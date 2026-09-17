@@ -88,9 +88,9 @@ use kontor_core::repository::{
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, ModelRung, NodeProjectionCapability,
     PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec, ProviderQuotaKind,
-    ProviderQuotaSource, ResolvedWorkProfileSnapshot, RoleCatalogRevision, Shareability,
-    ShareabilityClass, ShareabilityClassifier, ShareabilityProvenance, ShareabilityTier,
-    SourceIdentity, TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot,
+    ProviderQuotaSource, ResolvedWorkProfileSnapshot, RoleCatalogRevision, SeatAutonomy,
+    Shareability, ShareabilityClass, ShareabilityClassifier, ShareabilityProvenance,
+    ShareabilityTier, SourceIdentity, TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot,
     TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
 };
 use kontor_core::state::{
@@ -887,6 +887,24 @@ fn read_advisor_advice(
 
 pub(crate) fn read_timestamp(value: &str) -> RepositoryResult<Timestamp> {
     Ok(parse_utc_timestamp(value)?)
+}
+
+/// Decode one stored [`SeatAutonomy`] from its durable spelling.
+///
+/// The column's CHECK admits only these three, so an unrecognized value means
+/// the row was written by something other than this schema. That is refused
+/// rather than defaulted: silently reading an unknown authority as `Supervised`
+/// would hide the corruption, and reading it as anything else would invent
+/// authority no evidence supports.
+pub(crate) fn read_seat_autonomy(value: &str) -> RepositoryResult<SeatAutonomy> {
+    match value {
+        "supervised" => Ok(SeatAutonomy::Supervised),
+        "bounded" => Ok(SeatAutonomy::Bounded),
+        "advisory" => Ok(SeatAutonomy::Advisory),
+        other => Err(RepositoryError::Backend {
+            detail: format!("a stored seat autonomy is not a known authority: {other}"),
+        }),
+    }
 }
 
 pub(crate) fn to_json<T: Serialize>(value: &T) -> RepositoryResult<String> {
@@ -4078,7 +4096,7 @@ impl SqliteStore {
             .connection
             .query_row(
                 "SELECT model_rung, runtime_kind, host, generation, native_id,
-                        provider_session_id, observed_at
+                        provider_session_id, observed_at, autonomy
                  FROM hosted_topology_seats
                  WHERE project_id = ?1 AND seat_binding_id = ?2",
                 params![project_id.to_string(), seat_binding_id.to_string()],
@@ -4091,13 +4109,14 @@ impl SqliteStore {
                         row.get::<_, String>(4)?,
                         row.get::<_, Option<String>>(5)?,
                         row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
                     ))
                 },
             )
             .optional()
             .map_err(backend)?;
         row.map(
-            |(model, runtime, host, generation, native, provider, observed)| {
+            |(model, runtime, host, generation, native, provider, observed, autonomy)| {
                 Ok(StoredHostedTopologySeat {
                     project_id,
                     seat_binding_id,
@@ -4118,6 +4137,7 @@ impl SqliteStore {
                         })?,
                         native_id: ExternalId::parse(&native)?,
                     },
+                    autonomy: read_seat_autonomy(&autonomy)?,
                     provider_session_id: provider.as_deref().map(ExternalId::parse).transpose()?,
                     observed_at: read_timestamp(&observed)?,
                 })
@@ -4171,6 +4191,7 @@ impl SqliteStore {
         {
             if existing.model_rung == seat.model_rung
                 && existing.native_identity == seat.native_identity
+                && existing.autonomy == seat.autonomy
             {
                 self.connection
                     .execute(
@@ -4189,7 +4210,7 @@ impl SqliteStore {
             }
             return Err(RepositoryError::Conflict {
                 subject: "hosted topology seat",
-                rule: "a persistent seat cannot change its route or native identity",
+                rule: "a persistent seat cannot change its route, native identity or autonomy",
             });
         }
         let model =
@@ -4200,8 +4221,8 @@ impl SqliteStore {
             .execute(
                 "INSERT INTO hosted_topology_seats
                      (seat_binding_id, project_id, model_rung, runtime_kind, host,
-                      generation, native_id, provider_session_id, observed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                      generation, native_id, autonomy, provider_session_id, observed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     seat.seat_binding_id.to_string(),
                     seat.project_id.to_string(),
@@ -4210,6 +4231,7 @@ impl SqliteStore {
                     seat.native_identity.host.as_str(),
                     i64::try_from(seat.native_identity.generation).unwrap_or(i64::MAX),
                     seat.native_identity.native_id.as_str(),
+                    seat.autonomy.as_str(),
                     seat.provider_session_id.as_ref().map(ExternalId::as_str),
                     text(seat.observed_at),
                 ],
@@ -4232,7 +4254,7 @@ impl SqliteStore {
         let active = transaction
             .query_row(
                 "SELECT model_rung, runtime_kind, host, generation, native_id,
-                        provider_session_id, observed_at
+                        provider_session_id, observed_at, autonomy
                  FROM hosted_topology_seats
                  WHERE project_id = ?1 AND seat_binding_id = ?2",
                 params![
@@ -4248,6 +4270,7 @@ impl SqliteStore {
                         row.get::<_, String>(4)?,
                         row.get::<_, Option<String>>(5)?,
                         row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
                     ))
                 },
             )
@@ -4258,8 +4281,11 @@ impl SqliteStore {
                 detail: format!("a hosted-seat model rung could not be encoded: {error}"),
             }
         })?;
-        if let Some((model, runtime, host, generation, native, provider, observed)) = active {
+        if let Some((model, runtime, host, generation, native, provider, observed, autonomy)) =
+            active
+        {
             if model != expected_model
+                || autonomy != predecessor.autonomy.as_str()
                 || runtime != predecessor.native_identity.runtime_kind.as_str()
                 || host != predecessor.native_identity.host.as_str()
                 || u64::try_from(generation).ok() != Some(predecessor.native_identity.generation)
@@ -4280,9 +4306,10 @@ impl SqliteStore {
                 .execute(
                     "INSERT INTO hosted_topology_seat_history
                          (seat_binding_id, project_id, generation, model_rung,
-                          runtime_kind, host, native_id, provider_session_id,
-                          observed_at, retired_at, retirement_reason)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                          runtime_kind, host, native_id, autonomy,
+                          provider_session_id, observed_at, retired_at,
+                          retirement_reason)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                     params![
                         predecessor.seat_binding_id.to_string(),
                         predecessor.project_id.to_string(),
@@ -4291,6 +4318,7 @@ impl SqliteStore {
                         predecessor.native_identity.runtime_kind.as_str(),
                         predecessor.native_identity.host.as_str(),
                         predecessor.native_identity.native_id.as_str(),
+                        predecessor.autonomy.as_str(),
                         predecessor
                             .provider_session_id
                             .as_ref()
@@ -4348,7 +4376,7 @@ impl SqliteStore {
             .connection
             .query_row(
                 "SELECT model_rung, runtime_kind, host, generation,
-                        provider_session_id, observed_at
+                        provider_session_id, observed_at, autonomy
                  FROM hosted_topology_seat_history
                  WHERE project_id = ?1 AND seat_binding_id = ?2 AND native_id = ?3",
                 params![
@@ -4364,36 +4392,40 @@ impl SqliteStore {
                         row.get::<_, i64>(3)?,
                         row.get::<_, Option<String>>(4)?,
                         row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
                     ))
                 },
             )
             .optional()
             .map_err(backend)?;
-        row.map(|(model, runtime, host, generation, provider, observed)| {
-            Ok(StoredHostedTopologySeat {
-                project_id,
-                seat_binding_id,
-                model_rung: serde_json::from_str(&model).map_err(|error| {
-                    RepositoryError::Backend {
-                        detail: format!(
-                            "a hosted-seat history model rung could not be decoded: {error}"
-                        ),
-                    }
-                })?,
-                native_identity: NativeRuntimeIdentity {
-                    runtime_kind: RuntimeKindKey::parse(&runtime)?,
-                    host: ExternalName::parse(&host)?,
-                    generation: u64::try_from(generation).map_err(|_| {
+        row.map(
+            |(model, runtime, host, generation, provider, observed, autonomy)| {
+                Ok(StoredHostedTopologySeat {
+                    project_id,
+                    seat_binding_id,
+                    model_rung: serde_json::from_str(&model).map_err(|error| {
                         RepositoryError::Backend {
-                            detail: "a hosted-seat history generation is negative".to_owned(),
+                            detail: format!(
+                                "a hosted-seat history model rung could not be decoded: {error}"
+                            ),
                         }
                     })?,
-                    native_id: native_id.clone(),
-                },
-                provider_session_id: provider.as_deref().map(ExternalId::parse).transpose()?,
-                observed_at: read_timestamp(&observed)?,
-            })
-        })
+                    native_identity: NativeRuntimeIdentity {
+                        runtime_kind: RuntimeKindKey::parse(&runtime)?,
+                        host: ExternalName::parse(&host)?,
+                        generation: u64::try_from(generation).map_err(|_| {
+                            RepositoryError::Backend {
+                                detail: "a hosted-seat history generation is negative".to_owned(),
+                            }
+                        })?,
+                        native_id: native_id.clone(),
+                    },
+                    autonomy: read_seat_autonomy(&autonomy)?,
+                    provider_session_id: provider.as_deref().map(ExternalId::parse).transpose()?,
+                    observed_at: read_timestamp(&observed)?,
+                })
+            },
+        )
         .transpose()
     }
 
@@ -4481,9 +4513,10 @@ impl SqliteStore {
             .execute(
                 "INSERT INTO hosted_topology_seat_history
                      (seat_binding_id, project_id, generation, model_rung,
-                      runtime_kind, host, native_id, provider_session_id,
-                      observed_at, retired_at, retirement_reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                      runtime_kind, host, native_id, autonomy,
+                      provider_session_id, observed_at, retired_at,
+                      retirement_reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     predecessor.seat_binding_id.to_string(),
                     predecessor.project_id.to_string(),
@@ -4492,6 +4525,7 @@ impl SqliteStore {
                     predecessor.native_identity.runtime_kind.as_str(),
                     predecessor.native_identity.host.as_str(),
                     predecessor.native_identity.native_id.as_str(),
+                    predecessor.autonomy.as_str(),
                     predecessor
                         .provider_session_id
                         .as_ref()
@@ -4521,8 +4555,9 @@ impl SqliteStore {
             .execute(
                 "INSERT INTO hosted_topology_seats
                      (seat_binding_id, project_id, model_rung, runtime_kind, host,
-                      generation, native_id, provider_session_id, observed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                      generation, native_id, autonomy, provider_session_id,
+                      observed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     successor.seat_binding_id.to_string(),
                     successor.project_id.to_string(),
@@ -4531,6 +4566,7 @@ impl SqliteStore {
                     successor.native_identity.host.as_str(),
                     i64::try_from(successor.native_identity.generation).unwrap_or(i64::MAX),
                     successor.native_identity.native_id.as_str(),
+                    successor.autonomy.as_str(),
                     successor
                         .provider_session_id
                         .as_ref()

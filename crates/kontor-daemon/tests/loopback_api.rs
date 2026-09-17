@@ -71,7 +71,7 @@ use kontor_core::repository::{
 };
 use kontor_core::spec::{
     CatalogRoleRef, EffortLevel, ModelRef, ModelRung, ProviderQuotaKind, ProviderQuotaSource,
-    ProviderRef, QuotaDecisionBasis, TeamRunSnapshot,
+    ProviderRef, QuotaDecisionBasis, SeatAutonomy, TeamRunSnapshot,
 };
 use kontor_core::state::{
     Freshness, GateVerdict, NativeRuntimeIdentity, ObservedRunState, RuntimeContact,
@@ -86,7 +86,9 @@ use kontor_daemon::usage::{ExactProviderUsageReporter, ProviderUsageProbeFailure
 use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_runtime::adapter::RuntimeAdapter as _;
 use kontor_runtime::capability::RuntimeCapability;
-use kontor_runtime::fake::{AdapterCall, RequestKey, RuntimeScript, ScriptStep, SessionScript};
+use kontor_runtime::fake::{
+    AdapterCall, HostedSeatOperation, RequestKey, RuntimeScript, ScriptStep, SessionScript,
+};
 use kontor_runtime::request::CorrelationLabel;
 use kontor_scheduler::model::CapacityConfig;
 use kontor_store::{
@@ -30265,6 +30267,11 @@ async fn native_child_archive_requires_retirement_and_recovers_a_lost_acknowledg
         projected_child["revision"],
         serde_json::json!(node.revision)
     );
+    // ASMA-8193. These seats were launched while the plane declared nothing, so
+    // each holds `Supervised`. Move the default before retiring them: retirement
+    // must still describe the generation it is ending, and with the two values
+    // equal the assertion below would hold under either implementation.
+    world.fake.declare_autonomy(Some(SeatAutonomy::Bounded));
     let mut native_retired = 0;
     for seat in seats {
         let hosted = world.daemon.state().with_store(|store| {
@@ -30282,8 +30289,9 @@ async fn native_child_archive_requires_retirement_and_recovers_a_lost_acknowledg
         assert_eq!(projected_seat["revision"], serde_json::json!(seat.revision));
         let retire_body = serde_json::json!({"expected_revision": projected_seat["revision"], "reason": "retire disposable role"});
         let key = format!("cleanup-seat-{}", seat.id);
-        if hosted.is_some() {
+        if let Some(hosted) = hosted.as_ref() {
             native_retired += 1;
+            let launched_under = hosted.autonomy;
             world.fake.lose_next_hosted_retire_ack(seat.id);
             let pause = world.fake.pause_next_hosted_retirement();
             let retiring = Call::post(&retire_uri, &retire_body)
@@ -30347,6 +30355,18 @@ async fn native_child_archive_requires_retirement_and_recovers_a_lost_acknowledg
                         .expect("retained"))
                     .lifecycle,
                 TopologyLifecycle::Active
+            );
+            // The retire whose acknowledgement was lost still named the
+            // authority the seat was launched under, not the one the plane
+            // declares now. Re-resolving here would describe the seat being
+            // retired as something it never was, and the correlation refusal
+            // that follows would leave the native unreachable.
+            assert_eq!(
+                world
+                    .fake
+                    .last_hosted_autonomy(HostedSeatOperation::Retire, seat.id),
+                Some(launched_under),
+                "retirement recomputed the live plane default instead of                  describing the generation it is ending"
             );
         }
         let retired = Call::post(&retire_uri, &retire_body)
@@ -35031,6 +35051,19 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         "an identity refusal reached the runtime"
     );
 
+    // ASMA-8193. The TPM above was launched while the plane declared nothing,
+    // so its generation is `Supervised`. The operator now edits `runtimes.json`
+    // and restarts into a `bounded` default. Everything from here on asks the
+    // same question: which of the two values does each control operation use?
+    assert_eq!(
+        world
+            .fake
+            .last_hosted_autonomy(HostedSeatOperation::Launch, tpm_binding_id),
+        Some(SeatAutonomy::Supervised),
+        "the TPM generation was launched before the default moved"
+    );
+    world.fake.declare_autonomy(Some(SeatAutonomy::Bounded));
+
     // The authorized correction archives only the exact native predecessor,
     // launches the requested fallback, and preserves the logical SeatBinding.
     let preview = Call::post(
@@ -35041,6 +35074,15 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
     .send(world)
     .await;
     assert_eq!(preview.status, 200, "{}", preview.body);
+    // A liveness probe describes the native it is probing. Resolving the plane
+    // default here would ask about a seat that does not exist.
+    assert_eq!(
+        world
+            .fake
+            .last_hosted_autonomy(HostedSeatOperation::Inspect, tpm_binding_id),
+        Some(SeatAutonomy::Supervised),
+        "the preview's inspect recomputed the live default instead of reading          the authority the predecessor was launched under"
+    );
     assert_eq!(preview.json()["seat_binding_id"], tpm_binding);
     assert_eq!(preview.json()["predecessor_native_id"], tpm_native);
     assert_eq!(preview.json()["would_replace_native"], true);
@@ -35098,6 +35140,28 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
     assert!(
         route_calls.contains(&AdapterCall::MessageHostedSeat(tpm_binding_id)),
         "the newest stale Completion wake did not reach the exact successor: {route_calls:?}"
+    );
+    // The generation boundary, observed from the runtime side. Retirement
+    // describes the seat being ended — under the old default, because that is
+    // what it ran under — and only the successor launch sees the new one.
+    //
+    // This pair is the wedge the Committee reproduced. With retirement
+    // recomputing the default, it names `Bounded` against a native launched
+    // `Supervised`, the mismatch refuses the retire *before* archival, and the
+    // successor below is never launched at all.
+    assert_eq!(
+        world
+            .fake
+            .last_hosted_autonomy(HostedSeatOperation::Retire, tpm_binding_id),
+        Some(SeatAutonomy::Supervised),
+        "retirement must describe the generation it is ending"
+    );
+    assert_eq!(
+        world
+            .fake
+            .last_hosted_autonomy(HostedSeatOperation::Launch, tpm_binding_id),
+        Some(SeatAutonomy::Bounded),
+        "the successor is a new generation and is the one place a changed          plane default legitimately takes effect"
     );
     let first_deliveries = world.daemon.state().with_store(|store| {
         store
@@ -35161,6 +35225,10 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         .as_u64()
         .expect("the corrected TPM generation");
     world.fake.archive_hosted_seat(&corrected_successor);
+    // The successor now holds `Bounded`. Move the plane default a second time,
+    // so the persisted value and the live one disagree again — otherwise the
+    // assertion below would pass under either implementation and prove nothing.
+    world.fake.declare_autonomy(Some(SeatAutonomy::Advisory));
     let seat_before_attention = world.daemon.state().with_store(|store| {
         store
             .get_seat_binding(project_id, tpm_binding_id)
@@ -35183,6 +35251,15 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         attention.json()["observed_binding"].is_null(),
         "an archived hosted native was reported from its live container: {}",
         attention.body
+    );
+    // Attention is a read. It must describe the seat as it was launched, not as
+    // the plane would launch one now.
+    assert_eq!(
+        world
+            .fake
+            .last_hosted_autonomy(HostedSeatOperation::Inspect, tpm_binding_id),
+        Some(SeatAutonomy::Bounded),
+        "seat attention recomputed the live default instead of reading the          authority the successor generation was launched under"
     );
     let seat_after_attention = world.daemon.state().with_store(|store| {
         store

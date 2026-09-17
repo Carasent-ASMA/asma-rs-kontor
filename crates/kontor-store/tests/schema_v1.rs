@@ -552,7 +552,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // delivery workspace, and leaves a pre-v96 run's subject visibly
     // unrecorded. v97 confirms only pre-hook local task/gate receipts whose
     // exact durable mutations prove that their synchronous commands succeeded.
-    assert_eq!(SCHEMA_VERSION, 98);
+    // v99 freezes a hosted leadership seat's autonomy beside its occupancy
+    // generation, in both the active and the historical row, and backfills every
+    // pre-feature row to the only launch mode any of them can have had.
+    assert_eq!(SCHEMA_VERSION, 99);
 }
 
 #[test]

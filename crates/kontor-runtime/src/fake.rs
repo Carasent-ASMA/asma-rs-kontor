@@ -25,7 +25,7 @@ use kontor_core::id::{
     Timestamp, TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
-use kontor_core::spec::ModelRung;
+use kontor_core::spec::{ModelRung, SeatAutonomy};
 use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
 use serde::Deserialize;
 
@@ -279,6 +279,28 @@ pub struct RuntimeScript {
     /// Deviations from the happy path, in the order they must be consumed.
     #[serde(default)]
     pub steps: Vec<ScriptStep>,
+}
+
+/// Which hosted-seat control operation an autonomy observation came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedSeatOperation {
+    /// A new occupancy generation is being created.
+    Launch,
+    /// A live native is being read back.
+    Inspect,
+    /// A generation is being ended.
+    Retire,
+}
+
+/// One hosted-seat control operation and the authority it named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostedAutonomyObservation {
+    /// Which control operation.
+    pub operation: HostedSeatOperation,
+    /// The logical seat it addressed.
+    pub seat_binding_id: SeatBindingId,
+    /// The authority the caller actually supplied.
+    pub autonomy: SeatAutonomy,
 }
 
 /// What the fake was asked to do, in order.
@@ -701,6 +723,16 @@ struct FakeState {
     consultation_permissions: BTreeMap<SeatBindingId, BTreeSet<ExternalId>>,
     consultation_permission_acks: BTreeMap<(SeatBindingId, ExternalId), ConsultationPermissionAck>,
     hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
+    /// Every authority a hosted-seat control operation was actually asked for.
+    ///
+    /// ASMA-8193: the defect this exists to observe is not a wrong *stored*
+    /// value, it is a control operation that recomputes one. Nothing else in
+    /// the fake records the autonomy a call carried, so re-resolving the plane
+    /// default at inspect or retire was invisible to every test.
+    hosted_autonomy: Vec<HostedAutonomyObservation>,
+    /// Plane-wide default this runtime declares, as an operator may change it
+    /// between one control operation and the next.
+    declared_autonomy: Option<SeatAutonomy>,
     /// Terminal hosted natives retained so retirement and recovery are replayable.
     archived_hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// Stable message ledger per exact hosted native. A logical seat may be
@@ -1202,6 +1234,8 @@ impl ScriptedFakeRuntime {
                 consultation_permissions: BTreeMap::new(),
                 consultation_permission_acks: BTreeMap::new(),
                 hosted_seats: BTreeMap::new(),
+                hosted_autonomy: Vec::new(),
+                declared_autonomy: None,
                 archived_hosted_seats: BTreeMap::new(),
                 hosted_messages: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
@@ -1778,6 +1812,35 @@ impl ScriptedFakeRuntime {
         self.lock().calls.clone()
     }
 
+    /// Every authority a hosted-seat control operation was asked for, in order.
+    #[must_use]
+    pub fn hosted_autonomy_calls(&self) -> Vec<HostedAutonomyObservation> {
+        self.lock().hosted_autonomy.clone()
+    }
+
+    /// The authority named by the last control operation of one kind on a seat.
+    #[must_use]
+    pub fn last_hosted_autonomy(
+        &self,
+        operation: HostedSeatOperation,
+        seat_binding_id: SeatBindingId,
+    ) -> Option<SeatAutonomy> {
+        self.lock()
+            .hosted_autonomy
+            .iter()
+            .rev()
+            .find(|observed| {
+                observed.operation == operation && observed.seat_binding_id == seat_binding_id
+            })
+            .map(|observed| observed.autonomy)
+    }
+
+    /// Move the plane-wide default, as an operator editing `runtimes.json`
+    /// between two control operations would.
+    pub fn declare_autonomy(&self, autonomy: Option<SeatAutonomy>) {
+        self.lock().declared_autonomy = autonomy;
+    }
+
     /// Exact route supplied for one launched delivery run.
     #[must_use]
     pub fn launched_model(&self, run: AgentRunId) -> Option<ModelRung> {
@@ -2016,6 +2079,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
 
     fn provider_available(&self, provider: &str) -> bool {
         !self.lock().unavailable_providers.contains(provider)
+    }
+
+    fn declared_autonomy(&self) -> Option<SeatAutonomy> {
+        self.lock().declared_autonomy
     }
 
     fn fallback_model_rung(&self, requested: &ModelRung) -> Option<ModelRung> {
@@ -2794,6 +2861,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .calls
             .push(AdapterCall::LaunchHostedSeat(request.seat_binding_id));
+        state.hosted_autonomy.push(HostedAutonomyObservation {
+            operation: HostedSeatOperation::Launch,
+            seat_binding_id: request.seat_binding_id,
+            autonomy: request.autonomy,
+        });
         if let Some(existing) = state.hosted_seats.get(&request.seat_binding_id) {
             return Ok(existing.clone());
         }
@@ -2832,11 +2904,16 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         &self,
         request: &HostedSeatInspectRequest,
     ) -> RuntimeResult<HostedSeatInspection> {
-        let state = self.lock();
+        let mut state = self.lock();
         preflight(
             &state.capabilities,
             &OperationContext::new(RuntimeCapability::Inspect),
         )?;
+        state.hosted_autonomy.push(HostedAutonomyObservation {
+            operation: HostedSeatOperation::Inspect,
+            seat_binding_id: request.seat_binding_id,
+            autonomy: request.autonomy,
+        });
         if request.identity.runtime_kind != state.runtime_kind
             || request.identity.host != state.host
             || request.identity.generation > state.generation
@@ -3139,6 +3216,13 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             pause.pause().await;
         }
         let mut state = self.lock();
+        // Recorded before the disposition branch: a retire that is replay-safe
+        // still named an authority, and that is the value under test.
+        state.hosted_autonomy.push(HostedAutonomyObservation {
+            operation: HostedSeatOperation::Retire,
+            seat_binding_id: request.seat_binding_id,
+            autonomy: request.autonomy,
+        });
         if let Some(held) = state.hosted_seats.get(&request.seat_binding_id) {
             if held.identity != request.identity {
                 return Err(RuntimeError::CorrelationFailed);

@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 98;
+pub const SCHEMA_VERSION: i64 = 99;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -363,6 +363,10 @@ const MIGRATIONS: &[&str] = &[
     // immutable provenance and are accepted only when one receipt maps to one
     // mutation. Ambiguous v97 reconstructions become confirmation-unknown.
     include_str!("../migrations/0098_legacy_local_confirmation_provenance.sql"),
+    // Schema v99. A hosted leadership seat's autonomy is frozen beside its
+    // occupancy generation, so inspect, retire, restart and replay read what
+    // the seat was launched under instead of recomputing a mutable default.
+    include_str!("../migrations/0099_hosted_seat_autonomy_generation.sql"),
 ];
 
 const _: () = assert!(

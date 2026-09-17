@@ -6907,7 +6907,10 @@ impl Services {
                     seat_binding_id: binding.id,
                     identity: predecessor.native_identity.clone(),
                     model_rung: predecessor.model_rung.clone(),
-                    autonomy: freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+                    // The authority this native was launched under, not the one
+                    // the plane would grant a new seat today. Re-resolving here
+                    // makes a liveness probe fail whenever the default moved.
+                    autonomy: predecessor.autonomy,
                     requested_at: kontor_api::now(),
                 })
                 .await
@@ -9508,7 +9511,10 @@ impl Services {
                         seat_binding_id,
                         identity: hosted.native_identity.clone(),
                         model_rung: hosted.model_rung.clone(),
-                        autonomy: freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+                        // Retirement must describe the seat being retired. A
+                        // freshly resolved default refuses the retire before
+                        // archival, which is the wedge that blocks replacement.
+                        autonomy: hosted.autonomy,
                         requested_at: now,
                     })
                     .await
@@ -9525,7 +9531,7 @@ impl Services {
                     seat_binding_id,
                     identity: hosted.native_identity.clone(),
                     model_rung: hosted.model_rung.clone(),
-                    autonomy: freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+                    autonomy: hosted.autonomy,
                     requested_at: now,
                 })
                 .await
@@ -21072,6 +21078,21 @@ impl ApplicationOperations for Services {
                     seat_binding_id,
                 ))
                 .map_err(|error| self.refuse_domain(&error))?;
+                // Launch intent, not live configuration, survives a lost
+                // acknowledgement. `materialize_roster_seats` runs on replay so
+                // a receipt whose process died between the logical and native
+                // halves can converge; if that process had already launched and
+                // persisted this seat, the generation is the same one and keeps
+                // the authority it was created under. Only a seat with no
+                // persisted occupancy is a new generation, and only a new
+                // generation reads the plane default.
+                let autonomy = match state
+                    .with_store(|store| store.get_hosted_topology_seat(project_id, seat_binding_id))
+                    .map_err(|error| self.refuse(&error))?
+                {
+                    Some(existing) => existing.autonomy,
+                    None => freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+                };
                 let outcome = adapter
                     .launch_hosted_seat(&HostedSeatLaunchRequest {
                         seat_binding_id,
@@ -21088,7 +21109,7 @@ impl ApplicationOperations for Services {
                         ),
                         fenced_predecessor_native_ids: Vec::new(),
                         model_rung: model_rung.clone(),
-                        autonomy: freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+                        autonomy,
                         context_policy: context_policy.clone(),
                         requested_at: kontor_api::now(),
                     })
@@ -21099,6 +21120,7 @@ impl ApplicationOperations for Services {
                     seat_binding_id,
                     model_rung: model_rung.clone(),
                     native_identity: outcome.identity,
+                    autonomy,
                     provider_session_id: outcome.provider_session_id,
                     observed_at: outcome.observed_at,
                 };
@@ -21224,7 +21246,7 @@ impl ApplicationOperations for Services {
                     seat_binding_id: plan.binding.id,
                     identity: plan.predecessor.native_identity.clone(),
                     model_rung: plan.predecessor.model_rung.clone(),
-                    autonomy: freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+                    autonomy: plan.predecessor.autonomy,
                     requested_at: kontor_api::now(),
                 })
                 .await
@@ -21294,6 +21316,7 @@ impl ApplicationOperations for Services {
                     store.list_hosted_topology_seat_history_native_ids(project_id, plan.binding.id)
                 })
                 .map_err(|error| self.refuse(&error))?;
+            let successor_autonomy = freeze_hosted_seat_autonomy(adapter.declared_autonomy());
             let outcome = adapter
                 .launch_hosted_seat(&HostedSeatLaunchRequest {
                     seat_binding_id: plan.binding.id,
@@ -21311,7 +21334,12 @@ impl ApplicationOperations for Services {
                     ),
                     fenced_predecessor_native_ids,
                     model_rung: plan.desired.clone(),
-                    autonomy: freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+                    // The one place a changed plane default legitimately takes
+                    // effect. This is a new occupancy generation created through
+                    // the audited retire/replace path, and the predecessor it
+                    // supersedes has already been archived with the authority it
+                    // ran under, so nothing is rewritten by resolving afresh.
+                    autonomy: successor_autonomy,
                     context_policy,
                     requested_at: kontor_api::now(),
                 })
@@ -21322,6 +21350,7 @@ impl ApplicationOperations for Services {
                 seat_binding_id: plan.binding.id,
                 model_rung: plan.desired.clone(),
                 native_identity: outcome.identity,
+                autonomy: successor_autonomy,
                 provider_session_id: outcome.provider_session_id,
                 observed_at: outcome.observed_at,
             };
@@ -21469,6 +21498,18 @@ impl ApplicationOperations for Services {
             seat_binding_id: plan.binding.id,
             model_rung: runtime_outcome.claim.model_rung.clone(),
             native_identity: runtime_outcome.claim.identity.clone(),
+            // A claim adopts a session Kontor did not launch. The claim preview
+            // reads back the route the claimant is actually running, but no
+            // runtime reports the authority a live session was started under,
+            // so there is no readback to agree with here the way there is on a
+            // launch. Resolving the plane default would hand an adopted foreign
+            // session whatever the plane currently permits on no evidence at
+            // all; the predecessor's value would be worse still, since the
+            // claimant is a different native that never ran under it.
+            //
+            // Kontor records what it can prove: the least authority the domain
+            // has. Widening it is the audited retire/replace path's job.
+            autonomy: SeatAutonomy::standard(),
             provider_session_id: runtime_outcome.claim.provider_session_id.clone(),
             observed_at: runtime_outcome.claim.observed_at,
         };
