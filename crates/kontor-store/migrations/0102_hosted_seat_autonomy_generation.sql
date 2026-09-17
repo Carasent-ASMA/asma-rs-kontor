@@ -98,4 +98,4 @@ DROP TABLE hosted_topology_seat_history;
 ALTER TABLE hosted_topology_seat_history_v99 RENAME TO hosted_topology_seat_history;
 PRAGMA legacy_alter_table = OFF;
 
-PRAGMA user_version = 99;
+PRAGMA user_version = 102;

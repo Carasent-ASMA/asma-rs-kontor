@@ -34,7 +34,8 @@ use crate::container::{
 };
 use crate::observation::{ControlPlaneObservation, NativeSession, ReconciliationReport};
 use crate::request::{
-    AdoptRequest, CancelRequest, CompactRequest, HistoryRequest, InspectRequest, LaunchRequest,
+    AdoptRequest, CancelRequest, CompactRequest, CorrelationChallengeCompletionRequest,
+    CorrelationChallengeRequest, HistoryRequest, InspectRequest, LaunchRequest,
     LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
     ReconcileSessionLabelsRequest, ReconciledSessionLabels, ResumeRequest, SendMessageRequest,
 };
@@ -848,6 +849,25 @@ pub struct MessageAck {
     pub accepted_at: Timestamp,
 }
 
+/// Exact canonical tail observed before a server correlation challenge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorrelationChallengeBoundary {
+    /// Kontor canonical position at the tail.
+    pub position: TimelinePosition,
+    /// Runtime-owned epoch identity needed to re-address the same transcript
+    /// after an adapter restart.
+    pub native_epoch: ExternalId,
+}
+
+/// Canonical acknowledgement of a server correlation challenge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorrelationChallengeAck {
+    /// Ordinary exact message acknowledgement.
+    pub message: MessageAck,
+    /// Runtime-owned epoch identity containing the message.
+    pub native_epoch: ExternalId,
+}
+
 /// The runtime's answer to one permission response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionAck {
@@ -1139,6 +1159,62 @@ pub trait RuntimeAdapter: Send + Sync {
         Err(RuntimeError::UnsupportedCapability {
             capability: RuntimeCapability::PermissionResponse,
         })
+    }
+
+    /// Take the timeline-epoch mappings this adapter has allocated since the
+    /// last drain, and forget that they are new.
+    ///
+    /// The runtime boundary for epoch continuity. An adapter allocates a Kontor
+    /// epoch number the first time it sees a raw native epoch, and that number
+    /// is only meaningful if it survives a restart — but an adapter must not
+    /// reach a store to make it survive. So it surfaces the pairs here and the
+    /// control plane persists them.
+    ///
+    /// Draining is the *whole* contract: the caller has taken responsibility
+    /// for durability, so it must persist before exposing or consuming anything
+    /// addressed by these numbers. An adapter that has allocated nothing since
+    /// the last drain returns empty, which is the common case and costs a lock.
+    fn drain_new_timeline_epochs(&self) -> Vec<(String, u64)> {
+        Vec::new()
+    }
+
+    /// Learn which epoch this session is in *now*, in one bounded call.
+    ///
+    /// The recovery half of [`RuntimeAdapter::drain_new_timeline_epochs`]. A
+    /// caller holding a cursor can be told
+    /// [`RuntimeError::TimelineRefetchRequired`] for two different reasons: the
+    /// runtime declared the page a break, or this process cannot spell the
+    /// cursor's epoch at all. Both say the same thing — *the numbering you are
+    /// addressing is not the one I am in* — and both are answered by asking the
+    /// runtime what its numbering is, not by reading the session again.
+    ///
+    /// That distinction is the point. Re-reading the session canonically means
+    /// walking to its origin, which on a long-lived seat is the unbounded read a
+    /// settlement proof must never take; this asks for the epoch alone, so it
+    /// costs one call whatever the session's length. Newly learned mappings
+    /// surface through the drain like any other, so the caller still owes them
+    /// durability before anything addressed by them is exposed.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when the session cannot be reached or the
+    /// binding no longer attests.
+    async fn refresh_timeline_epoch(&self, binding: &RuntimeBindingSnapshot) -> RuntimeResult<()> {
+        let _ = binding;
+        Ok(())
+    }
+
+    /// Seed the epoch registry from durable state before any read happens.
+    ///
+    /// Restores the exact numbers previously allocated, so a raw epoch resolves
+    /// to the same u64 it did in the last process. Pairs already known are left
+    /// alone rather than renumbered: a mapping is a bijection, and the durable
+    /// side is authoritative.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when the supplied pairs are not a bijection.
+    fn restore_timeline_epochs(&self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
+        let _ = pairs;
+        Ok(())
     }
 
     /// Take back into this runtime's own registry the bindings a previous
@@ -1441,6 +1517,48 @@ pub trait RuntimeAdapter: Send + Sync {
     /// content. A retry of the same identifier and body replays the original
     /// acknowledgement instead of delivering twice.
     async fn send(&self, request: &SendMessageRequest) -> RuntimeResult<MessageAck>;
+
+    /// Read the exact canonical tail before a server-generated correlation
+    /// challenge is persisted. No runtime effect is permitted.
+    ///
+    /// Runtimes only need this recovery surface when their historical user
+    /// messages can omit the caller's correlation id. The default is a closed
+    /// refusal so no adapter silently inherits weaker correlation semantics.
+    async fn correlation_challenge_boundary(
+        &self,
+        _binding: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<CorrelationChallengeBoundary> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::History,
+        })
+    }
+
+    /// Reconcile or deliver one durably claimed correlation challenge.
+    ///
+    /// `may_dispatch` is true only for the transaction that won the first-send
+    /// claim. A false value is read-only and may never resend an uncertain
+    /// effect.
+    async fn send_correlation_challenge(
+        &self,
+        _request: &CorrelationChallengeRequest,
+    ) -> RuntimeResult<CorrelationChallengeAck> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::SendMessage,
+        })
+    }
+
+    /// Prove the exact terminal response to a durably correlated challenge.
+    ///
+    /// The returned position is selected by the adapter from canonical history;
+    /// callers provide neither message nor response coordinates.
+    async fn prove_correlation_challenge_completion(
+        &self,
+        _request: &CorrelationChallengeCompletionRequest,
+    ) -> RuntimeResult<TimelinePosition> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::History,
+        })
+    }
 
     /// Ask an existing native session to stop.
     ///

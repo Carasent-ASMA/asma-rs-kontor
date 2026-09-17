@@ -34,12 +34,12 @@ use crate::adapter::{
     ConsultationPermissionAck, ConsultationPermissionInspectRequest,
     ConsultationPermissionInspection, ConsultationPermissionResponseRequest,
     ConsultationRouteProvenance, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
-    HostedSeatClaimOutcome, HostedSeatClaimPreview, HostedSeatClaimRequest,
-    HostedSeatInspectRequest, HostedSeatInspection, HostedSeatLaunchRequest,
-    HostedSeatMessageOutcome, HostedSeatMessageRequest, HostedSeatNativeState,
-    HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome, MessageAck, PermissionAck,
-    PersistentSeatInspection, PersistentSeatNativeState, RetitleSeatOutcome, RetitleSeatRequest,
-    RuntimeAdapter, RuntimeError, RuntimeResult,
+    CorrelationChallengeAck, CorrelationChallengeBoundary, HostedSeatClaimOutcome,
+    HostedSeatClaimPreview, HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatInspection,
+    HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
+    HostedSeatNativeState, HostedSeatRetireOutcome, HostedSeatRetireRequest, LaunchOutcome,
+    MessageAck, PermissionAck, PersistentSeatInspection, PersistentSeatNativeState,
+    RetitleSeatOutcome, RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use crate::admission::{
     AdmissionLedger, AdmissionOutcome, AdmissionRequest, RoleSlotKey, SeatFacts,
@@ -58,9 +58,10 @@ use crate::observation::{
 };
 use crate::refusal::{RefusalProvenance, TransientRefusal};
 use crate::request::{
-    AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
-    LaunchRequest, LiveSubscribeRequest, MessageId, PermissionResponseRequest, ResumeRequest,
-    SendMessageRequest, capability_document,
+    AdoptRequest, CancelRequest, CompactRequest, CorrelationChallengeCompletionRequest,
+    CorrelationChallengeRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchRequest,
+    LiveSubscribeRequest, MessageId, PermissionResponseRequest, ResumeRequest, SendMessageRequest,
+    capability_document,
 };
 use crate::timeline::{
     Admission, EventSubject, HistoryCursor, HistoryPage, LiveSubscription, MessageLedger,
@@ -348,6 +349,12 @@ pub enum AdapterCall {
     Resume(RuntimeBindingId),
     /// A message was delivered.
     Send(RuntimeBindingId, MessageId),
+    /// A correlation challenge boundary was read.
+    CorrelationChallengeBoundary(RuntimeBindingId),
+    /// A correlation challenge was reconciled or delivered.
+    CorrelationChallengeSend(RuntimeBindingId, MessageId, bool),
+    /// A correlation challenge completion was proved.
+    CorrelationChallengeCompletion(RuntimeBindingId, MessageId),
     /// A cancellation was requested.
     Cancel(RuntimeBindingId),
     /// A session was permanently retired for replacement.
@@ -360,6 +367,8 @@ pub enum AdapterCall {
     DiscoverSessions,
     /// A history page was read.
     History(RuntimeBindingId),
+    /// The session's current timeline epoch was re-read, without its content.
+    RefreshTimelineEpoch(RuntimeBindingId),
     /// A live subscription was opened.
     SubscribeLive(RuntimeBindingId),
     /// A permission request was answered.
@@ -766,6 +775,29 @@ struct FakeState {
     /// Separate from the strict script queue so read-only proof calls may
     /// legitimately precede that send.
     lose_next_send_ack: bool,
+    /// Raw->Kontor timeline epoch mappings this fake has allocated, and the
+    /// ones not yet handed to the control plane for persistence. The fake
+    /// models the same boundary a native adapter does, so the persist-before-
+    /// expose barrier can be exercised without a live runtime.
+    epoch_mappings: BTreeMap<String, u64>,
+    undrained_epochs: Vec<(String, u64)>,
+    /// Whether an anchored read must declare a refetch until the epoch is
+    /// re-read.
+    ///
+    /// The transient half of the refetch signal: the cursor names an epoch this
+    /// runtime still holds, but the page it addresses cannot be served until the
+    /// reader has re-established which epoch the session is in. Cleared by
+    /// [`RuntimeAdapter::refresh_timeline_epoch`] and by nothing else, so a test
+    /// that never refreshes never gets past it.
+    refetch_until_epoch_refresh: bool,
+    /// Whether the next inspect should fail at the transport.
+    ///
+    /// Off the strict queue for the same reason as `lose_next_send_ack`, and a
+    /// sharper one: the readback that follows a delivery is reached *through*
+    /// that delivery, so a queued step naming the inspect would be refused by
+    /// the send it has to pass through first. The one sequence worth scripting
+    /// here is the one the queue cannot express.
+    fail_next_inspect: bool,
     /// Container retitles a runtime silently ignores once, so callers must
     /// reject the unchanged native readback instead of recording success.
     ignore_retitle_once: BTreeSet<TopologyNodeId>,
@@ -1253,6 +1285,10 @@ impl ScriptedFakeRuntime {
                 container_titles: BTreeMap::new(),
                 lose_retitle_ack_once: BTreeSet::new(),
                 lose_next_send_ack: false,
+                epoch_mappings: BTreeMap::new(),
+                undrained_epochs: Vec::new(),
+                refetch_until_epoch_refresh: false,
+                fail_next_inspect: false,
                 ignore_retitle_once: BTreeSet::new(),
                 task_title_scopes: BTreeMap::new(),
                 bindings: BTreeMap::new(),
@@ -1395,6 +1431,100 @@ impl ScriptedFakeRuntime {
         session.state = ObservedRunState::WaitingInput;
         session.refusal = None;
         Ok((message_position, response_position))
+    }
+
+    /// Append one tool call after a completed turn.
+    ///
+    /// The shape a terminality check exists for: turn content that is *not* a
+    /// message, landing after the response. It carries no message subject, so
+    /// nothing can mistake it for a new turn — but it is a canonical turn event,
+    /// so a response before it is no longer the last one.
+    pub fn observe_trailing_tool_call(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<TimelinePosition> {
+        let mut state = self.lock();
+        let issued = state
+            .bindings
+            .get(&binding.binding_id())
+            .filter(|issued| *issued == binding)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the runtime did not issue the binding named by the trailing tool call",
+            })?;
+        let session = state.session(&issued)?;
+        let position = session.append(
+            SessionEventKind::ToolCall,
+            EventSubject::None,
+            "trailing tool call",
+            observed_at,
+        )?;
+        session.state = ObservedRunState::WaitingInput;
+        Ok(position)
+    }
+
+    /// Record the exact response text a server-generated correlation challenge
+    /// asks for. The corresponding user message is emitted without a native
+    /// client id by [`RuntimeAdapter::send_correlation_challenge`], reproducing
+    /// Paseo 0.8.0 while keeping the test's correlation server-owned.
+    pub fn observe_correlation_challenge_completion(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        response: &str,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<TimelinePosition> {
+        let mut state = self.lock();
+        let issued = state
+            .bindings
+            .get(&binding.binding_id())
+            .filter(|issued| *issued == binding)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the runtime did not issue the binding named by the correlation challenge",
+            })?;
+        let session = state.session(&issued)?;
+        let position = session.append(
+            SessionEventKind::Message,
+            EventSubject::None,
+            response,
+            observed_at,
+        )?;
+        session.state = ObservedRunState::WaitingInput;
+        session.refusal = None;
+        Ok(position)
+    }
+
+    /// Record one identity-poor canonical user message.
+    ///
+    /// This deliberately carries no [`MessageId`]. It lets the daemon contract
+    /// reproduce both ambiguous historical Paseo 0.8.0 content and a duplicate
+    /// exact challenge body without giving either occurrence invented proof.
+    pub fn observe_uncorrelated_user_message(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        body: &str,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<TimelinePosition> {
+        let mut state = self.lock();
+        let issued = state
+            .bindings
+            .get(&binding.binding_id())
+            .filter(|issued| *issued == binding)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the runtime did not issue the binding named by the uncorrelated message",
+            })?;
+        let session = state.session(&issued)?;
+        let position = session.append(
+            SessionEventKind::Message,
+            EventSubject::None,
+            body,
+            observed_at,
+        )?;
+        session.state = ObservedRunState::WaitingInput;
+        session.refusal = None;
+        Ok(position)
     }
 
     /// Append one canonical non-content status event after a completed turn.
@@ -1945,6 +2075,48 @@ impl ScriptedFakeRuntime {
         self.lock().lose_next_send_ack = true;
     }
 
+    /// Fail the next inspect at the transport, leaving every earlier call
+    /// alone. This is how a *post-delivery readback* fault is described: the
+    /// send lands, and the observation that should follow it never answers.
+    pub fn fail_next_inspect(&self) {
+        self.lock().fail_next_inspect = true;
+    }
+
+    /// Declare a refetch on every anchored read until the epoch is re-read.
+    ///
+    /// The recoverable shape of that signal, and the one a settlement has to
+    /// survive: the session is entirely readable, and a reader that answers the
+    /// runtime's question — *which epoch are you addressing?* — may carry on
+    /// from the same cursor. A reader that only retries stays stuck here, which
+    /// is what makes this hook worth having.
+    pub fn require_timeline_refetch_until_epoch_refresh(&self) {
+        self.lock().refetch_until_epoch_refresh = true;
+    }
+
+    /// Forget every epoch mapping, as a process that restarted with nothing
+    /// durable behind it does.
+    ///
+    /// Not a transport fault and not a runtime change: the sessions and their
+    /// native epochs are untouched, and only this side's memory of what number
+    /// each was given is gone. That is the state a restart leaves when the
+    /// durable table is empty, and it is the one that makes a cursor issued by
+    /// the previous process unspellable.
+    pub fn forget_timeline_epochs(&self) {
+        let mut state = self.lock();
+        state.epoch_mappings.clear();
+        state.undrained_epochs.clear();
+    }
+
+    /// The mappings allocated but not yet handed over for persistence.
+    ///
+    /// A peek, deliberately: [`RuntimeAdapter::drain_new_timeline_epochs`] is
+    /// the control plane's to call, and a test that drained to look would be
+    /// discharging the very obligation it means to check.
+    #[must_use]
+    pub fn undrained_epochs(&self) -> Vec<(String, u64)> {
+        self.lock().undrained_epochs.clone()
+    }
+
     /// Every recorded event of the session behind `binding`.
     #[must_use]
     pub fn content(&self, binding: &RuntimeBindingSnapshot) -> Vec<SessionEvent> {
@@ -2069,6 +2241,18 @@ fn payload(kind: SessionEventKind, sequence: u64, body: &str) -> RuntimeResult<C
     }))?)
 }
 
+fn payload_body_is(event: &SessionEvent, expected: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(event.payload.json())
+        .ok()
+        .and_then(|value| {
+            value
+                .get("body")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|body| body == expected)
+}
+
 fn build_events(scripts: &[EventScript], epoch: u64) -> RuntimeResult<Vec<SessionEvent>> {
     scripts
         .iter()
@@ -2169,6 +2353,59 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     /// *does this session still exist here?*, and everything else comes out of
     /// the persisted snapshot. A fake that rebuilt capabilities here would let a
     /// re-grading bug pass its own restart test.
+    fn drain_new_timeline_epochs(&self) -> Vec<(String, u64)> {
+        std::mem::take(&mut self.lock().undrained_epochs)
+    }
+
+    fn restore_timeline_epochs(&self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        for (raw, epoch) in pairs {
+            state.epoch_mappings.insert(raw.clone(), *epoch);
+        }
+        Ok(())
+    }
+
+    /// Map the session's current epoch and answer the refetch signal, without
+    /// touching its content.
+    ///
+    /// Reads `session.epoch` and allocates through the same boundary
+    /// [`FakeAdapter::history`] uses, so the mapping this produces is
+    /// indistinguishable from one a read produced — and, like that one, is
+    /// undrained until the control plane takes it.
+    ///
+    /// Off the strict script queue, for the same reason as `fail_next_inspect`:
+    /// this call is reached *through* a read that was refused, so a queued step
+    /// naming it could never be scheduled in the right place.
+    async fn refresh_timeline_epoch(&self, binding: &RuntimeBindingSnapshot) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(1)),
+                context_policy: None,
+            },
+        )?;
+        state
+            .calls
+            .push(AdapterCall::RefreshTimelineEpoch(binding.binding_id()));
+        let epoch = state.session(binding)?.epoch;
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
+        state.refetch_until_epoch_refresh = false;
+        Ok(())
+    }
+
     async fn restore_bindings(
         &self,
         snapshots: &[RuntimeBindingSnapshot],
@@ -3416,11 +3653,233 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         let lose_ack = matches!(step, Some(ScriptStep::LoseSendAck))
             || std::mem::take(&mut state.lose_next_send_ack);
         if lose_ack {
-            return Err(RuntimeError::Transport {
-                rule: "acknowledgement was lost after the message was committed",
+            // The message is in the session and the ledger above holds its
+            // acknowledgement: what was lost is the answer, not the effect.
+            // Reporting that as a bare transport fault would let the API tell
+            // its caller nothing was changed, which is false here and is the
+            // sentence that turns one instruction into two native turns.
+            return Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the acknowledgement was lost after the message was committed",
             });
         }
         Ok(acknowledgement)
+    }
+
+    async fn correlation_challenge_boundary(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<CorrelationChallengeBoundary> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(1)),
+                context_policy: None,
+            },
+        )?;
+        state.calls.push(AdapterCall::CorrelationChallengeBoundary(
+            binding.binding_id(),
+        ));
+        let session = state.session(binding)?;
+        Ok(CorrelationChallengeBoundary {
+            position: session.content.last().map_or_else(
+                || TimelinePosition::start_of(session.epoch),
+                |event| event.position,
+            ),
+            native_epoch: ExternalId::parse(&format!("fake-epoch-{}", session.epoch))?,
+        })
+    }
+
+    async fn send_correlation_challenge(
+        &self,
+        request: &CorrelationChallengeRequest,
+    ) -> RuntimeResult<CorrelationChallengeAck> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::SendMessage,
+                autonomous: true,
+                account_pinned: false,
+                binding: Some(&request.binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::MessageBytes(request.body.as_str().len() as u64)),
+                context_policy: None,
+            },
+        )?;
+        state.session(&request.binding)?;
+        if !state.placements.contains(&request.binding.binding_id()) {
+            return Err(RuntimeError::WorkspaceBindingRequired);
+        }
+        state.calls.push(AdapterCall::CorrelationChallengeSend(
+            request.binding.binding_id(),
+            request.message_id,
+            request.may_dispatch,
+        ));
+        let lose_ack = request.may_dispatch && std::mem::take(&mut state.lose_next_send_ack);
+        let binding_id = request.binding.binding_id();
+        let body_hash = request.body_hash();
+        let session = state.session(&request.binding)?;
+        if request.native_epoch.as_str() != format!("fake-epoch-{}", session.epoch)
+            || request.after.epoch != session.epoch
+            || request.after.sequence
+                > session
+                    .content
+                    .last()
+                    .map_or(0, |event| event.position.sequence)
+        {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            });
+        }
+        let matches = session
+            .content
+            .iter()
+            .filter(|event| {
+                event.position.sequence > request.after.sequence
+                    && event.kind == SessionEventKind::Message
+                    && payload_body_is(event, request.body.as_str())
+            })
+            .map(|event| event.position)
+            .collect::<Vec<_>>();
+        if matches.len() > 1 {
+            return Err(RuntimeError::DuplicateMessage {
+                rule: "the exact server correlation challenge appears more than once",
+            });
+        }
+        let position = if let Some(position) = matches.first().copied() {
+            position
+        } else if request.may_dispatch {
+            // Deliberately omit EventSubject::Message: the challenge contract
+            // proves the Paseo 0.8.0 case where native history loses that echo.
+            session.append(
+                SessionEventKind::Message,
+                EventSubject::None,
+                request.body.as_str(),
+                request.sent_at,
+            )?
+        } else {
+            return Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the durably claimed correlation challenge is not yet present; retry may reconcile but must not resend",
+            });
+        };
+        let acknowledgement = MessageAck {
+            message_id: request.message_id,
+            binding_id,
+            position,
+            accepted_at: request.sent_at,
+        };
+        if lose_ack {
+            return Err(RuntimeError::Transport {
+                rule: "the correlation challenge landed but its acknowledgement was lost",
+            });
+        }
+        session
+            .messages
+            .record(request.message_id, body_hash, acknowledgement.clone());
+        Ok(CorrelationChallengeAck {
+            message: acknowledgement,
+            native_epoch: request.native_epoch.clone(),
+        })
+    }
+
+    async fn prove_correlation_challenge_completion(
+        &self,
+        request: &CorrelationChallengeCompletionRequest,
+    ) -> RuntimeResult<TimelinePosition> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&request.binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(64)),
+                context_policy: None,
+            },
+        )?;
+        state
+            .calls
+            .push(AdapterCall::CorrelationChallengeCompletion(
+                request.binding.binding_id(),
+                request.message_id,
+            ));
+        let session = state.session(&request.binding)?;
+        if request.native_epoch.as_str() != format!("fake-epoch-{}", session.epoch) {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            });
+        }
+        if request.after.epoch != request.message_position.epoch
+            || request.after.sequence >= request.message_position.sequence
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let challenge_body_positions = session
+            .content
+            .iter()
+            .filter(|event| {
+                event.position.epoch == request.message_position.epoch
+                    && event.position.sequence > request.after.sequence
+                    && event.kind == SessionEventKind::Message
+                    && payload_body_is(event, request.body.as_str())
+            })
+            .map(|event| event.position)
+            .collect::<Vec<_>>();
+        let response_matches = session
+            .content
+            .iter()
+            .filter(|event| {
+                event.position.epoch == request.message_position.epoch
+                    && event.position.sequence > request.message_position.sequence
+                    && event.kind == SessionEventKind::Message
+                    && event.subject == EventSubject::None
+                    && payload_body_is(event, request.expected_response.as_str())
+            })
+            .map(|event| event.position)
+            .collect::<Vec<_>>();
+        let last_content = session
+            .content
+            .iter()
+            .filter(|event| {
+                !matches!(
+                    event.kind,
+                    SessionEventKind::StateChange | SessionEventKind::Log
+                )
+            })
+            .map(|event| event.position)
+            .last();
+        if challenge_body_positions.len() > 1 {
+            return Err(RuntimeError::DuplicateMessage {
+                rule: "the exact server correlation challenge body appears more than once after its boundary",
+            });
+        }
+        if challenge_body_positions.first().copied() != Some(request.message_position)
+            || response_matches.len() != 1
+            || last_content != response_matches.first().copied()
+            || session.state != ObservedRunState::WaitingInput
+        {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the exact server correlation challenge has no unique terminal confirmation",
+            });
+        }
+        Ok(response_matches[0])
     }
 
     async fn cancel(&self, request: &CancelRequest) -> RuntimeResult<ControlPlaneObservation> {
@@ -3551,6 +4010,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 context_policy: None,
             },
         )?;
+        if std::mem::take(&mut state.fail_next_inspect) {
+            return Err(RuntimeError::Transport {
+                rule: "channel failed before the runtime answered",
+            });
+        }
         let step = state.take_step(
             RuntimeCapability::Inspect,
             RequestKey::Binding(request.binding.binding_id()),
@@ -3798,6 +4262,23 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 reason: TimelineBreak::EpochChanged,
             });
         }
+        // Anchored reads only. A cursor-free read names no epoch, so it has
+        // none to be wrong about — which is why it stays available as the way
+        // back even while every cursor is being refused.
+        if request.cursor.is_some() && state.refetch_until_epoch_refresh {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            });
+        }
+        // First sight of this raw epoch allocates a Kontor number, the same
+        // shape a native adapter has. It is surfaced through the runtime
+        // boundary rather than persisted here: adapters stay store-free.
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
+        let session = state.session(&request.binding)?;
         let recorded = &session.content[..session.history_len];
         let items: Vec<SessionEvent> = recorded
             .iter()

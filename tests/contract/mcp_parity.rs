@@ -537,12 +537,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "178 forever": this is what makes a later contract change fail here, so a
+    // Not "181 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        178,
+        182,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
@@ -550,7 +550,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         REGISTRY.len() - CLI_ONLY.len(),
-        177,
+        181,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -558,9 +558,13 @@ fn the_snapshot_canary_holds_at_this_base() {
         2,
         "the allowlist changed; an omission must be reviewed, not added"
     );
+    // 182 against a registry of 181: the regenerated contract also documents
+    // master's `fill_team_run_seat` (#225), which was served but never written
+    // into the document and has no MCP tool of its own. The gap is master's to
+    // close, and it is named here rather than hidden by a matching count.
     assert_eq!(
         documented().len(),
-        179,
+        183,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -626,6 +630,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // authority over the process, not work inside it. The daemon requires
         // the same tier on the route itself.
         ("kontor_gate_rejection_recover", CallerTier::Admin),
+        // Re-deriving a stalled phase from evidence already recorded is a
+        // repair, not a verdict: it writes only the advance its own projection
+        // proves, so it sits at the sibling recovery's admin tier.
+        ("kontor_workflow_phase_recover", CallerTier::Admin),
         ("kontor_runtime_settle", CallerTier::Operator),
         // Abandoning an unbound run drives the same seat-shaped aggregate that
         // settlement does, so it sits at the same tier — no wider, because the
@@ -658,6 +666,18 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // A bounded role turn is Kontor's own decision about its own work, so it
         // is an operator act like every other seat-driving one.
         ("kontor_turn_settle", CallerTier::Operator),
+        // Reading which turn a seat just finished is observation: it returns
+        // positions the timeline already shows any observer, grants nothing and
+        // writes nothing. Settling on them stays operator work.
+        ("kontor_turn_observe", CallerTier::Observer),
+        (
+            "kontor_turn_correlation_challenge_preview",
+            CallerTier::Operator,
+        ),
+        (
+            "kontor_turn_correlation_challenge_apply",
+            CallerTier::Operator,
+        ),
         ("kontor_late_handoff_attest", CallerTier::Admin),
         ("kontor_seat_replace", CallerTier::Admin),
         ("kontor_seat_recover", CallerTier::Admin),

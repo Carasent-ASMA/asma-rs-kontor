@@ -44,7 +44,9 @@ use kontor_core::repository::{
     MiniProject, NewLocalCommand, NewTaskWorkflow, Project, RepositoryError, RepositoryResult,
     Task, TicketLink, validate_dependency_graph,
 };
-use kontor_core::spec::{ResolvedWorkProfileSnapshot, TeamTemplateRevision, WorkProfileSpec};
+use kontor_core::spec::{
+    HoldLiftCondition, ResolvedWorkProfileSnapshot, TeamTemplateRevision, WorkProfileSpec,
+};
 use kontor_core::state::{ImportedTaskState, TaskState};
 use kontor_core::ticket::StatusConflictKind;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -2011,6 +2013,99 @@ impl SqliteStore {
         transaction.commit().map_err(backend)?;
         Ok(())
     }
+
+    /// Record what would lift one already-revoked authorization.
+    ///
+    /// Separate from the revocation because a revocation is evidence and this
+    /// schema never updates evidence. The caller records the revocation first;
+    /// the foreign key makes "a lift condition on something that is not a hold"
+    /// unrepresentable rather than merely discouraged.
+    ///
+    /// Converges on replay, and refuses to move. Epic apply is replay-safe as a
+    /// whole, so this runs again with the same inputs whenever a receipt is
+    /// served rather than recorded; a plain insert made the second call a
+    /// revision conflict and broke the replay it sits inside. Recording the
+    /// same condition twice is therefore a no-op, and recording a *different*
+    /// one is refused — the terms of a hold do not move while it holds.
+    ///
+    /// # Errors
+    /// Refuses an unknown or unrevoked authorization, and a second, different
+    /// condition for one hold.
+    pub fn record_hold_lift_condition(
+        &self,
+        project_id: ProjectId,
+        authorization_id: ExecutionAuthorizationId,
+        condition: HoldLiftCondition,
+        recorded_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO execution_hold_conditions
+                     (project_id, authorization_id, condition, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (project_id, authorization_id) DO NOTHING",
+                params![
+                    project_id.to_string(),
+                    authorization_id.to_string(),
+                    condition.as_str(),
+                    text(recorded_at)
+                ],
+            )
+            .map_err(backend)?;
+        // Read back rather than trusting the insert: `DO NOTHING` is silent
+        // about *why* it did nothing, and "a row already said something else"
+        // must not be mistaken for "this call succeeded".
+        let stored: String = transaction
+            .query_row(
+                "SELECT condition FROM execution_hold_conditions
+                 WHERE project_id = ?1 AND authorization_id = ?2",
+                params![project_id.to_string(), authorization_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if stored != condition.as_str() {
+            return Err(conflict(
+                "execution hold condition",
+                "already records a different lift condition for this hold",
+            ));
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// What would lift one hold.
+    ///
+    /// A hold with no row is [`HoldLiftCondition::Manual`], which is what every
+    /// hold recorded before this table existed actually meant: nothing about
+    /// self-lifting was promised to it, so it must not acquire one.
+    ///
+    /// # Errors
+    /// Backend failures, and a stored value outside the closed vocabulary —
+    /// which is a condition nothing can evaluate, and therefore a hold that
+    /// would never lift.
+    pub fn get_hold_lift_condition(
+        &self,
+        project_id: ProjectId,
+        authorization_id: ExecutionAuthorizationId,
+    ) -> RepositoryResult<HoldLiftCondition> {
+        let stored: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT condition FROM execution_hold_conditions
+                 WHERE project_id = ?1 AND authorization_id = ?2",
+                params![project_id.to_string(), authorization_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        match stored {
+            None => Ok(HoldLiftCondition::Manual),
+            // A stored value outside the vocabulary is a hold nothing can ever
+            // evaluate, so it is surfaced rather than quietly read as manual.
+            Some(stored) => Ok(HoldLiftCondition::parse(&stored)?),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3816,6 +3911,84 @@ pub struct StoredBindingSnapshot {
 }
 
 impl SqliteStore {
+    /// Durably record newly allocated timeline-epoch mappings for one runtime.
+    ///
+    /// The barrier ASMA-8203 exists for: a Kontor epoch number must be durable
+    /// *before* any tuple carrying it is handed to a caller or consumed by
+    /// settlement. One transaction, so a crash either leaves the mapping absent
+    /// — and nothing was exposed under it — or leaves it complete.
+    ///
+    /// Existing rows are never rewritten. `ON CONFLICT DO NOTHING` is the whole
+    /// continuity guarantee: a raw epoch that already has a number keeps it, so
+    /// restoring a registry can never renumber what `role_turns` already
+    /// settled under.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn persist_timeline_epochs(
+        &self,
+        runtime_kind: &str,
+        host: &str,
+        pairs: &[(String, u64)],
+        recorded_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        if pairs.is_empty() {
+            return Ok(());
+        }
+        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO runtime_timeline_epochs
+                         (runtime_kind, host, raw_epoch, kontor_epoch, recorded_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT (runtime_kind, host, raw_epoch) DO NOTHING",
+                )
+                .map_err(backend)?;
+            for (raw, epoch) in pairs {
+                statement
+                    .execute(params![
+                        runtime_kind,
+                        host,
+                        raw.as_str(),
+                        i64::try_from(*epoch).unwrap_or(i64::MAX),
+                        recorded_at.to_string(),
+                    ])
+                    .map_err(backend)?;
+            }
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Every durable epoch mapping this runtime allocated, for registry restore.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn list_timeline_epochs(
+        &self,
+        runtime_kind: &str,
+        host: &str,
+    ) -> RepositoryResult<Vec<(String, u64)>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT raw_epoch, kontor_epoch FROM runtime_timeline_epochs
+                 WHERE runtime_kind = ?1 AND host = ?2 ORDER BY kontor_epoch",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![runtime_kind, host])
+            .map_err(backend)?;
+        let mut pairs = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let raw: String = row.get(0).map_err(backend)?;
+            let epoch: i64 = row.get(1).map_err(backend)?;
+            pairs.push((raw, u64::try_from(epoch).unwrap_or_default()));
+        }
+        Ok(pairs)
+    }
+
     /// Keep the frozen snapshot a runtime issued for one binding.
     ///
     /// Replaceable, because a rebind for the same binding id issues a new

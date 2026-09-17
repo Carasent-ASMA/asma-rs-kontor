@@ -40,7 +40,10 @@ use std::sync::{
 use std::time::Duration;
 
 use async_trait::async_trait;
-use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
+use harness::{
+    Answer, Call, World, at, capabilities_with_history_page, capabilities_without, fake_family,
+    name, secret,
+};
 use kontor_accounts::{KeychainBackend, KeychainFailure, KeychainTarget, UsageReading};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
@@ -3000,10 +3003,27 @@ async fn a_lost_acknowledgement_is_replayed_without_a_second_native_effect() {
     .await;
     assert_eq!(
         lost.status, 503,
-        "a lost acknowledgement is a fact about the channel: {}",
+        "a lost acknowledgement still asks the caller to back off: {}",
         lost.body
     );
-    assert_eq!(lost.code(), "unavailable");
+    // OG-058. The status was never the problem. This refusal used to come back
+    // as `unavailable`, whose action tells a caller *nothing was changed* — and
+    // the rest of this test proves the message was committed. An operator who
+    // believed it resent under a fresh id and put the same instruction into a
+    // live seat twice.
+    assert_eq!(lost.code(), "delivery_unconfirmed", "{}", lost.body);
+    let action = lost.json()["action"]
+        .as_str()
+        .expect("an action")
+        .to_owned();
+    assert!(
+        !action.contains("nothing was changed"),
+        "a committed message must never be reported as no change: {action}",
+    );
+    assert!(
+        action.contains("do not resend"),
+        "the caller has to be told the one thing that is unsafe here: {action}",
+    );
 
     // The retry is answered from the runtime's ledger, and the content grew by one
     // item and not by two.
@@ -3053,6 +3073,125 @@ async fn a_lost_acknowledgement_is_replayed_without_a_second_native_effect() {
         messages, 1,
         "the retry replayed the original effect rather than committing a second one"
     );
+}
+
+/// OG-058, the readback half.
+///
+/// A delivery has two parts and only one of them is the message. Once the send
+/// is acknowledged the instruction is in the seat; everything after that is
+/// Kontor catching up on what the seat is now doing. Reporting a failure of the
+/// second part as a failure of the first is what makes an operator resend, and
+/// a resend under a fresh id is a second turn in a live transcript.
+#[tokio::test]
+async fn a_failed_readback_after_delivery_never_reports_the_message_as_unsent() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let key = kontor_runtime::request::MessageId::generate().to_string();
+    let body = serde_json::json!({"body": "the message whose readback was lost"});
+
+    // The send lands; the observation that should follow it never answers.
+    world.fake.fail_next_inspect();
+    let refused = Call::post(format!("/v1/sessions/{run}/messages"), &body)
+        .signed_as(&world, "operator")
+        .with_key(&key)
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 503, "{}", refused.body);
+    assert_eq!(
+        refused.json()["rule"],
+        "the message was delivered and acknowledged, but the session readback that follows it did not answer",
+        "the refusal must say which half failed: {}",
+        refused.body
+    );
+    let action = refused.json()["action"]
+        .as_str()
+        .expect("an action")
+        .to_owned();
+    assert!(
+        !action.contains("nothing was changed"),
+        "the message is in the seat; saying otherwise is the defect: {action}",
+    );
+    assert!(action.contains("Never resend under a new one"), "{action}",);
+
+    // It really did land: exactly once, on the session's own timeline.
+    let delivered = world
+        .fake
+        .calls()
+        .iter()
+        .filter(|call| matches!(call, AdapterCall::Send(binding, _) if *binding == snapshot.binding_id()))
+        .count();
+    assert_eq!(delivered, 1, "the send reached the runtime");
+    let timeline = Call::get(format!("/v1/sessions/{run}/timeline?limit=64"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        timeline.json()["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .filter(|item| item["message_id"].as_str() == Some(&key))
+            .count(),
+        1,
+        "the message is in the session the refusal was about: {}",
+        timeline.body
+    );
+
+    // And the advice works: the same key replays the original acknowledgement
+    // and repairs the projection, without a second native effect.
+    let replayed = Call::post(format!("/v1/sessions/{run}/messages"), &body)
+        .signed_as(&world, "operator")
+        .with_key(&key)
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["value"]["message_id"],
+        serde_json::json!(key)
+    );
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::Send(binding, _) if *binding == snapshot.binding_id()))
+            .count(),
+        2,
+        "the replay is answered from the ledger, not by committing a second message",
+    );
+    assert_eq!(
+        timeline_message_count(&world, &run, &key).await,
+        1,
+        "replaying the same key never puts the instruction in the seat twice",
+    );
+
+    // Delivering a message is not settling a turn, and a repaired projection
+    // does not become one: `kontor_turn_settle` remains the only authority that
+    // can open a position in the seat's sequence.
+    let turns = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_settled_turns(world.project, world.task))
+        .expect("settled turns read");
+    assert!(
+        turns.is_empty(),
+        "a message send must never settle a turn: {turns:?}",
+    );
+}
+
+/// How many timeline items carry `key`.
+async fn timeline_message_count(world: &World, run: &AgentRunId, key: &str) -> usize {
+    Call::get(format!("/v1/sessions/{run}/timeline?limit=64"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await
+        .json()["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter(|item| item["message_id"].as_str() == Some(key))
+        .count()
 }
 
 #[tokio::test]
@@ -4619,6 +4758,960 @@ async fn reapplying_the_identical_epic_writes_nothing_and_drift_is_refused() {
     .send(&world)
     .await;
     assert_eq!(reused.status, 409, "{}", reused.body);
+}
+
+/// A newly applied epic says, in the same response that creates it, that its
+/// leadership exists only on paper — and names the call that changes that.
+///
+/// `govern_epic` freezes the roster, ensures the ECP node and creates a seat
+/// binding per mandatory role. All rows. Nothing there binds a native workspace
+/// or launches a seat, while the epic's delivery workspace gets its native from
+/// scheduler admission — so the normal result is a bound ESW beside an unbound
+/// ECP, and before ASMA-8199 nothing in any response said so. Every epic in the
+/// live realm created since 2026-09-12 is in exactly this state, which is why
+/// this is reported rather than refused.
+///
+/// The assertion that carries the fix is `completes_with`. `materialized: false`
+/// alone is satisfied by a field that is always false; naming the exact next
+/// call is what makes the report actionable, and it has to be the *node* call
+/// while the node is unbound, because a seat cannot be launched into a
+/// workspace that does not exist yet.
+#[tokio::test]
+async fn a_new_epic_reports_leadership_declared_but_not_materialized() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "ecp-1", "Kontor", "/tmp/kontor-ecp").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+    let body = epic_body(
+        revision,
+        "Epic with paper leadership",
+        &category,
+        serde_json::json!([{"title": "Only task"}]),
+    );
+
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("ecp-epic-1")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    let plane = &applied.json()["control_plane"];
+    assert_eq!(
+        plane["materialized"], false,
+        "epic-apply binds no native workspace, and must not claim it did"
+    );
+    assert_eq!(
+        plane["completes_with"], "kontor_topology_materialize on scope epic_control",
+        "an unbound control plane names the node call, not the seat call"
+    );
+    assert_eq!(
+        plane["staffed_seats"], 0,
+        "no seat holds a native session at creation"
+    );
+    assert!(
+        plane["declared_seats"].as_u64().expect("a count") > 0,
+        "the roster does declare leadership — that is the whole asymmetry"
+    );
+
+    // And the report survives a replay, because it describes the epic rather
+    // than the call: a served receipt that answered `materialized: true` would
+    // be worse than no report at all.
+    let again = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("ecp-epic-1")
+        .send(&world)
+        .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.json()["control_plane"], *plane);
+}
+
+/// Plan, then start on exactly that plan.
+///
+/// A start names the plan it acts on, so the pair has to be taken together;
+/// the interesting answer here is what the epic's authorizations look like
+/// afterwards, not what start itself returned.
+async fn start_epic(world: &World, project: &str, epic: &str, key: &str) -> Answer {
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan.json()["plan_hash"]}),
+    )
+    .signed_as(world, "operator")
+    .with_key(key)
+    .send(world)
+    .await
+}
+
+/// Every authorization covering one epic that is not revoked.
+///
+/// A hold is a revoked grant, so "held" is exactly "no live grant" — which is
+/// what makes this the honest oracle for a self-lift rather than looking for a
+/// particular receipt.
+async fn live_epic_grants(world: &World, project: &str, epic: &str) -> Vec<serde_json::Value> {
+    epic_authorizations(world, project, epic)
+        .await
+        .into_iter()
+        .filter(|grant| grant["revoked_at"].is_null())
+        .collect()
+}
+
+/// Every authorization covering one epic, live or revoked.
+async fn epic_authorizations(world: &World, project: &str, epic: &str) -> Vec<serde_json::Value> {
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    projection.json()["authorizations"]
+        .as_array()
+        .expect("authorizations")
+        .clone()
+}
+
+/// A kickoff hold ends itself at the boundary that makes its own terms true.
+///
+/// A kickoff hold is a covering authorization persisted already revoked, so a
+/// new epic is never governable and default-allow at any crash boundary. That
+/// worked. What it never carried was a statement of what would end it: `reason`
+/// is prose — this realm's own says "kickoff hold until Jira binding and
+/// worktrees are confirmed" — which reads well and decides nothing. So the only
+/// thing that ever lifted a hold was a human typing `execution-arm`, and an
+/// epic whose stated condition had been true for days sat idle because nobody
+/// was asked to look.
+///
+/// The three arms run one identical sequence and differ only in what the hold
+/// recorded and what the graph actually is, which is what makes this evidence
+/// rather than a demonstration:
+///
+/// * `kickoff_ready` over a graph that becomes bound *and* placed — lifts;
+/// * `manual` over that same graph — never lifts, because `manual` is not "no
+///   condition", it is the statement that a person decides;
+/// * `kickoff_ready` over a graph whose task nobody can seat — does not lift,
+///   because the recorded hold named worktrees as well as Jira, and a
+///   Jira-only reading of it would release work with nowhere to run.
+///
+/// The lift is observed *before* any `scheduler:start`, which is the whole
+/// correction: the condition is evaluated at the durable boundary that makes it
+/// true, not as a side effect of an operator endpoint that can be refused.
+#[tokio::test]
+async fn a_kickoff_hold_lifts_itself_at_the_boundary_that_satisfies_its_terms() {
+    const EPIC_KEY: &str = "ASMA-9401";
+    const TASK_KEY: &str = "ASMA-9402";
+
+    for (label, condition, places_task, lifts) in [
+        ("ready", "kickoff_ready", true, true),
+        ("manual", "manual", true, false),
+        ("unplaced", "kickoff_ready", false, false),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/rest/api/3/issue/{EPIC_KEY}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": EPIC_KEY,
+                "id": "909401",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                    "parent": null,
+                    "summary": "Kickoff epic",
+                    "description": {"type":"doc","version":1,"content":[{
+                        "type":"paragraph","content":[{"type":"text","text":"Kickoff epic"}]
+                    }]},
+                    "labels": []
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/rest/api/3/issue/{TASK_KEY}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": TASK_KEY,
+                "id": "909402",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "issuetype": {"name": "Task", "hierarchyLevel": 0},
+                    "parent": {"key": EPIC_KEY},
+                    "summary": "Kickoff task",
+                    "description": {"type":"doc","version":1,"content":[{
+                        "type":"paragraph","content":[{"type":"text","text":"Kickoff task"}]
+                    }]},
+                    "labels": []
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let project_id = ProjectId::generate();
+        let config_root = tempfile::tempdir().expect("Jira config root");
+        std::fs::write(
+            config_root.path().join("jira.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "projects": [{
+                    "project_id": project_id.to_string(),
+                    "endpoint": server.uri(),
+                    "project_key": "ASMA",
+                    "credential_alias": "work"
+                }]
+            }))
+            .expect("Jira configuration serializes"),
+        )
+        .expect("Jira configuration is written");
+        let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+            config_root.path(),
+            Arc::new(JiraFixtureKeychain),
+        )
+        .expect("Jira configuration loads");
+        let world = World::open_empty_with_jira(connectors).await;
+        world.daemon.reconcile().await;
+        world.daemon.state().with_store(|store| {
+            store
+                .create_project(&NewProject {
+                    id: project_id,
+                    name: name(&format!("Kickoff hold {label}")),
+                    root_path: name(&format!("/tmp/kontor-kickoff-{label}")),
+                    created_at: at("2026-09-17T09:00:00Z"),
+                })
+                .expect("the project is created");
+        });
+        let project = project_id.to_string();
+        register_mvp_delivery_slots(&world, &project);
+        let category = first_category(&world).await;
+
+        let account = Call::post(
+            format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+            &serde_json::json!({
+                "label": "Kickoff holder",
+                "harness": "fake.runtime",
+                "credential_alias": "kickoff-holder",
+                "enabled": true
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key("kickoff-account")
+        .send(&world)
+        .await;
+        assert_eq!(account.status, 200, "{}", account.body);
+        let account_id = account.json()["account_profile_id"]
+            .as_str()
+            .expect("an account id")
+            .to_owned();
+
+        let mut body = epic_body(
+            1,
+            &format!("Kickoff {label}"),
+            &category,
+            serde_json::json!([{"title": "First"}]),
+        );
+        body["tasks"][0]["ticket_links"] = serde_json::json!([{
+            "connector": "connector.jira",
+            "external_issue_key": TASK_KEY,
+        }]);
+        if !places_task {
+            // A task is placed either because it declared a worktree or because
+            // one could be derived from a tracker key it carries. Removing all
+            // three is the only way to reach a task nobody can seat, and it is
+            // reachable in life: a graph whose keys arrive later.
+            let task = body["tasks"][0]
+                .as_object_mut()
+                .expect("the task request is an object");
+            task.remove("worktree");
+            task.remove("ticket_links");
+            body.as_object_mut()
+                .expect("the epic request is an object")
+                .remove("execution_scope");
+        }
+        body["initial_hold"] = serde_json::json!({
+            "held_by": account_id,
+            "reason": "Kickoff hold until Jira binding and worktrees are confirmed",
+            "lift_condition": condition,
+        });
+
+        // The preview resolves the condition rather than echoing it, so a
+        // caller reads what will be recorded instead of what it happened to
+        // send.
+        let preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &body)
+            .signed_as(&world, "admin")
+            .send(&world)
+            .await;
+        assert_eq!(preview.status, 200, "{}", preview.body);
+        assert_eq!(preview.json()["initial_hold"]["lift_condition"], condition);
+
+        let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+            .signed_as(&world, "admin")
+            .with_key("kickoff-apply")
+            .send(&world)
+            .await;
+        assert_eq!(applied.status, 200, "{}", applied.body);
+        let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+        let task = applied.json()["tasks"][0]["task_id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+        assert_eq!(
+            applied.json()["initial_hold"]["lift_condition"],
+            condition,
+            "applying a hold reads back the terms it recorded: {}",
+            applied.body
+        );
+
+        // A hold blocks scheduling and states both who holds it and what would
+        // end it. "Why work is held" and "what would release it" are different
+        // questions, and only the second one can be acted on.
+        assert!(
+            live_epic_grants(&world, &project, &epic).await.is_empty(),
+            "the epic starts held: its only authorization is the revoked one"
+        );
+        let held = epic_authorizations(&world, &project, &epic).await;
+        assert_eq!(held.len(), 1, "exactly one covering authorization exists");
+        assert_eq!(held[0]["revoked_by"], account_id);
+        assert_eq!(held[0]["lift_condition"], condition);
+
+        // Whether the graph will become placed is settled at apply, so it is
+        // asserted here rather than inferred from the outcome.
+        let declared_worktree = world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store.task_worktree(project_id, TaskId::parse(&task).expect("a task id"))
+            })
+            .expect("the declared worktree reads");
+        assert_eq!(
+            declared_worktree.is_some(),
+            places_task,
+            "the {label} arm must decide placement at apply, not at lift"
+        );
+
+        let materialization = serde_json::json!({
+            "epic": {"mode": "link", "issue_key": EPIC_KEY},
+            "tasks": {(task.clone()): {"mode": "link", "issue_key": TASK_KEY}}
+        });
+        let jira_preview = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/jira:preview"),
+            &materialization,
+        )
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+        assert_eq!(jira_preview.status, 200, "{}", jira_preview.body);
+        let epic_revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await
+            .json()["revision"]
+            .as_u64()
+            .expect("an epic revision");
+        let jira_apply_body = serde_json::json!({
+            "materialization": materialization,
+            "preview_hash": jira_preview.json()["preview_hash"],
+            "expected_revision": epic_revision
+        });
+        let materialized = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/jira:apply"),
+            &jira_apply_body,
+        )
+        .signed_as(&world, "admin")
+        .with_key("kickoff-materialize")
+        .send(&world)
+        .await;
+        assert_eq!(materialized.status, 200, "{}", materialized.body);
+        assert_eq!(materialized.json()["activated"], true);
+
+        // The whole correction, asserted before any `scheduler:start` exists to
+        // be blamed for it.
+        let grants = live_epic_grants(&world, &project, &epic).await;
+        if lifts {
+            assert_eq!(
+                grants.len(),
+                1,
+                "the recorded condition came true at this boundary, so the hold stopped holding: {}",
+                materialized.body
+            );
+            assert_eq!(
+                grants[0]["created_by"], account_id,
+                "a self-lift is the hold's own terms being met, not a new party deciding"
+            );
+            assert!(
+                grants[0]["capability_receipt_id"]
+                    .as_str()
+                    .is_some_and(|receipt| !receipt.is_empty()),
+                "a lift leaves the evidence an ordinary execution-arm leaves"
+            );
+        } else {
+            assert!(
+                grants.is_empty(),
+                "the {label} arm's terms are not met, so the hold still holds"
+            );
+        }
+
+        // Re-running the boundary must not mint a second grant. It is currently
+        // refused before it ever reaches the lift — a second `jira:apply` over
+        // an already-materialized epic is refused whether the key repeats (409)
+        // or is fresh (503), and identically in all three arms including
+        // `manual`, where nothing lifts at all. That refusal predates this
+        // change and is not what is under test here, so what is asserted is the
+        // invariant that is: an attempt to re-run the boundary leaves every
+        // authorization exactly as it was, whatever it answered.
+        let settled = epic_authorizations(&world, &project, &epic).await;
+        let replayed = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/jira:apply"),
+            &jira_apply_body,
+        )
+        .signed_as(&world, "admin")
+        .with_key("kickoff-materialize")
+        .send(&world)
+        .await;
+        assert_eq!(
+            epic_authorizations(&world, &project, &epic).await,
+            settled,
+            "the {label} arm's authorizations moved under a replay that answered {}: {}",
+            replayed.status,
+            replayed.body
+        );
+
+        // And start only ever consumes what the boundary already decided. The
+        // lift no longer lives here, so a refused or stale start cannot become
+        // a way to arm an epic that its own terms have not released.
+        let started = start_epic(&world, &project, &epic, "kickoff-start").await;
+        assert!(
+            started.status == 200 || started.status == 409,
+            "{}",
+            started.body
+        );
+        assert_eq!(
+            epic_authorizations(&world, &project, &epic).await,
+            settled,
+            "start observes authorization; it never writes it: {}",
+            started.body
+        );
+    }
+}
+/// One Jira-backed world whose epic and task may simply be linked, and the
+/// project, account and category an epic apply needs.
+///
+/// Link materialization reads each issue back and judges it; it never creates,
+/// so these two readbacks are the connector's whole surface here. The server
+/// and its configuration root are held rather than returned by value because
+/// dropping either would take the endpoint down mid-test.
+struct KickoffWorld {
+    world: World,
+    project_id: ProjectId,
+    project: String,
+    category: String,
+    account_id: String,
+    _server: MockServer,
+    _config_root: tempfile::TempDir,
+}
+
+async fn kickoff_world(label: &str, epic_key: &str, task_key: &str) -> KickoffWorld {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/rest/api/3/issue/{epic_key}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": epic_key,
+            "id": "909411",
+            "fields": {
+                "project": {"key": "ASMA"},
+                "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                "parent": null,
+                "summary": "Kickoff epic",
+                "description": {"type":"doc","version":1,"content":[{
+                    "type":"paragraph","content":[{"type":"text","text":"Kickoff epic"}]
+                }]},
+                "labels": []
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/rest/api/3/issue/{task_key}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": task_key,
+            "id": "909412",
+            "fields": {
+                "project": {"key": "ASMA"},
+                "issuetype": {"name": "Task", "hierarchyLevel": 0},
+                "parent": {"key": epic_key},
+                "summary": "Kickoff task",
+                "description": {"type":"doc","version":1,"content":[{
+                    "type":"paragraph","content":[{"type":"text","text":"Kickoff task"}]
+                }]},
+                "labels": []
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let config_root = tempfile::tempdir().expect("Jira config root");
+    std::fs::write(
+        config_root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("Jira configuration serializes"),
+    )
+    .expect("Jira configuration is written");
+    let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+        config_root.path(),
+        Arc::new(JiraFixtureKeychain),
+    )
+    .expect("Jira configuration loads");
+    let world = World::open_empty_with_jira(connectors).await;
+    world.daemon.reconcile().await;
+    world.daemon.state().with_store(|store| {
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name(&format!("Kickoff hold {label}")),
+                root_path: name(&format!("/tmp/kontor-kickoff-{label}")),
+                created_at: at("2026-09-17T09:00:00Z"),
+            })
+            .expect("the project is created");
+    });
+    let project = project_id.to_string();
+    register_mvp_delivery_slots(&world, &project);
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Kickoff holder",
+            "harness": "fake.runtime",
+            "credential_alias": "kickoff-holder",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("kickoff-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    KickoffWorld {
+        world,
+        project_id,
+        project,
+        category,
+        account_id,
+        _server: server,
+        _config_root: config_root,
+    }
+}
+
+/// A hold that never recorded any terms is manual, and stays held through the
+/// boundary that would have released one that had.
+///
+/// Every hold applied since v99 records a row, including `manual`, so the only
+/// way to hold an authorization with *no* row is the way that predates the
+/// table: arm, then disarm. That is exactly the shape of every hold this realm
+/// recorded before ASMA-8194, and it must not acquire a self-lift it was never
+/// given — the read that turns an absent row into `manual` is the only thing
+/// standing between those holds and an automatic release.
+///
+/// The graph is deliberately made fully kickoff-ready — epic and task bound,
+/// task placed — so that the *condition* is the only reason it does not lift.
+/// A legacy hold over a graph that could not have lifted anyway would prove
+/// nothing.
+#[tokio::test]
+async fn a_hold_that_recorded_no_terms_is_manual_and_survives_the_lift_boundary() {
+    const EPIC_KEY: &str = "ASMA-9411";
+    const TASK_KEY: &str = "ASMA-9412";
+    let fixture = kickoff_world("legacy", EPIC_KEY, TASK_KEY).await;
+    let (world, project) = (&fixture.world, fixture.project.as_str());
+
+    let mut body = epic_body(
+        1,
+        "Legacy hold",
+        &fixture.category,
+        serde_json::json!([{"title": "First"}]),
+    );
+    body["tasks"][0]["ticket_links"] = serde_json::json!([{
+        "connector": "connector.jira",
+        "external_issue_key": TASK_KEY,
+    }]);
+    // No `initial_hold`: this epic is never handed terms, which is the whole
+    // point. The hold arrives the pre-v99 way, below.
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(world, "admin")
+        .with_key("legacy-apply")
+        .send(world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": applied.json()["revision"],
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "granted_by": fixture.account_id,
+            "reason": "Arm it before holding it"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("legacy-arm")
+    .send(world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+    let authorization = armed.json()["authorization_id"]
+        .as_str()
+        .expect("an authorization id")
+        .to_owned();
+
+    let epic_revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await
+        .json()["revision"]
+        .as_u64()
+        .expect("an epic revision");
+    let disarmed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:disarm"),
+        &serde_json::json!({
+            "authorization_id": authorization,
+            "expected_revision": epic_revision,
+            "revoked_by": fixture.account_id,
+            "reason": "Kickoff hold until Jira binding and worktrees are confirmed"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("legacy-disarm")
+    .send(world)
+    .await;
+    assert_eq!(disarmed.status, 200, "{}", disarmed.body);
+
+    // A revoked covering authorization with no row in the condition ledger:
+    // the pre-v99 hold, reachable only this way now that applying one always
+    // records its terms.
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store.get_hold_lift_condition(
+                    fixture.project_id,
+                    kontor_core::id::ExecutionAuthorizationId::parse(&authorization)
+                        .expect("an authorization id"),
+                )
+            })
+            .map(|condition| condition == kontor_core::spec::HoldLiftCondition::Manual)
+            .expect("the absent condition reads"),
+        "a hold with no recorded row means manual, which is what it meant before the row existed"
+    );
+    let held = epic_authorizations(world, project, &epic).await;
+    assert_eq!(
+        held.len(),
+        1,
+        "exactly one covering authorization: {held:?}"
+    );
+    assert_eq!(
+        held[0]["lift_condition"], "manual",
+        "the readback states manual rather than inventing terms nobody recorded"
+    );
+    assert!(
+        live_epic_grants(world, project, &epic).await.is_empty(),
+        "the epic is held"
+    );
+
+    // The graph becomes everything `kickoff_ready` asks for. A hold that had
+    // recorded those terms would lift here; this one recorded none.
+    let materialization = serde_json::json!({
+        "epic": {"mode": "link", "issue_key": EPIC_KEY},
+        "tasks": {(task.clone()): {"mode": "link", "issue_key": TASK_KEY}}
+    });
+    let jira_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/jira:preview"),
+        &materialization,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(jira_preview.status, 200, "{}", jira_preview.body);
+    let epic_revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await
+        .json()["revision"]
+        .as_u64()
+        .expect("an epic revision");
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/jira:apply"),
+        &serde_json::json!({
+            "materialization": materialization,
+            "preview_hash": jira_preview.json()["preview_hash"],
+            "expected_revision": epic_revision
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("legacy-materialize")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    assert_eq!(materialized.json()["activated"], true);
+
+    assert!(
+        live_epic_grants(world, project, &epic).await.is_empty(),
+        "a hold that was never given terms must not acquire them: {}",
+        materialized.body
+    );
+    assert_eq!(
+        epic_authorizations(world, project, &epic).await,
+        held,
+        "and nothing about it moved"
+    );
+}
+
+/// The terms of a hold are part of the operation its key names.
+///
+/// `reason` is prose and `lift_condition` decides what happens, so replaying an
+/// apply under the same key with *different* terms is not a replay — it is a
+/// second, different command wearing the first one's key. If the condition were
+/// left out of the intent, the two would hash identically and the second call
+/// would be answered with the first one's result, silently keeping terms the
+/// caller had just tried to change.
+///
+/// The unchanged-body replay is asserted first and deliberately: without it, an
+/// intent that conflicted with *everything* would pass the interesting half of
+/// this test.
+#[tokio::test]
+async fn one_apply_key_cannot_carry_two_different_hold_conditions() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "hold-terms", "Kontor", "/tmp/kontor-hold-terms").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+    let body = epic_body(
+        revision,
+        "Epic with paper leadership",
+        &category,
+        serde_json::json!([{"title": "Only task"}]),
+    );
+
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("ecp-epic-1")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    let plane = &applied.json()["control_plane"];
+    assert_eq!(
+        plane["materialized"], false,
+        "epic-apply binds no native workspace, and must not claim it did"
+    );
+    assert_eq!(
+        plane["completes_with"], "kontor_topology_materialize on scope epic_control",
+        "an unbound control plane names the node call, not the seat call"
+    );
+    assert_eq!(
+        plane["staffed_seats"], 0,
+        "no seat holds a native session at creation"
+    );
+    assert!(
+        plane["declared_seats"].as_u64().expect("a count") > 0,
+        "the roster does declare leadership — that is the whole asymmetry"
+    );
+
+    // And the report survives a replay, because it describes the epic rather
+    // than the call: a served receipt that answered `materialized: true` would
+    // be worse than no report at all.
+    let again = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("ecp-epic-1")
+        .send(&world)
+        .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.json()["control_plane"], *plane);
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Kickoff holder",
+            "harness": "fake.runtime",
+            "credential_alias": "kickoff-holder",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("terms-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let body_with = |condition: Option<&str>| {
+        let mut body = epic_body(
+            revision,
+            "Hold terms",
+            &category,
+            serde_json::json!([{"title": "First"}]),
+        );
+        let mut hold = serde_json::json!({
+            "held_by": account_id,
+            "reason": "Kickoff hold until Jira binding and worktrees are confirmed",
+        });
+        if let Some(condition) = condition {
+            hold["lift_condition"] = serde_json::json!(condition);
+        }
+        body["initial_hold"] = hold;
+        body
+    };
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &body_with(Some("kickoff_ready")),
+    )
+    .signed_as(&world, "admin")
+    .with_key("terms-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+
+    // The identical call is still a replay.
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &body_with(Some("kickoff_ready")),
+    )
+    .signed_as(&world, "admin")
+    .with_key("terms-apply")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["epic_id"], epic);
+
+    // The same key with different terms is a different command.
+    let changed = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &body_with(Some("manual")),
+    )
+    .signed_as(&world, "admin")
+    .with_key("terms-apply")
+    .send(&world)
+    .await;
+    assert_eq!(changed.status, 409, "{}", changed.body);
+    assert_eq!(changed.json()["code"], "idempotency_conflict");
+    assert_eq!(
+        changed.json()["rule"],
+        "the idempotency key was already used for a different operation"
+    );
+
+    // And the refused call changed nothing: the hold still states the terms it
+    // was applied with.
+    let held = epic_authorizations(&world, &project, &epic).await;
+    assert_eq!(
+        held.len(),
+        1,
+        "exactly one covering authorization: {held:?}"
+    );
+    assert_eq!(held[0]["lift_condition"], "kickoff_ready");
+
+    // A caller that names no condition keeps the pre-field intent bytes, so its
+    // own apply stays replayable. This is the compatibility half of "widened
+    // only when named": every hold applied before the field existed named
+    // nothing, and every one of those receipts has to keep replaying.
+    //
+    // In its own project, because two epics in one project contend for the
+    // short codes and backlog code this fixture hands out, and that refusal
+    // would say nothing about hold terms.
+    let silent_project = ensure_project(
+        &world,
+        "hold-terms-silent",
+        "Kontor",
+        "/tmp/kontor-hold-terms-silent",
+    )
+    .await;
+    let silent_id = silent_project.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let silent_account = Call::post(
+        format!("/v1/projects/{silent_id}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Kickoff holder",
+            "harness": "fake.runtime",
+            "credential_alias": "kickoff-holder",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("silent-account")
+    .send(&world)
+    .await;
+    assert_eq!(silent_account.status, 200, "{}", silent_account.body);
+    let mut silent = epic_body(
+        silent_project.json()["revision"]
+            .as_u64()
+            .expect("revision"),
+        "Hold terms unspoken",
+        &category,
+        serde_json::json!([{"title": "First"}]),
+    );
+    silent["initial_hold"] = serde_json::json!({
+        "held_by": silent_account.json()["account_profile_id"],
+        "reason": "Kickoff hold until Jira binding and worktrees are confirmed",
+    });
+    let first = Call::post(format!("/v1/projects/{silent_id}/epics:apply"), &silent)
+        .signed_as(&world, "admin")
+        .with_key("terms-apply-omitted")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let silent_epic = first.json()["epic_id"].as_str().expect("id").to_owned();
+    let again = Call::post(format!("/v1/projects/{silent_id}/epics:apply"), &silent)
+        .signed_as(&world, "admin")
+        .with_key("terms-apply-omitted")
+        .send(&world)
+        .await;
+    assert_eq!(
+        again.status, 200,
+        "an apply that named no condition must stay replayable: {}",
+        again.body
+    );
+    assert_eq!(again.json()["epic_id"], silent_epic);
+    assert_eq!(
+        epic_authorizations(&world, &silent_id, &silent_epic).await[0]["lift_condition"],
+        "manual",
+        "an unstated condition resolves to manual in the readback, without having been in the intent"
+    );
 }
 
 /// Legacy imports may add one explicit short-code mapping without changing the
@@ -11211,6 +12304,267 @@ fn rewind_to_unrouted_rejection(world: &World, seed: &Bootstrapped, rejection: &
     assert_eq!(moved, 1);
 }
 
+/// ASMA-8205 / ASMA-8199. A workflow whose stored phase lags its own durable
+/// evidence is caught up, once.
+///
+/// The advance is normally a side effect of recording a gate or settling a
+/// turn. ASMA-8205 passed its `high-verification-gate` at sequence 2 and the
+/// stored phase never moved, and nothing could re-derive it afterwards — the
+/// evidence was complete and unambiguous and the workflow was simply stuck.
+///
+/// The fixture reproduces the drift the same way the rejection tests do, by
+/// rewinding the stored phase behind evidence that is already recorded. What
+/// the repair must then prove is not only that it advances, but that it is a
+/// projection and not a second verdict: nothing is appended, no turn is
+/// replayed, and running it again moves nothing.
+#[tokio::test]
+async fn a_stalled_workflow_is_caught_up_to_its_evidence_exactly_once() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "phase-drift").await;
+    // The turns this records are the evidence the drift sits on top of. Its
+    // rejection is then unwound, because ASMA-8205 was not a *fenced* workflow —
+    // its fence had already been released by a rework turn. What was left was a
+    // stored phase that simply never caught up with complete evidence, and that
+    // is what this reproduces.
+    let rejection = record_a_rejection(&world, &seed, &runs, "phase-drift").await;
+    rewind_to_unrouted_rejection(&world, &seed, &rejection);
+    // Rewind only the stored phase to the workflow's entry, leaving every
+    // evaluation, route and turn exactly where they are. That is the ASMA-8205
+    // shape: durable evidence sitting ahead of the projection, with no
+    // supported way to reconcile the two.
+    let advanced_workflow = active_workflow(&world, &seed);
+    let entry = advanced_workflow
+        .snapshot
+        .definition
+        .phases
+        .iter()
+        .map(|phase| phase.id.clone())
+        .find(|candidate| {
+            !advanced_workflow
+                .snapshot
+                .definition
+                .edges
+                .iter()
+                .any(|edge| &edge.to == candidate)
+        })
+        .expect("the definition has an entry phase");
+    {
+        let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+        let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+        let moved = connection
+            .execute(
+                "UPDATE task_workflows SET current_phase = ?1 WHERE project_id = ?2 AND id = ?3",
+                rusqlite::params![
+                    entry.as_str(),
+                    seed.project,
+                    advanced_workflow.id.to_string()
+                ],
+            )
+            .expect("the stored phase is rewound");
+        assert_eq!(moved, 1);
+    }
+    let stalled = active_workflow(&world, &seed);
+    assert_eq!(
+        stalled.current_phase, entry,
+        "the fixture reproduces a workflow standing behind its own evidence"
+    );
+
+    let census_before = rejection_census(&world);
+    let uri = format!(
+        "/v1/projects/{}/tasks/{}/workflow:recover-phase",
+        seed.project, seed.task
+    );
+
+    // An operator may not do this: re-deriving a phase is an admin repair.
+    let refused = Call::post(&uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .with_key("phase-drift-recover-operator")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
+    let first = Call::post(&uri, &serde_json::json!({}))
+        .signed_as(&world, "admin")
+        .with_key("phase-drift-recover-1")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(
+        first.json()["advanced"],
+        serde_json::json!(true),
+        "the fixture must actually drift, or this proves nothing: {}",
+        first.body
+    );
+    let landed = active_workflow(&world, &seed);
+    assert_ne!(
+        landed.current_phase, stalled.current_phase,
+        "recovery moved the stored phase"
+    );
+    assert_eq!(
+        first.json()["current_phase"],
+        serde_json::json!(landed.current_phase.as_str()),
+        "the answer names the phase the store now holds: {}",
+        first.body
+    );
+
+    // Idempotent: a second call re-derives the same phase and moves nothing.
+    // This is the assertion that a recovery surface must never double-advance.
+    // A *different* key, deliberately: a replayed key would be answered from
+    // the receipt and prove nothing about the operation being idempotent.
+    let second = Call::post(&uri, &serde_json::json!({}))
+        .signed_as(&world, "admin")
+        .with_key("phase-drift-recover-2")
+        .send(&world)
+        .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    assert_eq!(
+        second.json()["advanced"],
+        serde_json::json!(false),
+        "a workflow already at its evidence phase must not advance again: {}",
+        second.body
+    );
+    let settled = active_workflow(&world, &seed);
+    assert_eq!(
+        settled.current_phase, landed.current_phase,
+        "the second call changed the stored phase"
+    );
+    assert_eq!(
+        settled.revision, landed.revision,
+        "a no-op recovery must not burn a revision"
+    );
+
+    // Never *past* the evidence. A recovery that kept stepping would walk the
+    // definition to its last phase, and every assertion above would still hold
+    // — it advanced, then stopped, and wrote nothing. The boundary is the only
+    // thing that distinguishes catching up from running away: the phase it
+    // lands on may be incomplete (that is the work still to do), but the phase
+    // *before* it must be finished.
+    let produced: BTreeSet<_> = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.list_settled_turns(
+                ProjectId::parse(&seed.project).expect("a project id"),
+                TaskId::parse(&seed.task).expect("a task id"),
+            )
+        })
+        .expect("settled turns read")
+        .iter()
+        .flat_map(|turn| turn.artifacts.iter().cloned())
+        .collect();
+    if landed.current_phase != stalled.current_phase {
+        let predecessor = landed
+            .snapshot
+            .definition
+            .edges
+            .iter()
+            .find(|edge| edge.to == landed.current_phase)
+            .map(|edge| edge.from.clone())
+            .expect("an advanced phase has an inbound edge");
+        let required = landed
+            .snapshot
+            .definition
+            .phases
+            .iter()
+            .find(|phase| phase.id == predecessor)
+            .map(|phase| phase.required_artifacts.clone())
+            .unwrap_or_default();
+        assert!(
+            required.iter().all(|artifact| produced.contains(artifact)),
+            "recovery stepped past its evidence: landed on {} whose predecessor {} still needs {:?}",
+            landed.current_phase.as_str(),
+            predecessor.as_str(),
+            required
+        );
+    }
+
+    // The over-advance boundary. Recovery may stop early — a gate this test
+    // does not recompute can hold it back, and stopping short is safe. What it
+    // must never do is *step over* a phase whose own evidence is missing, which
+    // is exactly what a projection without a stop condition does: it walks the
+    // definition to the end.
+    //
+    // So every phase strictly between where the workflow stalled and where it
+    // landed must have its required artifacts already produced.
+    let mut walk = stalled.current_phase.clone();
+    let mut crossed = Vec::new();
+    while walk != landed.current_phase {
+        let Some(next) = landed
+            .snapshot
+            .definition
+            .edges
+            .iter()
+            .find(|edge| edge.from == walk)
+            .map(|edge| edge.to.clone())
+        else {
+            break;
+        };
+        crossed.push(walk.clone());
+        walk = next;
+    }
+    // Artifacts are only half of a phase's completion; its declared gates are
+    // the other half, and in practice the gate is what holds a phase open. A
+    // check that looked only at artifacts would wave through exactly the
+    // over-advance it exists to catch.
+    let gate_states = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.gate_states(
+                ProjectId::parse(&seed.project).expect("a project id"),
+                landed.id,
+            )
+        })
+        .expect("gate states read");
+    for phase in &crossed {
+        let declared = landed
+            .snapshot
+            .definition
+            .phases
+            .iter()
+            .find(|declared| &declared.id == phase)
+            .expect("a crossed phase is declared");
+        let missing: Vec<_> = declared
+            .required_artifacts
+            .iter()
+            .filter(|artifact| !produced.contains(*artifact))
+            .map(|artifact| artifact.as_str().to_owned())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "recovery stepped over {} on its way to {}, but it still needs {missing:?}",
+            phase.as_str(),
+            landed.current_phase.as_str()
+        );
+        let open: Vec<_> = declared
+            .gates
+            .iter()
+            .filter(|gate| {
+                !gate_states
+                    .get(*gate)
+                    .is_some_and(|state| state.satisfies_requirement())
+            })
+            .map(|gate| gate.as_str().to_owned())
+            .collect();
+        assert!(
+            open.is_empty(),
+            "recovery stepped over {} on its way to {}, but its gates {open:?} are not satisfied",
+            phase.as_str(),
+            landed.current_phase.as_str()
+        );
+    }
+
+    // And it is a projection, not a verdict: nothing was appended anywhere a
+    // gate recording or a settlement would have written.
+    assert_eq!(
+        rejection_census(&world),
+        census_before,
+        "recovery appended no evaluation, route, turn or receipt",
+    );
+}
+
 /// The recovery URI for one task's gate.
 fn recovery_uri(seed: &Bootstrapped, gate: &str) -> String {
     format!(
@@ -12978,6 +14332,474 @@ async fn legacy_artifacts_do_not_advance_a_recovered_rejection_until_a_fresh_aut
     assert_eq!(
         routes[0].origin,
         kontor_core::repository::GateRouteOrigin::Recovered
+    );
+}
+
+/// A pack whose slot ids name *seats* and whose roles name what those seats
+/// *are* -- `implement` filling `fence-implementer` -- which is the shape of
+/// every calibrated ASMA team and the shape no fixture in this suite had. Where
+/// the two coincide, as they do in the MVP pack, reading a slot id as a role is
+/// indistinguishable from resolving it.
+const SLOT_ROLE_FENCE_PACK: &str =
+    include_str!("../../../tests/fixtures/pilot/slot-role-fence-pack.json");
+
+/// Register the slot-role fence pack, bootstrap an epic pinned to its category,
+/// and seat the team.
+async fn fence_seated(world: &World, slug: &'static str) -> (Bootstrapped, Vec<String>) {
+    let pack: serde_json::Value =
+        serde_json::from_str(SLOT_ROLE_FENCE_PACK).expect("the fence pack parses");
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": pack}),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-pack"))
+    .send(world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+
+    let created = ensure_project(world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    register_test_delivery_slots(
+        world,
+        &project,
+        &[("scope", "SA"), ("implement", "SWE"), ("verify", "QA")],
+    );
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-account"))
+    .send(world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Fence epic",
+            "slot-role-fence-v1",
+            serde_json::json!([{"title": "The task"}]),
+        ),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-epic"))
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let seed = Bootstrapped {
+        project,
+        epic: applied.json()["epic_id"].as_str().expect("id").to_owned(),
+        task: applied.json()["tasks"][0]["task_id"]
+            .as_str()
+            .expect("id")
+            .to_owned(),
+        task_revision: applied.json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("revision"),
+        account: account.json()["account_profile_id"]
+            .as_str()
+            .expect("id")
+            .to_owned(),
+    };
+    let runs = seat_existing(world, &seed, slug).await;
+    (seed, runs)
+}
+
+/// The route this workflow is currently fenced by.
+fn only_route(world: &World, seed: &Bootstrapped) -> kontor_core::repository::GateRejectionRoute {
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let workflow = active_workflow(world, seed);
+    let routes = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_gate_rejection_routes(project, workflow.id))
+        .expect("routes read");
+    assert_eq!(routes.len(), 1, "the rejection routed exactly once");
+    routes[0].clone()
+}
+
+/// ASMA-8189. A rejection fence asks which *role* re-authored the phase the work
+/// was returned to, while a settled turn carries the *slot* that authored it.
+/// Comparing the two as text answers correctly only for a team that spells a
+/// slot and its role the same way; every calibrated ASMA team does not, so a
+/// valid rework never released the fence and the workflow stayed at its
+/// implementation phase with its evidence and gates intact.
+///
+/// The mutants this kills: reading `role_slot_id` as a logical role; resolving
+/// the mapping against anything other than the route-time run's frozen team;
+/// and treating an unresolvable slot as a release rather than as a fence.
+#[tokio::test]
+async fn a_rejection_fence_releases_for_the_slot_the_pinned_team_maps_to_the_handoff_role() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = fence_seated(&world, "slot-role-fence").await;
+
+    // The pinned team names seats, not roles: this is the whole premise.
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let task = TaskId::parse(&seed.task).expect("task id");
+    let seated_run = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_team_runs_for_task(project, task))
+        .expect("the task's team runs read")
+        .first()
+        .map(|(id, _)| *id)
+        .expect("a seated run");
+    let assignments = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_team_run(project, seated_run))
+        .expect("the seated run reads")
+        .expect("the seated run exists")
+        .snapshot
+        .slot_role_assignments()
+        .expect("the frozen team maps its slots");
+    assert_eq!(
+        assignments
+            .get(&kontor_core::id::RoleSlotId::parse("implement").expect("a slot id"))
+            .map(kontor_core::id::RoleKey::as_str),
+        Some("fence-implementer"),
+        "the slot and the role it fills are different names"
+    );
+
+    // Drive the workflow to its gate: every phase's producer settles its own
+    // artifact from its own seat.
+    for (index, (slot, artifact)) in [
+        ("scope", "fence-scope-record"),
+        ("implement", "fence-change"),
+        ("verify", "fence-verification-report"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let run = run_with_role(&world, &runs, slot).await;
+        let settled = settle_turn(
+            &world,
+            &seed,
+            &run,
+            slot,
+            serde_json::json!([artifact]),
+            &format!("slot-role-fence-produce-{index}"),
+        )
+        .await;
+        assert_eq!(settled.status, 200, "{slot}: {}", settled.body);
+    }
+    assert_eq!(
+        workflow_position(&world, &seed).0,
+        "fence-verification",
+        "the producers' own turns advanced the workflow to the gate"
+    );
+
+    // The verifier rejects. The work returns to the implementation phase, whose
+    // inbound edge names the role `fence-implementer` -- never the slot.
+    let (uri, revision, gate) = gate_record_target(&world, &seed).await;
+    assert_eq!(gate, "fence-verification-gate");
+    let rejected = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": "fence-verifier",
+            "evaluator_account": seed.account,
+            "evidence": [],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("slot-role-fence-reject")
+    .send(&world)
+    .await;
+    assert_eq!(rejected.status, 200, "{}", rejected.body);
+    let (target, routed_revision) = workflow_position(&world, &seed);
+    assert_eq!(target, "fence-implementation");
+    let route = only_route(&world, &seed);
+    assert_eq!(
+        route.team_run_id, seated_run,
+        "the route froze the seated run"
+    );
+
+    // Reconciliation re-reads the pre-rejection evidence as often as it likes.
+    for _ in 0..3 {
+        world.daemon.reconcile().await;
+        assert_eq!(
+            workflow_position(&world, &seed),
+            (target.clone(), routed_revision),
+            "the rejected evidence must not walk the workflow back out"
+        );
+    }
+
+    // Mismatched mapping: the verifier's own slot fills `fence-verifier`, so its
+    // turn is not the rework the rejection asked for however well it is formed.
+    let verifier = run_with_role(&world, &runs, "verify").await;
+    let wrong_role = settle_turn(
+        &world,
+        &seed,
+        &verifier,
+        "verify",
+        serde_json::json!(["fence-change"]),
+        "slot-role-fence-wrong-role",
+    )
+    .await;
+    assert_eq!(wrong_role.status, 200, "{}", wrong_role.body);
+    assert_eq!(
+        workflow_position(&world, &seed),
+        (target.clone(), routed_revision),
+        "a slot filling another role does not release the fence"
+    );
+
+    // Missing mapping: a turn from a slot the frozen team never declared proves
+    // nothing about who authored the rework, so it must fence rather than pass.
+    settle_turn_on_team_run(
+        &world,
+        &seed,
+        route.team_run_id,
+        "ghost",
+        "[\"fence-change\"]",
+        "2027-01-05T00:00:00Z",
+    );
+    world.daemon.reconcile().await;
+    // Advancement is computed when a turn settles, so the fence is only asked
+    // about that row once something asks the workflow to move. An empty turn
+    // from a slot filling another role cannot itself release anything, which is
+    // what makes it a nudge rather than a second subject.
+    let nudge = settle_turn(
+        &world,
+        &seed,
+        &verifier,
+        "verify",
+        serde_json::json!([]),
+        "slot-role-fence-ghost-nudge",
+    )
+    .await;
+    assert_eq!(nudge.status, 200, "{}", nudge.body);
+    assert_eq!(
+        workflow_position(&world, &seed),
+        (target.clone(), routed_revision),
+        "an undeclared slot resolves to no role and releases nothing"
+    );
+
+    // The rework itself. The `implement` slot is what the seat carries; the
+    // pinned team is what says it fills `fence-implementer`.
+    let implementer = run_with_role(&world, &runs, "implement").await;
+    let rework = settle_turn(
+        &world,
+        &seed,
+        &implementer,
+        "implement",
+        serde_json::json!(["fence-change"]),
+        "slot-role-fence-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+    let (phase_after, revision_after) = workflow_position(&world, &seed);
+    assert_ne!(
+        phase_after, target,
+        "the slot the pinned team maps to the handoff role releases the fence"
+    );
+    assert!(
+        revision_after > routed_revision,
+        "releasing the fence lets ordinary advancement resume"
+    );
+
+    // Nothing about the identity of the work changed to achieve that: the same
+    // task, the same TeamRun, the same seats, the same single route.
+    let after = only_route(&world, &seed);
+    assert_eq!(after.team_run_id, route.team_run_id);
+    assert_eq!(after.rejection_receipt_id, route.rejection_receipt_id);
+    assert_eq!(after.task_id, route.task_id);
+    assert_eq!(after.rejection_target, route.rejection_target);
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_team_runs_for_task(project, task))
+            .expect("the task's team runs read")
+            .len(),
+        1,
+        "releasing a fence creates no second TeamRun"
+    );
+    for slot in ["scope", "implement", "verify"] {
+        assert_eq!(
+            run_with_role(&world, &runs, slot).await,
+            run_with_role(&world, &runs, slot).await,
+            "the {slot} seat is the one that was seated"
+        );
+    }
+}
+
+/// A second TeamRun on the same task whose frozen team binds the same slot ids
+/// to *different* logical roles.
+///
+/// Built through the store because only the identity and the frozen bytes
+/// matter: the scenario asks which run's team document the fence consults, not
+/// how a divergent team could come to exist.
+fn later_team_run_with_rebound_slots(
+    world: &World,
+    seed: &Bootstrapped,
+    rebind: &[(&str, &str)],
+    after: &str,
+) -> TeamRunId {
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let task = TaskId::parse(&seed.task).expect("task id");
+    let first = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_team_runs_for_task(project, task))
+        .expect("the task's team runs read")
+        .first()
+        .map(|(id, _)| *id)
+        .expect("a seated run");
+    let mut snapshot = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_team_run(project, first))
+        .expect("the seated run reads")
+        .expect("the seated run exists")
+        .snapshot;
+    let mut definition: serde_json::Value =
+        serde_json::from_str(snapshot.definition.json()).expect("the frozen definition is JSON");
+    for slot in definition["slots"]
+        .as_array_mut()
+        .expect("the frozen definition declares slots")
+    {
+        let id = slot["id"].as_str().expect("a slot id").to_owned();
+        if let Some((_, role)) = rebind.iter().find(|(name, _)| *name == id) {
+            slot["role"]["role"] = serde_json::json!(role);
+        }
+    }
+    snapshot.definition =
+        CanonicalDocument::from_value(&definition).expect("the rebound team canonicalizes");
+    let later = TeamRunId::generate();
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.create_team_run(&kontor_core::repository::NewTeamRun {
+                id: later,
+                project_id: project,
+                task_id: task,
+                snapshot: snapshot.clone(),
+                created_at: kontor_core::id::parse_utc_timestamp(after)
+                    .expect("a canonical instant"),
+            })
+        })
+        .expect("a second team run is created for the same task");
+    later
+}
+
+/// ASMA-8189. The mapping is read from the run the *route* froze, never from
+/// whichever team document is nearest to hand.
+///
+/// A later TeamRun on the same task binds `implement` to the verifier's role. A
+/// fence that resolved the rework's slot against that run — or against the
+/// template as it stands now — would read the rework as the wrong role and hold
+/// a fence the route-time team says is released.
+#[tokio::test]
+async fn a_rejection_fence_resolves_its_roles_against_the_run_the_route_froze() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = fence_seated(&world, "fence-route-time-team").await;
+
+    for (index, (slot, artifact)) in [
+        ("scope", "fence-scope-record"),
+        ("implement", "fence-change"),
+        ("verify", "fence-verification-report"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let run = run_with_role(&world, &runs, slot).await;
+        let settled = settle_turn(
+            &world,
+            &seed,
+            &run,
+            slot,
+            serde_json::json!([artifact]),
+            &format!("fence-route-time-produce-{index}"),
+        )
+        .await;
+        assert_eq!(settled.status, 200, "{slot}: {}", settled.body);
+    }
+
+    let (uri, revision, gate) = gate_record_target(&world, &seed).await;
+    let rejected = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": "fence-verifier",
+            "evaluator_account": seed.account,
+            "evidence": [],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("fence-route-time-reject")
+    .send(&world)
+    .await;
+    assert_eq!(rejected.status, 200, "{gate}: {}", rejected.body);
+    let (target, routed_revision) = workflow_position(&world, &seed);
+    assert_eq!(target, "fence-implementation");
+    let route = only_route(&world, &seed);
+
+    // A later run for the same task, whose frozen team says `implement` fills
+    // the verifier's role. It is what a "current team" lookup would find.
+    let rebound = later_team_run_with_rebound_slots(
+        &world,
+        &seed,
+        &[("implement", "fence-verifier")],
+        "2027-02-01T00:00:00Z",
+    );
+    assert_ne!(rebound, route.team_run_id);
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let task = TaskId::parse(&seed.task).expect("task id");
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_team_runs_for_task(project, task))
+            .expect("the task's team runs read")
+            .last()
+            .map(|(id, _)| *id),
+        Some(rebound),
+        "the rebound run is what a latest-run lookup would pick, which is the trap"
+    );
+
+    // The rework is settled on the route-time run, whose own frozen team maps
+    // `implement` to `fence-implementer`. That is the document that decides.
+    let implementer = run_with_role(&world, &runs, "implement").await;
+    let rework = settle_turn(
+        &world,
+        &seed,
+        &implementer,
+        "implement",
+        serde_json::json!(["fence-change"]),
+        "fence-route-time-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+    let (phase_after, revision_after) = workflow_position(&world, &seed);
+    assert_ne!(
+        phase_after, target,
+        "the route-time team's mapping is the one the fence reads"
+    );
+    assert!(revision_after > routed_revision);
+    assert_eq!(
+        only_route(&world, &seed).team_run_id,
+        route.team_run_id,
+        "the route still names the run it froze"
     );
 }
 
@@ -22371,7 +24193,11 @@ fn observe_current_turn(world: &World, project: &str, agent_run: &str) -> serde_
     })
 }
 
-fn observe_post_turn_status(world: &World, project: &str, agent_run: &str) {
+fn observe_post_turn_status(
+    world: &World,
+    project: &str,
+    agent_run: &str,
+) -> kontor_runtime::timeline::TimelinePosition {
     let project_id = ProjectId::parse(project).expect("a project id");
     let agent_run_id = AgentRunId::parse(agent_run).expect("an agent run id");
     let run = world.daemon.state().with_store(|store| {
@@ -22390,7 +24216,728 @@ fn observe_post_turn_status(world: &World, project: &str, agent_run: &str) {
     world
         .fake
         .observe_post_turn_state_change(&held, kontor_api::now())
-        .expect("the runtime records the post-turn status");
+        .expect("the runtime records the post-turn status")
+}
+
+#[tokio::test]
+async fn an_ambiguous_history_only_settles_after_one_server_owned_challenge() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "turn-correlation").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("run id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("role slot").to_owned();
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let agent_run_id = AgentRunId::parse(&agent_run).expect("agent run id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, agent_run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let binding = before.binding.clone().expect("the run is bound");
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the binding is held");
+    // Two content positions with no MessageId reproduce the only fact Kontor
+    // can safely conclude from the historical Paseo 0.8.0 transcript:
+    // correlation is ambiguous. Neither position is caller-selectable through
+    // the new challenge API.
+    world
+        .fake
+        .observe_uncorrelated_user_message(&held, "uncorrelated historical one", kontor_api::now())
+        .expect("the first uncorrelated position exists");
+    world
+        .fake
+        .observe_uncorrelated_user_message(&held, "uncorrelated historical two", kontor_api::now())
+        .expect("the second uncorrelated position exists");
+    let task_id = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, before.team_run_id)
+            .expect("team reads")
+            .expect("team exists")
+            .task_id
+    });
+    let task = world.daemon.state().with_store(|store| {
+        store
+            .get_task(project_id, task_id)
+            .expect("task reads")
+            .expect("task exists")
+    });
+    let role_slot_id = RoleSlotId::parse(&role_slot).expect("role slot");
+    let topology_seat = world.daemon.state().with_store(|store| {
+        let node = store
+            .get_task_topology_node(project_id, task_id)
+            .expect("task topology reads")
+            .expect("task topology exists");
+        let mut matching = store
+            .list_seat_bindings(project_id, node.id)
+            .expect("task seats read")
+            .into_iter()
+            .filter(|seat| {
+                seat.lifecycle == TopologyLifecycle::Active
+                    && seat.task_id == Some(task_id)
+                    && seat.team_run_id == Some(before.team_run_id)
+                    && seat.role_slot_id == role_slot_id
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "the run has one exact topology seat");
+        matching.remove(0)
+    });
+    let historical_report_checksum =
+        ContentHash::parse("3f667be8feac65ef1e8331fa872966cf6868d173e8405921b931749168df1ee8")
+            .expect("the approved historical report hash");
+    let report_checksum =
+        ContentHash::parse("0a425a0c42dfe904411e5ca417e7c04df31991e0e8047798245f84ea2704fa4a")
+            .expect("the current approved report hash");
+    let correction_report_checksum =
+        ContentHash::parse("0ad932926ae6813bd134468b53986c61339bf45de41b9aec237441edf512009c")
+            .expect("the approved identity-correction report hash");
+    let evidence = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "type": "operational_gap",
+        "project_id": project,
+        "report_sha256": report_checksum.as_str(),
+        "asma_8118_paseo_0_8_correlation_addendum_20260914": {
+            "report_sha256": historical_report_checksum.as_str(),
+            "blocker": {
+                "code": "runtime_proof_unavailable",
+                "settlement_attempted": false
+            },
+            "readback": {
+                "task": {"id": task_id.to_string(), "revision": task.revision.get()},
+                "team_run_id": before.team_run_id.to_string(),
+                "agent_run": {"id": agent_run, "revision": before.revision.get()},
+                "seat_binding_id": binding.id.to_string(),
+                "native_id": binding.identity.native_id.as_str()
+            },
+            "canonical_timeline": {
+                "epoch": 2,
+                "end_sequence": 385,
+                "next": null,
+                "paseo_version": "0.8.0",
+                "user_message_sequences": [1, 144],
+                "correlation_fields": {
+                    "message_id": "null for every event",
+                    "native_event_id": "null for every event"
+                }
+            }
+        },
+        "asma_8118_binding_identity_correction_20260914": {
+            "exact_identity": {
+                "topology_seat_binding_id": topology_seat.id.to_string(),
+                "runtime_binding_id": binding.id.to_string(),
+                "runtime_binding_generation": binding.identity.generation,
+                "agent_run_id": before.id.to_string(),
+                "agent_run_revision": before.revision.get()
+            },
+            "report_sha256": correction_report_checksum.as_str()
+        },
+        "closeout_recovery_20260914": {
+            "asma_8118": {"artifact": "high-scope-record"}
+        }
+    }))
+    .expect("the evidence canonicalizes");
+    let proposal = world.daemon.state().with_store(|store| {
+        let provenance = kontor_store::memory::MemoryProvenance {
+            source: "operator".to_owned(),
+            source_id: None,
+            legacy_last_write_wins: false,
+            history_unavailable: false,
+        };
+        let (proposal, _) = store
+            .propose_memory_revision(
+                project_id,
+                "turn-correlation-gap",
+                0,
+                &evidence,
+                &provenance,
+                "test-author",
+            )
+            .expect("the gap is proposed");
+        store
+            .approve_memory_revision(
+                project_id,
+                "turn-correlation-gap",
+                &proposal.revision_id,
+                1,
+                "test-reviewer",
+            )
+            .expect("the gap is approved");
+        proposal
+    });
+
+    // A caller-invented historical MessageId and positions remain ordinary
+    // proof and fail because the canonical event carries no subject identity.
+    let turns_before = world.daemon.state().with_store(|store| {
+        store
+            .list_settled_turns(project_id, task_id)
+            .expect("turns read")
+            .len()
+    });
+    let fabricated = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task.revision.get(),
+            "runtime_proof": {
+                "message_id": kontor_runtime::request::MessageId::generate().to_string(),
+                "message_position": {"epoch": 1, "sequence": 1},
+                "response_position": {"epoch": 1, "sequence": 3}
+            },
+            "artifacts": ["high-scope-record"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-fabricated-history")
+    .send(&world)
+    .await;
+    assert_eq!(fabricated.status, 409, "{}", fabricated.body);
+    assert_eq!(
+        world.daemon.state().with_store(|store| store
+            .list_settled_turns(project_id, task_id)
+            .expect("turns read")
+            .len()),
+        turns_before,
+        "ambiguous history cannot create a role-turn receipt"
+    );
+
+    let challenge_request = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": task.revision.get(),
+        "expected_run_revision": before.revision.get(),
+        "artifact": "high-scope-record",
+        "evidence_revision_id": proposal.revision_id,
+        "evidence_content_hash": proposal.document.hash().as_str(),
+        "report_checksum": report_checksum.as_str()
+    });
+    let challenge_uri =
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turn-correlation:challenge-preview");
+    for (item_id, changes) in [
+        (
+            "turn-correlation-gap-runtime-as-seat",
+            vec![(
+                "/asma_8118_binding_identity_correction_20260914/exact_identity/topology_seat_binding_id",
+                serde_json::json!(binding.id.to_string()),
+            )],
+        ),
+        (
+            "turn-correlation-gap-seat-as-runtime",
+            vec![(
+                "/asma_8118_binding_identity_correction_20260914/exact_identity/runtime_binding_id",
+                serde_json::json!(topology_seat.id.to_string()),
+            )],
+        ),
+        (
+            "turn-correlation-gap-abbreviated-null-strings",
+            vec![
+                (
+                    "/asma_8118_paseo_0_8_correlation_addendum_20260914/canonical_timeline/correlation_fields/message_id",
+                    serde_json::json!("null"),
+                ),
+                (
+                    "/asma_8118_paseo_0_8_correlation_addendum_20260914/canonical_timeline/correlation_fields/native_event_id",
+                    serde_json::json!("null"),
+                ),
+            ],
+        ),
+    ] {
+        let mut swapped: serde_json::Value =
+            serde_json::from_str(evidence.json()).expect("the evidence JSON reads");
+        for (pointer, wrong_value) in changes {
+            *swapped
+                .pointer_mut(pointer)
+                .expect("the evidence field exists") = wrong_value;
+        }
+        let swapped = CanonicalDocument::from_value(&swapped).expect("the swap canonicalizes");
+        let swapped_proposal = world.daemon.state().with_store(|store| {
+            let provenance = kontor_store::memory::MemoryProvenance {
+                source: "operator".to_owned(),
+                source_id: None,
+                legacy_last_write_wins: false,
+                history_unavailable: false,
+            };
+            let (proposal, _) = store
+                .propose_memory_revision(
+                    project_id,
+                    item_id,
+                    0,
+                    &swapped,
+                    &provenance,
+                    "test-author",
+                )
+                .expect("the mismatched gap is proposed");
+            store
+                .approve_memory_revision(
+                    project_id,
+                    item_id,
+                    &proposal.revision_id,
+                    1,
+                    "test-reviewer",
+                )
+                .expect("the mismatched gap is approved");
+            proposal
+        });
+        let refused = Call::post(
+            &challenge_uri,
+            &serde_json::json!({
+                "role_slot": role_slot,
+                "expected_task_revision": task.revision.get(),
+                "expected_run_revision": before.revision.get(),
+                "artifact": "high-scope-record",
+                "evidence_revision_id": swapped_proposal.revision_id,
+                "evidence_content_hash": swapped_proposal.document.hash().as_str(),
+                "report_checksum": report_checksum.as_str()
+            }),
+        )
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+        assert_eq!(
+            refused.status, 409,
+            "a mislabeled identity or abbreviated correlation field must refuse: {}",
+            refused.body
+        );
+    }
+    let calls_before_preview = world.fake.calls().len();
+    let preview = Call::post(&challenge_uri, &challenge_request)
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["historical_backfill_supported"], false);
+    assert_eq!(
+        preview.json()["seat_binding_id"],
+        topology_seat.id.to_string()
+    );
+    assert_eq!(preview.json()["runtime_binding_id"], binding.id.to_string());
+    assert_eq!(
+        preview.json()["native_id"],
+        binding.identity.native_id.as_str()
+    );
+    assert!(
+        world.fake.calls()[calls_before_preview..]
+            .iter()
+            .all(|call| !matches!(call, AdapterCall::CorrelationChallengeSend(..))),
+        "preview performs no native send"
+    );
+
+    let apply_uri =
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turn-correlation:challenge-apply");
+    let apply_body = serde_json::json!({
+        "challenge": challenge_request,
+        "preview_hash": preview.json()["preview_hash"]
+    });
+    // Lose the first acknowledgement after the fake has committed the exact
+    // message. The durable row is now `dispatching`: replay may search after
+    // its boundary, but the CAS can never grant a second first send.
+    world.fake.lose_next_send_ack();
+    let uncertain = Call::post(&apply_uri, &apply_body)
+        .signed_as(&world, "operator")
+        .with_key("turn-correlation-challenge")
+        .send(&world)
+        .await;
+    assert_eq!(uncertain.status, 503, "{}", uncertain.body);
+    let after_uncertain = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge_by_key("turn-correlation-challenge")
+            .expect("challenge reads")
+            .expect("challenge exists")
+    });
+    assert_eq!(
+        after_uncertain.state,
+        kontor_store::TurnCorrelationState::Dispatching
+    );
+    let message_id = after_uncertain.message_id.as_str().to_owned();
+    let sends_after_first = world
+        .fake
+        .calls()
+        .iter()
+        .filter(|call| matches!(call, AdapterCall::CorrelationChallengeSend(_, _, true)))
+        .count();
+    assert_eq!(
+        sends_after_first, 1,
+        "exactly one first-dispatch claim wins"
+    );
+
+    let bypass_preview = Call::post(&challenge_uri, &challenge_request)
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(bypass_preview.status, 200, "{}", bypass_preview.body);
+    let bypass = Call::post(
+        &apply_uri,
+        &serde_json::json!({
+            "challenge": challenge_request,
+            "preview_hash": bypass_preview.json()["preview_hash"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-challenge-bypass-key")
+    .send(&world)
+    .await;
+    assert_eq!(bypass.status, 409, "{}", bypass.body);
+    assert!(
+        world.daemon.state().with_store(|store| store
+            .turn_correlation_challenge_by_key("turn-correlation-challenge-bypass-key")
+            .expect("the bypass key reads")
+            .is_none()),
+        "the partial unique index leaves no second durable challenge"
+    );
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::CorrelationChallengeSend(_, _, true)))
+            .count(),
+        sends_after_first,
+        "a fresh idempotency key cannot send a second active challenge"
+    );
+
+    let reconciled = Call::post(&apply_uri, &apply_body)
+        .signed_as(&world, "operator")
+        .with_key("turn-correlation-challenge")
+        .send(&world)
+        .await;
+    assert_eq!(reconciled.status, 200, "{}", reconciled.body);
+    assert_eq!(reconciled.json()["state"], "acknowledged");
+    assert_eq!(reconciled.json()["message_id"], message_id);
+    assert_eq!(reconciled.json()["applied"], "unchanged");
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::CorrelationChallengeSend(_, _, true)))
+            .count(),
+        sends_after_first,
+        "a lost acknowledgement is reconciled without another first send"
+    );
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::CorrelationChallengeSend(_, _, false)))
+            .count(),
+        1,
+        "the uncertain replay is explicitly reconciliation-only"
+    );
+
+    let calls_after_acknowledgement = world.fake.calls().len();
+    let replayed = Call::post(&apply_uri, &apply_body)
+        .signed_as(&world, "operator")
+        .with_key("turn-correlation-challenge")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["message_id"], message_id);
+    assert_eq!(world.fake.calls().len(), calls_after_acknowledgement);
+
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge_by_key("turn-correlation-challenge")
+            .expect("challenge reads")
+            .expect("challenge exists")
+    });
+    world
+        .fake
+        .observe_correlation_challenge_completion(
+            &held,
+            stored.expected_response.as_str(),
+            kontor_api::now(),
+        )
+        .expect("the exact confirmation lands");
+    let settle_body = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": task.revision.get(),
+        "correlation_challenge_message_id": message_id,
+        "artifacts": ["high-scope-record"]
+    });
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &settle_body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["applied"], "created");
+    let consumed = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge(project_id, &ExternalId::parse(&message_id).expect("id"))
+            .expect("challenge reads")
+            .expect("challenge exists")
+    });
+    assert_eq!(consumed.state, kontor_store::TurnCorrelationState::Settled);
+    assert_eq!(
+        consumed
+            .settled_turn_id
+            .expect("the turn is linked")
+            .to_string(),
+        settled.json()["turn_id"].as_str().expect("turn id")
+    );
+
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, agent_run_id)
+            .expect("run reads")
+            .expect("run exists")
+    });
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.team_run_id, before.team_run_id);
+    assert_eq!(after.role, before.role);
+    assert_eq!(after.binding, before.binding);
+    assert!(after.terminal.is_none());
+
+    // Prepare a second, independently server-owned challenge at the now-current
+    // run revision. Moving the task after acknowledgement must invalidate that
+    // challenge even when the caller supplies the task's new revision.
+    let current_task = world.daemon.state().with_store(|store| {
+        store
+            .get_task(project_id, task_id)
+            .expect("task reads")
+            .expect("task exists")
+    });
+    let stale_evidence = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "type": "operational_gap",
+        "project_id": project,
+        "report_sha256": report_checksum.as_str(),
+        "asma_8118_paseo_0_8_correlation_addendum_20260914": {
+            "report_sha256": historical_report_checksum.as_str(),
+            "blocker": {
+                "code": "runtime_proof_unavailable",
+                "settlement_attempted": false
+            },
+            "readback": {
+                "task": {"id": task_id.to_string(), "revision": current_task.revision.get()},
+                "team_run_id": after.team_run_id.to_string(),
+                "agent_run": {"id": after.id.to_string(), "revision": after.revision.get()},
+                "seat_binding_id": binding.id.to_string(),
+                "native_id": binding.identity.native_id.as_str()
+            },
+            "canonical_timeline": {
+                "epoch": 2,
+                "end_sequence": 385,
+                "next": null,
+                "paseo_version": "0.8.0",
+                "user_message_sequences": [1, 144],
+                "correlation_fields": {
+                    "message_id": "null for every event",
+                    "native_event_id": "null for every event"
+                }
+            }
+        },
+        "asma_8118_binding_identity_correction_20260914": {
+            "exact_identity": {
+                "topology_seat_binding_id": topology_seat.id.to_string(),
+                "runtime_binding_id": binding.id.to_string(),
+                "runtime_binding_generation": binding.identity.generation,
+                "agent_run_id": after.id.to_string(),
+                "agent_run_revision": after.revision.get()
+            },
+            "report_sha256": correction_report_checksum.as_str()
+        },
+        "closeout_recovery_20260914": {
+            "asma_8118": {"artifact": "high-scope-record"}
+        }
+    }))
+    .expect("the stale-task evidence canonicalizes");
+    let stale_proposal = world.daemon.state().with_store(|store| {
+        let provenance = kontor_store::memory::MemoryProvenance {
+            source: "operator".to_owned(),
+            source_id: None,
+            legacy_last_write_wins: false,
+            history_unavailable: false,
+        };
+        let (proposal, _) = store
+            .propose_memory_revision(
+                project_id,
+                "turn-correlation-stale-task-gap",
+                0,
+                &stale_evidence,
+                &provenance,
+                "test-author",
+            )
+            .expect("the second gap is proposed");
+        store
+            .approve_memory_revision(
+                project_id,
+                "turn-correlation-stale-task-gap",
+                &proposal.revision_id,
+                1,
+                "test-reviewer",
+            )
+            .expect("the second gap is approved");
+        proposal
+    });
+    let stale_request = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": current_task.revision.get(),
+        "expected_run_revision": after.revision.get(),
+        "artifact": "high-scope-record",
+        "evidence_revision_id": stale_proposal.revision_id,
+        "evidence_content_hash": stale_proposal.document.hash().as_str(),
+        "report_checksum": report_checksum.as_str()
+    });
+    let stale_preview = Call::post(&challenge_uri, &stale_request)
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(stale_preview.status, 200, "{}", stale_preview.body);
+    let stale_applied = Call::post(
+        &apply_uri,
+        &serde_json::json!({
+            "challenge": stale_request,
+            "preview_hash": stale_preview.json()["preview_hash"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-stale-task-challenge")
+    .send(&world)
+    .await;
+    assert_eq!(stale_applied.status, 200, "{}", stale_applied.body);
+    let stale_message_id = stale_applied.json()["message_id"]
+        .as_str()
+        .expect("the second challenge id")
+        .to_owned();
+    let stale_challenge = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge(
+                project_id,
+                &ExternalId::parse(&stale_message_id).expect("challenge id"),
+            )
+            .expect("challenge reads")
+            .expect("challenge exists")
+    });
+    world
+        .fake
+        .observe_uncorrelated_user_message(&held, stale_challenge.body.as_str(), kontor_api::now())
+        .expect("a second exact identity-poor challenge body is reproduced");
+    let stale_response_position = world
+        .fake
+        .observe_correlation_challenge_completion(
+            &held,
+            stale_challenge.expected_response.as_str(),
+            kontor_api::now(),
+        )
+        .expect("the second exact confirmation lands");
+    let duplicate_body_settlement = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": current_task.revision.get(),
+            "correlation_challenge_message_id": stale_message_id,
+            "artifacts": ["high-scope-record"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-duplicate-body-settle")
+    .send(&world)
+    .await;
+    assert_eq!(
+        duplicate_body_settlement.status, 409,
+        "{}",
+        duplicate_body_settlement.body
+    );
+    assert_eq!(duplicate_body_settlement.code(), "idempotency_conflict");
+
+    let moved = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/lifecycle"),
+        &serde_json::json!({
+            "action": "block",
+            "task_id": task_id,
+            "expected_revision": current_task.revision.get(),
+            "reason": "prove the acknowledged challenge is revision fenced"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-move-task")
+    .send(&world)
+    .await;
+    assert_eq!(moved.status, 200, "{}", moved.body);
+    let moved_revision = AggregateRevision::parse(
+        moved.json()["revision"]
+            .as_u64()
+            .expect("the moved task revision"),
+    )
+    .expect("a positive revision");
+
+    let stale_settlement = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": moved_revision.get(),
+            "correlation_challenge_message_id": stale_message_id,
+            "artifacts": ["high-scope-record"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-stale-task-settle")
+    .send(&world)
+    .await;
+    assert_eq!(stale_settlement.status, 409, "{}", stale_settlement.body);
+
+    // Defence in depth: bypass the daemon method and ask the store to insert a
+    // role turn at the moved revision. The v97 trigger independently requires
+    // the challenge's frozen task revision and rejects the row atomically.
+    let store_refusal = world.daemon.state().with_store(|store| {
+        store
+            .settle_role_turn(&kontor_store::NewRoleTurn {
+                id: kontor_core::id::RoleTurnId::generate(),
+                project_id,
+                task_id,
+                team_run_id: after.team_run_id,
+                agent_run_id: after.id,
+                role_slot_id: RoleSlotId::parse(&role_slot).expect("role slot"),
+                idempotency_key: "turn-correlation-store-stale-task".to_owned(),
+                task_revision: moved_revision,
+                binding_generation: binding.identity.generation,
+                runtime_proof: Some(kontor_store::RoleTurnRuntimeProof {
+                    message_id: stale_message_id.clone(),
+                    timeline_epoch: stale_challenge.message_epoch.expect("message epoch"),
+                    message_sequence: stale_challenge.message_sequence.expect("message sequence"),
+                    response_sequence: stale_response_position.sequence,
+                    runtime_observation_cursor: kontor_core::id::EventCursor::parse(1)
+                        .expect("positive cursor"),
+                }),
+                authority_tier: "operator",
+                account_profile: after.account_profile_id,
+                artifacts: [
+                    kontor_core::id::ArtifactKey::parse("high-scope-record").expect("artifact")
+                ]
+                .into_iter()
+                .collect(),
+                evidence_hash: ContentHash::of(b"store task-revision trigger regression"),
+                settled_at: kontor_api::now(),
+            })
+            .expect_err("storage independently rejects a moved-task challenge")
+    });
+    assert!(
+        store_refusal.to_string().contains("constraint refused"),
+        "the v97 challenge constraint is the refusing fence: {store_refusal}"
+    );
+    let still_acknowledged = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge(
+                project_id,
+                &ExternalId::parse(&stale_message_id).expect("challenge id"),
+            )
+            .expect("challenge reads")
+            .expect("challenge remains")
+    });
+    assert_eq!(
+        still_acknowledged.state,
+        kontor_store::TurnCorrelationState::Acknowledged,
+        "the rejected moved-task insert neither settles nor rewrites the challenge"
+    );
 }
 
 #[tokio::test]
@@ -22440,8 +24987,9 @@ async fn settling_a_bounded_turn_reads_only_the_claimed_current_window() {
             .iter()
             .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::History(_)))
             .count(),
-        1,
-        "settlement must not crawl unrelated history before the claimed current message: {calls:?}",
+        2,
+        "settlement reads the bounded window and then asks once whether anything \
+         follows the claimed response — never the whole tail: {calls:?}",
     );
 }
 
@@ -22515,7 +25063,7 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
 
     let stale_runtime_proof = observe_current_turn(&world, &project, &agent_run);
     let runtime_proof = observe_current_turn(&world, &project, &agent_run);
-    observe_post_turn_status(&world, &project, &agent_run);
+    let _ = observe_post_turn_status(&world, &project, &agent_run);
     let calls_before_stale = world.fake.calls().len();
     let stale_completion = Call::post(
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
@@ -22534,8 +25082,9 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
     assert_eq!(stale_completion.code(), "revision_conflict");
     assert_eq!(
         world.fake.calls().len(),
-        calls_before_stale + 2,
-        "the stale proof performs only the fresh inspect and bounded history read",
+        calls_before_stale + 3,
+        "the stale proof performs the fresh inspect, the bounded window read and \
+         the one anchored read past the claimed response",
     );
     assert!(
         world
@@ -22697,6 +25246,1166 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
     .send(&world)
     .await;
     assert_eq!(stale.status, 409, "{}", stale.body);
+}
+
+/// One forged-window settlement attempt, and the boundary it has to hold.
+///
+/// The status code is the least of it. A settlement that is refused *after* it
+/// has written is not a refusal, so every case asserts the same three things:
+/// the stable rule, that the runtime paid only for the fresh inspect and the
+/// one bounded history read, and that nothing durable moved — no turn, no
+/// artifact evidence carried on one, and no dispatch.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is one axis the matrix varies, and collapsing them into a struct would hide which one a case is testing"
+)]
+async fn refuse_forged_current_window(
+    world: &World,
+    project: &str,
+    task_id: TaskId,
+    agent_run: &str,
+    role_slot: &str,
+    revision: u64,
+    key: &str,
+    proof: serde_json::Value,
+    forgery: &str,
+    rule: &str,
+) {
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let calls_before = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": proof,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(key)
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 409, "{forgery}: {}", refused.body);
+    assert_eq!(refused.code(), "revision_conflict", "{forgery}");
+    assert_eq!(
+        refused.json()["rule"],
+        rule,
+        "{forgery}: the refusal must name its own rule and not some earlier guard",
+    );
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before + 3,
+        "{forgery}: a forged window costs one fresh inspect, one bounded window \
+         read and one anchored read past the claimed response",
+    );
+    let (turns, dispatches) = world.daemon.state().with_store(|store| {
+        (
+            store
+                .list_settled_turns(project_id, task_id)
+                .expect("settled turns read"),
+            store
+                .list_turn_dispatches(project_id)
+                .expect("dispatches read"),
+        )
+    });
+    assert!(
+        turns.is_empty(),
+        "{forgery}: a refused settlement records no turn and no artifact evidence: {turns:?}",
+    );
+    assert!(
+        dispatches.is_empty(),
+        "{forgery}: a refused settlement fans nothing out: {dispatches:?}",
+    );
+}
+
+/// ASMA-8203. The observation surface, end to end into the unchanged settler.
+///
+/// The point of the surface is that a post-turn caller no longer hand-derives
+/// the tuple, because hand-derivation is where a wrong position comes from. So
+/// the assertion that matters is not what the read *says* — it is that what it
+/// says is accepted verbatim by a `turns:settle` that re-derives everything
+/// itself and was not modified.
+#[tokio::test]
+async fn an_observed_turn_is_the_tuple_settlement_accepts_verbatim() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "turn-observe-e2e").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let task = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]
+        .clone();
+    let revision = task["revision"].as_u64().expect("a revision");
+    let task_id = TaskId::parse(task["task_id"].as_str().expect("a task id")).expect("a task id");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+
+    let _earlier = observe_current_turn(&world, &project, &agent_run);
+    let expected = observe_current_turn(&world, &project, &agent_run);
+
+    let observed = Call::get(format!("/v1/sessions/{agent_run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(observed.status, 200, "{}", observed.body);
+    let body = observed.json();
+
+    // It names the *current* turn, not the earlier one it also walked past.
+    assert_eq!(
+        body["message_id"], expected["message_id"],
+        "{}",
+        observed.body
+    );
+    assert_eq!(
+        body["timeline_epoch"],
+        expected["message_position"]["epoch"]
+    );
+    assert_eq!(
+        body["message_sequence"],
+        expected["message_position"]["sequence"]
+    );
+    assert_eq!(
+        body["response_sequence"],
+        expected["response_position"]["sequence"]
+    );
+
+    // Reading is not writing: an observation records no turn and dispatches
+    // nothing, which is what keeps `turns:settle` the only writer.
+    let (turns, dispatches) = world.daemon.state().with_store(|store| {
+        (
+            store
+                .list_settled_turns(project_id, task_id)
+                .expect("turns read"),
+            store
+                .list_turn_dispatches(project_id)
+                .expect("dispatches read"),
+        )
+    });
+    assert!(turns.is_empty(), "observing settles nothing: {turns:?}");
+    assert!(dispatches.is_empty(), "observing dispatches nothing");
+
+    // And the whole point: relayed verbatim, the unchanged settler accepts it.
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": {
+                "message_id": body["message_id"],
+                "message_position": {
+                    "epoch": body["timeline_epoch"],
+                    "sequence": body["message_sequence"],
+                },
+                "response_position": {
+                    "epoch": body["timeline_epoch"],
+                    "sequence": body["response_sequence"],
+                },
+            },
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-observe-e2e-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["turn_ordinal"], 1);
+
+    // Single-use survives the new surface: observing the same finished turn
+    // again still yields the same tuple, and settling it a second time under a
+    // fresh key is refused.
+    let again = Call::get(format!("/v1/sessions/{agent_run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.json()["message_id"], body["message_id"]);
+    let reused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": {
+                "message_id": body["message_id"],
+                "message_position": {
+                    "epoch": body["timeline_epoch"],
+                    "sequence": body["message_sequence"],
+                },
+                "response_position": {
+                    "epoch": body["timeline_epoch"],
+                    "sequence": body["response_sequence"],
+                },
+            },
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-observe-e2e-reuse")
+    .send(&world)
+    .await;
+    assert_eq!(reused.status, 409, "{}", reused.body);
+
+    // A tampered observation is still caught by the settler, which is the
+    // statement that this surface grants no authority.
+    let forged = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": {
+                "message_id": kontor_runtime::request::MessageId::generate().to_string(),
+                "message_position": {
+                    "epoch": body["timeline_epoch"],
+                    "sequence": body["message_sequence"],
+                },
+                "response_position": {
+                    "epoch": body["timeline_epoch"],
+                    "sequence": body["response_sequence"],
+                },
+            },
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-observe-e2e-forged")
+    .send(&world)
+    .await;
+    assert_eq!(forged.status, 409, "{}", forged.body);
+    assert_eq!(forged.code(), "revision_conflict");
+}
+
+/// The cases the surface has to refuse rather than answer approximately.
+#[tokio::test]
+async fn observing_a_current_turn_fails_closed_on_every_unreadable_shape() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let uri = format!("/v1/sessions/{run}/turns/current");
+
+    // 1. Nothing addressed yet. A launch alone is not a turn, and answering with
+    //    the newest arbitrary event is exactly the inference that is banned.
+    let empty = Call::get(&uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        empty.status == 404 || empty.status == 409,
+        "an unaddressed session has no current turn: {} {}",
+        empty.status,
+        empty.body
+    );
+
+    // 2. A seat still working. The message exists; the turn has not ended, so
+    //    there is no terminal response to name.
+    let key = kontor_runtime::request::MessageId::generate().to_string();
+    let sent = Call::post(
+        format!("/v1/sessions/{run}/messages"),
+        &serde_json::json!({"body": "do the work"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(&key)
+    .send(&world)
+    .await;
+    assert_eq!(sent.status, 200, "{}", sent.body);
+    let working = Call::get(&uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(working.status, 409, "{}", working.body);
+    assert_eq!(working.code(), "revision_conflict");
+    assert_eq!(
+        working.json()["rule"],
+        "this seat is not waiting after a finished turn, so it has no current turn to observe",
+        "the refusal must come from the liveness check, not from a later guard that happens \
+         to also refuse: {}",
+        working.body
+    );
+
+    // 3. A finished turn reads cleanly.
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+    let duplicated = kontor_runtime::request::MessageId::generate();
+    world
+        .fake
+        .observe_turn_completion(&held, duplicated, kontor_api::now())
+        .expect("a completed turn");
+    let good = Call::get(&uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(good.status, 200, "{}", good.body);
+    assert_eq!(
+        good.json()["message_id"],
+        serde_json::json!(duplicated.to_string())
+    );
+
+    // 4. The same id twice is divergence, not a luckier answer: a caller cannot
+    //    tell which of them it would be settling.
+    world
+        .fake
+        .observe_turn_completion(&held, duplicated, kontor_api::now())
+        .expect("the runtime repeats the id");
+    let diverged = Call::get(&uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(diverged.status, 409, "{}", diverged.body);
+    assert_eq!(diverged.code(), "revision_conflict", "{}", diverged.body);
+
+    // 4b. Turn content after the response means the turn described is not the
+    //     current one. A tool call carries no message subject, so nothing reads
+    //     it as a new turn — which is exactly why terminality needs its own
+    //     check rather than falling out of the message scan.
+    let (fresh_world, fresh_run, fresh_snapshot) = {
+        let w = World::open().await;
+        w.script(HISTORY_LIVE);
+        let (r, snap) = w.launch().await;
+        (w, r, snap)
+    };
+    let fresh_held = fresh_world
+        .daemon
+        .state()
+        .sessions()
+        .get(fresh_snapshot.binding_id())
+        .expect("the process holds the binding");
+    fresh_world
+        .fake
+        .observe_turn_completion(
+            &fresh_held,
+            kontor_runtime::request::MessageId::generate(),
+            kontor_api::now(),
+        )
+        .expect("a completed turn");
+    fresh_world
+        .fake
+        .observe_trailing_tool_call(&fresh_held, kontor_api::now())
+        .expect("turn content lands after the response");
+    let trailing = Call::get(format!("/v1/sessions/{fresh_run}/turns/current"))
+        .signed_as(&fresh_world, "observer")
+        .send(&fresh_world)
+        .await;
+    assert_eq!(trailing.status, 409, "{}", trailing.body);
+    assert_eq!(
+        trailing.json()["rule"],
+        "the newest turn's response is not the last canonical turn event",
+        "{}",
+        trailing.body
+    );
+
+    // 5. A cursor from another session is refused before the runtime is asked,
+    //    and a cursor naming an epoch this session never had is a refetch, not a
+    //    fresh scan that silently starts over.
+    let foreign = Call::get(format!(
+        "/v1/sessions/{run}/turns/current?after={}",
+        kontor_runtime::timeline::HistoryCursor::issue(
+            RuntimeBindingId::generate(),
+            kontor_runtime::timeline::TimelinePosition {
+                epoch: 1,
+                sequence: 1
+            },
+        )
+        .as_str()
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(foreign.status, 400, "{}", foreign.body);
+
+    let other_epoch = Call::get(format!(
+        "/v1/sessions/{run}/turns/current?after={}",
+        kontor_runtime::timeline::HistoryCursor::issue(
+            snapshot.binding_id(),
+            kontor_runtime::timeline::TimelinePosition {
+                epoch: 99,
+                sequence: 1
+            },
+        )
+        .as_str()
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(other_epoch.status, 409, "{}", other_epoch.body);
+    assert_eq!(other_epoch.code(), "timeline_refetch_required");
+}
+
+/// ASMA-8203. The persist-before-expose barrier, at the API boundary.
+///
+/// A Kontor epoch number is allocated by the adapter on first sight of a raw
+/// native epoch. It is only meaningful if it survives a restart, so nothing
+/// addressed by it may reach a caller — or be consumed by settlement — before
+/// the mapping is durable. The assertion is ordering, not existence: by the
+/// time a read has returned, the row is already committed.
+#[tokio::test]
+async fn a_history_read_persists_its_epoch_mapping_before_returning() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, _snapshot) = world.launch().await;
+
+    // The host the fake's bindings carry, read from the binding itself so the
+    // assertion cannot drift from the scope the mapping is keyed under.
+    let host = _snapshot.identity().host.as_str().to_owned();
+    let kind = fake_family();
+    let before = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(kind.as_str(), &host))
+        .unwrap_or_default();
+
+    let timeline = Call::get(format!("/v1/sessions/{run}/timeline?limit=5"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(timeline.status, 200, "{}", timeline.body);
+    let epoch = timeline.json()["epoch"].as_u64().expect("an epoch");
+
+    // Already durable at the moment the page was handed over.
+    let after = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(kind.as_str(), &host))
+        .expect("durable epochs read");
+    assert!(
+        after.iter().any(|(_, mapped)| *mapped == epoch),
+        "the epoch the caller was given is durable before it was given: before={before:?} after={after:?}"
+    );
+}
+
+/// A duplicate that straddles the `after` cursor is still a duplicate.
+///
+/// The P1 the audit found. `after` used to scope duplicate tracking to the
+/// suffix, so a first occurrence sitting in the skipped prefix was simply not
+/// counted — and nothing downstream recovers it. Settlement's own scan begins
+/// immediately before the occurrence it is handed, so it sees one too, and the
+/// store refuses an id that already *settled*, not one that already *appeared*.
+/// An id delivered twice could therefore be observed clean and then settled.
+#[tokio::test]
+async fn observing_refuses_a_duplicate_that_straddles_the_resume_cursor() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+
+    // First occurrence of M, deliberately early.
+    let duplicated = kontor_runtime::request::MessageId::generate();
+    let (first_at, _) = world
+        .fake
+        .observe_turn_completion(&held, duplicated, kontor_api::now())
+        .expect("the first occurrence");
+
+    // Unrelated turns, so the cursor can sit strictly between the two.
+    for _ in 0..3 {
+        world
+            .fake
+            .observe_turn_completion(
+                &held,
+                kontor_runtime::request::MessageId::generate(),
+                kontor_api::now(),
+            )
+            .expect("an unrelated turn");
+    }
+    let boundary = world
+        .fake
+        .observe_turn_completion(
+            &held,
+            kontor_runtime::request::MessageId::generate(),
+            kontor_api::now(),
+        )
+        .expect("the turn the cursor will point past")
+        .1;
+
+    // Second occurrence of the same id, after where the caller will resume.
+    world
+        .fake
+        .observe_turn_completion(&held, duplicated, kontor_api::now())
+        .expect("the repeat");
+
+    // A perfectly valid anchor, strictly after the first occurrence.
+    let after = kontor_runtime::timeline::HistoryCursor::issue(snapshot.binding_id(), boundary);
+    assert!(
+        boundary.sequence > first_at.sequence,
+        "the cursor must sit after the first occurrence for this to be the reported hole"
+    );
+
+    let observed = Call::get(format!(
+        "/v1/sessions/{run}/turns/current?after={}",
+        after.as_str()
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(
+        observed.status, 409,
+        "a duplicate hidden in the skipped prefix must still refuse: {}",
+        observed.body
+    );
+    assert_eq!(observed.code(), "revision_conflict", "{}", observed.body);
+    assert_eq!(
+        observed.json()["rule"],
+        "this message id appears more than once in the session's canonical content",
+        "{}",
+        observed.body
+    );
+
+    // And the control: read without the cursor, the same divergence is refused,
+    // so the cursor is not the only path that catches it.
+    let whole = Call::get(format!("/v1/sessions/{run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(whole.status, 409, "{}", whole.body);
+    assert_eq!(whole.code(), "revision_conflict");
+}
+
+/// A long session is paged, not truncated, and the anchor it hands back is a
+/// resume point rather than decoration.
+#[tokio::test]
+async fn observing_a_current_turn_pages_a_long_session_and_resumes_from_its_anchor() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+
+    // Well past one page, so the scan has to continue rather than answer from
+    // the first page it was given.
+    for _ in 0..40 {
+        world
+            .fake
+            .observe_turn_completion(
+                &held,
+                kontor_runtime::request::MessageId::generate(),
+                kontor_api::now(),
+            )
+            .expect("a completed turn");
+    }
+    let newest = kontor_runtime::request::MessageId::generate();
+    let (message_at, response_at) = world
+        .fake
+        .observe_turn_completion(&held, newest, kontor_api::now())
+        .expect("the newest completed turn");
+
+    let observed = Call::get(format!("/v1/sessions/{run}/turns/current?limit=3"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(observed.status, 200, "{}", observed.body);
+    assert_eq!(
+        observed.json()["message_id"],
+        serde_json::json!(newest.to_string()),
+        "a paged scan reports the newest turn, not the last one on some page: {}",
+        observed.body
+    );
+    assert_eq!(
+        observed.json()["message_sequence"],
+        serde_json::json!(message_at.sequence)
+    );
+    assert_eq!(
+        observed.json()["response_sequence"],
+        serde_json::json!(response_at.sequence)
+    );
+
+    // A scan that cannot reach the end says so instead of answering from the
+    // part it saw. At one item per page this session is far past the budget, and
+    // the newest turn is nowhere near the pages it managed to read — so an
+    // answer here would be confidently wrong rather than merely partial.
+    let starved = Call::get(format!("/v1/sessions/{run}/turns/current?limit=1"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(starved.status, 503, "{}", starved.body);
+    assert_eq!(
+        starved.json()["rule"],
+        "the canonical scan reached its page budget before the end of this session",
+        "{}",
+        starved.body
+    );
+
+    // The anchor resumes: reading again from it reaches the same turn without
+    // starting over.
+    let anchor = observed.json()["anchor"]
+        .as_str()
+        .expect("an anchor")
+        .to_owned();
+    let resumed = Call::get(format!("/v1/sessions/{run}/turns/current?after={anchor}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        resumed.status == 200 || resumed.status == 404,
+        "an exhausted anchor resumes or reports nothing new, never a broken read: {} {}",
+        resumed.status,
+        resumed.body
+    );
+}
+
+/// The terminality question has to be *asked*, not inferred from the window.
+///
+/// Bounding the window at the claimed response means a later turn can fall
+/// entirely outside it. When the window page happens to overshoot, the existing
+/// last-turn check still catches such a turn — which makes it easy to believe
+/// the anchored read is redundant. Size the page so the window ends exactly at
+/// the response and the next turn lands on the page after it, and the anchored
+/// read is the only thing standing between a stale tuple and a settlement.
+#[tokio::test]
+async fn a_later_turn_beyond_the_window_page_still_refuses_a_stale_tuple() {
+    // Two events per page: the window is exactly the claimed turn.
+    let world = World::open_with(capabilities_with_history_page(2)).await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "og-061-beyond-window").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let task = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]
+        .clone();
+    let revision = task["revision"].as_u64().expect("a revision");
+    let task_id = TaskId::parse(task["task_id"].as_str().expect("a task id")).expect("a task id");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+
+    let stale = observe_current_turn(&world, &project, &agent_run);
+    // A newer turn, landing past the window page the stale tuple describes.
+    let _newer = observe_current_turn(&world, &project, &agent_run);
+
+    let refused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": stale,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("og-061-beyond-window-settle")
+    .send(&world)
+    .await;
+    assert_eq!(
+        refused.status, 409,
+        "a turn that is no longer current must refuse even when the newer turn \
+         falls outside the window page: {}",
+        refused.body
+    );
+    assert_eq!(refused.code(), "revision_conflict", "{}", refused.body);
+    let turns = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_settled_turns(project_id, task_id))
+        .expect("settled turns read");
+    assert!(turns.is_empty(), "the refusal wrote nothing: {turns:?}");
+}
+
+/// OG-061. A proof that sits early in a long session settles.
+///
+/// ASMA-8201 (`12:6 -> 12:263`) and ASMA-8202 (`13:11 -> 13:296`) named turns a
+/// handful of events into their epoch, and settlement proved terminality by
+/// paging from the claimed message to the *end* of the session. The cost was
+/// therefore the distance to the tail, not the size of the turn, so a verifier
+/// response early in a long epoch could not be settled at all — while a
+/// terminal-anchor timeline read of the same session answered in one page and
+/// `runtime_capabilities` reported the plane reachable. The failure surfaced as
+/// "the session's runtime could not be reached", pointing at a healthy runtime.
+///
+/// The fixture reproduces that shape: a short turn, then a long tail behind it,
+/// with the history page narrowed so the old full-forward scan could not have
+/// finished inside its budget. What must happen now is that the turn settles.
+#[tokio::test]
+async fn an_early_proof_in_a_long_session_settles_without_reading_the_tail() {
+    // A narrow page, so the distance the proof has to cover is visible in the
+    // read count rather than hidden inside one generous page.
+    let world = World::open_with(capabilities_with_history_page(4)).await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "og-061-early-proof").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+
+    // The turn being settled, early in the session.
+    let proof = observe_current_turn(&world, &project, &agent_run);
+
+    // Then a long tail of non-turn content behind it. Status changes are not
+    // turn events, so the response stays terminal — but the old scan still had
+    // to read every one of them to discover that.
+    for _ in 0..60 {
+        let _ = observe_post_turn_status(&world, &project, &agent_run);
+    }
+
+    let calls_before = world.fake.calls().len();
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": proof,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("og-061-early-proof-settle")
+    .send(&world)
+    .await;
+    assert_eq!(
+        settled.status, 200,
+        "an early proof behind a long tail must still settle: {}",
+        settled.body
+    );
+    assert_eq!(settled.json()["turn_ordinal"], 1);
+
+    // And it did not read the tail to get there. The old path needed a page per
+    // trailing event; this one is bounded by the window and the anchored read.
+    let reads = world.fake.calls()[calls_before..]
+        .iter()
+        .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::History(_)))
+        .count();
+    // The window itself is two events — one page. Everything else this read
+    // spends is the terminality question, and the claimed message's distance
+    // from the start of the session no longer enters into it at all.
+    assert!(
+        reads <= 1 + 60 / 4 + 2,
+        "settlement read {reads} pages; the window is one page and the rest is \
+         the bounded terminality read, not a walk from the claimed message"
+    );
+}
+
+/// OG-061, after the combined deployment. The refetch signal is answered, once.
+///
+/// The bounded scan shipped and the preserved proofs still would not settle:
+/// 503 `proof_scan_incomplete`, with `timeline_refetch_required` underneath it
+/// in the daemon log, while a direct read of the same native sessions returned
+/// every event. The scan mapped *every* runtime read error to "could not be read
+/// to the end", so the one signal that means *ask me which epoch I am addressing
+/// and carry on* was spent as a dead end.
+///
+/// Here the runtime refuses every anchored read until it is asked exactly that,
+/// and answers normally afterwards — the session is wholly readable throughout,
+/// which is the property that made the live failure so misleading. Without the
+/// recovery the settlement cannot get past its first page.
+#[tokio::test]
+async fn a_settlement_answers_a_timeline_refetch_signal_once_and_settles() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "og-061-refetch").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let task = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]
+        .clone();
+    let revision = task["revision"].as_u64().expect("a revision");
+    let task_id = TaskId::parse(task["task_id"].as_str().expect("a task id")).expect("a task id");
+
+    let proof = observe_current_turn(&world, &project, &agent_run);
+
+    // The scope the mapping is keyed under, read from the binding itself so the
+    // assertion below cannot drift from it.
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let agent_run_id = AgentRunId::parse(&agent_run).expect("an agent run id");
+    let run_record = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, agent_run_id)
+            .expect("the settling run reads")
+            .expect("the settling run exists")
+    });
+    let bound = run_record.binding.expect("the settling run is bound");
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(bound.id)
+        .expect("the process holds the exact settling binding");
+    let kind = held.identity().runtime_kind.as_str().to_owned();
+    let host = held.identity().host.as_str().to_owned();
+
+    // From here every cursor is refused until the epoch is re-read.
+    world.fake.require_timeline_refetch_until_epoch_refresh();
+
+    let calls_before = world.fake.calls().len();
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": proof,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("og-061-refetch-settle")
+    .send(&world)
+    .await;
+    assert_eq!(
+        settled.status, 200,
+        "a readable session that asked to be re-epoched must still settle: {}",
+        settled.body
+    );
+    assert_eq!(settled.json()["turn_ordinal"], 1);
+
+    let recent = world.fake.calls();
+    let refreshes = recent[calls_before..]
+        .iter()
+        .filter(|call| {
+            matches!(
+                call,
+                kontor_runtime::fake::AdapterCall::RefreshTimelineEpoch(_)
+            )
+        })
+        .count();
+    // Once for the scan, not once per refused page. A recovery that fired on
+    // every page would put the session's length back into the cost of a proof,
+    // which is the whole thing the bounded scan removed.
+    assert_eq!(
+        refreshes, 1,
+        "the recovery is one bounded call, not a retry loop: {recent:?}"
+    );
+
+    // And what that call learned was durable before the tuple was consumed. The
+    // recovery read allocates through the same boundary an ordinary history read
+    // does, so it owes the same barrier.
+    let durable = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(&kind, &host))
+        .expect("durable epochs read");
+    let claimed_epoch = proof["message_position"]["epoch"]
+        .as_u64()
+        .expect("an epoch");
+    assert!(
+        durable.iter().any(|(_, mapped)| *mapped == claimed_epoch),
+        "the epoch the settled tuple is addressed by is durable: {durable:?}"
+    );
+
+    // The fences the recovery must not have loosened. The same tuple, under a
+    // fresh key, is spent — a scan that recovered its way into settling twice
+    // would be worse than one that refused.
+    let replay = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision + 1,
+            "runtime_proof": proof,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("og-061-refetch-replay")
+    .send(&world)
+    .await;
+    assert_eq!(
+        replay.status, 409,
+        "the single-use fence still holds after a recovered scan: {}",
+        replay.body
+    );
+    let turns = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_settled_turns(project_id, task_id))
+        .expect("settled turns read");
+    assert_eq!(turns.len(), 1, "exactly one turn settled: {turns:?}");
+}
+
+/// OG-061. A numbering the runtime no longer has is not an unreadable session.
+///
+/// This is the live shape the deployment itself created. The durable epoch table
+/// arrived empty, so the restarted process renumbered from 1 and the preserved
+/// tuples — `12:6 -> 12:263` and `13:11 -> 13:296` — named epochs nothing maps.
+/// The adapter refuses such a cursor before it reaches the wire, which is why
+/// the plane looked healthy and read fine to everyone else.
+///
+/// One re-read of the epoch is owed, because the signal is indistinguishable
+/// from the recoverable one until it has been answered. After that the refusal
+/// must say what is actually true: not "retry, the scan ran out", but "these
+/// positions name a numbering this runtime no longer has — observe the turn
+/// again". And it must write nothing on the way through.
+#[tokio::test]
+async fn a_settlement_naming_an_unmapped_epoch_is_told_to_observe_the_turn_again() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "og-061-dead-epoch").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let task = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]
+        .clone();
+    let revision = task["revision"].as_u64().expect("a revision");
+    let task_id = TaskId::parse(task["task_id"].as_str().expect("a task id")).expect("a task id");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+
+    // A tuple that is true in every respect except the numbering it is spelled
+    // in — exactly what a proof minted before the renumbering became.
+    let mut stale = observe_current_turn(&world, &project, &agent_run);
+    let live_epoch = stale["message_position"]["epoch"]
+        .as_u64()
+        .expect("an epoch");
+    stale["message_position"]["epoch"] = serde_json::json!(live_epoch + 7);
+    stale["response_position"]["epoch"] = serde_json::json!(live_epoch + 7);
+
+    // And a runtime that has forgotten which numbers it gave out, which is the
+    // half of the live condition that made the recovery read allocate rather
+    // than recognize. It is what puts a *new* mapping on this path, so the
+    // barrier below has something to be owed.
+    world.fake.forget_timeline_epochs();
+
+    let calls_before = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": stale,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("og-061-dead-epoch-settle")
+    .send(&world)
+    .await;
+    assert_eq!(
+        refused.status, 409,
+        "a dead numbering is a conflict about the tuple, not a runtime outage: {}",
+        refused.body
+    );
+    assert_eq!(
+        refused.code(),
+        "timeline_refetch_required",
+        "an operator must be able to tell this from a scan that ran out of reads: {}",
+        refused.body
+    );
+
+    // Answered once, then believed. A path that kept re-reading the epoch would
+    // hammer the runtime for a mapping that is never coming back.
+    let recent = world.fake.calls();
+    let refreshes = recent[calls_before..]
+        .iter()
+        .filter(|call| {
+            matches!(
+                call,
+                kontor_runtime::fake::AdapterCall::RefreshTimelineEpoch(_)
+            )
+        })
+        .count();
+    assert_eq!(
+        refreshes, 1,
+        "the unrecoverable case costs one re-read, not a loop: {recent:?}"
+    );
+
+    // The barrier holds on the recovery seam too, and this is the one path
+    // where it is visible: the read that follows the recovery fails, so the
+    // mapping that recovery allocated is never carried over by a later page. It
+    // has to have been made durable by the recovery itself, refusal or not — a
+    // number left in the adapter's head is one the next process would hand to a
+    // different raw epoch.
+    assert!(
+        world.fake.undrained_epochs().is_empty(),
+        "the recovery persisted what it allocated before returning: {:?}",
+        world.fake.undrained_epochs()
+    );
+
+    let turns = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_settled_turns(project_id, task_id))
+        .expect("settled turns read");
+    assert!(turns.is_empty(), "the refusal wrote nothing: {turns:?}");
+}
+
+/// ASMA-8203. The negative half of the current-turn proof.
+///
+/// `settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open` covers the
+/// two coarse failures — no proof at all, and a whole tuple from the previous
+/// turn. Between them sits the interesting space: a request that is well-formed,
+/// freshly attested, and wrong in exactly one field. Each case below changes one
+/// element of a tuple that would otherwise settle, so a guard that stopped
+/// checking that element has nowhere to hide.
+#[tokio::test]
+async fn settling_a_bounded_turn_refuses_a_forged_current_window() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "turn-forged-window").await;
+
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let task = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]
+        .clone();
+    let revision = task["revision"].as_u64().expect("a revision");
+    let task_id = TaskId::parse(task["task_id"].as_str().expect("a task id")).expect("a task id");
+
+    // One completed turn before the one under test, so that "one position too
+    // early" lands on a real event rather than off the front of the timeline.
+    let _earlier = observe_current_turn(&world, &project, &agent_run);
+    let current = observe_current_turn(&world, &project, &agent_run);
+
+    // A different valid message id at the true current positions. Both
+    // positions are real and the response is terminal; only the identity is
+    // somebody else's, which is precisely the delayed-notification shape.
+    let mut forged_identity = current.clone();
+    forged_identity["message_id"] =
+        serde_json::json!(kontor_runtime::request::MessageId::generate().to_string());
+    refuse_forged_current_window(
+        &world,
+        &project,
+        task_id,
+        &agent_run,
+        &role_slot,
+        revision,
+        "turn-forged-identity",
+        forged_identity,
+        "a different valid message id",
+        "the supplied message and terminal position are not the exact current runtime turn",
+    )
+    .await;
+
+    // The true current message id, claimed one position early — where the
+    // previous turn's response sits. The id has to be *at* the claimed
+    // position, not merely somewhere inside the window that was read.
+    let mut forged_message_position = current.clone();
+    forged_message_position["message_position"]["sequence"] = serde_json::json!(
+        current["message_position"]["sequence"]
+            .as_u64()
+            .expect("a sequence")
+            - 1
+    );
+    refuse_forged_current_window(
+        &world,
+        &project,
+        task_id,
+        &agent_run,
+        &role_slot,
+        revision,
+        "turn-forged-message-position",
+        forged_message_position,
+        "a wrong user-message position",
+        "the supplied message and terminal position are not the exact current runtime turn",
+    )
+    .await;
+
+    // A newer turn lands. The tuple that was current a moment ago is now
+    // proposing a response the transcript has moved past, and a settlement on
+    // it would attribute this seat's newest work to an older message.
+    let newest = observe_current_turn(&world, &project, &agent_run);
+    refuse_forged_current_window(
+        &world,
+        &project,
+        task_id,
+        &agent_run,
+        &role_slot,
+        revision,
+        "turn-forged-terminal-position",
+        current.clone(),
+        "a response position that is no longer terminal",
+        "the supplied message and terminal position are not the exact current runtime turn",
+    )
+    .await;
+
+    // The newest message paired with a position that is not a response at all.
+    // The post-turn status event is later than the real response and is not a
+    // turn event, so it can be neither the terminal response nor a reason to
+    // reject the real one.
+    let status = observe_post_turn_status(&world, &project, &agent_run);
+    let mut forged_response = newest.clone();
+    forged_response["response_position"]["sequence"] = serde_json::json!(status.sequence);
+    refuse_forged_current_window(
+        &world,
+        &project,
+        task_id,
+        &agent_run,
+        &role_slot,
+        revision,
+        "turn-forged-response-position",
+        forged_response,
+        "a response position holding a non-message event",
+        "the supplied message and terminal position are not the exact current runtime turn",
+    )
+    .await;
+
+    // The tuple that spans two turns, and the one every other check here waves
+    // through. Each half is genuine: the older message really is at the
+    // position claimed for it, and the newest response really is the terminal
+    // event. Only the window drawn between them is a lie, and settling it would
+    // attribute this seat's newest work to an older message.
+    let mut spanning = current.clone();
+    spanning["response_position"] = newest["response_position"].clone();
+    refuse_forged_current_window(
+        &world,
+        &project,
+        task_id,
+        &agent_run,
+        &role_slot,
+        revision,
+        "turn-forged-spanning-window",
+        spanning,
+        "an older message paired with a newer turn's terminal response",
+        "a newer runtime message lies inside the claimed window, so it spans more than the current turn",
+    )
+    .await;
+
+    // The control, and the reason the zero-write assertions above are worth
+    // making: the genuine tuple still settles, and it settles as turn *one*.
+    // Every refusal left the seat's sequence exactly where it found it.
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": newest,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-forged-window-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["applied"], "created");
+    assert_eq!(
+        settled.json()["turn_ordinal"],
+        1,
+        "a refused settlement must not consume a position in the seat's sequence",
+    );
 }
 
 /// BLK-010. The next turn on a settled slot reuses the *same* seat: same Paseo
@@ -44980,39 +48689,40 @@ async fn a_partially_seated_candidate_claims_progress_and_an_unattached_one_does
         .expect("an agent run id")
         .to_owned();
 
+    let blocked_plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let blocker = &blocked_plan.json()["blocked"][0];
+    assert_eq!(blocker["code"], "runtime_attachment_unconfirmed");
+    assert!(
+        blocker["action"]
+            .as_str()
+            .expect("an action")
+            .contains("kontor_scheduler_resume")
+    );
+    assert_eq!(blocker["evidence"][0]["owner"], "kontor_scheduler");
+    assert_eq!(blocker["evidence"][0]["team_run_id"], preserved_team_run);
+    assert_eq!(blocker["evidence"][0]["agent_run_id"], preserved_agent_run);
+    assert_eq!(blocker["evidence"][0]["desired"], "run_requested");
+    assert_eq!(blocker["evidence"][0]["observed"], "unknown");
+    assert!(blocker["evidence"][0]["binding"].is_null());
+
     // (1) The earlier slot attaches and the later one still refuses. The
     // candidate is reported blocked and contributes no started seat, but the
     // task has demonstrably begun and its own state has to say so.
     world.fake.allowing_launch_of(&architect);
-    let partial = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
-        &serde_json::json!({
-            "expected_revision": epic_revision,
-            "admissions": [{
-                "team_run_id": preserved_team_run,
-                "agent_run_id": preserved_agent_run,
-            }],
-        }),
-    )
-    .signed_as(&world, "operator")
-    .with_key("partial-resume")
-    .send(&world)
-    .await;
-    assert_eq!(partial.status, 200, "{}", partial.body);
-    assert!(
-        partial.json()["started"]
-            .as_array()
-            .expect("started")
-            .is_empty(),
-        "the refused later slot yields no started seat: {}",
-        partial.body
-    );
-    assert_eq!(
-        partial.json()["blocked"].as_array().expect("blocked").len(),
-        1,
-        "the candidate is still blocked, and its refusal stays fail-closed: {}",
-        partial.body
-    );
+    let scanner = world
+        .daemon
+        .spawn_admission_reconciler(std::time::Duration::from_millis(5));
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    scanner.abort();
 
     let after_partial = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(&world, "observer")
@@ -45035,23 +48745,13 @@ async fn a_partially_seated_candidate_claims_progress_and_an_unattached_one_does
     );
     let progressed_revision = task["revision"].as_u64().expect("a revision");
 
-    // (3) Replaying the exact same resume changes nothing: the transition is
-    // reached once, and a replay neither repeats it nor walks the task back.
-    let replayed = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
-        &serde_json::json!({
-            "expected_revision": epic_revision,
-            "admissions": [{
-                "team_run_id": preserved_team_run,
-                "agent_run_id": preserved_agent_run,
-            }],
-        }),
-    )
-    .signed_as(&world, "operator")
-    .with_key("partial-resume")
-    .send(&world)
-    .await;
-    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    // (3) Once the original root is attached, another automatic scan is inert:
+    // it neither repeats the transition nor walks the task back.
+    let replay = world
+        .daemon
+        .spawn_admission_reconciler(std::time::Duration::from_millis(5));
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    replay.abort();
 
     let after_replay = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(&world, "observer")
@@ -48240,5 +51940,75 @@ async fn a_consultation_with_no_recorded_subject_refuses_to_be_named() {
                 | AdapterCall::LaunchConsultation(_)
         )),
         "an unnameable consultation must refuse before any native effect",
+    );
+}
+
+/// ASMA-8119: a confirmed Jira key addresses exactly the subject its UUID does.
+///
+/// The key is not a second way to *find* a subject — it reaches the same route
+/// and the same operation, and the server decides what it names. So the two
+/// spellings are asserted to return the same document, and every way a key can
+/// be wrong is asserted to refuse before that operation runs.
+#[tokio::test]
+async fn a_confirmed_jira_key_addresses_the_same_subject_as_its_uuid() {
+    let server = MockServer::start().await;
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let (world, _config) = world_with_jira(&server, project_id).await;
+    seed_confirmed_epic_binding(&world, project_id, epic_id).await;
+
+    let by_uuid = Call::get(format!("/v1/projects/{project_id}/epics/{epic_id}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(by_uuid.status, 200, "{}", by_uuid.body);
+
+    let by_key = Call::get(format!("/v1/projects/{project_id}/epics/ASMA-1"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(by_key.status, 200, "{}", by_key.body);
+    assert_eq!(
+        by_key.json(),
+        by_uuid.json(),
+        "the confirmed key resolves to the very same epic"
+    );
+
+    // The key names an epic, so it must not satisfy a route that addresses a
+    // task. This is the check the store's resolver deliberately does not make.
+    let wrong_kind = Call::get(format!("/v1/projects/{project_id}/tasks/ASMA-1"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        wrong_kind.status.is_client_error() || wrong_kind.status.is_server_error(),
+        "an epic key must not address a task: {} {}",
+        wrong_kind.status,
+        wrong_kind.body
+    );
+
+    // A well-formed key with no confirmed binding in this project is refused.
+    let unknown = Call::get(format!("/v1/projects/{project_id}/epics/ASMA-4242"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        unknown.status.is_client_error() || unknown.status.is_server_error(),
+        "an unbound key is refused: {} {}",
+        unknown.status,
+        unknown.body
+    );
+
+    // Case is never repaired, so a lowercase spelling stays a refusal rather
+    // than quietly becoming the confirmed key.
+    let malformed = Call::get(format!("/v1/projects/{project_id}/epics/asma-1"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        malformed.status.is_client_error() || malformed.status.is_server_error(),
+        "a non-canonical key is refused: {} {}",
+        malformed.status,
+        malformed.body
     );
 }

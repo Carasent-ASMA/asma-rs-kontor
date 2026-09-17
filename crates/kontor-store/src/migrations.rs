@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 100;
+pub const SCHEMA_VERSION: i64 = 103;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -363,14 +363,26 @@ const MIGRATIONS: &[&str] = &[
     // immutable provenance and are accepted only when one receipt maps to one
     // mutation. Ambiguous v97 reconstructions become confirmation-unknown.
     include_str!("../migrations/0098_legacy_local_confirmation_provenance.sql"),
-    // Schema v99. A hosted leadership seat's autonomy is frozen beside its
+    // Schema v99. A new, server-generated correlation challenge may establish
+    // one future turn on an exact existing binding; ambiguous history remains
+    // permanently ineligible for backfill.
+    include_str!("../migrations/0099_turn_correlation_challenges.sql"),
+    // Schema v100. Kontor's own timeline-epoch numbering becomes durable, so the
+    // same raw runtime epoch resolves to the same number after a restart and a
+    // proof observed in one process still names the same content in the next.
+    include_str!("../migrations/0100_runtime_timeline_epochs.sql"),
+    // Schema v101. A kickoff hold records what would end it beside the
+    // revocation that is the hold, so a hold states its own terms instead of
+    // only its prose reason; an absent row still means `manual`.
+    include_str!("../migrations/0101_hold_lift_conditions.sql"),
+    // Schema v102. A hosted leadership seat's autonomy is frozen beside its
     // occupancy generation, so inspect, retire, restart and replay read what
     // the seat was launched under instead of recomputing a mutable default.
-    include_str!("../migrations/0099_hosted_seat_autonomy_generation.sql"),
-    // Schema v100. The authority a hosted-seat launch resolved is recorded
+    include_str!("../migrations/0102_hosted_seat_autonomy_generation.sql"),
+    // Schema v103. The authority a hosted-seat launch resolved is recorded
     // before the native call and consumed when the occupancy binds, so a lost
     // acknowledgement cannot leave a live native whose intent nothing holds.
-    include_str!("../migrations/0100_hosted_seat_launch_intents.sql"),
+    include_str!("../migrations/0103_hosted_seat_launch_intents.sql"),
 ];
 
 const _: () = assert!(

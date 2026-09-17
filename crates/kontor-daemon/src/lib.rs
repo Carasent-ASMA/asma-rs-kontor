@@ -93,6 +93,9 @@ pub const COMPLETION_SCAN_PAGE: u32 = 64;
 /// Period between bounded completion reopening scans.
 pub const COMPLETION_SCAN_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Maximum unconfirmed admissions retried in one resident scan.
+const UNCONFIRMED_ADMISSION_SCAN_LIMIT: u32 = 16;
+
 /// How many simultaneous runs a Realm admits before the planner refuses.
 ///
 /// These are the numbers a Realm ran under when they were compiled into the
@@ -607,6 +610,49 @@ impl Daemon {
         })
     }
 
+    /// Run bounded exact admission recovery after startup reconciliation.
+    #[must_use]
+    pub fn spawn_admission_reconciler(&self, period: Duration) -> tokio::task::JoinHandle<()> {
+        let state = self.state.clone();
+        let applications = Arc::clone(&self.applications);
+        tokio::spawn(async move {
+            let mut stopping = state.signals().stops();
+            if *stopping.borrow_and_update() {
+                return;
+            }
+            let barrier = tokio::select! {
+                barrier = state.barrier().settled() => barrier,
+                _ = stopping.changed() => return,
+            };
+            if barrier != BarrierState::Open {
+                return;
+            }
+            let mut ticker = tokio::time::interval(period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = stopping.changed() => return,
+                    _ = ticker.tick() => {}
+                }
+                tokio::select! {
+                    _ = stopping.changed() => return,
+                    result = applications.recover_unconfirmed_admissions(UNCONFIRMED_ADMISSION_SCAN_LIMIT) => match result {
+                        Ok((recovered, blocked)) if recovered > 0 || blocked > 0 => info!(
+                            recovered,
+                            blocked,
+                            "unconfirmed runtime attachments reconciled"
+                        ),
+                        Ok(_) => {},
+                        Err(error) => warn!(
+                            detail = %error.code.as_str(),
+                            "unconfirmed runtime attachment scan could not complete"
+                        ),
+                    }
+                }
+            }
+        })
+    }
+
     /// Release consultation sessions after durable settlement, including the
     /// backlog left by older versions. Wait for startup reconciliation first.
     #[must_use]
@@ -998,6 +1044,51 @@ impl Daemon {
                 );
                 claimed.extend(recovered);
             }
+            // Epoch continuity is restored *before* anything is read, at the
+            // same seam that re-attests bindings. A Kontor epoch number is only
+            // meaningful if the same raw native epoch resolves to it again; the
+            // adapter allocates from empty, so without this a tuple observed in
+            // one process names different content in the next — which is exactly
+            // how a settleable observation stopped being settleable across a
+            // restart.
+            let hosts: std::collections::BTreeSet<_> = family_bindings
+                .iter()
+                .map(|binding| binding.binding.identity.host.clone())
+                .collect();
+            let mut continuity = true;
+            for host in &hosts {
+                let durable = match self
+                    .state
+                    .with_store(|store| store.list_timeline_epochs(family.as_str(), host.as_str()))
+                {
+                    Ok(pairs) => pairs,
+                    Err(error) => {
+                        warn!(
+                            realm_id = %self.realm_id(),
+                            runtime = %family,
+                            detail = %error,
+                            "durable timeline epochs could not be read; scheduling stays shut"
+                        );
+                        continuity = false;
+                        break;
+                    }
+                };
+                if let Err(error) = adapter.restore_timeline_epochs(&durable) {
+                    warn!(
+                        realm_id = %self.realm_id(),
+                        runtime = %family,
+                        detail = %error,
+                        "durable timeline epochs contradict this runtime; scheduling stays shut"
+                    );
+                    continuity = false;
+                    break;
+                }
+            }
+            if !continuity {
+                settled = BarrierState::Failed;
+                continue;
+            }
+
             // Hand the claims back to the runtime that issued them. It confirms
             // each session still exists in the same generation and re-records
             // the snapshot *verbatim*, so the binding keeps the grade, limits,

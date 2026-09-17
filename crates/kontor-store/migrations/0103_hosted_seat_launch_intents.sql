@@ -57,4 +57,4 @@ BEGIN
         'a hosted-seat launch intent records what was resolved before the native call and never changes it');
 END;
 
-PRAGMA user_version = 100;
+PRAGMA user_version = 103;

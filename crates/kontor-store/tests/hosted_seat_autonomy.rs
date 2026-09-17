@@ -495,9 +495,9 @@ fn pre_feature_hosted_rows_migrate_to_the_least_authority() {
 
     connection
         .execute_batch(include_str!(
-            "../migrations/0099_hosted_seat_autonomy_generation.sql"
+            "../migrations/0102_hosted_seat_autonomy_generation.sql"
         ))
-        .expect("v99 migrates the hosted-seat shape");
+        .expect("v102 migrates the hosted-seat shape");
 
     let active: String = connection
         .query_row(
@@ -522,7 +522,10 @@ fn pre_feature_hosted_rows_migrate_to_the_least_authority() {
         retired, "supervised",
         "a pre-feature history row is narrowed"
     );
-    assert_eq!(version, 99);
+    // 102 rather than the 99 this lane wrote: the ASMA-8190 integration lands
+    // four lane migrations that each numbered themselves from the same base, so
+    // the numbers are assigned once in the combined head.
+    assert_eq!(version, 102);
 }
 
 /// Fail closed. The column admits exactly the three spellings `SeatAutonomy`

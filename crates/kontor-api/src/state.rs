@@ -324,6 +324,90 @@ impl std::fmt::Debug for ApiState {
 }
 
 impl ApiState {
+    /// Read canonical history and make any epoch it allocated durable *first*.
+    ///
+    /// The single seam every history read goes through — the API timeline and
+    /// current-turn reads, and settlement's own validation scan. Centralized
+    /// because the barrier is only a barrier if nothing bypasses it.
+    ///
+    /// A Kontor epoch number is allocated by the adapter the first time it sees
+    /// a raw native epoch. Until this function returns, no caller has been given
+    /// a position addressed by that number and no validation has consumed one.
+    /// So the order here is the whole guarantee:
+    ///
+    /// * crash *before* the commit — the mapping is absent, and nothing was ever
+    ///   exposed under it, so the next process is free to allocate afresh;
+    /// * crash *after* the commit — the next process restores the same number,
+    ///   and a tuple minted under it still resolves to the same content.
+    ///
+    /// Persisting is therefore not best-effort: a failure to record the mapping
+    /// fails the read, because returning the page would hand out a number that
+    /// might not survive.
+    ///
+    /// # Errors
+    /// The runtime's own refusal, or a repository failure while recording the
+    /// mapping.
+    pub async fn history_with_durable_epochs(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        request: &kontor_runtime::request::HistoryRequest,
+    ) -> Result<kontor_runtime::timeline::HistoryPage, crate::error::ApiError> {
+        let realm_id = self.realm_id();
+        let page = adapter
+            .history(request)
+            .await
+            .map_err(|error| crate::error::ApiError::from_runtime(realm_id, &error))?;
+        self.persist_drained_epochs(adapter, identity)?;
+        Ok(page)
+    }
+
+    /// Re-read which epoch a session is in, through the same durability
+    /// barrier.
+    ///
+    /// The answer to a runtime that refuses a cursor. It is bounded by
+    /// construction — the adapter reads no content — so it stays available to
+    /// callers, like a settlement proof scan, that must never take an unbounded
+    /// read. What it can allocate, it persists before returning, for exactly the
+    /// reason [`ApiState::history_with_durable_epochs`] does: the caller is
+    /// about to address positions by these numbers.
+    ///
+    /// # Errors
+    /// Returns the runtime's own refusal, or a repository refusal when the
+    /// mapping it learned could not be made durable.
+    pub async fn refresh_timeline_epoch_durably(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        binding: &kontor_runtime::capability::RuntimeBindingSnapshot,
+    ) -> Result<(), crate::error::ApiError> {
+        let realm_id = self.realm_id();
+        adapter
+            .refresh_timeline_epoch(binding)
+            .await
+            .map_err(|error| crate::error::ApiError::from_runtime(realm_id, &error))?;
+        self.persist_drained_epochs(adapter, identity)
+    }
+
+    /// Commit whatever epoch mappings an adapter has allocated but not yet
+    /// handed over. The barrier itself, in one place, so no caller can take the
+    /// drain without the write.
+    fn persist_drained_epochs(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+    ) -> Result<(), crate::error::ApiError> {
+        let allocated = adapter.drain_new_timeline_epochs();
+        if allocated.is_empty() {
+            return Ok(());
+        }
+        let kind = identity.runtime_kind.as_str().to_owned();
+        let host = identity.host.as_str().to_owned();
+        let at = crate::now();
+        self.with_store(|store| store.persist_timeline_epochs(&kind, &host, &allocated, at))
+            .map_err(|error| crate::error::ApiError::from_repository(self.realm_id(), &error))
+    }
+
     /// Assemble the handler state from what the composition root opened.
     #[must_use]
     pub fn new(parts: ApiParts) -> Self {

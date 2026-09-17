@@ -3409,6 +3409,66 @@ impl TeamRunSnapshot {
             .collect()
     }
 
+    /// Every frozen slot's logical role, by slot id.
+    ///
+    /// A slot id (`implement`) and the logical role it fills
+    /// (`fleet-implementer`) are different names, and only the team document
+    /// relates them. A caller that needs "which role authored this turn" starts
+    /// from the slot — a slot is what a run's role column stores — and must come
+    /// here for the role rather than reading the slot's own text as though it
+    /// were one. Small teams often name both the same, so that confusion
+    /// survives its own tests and then fences a real workflow shut.
+    ///
+    /// Read from this run's *frozen* copy, so the answer is the mapping the run
+    /// was pinned to rather than whatever the template was edited to say later.
+    ///
+    /// # Errors
+    /// [`DomainError::Invalid`] when the definition is unreadable, declares no
+    /// slots, carries a slot without an id or without a role, or declares one
+    /// slot id twice. A duplicate is refused rather than resolved to its last
+    /// entry: this mapping decides authority, and authority read out of an
+    /// ambiguous document is a guess.
+    pub fn slot_role_assignments(&self) -> DomainResult<BTreeMap<crate::id::RoleSlotId, RoleKey>> {
+        let value: serde_json::Value =
+            serde_json::from_str(self.definition.json()).map_err(|_| {
+                DomainError::invalid("TeamRunSnapshot", "the frozen definition is not valid JSON")
+            })?;
+        let slots = value
+            .get("slots")
+            .and_then(serde_json::Value::as_array)
+            .ok_or(DomainError::Invalid {
+                subject: "TeamRunSnapshot",
+                rule: "the frozen definition declares no role slots",
+            })?;
+        let mut assignments = BTreeMap::new();
+        for slot in slots {
+            let id = slot
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(DomainError::Invalid {
+                    subject: "TeamRunSnapshot",
+                    rule: "a frozen role slot carries no id",
+                })
+                .and_then(crate::id::RoleSlotId::parse)?;
+            let role = slot
+                .get("role")
+                .and_then(|role| role.get("role"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or(DomainError::Invalid {
+                    subject: "TeamRunSnapshot",
+                    rule: "a frozen role slot carries no role",
+                })
+                .and_then(RoleKey::parse)?;
+            if assignments.insert(id, role).is_some() {
+                return Err(DomainError::invalid(
+                    "TeamRunSnapshot",
+                    "the frozen definition declares one role slot id twice",
+                ));
+            }
+        }
+        Ok(assignments)
+    }
+
     /// The waiver policy one frozen slot declares, if it declares one at all.
     ///
     /// Read from the *frozen* definition rather than from any catalog: whether a
@@ -3959,6 +4019,47 @@ pub struct ExecutionCapability {
     /// stored. The scanner is the shared rule and stays exactly as it is; the
     /// field carries the name that says what it actually is.
     pub execution_authorization: ExecutionAuthorizationId,
+}
+
+closed_enum! {
+    /// What must become true before a kickoff hold stops holding.
+    ///
+    /// A hold is a covering authorization persisted already revoked, so a new
+    /// epic is never governable and default-allow at any crash boundary. It
+    /// worked; what it never carried was a statement of what would end it. The
+    /// reason was prose — "kickoff hold until Jira binding and worktrees are
+    /// confirmed" — which reads well and decides nothing, so the only thing
+    /// that ever lifted a hold was a human typing `execution-arm`. An epic
+    /// whose stated condition had been true for days sat idle because nobody
+    /// was asked to look.
+    ///
+    /// Each value is a predicate Kontor can evaluate against its own durable
+    /// state, with no runtime call and no external fetch. That bound is what
+    /// makes a self-lift safe to evaluate at a durable state-change boundary:
+    /// it cannot fail for a reason that has nothing to do with the epic, and a
+    /// busy Jira cannot become a stuck epic.
+    HoldLiftCondition, "HoldLiftCondition" {
+        /// Only a human lifts it, by arming.
+        ///
+        /// The default, and what every existing hold means: a hold recorded
+        /// before this type existed said nothing about lifting, and must not
+        /// acquire a self-lift it was never given.
+        Manual => "manual",
+        /// Kickoff finished: the graph is externally bound, and every task it
+        /// owns has somewhere to run.
+        ///
+        /// The machine-checkable spelling of the hold this realm actually
+        /// records — "until Jira binding and worktrees are confirmed" — and of
+        /// both its halves rather than the Jira one alone. Concretely: the epic
+        /// carries a confirmed Jira binding, and every task it owns carries
+        /// both a confirmed Jira binding and a durable declared worktree.
+        ///
+        /// Runtime placement is deliberately *not* part of it. A claim verified
+        /// by the scheduler, or a workspace proven by placement preflight, is a
+        /// fact admission itself produces — so a kickoff hold that waited on
+        /// one would be waiting on the thing it is holding back.
+        KickoffReady => "kickoff_ready",
+    }
 }
 
 /// Whether a trigger may arm work by itself.

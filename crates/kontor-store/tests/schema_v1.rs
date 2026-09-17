@@ -82,6 +82,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "execution_authorization_revocations",
     "execution_authorization_tasks",
     "execution_authorizations",
+    "execution_hold_conditions",
     "external_comments",
     "external_ticket_observations",
     "external_workflow_specs",
@@ -176,6 +177,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "runtime_reconciliation_members",
     "runtime_reconciliation_results",
     "runtime_replay_consumers",
+    "runtime_timeline_epochs",
     "schedule_overrides",
     "scheduler_admission_events",
     "source_events",
@@ -217,6 +219,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "topology_nodes",
     "topology_spec_canonicalization_receipts",
     "topology_specs",
+    "turn_correlation_challenges",
     "turn_dispatches",
     "work_calendars",
     "work_profiles",
@@ -555,13 +558,26 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // delivery workspace, and leaves a pre-v96 run's subject visibly
     // unrecorded. v97 confirms only pre-hook local task/gate receipts whose
     // exact durable mutations prove that their synchronous commands succeeded.
-    // v99 freezes a hosted leadership seat's autonomy beside its occupancy
+    // v98 gives those reconstructed confirmations typed, immutable provenance,
+    // accepted only when one receipt maps to one mutation. v99 adds the
+    // immutable future-turn correlation challenge; no historical runtime
+    // position can enter that ledger.
+    //
+    // The ASMA-8190 integration then lands four lane migrations in one head, so
+    // their numbers are assigned here rather than in the lanes that wrote them.
+    // v100 makes Kontor's timeline-epoch numbering durable, so the same raw
+    // runtime epoch resolves to the same number across a restart (ASMA-8203).
+    // v101 records what would end a kickoff hold beside the revocation that is
+    // the hold, so a hold can state its own terms instead of only its prose
+    // reason, and an absent row still means `manual` (ASMA-8194).
+    // v102 freezes a hosted leadership seat's autonomy beside its occupancy
     // generation, in both the active and the historical row, and backfills every
-    // pre-feature row to the only launch mode any of them can have had. v100
+    // pre-feature row to the only launch mode any of them can have had. v103
     // records that authority *before* the native call and consumes it when the
     // occupancy binds, so a created native whose acknowledgement was lost is
-    // never left with no durable statement of what it was launched under.
-    assert_eq!(SCHEMA_VERSION, 100);
+    // never left with no durable statement of what it was launched under
+    // (both ASMA-8193).
+    assert_eq!(SCHEMA_VERSION, 103);
 }
 
 #[test]
@@ -2760,6 +2776,81 @@ fn the_schema_contains_exactly_the_expected_tables_and_they_are_all_strict() {
         .map(|name| name.expect("a name"))
         .collect();
     assert!(lax.is_empty(), "every table must be STRICT, found {lax:?}");
+}
+
+/// A recorded hold condition is evidence: it cannot be edited, and it cannot be
+/// withdrawn.
+///
+/// Both halves matter, and the delete half is the quiet one. The read path
+/// treats an absent row as `manual`, so removing the row leaves no gap to
+/// notice — it converts a hold that would have lifted itself into one that
+/// waits for a human forever, and nothing in the projection says so. The closed
+/// vocabulary is checked here too, because a value the domain cannot parse is a
+/// hold that never lifts and never explains why (ASMA-8194).
+#[test]
+fn v99_records_a_hold_lift_condition_that_can_neither_be_edited_nor_withdrawn() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    // The condition's only foreign key is to the revocation that makes an
+    // authorization a hold. This test is about the table's own rules, so the
+    // surrounding graph is deliberately not built.
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("foreign keys can be disabled");
+
+    let hold = "0193f000-0000-7000-8000-000000000099";
+    connection
+        .execute(
+            "INSERT INTO execution_hold_conditions
+                 (project_id, authorization_id, condition, recorded_at)
+             VALUES ('0193f000-0000-7000-8000-000000000001', ?1, 'kickoff_ready',
+                     '2026-09-17T09:00:00Z')",
+            [hold],
+        )
+        .expect("a hold may record what would end it");
+
+    assert!(
+        connection
+            .execute(
+                "UPDATE execution_hold_conditions SET condition = 'manual'
+                 WHERE authorization_id = ?1",
+                [hold],
+            )
+            .is_err(),
+        "the terms of a hold must not move while it holds"
+    );
+    assert!(
+        connection
+            .execute(
+                "DELETE FROM execution_hold_conditions WHERE authorization_id = ?1",
+                [hold],
+            )
+            .is_err(),
+        "deleting the row would silently demote a self-lifting hold to manual"
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO execution_hold_conditions
+                     (project_id, authorization_id, condition, recorded_at)
+                 VALUES ('0193f000-0000-7000-8000-000000000001',
+                         '0193f000-0000-7000-8000-000000000098', 'whenever',
+                         '2026-09-17T09:00:00Z')",
+                [],
+            )
+            .is_err(),
+        "a condition outside the closed vocabulary is a hold nothing can evaluate"
+    );
+
+    let stored: String = connection
+        .query_row(
+            "SELECT condition FROM execution_hold_conditions WHERE authorization_id = ?1",
+            [hold],
+            |row| row.get(0),
+        )
+        .expect("the original condition is still readable");
+    assert_eq!(stored, "kickoff_ready");
 }
 
 #[test]
