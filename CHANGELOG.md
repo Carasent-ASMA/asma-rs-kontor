@@ -64,6 +64,13 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Jira issue keys as the binding authority.
 - Advanced the immutable Operational topology opt-in to revision 4; revision 1
   remains unchanged.
+- Daemon black-box tests now replay the 96 schema generations once per test
+  process and clone the migrated database into each world, instead of
+  replaying them for every world: `loopback_api` finishes in about 40s instead
+  of about 17 minutes, with the same pass/fail set. The Realm identity is
+  shared by the clones because the schema refuses to re-identify a copied row,
+  so the tests that compare identities start from `World::open_created_realm()`
+  and pay the real migration (ASMA-7869).
 
 ### Fixed
 
