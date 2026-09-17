@@ -769,6 +769,79 @@ fn a_blocked_first_page_cannot_hide_later_admissions() {
 }
 
 #[test]
+fn admissions_sharing_a_decided_at_are_not_skipped_by_the_resume_point() {
+    // Two admissions decided in the same instant, and one later. If the resume
+    // point compared `decided_at` alone, then resuming after the first of the
+    // pair would skip its sibling entirely: the sibling's timestamp is not
+    // greater, so it would never be read again and would starve behind a
+    // position that had already passed it.
+    let harness = Harness::new();
+    let scope = harness.scope("tied-decided-at");
+    let peers = BTreeSet::new();
+    let shared = at("2026-08-12T09:00:01Z");
+
+    for (label, decided_at) in [
+        ("tie-a", shared),
+        ("tie-b", shared),
+        ("later", at("2026-08-12T09:00:02Z")),
+    ] {
+        let task = harness.task(&scope, label, TaskState::Ready);
+        let admitted = harness.admitted(&scope, task, None, None);
+        let parts = Parts::new(label);
+        let mut request = commit(
+            &scope,
+            &admitted,
+            &peers,
+            &parts,
+            &scope.template,
+            decided_at,
+        );
+        request.evidence = recovery_document(&admitted);
+        harness
+            .store
+            .admit_candidate(&request)
+            .expect("the admission commits");
+    }
+
+    let page = |after: Option<&AdmissionScanKey>, limit: u32| {
+        harness
+            .store
+            .unconfirmed_admissions(Some(scope.project), Some(scope.mission), after, limit)
+            .expect("unconfirmed admissions are readable")
+    };
+
+    // Learn the scan order rather than assume it: the tie is broken by the
+    // event id, which is generated.
+    let full = page(None, 16);
+    assert_eq!(full.len(), 3, "all three admissions are eligible");
+    assert_eq!(
+        full[0].admitted_at, full[1].admitted_at,
+        "the first two must genuinely share a decided_at, or this proves nothing"
+    );
+
+    // One at a time, following the same rule the resident scan follows.
+    let first = page(None, 1);
+    assert_eq!(first[0].agent_run_id, full[0].agent_run_id);
+
+    let second = page(Some(&first[0].scan_key), 1);
+    assert_eq!(
+        second.len(),
+        1,
+        "the sibling sharing the instant must still be reachable"
+    );
+    assert_eq!(
+        second[0].agent_run_id, full[1].agent_run_id,
+        "resuming after one of a tied pair reaches its sibling, not the next instant"
+    );
+
+    let third = page(Some(&second[0].scan_key), 1);
+    assert_eq!(
+        third[0].agent_run_id, full[2].agent_run_id,
+        "and only then the later instant"
+    );
+}
+
+#[test]
 fn a_refused_admission_writes_nothing_at_all() {
     let harness = Harness::new();
     let scope = harness.scope("nothing");
