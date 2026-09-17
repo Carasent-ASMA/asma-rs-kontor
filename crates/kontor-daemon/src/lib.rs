@@ -93,6 +93,9 @@ pub const COMPLETION_SCAN_PAGE: u32 = 64;
 /// Period between bounded completion reopening scans.
 pub const COMPLETION_SCAN_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Maximum unconfirmed admissions retried in one resident scan.
+const UNCONFIRMED_ADMISSION_SCAN_LIMIT: u32 = 16;
+
 /// How many simultaneous runs a Realm admits before the planner refuses.
 ///
 /// These are the numbers a Realm ran under when they were compiled into the
@@ -607,6 +610,49 @@ impl Daemon {
         })
     }
 
+    /// Run bounded exact admission recovery after startup reconciliation.
+    #[must_use]
+    pub fn spawn_admission_reconciler(&self, period: Duration) -> tokio::task::JoinHandle<()> {
+        let state = self.state.clone();
+        let applications = Arc::clone(&self.applications);
+        tokio::spawn(async move {
+            let mut stopping = state.signals().stops();
+            if *stopping.borrow_and_update() {
+                return;
+            }
+            let barrier = tokio::select! {
+                barrier = state.barrier().settled() => barrier,
+                _ = stopping.changed() => return,
+            };
+            if barrier != BarrierState::Open {
+                return;
+            }
+            let mut ticker = tokio::time::interval(period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = stopping.changed() => return,
+                    _ = ticker.tick() => {}
+                }
+                tokio::select! {
+                    _ = stopping.changed() => return,
+                    result = applications.recover_unconfirmed_admissions(UNCONFIRMED_ADMISSION_SCAN_LIMIT) => match result {
+                        Ok((recovered, blocked)) if recovered > 0 || blocked > 0 => info!(
+                            recovered,
+                            blocked,
+                            "unconfirmed runtime attachments reconciled"
+                        ),
+                        Ok(_) => {},
+                        Err(error) => warn!(
+                            detail = %error.code.as_str(),
+                            "unconfirmed runtime attachment scan could not complete"
+                        ),
+                    }
+                }
+            }
+        })
+    }
+
     /// Release consultation sessions after durable settlement, including the
     /// backlog left by older versions. Wait for startup reconciliation first.
     #[must_use]
@@ -766,6 +812,35 @@ impl Daemon {
         // follow-up exists only because a turn was settled — so a restart cannot
         // invent work, and the dispatch table's key makes a retry idempotent.
         if outcome == BarrierState::Open {
+            // First, and deliberately before anything that waits on a runtime.
+            //
+            // A corrected fence predicate only ever runs when something asks it
+            // to, and the realms this correction exists for have nothing left to
+            // ask: their qualifying turn and passing gate verdict are already
+            // durable. This asks once, on the same seam that already owns "what
+            // did this realm leave unfinished?".
+            //
+            // It reads and writes only this realm's own database, so it owes
+            // nothing to a native session and must not queue behind one. The
+            // follow-up retry below does await delivery, and a realm carrying
+            // undelivered handoffs whose targets are long gone can leave it
+            // waiting indefinitely -- which, when the catch-up ran after it,
+            // meant a workflow stayed fenced for a reason that had nothing to do
+            // with its own evidence. Ordering is the whole fix; the retry that
+            // follows is unchanged and still runs.
+            match self.applications.catch_up_fenced_workflows() {
+                Ok(0) => {}
+                Ok(advanced) => info!(
+                    realm_id = %realm_id,
+                    advanced,
+                    "fenced workflows converged on evidence that was already durable"
+                ),
+                Err(error) => warn!(
+                    realm_id = %realm_id,
+                    detail = %error.code.as_str(),
+                    "fenced workflows could not be reconsidered"
+                ),
+            }
             match self
                 .state
                 .applications()

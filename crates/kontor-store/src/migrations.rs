@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 99;
+pub const SCHEMA_VERSION: i64 = 100;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -363,7 +363,14 @@ const MIGRATIONS: &[&str] = &[
     // immutable provenance and are accepted only when one receipt maps to one
     // mutation. Ambiguous v97 reconstructions become confirmation-unknown.
     include_str!("../migrations/0098_legacy_local_confirmation_provenance.sql"),
-    include_str!("../migrations/0099_hold_lift_conditions.sql"),
+    // Schema v99. A new, server-generated correlation challenge may establish
+    // one future turn on an exact existing binding; ambiguous history remains
+    // permanently ineligible for backfill.
+    include_str!("../migrations/0099_turn_correlation_challenges.sql"),
+    // Schema v100. A revoked authorization may carry the condition that would
+    // end it, so a hold states what lifts it instead of waiting on a human to
+    // re-read its prose.
+    include_str!("../migrations/0100_hold_lift_conditions.sql"),
 ];
 
 const _: () = assert!(
@@ -489,7 +496,21 @@ fn apply_pending(
     version: i64,
 ) -> Result<(), StoreError> {
     let _ = version;
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // A cold first open now applies the complete migration history. On a loaded
+    // machine that can outlast one connection busy timeout, even though the
+    // peer holding the lock is making legitimate progress. Give this one lock
+    // acquisition one additional bounded timeout window; every ordinary store
+    // operation keeps the connection's 30-second busy contract.
+    let lock_deadline = Instant::now() + BUSY_TIMEOUT + BUSY_TIMEOUT;
+    let transaction = loop {
+        match connection.transaction_with_behavior(TransactionBehavior::Immediate) {
+            Ok(transaction) => break transaction,
+            Err(error) if is_busy(&error) && Instant::now() < lock_deadline => {
+                std::thread::sleep(BUSY_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
 
     // Re-read the version now that the write lock is actually held. The first
     // read above was unlocked: with two processes opening the same new file at

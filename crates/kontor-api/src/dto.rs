@@ -766,6 +766,38 @@ impl From<&SessionEvent> for TimelineItemDto {
     }
 }
 
+/// The exact current turn, as canonical history records it.
+///
+/// Read-only, and deliberately not a proof. It is what a post-turn control
+/// caller needs in order to *state* a settlement: the Kontor message id the
+/// runtime echoed back, and the two canonical positions bounding the turn it
+/// opened. `turns:settle` re-derives every one of these itself and is the only
+/// thing that decides whether they are true — this surface never writes, never
+/// attests, and being able to read it grants nothing.
+///
+/// The fields are named to match `TurnRuntimeProofRequest` exactly, so relaying
+/// an observation into a settlement is a copy rather than a transcription.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ObservedTurnDto {
+    /// The Realm the session belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: RealmId,
+    /// The run whose session was read.
+    #[schema(value_type = String)]
+    pub agent_run_id: AgentRunId,
+    /// The Kontor message id the runtime echoed on the current user message.
+    pub message_id: String,
+    /// The canonical epoch both positions belong to.
+    pub timeline_epoch: u64,
+    /// The canonical sequence of that exact user message.
+    pub message_sequence: u64,
+    /// The canonical sequence of the turn's terminal provider response.
+    pub response_sequence: u64,
+    /// The position the scan stopped at, so a caller reading a long session can
+    /// resume rather than start over.
+    pub anchor: String,
+}
+
 /// One page of a session's recorded content.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct TimelineDto {

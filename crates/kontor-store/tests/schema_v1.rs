@@ -82,6 +82,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "execution_authorization_revocations",
     "execution_authorization_tasks",
     "execution_authorizations",
+    "execution_hold_conditions",
     "external_comments",
     "external_ticket_observations",
     "external_workflow_specs",
@@ -214,6 +215,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "topology_nodes",
     "topology_spec_canonicalization_receipts",
     "topology_specs",
+    "turn_correlation_challenges",
     "turn_dispatches",
     "work_calendars",
     "work_profiles",
@@ -552,7 +554,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // delivery workspace, and leaves a pre-v96 run's subject visibly
     // unrecorded. v97 confirms only pre-hook local task/gate receipts whose
     // exact durable mutations prove that their synchronous commands succeeded.
-    assert_eq!(SCHEMA_VERSION, 98);
+    // v98 gives those reconstructed confirmations typed, immutable provenance,
+    // accepted only when one receipt maps to one mutation. v99 adds the
+    // immutable future-turn correlation challenge; no historical runtime
+    // position can enter that ledger.
+    assert_eq!(SCHEMA_VERSION, 100);
 }
 
 #[test]

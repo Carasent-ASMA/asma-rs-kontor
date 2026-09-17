@@ -34,4 +34,4 @@ CREATE TRIGGER execution_hold_conditions_no_update
 BEFORE UPDATE ON execution_hold_conditions
 BEGIN SELECT RAISE(ABORT, 'a hold lift condition is evidence, not a draft'); END;
 
-PRAGMA user_version = 99;
+PRAGMA user_version = 100;

@@ -3409,6 +3409,66 @@ impl TeamRunSnapshot {
             .collect()
     }
 
+    /// Every frozen slot's logical role, by slot id.
+    ///
+    /// A slot id (`implement`) and the logical role it fills
+    /// (`fleet-implementer`) are different names, and only the team document
+    /// relates them. A caller that needs "which role authored this turn" starts
+    /// from the slot — a slot is what a run's role column stores — and must come
+    /// here for the role rather than reading the slot's own text as though it
+    /// were one. Small teams often name both the same, so that confusion
+    /// survives its own tests and then fences a real workflow shut.
+    ///
+    /// Read from this run's *frozen* copy, so the answer is the mapping the run
+    /// was pinned to rather than whatever the template was edited to say later.
+    ///
+    /// # Errors
+    /// [`DomainError::Invalid`] when the definition is unreadable, declares no
+    /// slots, carries a slot without an id or without a role, or declares one
+    /// slot id twice. A duplicate is refused rather than resolved to its last
+    /// entry: this mapping decides authority, and authority read out of an
+    /// ambiguous document is a guess.
+    pub fn slot_role_assignments(&self) -> DomainResult<BTreeMap<crate::id::RoleSlotId, RoleKey>> {
+        let value: serde_json::Value =
+            serde_json::from_str(self.definition.json()).map_err(|_| {
+                DomainError::invalid("TeamRunSnapshot", "the frozen definition is not valid JSON")
+            })?;
+        let slots = value
+            .get("slots")
+            .and_then(serde_json::Value::as_array)
+            .ok_or(DomainError::Invalid {
+                subject: "TeamRunSnapshot",
+                rule: "the frozen definition declares no role slots",
+            })?;
+        let mut assignments = BTreeMap::new();
+        for slot in slots {
+            let id = slot
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(DomainError::Invalid {
+                    subject: "TeamRunSnapshot",
+                    rule: "a frozen role slot carries no id",
+                })
+                .and_then(crate::id::RoleSlotId::parse)?;
+            let role = slot
+                .get("role")
+                .and_then(|role| role.get("role"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or(DomainError::Invalid {
+                    subject: "TeamRunSnapshot",
+                    rule: "a frozen role slot carries no role",
+                })
+                .and_then(RoleKey::parse)?;
+            if assignments.insert(id, role).is_some() {
+                return Err(DomainError::invalid(
+                    "TeamRunSnapshot",
+                    "the frozen definition declares one role slot id twice",
+                ));
+            }
+        }
+        Ok(assignments)
+    }
+
     /// The waiver policy one frozen slot declares, if it declares one at all.
     ///
     /// Read from the *frozen* definition rather than from any catalog: whether a
