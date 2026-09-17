@@ -19,7 +19,8 @@
 //!
 //! A delivery native session is created in exactly one place in this file:
 //! inside the shared seating path reached by [`Services::start`] and exact
-//! admission recovery, after `admit_candidate` has committed. Persistent Core
+//! admission recovery or bounded TeamRun seat fill, after `admit_candidate`
+//! has committed. Persistent Core
 //! Team seats use their separate, explicitly routed materialization surface;
 //! they have no TeamRun and are keyed by their durable SeatBinding. Neither
 //! path can create the other's kind of session.
@@ -130,6 +131,9 @@ use kontor_api::applications::{
     ResolveContextRequest, ResolvedContextDto, RuntimeSettlementDto, SelectionDto,
     SelectionRequest, SessionVerdictCitationDto, TicketContentConflictDto, TicketFieldDiffDto,
     TicketReconcileAppliedDto, TicketReconcileApplyRequest, TicketReconcilePlanDto,
+};
+use kontor_api::applications::{
+    FillTeamRunSeatRequest, FilledTeamRunSeatDto, TeamRunSeatDispatchDto,
 };
 use kontor_api::dto::JiraBindingDto;
 use kontor_api::error::{ApiError, ApiErrorCode};
@@ -20387,13 +20391,27 @@ impl ApplicationOperations for Services {
         let stored = state
             .with_store(SqliteStore::get_capacity_configuration)
             .map_err(|error| self.refuse(&error))?;
+        // The ceilings this Realm is *admitting under* are the ones it was
+        // composed with. A stored replacement is a separate fact — but
+        // reporting it only through a revision meant an applied configuration
+        // that nothing enforces was indistinguishable from one that had taken
+        // effect, and a caller had no way to learn the difference. Say it.
+        let composed = ceilings_dto(self.capacity);
+        let stored_ceilings = stored
+            .as_ref()
+            .and_then(|stored| {
+                stored
+                    .ceilings
+                    .deserialize::<StoredCeilings>()
+                    .ok()
+                    .map(|stored| stored.ceilings)
+            })
+            .filter(|stored| *stored != composed);
         Ok(CapacityConfigurationDto {
             realm_id: state.realm_id(),
-            // The ceilings this Realm is *admitting under*, which are the ones
-            // it was composed with. An operator's stored replacement is a
-            // separate fact, and it is reported through its revision rather
-            // than by answering with numbers nothing is enforcing yet.
-            ceilings: ceilings_dto(self.capacity),
+            ceilings: composed,
+            restart_required: stored_ceilings.is_some(),
+            stored_ceilings,
             revision: stored
                 .as_ref()
                 .map_or(AggregateRevision::INITIAL, |stored| stored.revision),
@@ -20510,6 +20528,12 @@ impl ApplicationOperations for Services {
                 .deserialize::<StoredCeilings>()
                 .map(|stored| stored.ceilings)
                 .map_err(|error| self.refuse_domain(&error))?,
+            // What was just written is durable but not composed, so it is not
+            // yet in force. Saying so here is the whole point: an apply that
+            // answers 200 and changes nothing about admission is exactly the
+            // shape that hid this for as long as it did.
+            stored_ceilings: None,
+            restart_required: true,
             revision: stored.revision,
             snapshot_cursor: self.cursor()?,
         })
@@ -26452,6 +26476,306 @@ impl ApplicationOperations for Services {
                 } else {
                     AppliedDto::Created
                 },
+                revision: epic.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
+    async fn fill_team_run_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        role_slot_id: &RoleSlotId,
+        request: &FillTeamRunSeatRequest,
+    ) -> Result<FilledTeamRunSeatDto, ApiError> {
+        let _native_activity = self.native_activity()?;
+        let _succession_guard = self.succession_guard.lock().await;
+        let state = self.state()?;
+        if !state.barrier().state().is_open() {
+            return Err(self.deny(
+                ApiErrorCode::ReconciliationPending,
+                "startup reconciliation has not finished, so no seat may be filled",
+            ));
+        }
+        let team = state
+            .with_store(|store| store.get_team_run(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the TeamRun does not exist in this project",
+                )
+            })?;
+        if team.lifecycle.is_terminal() {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "a terminal TeamRun cannot acquire a seat",
+            ));
+        }
+        let task = self.task_row(project_id, team.task_id)?;
+        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let slot = template
+            .slots
+            .iter()
+            .find(|slot| &slot.id == role_slot_id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the frozen TeamRun snapshot does not declare this slot",
+                )
+            })?;
+        if self.slot_is_waived(project_id, team_run_id, &slot.id)? {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the declared slot was waived",
+            ));
+        }
+        if task.revision != request.expected_task_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the task changed after the seat fill was authorized",
+                )
+                .with_revision(Some(task.revision)));
+        }
+        let epic_id = task.mini_project_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the admitted task has no epic",
+            )
+        })?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        // As with exact admission recovery, the scheduling receipt witnesses
+        // the owning epic; its canonical intent narrows the effect to one slot.
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "team_run_seat_fill",
+            "project_id": project_id,
+            "team_run_id": team_run_id,
+            "role_slot_id": slot.id,
+            "expected_task_revision": request.expected_task_revision,
+            "reason": request.reason,
+        }))?;
+        self.replayed(key, &intent, Some(&target))?;
+        let bound = self
+            .current_delivery_role_leaf(project_id, team_run_id, slot.id.as_role_key())?
+            .is_some_and(|run| run.binding.is_some());
+        let receipt_id;
+        let applied;
+        if bound {
+            // State idempotence also covers seats filled by ordinary admission.
+            // In particular, an already-bound leaf does not send another handoff.
+            receipt_id = self.record(
+                key,
+                project_id,
+                CommandKind::StartScheduledWork,
+                target,
+                epic.revision,
+                &intent,
+            )?;
+            applied = AppliedDto::Unchanged;
+        } else {
+            let owed = state
+                .with_store(|store| store.list_turn_dispatches(project_id))
+                .map_err(|error| self.refuse(&error))?
+                .into_iter()
+                .any(|row| {
+                    row.team_run_id == team_run_id
+                        && row.to_role_slot_id == slot.id
+                        && !row.dispatched
+                });
+            if !owed {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "this TeamRun slot is not owed an undelivered follow-up",
+                ));
+            }
+            self.ensure_no_team_definition_migration(project_id, epic_id)?;
+            let task_root = self.task_root(project_id, task.id)?;
+            // This operation fills an existing topology. Refuse before calling
+            // the shared resolver if the task never acquired its node.
+            let existing_node = state
+                .with_store(|store| store.get_task_topology_node(project_id, task.id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the task has no existing TSW node",
+                    )
+                })?;
+            let placement = self.resolve_placement(
+                project_id,
+                task.id,
+                team_run_id,
+                std::slice::from_ref(&slot.id),
+                &task_root,
+            )?;
+            if placement.id != existing_node.id {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the task's TSW identity changed",
+                ));
+            }
+            let container = state
+                .with_store(|store| store.get_topology_node_container(project_id, placement.id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the TSW has no bound container",
+                    )
+                })?;
+            let logical_seat = state
+                .with_store(|store| store.list_seat_bindings(project_id, placement.id))
+                .map_err(|error| self.refuse(&error))?
+                .into_iter()
+                .any(|seat| {
+                    seat.team_run_id == Some(team_run_id)
+                        && seat.task_id == Some(task.id)
+                        && seat.role_slot_id == slot.id
+                        && seat.is_non_terminal()
+                });
+            if !logical_seat {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the declared slot has no existing live SeatBinding on this TSW",
+                ));
+            }
+            self.preflight_delivery_slots(&placement, std::slice::from_ref(&slot.id))?;
+
+            // Resolve the immutable admission, not a new scheduler decision or
+            // a task's subsequently edited account selection.
+            let roots = eligible_roots(&template);
+            let mut admitted = None;
+            for root in self
+                .team_members(project_id, team_run_id)?
+                .into_iter()
+                .filter(|run| {
+                    run.parent_agent_run_id.is_none()
+                        && roots.iter().any(|slot| slot.as_role_key() == &run.role)
+                })
+            {
+                if let Some(recovered) = state
+                    .with_store(|store| {
+                        store.recoverable_admission(project_id, team_run_id, root.id)
+                    })
+                    .map_err(|error| self.refuse(&error))?
+                {
+                    if admitted.is_some() || recovered.admitted.task_id != task.id {
+                        return Err(self.deny(
+                            ApiErrorCode::RevisionConflict,
+                            "the TeamRun has inconsistent immutable admission identities",
+                        ));
+                    }
+                    let mut candidate = recovered.admitted;
+                    candidate.account_profile_id = root.account_profile_id;
+                    admitted = Some(candidate);
+                }
+            }
+            let admitted = admitted.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the TeamRun has no immutable root admission",
+                )
+            })?;
+            if container.identity.runtime_kind != admitted.runtime_kind {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the bound TSW and the admission name different runtimes",
+                ));
+            }
+            let adapter = state
+                .runtimes()
+                .get(&admitted.runtime_kind)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the admitted runtime is not configured",
+                    )
+                })?;
+            let scope =
+                self.execution_scope(project_id, epic_id, Some(task.id), adapter.as_ref())?;
+            receipt_id = self.record(
+                key,
+                project_id,
+                CommandKind::StartScheduledWork,
+                target,
+                epic.revision,
+                &intent,
+            )?;
+            // Re-attest the bound container through the same preparation path
+            // as seating; the runtime owns the snapshot used by launch.
+            let workspace = self
+                .ensure_container(project_id, &placement, &task_root, adapter.as_ref())
+                .await?;
+            if workspace.binding.identity.native_id != container.identity.native_id {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "container preparation changed the existing TSW native identity",
+                ));
+            }
+            let seating = Seating {
+                project_id,
+                admitted: &admitted,
+                scope: &scope,
+                team_run_id,
+                roots: &roots,
+                adapter: &adapter,
+                container: &workspace,
+                cwd: &task_root,
+                now: kontor_api::now(),
+            };
+            applied = self.fill_slot(&seating, &slot.id, None).await?.applied;
+            self.retry_undelivered_dispatches().await?;
+        }
+        let run = self
+            .current_delivery_role_leaf(project_id, team_run_id, slot.id.as_role_key())?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the filled slot has no current AgentRun",
+                )
+            })?;
+        let binding = run.binding.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::StaleBinding,
+                "the filled slot has no runtime binding",
+            )
+        })?;
+        let dispatches = state
+            .with_store(|store| store.list_turn_dispatches(project_id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .filter(|row| row.team_run_id == team_run_id && row.to_role_slot_id == slot.id)
+            .map(|row| TeamRunSeatDispatchDto {
+                settled_turn_id: row.settled_turn_id.to_string(),
+                message_id: row.message_id,
+                target_agent_run_id: row.target_agent_run.map(|id| id.to_string()),
+                dispatched: row.dispatched,
+            })
+            .collect();
+        state.signals().appended();
+        Ok(FilledTeamRunSeatDto {
+            realm_id: state.realm_id(),
+            task_id: task.id,
+            team_run_id,
+            role_slot_id: slot.id.clone(),
+            agent_run_id: run.id,
+            binding_id: binding.id.to_string(),
+            binding_generation: binding.identity.generation,
+            native_id: binding.identity.native_id.as_str().to_owned(),
+            run_lifecycle: run.projection.lifecycle.as_str().to_owned(),
+            dispatches,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied,
                 revision: epic.revision,
                 snapshot_cursor: self.cursor()?,
             },
@@ -35755,11 +36079,9 @@ impl Services {
             })?
             .snapshot;
 
-        // Neither the plane nor the container is prepared again here.
-        // `fill_slot` is reached from `seat` and from nowhere else, and `seat`
-        // prepares both immediately before the first slot — so a second call
-        // could never observe a different answer, and a line no test can kill is
-        // worse than no line.
+        // The caller supplies the runtime's prepared container snapshot. Initial
+        // seating prepares it once for all slots; bounded seat fill re-attests
+        // the existing native container before reaching this shared path.
         let authority = adapter
             .admit_launch(&AdmissionRequest {
                 slot: RoleSlotKey::new(team_run_id, slot.clone()),
