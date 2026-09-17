@@ -238,6 +238,78 @@ actual migration cover.
 | N3 | the store's uniqueness comparison is dropped | **killed**: a foreign session's claim returned `Replayed` |
 | N4 | observation drops the binding-match guard | **killed**: an id issued to another session was accepted 200 |
 
+## Suite evidence — final cut
+
+`/tmp/p1-ledger-suites.log`, exit 0, one `===ALL-DONE===` marker, run on the
+committed tree.
+
+| Phase | Result |
+|---|---|
+| `kontor-store`, `kontor-runtime`, `kontor-api`, `kontor-runtime-paseo` | 45 result blocks, **all ok**, 0 failures (6 ignored in one block, pre-existing) |
+| `kontor-daemon --test loopback_api` | **363 passed, 8 failed, 1 ignored** |
+| `kontor-tests-contract` | 9 result blocks, **all ok**, 0 failures |
+
+The eight loopback failures are the known baseline set, unchanged by this
+remediation and previously verified identical at base `86ba6065`: six fail with
+code `unavailable` / "the configured native Jira connector could not answer";
+`a_session_key_must_be_a_stable_client_message_id` fails on the
+`MessageId::derive` change from master `9d5a81b5` (#222); and
+`replaying_a_partial_admission_delivers_its_durable_follow_up` fails with
+`revision_conflict` from a hardcoded expected revision. None touch the epoch
+barrier, the tail window or the issuance ledger.
+
+Counts reconcile: 372 loopback tests = 368 before this cut + the 4 new loopback
+regressions.
+
+All eight tests this remediation depends on passed in that run:
+
+```text
+a_failed_epoch_persist_leaves_the_mapping_pending_until_it_lands ... ok
+a_message_issuance_is_unique_per_id_and_recognises_its_own_replay ... ok
+an_observation_whose_epoch_write_fails_keeps_it_pending ... ok
+observing_a_never_read_session_recovers_its_epoch_once ... ok
+observing_a_long_never_read_transcript_costs_the_window_not_the_session ... ok
+observing_refuses_a_current_turn_older_than_its_window ... ok
+observing_refuses_a_tail_window_that_does_not_advance ... ok
+observing_trusts_only_a_message_this_realm_issued_to_this_session ... ok
+```
+
+`cargo fmt --check` clean per crate for all five touched crates. Formatting was
+run per-crate rather than `--all`, because the workspace is not fmt-clean at
+every commit and `--all` would widen the diff beyond the owned files.
+
+One environmental note, recorded because it appeared in an earlier run of the
+same suite and could otherwise be mistaken for a regression:
+`a_concurrent_first_open_initializes_exactly_one_realm` failed twice with
+`DatabaseBusy` / "database is locked" while an unrelated full workspace suite was
+running concurrently in another worktree, taking 163–168s for a block that takes
+~2s alone. It passes in isolation and passed in this final run. It is SQLite lock
+contention, not a logic fault.
+
+## Mutation — all nine killed
+
+Three separate defects are closed in this remediation, and each was proven by
+mutation on the exact seam it fixes.
+
+| # | Seam | Mutation | Result |
+|---|---|---|---|
+| M1 | epoch barrier | acknowledge before the commit (the original `mem::take` semantics) | killed — `a mapping whose write failed is still pending: []` |
+| M2 | epoch registry | `ack` clears wholesale instead of exactly what it was told | killed — `left: []`, `right: [("raw-b", 2), ("raw-c", 3)]` |
+| M3 | epoch barrier | `pending_timeline_epochs` takes instead of peeking | killed — same pending-empty failure |
+| M4 | observe recovery | observation reads without the epoch recovery | killed by the never-read regression |
+| M5 | observe refusal | the typed restatement is dropped | killed — reverts to the circular "read the session timeline again" |
+| N1 | tail bound | observation no longer seeds from the tail | killed — 9 session reads instead of 1 |
+| N2 | issuance ledger | the issuing path omits the ledger write | killed — a real send no longer issues the id it delivers |
+| N3 | issuance ledger | the store's uniqueness comparison is dropped | killed — a foreign session's claim returned `Replayed` |
+| N4 | issuance ledger | observation drops the binding-match guard | killed — an id issued to another session was accepted 200 |
+
+M3 survived its first attempt: the durability assertion was vacuous because an
+earlier ordinary read in the same fixture had already persisted the mapping. The
+test was rewritten to forget the mappings first and to assert on the *undrained*
+side in the failure path, where no later page can discharge the obligation. That
+is recorded rather than quietly fixed, because a mutant that survives once is the
+only evidence that the assertion was not proving what it claimed.
+
 ## Noted, out of scope
 
 The store's constraint refusal surfaces to the caller as `revision_conflict`
