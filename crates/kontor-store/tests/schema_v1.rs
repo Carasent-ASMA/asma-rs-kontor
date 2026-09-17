@@ -42,6 +42,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "command_receipt_transitions",
     "command_receipts",
     "command_targets",
+    "legacy_local_command_confirmation_provenance",
     "compaction_receipts",
     "consultation_profile_revisions",
     // Schema v36 (KON-OP-05): frozen consultation execution, exact native
@@ -550,9 +551,13 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // ticket one consultation was asked
     // about, frozen beside its run because the node's task belongs to the
     // delivery workspace, and leaves a pre-v96 run's subject visibly
-    // unrecorded. v97 adds the immutable future-turn correlation challenge;
-    // no historical runtime position can enter that ledger.
-    assert_eq!(SCHEMA_VERSION, 97);
+    // unrecorded. v97 confirms only pre-hook local task/gate receipts whose
+    // exact durable mutations prove that their synchronous commands succeeded.
+    // v98 gives those reconstructed confirmations typed, immutable provenance,
+    // accepted only when one receipt maps to one mutation. v99 adds the
+    // immutable future-turn correlation challenge; no historical runtime
+    // position can enter that ledger.
+    assert_eq!(SCHEMA_VERSION, 99);
 }
 
 #[test]
@@ -4645,6 +4650,12 @@ fn all_logical_relationships_are_project_scoped_and_fk_backed() {
         ),
         (
             "command_receipt_transitions",
+            &["project_id", "receipt_id"],
+            "command_receipts",
+            &["project_id", "id"],
+        ),
+        (
+            "legacy_local_command_confirmation_provenance",
             &["project_id", "receipt_id"],
             "command_receipts",
             &["project_id", "id"],

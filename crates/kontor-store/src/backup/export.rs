@@ -2042,6 +2042,18 @@ exported_tables! {
         evidence_ref: Option<String>,
         recorded_at: String,
     }
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    legacy_local_command_confirmation_provenance: LegacyLocalCommandConfirmationProvenanceRow from "legacy_local_command_confirmation_provenance" key(project_id, receipt_id) {
+        project_id: String,
+        receipt_id: String,
+        receipt_kind: String,
+        source: String,
+        disposition: String,
+        mutation_identity: String,
+        mutation_recorded_at: Option<String>,
+        certificate_ref: Option<String>,
+        certified_at: String,
+    }
     command_targets: CommandTargetsRow from "command_targets" key(project_id, receipt_id) {
         project_id: String,
         receipt_id: String,

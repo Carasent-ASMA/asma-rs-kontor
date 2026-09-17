@@ -7245,7 +7245,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "A caller-generated UUIDv7 message id",
+            "description": "The caller's stable idempotency key",
             "required": true,
             "schema": {
               "type": "string"

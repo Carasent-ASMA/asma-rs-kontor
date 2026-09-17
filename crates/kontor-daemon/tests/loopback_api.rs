@@ -258,15 +258,35 @@ async fn periodic_scanner_reopens_done_completion_after_startup() {
     scanner.await.expect("scanner stops cleanly");
 }
 
+/// With no live TPM to adopt, the wake-producing transition writes nothing.
+///
+/// Adoption is not a licence to guess. When the epic's control plane holds no
+/// live seat for the role, there is no seat the completion could honestly be
+/// answering to, so it refuses before any mutation and names the operation that
+/// resolves it — leaving the run exactly where it stood.
 #[tokio::test]
-async fn completion_with_foreign_tpm_refuses_without_state_wake_or_receipt() {
-    let (world, seed, _tpm) = reopened_completion_fixture("completion-foreign-tpm").await;
+async fn completion_without_a_live_tpm_writes_no_state_wake_or_receipt() {
+    let (world, seed, tpm) = reopened_completion_fixture("completion-no-live-tpm").await;
+    let project_id = ProjectId::parse(&seed.project).expect("project");
+    let epic_id = MiniProjectId::parse(&seed.epic).expect("epic");
     let standing = seed_completion_phase(
         &world,
         &seed,
-        SeatBindingId::generate(),
+        tpm,
         kontor_scheduler::CompletionPhase::Tickets,
     );
+
+    // Retire the only TPM, leaving the role unbound.
+    let retired = Call::post(
+        format!("/v1/projects/{}/seat-bindings/{tpm}/retire", seed.project),
+        &serde_json::json!({"expected_revision": 1, "reason": "programme lead stepped away"}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-no-live-tpm-retire")
+    .send(&world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+
     let refused = Call::post(
         format!(
             "/v1/projects/{}/epics/{}/completion:advance",
@@ -275,36 +295,874 @@ async fn completion_with_foreign_tpm_refuses_without_state_wake_or_receipt() {
         &serde_json::json!({"expected_revision": standing.get()}),
     )
     .signed_as(&world, "operator")
-    .with_key("completion-foreign-tpm-advance")
+    .with_key("completion-no-live-tpm-advance")
     .send(&world)
     .await;
-    assert_eq!(refused.code(), "stale_binding", "{}", refused.body);
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    assert!(
+        refused.body.contains("no live seat to adopt"),
+        "the refusal names the missing seat, not a stale pin: {}",
+        refused.body
+    );
+    assert!(
+        refused.body.contains("bind or replace the control seat"),
+        "and names the operation that resolves it: {}",
+        refused.body
+    );
+
     let stored = world.daemon.state().with_store(|store| {
         store
-            .get_epic_completion(
-                ProjectId::parse(&seed.project).expect("project"),
-                MiniProjectId::parse(&seed.epic).expect("epic"),
-            )
+            .get_epic_completion(project_id, epic_id)
             .expect("completion reads")
             .expect("completion exists")
     });
-    assert_eq!(stored.revision, standing);
+    assert_eq!(stored.revision, standing, "the run did not move");
     world.daemon.state().with_store(|store| {
         assert!(
             store
-                .list_completion_wakes(stored.project_id, stored.mini_project_id)
+                .list_completion_wakes(project_id, epic_id)
                 .expect("wakes read")
-                .is_empty()
+                .is_empty(),
+            "a refusal writes no wake"
         );
         assert!(
             store
                 .get_receipt_by_key(
-                    &IdempotencyKey::parse("completion-foreign-tpm-advance").expect("key")
+                    &IdempotencyKey::parse("completion-no-live-tpm-advance").expect("key")
                 )
                 .expect("receipt reads")
-                .is_none()
+                .is_none(),
+            "and no receipt"
         );
     });
+}
+
+/// A TPM replaced mid-run is adopted: the forward pin moves, and the wake goes
+/// to the seat that actually leads the epic now.
+///
+/// The frozen `tpm_seat_id` records who led when the run started. Refusing
+/// because that seat has since been replaced left the completion stuck behind a
+/// seat that no longer exists, with no operation an operator could use to move
+/// it. The transition still commits as one unit — state, wake and receipt — and
+/// only the *forward* pin moves; what the run already recorded is untouched.
+#[tokio::test]
+async fn a_replaced_tpm_is_adopted_into_the_forward_pin_and_receives_the_wake() {
+    let (world, seed, original) = reopened_completion_fixture("completion-adopt-tpm").await;
+    let project_id = ProjectId::parse(&seed.project).expect("project");
+    let epic_id = MiniProjectId::parse(&seed.epic).expect("epic");
+    let standing = seed_completion_phase(
+        &world,
+        &seed,
+        original,
+        kontor_scheduler::CompletionPhase::Tickets,
+    );
+
+    // The seat that led at freeze time is retired and the team re-materialized,
+    // so a different SeatBinding now holds the role.
+    let retired = Call::post(
+        format!(
+            "/v1/projects/{}/seat-bindings/{original}/retire",
+            seed.project
+        ),
+        &serde_json::json!({"expected_revision": 1, "reason": "handed over mid-run"}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-adopt-tpm-retire")
+    .send(&world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    let rematerialized = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/core-team/seats:materialize",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-adopt-tpm-rematerialize")
+    .send(&world)
+    .await;
+    assert_eq!(rematerialized.status, 200, "{}", rematerialized.body);
+    let successor = SeatBindingId::parse(
+        rematerialized.json()["core_team"]["seats"]
+            .as_array()
+            .expect("core seats")
+            .iter()
+            .find(|entry| entry["role"]["role_code"] == "TPM")
+            .expect("a TPM seat")["seat_binding_id"]
+            .as_str()
+            .expect("a bound TPM"),
+    )
+    .expect("a seat binding id");
+    assert_ne!(successor, original, "the fixture really replaced the seat");
+
+    let advanced = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/completion:advance",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": standing.get()}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("completion-adopt-tpm-advance")
+    .send(&world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_epic_completion(project_id, epic_id)
+            .expect("completion reads")
+            .expect("completion exists")
+    });
+    let state: kontor_scheduler::CompletionState =
+        serde_json::from_value(stored.state.clone()).expect("the state decodes");
+    assert_eq!(
+        state.tpm_seat_id, successor,
+        "the forward pin is the seat that leads now, and it is persisted"
+    );
+    assert_ne!(stored.revision, standing, "the transition committed");
+
+    let wakes = world.daemon.state().with_store(|store| {
+        store
+            .list_completion_wakes(project_id, epic_id)
+            .expect("wakes read")
+    });
+    assert_eq!(wakes.len(), 1, "exactly one wake: {wakes:?}");
+    assert_eq!(
+        wakes[0].seat_binding_id, successor,
+        "and it is addressed to the current seat, not the retired one"
+    );
+    assert_eq!(wakes[0].completion_revision, stored.revision);
+
+    // The same key replays without writing a second wake or a second receipt.
+    let replay = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/completion:advance",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": standing.get()}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("completion-adopt-tpm-advance")
+    .send(&world)
+    .await;
+    assert_eq!(replay.status, 200, "the same key replays: {}", replay.body);
+    let after = world.daemon.state().with_store(|store| {
+        (
+            store
+                .get_epic_completion(project_id, epic_id)
+                .expect("completion reads")
+                .expect("completion exists"),
+            store
+                .list_completion_wakes(project_id, epic_id)
+                .expect("wakes read"),
+        )
+    });
+    assert_eq!(
+        after.0.revision, stored.revision,
+        "the replay moved nothing"
+    );
+    assert_eq!(after.1.len(), 1, "and appended no second wake");
+}
+
+/// Adoption moves the forward pin and leaves recorded history alone.
+///
+/// A reopened completion carries what earlier rounds already found: the verdict,
+/// the exact result and remediation digests, and the era that decided them.
+/// Adopting a replacement TPM changes who the run answers to *next*; a round
+/// already recorded is not the incoming seat's to rewrite.
+#[tokio::test]
+async fn adoption_moves_the_forward_pin_without_disturbing_recorded_rounds() {
+    let (world, seed, original) = reopened_completion_fixture("completion-adopt-history").await;
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&seed.epic).expect("an epic id");
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("the profile compiles");
+    let mut state = kontor_scheduler::start(&compiled, original, Vec::new()).expect("a run starts");
+    state.rounds.push(kontor_scheduler::CompletionRound {
+        round: 1,
+        verdict: kontor_scheduler::CommitteeVerdict::Fail,
+        evidence: ContentHash::of(b"round-one-evidence"),
+        committee_run_id: None,
+        result_hash: Some(ContentHash::of(b"round-one-result")),
+        remediation_hash: Some(ContentHash::of(b"round-one-remediation")),
+        deliberation: vec![kontor_policy::DeliberationStep {
+            role: ExternalName::parse("reviewer-a").expect("a role"),
+            consultation: ExternalName::parse("independent-review").expect("a consultation"),
+            round: 1,
+            outcome: ExternalName::parse("non-compliant").expect("an outcome"),
+        }],
+        decided_in: Some(kontor_scheduler::EraStamp {
+            generation: state.generation,
+            definition_hash: compiled.definition_hash.clone(),
+            team: None,
+        }),
+    });
+    state.phase = kontor_scheduler::CompletionPhase::Tickets;
+    let recorded_rounds = serde_json::to_value(&state.rounds).expect("the rounds serialize");
+    let era = state.generation;
+    let standing = state.revision;
+    world.daemon.state().with_store(|store| {
+        store
+            .create_epic_completion(&StoredEpicCompletion {
+                project_id,
+                mini_project_id: epic_id,
+                profile_id: compiled.profile.id.clone(),
+                profile_version: compiled.profile.version,
+                definition_hash: compiled.definition_hash.clone(),
+                state: serde_json::to_value(&state).expect("the state serializes"),
+                revision: state.revision,
+                updated_at: at("2026-09-03T09:00:00Z"),
+            })
+            .expect("the completion seeds");
+    });
+
+    let retired = Call::post(
+        format!(
+            "/v1/projects/{}/seat-bindings/{original}/retire",
+            seed.project
+        ),
+        &serde_json::json!({"expected_revision": 1, "reason": "handed over mid-run"}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-adopt-history-retire")
+    .send(&world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    let rematerialized = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/core-team/seats:materialize",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-adopt-history-rematerialize")
+    .send(&world)
+    .await;
+    assert_eq!(rematerialized.status, 200, "{}", rematerialized.body);
+    let successor = SeatBindingId::parse(
+        rematerialized.json()["core_team"]["seats"]
+            .as_array()
+            .expect("core seats")
+            .iter()
+            .find(|entry| entry["role"]["role_code"] == "TPM")
+            .expect("a TPM seat")["seat_binding_id"]
+            .as_str()
+            .expect("a bound TPM"),
+    )
+    .expect("a seat binding id");
+    assert_ne!(successor, original, "the fixture really replaced the seat");
+
+    let advanced = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/completion:advance",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": standing.get()}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("completion-adopt-history-advance")
+    .send(&world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_epic_completion(project_id, epic_id)
+            .expect("completion reads")
+            .expect("completion exists")
+    });
+    assert_eq!(
+        stored.state["rounds"], recorded_rounds,
+        "adoption rewrote what an earlier round had already recorded"
+    );
+    let next: kontor_scheduler::CompletionState =
+        serde_json::from_value(stored.state.clone()).expect("the state decodes");
+    assert_eq!(next.tpm_seat_id, successor, "the forward pin still moved");
+    assert_eq!(
+        next.generation, era,
+        "adopting a seat is not a reopening: the era is unchanged"
+    );
+}
+
+/// The bundled `independent_review@1` Committee template the operational
+/// completion profile names as its verdict committee.
+const COMMITTEE_PRESET: &str = "01991c00-0000-7000-8000-000000000001";
+
+/// A core-team materialization body that routes both control seats.
+fn control_seat_routes(expected_revision: u64) -> serde_json::Value {
+    serde_json::json!({
+        "expected_revision": expected_revision,
+        "routes": [
+            {"role_code": "LSA", "model_route": {
+                "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+            }},
+            {"role_code": "TPM", "model_route": {
+                "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+            }}
+        ]
+    })
+}
+
+/// The current revision of a SeatBinding, so a retire presents the revision the
+/// realm actually holds rather than assuming the seat was never observed.
+fn seat_revision(world: &World, project_id: ProjectId, seat: &str) -> u64 {
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_seat_binding(
+                project_id,
+                SeatBindingId::parse(seat).expect("a seat binding id"),
+            )
+        })
+        .expect("the seat binding reads")
+        .expect("the seat binding exists")
+        .revision
+        .get()
+}
+
+/// The SeatBinding a core-team answer bound to `role_code`.
+fn core_seat(answer: &Answer, role_code: &str) -> String {
+    answer.json()["core_team"]["seats"]
+        .as_array()
+        .expect("core seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == role_code)
+        .unwrap_or_else(|| panic!("a {role_code} seat"))["seat_binding_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a bound {role_code} seat"))
+        .to_owned()
+}
+
+/// An epic whose round-one Committee has settled non-compliant, with its
+/// completion parked at the verdict gate that will consume it.
+struct VerdictBoundary {
+    composed: Composed,
+    epic: String,
+    tpm: String,
+    committee_run: String,
+    standing: AggregateRevision,
+    era: u32,
+}
+
+/// Drive a real round-one Committee to a settled non-compliant result.
+///
+/// Every step here is the API a Committee actually goes through — invoke, three
+/// immutable findings, settlement — so the failed verdict the completion later
+/// consumes is one the product produced rather than one a test wrote into the
+/// store. Only the completion's own standing phase is seeded, exactly as the
+/// neighbouring verdict-intake journeys do.
+async fn committee_verdict_boundary(root: &str, slug: &str) -> VerdictBoundary {
+    let composed = compose_realm(root).await;
+    let project = composed.project.clone();
+    {
+        let world = &composed.world;
+        adopt_session_base(world, &project, composed.project_revision).await;
+        publish_core_team(
+            world,
+            &project,
+            serde_json::json!([seat("SA", "default", true)]),
+        )
+        .await;
+    }
+    let (quick, preview_hash) = quick_session_ready_to_promote(
+        &composed.world,
+        &project,
+        "Drive the verdict boundary",
+        &format!("{slug}-quick"),
+    )
+    .await;
+    let world = &composed.world;
+    let promoted = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{quick}/promotion:apply"),
+        &promotion_apply_body(&preview_hash),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("{slug}-promote"))
+    .send(world)
+    .await;
+    assert_eq!(promoted.status, 200, "{}", promoted.body);
+    let epic = promoted.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    confirm_promoted_epic_identity(world, &project, &epic, "PROMO", "ASMA-9001");
+
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &control_seat_routes(1),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-control-seats"))
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let caller = core_seat(&materialized, "LSA");
+    let tpm = core_seat(&materialized, "TPM");
+
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(epic_read.status, 200, "{}", epic_read.body);
+    let invoked = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &serde_json::json!({
+            "profile": {"id": COMMITTEE_PRESET, "version": 1},
+            "topic": "Operational gate evidence",
+            "question": "Does this evidence satisfy the operational gate?",
+            "caller_seat_binding_id": caller,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("{slug}-committee-invoke"))
+    .send(world)
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    assert_eq!(invoked.json()["round"], 1);
+    let committee_run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run id")
+        .to_owned();
+    let seats = invoked.json()["seats"]
+        .as_array()
+        .expect("Committee seats")
+        .clone();
+    let reviewers: Vec<String> = seats
+        .iter()
+        .filter(|entry| {
+            entry["role_slot_id"]
+                .as_str()
+                .is_some_and(|slot| slot.starts_with("reviewer"))
+        })
+        .map(|entry| {
+            entry["seat_binding_id"]
+                .as_str()
+                .expect("a reviewer SeatBinding")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(reviewers.len(), 2, "{}", invoked.body);
+    let judge = seats
+        .iter()
+        .find(|entry| entry["role_slot_id"] == "judge")
+        .and_then(|entry| entry["seat_binding_id"].as_str())
+        .expect("the Judge SeatBinding")
+        .to_owned();
+    let mut revision = invoked.json()["receipt"]["revision"]
+        .as_u64()
+        .expect("the Committee run revision");
+    for (index, reviewer) in reviewers.iter().enumerate() {
+        let recorded = Call::post(
+            format!("/v1/projects/{project}/committee-runs/{committee_run}/findings:record"),
+            &serde_json::json!({
+                "round": 1,
+                "verdict": if index == 0 { "compliant" } else { "non_compliant" },
+                "evidence_complete": index == 0,
+                "rationale": format!("reviewer {} reported independently", index + 1),
+                "evidence_refs": [format!("evidence:reviewer-{}", index + 1)],
+                "expected_revision": revision,
+            }),
+        )
+        .with_token(
+            world
+                .daemon
+                .state()
+                .credentials()
+                .consultation_seat_credential(
+                    SeatBindingId::parse(reviewer).expect("a reviewer SeatBinding"),
+                ),
+        )
+        .with_key(format!("{slug}-reviewer-{}", index + 1))
+        .send(world)
+        .await;
+        assert_eq!(recorded.status, 200, "{}", recorded.body);
+        revision = recorded.json()["receipt"]["revision"]
+            .as_u64()
+            .expect("the reviewer revision");
+    }
+    let judged = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{committee_run}/findings:record"),
+        &serde_json::json!({
+            "round": 1,
+            "verdict": "non_compliant",
+            "evidence_complete": false,
+            "rationale": "The conjunctive rule fails on one independent finding.",
+            "evidence_refs": ["evidence:reviewer-1", "evidence:reviewer-2"],
+            "expected_revision": revision,
+        }),
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .consultation_seat_credential(
+                SeatBindingId::parse(&judge).expect("the Judge SeatBinding"),
+            ),
+    )
+    .with_key(format!("{slug}-judge"))
+    .send(world)
+    .await;
+    assert_eq!(judged.status, 200, "{}", judged.body);
+    let settled = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{committee_run}/settle"),
+        &serde_json::json!({
+            "recommendation": "Re-run the gate after correcting the missing evidence.",
+            "tried_path": "Round one identified the missing operational receipt.",
+            "expected_revision": judged.json()["receipt"]["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("{slug}-settle"))
+    .send(world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["state"], "settled");
+    assert_eq!(settled.json()["round"], 1);
+    assert_eq!(settled.json()["outcome"], "non_compliant");
+
+    // Only the completion's standing phase is seeded: the verdict it is about
+    // to consume was produced above, over the public API.
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("the profile compiles");
+    let mut state = kontor_scheduler::start(
+        &compiled,
+        SeatBindingId::parse(&tpm).expect("the TPM seat id"),
+        Vec::new(),
+    )
+    .expect("a run starts");
+    state.phase = kontor_scheduler::CompletionPhase::Verdict(1);
+    let standing = state.revision;
+    let era = state.generation;
+    world.daemon.state().with_store(|store| {
+        store
+            .create_epic_completion(&StoredEpicCompletion {
+                project_id: ProjectId::parse(&project).expect("a project id"),
+                mini_project_id: MiniProjectId::parse(&epic).expect("an epic id"),
+                profile_id: compiled.profile.id.clone(),
+                profile_version: compiled.profile.version,
+                definition_hash: compiled.definition_hash.clone(),
+                state: serde_json::to_value(&state).expect("the state serializes"),
+                revision: state.revision,
+                updated_at: kontor_api::now(),
+            })
+            .expect("the completion seeds at its verdict gate");
+    });
+
+    VerdictBoundary {
+        composed,
+        epic,
+        tpm,
+        committee_run,
+        standing,
+        era,
+    }
+}
+
+/// A TPM replaced while the Committee deliberates is adopted by the very
+/// transition that consumes the failed verdict.
+///
+/// This is the boundary the whole change exists for: the Committee run is
+/// invoked, judged and settled non-compliant over the public API, the seat that
+/// led when completion froze hands over, and the single transition that
+/// consumes the Fail must reach `AwaitRemediation(1)`, record the failed round,
+/// move the forward pin to the seat that leads now, and wake exactly that seat
+/// — all as one committed unit.
+#[tokio::test]
+async fn a_failed_verdict_adopts_the_replacement_tpm_in_one_atomic_transition() {
+    let boundary = committee_verdict_boundary("/tmp/kontor-op22-verdict-adopt", "op22-adopt").await;
+    let world = &boundary.composed.world;
+    let project = boundary.composed.project.clone();
+    let epic = boundary.epic.clone();
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let original = SeatBindingId::parse(&boundary.tpm).expect("the frozen TPM seat");
+
+    let retired = Call::post(
+        format!(
+            "/v1/projects/{project}/seat-bindings/{}/retire",
+            boundary.tpm
+        ),
+        &serde_json::json!({
+            "expected_revision": seat_revision(world, project_id, &boundary.tpm),
+            "reason": "handed over mid-verdict",
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("op22-adopt-retire")
+    .send(world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    let rematerialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &control_seat_routes(
+            epic_read.json()["revision"]
+                .as_u64()
+                .expect("an epic revision"),
+        ),
+    )
+    .signed_as(world, "admin")
+    .with_key("op22-adopt-rematerialize")
+    .send(world)
+    .await;
+    assert_eq!(rematerialized.status, 200, "{}", rematerialized.body);
+    let successor =
+        SeatBindingId::parse(&core_seat(&rematerialized, "TPM")).expect("the successor TPM");
+    assert_ne!(successor, original, "the fixture really replaced the seat");
+
+    let advanced = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": boundary.standing.get()}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op22-adopt-advance")
+    .send(world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+    assert_eq!(
+        advanced.json()["state"]["phase"]["phase"],
+        "awaiting_lsa",
+        "the Fail must reach AwaitRemediation: {}",
+        advanced.body
+    );
+    assert_eq!(advanced.json()["state"]["phase"]["round"], 1);
+    assert_eq!(advanced.json()["state"]["rounds"][0]["verdict"], "fail");
+    assert_eq!(
+        advanced.json()["state"]["rounds"][0]["committee_run_id"],
+        boundary.committee_run,
+        "the round records the exact Committee run that failed"
+    );
+
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_epic_completion(project_id, epic_id)
+            .expect("completion reads")
+            .expect("completion exists")
+    });
+    let next: kontor_scheduler::CompletionState =
+        serde_json::from_value(stored.state.clone()).expect("the state decodes");
+    assert_eq!(
+        next.tpm_seat_id, successor,
+        "the forward pin is the seat that leads now, and it is persisted"
+    );
+    assert_eq!(
+        next.generation, boundary.era,
+        "consuming a verdict is not a reopening"
+    );
+    assert_eq!(next.rounds.len(), 1, "exactly one round was recorded");
+    assert_ne!(
+        stored.revision, boundary.standing,
+        "the transition committed"
+    );
+
+    let wakes = world.daemon.state().with_store(|store| {
+        store
+            .list_completion_wakes(project_id, epic_id)
+            .expect("wakes read")
+    });
+    assert_eq!(wakes.len(), 1, "exactly one wake: {wakes:?}");
+    assert_eq!(
+        wakes[0].seat_binding_id, successor,
+        "and it is addressed to the current TPM, not the retired one"
+    );
+    assert_eq!(wakes[0].completion_revision, stored.revision);
+
+    let connection =
+        rusqlite::Connection::open(world.directory.path().join(kontor_daemon::DATABASE_FILE))
+            .expect("the Realm database opens");
+    let receipts: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM command_receipts WHERE idempotency_key = 'op22-adopt-advance'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the receipt count reads");
+    assert_eq!(receipts, 1, "exactly one receipt stands for the transition");
+}
+
+/// The same boundary with no live TPM to adopt mutates nothing at all.
+///
+/// The Fail is real and waiting, but there is no seat the completion could
+/// honestly answer to. It must refuse before any mutation: the verdict stays
+/// unconsumed, the run stays at its gate, and no wake or receipt is written.
+#[tokio::test]
+async fn a_failed_verdict_without_a_live_tpm_consumes_nothing_at_the_boundary() {
+    let boundary =
+        committee_verdict_boundary("/tmp/kontor-op22-verdict-nolive", "op22-nolive").await;
+    let world = &boundary.composed.world;
+    let project = boundary.composed.project.clone();
+    let epic = boundary.epic.clone();
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+
+    let retired = Call::post(
+        format!(
+            "/v1/projects/{project}/seat-bindings/{}/retire",
+            boundary.tpm
+        ),
+        &serde_json::json!({
+            "expected_revision": seat_revision(world, project_id, &boundary.tpm),
+            "reason": "programme lead stepped away",
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("op22-nolive-retire")
+    .send(world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": boundary.standing.get()}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op22-nolive-advance")
+    .send(world)
+    .await;
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    assert!(
+        refused.body.contains("no live seat to adopt"),
+        "the refusal names the missing seat: {}",
+        refused.body
+    );
+    assert!(
+        refused.body.contains("bind or replace the control seat"),
+        "and names the operation that resolves it: {}",
+        refused.body
+    );
+
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_epic_completion(project_id, epic_id)
+            .expect("completion reads")
+            .expect("completion exists")
+    });
+    assert_eq!(stored.revision, boundary.standing, "the run did not move");
+    let unchanged: kontor_scheduler::CompletionState =
+        serde_json::from_value(stored.state.clone()).expect("the state decodes");
+    assert!(
+        unchanged.rounds.is_empty(),
+        "the failed verdict must not have been consumed: {:?}",
+        unchanged.rounds
+    );
+    assert_eq!(
+        unchanged.phase,
+        kontor_scheduler::CompletionPhase::Verdict(1),
+        "the run still stands at its verdict gate"
+    );
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .list_completion_wakes(project_id, epic_id)
+                .expect("wakes read")
+                .is_empty(),
+            "a refusal writes no wake"
+        );
+        assert!(
+            store
+                .get_receipt_by_key(&IdempotencyKey::parse("op22-nolive-advance").expect("key"))
+                .expect("receipt reads")
+                .is_none(),
+            "and no receipt"
+        );
+    });
+
+    // The Committee's own settled evidence is untouched and still consumable.
+    let committee = Call::get(format!(
+        "/v1/projects/{project}/committee-runs/{}",
+        boundary.committee_run
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(committee.status, 200, "{}", committee.body);
+    assert_eq!(committee.json()["state"], "settled");
+    assert_eq!(committee.json()["round"], 1);
+    assert_eq!(committee.json()["outcome"], "non_compliant");
+}
+
+/// A control role never holds two live seats, so adoption is never ambiguous.
+///
+/// `sole_live_control_seat` refuses rather than guess when a role has more than
+/// one live seat. That branch is defensive: materialization binds *missing*
+/// seats only, so re-running it returns the seat already there instead of
+/// binding a rival, and a successor only appears once the predecessor has been
+/// retired. This pins the constructor behaviour the refusal relies on — if a
+/// future change lets a second live seat in, this test fails before the
+/// ambiguity can reach a completion.
+#[tokio::test]
+async fn a_control_role_never_holds_two_live_seats() {
+    let (world, seed, tpm) = reopened_completion_fixture("completion-single-live-tpm").await;
+    let epic_read = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let again = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/core-team/seats:materialize",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-single-live-tpm-again")
+    .send(&world)
+    .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    let core_team = again.json();
+    let live_tpms: Vec<&serde_json::Value> = core_team["core_team"]["seats"]
+        .as_array()
+        .expect("core seats")
+        .iter()
+        .filter(|entry| entry["role"]["role_code"] == "TPM")
+        .collect();
+    assert_eq!(
+        live_tpms.len(),
+        1,
+        "materializing again bound a rival TPM: {}",
+        again.body
+    );
+    assert_eq!(
+        live_tpms[0]["seat_binding_id"],
+        tpm.to_string(),
+        "the seat already there kept its identity"
+    );
+
+    // And the completion path agrees: with one live seat it adopts rather than
+    // refusing for ambiguity.
+    let standing = seed_completion_phase(
+        &world,
+        &seed,
+        tpm,
+        kontor_scheduler::CompletionPhase::Tickets,
+    );
+    let advanced = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/completion:advance",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": standing.get()}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("completion-single-live-tpm-advance")
+    .send(&world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
 }
 
 #[derive(Default)]
@@ -995,7 +1853,10 @@ async fn a_non_loopback_bind_is_refused_and_leaves_nothing_behind() {
 
 #[tokio::test]
 async fn a_second_daemon_on_one_state_root_fails_and_two_roots_are_two_realms() {
-    let first = World::open().await;
+    // Both worlds are created here rather than cloned from the process template:
+    // the identities are what this test is about, and a clone shares the
+    // template's (see the harness on why a realm row cannot be re-identified).
+    let first = World::open_created_realm().await;
     let second = Daemon::start(
         DaemonConfig::at(first.directory.path()).with_port(0),
         RuntimeRegistry::new(),
@@ -1005,7 +1866,7 @@ async fn a_second_daemon_on_one_state_root_fails_and_two_roots_are_two_realms() 
         "one state root holds one daemon: the second must fail cleanly"
     );
 
-    let other = World::open().await;
+    let other = World::open_created_realm().await;
     assert_ne!(
         first.realm_id(),
         other.realm_id(),
@@ -1464,6 +2325,28 @@ async fn a_mutation_without_an_idempotency_key_is_refused() {
         .await;
     assert_eq!(answer.status, 400);
     assert_eq!(answer.code(), "invalid_request");
+}
+
+#[tokio::test]
+async fn a_refused_identifier_names_which_one_it_was() {
+    // OG-038 is what an anonymous refusal costs. `message_hosted_seat` parses a
+    // project id, a seat binding id and the `Idempotency-Key`; every one of them
+    // answered "the identifier is not in canonical form". Three investigations
+    // read that, blamed the seat binding, and abandoned the only route to a
+    // leadership seat while the realm stopped scheduling.
+    let world = World::open().await;
+    let answer = Call::get("/v1/projects/not-a-project-id")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 400, "{}", answer.body);
+    assert_eq!(answer.code(), "invalid_request");
+    assert_eq!(
+        answer.json()["subject"],
+        "ProjectId",
+        "a refusal names the type that rejected the value: {}",
+        answer.body
+    );
 }
 
 #[tokio::test]
@@ -2800,7 +3683,9 @@ async fn the_credential_file_is_owner_only() {
 #[tokio::test]
 async fn a_write_naming_another_realms_project_resolves_to_nothing() {
     let world = World::open().await;
-    let other = World::open().await;
+    // Created, not cloned: this test is about crossing an identity boundary, and
+    // worlds cloned from one template share the template's identity.
+    let other = World::open_created_realm().await;
 
     // The ids are real — they simply belong to a different database file, which
     // is the whole of the isolation boundary. The answer names *this* realm, so
@@ -2852,7 +3737,9 @@ async fn a_task_from_another_project_in_this_realm_does_not_resolve() {
 #[tokio::test]
 async fn a_cursor_from_another_realm_is_refused_typed_before_any_read() {
     let world = World::open().await;
-    let other = World::open().await;
+    // Created, not cloned, for the same reason as the cross-realm write above:
+    // the identity is the subject of the test.
+    let other = World::open_created_realm().await;
     let (run, _) = world.launch().await;
     observe(&world, run, 1, 1);
 
@@ -5858,6 +6745,8 @@ fn well_formed_body(uri: &str) -> serde_json::Value {
                 "agent_run_id": kontor_core::id::AgentRunId::generate().to_string(),
             }],
         })
+    } else if uri.ends_with("/seat") {
+        serde_json::json!({"expected_task_revision": 1, "reason": "Complete a handoff"})
     } else if uri.ends_with("lifecycle") {
         serde_json::json!({"action": "block", "expected_revision": 1, "reason": "x"})
     } else if uri.ends_with("projects:ensure") {
@@ -5893,6 +6782,10 @@ async fn every_application_operation_refuses_an_unauthenticated_or_under_privile
         format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
         format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
         format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        format!(
+            "/v1/projects/{project}/team-runs/{}/role-slots/audit/seat",
+            TeamRunId::generate()
+        ),
         format!("/v1/projects/{project}/epics/{epic}/lifecycle"),
     ];
     for uri in &mutations {
@@ -12348,6 +13241,243 @@ async fn task_completion_refuses_caller_named_unproduced_artifacts() {
         .send(&world)
         .await;
     assert_eq!(after.json()["tasks"][0]["state"], "in_progress");
+}
+
+/// Epic completion may consume a receipt-backed certificate from a task that
+/// already crossed its native closure boundary, without reclassifying the gate
+/// citations as producer evidence.
+///
+/// This is the compatibility seam for native closures written before role-turn
+/// artifacts became the producer ledger. The ordinary task completion route is
+/// still covered above: caller strings and directly seeded verdicts cannot close
+/// a live task.
+#[tokio::test]
+async fn epic_completion_accepts_a_receipt_backed_native_closure_certificate() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "completion-native-certificate").await;
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+    let task_id = TaskId::parse(&seed.task).expect("a task id");
+    let agent_run_id = AgentRunId::parse(&runs[0]).expect("an agent run id");
+    let workflow = active_workflow(&world, &seed);
+    let task = world.daemon.state().with_store(|store| {
+        store
+            .get_task(project_id, task_id)
+            .expect("the task reads")
+            .expect("the task exists")
+    });
+
+    let artifact_keys = workflow
+        .snapshot
+        .definition
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.key.clone())
+        .collect::<Vec<_>>();
+    for (index, gate) in workflow.snapshot.definition.gates.iter().enumerate() {
+        let evaluator_role = gate
+            .evaluator_roles
+            .first()
+            .expect("every gate has an evaluator")
+            .clone();
+        let evaluator_account = AccountProfileId::parse(&seed.account).expect("an account id");
+        let recorded_at = at(&format!("2026-09-01T10:{index:02}:00Z"));
+        let command_key =
+            IdempotencyKey::parse(&format!("completion-native-certificate-gate-{index}"))
+                .expect("a key");
+        world.daemon.state().with_store(|store| {
+            store
+                .append_gate_evaluation(&NewGateEvaluation {
+                    project_id,
+                    workflow_id: workflow.id,
+                    gate: gate.id.clone(),
+                    verdict: GateVerdict::Passed,
+                    evaluator_role: evaluator_role.clone(),
+                    evaluator_account,
+                    evidence: gate.required_evidence.clone(),
+                    agent_run_id: Some(agent_run_id),
+                    session_evidence: None,
+                    reviewer_principal: None,
+                    policy_evaluation_id: None,
+                    recorded_at,
+                })
+                .expect("the legacy gate pass records");
+            store
+                .record_local_command(&NewLocalCommand {
+                    project_id,
+                    receipt_id: CommandReceiptId::generate(),
+                    idempotency_key: command_key.clone(),
+                    kind: CommandKind::RecordGateVerdict,
+                    target: AggregateRef::Task { task_id },
+                    target_revision: workflow.revision,
+                    intent: CanonicalDocument::from_value(&serde_json::json!({
+                        "schema_version": 1,
+                        "operation": "gate_record",
+                        "task_id": task_id.to_string(),
+                        "gate": gate.id.as_str(),
+                        "verdict": "passed",
+                        "evaluator_role": evaluator_role.as_str(),
+                        "evaluator_account": evaluator_account.to_string(),
+                        "evidence": gate.required_evidence.iter()
+                            .map(|key| key.as_str())
+                            .collect::<Vec<_>>(),
+                    }))
+                    .expect("the gate intent canonicalizes"),
+                    created_at: recorded_at,
+                })
+                .expect("the legacy gate receipt records");
+            store
+                .complete_local_command(&command_key, recorded_at)
+                .expect("the gate receipt confirms")
+                .expect("the gate receipt exists");
+        });
+    }
+
+    let closed_at = at("2026-09-01T11:00:00Z");
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    assert_eq!(
+        connection
+            .execute(
+                "UPDATE tasks
+                    SET state = 'done', revision = revision + 1, updated_at = ?1
+                  WHERE project_id = ?2 AND id = ?3 AND revision = ?4",
+                rusqlite::params![
+                    closed_at.to_string(),
+                    seed.project,
+                    seed.task,
+                    i64::try_from(task.revision.get()).expect("the revision fits SQLite")
+                ],
+            )
+            .expect("the historical native closure is restored"),
+        1
+    );
+    let closure_key = IdempotencyKey::parse("completion-native-certificate-close").expect("a key");
+    world.daemon.state().with_store(|store| {
+        store
+            .record_local_command(&NewLocalCommand {
+                project_id,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: closure_key.clone(),
+                kind: CommandKind::TransitionTask,
+                target: AggregateRef::Task { task_id },
+                target_revision: task.revision,
+                intent: CanonicalDocument::from_value(&serde_json::json!({
+                    "schema_version": 1,
+                    "operation": "lifecycle",
+                    "action": "complete_task",
+                    "task_id": task_id.to_string(),
+                    "expected_revision": task.revision.get(),
+                    "reason": "receipt-backed historical native closure",
+                    "evidence": artifact_keys.iter()
+                        .map(|key| key.as_str())
+                        .collect::<Vec<_>>(),
+                }))
+                .expect("the closure intent canonicalizes"),
+                created_at: closed_at,
+            })
+            .expect("the historical closure receipt records");
+        store
+            .complete_local_command(&closure_key, closed_at)
+            .expect("the closure receipt confirms")
+            .expect("the closure receipt exists");
+        assert!(
+            store
+                .list_task_artifact_keys(project_id, task_id)
+                .expect("producer evidence reads")
+                .is_empty(),
+            "the certificate did not become producer evidence"
+        );
+    });
+
+    let project_read = Call::get(format!("/v1/projects/{}", seed.project))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let project_revision = project_read.json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    adopt_session_base(&world, &seed.project, project_revision).await;
+    publish_core_team(
+        &world,
+        &seed.project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let materialized = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/core-team/seats:materialize",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("completion-native-certificate-materialize")
+    .send(&world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let tpm = SeatBindingId::parse(
+        materialized.json()["core_team"]["seats"]
+            .as_array()
+            .expect("core seats")
+            .iter()
+            .find(|seat| seat["role"]["role_code"] == "TPM")
+            .expect("a TPM seat")["seat_binding_id"]
+            .as_str()
+            .expect("a seat id"),
+    )
+    .expect("a valid seat id");
+
+    let requirements = vec![kontor_policy::TicketRequirement {
+        task_id,
+        goals: workflow
+            .snapshot
+            .definition
+            .gates
+            .iter()
+            .map(|gate| ExternalName::parse(gate.id.as_str()).expect("a goal"))
+            .collect(),
+        evidence: artifact_keys
+            .iter()
+            .map(|key| ExternalName::parse(key.as_str()).expect("an evidence key"))
+            .collect(),
+    }];
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("the profile compiles");
+    let state = kontor_scheduler::start(&compiled, tpm, requirements).expect("a run starts");
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.create_epic_completion(&StoredEpicCompletion {
+                project_id,
+                mini_project_id: MiniProjectId::parse(&seed.epic).expect("an epic id"),
+                profile_id: compiled.profile.id.clone(),
+                profile_version: compiled.profile.version,
+                definition_hash: compiled.definition_hash.clone(),
+                state: serde_json::to_value(&state).expect("the state serializes"),
+                revision: state.revision,
+                updated_at: at("2026-09-01T12:00:00Z"),
+            })
+        })
+        .expect("the completion run seeds");
+
+    let advanced = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/completion:advance",
+            seed.project, seed.epic
+        ),
+        &serde_json::json!({"expected_revision": state.revision.get()}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("completion-native-certificate-advance")
+    .send(&world)
+    .await;
+    assert_eq!(advanced.status, 200, "{}", advanced.body);
+    assert_eq!(advanced.json()["state"]["phase"]["phase"], "integration");
 }
 
 /// Discharge one task's pinned profile through the public routes and complete it.
@@ -24518,6 +25648,569 @@ async fn consecutive_turns_on_one_slot_converge_on_one_seat_and_one_session() {
     );
 }
 
+/// OG-057's four-slot shape reached through production operations: admission
+/// stops at verify, exact partial resume adopts verify and skips the absent
+/// audit AgentRun, then verify's settlement derives the targetless audit row.
+/// Catalog registration uses a small four-slot fixture so waiver cases can use
+/// the same frozen template. No AgentRun or dispatch row is inserted by the test.
+struct SeatFillWorld {
+    world: World,
+    project: ProjectId,
+    epic: MiniProjectId,
+    task: TaskId,
+    team: TeamRunId,
+    node: TopologyNodeId,
+}
+
+impl SeatFillWorld {
+    fn task_revision(&self) -> AggregateRevision {
+        self.world.daemon.state().with_store(|store| {
+            store
+                .get_task(self.project, self.task)
+                .expect("task reads")
+                .expect("task exists")
+                .revision
+        })
+    }
+
+    fn members(&self) -> Vec<kontor_core::repository::AgentRun> {
+        self.world.daemon.state().with_store(|store| {
+            store
+                .list_agent_runs_for_team_run(self.project, self.team)
+                .expect("members read")
+                .into_iter()
+                .map(|row| {
+                    store
+                        .get_agent_run(self.project, row.agent_run_id)
+                        .expect("run reads")
+                        .expect("run exists")
+                })
+                .collect()
+        })
+    }
+
+    async fn fill(&self, slot: &str, revision: AggregateRevision, key: &str) -> Answer {
+        Call::post(
+            format!("/v1/projects/{}/team-runs/{}/role-slots/{slot}/seat", self.project, self.team),
+            &serde_json::json!({"expected_task_revision": revision, "reason": "Complete the durable audit handoff"}),
+        ).signed_as(&self.world, "operator").with_key(key).send(&self.world).await
+    }
+
+    async fn settle(&self, slot: &str) -> Answer {
+        let run = self
+            .members()
+            .into_iter()
+            .find(|run| run.role.as_str() == slot)
+            .expect("the slot has a run");
+        Call::post(
+            format!("/v1/projects/{}/agent-runs/{}/turns:settle", self.project, run.id),
+            &serde_json::json!({
+                "role_slot": slot,
+                "expected_task_revision": self.task_revision(),
+                "runtime_proof": observe_current_turn(&self.world, &self.project.to_string(), &run.id.to_string()),
+                "artifacts": ["omega-a3"],
+            }),
+        ).signed_as(&self.world, "operator").with_key(format!("fill-settle-{slot}")).send(&self.world).await
+    }
+
+    async fn waive_audit(&self) {
+        let revision = self.world.daemon.state().with_store(|store| {
+            store
+                .get_team_run(self.project, self.team)
+                .expect("team reads")
+                .expect("team exists")
+                .revision
+        });
+        let answer = Call::post(
+            format!("/v1/projects/{}/team-runs/{}/role-slots/audit/waivers", self.project, self.team),
+            &serde_json::json!({"expected_team_revision": revision, "authorized_by_role": "omega-r1", "evidence": ["omega-a3"]}),
+        ).signed_as(&self.world, "admin").with_key("fill-waive").send(&self.world).await;
+        assert_eq!(answer.status, 200, "{}", answer.body);
+    }
+}
+
+async fn seat_fill_world(owed: bool) -> SeatFillWorld {
+    seat_fill_world_with_tasks(owed, 1).await
+}
+
+async fn seat_fill_world_with_tasks(owed: bool, task_count: usize) -> SeatFillWorld {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let mut pack: serde_json::Value = serde_json::from_str(OMEGA_PACK).expect("fixture pack");
+    // Register a real immutable revision; the task and TeamRun will freeze it
+    // through admission, with catalog roles distinct from slot identifiers.
+    let team = &mut pack["teams"][1];
+    let mut implement = team["slots"][0].clone();
+    implement["id"] = serde_json::json!("implement");
+    team["slots"][0]["id"] = serde_json::json!("scope");
+    team["slots"][1]["id"] = serde_json::json!("verify");
+    team["slots"][2]["id"] = serde_json::json!("audit");
+    team["slots"]
+        .as_array_mut()
+        .expect("slots")
+        .insert(1, implement);
+    team["roles"][0]["min_slots"] = serde_json::json!(2);
+    team["roles"][0]["max_slots"] = serde_json::json!(2);
+    team["handoffs"] = serde_json::json!([
+        {"from_slot":"scope", "to_slot":"implement", "after_phase":null, "required_artifacts":["omega-a1"]},
+        {"from_slot":"implement", "to_slot":"verify", "after_phase":null, "required_artifacts":["omega-a1"]},
+        {"from_slot":"verify", "to_slot":"audit", "after_phase":null, "required_artifacts":["omega-a3"]},
+    ]);
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack":pack}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("fill-pack")
+    .send(&world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+    let created =
+        ensure_project(&world, "fill-project", "Seat fill", "/tmp/kontor-seat-fill").await;
+    let project =
+        ProjectId::parse(created.json()["project_id"].as_str().expect("project")).expect("id");
+    register_test_delivery_slots(
+        &world,
+        &project.to_string(),
+        &[
+            ("scope", "SA"),
+            ("implement", "SWE"),
+            ("verify", "QA"),
+            ("audit", "AUD"),
+        ],
+    );
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({"label":"Lead", "harness":"fake.runtime", "credential_alias":"lead", "enabled":true}),
+    ).signed_as(&world, "admin").with_key("fill-account").send(&world).await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            created.json()["revision"].as_u64().expect("revision"),
+            "Seat fill",
+            "omega-u-cat",
+            serde_json::Value::Array(
+                (0..task_count)
+                    .map(|index| serde_json::json!({"title":format!("Audit change {index}")}))
+                    .collect(),
+            ),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("fill-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = MiniProjectId::parse(applied.json()["epic_id"].as_str().expect("epic")).expect("id");
+    let task = TaskId::parse(
+        applied.json()["tasks"][0]["task_id"]
+            .as_str()
+            .expect("task"),
+    )
+    .expect("id");
+    confirm_test_epic_identity(&world, &project.to_string(), &epic.to_string());
+    world
+        .fake
+        .refusing_launch_of(&RoleSlotId::parse("verify").expect("slot"));
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash":plan.json()["plan_hash"]}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("fill-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    assert_eq!(
+        started.json()["blocked"].as_array().expect("blocked").len(),
+        task_count,
+        "{}",
+        started.body
+    );
+    let (team, node) = world.daemon.state().with_store(|store| {
+        let runs = store
+            .list_team_runs_for_task(project, task)
+            .expect("teams read");
+        assert_eq!(runs.len(), 1, "one admitted team");
+        (
+            runs[0].0,
+            store
+                .get_task_topology_node(project, task)
+                .expect("node reads")
+                .expect("TSW exists")
+                .id,
+        )
+    });
+    let fixture = SeatFillWorld {
+        world,
+        project,
+        epic,
+        task,
+        team,
+        node,
+    };
+    let members = fixture.members();
+    assert_eq!(members.len(), 3, "audit was never reached by seating");
+    let root = members
+        .iter()
+        .find(|run| run.role.as_str() == "scope")
+        .expect("scope");
+    let verify = members
+        .iter()
+        .find(|run| run.role.as_str() == "verify")
+        .expect("verify");
+    assert!(root.binding.is_some());
+    assert!(verify.binding.is_none());
+    // Runtime census evidence of the already-created verify native is the
+    // supported exact partial-admission recovery input. This is a fake-runtime
+    // observation, not an inserted control-plane run or handoff.
+    fixture
+        .world
+        .fake
+        .load_script(
+            &RuntimeScript {
+                sessions: vec![SessionScript {
+                    native_id: "native-existing-verify".to_owned(),
+                    generation_delta: 0,
+                    correlation_slot: Some(0),
+                    correlation_text: None,
+                    state: ObservedRunState::WaitingInput,
+                    observed_at: kontor_api::now().to_string(),
+                }],
+                ..RuntimeScript::default()
+            },
+            &[CorrelationLabel::for_run(verify.id)],
+        )
+        .expect("verify is visible");
+    let resumed = Call::post(format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"), &serde_json::json!({
+        "expected_revision":applied.json()["revision"],
+        "admissions":[{"team_run_id":team, "agent_run_id":root.id,
+            "downstream":{"agent_run_id":verify.id, "expected_revision":verify.revision, "expected_native_id":"native-existing-verify"}}],
+    })).signed_as(&fixture.world, "operator").with_key("fill-resume").send(&fixture.world).await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    assert!(
+        resumed.json()["blocked"]
+            .as_array()
+            .expect("blocked")
+            .is_empty(),
+        "{}",
+        resumed.body
+    );
+    assert_eq!(
+        fixture.members().len(),
+        3,
+        "partial resume preserves the absent audit slot"
+    );
+    assert!(fixture.members().iter().all(|run| run.binding.is_some()));
+    if owed {
+        let settled = fixture.settle("verify").await;
+        assert_eq!(settled.status, 200, "{}", settled.body);
+        assert_eq!(settled.json()["follow_ups"][0]["to_role_slot"], "audit");
+        assert_eq!(
+            settled.json()["follow_ups"][0]["target_agent_run_id"],
+            serde_json::Value::Null
+        );
+        assert_eq!(settled.json()["follow_ups"][0]["dispatched"], false);
+    }
+    fixture
+}
+
+#[tokio::test]
+async fn a_declared_slot_never_seated_is_filled_and_its_durable_handoff_is_delivered_once() {
+    let fixture = seat_fill_world(true).await;
+    let siblings = fixture.members();
+    let before_task = fixture
+        .world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task(fixture.project, fixture.task))
+        .expect("task reads")
+        .expect("task");
+    let before_container = fixture
+        .world
+        .daemon
+        .state()
+        .with_store(|store| store.get_topology_node_container(fixture.project, fixture.node))
+        .expect("container reads")
+        .expect("container");
+    let audit_seat = fixture.world.daemon.state().with_store(|store| {
+        store
+            .list_seat_bindings(fixture.project, fixture.node)
+            .expect("seats read")
+            .into_iter()
+            .find(|seat| seat.role_slot_id.as_str() == "audit")
+            .expect("audit logical seat")
+    });
+    assert!(audit_seat.last_attached_at.is_none());
+    let pending = fixture
+        .world
+        .daemon
+        .state()
+        .with_store(|store| store.list_turn_dispatches(fixture.project))
+        .expect("dispatches read");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].team_run_id, fixture.team);
+    assert!(!pending[0].dispatched);
+    assert!(pending[0].target_agent_run.is_none());
+    let calls_before = fixture.world.fake.calls().len();
+    let result = fixture
+        .fill("audit", before_task.revision, "fill-audit")
+        .await;
+    assert_eq!(result.status, 200, "{}", result.body);
+    let filled = result.json();
+    assert_eq!(filled["receipt"]["applied"], "created");
+    assert_eq!(filled["team_run_id"], fixture.team.to_string());
+    assert_eq!(filled["task_id"], fixture.task.to_string());
+    assert_eq!(filled["role_slot_id"], "audit");
+    assert_eq!(filled["binding_generation"], 1);
+    let audit_id = AgentRunId::parse(filled["agent_run_id"].as_str().expect("run id")).expect("id");
+    let runs = fixture.members();
+    assert_eq!(runs.len(), 4);
+    let audit = runs
+        .iter()
+        .find(|run| run.id == audit_id)
+        .expect("audit persisted");
+    assert_eq!(audit.team_run_id, fixture.team);
+    assert_eq!(audit.role.as_str(), "audit");
+    let binding = audit.binding.as_ref().expect("audit bound");
+    assert_eq!(filled["binding_id"], binding.id.to_string());
+    assert_eq!(filled["native_id"], binding.identity.native_id.as_str());
+    assert_eq!(filled["run_lifecycle"], audit.projection.lifecycle.as_str());
+    let dispatch = &filled["dispatches"][0];
+    assert_eq!(dispatch["target_agent_run_id"], audit_id.to_string());
+    assert_eq!(dispatch["dispatched"], true);
+    assert_eq!(dispatch["message_id"], pending[0].message_id);
+    fixture.world.daemon.state().with_store(|store| {
+        let persisted = store
+            .list_turn_dispatches(fixture.project)
+            .expect("dispatches read");
+        assert_eq!(persisted.len(), 1);
+        assert!(persisted[0].dispatched);
+        assert_eq!(persisted[0].target_agent_run, Some(audit_id));
+        assert_eq!(persisted[0].message_id, pending[0].message_id);
+        let after_seat = store
+            .list_seat_bindings(fixture.project, fixture.node)
+            .expect("seats read")
+            .into_iter()
+            .find(|seat| seat.id == audit_seat.id)
+            .expect("same logical seat");
+        assert!(after_seat.last_attached_at.is_some());
+        assert_eq!(after_seat.task_id, Some(fixture.task));
+        assert_eq!(after_seat.team_run_id, Some(fixture.team));
+        let after_container = store
+            .get_topology_node_container(fixture.project, fixture.node)
+            .expect("container reads")
+            .expect("container");
+        assert_eq!(
+            after_container.topology_node_id,
+            before_container.topology_node_id
+        );
+        assert_eq!(
+            after_container.container_binding_id,
+            before_container.container_binding_id
+        );
+        assert_eq!(after_container.identity, before_container.identity);
+        assert_eq!(
+            after_container.canonical_cwd,
+            before_container.canonical_cwd
+        );
+        assert_eq!(
+            after_container.observed_kind,
+            before_container.observed_kind
+        );
+        let after_task = store
+            .get_task(fixture.project, fixture.task)
+            .expect("task reads")
+            .expect("task");
+        assert_eq!(after_task, before_task);
+        assert_eq!(after_task.mini_project_id, Some(fixture.epic));
+        assert_eq!(
+            store
+                .list_team_runs_for_task(fixture.project, fixture.task)
+                .expect("teams read")
+                .len(),
+            1
+        );
+    });
+    for sibling in &siblings {
+        assert_eq!(
+            runs.iter().find(|run| run.id == sibling.id),
+            Some(sibling),
+            "sibling id, native and state are preserved"
+        );
+    }
+    let effects = fixture.world.fake.calls();
+    let sends = effects[calls_before..]
+        .iter()
+        .filter(|call| matches!(call, AdapterCall::Send(..)))
+        .count();
+    assert_eq!(sends, 1, "one send completes the existing handoff");
+    assert!(effects[calls_before..].iter().any(|call| matches!(call,
+        AdapterCall::Send(id, message) if *id == binding.id && message.to_string() == pending[0].message_id
+    )), "the send uses the filled binding and the dispatch's original message id");
+    assert_eq!(
+        effects[calls_before..]
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::Launch(_)))
+            .count(),
+        1
+    );
+    for key in ["fill-audit", "fill-audit-fresh"] {
+        let replay = fixture.fill("audit", before_task.revision, key).await;
+        assert_eq!(replay.status, 200, "{}", replay.body);
+        assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+        assert_eq!(replay.json()["agent_run_id"], audit_id.to_string());
+        assert_eq!(replay.json()["binding_id"], binding.id.to_string());
+        assert_eq!(replay.json()["dispatches"], filled["dispatches"]);
+    }
+    assert_eq!(
+        fixture.world.fake.calls(),
+        effects,
+        "replays never reach the runtime"
+    );
+    assert_eq!(fixture.members(), runs);
+}
+
+#[tokio::test]
+async fn seat_fill_refuses_an_undeclared_frozen_slot() {
+    let fixture = seat_fill_world(true).await;
+    let before = fixture.world.fake.calls();
+    let result = fixture
+        .fill("omega-r2", fixture.task_revision(), "fill-undeclared")
+        .await;
+    assert_eq!(result.status, 400, "{}", result.body);
+    assert_eq!(result.code(), "invalid_request");
+    assert_eq!(fixture.world.fake.calls(), before);
+    assert_eq!(fixture.members().len(), 3);
+}
+
+#[tokio::test]
+async fn seat_fill_refuses_a_slot_with_no_owed_dispatch() {
+    let fixture = seat_fill_world(false).await;
+    let before = fixture.world.fake.calls();
+    let result = fixture
+        .fill("audit", fixture.task_revision(), "fill-no-owed")
+        .await;
+    assert_eq!(result.status, 400, "{}", result.body);
+    assert_eq!(result.code(), "invalid_request");
+    assert_eq!(fixture.world.fake.calls(), before);
+    assert_eq!(fixture.members().len(), 3);
+}
+
+#[tokio::test]
+async fn seat_fill_refuses_a_waived_slot_even_with_an_owed_dispatch() {
+    let fixture = seat_fill_world(true).await;
+    fixture.waive_audit().await;
+    let before = fixture.world.fake.calls();
+    let result = fixture
+        .fill("audit", fixture.task_revision(), "fill-waived")
+        .await;
+    assert_eq!(result.status, 409, "{}", result.body);
+    assert_eq!(result.code(), "revision_conflict");
+    assert_eq!(fixture.world.fake.calls(), before);
+}
+
+#[tokio::test]
+async fn seat_fill_leaves_an_already_bound_leaf_unchanged_without_an_owed_dispatch() {
+    let fixture = seat_fill_world(false).await;
+    let before = fixture.world.fake.calls();
+    let members = fixture.members();
+    let result = fixture
+        .fill("verify", fixture.task_revision(), "fill-bound")
+        .await;
+    assert_eq!(result.status, 200, "{}", result.body);
+    assert_eq!(result.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(result.json()["native_id"], "native-existing-verify");
+    assert_eq!(fixture.world.fake.calls(), before);
+    assert_eq!(fixture.members(), members);
+}
+
+#[tokio::test]
+async fn seat_fill_refuses_a_terminal_team_run() {
+    let fixture = seat_fill_world(false).await;
+    fixture.waive_audit().await;
+    for slot in ["scope", "implement", "verify"] {
+        let settled = fixture.settle(slot).await;
+        assert_eq!(settled.status, 200, "{}", settled.body);
+    }
+    assert!(
+        fixture
+            .world
+            .daemon
+            .state()
+            .with_store(|store| store.get_team_run(fixture.project, fixture.team))
+            .expect("team reads")
+            .expect("team exists")
+            .lifecycle
+            .is_terminal()
+    );
+    let before = fixture.world.fake.calls();
+    let result = fixture
+        .fill("verify", fixture.task_revision(), "fill-terminal")
+        .await;
+    assert_eq!(result.status, 409, "{}", result.body);
+    assert_eq!(result.code(), "revision_conflict");
+    assert_eq!(fixture.world.fake.calls(), before);
+}
+
+#[tokio::test]
+async fn seat_fill_refuses_a_drifted_task_revision() {
+    let fixture = seat_fill_world(true).await;
+    let before = fixture.world.fake.calls();
+    let result = fixture
+        .fill(
+            "audit",
+            AggregateRevision::parse(fixture.task_revision().get() + 1).expect("revision"),
+            "fill-stale",
+        )
+        .await;
+    assert_eq!(result.status, 409, "{}", result.body);
+    assert_eq!(result.code(), "revision_conflict");
+    assert_eq!(fixture.world.fake.calls(), before);
+}
+
+#[tokio::test]
+async fn seat_fill_cannot_borrow_another_tasks_owed_slot() {
+    let fixture = seat_fill_world_with_tasks(true, 2).await;
+    let read = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        fixture.project, fixture.epic
+    ))
+    .signed_as(&fixture.world, "observer")
+    .send(&fixture.world)
+    .await;
+    let projection = read.json();
+    let other = projection["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .find(|task| task["task_id"] != fixture.task.to_string())
+        .expect("another task");
+    let before = fixture.world.fake.calls();
+    let result = Call::post(
+        format!("/v1/projects/{}/team-runs/{}/role-slots/audit/seat", fixture.project, other["team_runs"][0]["team_run_id"].as_str().expect("other team")),
+        &serde_json::json!({"expected_task_revision":other["revision"], "reason":"Another task owes audit"}),
+    ).signed_as(&fixture.world, "operator").with_key("fill-wrong-task").send(&fixture.world).await;
+    assert_eq!(result.status, 400, "{}", result.body);
+    assert_eq!(result.code(), "invalid_request");
+    let wrong_project = Call::post(
+        format!("/v1/projects/{}/team-runs/{}/role-slots/audit/seat", ProjectId::generate(), fixture.team),
+        &serde_json::json!({"expected_task_revision":fixture.task_revision(), "reason":"Wrong project"}),
+    ).signed_as(&fixture.world, "operator").with_key("fill-wrong-project").send(&fixture.world).await;
+    assert_eq!(wrong_project.status, 404, "{}", wrong_project.body);
+    assert_eq!(fixture.world.fake.calls(), before);
+}
+
 /// One alpha team seated with `alpha-k2` deliberately never launched.
 ///
 /// `alpha-k2` is the slot whose *frozen* revision carries a `waiver_policy`
@@ -30977,10 +32670,16 @@ async fn the_mission_ceiling_counts_team_runs_and_not_the_seats_they_hold() {
         .send(world)
         .await;
     assert_eq!(capacity.status, 200, "{}", capacity.body);
+    // Against the constant, not a literal. This test is about *what the
+    // ceiling counts* — team-run envelopes, not the seats inside them — and
+    // pinning the number here made it fail for the one reason it does not
+    // test: a deliberate policy change to DEFAULT_CAPACITY, made in 3cf246d
+    // because OG-054 leaves a rebuild as the only way to move a ceiling. The
+    // value itself is asserted once, in `the_default_capacity_is_the_operational_set`.
     assert_eq!(
         capacity.json()["mission_ceiling"],
-        7,
-        "the Operational ceiling is seven: {}",
+        kontor_daemon::DEFAULT_CAPACITY.mission_max_in_flight,
+        "the mission ceiling is the composed Operational one: {}",
         capacity.body
     );
     assert_eq!(
@@ -31036,8 +32735,8 @@ async fn the_capacity_configuration_reports_the_operational_ceilings_and_guards_
         .send(world)
         .await;
     assert_eq!(current.status, 200, "{}", current.body);
-    assert_eq!(current.json()["ceilings"]["mission_max_in_flight"], 7);
-    assert_eq!(current.json()["ceilings"]["adaptive"]["ceiling"], 7);
+    assert_eq!(current.json()["ceilings"]["mission_max_in_flight"], 12);
+    assert_eq!(current.json()["ceilings"]["adaptive"]["ceiling"], 12);
     assert_eq!(current.json()["revision"], 1);
 
     let mut ceilings = current.json()["ceilings"].clone();
@@ -31084,6 +32783,42 @@ async fn the_capacity_configuration_reports_the_operational_ceilings_and_guards_
     assert_eq!(applied.status, 200, "{}", applied.body);
     assert_eq!(applied.json()["ceilings"]["mission_max_in_flight"], 5);
     assert_eq!(applied.json()["revision"], 1);
+    // An apply is durable and versioned, and it is *not* in force: the Realm
+    // keeps admitting under the ceilings it composed with. This test used to
+    // assert only the echo above, so a configuration that could never take
+    // effect looked exactly like one that had — which is how a realm sat at 8
+    // envelopes against a ceiling of 7 with an applied 12 that enforced
+    // nothing.
+    assert_eq!(
+        applied.json()["restart_required"],
+        true,
+        "an apply says plainly that it is not yet enforced: {}",
+        applied.body
+    );
+
+    let after = Call::get("/v1/capacity/configuration")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    assert_eq!(
+        after.json()["ceilings"]["mission_max_in_flight"],
+        12,
+        "the composed ceilings are still what admission uses: {}",
+        after.body
+    );
+    assert_eq!(
+        after.json()["stored_ceilings"]["mission_max_in_flight"],
+        5,
+        "the stored replacement is reported rather than hidden: {}",
+        after.body
+    );
+    assert_eq!(
+        after.json()["restart_required"],
+        true,
+        "a stored configuration the daemon is not enforcing announces itself: {}",
+        after.body
+    );
 
     // The same key answers from what is durable rather than conflicting.
     let replayed = Call::post(
@@ -34934,19 +36669,61 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         "same-route recovery replay emitted duplicate native effects"
     );
 
-    let message_id = kontor_runtime::request::MessageId::generate().to_string();
+    let message_key = "asma-8001-tpm-needs-human-lsa-handoff-r7-v1";
+    let message_id = kontor_runtime::request::MessageId::derive(message_key).to_string();
+    let calls_before_handoff = world.fake.calls().len();
     let handoff = Call::post(
         format!("/v1/projects/{project}/seat-bindings/{lsa_binding}/messages"),
         &serde_json::json!({"body": "Continue the bounded epic handoff."}),
     )
     .signed_as(world, "operator")
-    .with_key(&message_id)
+    .with_key(message_key)
     .send(world)
     .await;
     assert_eq!(handoff.status, 200, "{}", handoff.body);
     assert_eq!(handoff.json()["seat_binding_id"], lsa_binding);
     assert_eq!(handoff.json()["native_id"], lsa_native);
     assert_eq!(handoff.json()["message_id"], message_id);
+    let calls_after_handoff = world.fake.calls().len();
+    assert_eq!(calls_after_handoff, calls_before_handoff + 1);
+
+    let replayed_handoff = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{lsa_binding}/messages"),
+        &serde_json::json!({"body": "Continue the bounded epic handoff."}),
+    )
+    .signed_as(world, "operator")
+    .with_key(message_key)
+    .send(world)
+    .await;
+    assert_eq!(replayed_handoff.status, 200, "{}", replayed_handoff.body);
+    assert_eq!(replayed_handoff.json(), handoff.json());
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_after_handoff,
+        "replaying a prose idempotency key repeated the native handoff"
+    );
+
+    let invalid_handoff = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{lsa_binding}/messages"),
+        &serde_json::json!({"body": "This invalid key must not reach the seat."}),
+    )
+    .signed_as(world, "operator")
+    .with_key("x".repeat(257))
+    .send(world)
+    .await;
+    assert_eq!(invalid_handoff.status, 400, "{}", invalid_handoff.body);
+    assert_eq!(invalid_handoff.code(), "invalid_request");
+    assert_eq!(
+        invalid_handoff.json()["subject"],
+        "Idempotency-Key header",
+        "the refusal did not name the offending header: {}",
+        invalid_handoff.body
+    );
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_after_handoff,
+        "an invalid Idempotency-Key reached the runtime"
+    );
 
     // Promoting again returns the same epic rather than building a second.
     let again = Call::post(
