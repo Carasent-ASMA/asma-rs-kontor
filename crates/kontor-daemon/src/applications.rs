@@ -27856,6 +27856,39 @@ impl ApplicationOperations for Services {
         })
     }
 
+    async fn recover_workflow_phase(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<kontor_api::applications::WorkflowPhaseRecoveryDto, ApiError> {
+        let state = self.state()?;
+        // Read the stored phase first, so the answer can say whether anything
+        // actually moved rather than just reporting where we ended up.
+        let before = state
+            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the task has no active workflow to recover",
+                )
+            })?;
+        // The same deterministic projection every other path runs. It writes
+        // only phase advances it derives, and it derives them only from
+        // evidence that is already durable — so no verdict is recorded, no
+        // evaluation appended and no turn replayed. A workflow already at its
+        // evidence phase returns unchanged, which is what makes this idempotent.
+        let after = self.advance_workflow_from_evidence(project_id, task_id)?;
+        Ok(kontor_api::applications::WorkflowPhaseRecoveryDto {
+            realm_id: state.realm_id(),
+            task_id,
+            previous_phase: before.current_phase.as_str().to_owned(),
+            current_phase: after.current_phase.as_str().to_owned(),
+            revision: after.revision,
+            advanced: before.current_phase != after.current_phase,
+        })
+    }
+
     async fn recover_gate_rejection(
         &self,
         key: &IdempotencyKey,

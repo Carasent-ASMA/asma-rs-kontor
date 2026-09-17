@@ -3816,14 +3816,6 @@ pub struct StoredBindingSnapshot {
 }
 
 impl SqliteStore {
-    /// Keep the frozen snapshot a runtime issued for one binding.
-    ///
-    /// Replaceable, because a rebind for the same binding id issues a new
-    /// snapshot and the newest one is the claim the next restart must present.
-    ///
-    /// # Errors
-    /// Backend failures only. This is a claim, not authority, so nothing here
-    /// judges it — the issuing runtime does that when it is handed back.
     /// Durably record newly allocated timeline-epoch mappings for one runtime.
     ///
     /// The barrier ASMA-8203 exists for: a Kontor epoch number must be durable
@@ -3902,6 +3894,14 @@ impl SqliteStore {
         Ok(pairs)
     }
 
+    /// Keep the frozen snapshot a runtime issued for one binding.
+    ///
+    /// Replaceable, because a rebind for the same binding id issues a new
+    /// snapshot and the newest one is the claim the next restart must present.
+    ///
+    /// # Errors
+    /// Backend failures only. This is a claim, not authority, so nothing here
+    /// judges it — the issuing runtime does that when it is handed back.
     pub fn persist_binding_snapshot(
         &self,
         binding_id: RuntimeBindingId,

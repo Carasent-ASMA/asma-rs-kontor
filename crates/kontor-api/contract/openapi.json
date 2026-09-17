@@ -8536,6 +8536,66 @@
         }
       }
     },
+    "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Catch a stalled workflow up to the phase its own durable evidence proves.",
+        "description": "The advance is normally computed as a side effect of recording a gate or\nsettling a turn. When that moment is missed — ASMA-8205 passed its\n`high-verification-gate` at sequence 2 and the stored phase never moved —\nnothing re-derives it afterwards, and the workflow stalls with complete and\nunambiguous evidence sitting in front of it.\n\nThis is that missing surface and nothing more. It records no verdict,\nappends no evaluation, replays no turn and chooses no phase: it runs the\nsame deterministic projection the ordinary paths run, over evidence that is\nalready durable. A workflow already at its evidence phase is left exactly\nas it is, which is what makes running it twice a no-op rather than a second\nadvance.",
+        "operationId": "recover_workflow_phase",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "The task",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowPhaseRecoveryDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": "The task has no active workflow"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/team-definition-selection:apply": {
       "post": {
         "tags": [
@@ -24797,6 +24857,46 @@
               "type": "string"
             },
             "description": "The phases it may terminate at."
+          }
+        }
+      },
+      "WorkflowPhaseRecoveryDto": {
+        "type": "object",
+        "description": "What re-deriving a stalled workflow's phase from durable evidence did.\n\nReports the phase before and after, so a caller can see whether anything\nmoved. `advanced: false` is the ordinary answer for a workflow already where\nits evidence puts it — which is exactly what makes this safe to run twice.",
+        "required": [
+          "realm_id",
+          "task_id",
+          "previous_phase",
+          "current_phase",
+          "revision",
+          "advanced"
+        ],
+        "properties": {
+          "advanced": {
+            "type": "boolean",
+            "description": "Whether the stored phase actually moved."
+          },
+          "current_phase": {
+            "type": "string",
+            "description": "The phase its durable evidence puts it at."
+          },
+          "previous_phase": {
+            "type": "string",
+            "description": "The phase the workflow stood at before."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm the task belongs to."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The workflow revision after the projection caught up.",
+            "minimum": 0
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task whose workflow was re-derived."
           }
         }
       }

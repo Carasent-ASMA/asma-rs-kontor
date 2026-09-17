@@ -11416,6 +11416,267 @@ fn rewind_to_unrouted_rejection(world: &World, seed: &Bootstrapped, rejection: &
     assert_eq!(moved, 1);
 }
 
+/// ASMA-8205 / ASMA-8199. A workflow whose stored phase lags its own durable
+/// evidence is caught up, once.
+///
+/// The advance is normally a side effect of recording a gate or settling a
+/// turn. ASMA-8205 passed its `high-verification-gate` at sequence 2 and the
+/// stored phase never moved, and nothing could re-derive it afterwards — the
+/// evidence was complete and unambiguous and the workflow was simply stuck.
+///
+/// The fixture reproduces the drift the same way the rejection tests do, by
+/// rewinding the stored phase behind evidence that is already recorded. What
+/// the repair must then prove is not only that it advances, but that it is a
+/// projection and not a second verdict: nothing is appended, no turn is
+/// replayed, and running it again moves nothing.
+#[tokio::test]
+async fn a_stalled_workflow_is_caught_up_to_its_evidence_exactly_once() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "phase-drift").await;
+    // The turns this records are the evidence the drift sits on top of. Its
+    // rejection is then unwound, because ASMA-8205 was not a *fenced* workflow —
+    // its fence had already been released by a rework turn. What was left was a
+    // stored phase that simply never caught up with complete evidence, and that
+    // is what this reproduces.
+    let rejection = record_a_rejection(&world, &seed, &runs, "phase-drift").await;
+    rewind_to_unrouted_rejection(&world, &seed, &rejection);
+    // Rewind only the stored phase to the workflow's entry, leaving every
+    // evaluation, route and turn exactly where they are. That is the ASMA-8205
+    // shape: durable evidence sitting ahead of the projection, with no
+    // supported way to reconcile the two.
+    let advanced_workflow = active_workflow(&world, &seed);
+    let entry = advanced_workflow
+        .snapshot
+        .definition
+        .phases
+        .iter()
+        .map(|phase| phase.id.clone())
+        .find(|candidate| {
+            !advanced_workflow
+                .snapshot
+                .definition
+                .edges
+                .iter()
+                .any(|edge| &edge.to == candidate)
+        })
+        .expect("the definition has an entry phase");
+    {
+        let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+        let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+        let moved = connection
+            .execute(
+                "UPDATE task_workflows SET current_phase = ?1 WHERE project_id = ?2 AND id = ?3",
+                rusqlite::params![
+                    entry.as_str(),
+                    seed.project,
+                    advanced_workflow.id.to_string()
+                ],
+            )
+            .expect("the stored phase is rewound");
+        assert_eq!(moved, 1);
+    }
+    let stalled = active_workflow(&world, &seed);
+    assert_eq!(
+        stalled.current_phase, entry,
+        "the fixture reproduces a workflow standing behind its own evidence"
+    );
+
+    let census_before = rejection_census(&world);
+    let uri = format!(
+        "/v1/projects/{}/tasks/{}/workflow:recover-phase",
+        seed.project, seed.task
+    );
+
+    // An operator may not do this: re-deriving a phase is an admin repair.
+    let refused = Call::post(&uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .with_key("phase-drift-recover-operator")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
+    let first = Call::post(&uri, &serde_json::json!({}))
+        .signed_as(&world, "admin")
+        .with_key("phase-drift-recover-1")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(
+        first.json()["advanced"],
+        serde_json::json!(true),
+        "the fixture must actually drift, or this proves nothing: {}",
+        first.body
+    );
+    let landed = active_workflow(&world, &seed);
+    assert_ne!(
+        landed.current_phase, stalled.current_phase,
+        "recovery moved the stored phase"
+    );
+    assert_eq!(
+        first.json()["current_phase"],
+        serde_json::json!(landed.current_phase.as_str()),
+        "the answer names the phase the store now holds: {}",
+        first.body
+    );
+
+    // Idempotent: a second call re-derives the same phase and moves nothing.
+    // This is the assertion that a recovery surface must never double-advance.
+    // A *different* key, deliberately: a replayed key would be answered from
+    // the receipt and prove nothing about the operation being idempotent.
+    let second = Call::post(&uri, &serde_json::json!({}))
+        .signed_as(&world, "admin")
+        .with_key("phase-drift-recover-2")
+        .send(&world)
+        .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    assert_eq!(
+        second.json()["advanced"],
+        serde_json::json!(false),
+        "a workflow already at its evidence phase must not advance again: {}",
+        second.body
+    );
+    let settled = active_workflow(&world, &seed);
+    assert_eq!(
+        settled.current_phase, landed.current_phase,
+        "the second call changed the stored phase"
+    );
+    assert_eq!(
+        settled.revision, landed.revision,
+        "a no-op recovery must not burn a revision"
+    );
+
+    // Never *past* the evidence. A recovery that kept stepping would walk the
+    // definition to its last phase, and every assertion above would still hold
+    // — it advanced, then stopped, and wrote nothing. The boundary is the only
+    // thing that distinguishes catching up from running away: the phase it
+    // lands on may be incomplete (that is the work still to do), but the phase
+    // *before* it must be finished.
+    let produced: BTreeSet<_> = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.list_settled_turns(
+                ProjectId::parse(&seed.project).expect("a project id"),
+                TaskId::parse(&seed.task).expect("a task id"),
+            )
+        })
+        .expect("settled turns read")
+        .iter()
+        .flat_map(|turn| turn.artifacts.iter().cloned())
+        .collect();
+    if landed.current_phase != stalled.current_phase {
+        let predecessor = landed
+            .snapshot
+            .definition
+            .edges
+            .iter()
+            .find(|edge| edge.to == landed.current_phase)
+            .map(|edge| edge.from.clone())
+            .expect("an advanced phase has an inbound edge");
+        let required = landed
+            .snapshot
+            .definition
+            .phases
+            .iter()
+            .find(|phase| phase.id == predecessor)
+            .map(|phase| phase.required_artifacts.clone())
+            .unwrap_or_default();
+        assert!(
+            required.iter().all(|artifact| produced.contains(artifact)),
+            "recovery stepped past its evidence: landed on {} whose predecessor {} still needs {:?}",
+            landed.current_phase.as_str(),
+            predecessor.as_str(),
+            required
+        );
+    }
+
+    // The over-advance boundary. Recovery may stop early — a gate this test
+    // does not recompute can hold it back, and stopping short is safe. What it
+    // must never do is *step over* a phase whose own evidence is missing, which
+    // is exactly what a projection without a stop condition does: it walks the
+    // definition to the end.
+    //
+    // So every phase strictly between where the workflow stalled and where it
+    // landed must have its required artifacts already produced.
+    let mut walk = stalled.current_phase.clone();
+    let mut crossed = Vec::new();
+    while walk != landed.current_phase {
+        let Some(next) = landed
+            .snapshot
+            .definition
+            .edges
+            .iter()
+            .find(|edge| edge.from == walk)
+            .map(|edge| edge.to.clone())
+        else {
+            break;
+        };
+        crossed.push(walk.clone());
+        walk = next;
+    }
+    // Artifacts are only half of a phase's completion; its declared gates are
+    // the other half, and in practice the gate is what holds a phase open. A
+    // check that looked only at artifacts would wave through exactly the
+    // over-advance it exists to catch.
+    let gate_states = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.gate_states(
+                ProjectId::parse(&seed.project).expect("a project id"),
+                landed.id,
+            )
+        })
+        .expect("gate states read");
+    for phase in &crossed {
+        let declared = landed
+            .snapshot
+            .definition
+            .phases
+            .iter()
+            .find(|declared| &declared.id == phase)
+            .expect("a crossed phase is declared");
+        let missing: Vec<_> = declared
+            .required_artifacts
+            .iter()
+            .filter(|artifact| !produced.contains(*artifact))
+            .map(|artifact| artifact.as_str().to_owned())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "recovery stepped over {} on its way to {}, but it still needs {missing:?}",
+            phase.as_str(),
+            landed.current_phase.as_str()
+        );
+        let open: Vec<_> = declared
+            .gates
+            .iter()
+            .filter(|gate| {
+                !gate_states
+                    .get(*gate)
+                    .is_some_and(|state| state.satisfies_requirement())
+            })
+            .map(|gate| gate.as_str().to_owned())
+            .collect();
+        assert!(
+            open.is_empty(),
+            "recovery stepped over {} on its way to {}, but its gates {open:?} are not satisfied",
+            phase.as_str(),
+            landed.current_phase.as_str()
+        );
+    }
+
+    // And it is a projection, not a verdict: nothing was appended anywhere a
+    // gate recording or a settlement would have written.
+    assert_eq!(
+        rejection_census(&world),
+        census_before,
+        "recovery appended no evaluation, route, turn or receipt",
+    );
+}
+
 /// The recovery URI for one task's gate.
 fn recovery_uri(seed: &Bootstrapped, gate: &str) -> String {
     format!(
