@@ -64,7 +64,7 @@ CREATE TABLE core_team_route_successions (
     receipted_at                    TEXT NULL,
     CHECK ((receipt_id IS NULL AND receipted_at IS NULL)
            OR (receipt_id IS NOT NULL AND receipted_at IS NOT NULL))
-);
+) STRICT;
 
 -- One succession per (seat, predecessor occupancy). Two rows naming the same
 -- seat and the same generation would mean one occupancy was retired twice,
@@ -124,4 +124,4 @@ BEGIN
     SELECT RAISE(ABORT, 'a recorded Core Team route succession cannot be deleted');
 END;
 
-PRAGMA user_version = 97;
+PRAGMA user_version = 99;

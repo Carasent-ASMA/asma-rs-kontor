@@ -15870,7 +15870,7 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                /** @description A caller-generated UUIDv7 message id */
+                /** @description The caller's stable idempotency key */
                 "Idempotency-Key": string;
             };
             path: {

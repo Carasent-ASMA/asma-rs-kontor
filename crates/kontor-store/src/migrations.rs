@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 97;
+pub const SCHEMA_VERSION: i64 = 99;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -356,9 +356,16 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0094_jira_description_projection.sql"),
     include_str!("../migrations/0095_immutable_jira_issue_identity.sql"),
     include_str!("../migrations/0096_consultation_subject.sql"),
-    // Schema v97. One Core Team route succession becomes recoverable across
+    // Schema v97. Receipt-backed confirmation for successful legacy local task
+    // closures and gate verdicts, derived from their exact durable mutations.
+    include_str!("../migrations/0097_legacy_local_command_confirmation.sql"),
+    // Schema v98. Reconstructed local-command confirmations carry typed,
+    // immutable provenance and are accepted only when one receipt maps to one
+    // mutation. Ambiguous v97 reconstructions become confirmation-unknown.
+    include_str!("../migrations/0098_legacy_local_confirmation_provenance.sql"),
+    // Schema v99. One Core Team route succession becomes recoverable across
     // the interval between its committed store transition and its receipt.
-    include_str!("../migrations/0097_core_team_route_succession_recovery.sql"),
+    include_str!("../migrations/0099_core_team_route_succession_recovery.sql"),
 ];
 
 const _: () = assert!(

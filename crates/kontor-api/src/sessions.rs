@@ -631,14 +631,16 @@ async fn ensure_raised_here(
 }
 
 /// The `Idempotency-Key`, read as the Kontor message identifier it has to be.
+///
+/// The identity has to come from the caller's key, because on these routes the
+/// message id *is* the idempotency record: generating one per call would send
+/// the message twice on a retry. It does not have to be spelled as a UUIDv7.
+/// Requiring that made these routes the only writes in Kontor that refuse the
+/// key vocabulary the contract documents, and ASMA-8191 records what that cost
+/// on the one route whose refusal also named no field.
 fn message_identifier(state: &ApiState, headers: &HeaderMap) -> Result<MessageId, ApiError> {
     let key = idempotency_key(state, headers)?;
-    MessageId::parse(key.as_str()).map_err(|_| {
-        state.refuse(
-            ApiErrorCode::InvalidRequest,
-            "a session Idempotency-Key is the client's stable message id: a canonical UUID v7",
-        )
-    })
+    Ok(MessageId::parse(key.as_str()).unwrap_or_else(|_| MessageId::derive(key.as_str())))
 }
 
 /// The `Idempotency-Key` a compaction is keyed on, which *is* the receipt id.

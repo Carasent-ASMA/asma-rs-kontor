@@ -6852,6 +6852,180 @@ impl SqliteStore {
         Ok(keys)
     }
 
+    /// Artifact keys certified by this task's current native closure.
+    ///
+    /// This is deliberately a different authority class from
+    /// [`Self::list_task_artifact_keys`]. A gate citation is never producer
+    /// evidence and cannot authorize another gate or advance a workflow. Epic
+    /// completion may, however, consume the closed ticket's own certificate:
+    /// the exact local completion command, the resulting native `done`
+    /// revision, and the last passed, receipt-backed gate evaluation all have
+    /// to agree on the key under the task's frozen active profile.
+    ///
+    /// The task revision and sub-second command/transition timestamp bind the
+    /// legacy local receipt to the transition it produced. Current local
+    /// receipts also carry their result in the outbox payload, but early native
+    /// closures predate that result envelope. Imported historical completions,
+    /// direct store seeding, waivers, stale passes and reopened revisions all
+    /// fail one of the joins and contribute nothing.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn list_current_task_closure_artifact_keys(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<BTreeSet<ExternalName>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT DISTINCT cited.value
+                   FROM tasks AS task
+                   JOIN task_workflows AS workflow
+                     ON workflow.project_id = task.project_id
+                    AND workflow.task_id = task.id
+                    AND workflow.active = 1
+                   JOIN command_targets AS closure_target
+                     ON closure_target.project_id = task.project_id
+                    AND closure_target.target_kind = 'task'
+                    AND closure_target.target_task_id = task.id
+                   JOIN command_receipts AS closure_receipt
+                     ON closure_receipt.project_id = closure_target.project_id
+                    AND closure_receipt.id = closure_target.receipt_id
+                    AND closure_receipt.kind = 'transition_task'
+                    AND closure_receipt.execution_mode = 'local'
+                    AND closure_receipt.state = 'confirmed'
+                    AND EXISTS (
+                        SELECT 1
+                          FROM command_receipt_transitions AS closure_transition
+                         WHERE closure_transition.project_id = closure_receipt.project_id
+                           AND closure_transition.receipt_id = closure_receipt.id
+                           AND closure_transition.sequence = (
+                               SELECT max(newer.sequence)
+                                 FROM command_receipt_transitions AS newer
+                                WHERE newer.project_id = closure_receipt.project_id
+                                  AND newer.receipt_id = closure_receipt.id
+                           )
+                           AND closure_transition.state = 'confirmed'
+                           AND closure_transition.evidence_ref = closure_receipt.result_ref
+                    )
+                    AND (
+                        closure_receipt.result_ref = closure_receipt.intent_hash
+                        OR EXISTS (
+                            SELECT 1
+                              FROM legacy_local_command_confirmation_provenance AS closure_provenance
+                             WHERE closure_provenance.project_id = closure_receipt.project_id
+                               AND closure_provenance.receipt_id = closure_receipt.id
+                               AND closure_provenance.disposition = 'certified'
+                               AND closure_provenance.certificate_ref = closure_receipt.result_ref
+                        )
+                    )
+                   JOIN task_gate_evaluations AS evaluation
+                     ON evaluation.project_id = task.project_id
+                    AND evaluation.workflow_id = workflow.id
+                    AND evaluation.verdict = 'passed'
+                    AND evaluation.agent_run_id IS NOT NULL
+                   JOIN json_each(evaluation.evidence) AS cited
+                     ON cited.type = 'text'
+                  WHERE task.project_id = ?1
+                    AND task.id = ?2
+                    AND task.state = 'done'
+                    AND task.imported_state IS NULL
+                    AND closure_receipt.target_revision = task.revision - 1
+                    AND json_extract(closure_receipt.intent, '$.operation') = 'lifecycle'
+                    AND json_extract(closure_receipt.intent, '$.action') = 'complete_task'
+                    AND json_extract(closure_receipt.intent, '$.task_id') = task.id
+                    AND json_extract(closure_receipt.intent, '$.expected_revision') =
+                        closure_receipt.target_revision
+                    AND EXISTS (
+                        SELECT 1
+                          FROM json_each(
+                                   json_extract(closure_receipt.intent, '$.evidence')
+                               ) AS closed_evidence
+                         WHERE closed_evidence.type = 'text'
+                           AND closed_evidence.value = cited.value
+                    )
+                    AND abs((julianday(closure_receipt.created_at) -
+                             julianday(task.updated_at)) * 86400.0) < 1.0
+                    AND evaluation.sequence = (
+                        SELECT max(newer.sequence)
+                          FROM task_gate_evaluations AS newer
+                         WHERE newer.project_id = evaluation.project_id
+                           AND newer.workflow_id = evaluation.workflow_id
+                           AND newer.gate_key = evaluation.gate_key
+                    )
+                    AND EXISTS (
+                        SELECT 1
+                          FROM command_targets AS gate_target
+                          JOIN command_receipts AS gate_receipt
+                            ON gate_receipt.project_id = gate_target.project_id
+                           AND gate_receipt.id = gate_target.receipt_id
+                         WHERE gate_target.project_id = task.project_id
+                           AND gate_target.target_kind = 'task'
+                           AND gate_target.target_task_id = task.id
+                           AND gate_receipt.kind = 'record_gate_verdict'
+                           AND gate_receipt.execution_mode = 'local'
+                           AND gate_receipt.state = 'confirmed'
+                           AND EXISTS (
+                               SELECT 1
+                                 FROM command_receipt_transitions AS gate_transition
+                                WHERE gate_transition.project_id = gate_receipt.project_id
+                                  AND gate_transition.receipt_id = gate_receipt.id
+                                  AND gate_transition.sequence = (
+                                      SELECT max(newer.sequence)
+                                        FROM command_receipt_transitions AS newer
+                                       WHERE newer.project_id = gate_receipt.project_id
+                                         AND newer.receipt_id = gate_receipt.id
+                                  )
+                                  AND gate_transition.state = 'confirmed'
+                                  AND gate_transition.evidence_ref = gate_receipt.result_ref
+                           )
+                           AND (
+                               gate_receipt.result_ref = gate_receipt.intent_hash
+                               OR EXISTS (
+                                   SELECT 1
+                                     FROM legacy_local_command_confirmation_provenance AS gate_provenance
+                                    WHERE gate_provenance.project_id = gate_receipt.project_id
+                                      AND gate_provenance.receipt_id = gate_receipt.id
+                                      AND gate_provenance.disposition = 'certified'
+                                      AND gate_provenance.certificate_ref = gate_receipt.result_ref
+                               )
+                           )
+                           AND json_extract(gate_receipt.intent, '$.operation') = 'gate_record'
+                           AND json_extract(gate_receipt.intent, '$.gate') = evaluation.gate_key
+                           AND json_extract(gate_receipt.intent, '$.verdict') = 'passed'
+                           AND json_extract(gate_receipt.intent, '$.evaluator_role') =
+                               evaluation.evaluator_role
+                           AND json_extract(gate_receipt.intent, '$.evaluator_account') =
+                               evaluation.evaluator_account
+                           AND json_extract(gate_receipt.intent, '$.evidence') =
+                               json(evaluation.evidence)
+                           AND abs((julianday(gate_receipt.created_at) -
+                                    julianday(evaluation.recorded_at)) * 86400.0) < 1.0
+                    )
+                    AND EXISTS (
+                        SELECT 1
+                          FROM json_each(
+                                   json_extract(workflow.snapshot, '$.definition.artifacts')
+                               ) AS artifact
+                         WHERE json_extract(artifact.value, '$.key') = cited.value
+                    )
+                  ORDER BY cited.value",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(backend)?;
+        let mut keys = BTreeSet::new();
+        for row in rows {
+            keys.insert(ExternalName::parse(&row.map_err(backend)?)?);
+        }
+        Ok(keys)
+    }
+
     /// Check a proposal's existing replay authority before semantic validation.
     ///
     /// This ordering matters for a used key whose caller changes only the failed
