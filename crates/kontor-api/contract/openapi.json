@@ -11090,6 +11090,7 @@
           "revision",
           "work_profile",
           "bundle_hash",
+          "control_plane",
           "tasks"
         ],
         "properties": {
@@ -11100,6 +11101,10 @@
           "bundle_hash": {
             "type": "string",
             "description": "A stable digest of the graph this call applied.\n\nIt covers the *content* — the epic and its revision, the pinned profile\nand team revisions, and every task's identity, title, state, dependency\nset and ticket links — and nothing about the call that applied it. So a\nbyte-identical reapply of an unchanged graph returns the same digest, and\na caller diffing it to detect drift sees drift only when the graph\nactually moved.\n\nIt is deliberately *not* the resolved bundle's digest: that one covers the\nresolution, including when it happened, and therefore differs on every\ncall. Reporting it here made drift detection fire on every replay."
+          },
+          "control_plane": {
+            "$ref": "#/components/schemas/EpicControlPlaneDto",
+            "description": "What this epic's control plane actually is, beside what it declares."
           },
           "epic_backlog_code": {
             "type": [
@@ -15497,6 +15502,40 @@
             "type": "integer",
             "format": "int32",
             "description": "The exact workflow specification revision used.",
+            "minimum": 0
+          }
+        }
+      },
+      "EpicControlPlaneDto": {
+        "type": "object",
+        "description": "What an epic's control plane *is*, as distinct from what its roster declares.\n\nAn epic is born with an ECP topology node and one live seat binding per\nmandatory role, and both are logical rows. Nothing in that sequence binds a\nnative workspace or launches a seat, so an epic could report governed\nleadership while no LSA and no TPM existed anywhere — a bound delivery\nworkspace beside an unbound control plane, with nothing saying the\ndifference mattered. That is OG-052, and this is the answer to it: the\ndifference is reported, in the same response that creates it, and it names\nthe call that closes it.\n\nDeliberately a report and not a refusal. Every epic in this realm created\nsince 2026-09-12 has an unbound ECP; gating admission on it would stop all\ndelivery to fix a visibility problem.",
+        "required": [
+          "materialized",
+          "declared_seats",
+          "staffed_seats"
+        ],
+        "properties": {
+          "completes_with": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact supported call that advances materialization, or `None` when\nthe control plane is already whole."
+          },
+          "declared_seats": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Live leadership seats the frozen roster declares on it.",
+            "minimum": 0
+          },
+          "materialized": {
+            "type": "boolean",
+            "description": "Whether the ECP node holds a native container binding."
+          },
+          "staffed_seats": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many of those hold a native session, and so could take a turn.",
             "minimum": 0
           }
         }

@@ -3487,6 +3487,8 @@ export interface components {
              *     call. Reporting it here made drift detection fire on every replay.
              */
             bundle_hash: string;
+            /** @description What this epic's control plane actually is, beside what it declares. */
+            control_plane: components["schemas"]["EpicControlPlaneDto"];
             /**
              * @description Kontor-owned immutable namespace for this epic. Legacy receipt replays
              *     created before schema v72 remain readable until an explicit epic apply
@@ -5532,6 +5534,41 @@ export interface components {
              * @description The exact workflow specification revision used.
              */
             spec_version: number;
+        };
+        /**
+         * @description What an epic's control plane *is*, as distinct from what its roster declares.
+         *
+         *     An epic is born with an ECP topology node and one live seat binding per
+         *     mandatory role, and both are logical rows. Nothing in that sequence binds a
+         *     native workspace or launches a seat, so an epic could report governed
+         *     leadership while no LSA and no TPM existed anywhere — a bound delivery
+         *     workspace beside an unbound control plane, with nothing saying the
+         *     difference mattered. That is OG-052, and this is the answer to it: the
+         *     difference is reported, in the same response that creates it, and it names
+         *     the call that closes it.
+         *
+         *     Deliberately a report and not a refusal. Every epic in this realm created
+         *     since 2026-09-12 has an unbound ECP; gating admission on it would stop all
+         *     delivery to fix a visibility problem.
+         */
+        EpicControlPlaneDto: {
+            /**
+             * @description The exact supported call that advances materialization, or `None` when
+             *     the control plane is already whole.
+             */
+            completes_with?: string | null;
+            /**
+             * Format: int32
+             * @description Live leadership seats the frozen roster declares on it.
+             */
+            declared_seats: number;
+            /** @description Whether the ECP node holds a native container binding. */
+            materialized: boolean;
+            /**
+             * Format: int32
+             * @description How many of those hold a native session, and so could take a turn.
+             */
+            staffed_seats: number;
         };
         /**
          * @description The runtime-facing identity an epic declares independently of its display
