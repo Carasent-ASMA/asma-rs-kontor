@@ -5548,6 +5548,128 @@ async fn timeline_replacement_isolates_other_agents_and_rejects_malformed_notifi
     }
 }
 
+/// ASMA-8203. The epoch a caller was given survives a restart that carries no
+/// checkpoint — which is how the daemon actually starts.
+///
+/// `PaseoCheckpoint::fresh` is what the daemon builds its adapter with, so the
+/// registry begins empty every time and allocates by first-sighting order. The
+/// same seat therefore reported epoch 5, then 11, then 1 for one unchanged
+/// transcript, and a tuple observed before a restart named different content
+/// after it. The durable mapping is what closes that, so the test restarts the
+/// way production does: fresh, then seeded from what was drained.
+#[tokio::test]
+async fn timeline_epochs_survive_a_fresh_restart_through_the_durable_mapping() {
+    let (plane, binding) = with_history().await;
+    let (_, anchor) = drain_history(&plane.adapter, &binding, 10)
+        .await
+        .expect("history");
+
+    // What the control plane would have persisted: everything allocated so far.
+    let durable = plane.adapter.drain_new_timeline_epochs();
+    assert!(
+        !durable.is_empty(),
+        "reading history allocates a mapping that has to be made durable"
+    );
+    assert!(
+        durable
+            .iter()
+            .any(|(raw, epoch)| raw == EPOCH_RAW && *epoch == anchor.epoch),
+        "the raw epoch the read resolved is the one handed over: {durable:?}"
+    );
+    // Draining is once: a second drain has nothing left to persist, so a
+    // caller cannot be told to persist the same mapping twice.
+    assert!(
+        plane.adapter.drain_new_timeline_epochs().is_empty(),
+        "a drained mapping is no longer pending"
+    );
+    // Exactly what the daemon carries across a restart: the bindings come back
+    // through `restore_bindings`, and the epoch registry does **not** — that is
+    // the gap this repair closes, so the checkpoint is emptied of it here.
+    let mut carried = plane.adapter.checkpoint();
+    carried.epochs.clear();
+    drop(plane);
+
+    let restarted = Plane::build(
+        daemon().journaling(AGENT_ID, EPOCH_RAW, vec![user_entry(1, "msg_someone_else")]),
+        carried,
+    );
+    restarted
+        .adapter
+        .restore_timeline_epochs(&durable)
+        .expect("the durable mapping is adopted");
+    // Restored pairs are not pending again: they came from the store.
+    assert!(
+        restarted.adapter.drain_new_timeline_epochs().is_empty(),
+        "restoring is not a fresh allocation"
+    );
+
+    // The same raw epoch resolves to the same u64 it did before the restart.
+    let page = restarted
+        .adapter
+        .history(&HistoryRequest {
+            binding,
+            cursor: None,
+            page_size: 10,
+        })
+        .await
+        .expect("a fresh process reads the same session");
+    assert_eq!(
+        page.epoch, anchor.epoch,
+        "the same raw epoch must resolve to the same Kontor epoch across a restart"
+    );
+}
+
+/// The crash window: allocated but never persisted must expose nothing that
+/// outlives the process.
+#[tokio::test]
+async fn an_undrained_epoch_allocation_does_not_survive_the_process() {
+    let (plane, _binding) = with_history().await;
+    let (_, anchor) = drain_history(&plane.adapter, &plane.adapter.checkpoint().bindings[0], 10)
+        .await
+        .expect("history");
+    // Deliberately do not drain: this models a crash between allocating the
+    // number and committing it.
+    drop(plane);
+
+    let restarted = Plane::build(
+        daemon().journaling(AGENT_ID, EPOCH_RAW, vec![user_entry(1, "msg_someone_else")]),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    );
+    // Nothing durable was handed over, so the new process is free to allocate
+    // afresh — which is safe precisely because no tuple was ever exposed under
+    // the lost number. What must never happen is the new process believing it
+    // already knows a mapping it was never given.
+    restarted
+        .adapter
+        .restore_timeline_epochs(&[])
+        .expect("an empty durable set restores");
+    assert!(
+        restarted.adapter.drain_new_timeline_epochs().is_empty(),
+        "a fresh process starts with nothing pending"
+    );
+    let _ = anchor;
+}
+
+/// A durable mapping that contradicts one this process already issued is a
+/// renumbering, and is refused rather than silently adopted.
+#[tokio::test]
+async fn a_contradicting_durable_epoch_mapping_is_refused() {
+    let (plane, _binding) = with_history().await;
+    let (_, anchor) = drain_history(&plane.adapter, &plane.adapter.checkpoint().bindings[0], 10)
+        .await
+        .expect("history");
+    let contradiction = vec![(EPOCH_RAW.to_owned(), anchor.epoch + 1)];
+    plane
+        .adapter
+        .restore_timeline_epochs(&contradiction)
+        .expect_err("a raw epoch cannot hold two Kontor numbers");
+    // And a zero is not a epoch at all.
+    plane
+        .adapter
+        .restore_timeline_epochs(&[("some-other-raw".to_owned(), 0)])
+        .expect_err("a timeline epoch is one-based");
+}
+
 #[tokio::test]
 async fn timeline_restart_keeps_the_raw_epoch_mapping() {
     let (plane, binding) = with_history().await;

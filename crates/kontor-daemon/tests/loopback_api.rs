@@ -24486,6 +24486,48 @@ async fn observing_a_current_turn_fails_closed_on_every_unreadable_shape() {
     assert_eq!(other_epoch.code(), "timeline_refetch_required");
 }
 
+/// ASMA-8203. The persist-before-expose barrier, at the API boundary.
+///
+/// A Kontor epoch number is allocated by the adapter on first sight of a raw
+/// native epoch. It is only meaningful if it survives a restart, so nothing
+/// addressed by it may reach a caller — or be consumed by settlement — before
+/// the mapping is durable. The assertion is ordering, not existence: by the
+/// time a read has returned, the row is already committed.
+#[tokio::test]
+async fn a_history_read_persists_its_epoch_mapping_before_returning() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, _snapshot) = world.launch().await;
+
+    // The host the fake's bindings carry, read from the binding itself so the
+    // assertion cannot drift from the scope the mapping is keyed under.
+    let host = _snapshot.identity().host.as_str().to_owned();
+    let kind = fake_family();
+    let before = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(kind.as_str(), &host))
+        .unwrap_or_default();
+
+    let timeline = Call::get(format!("/v1/sessions/{run}/timeline?limit=5"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(timeline.status, 200, "{}", timeline.body);
+    let epoch = timeline.json()["epoch"].as_u64().expect("an epoch");
+
+    // Already durable at the moment the page was handed over.
+    let after = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(kind.as_str(), &host))
+        .expect("durable epochs read");
+    assert!(
+        after.iter().any(|(_, mapped)| *mapped == epoch),
+        "the epoch the caller was given is durable before it was given: before={before:?} after={after:?}"
+    );
+}
+
 /// A duplicate that straddles the `after` cursor is still a duplicate.
 ///
 /// The P1 the audit found. `after` used to scope duplicate tracking to the

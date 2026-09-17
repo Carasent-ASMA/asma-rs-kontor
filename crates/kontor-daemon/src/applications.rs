@@ -16431,14 +16431,22 @@ impl Services {
             ));
         }
         for _ in 0..64 {
-            let page = adapter
-                .history(&HistoryRequest {
-                    binding: issued.snapshot().clone(),
-                    cursor,
-                    page_size,
-                })
-                .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            // Through the same barrier every other history read uses. A
+            // settlement must never consume a position addressed by an epoch
+            // number that is not yet durable: if this process died here, the
+            // next one would resolve the same raw epoch to something else and
+            // the tuple would name different content.
+            let page = state
+                .history_with_durable_epochs(
+                    adapter.as_ref(),
+                    issued.snapshot().identity(),
+                    &HistoryRequest {
+                        binding: issued.snapshot().clone(),
+                        cursor,
+                        page_size,
+                    },
+                )
+                .await?;
             for event in &page.items {
                 if event.position == message_position
                     && event.kind == SessionEventKind::Message

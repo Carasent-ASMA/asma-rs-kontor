@@ -3824,6 +3824,84 @@ impl SqliteStore {
     /// # Errors
     /// Backend failures only. This is a claim, not authority, so nothing here
     /// judges it — the issuing runtime does that when it is handed back.
+    /// Durably record newly allocated timeline-epoch mappings for one runtime.
+    ///
+    /// The barrier ASMA-8203 exists for: a Kontor epoch number must be durable
+    /// *before* any tuple carrying it is handed to a caller or consumed by
+    /// settlement. One transaction, so a crash either leaves the mapping absent
+    /// — and nothing was exposed under it — or leaves it complete.
+    ///
+    /// Existing rows are never rewritten. `ON CONFLICT DO NOTHING` is the whole
+    /// continuity guarantee: a raw epoch that already has a number keeps it, so
+    /// restoring a registry can never renumber what `role_turns` already
+    /// settled under.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn persist_timeline_epochs(
+        &self,
+        runtime_kind: &str,
+        host: &str,
+        pairs: &[(String, u64)],
+        recorded_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        if pairs.is_empty() {
+            return Ok(());
+        }
+        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO runtime_timeline_epochs
+                         (runtime_kind, host, raw_epoch, kontor_epoch, recorded_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT (runtime_kind, host, raw_epoch) DO NOTHING",
+                )
+                .map_err(backend)?;
+            for (raw, epoch) in pairs {
+                statement
+                    .execute(params![
+                        runtime_kind,
+                        host,
+                        raw.as_str(),
+                        i64::try_from(*epoch).unwrap_or(i64::MAX),
+                        recorded_at.to_string(),
+                    ])
+                    .map_err(backend)?;
+            }
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Every durable epoch mapping this runtime allocated, for registry restore.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn list_timeline_epochs(
+        &self,
+        runtime_kind: &str,
+        host: &str,
+    ) -> RepositoryResult<Vec<(String, u64)>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT raw_epoch, kontor_epoch FROM runtime_timeline_epochs
+                 WHERE runtime_kind = ?1 AND host = ?2 ORDER BY kontor_epoch",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![runtime_kind, host])
+            .map_err(backend)?;
+        let mut pairs = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let raw: String = row.get(0).map_err(backend)?;
+            let epoch: i64 = row.get(1).map_err(backend)?;
+            pairs.push((raw, u64::try_from(epoch).unwrap_or_default()));
+        }
+        Ok(pairs)
+    }
+
     pub fn persist_binding_snapshot(
         &self,
         binding_id: RuntimeBindingId,

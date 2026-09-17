@@ -467,9 +467,7 @@ fn the_bundled_pack_declares_per_slot_autonomy_as_a_new_revision() {
             .teams
             .iter()
             .find(|team| team.template_id == first.template_id && team.version == second)
-            .unwrap_or_else(|| {
-                panic!("template {} ships a v2 revision", first.template_id)
-            });
+            .unwrap_or_else(|| panic!("template {} ships a v2 revision", first.template_id));
 
         for slot in &shipped.slots {
             assert_eq!(

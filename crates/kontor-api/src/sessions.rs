@@ -247,15 +247,17 @@ pub async fn timeline(
         .transpose()
         .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
 
-    let mut page = session
-        .adapter
-        .history(&HistoryRequest {
-            binding: session.snapshot.clone(),
-            cursor,
-            page_size,
-        })
-        .await
-        .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+    let mut page = state
+        .history_with_durable_epochs(
+            session.adapter.as_ref(),
+            session.snapshot.identity(),
+            &HistoryRequest {
+                binding: session.snapshot.clone(),
+                cursor,
+                page_size,
+            },
+        )
+        .await?;
 
     let mut reader = match resume {
         None => HistoryReader::start(session.snapshot.binding_id(), page.epoch),
@@ -292,6 +294,7 @@ const OBSERVE_PAGE_BUDGET: usize = 64;
 /// leaves uniqueness unproven, and an unproven uniqueness must not be reported
 /// as a clean turn.
 async fn prefix_occurrences(
+    state: &ApiState,
     session: &Session,
     realm_id: RealmId,
     page_size: u32,
@@ -302,15 +305,17 @@ async fn prefix_occurrences(
     let mut reader: Option<HistoryReader> = None;
     let mut found = 0usize;
     for _ in 0..OBSERVE_PAGE_BUDGET {
-        let mut page = session
-            .adapter
-            .history(&HistoryRequest {
-                binding: session.snapshot.clone(),
-                cursor,
-                page_size,
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+        let mut page = state
+            .history_with_durable_epochs(
+                session.adapter.as_ref(),
+                session.snapshot.identity(),
+                &HistoryRequest {
+                    binding: session.snapshot.clone(),
+                    cursor,
+                    page_size,
+                },
+            )
+            .await?;
         let reader = reader
             .get_or_insert_with(|| HistoryReader::start(session.snapshot.binding_id(), page.epoch));
         reader
@@ -320,8 +325,8 @@ async fn prefix_occurrences(
             if event.position.sequence > through.sequence {
                 break;
             }
-            if let EventSubject::Message(id) = &event.subject
-                && *id == wanted
+            if let EventSubject::Message(id) = event.subject
+                && id == wanted
             {
                 found += 1;
             }
@@ -439,15 +444,17 @@ pub async fn observe_current_turn(
     let mut exhausted = false;
 
     for _ in 0..OBSERVE_PAGE_BUDGET {
-        let mut page = session
-            .adapter
-            .history(&HistoryRequest {
-                binding: session.snapshot.clone(),
-                cursor: cursor.clone(),
-                page_size,
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+        let mut page = state
+            .history_with_durable_epochs(
+                session.adapter.as_ref(),
+                session.snapshot.identity(),
+                &HistoryRequest {
+                    binding: session.snapshot.clone(),
+                    cursor: cursor.clone(),
+                    page_size,
+                },
+            )
+            .await?;
 
         // The same exactly-once validation `/timeline` applies. A gap, a
         // redelivered position or a changed epoch is refused rather than
@@ -519,7 +526,8 @@ pub async fn observe_current_turn(
         + match resume {
             None => 0,
             Some(resume_at) => {
-                prefix_occurrences(&session, realm_id, page_size, resume_at, message_id).await?
+                prefix_occurrences(&state, &session, realm_id, page_size, resume_at, message_id)
+                    .await?
             }
         };
     if occurrences > 1 {
@@ -915,15 +923,17 @@ async fn ensure_raised_here(
     let mut cursor: Option<HistoryCursor> = None;
     let mut raised = BTreeSet::new();
     loop {
-        let page = session
-            .adapter
-            .history(&HistoryRequest {
-                binding: session.snapshot.clone(),
-                cursor: cursor.clone(),
-                page_size: DEFAULT_PAGE,
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+        let page = state
+            .history_with_durable_epochs(
+                session.adapter.as_ref(),
+                session.snapshot.identity(),
+                &HistoryRequest {
+                    binding: session.snapshot.clone(),
+                    cursor: cursor.clone(),
+                    page_size: DEFAULT_PAGE,
+                },
+            )
+            .await?;
         raised.extend(
             page.items
                 .iter()
