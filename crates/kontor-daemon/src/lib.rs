@@ -93,6 +93,9 @@ pub const COMPLETION_SCAN_PAGE: u32 = 64;
 /// Period between bounded completion reopening scans.
 pub const COMPLETION_SCAN_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Maximum unconfirmed admissions retried in one resident scan.
+const UNCONFIRMED_ADMISSION_SCAN_LIMIT: u32 = 16;
+
 /// How many simultaneous runs a Realm admits before the planner refuses.
 ///
 /// These are the numbers a Realm ran under when they were compiled into the
@@ -601,6 +604,49 @@ impl Daemon {
                                 "a completion reopening scan could not complete"
                             ),
                         }
+                    }
+                }
+            }
+        })
+    }
+
+    /// Run bounded exact admission recovery after startup reconciliation.
+    #[must_use]
+    pub fn spawn_admission_reconciler(&self, period: Duration) -> tokio::task::JoinHandle<()> {
+        let state = self.state.clone();
+        let applications = Arc::clone(&self.applications);
+        tokio::spawn(async move {
+            let mut stopping = state.signals().stops();
+            if *stopping.borrow_and_update() {
+                return;
+            }
+            let barrier = tokio::select! {
+                barrier = state.barrier().settled() => barrier,
+                _ = stopping.changed() => return,
+            };
+            if barrier != BarrierState::Open {
+                return;
+            }
+            let mut ticker = tokio::time::interval(period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = stopping.changed() => return,
+                    _ = ticker.tick() => {}
+                }
+                tokio::select! {
+                    _ = stopping.changed() => return,
+                    result = applications.recover_unconfirmed_admissions(UNCONFIRMED_ADMISSION_SCAN_LIMIT) => match result {
+                        Ok((recovered, blocked)) if recovered > 0 || blocked > 0 => info!(
+                            recovered,
+                            blocked,
+                            "unconfirmed runtime attachments reconciled"
+                        ),
+                        Ok(_) => {},
+                        Err(error) => warn!(
+                            detail = %error.code.as_str(),
+                            "unconfirmed runtime attachment scan could not complete"
+                        ),
                     }
                 }
             }

@@ -287,7 +287,7 @@ use kontor_store::{
     NewJiraMaterializationItem, NewRoleTurn, ProfileSelection, ProjectEnsure, RegisteredPack,
     RoleTurnReplay, RoleTurnRuntimeProof, SettledTurn, SqliteStore, StoredConflict,
     StoredConsultationPermissionResponse, StoredTeamDraft, StoredTeamsProjection,
-    TeamTemplateSource, TurnDispatch,
+    TeamTemplateSource, TurnDispatch, UnconfirmedAdmission,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 use kontor_teams::{
@@ -846,6 +846,66 @@ impl Services {
             }
         }
         Ok(confirmed)
+    }
+
+    /// Retry the bounded set of admitted roots that never attached.
+    ///
+    /// The immutable admission supplies every identity and the original launch
+    /// key. Replaying through `seat_with_address` therefore reuses the TeamRun,
+    /// AgentRun, seat, workspace, and project instead of minting replacements.
+    pub(crate) async fn recover_unconfirmed_admissions(
+        &self,
+        limit: u32,
+    ) -> Result<(usize, usize), ApiError> {
+        let state = self.state()?;
+        if !state.barrier().state().is_open() {
+            return Ok((0, 0));
+        }
+        let admissions = state
+            .with_store(|store| store.unconfirmed_admissions(None, None, limit))
+            .map_err(|error| self.refuse(&error))?;
+        let attempted = !admissions.is_empty();
+        let mut recovered = 0;
+        let mut blocked = 0;
+        for admission in admissions {
+            let project_id = admission.recovery.admitted.project_id;
+            let task_id = admission.recovery.admitted.task_id;
+            let outcome = self
+                .seat_with_address(
+                    project_id,
+                    &admission.recovery.admitted,
+                    &admission.recovery.launch_key,
+                    Some(admission.team_run_id),
+                    Some(admission.agent_run_id),
+                    None,
+                )
+                .await;
+            let (started, refusals) = match outcome {
+                Ok(started) => {
+                    recovered += 1;
+                    (started, Vec::new())
+                }
+                Err(refusal) => {
+                    blocked += 1;
+                    tracing::warn!(
+                        project_id = %project_id,
+                        epic_id = %admission.epic_id,
+                        task_id = %task_id,
+                        team_run_id = %admission.team_run_id,
+                        agent_run_id = %admission.agent_run_id,
+                        code = %refusal.code.as_str(),
+                        "an admitted run still could not confirm runtime attachment"
+                    );
+                    (Vec::new(), vec![seat_block(task_id, &refusal)])
+                }
+            };
+            self.mark_started_tasks_in_progress(project_id, &started, &refusals)?;
+        }
+        if attempted {
+            self.retry_undelivered_dispatches().await?;
+            state.signals().appended();
+        }
+        Ok((recovered, blocked))
     }
 
     /// The attached state, or the refusal a request is owed before one exists.
@@ -11953,6 +12013,26 @@ fn seat_block(task_id: TaskId, refusal: &ApiError) -> BlockedTaskDto {
         code: refusal.code.as_str().to_owned(),
         action: refusal.action.to_owned(),
         evidence: vec![evidence],
+    }
+}
+
+/// The visible state of a durable admission awaiting its first attachment.
+fn unconfirmed_admission_block(admission: &UnconfirmedAdmission) -> BlockedTaskDto {
+    BlockedTaskDto {
+        task_id: admission.recovery.admitted.task_id,
+        code: "runtime_attachment_unconfirmed".to_owned(),
+        action: "automatic recovery owns the retry; if it remains blocked, call kontor_scheduler_resume with the named TeamRun and AgentRun"
+            .to_owned(),
+        evidence: vec![serde_json::json!({
+            "kind": "runtime_attachment",
+            "owner": "kontor_scheduler",
+            "team_run_id": admission.team_run_id,
+            "agent_run_id": admission.agent_run_id,
+            "desired": "run_requested",
+            "observed": "unknown",
+            "binding": null,
+            "admitted_at": admission.admitted_at,
+        })],
     }
 }
 
@@ -25920,6 +26000,14 @@ impl ApplicationOperations for Services {
         let plan =
             kontor_scheduler::ready::plan(&snapshot).map_err(|error| self.refuse_domain(&error))?;
         let document = plan_digest(&plan).map_err(|error| self.refuse_domain(&error))?;
+        let unconfirmed: BTreeMap<TaskId, UnconfirmedAdmission> = state
+            .with_store(|store| {
+                store.unconfirmed_admissions(Some(project_id), Some(epic_id), u32::MAX)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .map(|admission| (admission.recovery.admitted.task_id, admission))
+            .collect();
         let mut ready = Vec::new();
         let mut blocked = Vec::new();
         let mut authorizations = BTreeSet::new();
@@ -25941,11 +26029,9 @@ impl ApplicationOperations for Services {
                     code,
                     evidence,
                     ..
-                } => blocked.push(blocked_task(
-                    *task_id,
-                    code.public_code(),
-                    code.next_action(),
-                    evidence,
+                } => blocked.push(unconfirmed.get(task_id).map_or_else(
+                    || blocked_task(*task_id, code.public_code(), code.next_action(), evidence),
+                    unconfirmed_admission_block,
                 )),
             }
         }
