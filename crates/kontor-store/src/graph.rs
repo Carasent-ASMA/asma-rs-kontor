@@ -3989,6 +3989,127 @@ impl SqliteStore {
         Ok(pairs)
     }
 
+    /// Record that Kontor issued one client message id to one exact binding.
+    ///
+    /// The write that makes observation bounded. Uniqueness is enforced by the
+    /// primary key inside the transaction rather than checked beforehand: a
+    /// check-then-write would leave the window this ledger exists to close.
+    ///
+    /// A **replay** is recognised, not refused. The same id presented again for
+    /// the same binding, session and idempotency key is the retry of an effect
+    /// the runtime may already have committed, and it returns `Ok` having
+    /// written nothing. The same id against a *different* session is the thing
+    /// that must never be true, and it refuses.
+    ///
+    /// # Errors
+    /// Backend failures, and a conflict when this id was already issued
+    /// somewhere else.
+    pub fn record_message_issuance(
+        &self,
+        issuance: &MessageIssuance,
+    ) -> RepositoryResult<MessageIssuanceOutcome> {
+        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
+        let written = transaction
+            .execute(
+                "INSERT INTO runtime_message_issuances
+                     (message_id, runtime_kind, host, runtime_binding_id,
+                      native_session_id, idempotency_key, provenance, issued_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (message_id) DO NOTHING",
+                params![
+                    issuance.message_id.as_str(),
+                    issuance.runtime_kind.as_str(),
+                    issuance.host.as_str(),
+                    issuance.runtime_binding_id.as_str(),
+                    issuance.native_session_id.as_str(),
+                    issuance.idempotency_key.as_str(),
+                    issuance.provenance.as_str(),
+                    issuance.issued_at.to_string(),
+                ],
+            )
+            .map_err(backend)?;
+        if written == 1 {
+            transaction.commit().map_err(backend)?;
+            return Ok(MessageIssuanceOutcome::Recorded);
+        }
+        // Already there. Whether that is this caller's own retry or a different
+        // session claiming an issued id is decided by the row, not by the
+        // caller's say-so.
+        let held: (String, String, String) = transaction
+            .query_row(
+                "SELECT runtime_binding_id, native_session_id, idempotency_key
+                   FROM runtime_message_issuances WHERE message_id = ?1",
+                params![issuance.message_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        if held.0 == issuance.runtime_binding_id
+            && held.1 == issuance.native_session_id
+            && held.2 == issuance.idempotency_key
+        {
+            return Ok(MessageIssuanceOutcome::Replayed);
+        }
+        Err(RepositoryError::Conflict {
+            subject: "runtime_message_issuances.message_id",
+            rule: "this client message id was already issued to a different session",
+        })
+    }
+
+    /// The issuance recorded for one client message id, if Kontor issued it.
+    ///
+    /// Absence is meaningful and is not an error: it means this realm never
+    /// minted that id, or minted it before the ledger existed.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn message_issuance(&self, message_id: &str) -> RepositoryResult<Option<MessageIssuance>> {
+        let row: Option<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        )> = self
+            .connection
+            .query_row(
+                "SELECT message_id, runtime_kind, host, runtime_binding_id,
+                        native_session_id, idempotency_key, provenance, issued_at
+                   FROM runtime_message_issuances WHERE message_id = ?1",
+                params![message_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|row| {
+            Ok(MessageIssuance {
+                message_id: row.0,
+                runtime_kind: row.1,
+                host: row.2,
+                runtime_binding_id: row.3,
+                native_session_id: row.4,
+                idempotency_key: row.5,
+                provenance: row.6,
+                issued_at: read_timestamp(&row.7)?,
+            })
+        })
+        .transpose()
+    }
+
     /// Keep the frozen snapshot a runtime issued for one binding.
     ///
     /// Replaceable, because a rebind for the same binding id issues a new
@@ -4109,6 +4230,41 @@ pub struct NewRoleSlotWaiver {
     pub evidence_hash: ContentHash,
     /// When it was recorded.
     pub recorded_at: Timestamp,
+}
+
+/// One recorded issuance of a Kontor-minted client message id.
+///
+/// The identity-bearing half — binding, native session and idempotency key — is
+/// what a replay must match and what a different session claiming an already
+/// issued id will fail to match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageIssuance {
+    /// The client message id Kontor minted.
+    pub message_id: String,
+    /// The runtime family it was issued into.
+    pub runtime_kind: String,
+    /// The host of that runtime.
+    pub host: String,
+    /// The exact runtime binding it was issued to.
+    pub runtime_binding_id: String,
+    /// The native session behind that binding when it was issued.
+    pub native_session_id: String,
+    /// The caller's stable key for the issuing call.
+    pub idempotency_key: String,
+    /// Which Kontor path issued it.
+    pub provenance: String,
+    /// When it was recorded, before the runtime was asked to accept it.
+    pub issued_at: Timestamp,
+}
+
+/// What recording an issuance did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageIssuanceOutcome {
+    /// A first issuance; the row is new.
+    Recorded,
+    /// The same id, binding, session and key as the row already held. The
+    /// caller is retrying an effect the runtime may already have committed.
+    Replayed,
 }
 
 /// One recorded waiver.

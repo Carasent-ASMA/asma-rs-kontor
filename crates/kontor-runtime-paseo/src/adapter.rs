@@ -658,9 +658,26 @@ impl EpochRegistry {
         self.next
     }
 
-    /// Take what has not been persisted yet.
-    fn drain(&mut self) -> Vec<(String, u64)> {
-        std::mem::take(&mut self.undrained)
+    /// What has not been persisted yet, without forgetting it.
+    ///
+    /// Reading the list must not discharge the obligation it represents. A take
+    /// here would mean a caller whose commit failed had already lost the only
+    /// record that these numbers are undurable — and `resolve` would go on
+    /// serving them from `by_raw`, so they would never be offered again.
+    fn pending(&self) -> Vec<(String, u64)> {
+        self.undrained.clone()
+    }
+
+    /// Drop exactly the pairs a caller has made durable.
+    ///
+    /// Exactly, and no more: an allocation that happened while the caller was
+    /// committing is still pending and keeps its place in the queue, so the
+    /// order the numbers were issued in is the order they are offered in.
+    /// `by_raw` is untouched — acknowledging is about durability, not about
+    /// forgetting a mapping this process is still using.
+    fn ack(&mut self, persisted: &[(String, u64)]) {
+        self.undrained
+            .retain(|pending| !persisted.contains(pending));
     }
 
     /// Adopt durable mappings. Known raws keep their number; the allocator
@@ -5374,12 +5391,117 @@ impl RuntimeAdapter for PaseoAdapter {
     /// still exist here?*. Rebuilding capabilities from a fresh
     /// `discover_capabilities` would re-grade a binding whose session never
     /// changed, which is precisely what the freeze rule exists to stop.
-    fn drain_new_timeline_epochs(&self) -> Vec<(String, u64)> {
-        self.lock().epochs.drain()
+    fn pending_timeline_epochs(&self) -> Vec<(String, u64)> {
+        self.lock().epochs.pending()
+    }
+
+    fn ack_timeline_epochs(&self, persisted: &[(String, u64)]) {
+        self.lock().epochs.ack(persisted);
     }
 
     fn restore_timeline_epochs(&self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
         self.lock().epochs.adopt(pairs)
+    }
+
+    /// At most `max_pages` pages of the newest content, never a walk to origin.
+    ///
+    /// The same backwards stepping the cursor-free [`RuntimeAdapter::history`]
+    /// path does, stopped at a budget instead of at the beginning of the
+    /// session. That is the whole difference, and it is what makes observing a
+    /// three-event turn cost three events rather than the transcript in front of
+    /// it.
+    ///
+    /// The non-advancing guard is kept verbatim: a page whose newest item is not
+    /// older than the cursor it was fetched before is a runtime that is not
+    /// making progress, and continuing would loop. Epoch agreement is enforced
+    /// on every step, so a window never splices two numberings together.
+    async fn tail_window(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        page_size: u32,
+        max_pages: usize,
+    ) -> RuntimeResult<HistoryPage> {
+        let binding = self.attested(binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::History,
+        )
+        .await?;
+        let declared = self.declared().await?;
+        let generation = self.generation();
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(page_size)),
+                context_policy: None,
+            },
+        )?;
+        let native_id = binding.identity().native_id.as_str().to_owned();
+        let mut page = self
+            .fetch_canonical(
+                &native_id,
+                PaseoDirection::Tail,
+                None,
+                page_size,
+                PaseoProjection::Canonical,
+            )
+            .await?;
+        let epoch = self.resolve_epoch(&page.epoch, None)?;
+        let mut items = self.normalize_page(&page, epoch)?;
+        let mut read = 1usize;
+        while page.has_older && read < max_pages.max(1) {
+            let before =
+                page.start_cursor
+                    .clone()
+                    .ok_or(RuntimeError::TimelineRefetchRequired {
+                        reason: TimelineBreak::SequenceGap,
+                    })?;
+            if before.epoch != page.epoch {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::EpochChanged,
+                });
+            }
+            let older = self
+                .fetch_canonical(
+                    &native_id,
+                    PaseoDirection::Before,
+                    Some(&before),
+                    page_size,
+                    PaseoProjection::Canonical,
+                )
+                .await?;
+            self.resolve_epoch(&older.epoch, Some(epoch))?;
+            let older_items = self.normalize_page(&older, epoch)?;
+            if older_items
+                .last()
+                .is_none_or(|event| event.position.sequence >= before.seq)
+            {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::SequenceGap,
+                });
+            }
+            let mut merged = older_items;
+            merged.append(&mut items);
+            items = merged;
+            page = older;
+            read += 1;
+        }
+        let end = items
+            .last()
+            .map_or(TimelinePosition::start_of(epoch), |event| event.position);
+        Ok(HistoryPage {
+            epoch,
+            items,
+            // The window ends at the tail; there is nothing after it.
+            next: None,
+            end,
+        })
     }
 
     /// One tail entry, read only for the epoch it is stamped with.
@@ -8818,6 +8940,91 @@ impl PaseoAdapter {
             }
         }
         Ok(placements)
+    }
+}
+
+#[cfg(test)]
+mod epoch_registry_tests {
+    use super::EpochRegistry;
+
+    fn fresh() -> EpochRegistry {
+        EpochRegistry::restore(&[]).expect("an empty registry restores")
+    }
+
+    /// Reading the pending list is not the same event as persisting it.
+    ///
+    /// The audit's P1 in miniature. A take here meant a caller whose commit
+    /// failed had already lost the only record that these numbers are not
+    /// durable — and `resolve` would keep serving them out of `by_raw`, so they
+    /// would never be offered again.
+    #[test]
+    fn pending_does_not_discharge_the_obligation_it_reports() {
+        let mut registry = fresh();
+        assert_eq!(registry.resolve("raw-a"), 1);
+
+        assert_eq!(registry.pending(), vec![("raw-a".to_owned(), 1)]);
+        assert_eq!(
+            registry.pending(),
+            vec![("raw-a".to_owned(), 1)],
+            "reading twice reports the same outstanding work"
+        );
+
+        registry.ack(&[("raw-a".to_owned(), 1)]);
+        assert!(
+            registry.pending().is_empty(),
+            "only an acknowledgement clears it"
+        );
+        assert_eq!(
+            registry.resolve("raw-a"),
+            1,
+            "and acknowledging durability does not forget the mapping itself"
+        );
+    }
+
+    /// An acknowledgement drops exactly what it names, in place.
+    ///
+    /// A caller commits the list it read; anything allocated while that commit
+    /// was in flight is still undurable and must keep both its place and its
+    /// turn. Clearing wholesale would silently drop it.
+    #[test]
+    fn ack_keeps_what_it_was_not_told_about_in_allocation_order() {
+        let mut registry = fresh();
+        assert_eq!(registry.resolve("raw-a"), 1);
+        let committing = registry.pending();
+
+        // Allocated after the caller read the list, before it acknowledged.
+        assert_eq!(registry.resolve("raw-b"), 2);
+        assert_eq!(registry.resolve("raw-c"), 3);
+
+        registry.ack(&committing);
+        assert_eq!(
+            registry.pending(),
+            vec![("raw-b".to_owned(), 2), ("raw-c".to_owned(), 3)],
+            "the later allocations survive, in the order they were issued"
+        );
+
+        // Idempotent on both sides: a retry after an ambiguous failure must not
+        // be punished, and a pair this registry never held is not an error.
+        registry.ack(&committing);
+        registry.ack(&[("raw-never-seen".to_owned(), 99)]);
+        assert_eq!(
+            registry.pending(),
+            vec![("raw-b".to_owned(), 2), ("raw-c".to_owned(), 3)],
+            "a repeated or unknown acknowledgement changes nothing"
+        );
+    }
+
+    /// Re-resolving a raw epoch already pending does not queue it twice.
+    #[test]
+    fn a_known_raw_epoch_is_never_queued_a_second_time() {
+        let mut registry = fresh();
+        assert_eq!(registry.resolve("raw-a"), 1);
+        assert_eq!(registry.resolve("raw-a"), 1);
+        assert_eq!(
+            registry.pending(),
+            vec![("raw-a".to_owned(), 1)],
+            "one allocation is one pending entry"
+        );
     }
 }
 

@@ -5565,7 +5565,7 @@ async fn timeline_epochs_survive_a_fresh_restart_through_the_durable_mapping() {
         .expect("history");
 
     // What the control plane would have persisted: everything allocated so far.
-    let durable = plane.adapter.drain_new_timeline_epochs();
+    let durable = plane.adapter.pending_timeline_epochs();
     assert!(
         !durable.is_empty(),
         "reading history allocates a mapping that has to be made durable"
@@ -5576,11 +5576,19 @@ async fn timeline_epochs_survive_a_fresh_restart_through_the_durable_mapping() {
             .any(|(raw, epoch)| raw == EPOCH_RAW && *epoch == anchor.epoch),
         "the raw epoch the read resolved is the one handed over: {durable:?}"
     );
-    // Draining is once: a second drain has nothing left to persist, so a
-    // caller cannot be told to persist the same mapping twice.
+    // Reading the list does not discharge it. A caller that read and then
+    // failed to commit must still find the pairs here, which is the whole
+    // reason this is a peek and not a take.
+    assert_eq!(
+        plane.adapter.pending_timeline_epochs(),
+        durable,
+        "an unacknowledged mapping is still pending"
+    );
+    // Acknowledging is what ends the obligation, and it ends exactly that one.
+    plane.adapter.ack_timeline_epochs(&durable);
     assert!(
-        plane.adapter.drain_new_timeline_epochs().is_empty(),
-        "a drained mapping is no longer pending"
+        plane.adapter.pending_timeline_epochs().is_empty(),
+        "an acknowledged mapping is no longer pending"
     );
     // Exactly what the daemon carries across a restart: the bindings come back
     // through `restore_bindings`, and the epoch registry does **not** — that is
@@ -5599,7 +5607,7 @@ async fn timeline_epochs_survive_a_fresh_restart_through_the_durable_mapping() {
         .expect("the durable mapping is adopted");
     // Restored pairs are not pending again: they came from the store.
     assert!(
-        restarted.adapter.drain_new_timeline_epochs().is_empty(),
+        restarted.adapter.pending_timeline_epochs().is_empty(),
         "restoring is not a fresh allocation"
     );
 
@@ -5644,7 +5652,7 @@ async fn an_undrained_epoch_allocation_does_not_survive_the_process() {
         .restore_timeline_epochs(&[])
         .expect("an empty durable set restores");
     assert!(
-        restarted.adapter.drain_new_timeline_epochs().is_empty(),
+        restarted.adapter.pending_timeline_epochs().is_empty(),
         "a fresh process starts with nothing pending"
     );
     let _ = anchor;

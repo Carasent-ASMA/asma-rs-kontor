@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 103;
+pub const SCHEMA_VERSION: i64 = 104;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -383,6 +383,10 @@ const MIGRATIONS: &[&str] = &[
     // before the native call and consumed when the occupancy binds, so a lost
     // acknowledgement cannot leave a live native whose intent nothing holds.
     include_str!("../migrations/0103_hosted_seat_launch_intents.sql"),
+    // Schema v104. Every client message id Kontor issues is recorded against the
+    // exact binding it was issued to, so proving one unambiguous is a key lookup
+    // rather than a walk of the session's whole canonical content.
+    include_str!("../migrations/0104_runtime_message_issuances.sql"),
 ];
 
 const _: () = assert!(

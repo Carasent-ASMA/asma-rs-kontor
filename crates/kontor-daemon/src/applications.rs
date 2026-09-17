@@ -4995,6 +4995,20 @@ impl Services {
         {
             return Ok(false);
         }
+        // The same ledger the operator path writes, for the same reason and in
+        // the same order: before the runtime is asked to accept it. A follow-up
+        // is a Kontor-minted id in a session exactly like a direct send, and an
+        // observation of the turn it opens has to be able to prove it
+        // unambiguous without reading the whole transcript. The dispatch row
+        // fixes the id across retries, so a replay recognises its own issuance
+        // rather than writing a second one.
+        state.record_message_issuance(
+            request.binding.identity(),
+            request.binding.binding_id(),
+            message_id,
+            "handoff_dispatch",
+            &message_id.to_string(),
+        )?;
         match adapter.send(&request).await {
             Ok(_) => {
                 state
@@ -16647,25 +16661,13 @@ impl Services {
             cursor,
             page_size,
         };
-        let identity = issued.snapshot().identity();
-        // Through the same barrier every other history read uses. A settlement
-        // must never consume a position addressed by an epoch number that is
-        // not yet durable: if this process died here, the next one would
-        // resolve the same raw epoch to something else and the tuple would name
-        // different content.
-        match state
-            .history_with_durable_epochs(adapter, identity, &request)
-            .await
-        {
-            Ok(page) => return Ok(page),
-            Err(error) if error.code == ApiErrorCode::TimelineRefetchRequired => {}
-            Err(error) => return Err(error),
-        }
+        // Through the same barrier and the same single recovery every derived
+        // read uses. A settlement must never consume a position addressed by an
+        // epoch number that is not yet durable: if this process died here, the
+        // next one would resolve the same raw epoch to something else and the
+        // tuple would name different content.
         state
-            .refresh_timeline_epoch_durably(adapter, identity, issued.snapshot())
-            .await?;
-        state
-            .history_with_durable_epochs(adapter, identity, &request)
+            .history_recovering_epoch_once(adapter, issued.snapshot().identity(), &request)
             .await
     }
 

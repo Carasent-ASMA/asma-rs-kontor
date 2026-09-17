@@ -1161,8 +1161,8 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
-    /// Take the timeline-epoch mappings this adapter has allocated since the
-    /// last drain, and forget that they are new.
+    /// The timeline-epoch mappings this adapter has allocated and not yet been
+    /// told are durable.
     ///
     /// The runtime boundary for epoch continuity. An adapter allocates a Kontor
     /// epoch number the first time it sees a raw native epoch, and that number
@@ -1170,17 +1170,77 @@ pub trait RuntimeAdapter: Send + Sync {
     /// reach a store to make it survive. So it surfaces the pairs here and the
     /// control plane persists them.
     ///
-    /// Draining is the *whole* contract: the caller has taken responsibility
-    /// for durability, so it must persist before exposing or consuming anything
-    /// addressed by these numbers. An adapter that has allocated nothing since
-    /// the last drain returns empty, which is the common case and costs a lock.
-    fn drain_new_timeline_epochs(&self) -> Vec<(String, u64)> {
+    /// A **peek**, deliberately, and this is the whole of the contract. Handing
+    /// the pairs over is not the same event as their becoming durable: a caller
+    /// that took them and then failed to commit would leave numbers that are
+    /// live in this process and absent from the store, and the next read of the
+    /// same raw epoch would be served from cache and never offered again. So
+    /// nothing is forgotten here. The caller persists what it reads and then
+    /// says so through [`RuntimeAdapter::ack_timeline_epochs`]; until it does,
+    /// these stay pending and every later call sees them again. An adapter with
+    /// nothing outstanding returns empty, which is the common case.
+    fn pending_timeline_epochs(&self) -> Vec<(String, u64)> {
         Vec::new()
+    }
+
+    /// Forget that `persisted` are pending, because they are now durable.
+    ///
+    /// The acknowledgement half of [`RuntimeAdapter::pending_timeline_epochs`],
+    /// and the only thing that may clear a pending mapping. Exactly the pairs
+    /// named are dropped: anything allocated while the caller was committing is
+    /// still outstanding and must survive, in the order it was allocated, so the
+    /// next acknowledgement can take it.
+    ///
+    /// Acknowledging a pair twice, or one this adapter never held, is not an
+    /// error. Persistence is idempotent on both sides — the store writes the
+    /// mapping once and a repeated commit is a no-op — so a caller that retries
+    /// after an ambiguous failure must not be punished for it.
+    fn ack_timeline_epochs(&self, persisted: &[(String, u64)]) {
+        let _ = persisted;
+    }
+
+    /// The newest content of a session, bounded, without walking to its origin.
+    ///
+    /// A cursor-free [`RuntimeAdapter::history`] read is an *origin* page: the
+    /// caller is promised everything before it was seen, so an adapter whose
+    /// native read is a tail window has to walk backwards until nothing older
+    /// remains. That walk costs a request per page of transcript, which is
+    /// exactly what makes observing a current turn on a long-lived seat
+    /// impossible — the turn is three events at the tail and the read is the
+    /// whole session.
+    ///
+    /// This asks the other question. It returns at most `max_pages` pages of the
+    /// *newest* content, in ascending order, all within one epoch, and promises
+    /// nothing about what precedes them. `next` is always `None`: the window
+    /// ends at the tail, so there is nothing after it to continue to. A caller
+    /// that cannot find what it needs inside the window must fail closed rather
+    /// than widen it, because widening without bound is the behaviour being
+    /// removed.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when the session cannot be reached, the binding
+    /// no longer attests, or the runtime's own pages do not advance.
+    async fn tail_window(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        page_size: u32,
+        max_pages: usize,
+    ) -> RuntimeResult<HistoryPage> {
+        // An adapter whose cursor-free read is already bounded — one that holds
+        // its transcript rather than paging a remote one — answers this with the
+        // read it already has.
+        let _ = max_pages;
+        self.history(&HistoryRequest {
+            binding: binding.clone(),
+            cursor: None,
+            page_size,
+        })
+        .await
     }
 
     /// Learn which epoch this session is in *now*, in one bounded call.
     ///
-    /// The recovery half of [`RuntimeAdapter::drain_new_timeline_epochs`]. A
+    /// The recovery half of [`RuntimeAdapter::pending_timeline_epochs`]. A
     /// caller holding a cursor can be told
     /// [`RuntimeError::TimelineRefetchRequired`] for two different reasons: the
     /// runtime declared the page a break, or this process cannot spell the

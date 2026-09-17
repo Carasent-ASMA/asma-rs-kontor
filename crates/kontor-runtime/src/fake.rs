@@ -369,6 +369,8 @@ pub enum AdapterCall {
     History(RuntimeBindingId),
     /// The session's current timeline epoch was re-read, without its content.
     RefreshTimelineEpoch(RuntimeBindingId),
+    /// A bounded window of the session's newest content was read.
+    TailWindow(RuntimeBindingId),
     /// A live subscription was opened.
     SubscribeLive(RuntimeBindingId),
     /// A permission request was answered.
@@ -790,6 +792,8 @@ struct FakeState {
     /// [`RuntimeAdapter::refresh_timeline_epoch`] and by nothing else, so a test
     /// that never refreshes never gets past it.
     refetch_until_epoch_refresh: bool,
+    /// Whether the next tail window should repeat one of its own positions.
+    repeat_next_tail_position: bool,
     /// Whether the next inspect should fail at the transport.
     ///
     /// Off the strict queue for the same reason as `lose_next_send_ack`, and a
@@ -1288,6 +1292,7 @@ impl ScriptedFakeRuntime {
                 epoch_mappings: BTreeMap::new(),
                 undrained_epochs: Vec::new(),
                 refetch_until_epoch_refresh: false,
+                repeat_next_tail_position: false,
                 fail_next_inspect: false,
                 ignore_retitle_once: BTreeSet::new(),
                 task_title_scopes: BTreeMap::new(),
@@ -2093,6 +2098,17 @@ impl ScriptedFakeRuntime {
         self.lock().refetch_until_epoch_refresh = true;
     }
 
+    /// Repeat one position inside the next tail window.
+    ///
+    /// A runtime that hands back a window whose positions do not advance. Not a
+    /// transport fault and not an empty read: the content is there, and two of
+    /// its entries claim the same place in the session. A reader that picked a
+    /// turn out of that would be picking arbitrarily, so the only safe answer is
+    /// to refuse — and this is how that is provoked.
+    pub fn repeat_next_tail_position(&self) {
+        self.lock().repeat_next_tail_position = true;
+    }
+
     /// Forget every epoch mapping, as a process that restarted with nothing
     /// durable behind it does.
     ///
@@ -2109,9 +2125,10 @@ impl ScriptedFakeRuntime {
 
     /// The mappings allocated but not yet handed over for persistence.
     ///
-    /// A peek, deliberately: [`RuntimeAdapter::drain_new_timeline_epochs`] is
-    /// the control plane's to call, and a test that drained to look would be
-    /// discharging the very obligation it means to check.
+    /// The same list [`RuntimeAdapter::pending_timeline_epochs`] serves, read
+    /// from the test side. Neither one consumes: only
+    /// [`RuntimeAdapter::ack_timeline_epochs`] may clear an entry, and it is the
+    /// control plane's to call once its commit has returned.
     #[must_use]
     pub fn undrained_epochs(&self) -> Vec<(String, u64)> {
         self.lock().undrained_epochs.clone()
@@ -2353,8 +2370,79 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     /// *does this session still exist here?*, and everything else comes out of
     /// the persisted snapshot. A fake that rebuilt capabilities here would let a
     /// re-grading bug pass its own restart test.
-    fn drain_new_timeline_epochs(&self) -> Vec<(String, u64)> {
-        std::mem::take(&mut self.lock().undrained_epochs)
+    /// The newest `page_size * max_pages` events, and nothing older.
+    ///
+    /// Bounded by construction, like the native one it stands for: the cost is
+    /// the window, never the transcript in front of it. A test can therefore
+    /// grow the session arbitrarily and still assert what observing it costs.
+    async fn tail_window(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        page_size: u32,
+        max_pages: usize,
+    ) -> RuntimeResult<HistoryPage> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(page_size)),
+                context_policy: None,
+            },
+        )?;
+        state
+            .calls
+            .push(AdapterCall::TailWindow(binding.binding_id()));
+        // The same break a cursor is refused with, on the same condition: a
+        // reader that has not established which epoch this session is in cannot
+        // be handed content addressed by one.
+        if state.refetch_until_epoch_refresh {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            });
+        }
+        let epoch = state.session(binding)?.epoch;
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
+        let session = state.session(binding)?;
+        let recorded = &session.content[..session.history_len];
+        let window = (page_size as usize).saturating_mul(max_pages.max(1));
+        let from = recorded.len().saturating_sub(window);
+        let mut items: Vec<SessionEvent> = recorded[from..].to_vec();
+        if std::mem::take(&mut state.repeat_next_tail_position)
+            && let Some(last) = items.last().cloned()
+        {
+            items.push(last);
+        }
+        let end = items
+            .last()
+            .map_or(TimelinePosition::start_of(epoch), |event| event.position);
+        Ok(HistoryPage {
+            epoch,
+            items,
+            next: None,
+            end,
+        })
+    }
+
+    fn pending_timeline_epochs(&self) -> Vec<(String, u64)> {
+        self.lock().undrained_epochs.clone()
+    }
+
+    fn ack_timeline_epochs(&self, persisted: &[(String, u64)]) {
+        self.lock()
+            .undrained_epochs
+            .retain(|pending| !persisted.contains(pending));
     }
 
     fn restore_timeline_epochs(&self, pairs: &[(String, u64)]) -> RuntimeResult<()> {

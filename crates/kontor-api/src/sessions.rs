@@ -306,7 +306,7 @@ async fn prefix_occurrences(
     let mut found = 0usize;
     for _ in 0..OBSERVE_PAGE_BUDGET {
         let mut page = state
-            .history_with_durable_epochs(
+            .history_recovering_epoch_once(
                 session.adapter.as_ref(),
                 session.snapshot.identity(),
                 &HistoryRequest {
@@ -315,7 +315,8 @@ async fn prefix_occurrences(
                     page_size,
                 },
             )
-            .await?;
+            .await
+            .map_err(unobservable_epoch)?;
         let reader = reader
             .get_or_insert_with(|| HistoryReader::start(session.snapshot.binding_id(), page.epoch));
         reader
@@ -443,9 +444,19 @@ pub async fn observe_current_turn(
     let mut anchor = resume;
     let mut exhausted = false;
 
+    // With no resume cursor the scan is seeded from the tail, not the origin.
+    // The current turn is the newest thing in the session by definition, so the
+    // transcript in front of it is not evidence about it — and reading that
+    // transcript is what made a three-event turn on a long-lived seat cost the
+    // whole session and time out. The window is bounded and fails closed; it
+    // never widens towards the origin.
+    if resume.is_none() {
+        return observe_from_tail(&state, &session, realm_id, page_size).await;
+    }
+
     for _ in 0..OBSERVE_PAGE_BUDGET {
         let mut page = state
-            .history_with_durable_epochs(
+            .history_recovering_epoch_once(
                 session.adapter.as_ref(),
                 session.snapshot.identity(),
                 &HistoryRequest {
@@ -454,7 +465,8 @@ pub async fn observe_current_turn(
                     page_size,
                 },
             )
-            .await?;
+            .await
+            .map_err(unobservable_epoch)?;
 
         // The same exactly-once validation `/timeline` applies. A gap, a
         // redelivered position or a changed epoch is refused rather than
@@ -735,6 +747,196 @@ pub async fn stream(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+/// How many pages of the newest content a tail-seeded observation may read.
+///
+/// The bound that replaces "until the session starts". A current turn is a
+/// message, whatever the seat did while answering, and the response — generous
+/// at this width, and a turn that genuinely exceeds it is reported as beyond the
+/// window rather than chased backwards.
+const TAIL_WINDOW_PAGES: usize = 8;
+
+/// Observe the current turn from a bounded window of the session's tail.
+///
+/// Seeded by one canonical tail read and never widened towards the origin. What
+/// the window has to prove is small: the newest addressed message, the terminal
+/// response after it, and that nothing followed. What it deliberately does *not*
+/// prove is that the message id is unique — that is not a fact about the
+/// transcript at all, it is a fact about what Kontor issued, and it is answered
+/// by the issuance ledger in one lookup.
+///
+/// Every refusal here is closed and typed. An ambiguous window, a
+/// non-advancing one, a missing terminal response and a message Kontor cannot
+/// vouch for are all reported as themselves, because the alternative — guessing
+/// across messages, or reading further back until something fits — is how a
+/// settlement ends up attributing a seat's newest work to an older message.
+async fn observe_from_tail(
+    state: &ApiState,
+    session: &Session,
+    realm_id: RealmId,
+    page_size: u32,
+) -> Result<Json<ObservedTurnDto>, ApiError> {
+    let window = state
+        .tail_window_recovering_epoch_once(
+            session.adapter.as_ref(),
+            session.snapshot.identity(),
+            &session.snapshot,
+            page_size,
+            TAIL_WINDOW_PAGES,
+        )
+        .await
+        .map_err(unobservable_epoch)?;
+
+    // Strictly ascending, single epoch. A runtime that repeats or reverses a
+    // position inside one window is not one this can reason about, and picking
+    // a turn out of it would be picking arbitrarily.
+    let mut previous: Option<TimelinePosition> = None;
+    for event in &window.items {
+        if event.position.epoch != window.epoch {
+            return Err(ApiError::new(
+                realm_id,
+                ApiErrorCode::TimelineRefetchRequired,
+                "the tail window spans more than one timeline epoch",
+            )
+            .advising("observe again; the session was renumbered while it was being read"));
+        }
+        if previous.is_some_and(|last| event.position.sequence <= last.sequence) {
+            return Err(ApiError::new(
+                realm_id,
+                ApiErrorCode::RevisionConflict,
+                "the runtime's tail window does not advance",
+            )
+            .advising("observe again; a window whose positions repeat cannot name one turn"));
+        }
+        previous = Some(event.position);
+    }
+
+    // The newest addressed message, and what followed it. Everything before the
+    // last message belongs to an older turn and is not consulted.
+    let mut message: Option<(MessageId, TimelinePosition)> = None;
+    let mut occurrences = 0usize;
+    let mut response: Option<TimelinePosition> = None;
+    let mut last_turn: Option<TimelinePosition> = None;
+    for event in &window.items {
+        if let EventSubject::Message(id) = &event.subject {
+            message = Some((*id, event.position));
+            occurrences = 1;
+            response = None;
+        } else if event.kind == SessionEventKind::Message && message.is_some() {
+            response = Some(event.position);
+        }
+        if !matches!(
+            event.kind,
+            SessionEventKind::StateChange | SessionEventKind::Log
+        ) {
+            last_turn = Some(event.position);
+        }
+    }
+    // A second occurrence of the *same* id inside the window is divergence the
+    // ledger cannot see, because the ledger records what Kontor issued and this
+    // is the runtime having repeated it.
+    if let Some((id, _)) = message {
+        occurrences = window
+            .items
+            .iter()
+            .filter(|event| event.subject == EventSubject::Message(id))
+            .count();
+    }
+
+    let (message_id, message_position) = message.ok_or_else(|| {
+        ApiError::new(
+            realm_id,
+            ApiErrorCode::NotFound,
+            "no canonically addressed Kontor message appears in the bounded tail window",
+        )
+        .advising(
+            "the current turn is older than the window this reads; send the seat a new message rather than widening the read",
+        )
+    })?;
+    if occurrences > 1 {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "this message id appears more than once in the session's canonical content",
+        ));
+    }
+
+    // Uniqueness, answered where it is actually known. A row means this realm
+    // minted the id and issued it exactly once, to exactly one binding — the
+    // primary key says so — which is a stronger statement than counting
+    // occurrences in content the realm does not control.
+    let issuance = state.message_issuance(message_id)?.ok_or_else(|| {
+        ApiError::new(
+            realm_id,
+            ApiErrorCode::NotFound,
+            "this realm holds no issuance record for the message naming the current turn",
+        )
+        .advising(
+            "send this seat one new Kontor message and observe the turn it opens; ids issued before the issuance ledger existed cannot be proven unambiguous and are never assumed to be",
+        )
+    })?;
+    if issuance.runtime_binding_id != session.snapshot.binding_id().to_string()
+        || issuance.native_session_id != session.snapshot.identity().native_id.as_str()
+    {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "the message naming the current turn was issued to a different session",
+        ));
+    }
+
+    let response_position = response.ok_or_else(|| {
+        ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "the current message has no terminal provider response yet",
+        )
+        .advising("observe again once the seat has answered")
+    })?;
+    if last_turn != Some(response_position) {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "the newest turn's response is not the last canonical turn event",
+        ));
+    }
+
+    Ok(Json(ObservedTurnDto {
+        realm_id,
+        agent_run_id: session.agent_run_id,
+        message_id: message_id.to_string(),
+        timeline_epoch: message_position.epoch,
+        message_sequence: message_position.sequence,
+        response_sequence: response_position.sequence,
+        anchor: HistoryCursor::issue(session.snapshot.binding_id(), window.end)
+            .as_str()
+            .to_owned(),
+    }))
+}
+
+/// Re-state a refetch refusal an observation could not recover from.
+///
+/// The code is kept: this really is a conflict about which numbering the caller
+/// is addressing, and 409 is what a client branches on. What is replaced is the
+/// advice. `/timeline`'s "read the session timeline again from the runtime" is
+/// right for a streaming consumer, which can restart its own read; an observer
+/// has *already* re-read the epoch at the tail and been refused a second time,
+/// so repeating the read is the one thing that cannot help. The positions being
+/// resumed from name a numbering this runtime no longer maps, and the way
+/// forward is a fresh observation with no resume cursor at all.
+///
+/// Anything that is not that signal passes through untouched.
+fn unobservable_epoch(error: ApiError) -> ApiError {
+    if error.code != ApiErrorCode::TimelineRefetchRequired {
+        return error;
+    }
+    ApiError::new(
+        error.realm_id,
+        ApiErrorCode::TimelineRefetchRequired,
+        "the resume cursor names a timeline epoch this runtime no longer maps, and re-reading the epoch did not recover it",
+    )
+    .advising("observe this turn again without a resume cursor; the epoch numbering it was issued under is gone")
+}
+
 /// Re-state a refusal that happened *after* the message was delivered.
 ///
 /// The code is kept — whatever went wrong with the readback really did go
@@ -805,6 +1007,19 @@ pub async fn send_message(
         })
         .await
         .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+    // Before the runtime is asked to accept it, never after. This ledger is what
+    // lets observation prove the id unambiguous without reading the session's
+    // whole content, and it can only do that if every id the runtime might have
+    // seen is already in it. Recording after a successful send would leave the
+    // ids whose acknowledgement was lost — exactly the ones an operator has to
+    // reason about — absent from the record that decides they are settleable.
+    state.record_message_issuance(
+        session.snapshot.identity(),
+        session.snapshot.binding_id(),
+        message_id,
+        "session_message_send",
+        idempotency_key(&state, &headers)?.as_str(),
+    )?;
     let acknowledged = session
         .adapter
         .send(&SendMessageRequest {

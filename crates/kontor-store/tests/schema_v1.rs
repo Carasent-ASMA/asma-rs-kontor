@@ -176,6 +176,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "runtime_reconciliation_epochs",
     "runtime_reconciliation_members",
     "runtime_reconciliation_results",
+    "runtime_message_issuances",
     "runtime_replay_consumers",
     "runtime_timeline_epochs",
     "schedule_overrides",
@@ -325,6 +326,81 @@ VALUES ('0193f000-0000-7000-8000-000000000040', '0193f000-0000-7000-8000-0000000
 
 fn temp() -> TempDir {
     TempDir::new().expect("a temporary directory")
+}
+
+fn issuance(message_id: &str, binding: &str, session: &str) -> kontor_store::MessageIssuance {
+    kontor_store::MessageIssuance {
+        message_id: message_id.to_owned(),
+        runtime_kind: "fake.agent".to_owned(),
+        host: "fixture-host".to_owned(),
+        runtime_binding_id: binding.to_owned(),
+        native_session_id: session.to_owned(),
+        idempotency_key: message_id.to_owned(),
+        provenance: "session_message_send".to_owned(),
+        issued_at: "2026-09-17T00:00:00Z"
+            .parse::<kontor_core::id::Timestamp>()
+            .expect("a timestamp"),
+    }
+}
+
+/// The ledger that makes a bounded observation safe: one id, one issuance, one
+/// binding — enforced by the key rather than checked after the fact.
+///
+/// A replay has to be recognised, because the retry of a send whose
+/// acknowledgement was lost presents the same id again and must not be refused.
+/// A *different* session presenting an already-issued id is the thing that must
+/// never be true, and it is refused inside the transaction.
+#[test]
+fn a_message_issuance_is_unique_per_id_and_recognises_its_own_replay() {
+    let directory = temp();
+    let store = open(&directory);
+    let first = "01a0b000-0000-7000-8000-00000000aaaa";
+    let binding = "01a0b000-0000-7000-8000-00000000bbbb";
+    let session = "native-session-one";
+
+    assert_eq!(
+        store
+            .record_message_issuance(&issuance(first, binding, session))
+            .expect("a first issuance records"),
+        kontor_store::MessageIssuanceOutcome::Recorded
+    );
+    // The same id, binding, session and key: a retry, not a second issuance.
+    assert_eq!(
+        store
+            .record_message_issuance(&issuance(first, binding, session))
+            .expect("a replay is recognised"),
+        kontor_store::MessageIssuanceOutcome::Replayed
+    );
+
+    // The same id claimed by a different session. This is what the bounded
+    // observation trusts the ledger about, so it is refused, not recorded.
+    let elsewhere = store.record_message_issuance(&issuance(
+        first,
+        "01a0b000-0000-7000-8000-00000000cccc",
+        "native-session-two",
+    ));
+    assert!(
+        elsewhere.is_err(),
+        "an issued id may not be claimed by another session: {elsewhere:?}"
+    );
+
+    let held = store
+        .message_issuance(first)
+        .expect("the issuance reads")
+        .expect("it is there");
+    assert_eq!(
+        held.runtime_binding_id, binding,
+        "the first issuance stands"
+    );
+    assert_eq!(held.native_session_id, session);
+
+    // And an id this realm never issued is absent rather than invented.
+    assert!(
+        store
+            .message_issuance("01a0b000-0000-7000-8000-00000000dddd")
+            .expect("the lookup runs")
+            .is_none()
+    );
 }
 
 fn open(directory: &TempDir) -> SqliteStore {
@@ -576,8 +652,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // records that authority *before* the native call and consumes it when the
     // occupancy binds, so a created native whose acknowledgement was lost is
     // never left with no durable statement of what it was launched under
-    // (both ASMA-8193).
-    assert_eq!(SCHEMA_VERSION, 103);
+    // (both ASMA-8193). v104 records every client message id Kontor issues
+    // against the exact binding it was issued to, so proving one unambiguous is
+    // a key lookup instead of a walk of the session's whole canonical content —
+    // which is what let observation become bounded (ASMA-8203).
+    assert_eq!(SCHEMA_VERSION, 104);
 }
 
 #[test]

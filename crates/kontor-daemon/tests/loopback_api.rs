@@ -24158,6 +24158,48 @@ async fn session_label_repair_preserves_the_bound_identity_and_replays_once() {
 /// the seat it was taken in stays live: settling a turn is not a claim that the
 /// runtime ended anything, and the persistent Paseo session is expected to still
 /// be sitting there when it returns.
+/// Record that Kontor issued this id to this binding, as a real send does.
+///
+/// `observe_turn_completion` writes a turn straight into the fake's transcript,
+/// which is the runtime's half of the story. The other half is that Kontor
+/// minted the id and issued it to exactly this session, and observation now
+/// asks the issuance ledger about that rather than counting occurrences in
+/// content the realm does not control. A fixture that skipped this would be
+/// describing a message the realm never sent.
+fn issue_message(
+    world: &World,
+    snapshot: &kontor_runtime::capability::RuntimeBindingSnapshot,
+    message_id: kontor_runtime::request::MessageId,
+) {
+    world
+        .daemon
+        .state()
+        .record_message_issuance(
+            snapshot.identity(),
+            snapshot.binding_id(),
+            message_id,
+            "session_message_send",
+            &message_id.to_string(),
+        )
+        .expect("the issuance records");
+}
+
+/// Issue an id and complete the turn it opens, in that order.
+fn issued_turn(
+    world: &World,
+    snapshot: &kontor_runtime::capability::RuntimeBindingSnapshot,
+    message_id: kontor_runtime::request::MessageId,
+) -> (
+    kontor_runtime::timeline::TimelinePosition,
+    kontor_runtime::timeline::TimelinePosition,
+) {
+    issue_message(world, snapshot, message_id);
+    world
+        .fake
+        .observe_turn_completion(snapshot, message_id, kontor_api::now())
+        .expect("a completed turn")
+}
+
 fn observe_current_turn(world: &World, project: &str, agent_run: &str) -> serde_json::Value {
     let project_id = ProjectId::parse(project).expect("a project id");
     let agent_run_id = AgentRunId::parse(agent_run).expect("an agent run id");
@@ -24176,10 +24218,9 @@ fn observe_current_turn(world: &World, project: &str, agent_run: &str) -> serde_
         .expect("the process holds the exact settling binding");
     let message_id = kontor_runtime::request::MessageId::generate();
     let message_identity = message_id.to_string();
-    let (message_position, response_position) = world
-        .fake
-        .observe_turn_completion(&held, message_id, kontor_api::now())
-        .expect("the runtime records the completed turn");
+    // Issued by Kontor, then completed by the runtime — the order a real send
+    // happens in, and what makes the turn provably this session's.
+    let (message_position, response_position) = issued_turn(world, &held, message_id);
     serde_json::json!({
         "message_id": message_identity,
         "message_position": {
@@ -25534,10 +25575,7 @@ async fn observing_a_current_turn_fails_closed_on_every_unreadable_shape() {
         .get(snapshot.binding_id())
         .expect("the process holds the binding");
     let duplicated = kontor_runtime::request::MessageId::generate();
-    world
-        .fake
-        .observe_turn_completion(&held, duplicated, kontor_api::now())
-        .expect("a completed turn");
+    issued_turn(&world, &held, duplicated);
     let good = Call::get(&uri)
         .signed_as(&world, "observer")
         .send(&world)
@@ -25577,14 +25615,11 @@ async fn observing_a_current_turn_fails_closed_on_every_unreadable_shape() {
         .sessions()
         .get(fresh_snapshot.binding_id())
         .expect("the process holds the binding");
-    fresh_world
-        .fake
-        .observe_turn_completion(
-            &fresh_held,
-            kontor_runtime::request::MessageId::generate(),
-            kontor_api::now(),
-        )
-        .expect("a completed turn");
+    issued_turn(
+        &fresh_world,
+        &fresh_held,
+        kontor_runtime::request::MessageId::generate(),
+    );
     fresh_world
         .fake
         .observe_trailing_tool_call(&fresh_held, kontor_api::now())
@@ -25636,6 +25671,15 @@ async fn observing_a_current_turn_fails_closed_on_every_unreadable_shape() {
     .await;
     assert_eq!(other_epoch.status, 409, "{}", other_epoch.body);
     assert_eq!(other_epoch.code(), "timeline_refetch_required");
+    // And it is the *observer's* refusal, not the streaming one. This epoch was
+    // already re-read at the tail and refused a second time, so advising
+    // another read of the same cursor would send the caller in a circle; what
+    // is left is observing afresh with no resume cursor.
+    assert!(
+        other_epoch.body.contains("without a resume cursor"),
+        "an observer that already recovered once is told what actually helps: {}",
+        other_epoch.body
+    );
 }
 
 /// ASMA-8203. The persist-before-expose barrier, at the API boundary.
@@ -25677,6 +25721,613 @@ async fn a_history_read_persists_its_epoch_mapping_before_returning() {
     assert!(
         after.iter().any(|(_, mapped)| *mapped == epoch),
         "the epoch the caller was given is durable before it was given: before={before:?} after={after:?}"
+    );
+}
+
+/// The live shape: a tiny current turn at the tail of a long, never-read session.
+///
+/// ASMA-8200 and ASMA-8196 were newly launched scope seats that had completed
+/// small turns and could not be observed at all — `turn-observe` hung, because
+/// a read with no resume cursor was an *origin* read and Paseo answers those by
+/// walking backwards from the tail until nothing older remains. The cost was the
+/// transcript, not the turn, and the transcript kept growing.
+///
+/// So the fixture makes the transcript large and the turn small, and asserts the
+/// two things that were wrong: the turn is reported exactly, and what it cost
+/// did not depend on how much came before it.
+#[tokio::test]
+async fn observing_a_long_never_read_transcript_costs_the_window_not_the_session() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+
+    // A long history in front of the turn under observation. The old path read
+    // all of it; nothing here should.
+    for _ in 0..200 {
+        let _ = issued_turn(
+            &world,
+            &held,
+            kontor_runtime::request::MessageId::generate(),
+        );
+    }
+    let newest = kontor_runtime::request::MessageId::generate();
+    let (message_at, response_at) = issued_turn(&world, &held, newest);
+
+    // Never read in this process before now.
+    world.fake.forget_timeline_epochs();
+
+    let before = world.fake.calls().len();
+    let observed = Call::get(format!("/v1/sessions/{run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        observed.status, 200,
+        "a tiny turn at the tail of a long session is observable: {}",
+        observed.body
+    );
+    // Exactly the turn, not something near it.
+    assert_eq!(
+        observed.json()["message_id"],
+        serde_json::json!(newest.to_string()),
+        "{}",
+        observed.body
+    );
+    assert_eq!(
+        observed.json()["message_sequence"],
+        serde_json::json!(message_at.sequence)
+    );
+    assert_eq!(
+        observed.json()["response_sequence"],
+        serde_json::json!(response_at.sequence)
+    );
+
+    // And the cost. 200 turns sit in front of this one; an origin-seeded read
+    // needed a page for each of them. The bound here is deliberately loose —
+    // what it pins is that the number does not scale with the transcript.
+    let recent = world.fake.calls();
+    let reads = recent[before..]
+        .iter()
+        .filter(|call| {
+            matches!(
+                call,
+                kontor_runtime::fake::AdapterCall::TailWindow(_)
+                    | kontor_runtime::fake::AdapterCall::History(_)
+            )
+        })
+        .count();
+    assert!(
+        reads <= 2,
+        "observing cost {reads} session reads for a turn two events long: {recent:?}"
+    );
+}
+
+/// A message Kontor actually sent is observable; one it cannot vouch for is not.
+///
+/// The end-to-end half of the ledger. `/messages` is the issuing path, so a turn
+/// opened by a real send carries a row and observation trusts it. The two ways
+/// that trust can be misplaced are both refused: an id this realm never issued,
+/// and an id issued to some other session.
+#[tokio::test]
+async fn observing_trusts_only_a_message_this_realm_issued_to_this_session() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+
+    // 1. A real send, through the issuing path, then the turn it opens.
+    let key = kontor_runtime::request::MessageId::generate();
+    let sent = Call::post(
+        format!("/v1/sessions/{run}/messages"),
+        &serde_json::json!({"body": "do the work"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(&key.to_string())
+    .send(&world)
+    .await;
+    assert_eq!(sent.status, 200, "{}", sent.body);
+    // The issuing path recorded it, against this exact binding, before the
+    // runtime was asked to accept it.
+    let recorded = world
+        .daemon
+        .state()
+        .message_issuance(key)
+        .expect("the issuance reads")
+        .expect("a real send issues the id it delivers");
+    assert_eq!(
+        recorded.runtime_binding_id,
+        snapshot.binding_id().to_string()
+    );
+    assert_eq!(
+        recorded.native_session_id,
+        snapshot.identity().native_id.as_str()
+    );
+
+    // And a turn carrying an issued id is observable.
+    let answered = kontor_runtime::request::MessageId::generate();
+    let _ = issued_turn(&world, &held, answered);
+    let observed = Call::get(format!("/v1/sessions/{run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        observed.status, 200,
+        "a turn whose id this realm issued is observable: {}",
+        observed.body
+    );
+    assert_eq!(
+        observed.json()["message_id"],
+        serde_json::json!(answered.to_string())
+    );
+
+    // 2. A turn whose id this realm never issued. Nothing about the content is
+    //    wrong; what is missing is any statement that Kontor sent it.
+    let stranger = kontor_runtime::request::MessageId::generate();
+    world
+        .fake
+        .observe_turn_completion(&held, stranger, kontor_api::now())
+        .expect("a turn nobody issued");
+    let unvouched = Call::get(format!("/v1/sessions/{run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(unvouched.status, 404, "{}", unvouched.body);
+    assert_eq!(
+        unvouched.json()["rule"],
+        "this realm holds no issuance record for the message naming the current turn",
+        "{}",
+        unvouched.body
+    );
+
+    // 3. An id issued, but to a different session. The row exists, so a check
+    //    that only asked "is it in the ledger?" would wave this through.
+    let elsewhere = kontor_runtime::request::MessageId::generate();
+    world
+        .daemon
+        .state()
+        .record_message_issuance(
+            snapshot.identity(),
+            kontor_core::id::RuntimeBindingId::generate(),
+            elsewhere,
+            "session_message_send",
+            &elsewhere.to_string(),
+        )
+        .expect("the issuance records against another binding");
+    world
+        .fake
+        .observe_turn_completion(&held, elsewhere, kontor_api::now())
+        .expect("a turn naming the foreign id");
+    let foreign = Call::get(format!("/v1/sessions/{run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(foreign.status, 409, "{}", foreign.body);
+    assert_eq!(
+        foreign.json()["rule"],
+        "the message naming the current turn was issued to a different session",
+        "{}",
+        foreign.body
+    );
+}
+
+/// A current turn older than the window is refused, not chased backwards.
+///
+/// The bound has to fail closed, or it is not a bound: widening towards the
+/// origin whenever the window comes up empty would restore exactly the walk this
+/// removed. The action says what actually helps, which is a new message rather
+/// than a longer read.
+#[tokio::test]
+async fn observing_refuses_a_current_turn_older_than_its_window() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+
+    let _ = issued_turn(
+        &world,
+        &held,
+        kontor_runtime::request::MessageId::generate(),
+    );
+    // Enough trailing non-message content to push the message out of the window.
+    for _ in 0..80 {
+        world
+            .fake
+            .observe_trailing_tool_call(&held, kontor_api::now())
+            .expect("turn content lands after the response");
+    }
+
+    let refused = Call::get(format!("/v1/sessions/{run}/turns/current?limit=2"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 404, "{}", refused.body);
+    assert_eq!(
+        refused.json()["rule"],
+        "no canonically addressed Kontor message appears in the bounded tail window",
+        "{}",
+        refused.body
+    );
+    assert!(
+        refused.body.contains("rather than widening the read"),
+        "the action names the bound instead of offering a longer scan: {}",
+        refused.body
+    );
+}
+
+/// A window whose positions do not advance names no turn.
+#[tokio::test]
+async fn observing_refuses_a_tail_window_that_does_not_advance() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+    let _ = issued_turn(
+        &world,
+        &held,
+        kontor_runtime::request::MessageId::generate(),
+    );
+
+    world.fake.repeat_next_tail_position();
+    let refused = Call::get(format!("/v1/sessions/{run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(
+        refused.json()["rule"],
+        "the runtime's tail window does not advance",
+        "{}",
+        refused.body
+    );
+}
+
+/// Observation recovers the epoch too, once, and reports it typed when it cannot.
+///
+/// Live evidence from two newly launched scope runs — ASMA-8200 and ASMA-8196 —
+/// whose session epochs had never been re-read under the current numbering:
+/// `turn-observe` could not derive a proof and direct reads refused every probed
+/// epoch with `timeline_refetch_required`. Settlement had already learned to
+/// answer that signal; the read path observation uses had not, so the one
+/// surface an operator is told to fall back to was the one that could not
+/// recover.
+///
+/// Here the runtime refuses every anchored read until the epoch is re-read.
+/// Observation must answer that at the tail — once — and go on to report the
+/// same turn it would have reported anyway.
+#[tokio::test]
+async fn observing_a_never_read_session_recovers_its_epoch_once() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+
+    // A first turn, then the turn under observation. Both are issued by Kontor
+    // first, because that is what makes them provably this session's.
+    let _earlier = issued_turn(
+        &world,
+        &held,
+        kontor_runtime::request::MessageId::generate(),
+    );
+    let newest = kontor_runtime::request::MessageId::generate();
+    let (message_at, response_at) = issued_turn(&world, &held, newest);
+
+    // The live condition: this process has never mapped the session's epoch, and
+    // every anchored read is refused until it asks which epoch the session is in.
+    world.fake.forget_timeline_epochs();
+    world.fake.require_timeline_refetch_until_epoch_refresh();
+
+    let before = world.fake.calls().len();
+    let observed = Call::get(format!("/v1/sessions/{run}/turns/current?limit=3"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        observed.status, 200,
+        "a readable session that asked to be re-epoched is still observable: {}",
+        observed.body
+    );
+    assert_eq!(
+        observed.json()["message_id"],
+        serde_json::json!(newest.to_string()),
+        "and it reports the same turn: {}",
+        observed.body
+    );
+    assert_eq!(
+        observed.json()["message_sequence"],
+        serde_json::json!(message_at.sequence)
+    );
+    assert_eq!(
+        observed.json()["response_sequence"],
+        serde_json::json!(response_at.sequence)
+    );
+
+    let recent = world.fake.calls();
+    let refreshes = recent[before..]
+        .iter()
+        .filter(|call| {
+            matches!(
+                call,
+                kontor_runtime::fake::AdapterCall::RefreshTimelineEpoch(_)
+            )
+        })
+        .count();
+    // Once for the observation, not once per page. A refresh on every refused
+    // read would put the session's length back into the cost of observing it.
+    assert_eq!(
+        refreshes, 1,
+        "the recovery is one bounded tail call, not a retry loop: {recent:?}"
+    );
+
+    // And what it learned is durable, through the same failure-safe barrier.
+    let kind = snapshot.identity().runtime_kind.as_str().to_owned();
+    let host = snapshot.identity().host.as_str().to_owned();
+    let durable = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(&kind, &host))
+        .expect("durable epochs read");
+    assert!(
+        !durable.is_empty(),
+        "the recovery persisted the mapping it established: {durable:?}"
+    );
+    assert!(
+        world.fake.undrained_epochs().is_empty(),
+        "with nothing left outstanding: {:?}",
+        world.fake.undrained_epochs()
+    );
+}
+
+/// An observation whose epoch write cannot land serves nothing and keeps it.
+///
+/// The audit P1 reaches this path too, now that observation recovers epochs: a
+/// recovery that allocated a mapping and failed to persist it would leave the
+/// number live in the adapter and absent from the store, and the observed tuple
+/// would be addressed by it.
+#[tokio::test]
+async fn an_observation_whose_epoch_write_fails_keeps_it_pending() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let kind = snapshot.identity().runtime_kind.as_str().to_owned();
+    let host = snapshot.identity().host.as_str().to_owned();
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+    let newest = kontor_runtime::request::MessageId::generate();
+    let _ = issued_turn(&world, &held, newest);
+
+    // Learn the number, then hand it to a different raw epoch so the write the
+    // next observation owes is refused by the store's own uniqueness rule.
+    let first = Call::get(format!("/v1/sessions/{run}/turns/current?limit=3"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let epoch = first.json()["timeline_epoch"]
+        .as_u64()
+        .expect("an observed epoch");
+    let raw = format!("fake-epoch-{epoch}");
+    {
+        let connection = rusqlite::Connection::open(&database).expect("the realm database opens");
+        connection
+            .execute(
+                "DELETE FROM runtime_timeline_epochs
+                  WHERE runtime_kind = ?1 AND host = ?2 AND raw_epoch = ?3",
+                rusqlite::params![kind, host, raw],
+            )
+            .expect("the mapping is removed");
+        connection
+            .execute(
+                "INSERT INTO runtime_timeline_epochs
+                     (runtime_kind, host, raw_epoch, kontor_epoch, recorded_at)
+                 VALUES (?1, ?2, 'observe-decoy-raw-epoch', ?3, '2026-09-17T00:00:00Z')",
+                rusqlite::params![kind, host, i64::try_from(epoch).expect("an epoch")],
+            )
+            .expect("the decoy claims that Kontor number");
+    }
+    world.fake.forget_timeline_epochs();
+
+    let refused = Call::get(format!("/v1/sessions/{run}/turns/current?limit=3"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        !refused.status.is_success(),
+        "a tuple addressed by a number that cannot be made durable is not reported: {} {}",
+        refused.status,
+        refused.body
+    );
+    assert!(
+        world
+            .fake
+            .undrained_epochs()
+            .contains(&(raw.clone(), epoch)),
+        "and the mapping is still pending: {:?}",
+        world.fake.undrained_epochs()
+    );
+
+    {
+        let connection = rusqlite::Connection::open(&database).expect("the realm database opens");
+        connection
+            .execute(
+                "DELETE FROM runtime_timeline_epochs WHERE raw_epoch = 'observe-decoy-raw-epoch'",
+                [],
+            )
+            .expect("the decoy is removed");
+    }
+    let retried = Call::get(format!("/v1/sessions/{run}/turns/current?limit=3"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        retried.status, 200,
+        "the retry observes once the write can land: {}",
+        retried.body
+    );
+    assert_eq!(retried.json()["message_id"], first.json()["message_id"]);
+    assert!(
+        world.fake.undrained_epochs().is_empty(),
+        "and only a landed write clears it: {:?}",
+        world.fake.undrained_epochs()
+    );
+}
+
+/// The audit's P1. A mapping stays pending until its write actually lands.
+///
+/// The barrier read the adapter's new mappings with a *take*: the pairs left
+/// the pending list before the commit that was supposed to make them durable.
+/// A failing write therefore lost them silently — the number stayed live in the
+/// adapter's own registry, so the next read of that raw epoch was served from
+/// cache and never offered for persistence again, and the realm went on
+/// addressing positions by a number the next process would hand to a different
+/// raw epoch. Exactly the drift migration 0100 exists to stop, reintroduced
+/// through its own write path.
+///
+/// The write is made to fail for real rather than simulated: the table holds
+/// `UNIQUE (runtime_kind, host, kontor_epoch)`, and the insert's conflict target
+/// is the primary key, so a second raw epoch claiming the same Kontor number is
+/// a genuine constraint violation inside the transaction.
+#[tokio::test]
+async fn a_failed_epoch_persist_leaves_the_mapping_pending_until_it_lands() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let kind = snapshot.identity().runtime_kind.as_str().to_owned();
+    let host = snapshot.identity().host.as_str().to_owned();
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+
+    // One ordinary read, to learn which number this session's raw epoch gets.
+    let first = Call::get(format!("/v1/sessions/{run}/timeline?limit=5"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let epoch = first.json()["epoch"].as_u64().expect("an epoch");
+    let raw = format!("fake-epoch-{epoch}");
+
+    // Now arrange for the *same* allocation to be refused by the store: drop the
+    // row it wrote, hand its Kontor number to a different raw epoch, and make
+    // the adapter forget the mapping so it allocates again.
+    {
+        let connection = rusqlite::Connection::open(&database).expect("the realm database opens");
+        connection
+            .execute(
+                "DELETE FROM runtime_timeline_epochs
+                  WHERE runtime_kind = ?1 AND host = ?2 AND raw_epoch = ?3",
+                rusqlite::params![kind, host, raw],
+            )
+            .expect("the mapping is removed");
+        connection
+            .execute(
+                "INSERT INTO runtime_timeline_epochs
+                     (runtime_kind, host, raw_epoch, kontor_epoch, recorded_at)
+                 VALUES (?1, ?2, 'p1-decoy-raw-epoch', ?3, '2026-09-17T00:00:00Z')",
+                rusqlite::params![kind, host, i64::try_from(epoch).expect("an epoch")],
+            )
+            .expect("the decoy claims that Kontor number");
+    }
+    world.fake.forget_timeline_epochs();
+
+    let refused = Call::get(format!("/v1/sessions/{run}/timeline?limit=5"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    // Refused, whatever the label: a page addressed by a number that could not
+    // be made durable must not reach a caller. (The store's constraint refusal
+    // surfaces as `revision_conflict`, which reads oddly for an epoch write —
+    // noted, and out of this P1's scope, which is the pending list.)
+    assert!(
+        !refused.status.is_success(),
+        "a mapping that cannot be made durable must not be served: {} {}",
+        refused.status,
+        refused.body
+    );
+
+    // The heart of it. The write failed, so the obligation is undischarged, and
+    // the adapter must still be holding it.
+    let pending = world.fake.undrained_epochs();
+    assert!(
+        pending.contains(&(raw.clone(), epoch)),
+        "a mapping whose write failed is still pending: {pending:?}"
+    );
+    let durable = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(&kind, &host))
+        .expect("durable epochs read");
+    assert!(
+        !durable.iter().any(|(stored, _)| *stored == raw),
+        "and nothing was written for it: {durable:?}"
+    );
+
+    // Clear the obstacle. The retry is an ordinary read — no special path, which
+    // is the point: the pairs were never lost, so the next pass through the same
+    // barrier carries them.
+    {
+        let connection = rusqlite::Connection::open(&database).expect("the realm database opens");
+        connection
+            .execute(
+                "DELETE FROM runtime_timeline_epochs WHERE raw_epoch = 'p1-decoy-raw-epoch'",
+                [],
+            )
+            .expect("the decoy is removed");
+    }
+
+    let retried = Call::get(format!("/v1/sessions/{run}/timeline?limit=5"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        retried.status, 200,
+        "the retry serves once the write can land: {}",
+        retried.body
+    );
+    assert_eq!(retried.json()["epoch"].as_u64(), Some(epoch));
+    let durable = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(&kind, &host))
+        .expect("durable epochs read");
+    assert!(
+        durable
+            .iter()
+            .any(|(stored, mapped)| *stored == raw && *mapped == epoch),
+        "the mapping the caller is addressed by is durable now: {durable:?}"
+    );
+    assert!(
+        world.fake.undrained_epochs().is_empty(),
+        "and only a landed write clears it: {:?}",
+        world.fake.undrained_epochs()
     );
 }
 
@@ -25798,10 +26449,7 @@ async fn observing_a_current_turn_pages_a_long_session_and_resumes_from_its_anch
             .expect("a completed turn");
     }
     let newest = kontor_runtime::request::MessageId::generate();
-    let (message_at, response_at) = world
-        .fake
-        .observe_turn_completion(&held, newest, kontor_api::now())
-        .expect("the newest completed turn");
+    let (message_at, response_at) = issued_turn(&world, &held, newest);
 
     let observed = Call::get(format!("/v1/sessions/{run}/turns/current?limit=3"))
         .signed_as(&world, "observer")
@@ -25823,20 +26471,26 @@ async fn observing_a_current_turn_pages_a_long_session_and_resumes_from_its_anch
         serde_json::json!(response_at.sequence)
     );
 
-    // A scan that cannot reach the end says so instead of answering from the
-    // part it saw. At one item per page this session is far past the budget, and
-    // the newest turn is nowhere near the pages it managed to read — so an
-    // answer here would be confidently wrong rather than merely partial.
-    let starved = Call::get(format!("/v1/sessions/{run}/turns/current?limit=1"))
+    // The narrowest possible page used to starve this read: seeded from the
+    // origin, one item per page could not reach the newest turn inside any
+    // budget, and the honest answer was a 503. Seeded from the tail it is not a
+    // hard case at all — the turn being described is the newest thing in the
+    // session, so the window lands on it whatever the page width, and the
+    // transcript in front of it is never touched.
+    let narrow = Call::get(format!("/v1/sessions/{run}/turns/current?limit=1"))
         .signed_as(&world, "observer")
         .send(&world)
         .await;
-    assert_eq!(starved.status, 503, "{}", starved.body);
     assert_eq!(
-        starved.json()["rule"],
-        "the canonical scan reached its page budget before the end of this session",
-        "{}",
-        starved.body
+        narrow.status, 200,
+        "a tail-seeded read does not starve on a narrow page: {}",
+        narrow.body
+    );
+    assert_eq!(
+        narrow.json()["message_id"],
+        serde_json::json!(newest.to_string()),
+        "and it still names the newest turn: {}",
+        narrow.body
     );
 
     // The anchor resumes: reading again from it reaches the same turn without
