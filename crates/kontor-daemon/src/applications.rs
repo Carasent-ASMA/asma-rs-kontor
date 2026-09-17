@@ -16323,6 +16323,17 @@ impl Services {
         })
     }
 
+    /// How many pages of *trailing* content a terminality check will read.
+    ///
+    /// Proving that nothing follows the claimed response means reading what
+    /// follows it, so this cannot be made free — but it is now the only part of
+    /// the proof that depends on the session's length, and it starts at the
+    /// response rather than at the message. The budget matches the scan it
+    /// replaced, so this path is never worse than the one it supersedes, and a
+    /// session that exceeds it is reported as an incomplete scan rather than
+    /// quietly called terminal.
+    const TRAILING_PAGE_BUDGET: usize = 64;
+
     /// Re-read the exact bound session and prove that the message named by the
     /// caller is the current completed turn, not a delayed prior notification.
     async fn prove_current_turn(
@@ -16417,7 +16428,7 @@ impl Services {
         // an older message.
         let mut newer_messages_inside = 0usize;
         let mut last_turn_position = None;
-        let mut exhausted = false;
+        let mut covered = false;
         let page_size = issued
             .snapshot()
             .capabilities
@@ -16446,7 +16457,28 @@ impl Services {
                         page_size,
                     },
                 )
-                .await?;
+                .await
+                .map_err(|error| {
+                    // The plane is not necessarily down: capabilities report it
+                    // reachable and bounded reads succeed. What failed is this
+                    // scan, which has to walk from the claimed message to the
+                    // end of the session to prove terminality — so a proof that
+                    // sits early in a long epoch reads almost all of it. Saying
+                    // "the runtime could not be reached" sends an operator to
+                    // look at a healthy runtime.
+                    tracing::warn!(
+                        agent_run_id = %run.id,
+                        claimed_message = %message_position.sequence,
+                        reached = last_turn_position
+                            .map_or(0, |position: TimelinePosition| position.sequence),
+                        detail = %error,
+                        "a settlement proof scan could not reach the end of the session"
+                    );
+                    self.deny(
+                        ApiErrorCode::ProofScanIncomplete,
+                        "the canonical proof scan could not be read to the end of this session",
+                    )
+                })?;
             for event in &page.items {
                 if event.position == message_position
                     && event.kind == SessionEventKind::Message
@@ -16478,17 +16510,99 @@ impl Services {
                     last_turn_position = Some(event.position);
                 }
             }
+            // The window ends at the claimed response. Everything the exact-turn
+            // proof needs about *content* lives between the message and the
+            // response; what lies beyond is a question about terminality, and
+            // reading the whole tail to answer it is what made a proof sitting
+            // early in a long epoch unsettleable. That question is asked below,
+            // anchored, in one read.
+            if page
+                .items
+                .last()
+                .is_some_and(|event| event.position.sequence >= response_position.sequence)
+            {
+                covered = true;
+                break;
+            }
             match page.next {
                 Some(next) => cursor = Some(next),
                 None => {
-                    exhausted = true;
+                    covered = last_turn_position
+                        .is_some_and(|position| position.sequence >= response_position.sequence);
                     break;
                 }
             }
         }
-        if !exhausted
-            || message_matches != 1
+        // Reaching the page budget means the scan stopped short, not that the
+        // caller's tuple is wrong. Reporting it as "not the exact current turn"
+        // accuses an operator of a forgery when the daemon simply ran out of
+        // reads — and leaves them with no way to tell the two apart.
+        if !covered {
+            return Err(self.deny(
+                ApiErrorCode::ProofScanIncomplete,
+                "the canonical proof scan reached its page budget before the claimed response",
+            ));
+        }
+        // Terminality, asked directly instead of inferred from having read
+        // everything. Anchored *at* the claimed response, so the runtime is
+        // asked only "is there anything after this?" — one bounded read for a
+        // session of any length. A trailing status change is not a turn and does
+        // not unseat the response, which is why the kind filter is the same one
+        // the window uses.
+        let mut after = Some(HistoryCursor::issue(binding.id, response_position));
+        let mut later_turn_event = false;
+        let mut settled_tail = false;
+        for _ in 0..Self::TRAILING_PAGE_BUDGET {
+            let page = state
+                .history_with_durable_epochs(
+                    adapter.as_ref(),
+                    issued.snapshot().identity(),
+                    &HistoryRequest {
+                        binding: issued.snapshot().clone(),
+                        cursor: after,
+                        page_size,
+                    },
+                )
+                .await
+                .map_err(|error| {
+                    tracing::warn!(
+                        agent_run_id = %run.id,
+                        claimed_response = response_position.sequence,
+                        detail = %error,
+                        "a settlement could not read past the claimed response"
+                    );
+                    self.deny(
+                        ApiErrorCode::ProofScanIncomplete,
+                        "the canonical read after the claimed response did not answer",
+                    )
+                })?;
+            if page.items.iter().any(|event| {
+                !matches!(
+                    event.kind,
+                    SessionEventKind::StateChange | SessionEventKind::Log
+                )
+            }) {
+                later_turn_event = true;
+                settled_tail = true;
+                break;
+            }
+            match page.next {
+                Some(next) => after = Some(next),
+                None => {
+                    settled_tail = true;
+                    break;
+                }
+            }
+        }
+        if !settled_tail {
+            return Err(self.deny(
+                ApiErrorCode::ProofScanIncomplete,
+                "the canonical read after the claimed response reached its page budget",
+            ));
+        }
+        if message_matches != 1
             || response_matches != 1
+            || later_turn_event
             || last_turn_position != Some(response_position)
         {
             return Err(self.deny(

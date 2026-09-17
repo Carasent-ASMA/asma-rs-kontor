@@ -40,7 +40,10 @@ use std::sync::{
 use std::time::Duration;
 
 use async_trait::async_trait;
-use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
+use harness::{
+    Answer, Call, World, at, capabilities_with_history_page, capabilities_without, fake_family,
+    name, secret,
+};
 use kontor_accounts::{KeychainBackend, KeychainFailure, KeychainTarget, UsageReading};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
@@ -24099,8 +24102,9 @@ async fn settling_a_bounded_turn_reads_only_the_claimed_current_window() {
             .iter()
             .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::History(_)))
             .count(),
-        1,
-        "settlement must not crawl unrelated history before the claimed current message: {calls:?}",
+        2,
+        "settlement reads the bounded window and then asks once whether anything \
+         follows the claimed response — never the whole tail: {calls:?}",
     );
 }
 
@@ -24193,8 +24197,9 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
     assert_eq!(stale_completion.code(), "revision_conflict");
     assert_eq!(
         world.fake.calls().len(),
-        calls_before_stale + 2,
-        "the stale proof performs only the fresh inspect and bounded history read",
+        calls_before_stale + 3,
+        "the stale proof performs the fresh inspect, the bounded window read and \
+         the one anchored read past the claimed response",
     );
     assert!(
         world
@@ -24405,8 +24410,9 @@ async fn refuse_forged_current_window(
     );
     assert_eq!(
         world.fake.calls().len(),
-        calls_before + 2,
-        "{forgery}: a forged window costs one fresh inspect and one bounded history read",
+        calls_before + 3,
+        "{forgery}: a forged window costs one fresh inspect, one bounded window \
+         read and one anchored read past the claimed response",
     );
     let (turns, dispatches) = world.daemon.state().with_store(|store| {
         (
@@ -24963,6 +24969,146 @@ async fn observing_a_current_turn_pages_a_long_session_and_resumes_from_its_anch
         "an exhausted anchor resumes or reports nothing new, never a broken read: {} {}",
         resumed.status,
         resumed.body
+    );
+}
+
+/// The terminality question has to be *asked*, not inferred from the window.
+///
+/// Bounding the window at the claimed response means a later turn can fall
+/// entirely outside it. When the window page happens to overshoot, the existing
+/// last-turn check still catches such a turn — which makes it easy to believe
+/// the anchored read is redundant. Size the page so the window ends exactly at
+/// the response and the next turn lands on the page after it, and the anchored
+/// read is the only thing standing between a stale tuple and a settlement.
+#[tokio::test]
+async fn a_later_turn_beyond_the_window_page_still_refuses_a_stale_tuple() {
+    // Two events per page: the window is exactly the claimed turn.
+    let world = World::open_with(capabilities_with_history_page(2)).await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "og-061-beyond-window").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let task = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]
+        .clone();
+    let revision = task["revision"].as_u64().expect("a revision");
+    let task_id = TaskId::parse(task["task_id"].as_str().expect("a task id")).expect("a task id");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+
+    let stale = observe_current_turn(&world, &project, &agent_run);
+    // A newer turn, landing past the window page the stale tuple describes.
+    let _newer = observe_current_turn(&world, &project, &agent_run);
+
+    let refused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": stale,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("og-061-beyond-window-settle")
+    .send(&world)
+    .await;
+    assert_eq!(
+        refused.status, 409,
+        "a turn that is no longer current must refuse even when the newer turn \
+         falls outside the window page: {}",
+        refused.body
+    );
+    assert_eq!(refused.code(), "revision_conflict", "{}", refused.body);
+    let turns = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_settled_turns(project_id, task_id))
+        .expect("settled turns read");
+    assert!(turns.is_empty(), "the refusal wrote nothing: {turns:?}");
+}
+
+/// OG-061. A proof that sits early in a long session settles.
+///
+/// ASMA-8201 (`12:6 -> 12:263`) and ASMA-8202 (`13:11 -> 13:296`) named turns a
+/// handful of events into their epoch, and settlement proved terminality by
+/// paging from the claimed message to the *end* of the session. The cost was
+/// therefore the distance to the tail, not the size of the turn, so a verifier
+/// response early in a long epoch could not be settled at all — while a
+/// terminal-anchor timeline read of the same session answered in one page and
+/// `runtime_capabilities` reported the plane reachable. The failure surfaced as
+/// "the session's runtime could not be reached", pointing at a healthy runtime.
+///
+/// The fixture reproduces that shape: a short turn, then a long tail behind it,
+/// with the history page narrowed so the old full-forward scan could not have
+/// finished inside its budget. What must happen now is that the turn settles.
+#[tokio::test]
+async fn an_early_proof_in_a_long_session_settles_without_reading_the_tail() {
+    // A narrow page, so the distance the proof has to cover is visible in the
+    // read count rather than hidden inside one generous page.
+    let world = World::open_with(capabilities_with_history_page(4)).await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "og-061-early-proof").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+
+    // The turn being settled, early in the session.
+    let proof = observe_current_turn(&world, &project, &agent_run);
+
+    // Then a long tail of non-turn content behind it. Status changes are not
+    // turn events, so the response stays terminal — but the old scan still had
+    // to read every one of them to discover that.
+    for _ in 0..60 {
+        let _ = observe_post_turn_status(&world, &project, &agent_run);
+    }
+
+    let calls_before = world.fake.calls().len();
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": proof,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("og-061-early-proof-settle")
+    .send(&world)
+    .await;
+    assert_eq!(
+        settled.status, 200,
+        "an early proof behind a long tail must still settle: {}",
+        settled.body
+    );
+    assert_eq!(settled.json()["turn_ordinal"], 1);
+
+    // And it did not read the tail to get there. The old path needed a page per
+    // trailing event; this one is bounded by the window and the anchored read.
+    let reads = world.fake.calls()[calls_before..]
+        .iter()
+        .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::History(_)))
+        .count();
+    // The window itself is two events — one page. Everything else this read
+    // spends is the terminality question, and the claimed message's distance
+    // from the start of the session no longer enters into it at all.
+    assert!(
+        reads <= 1 + 60 / 4 + 2,
+        "settlement read {reads} pages; the window is one page and the rest is \
+         the bounded terminality read, not a walk from the claimed message"
     );
 }
 
