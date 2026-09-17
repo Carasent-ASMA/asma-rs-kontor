@@ -4330,6 +4330,33 @@ pub struct AppliedTaskDto {
     pub worktree: Option<ExternalName>,
 }
 
+/// What an epic's control plane *is*, as distinct from what its roster declares.
+///
+/// An epic is born with an ECP topology node and one live seat binding per
+/// mandatory role, and both are logical rows. Nothing in that sequence binds a
+/// native workspace or launches a seat, so an epic could report governed
+/// leadership while no LSA and no TPM existed anywhere — a bound delivery
+/// workspace beside an unbound control plane, with nothing saying the
+/// difference mattered. That is OG-052, and this is the answer to it: the
+/// difference is reported, in the same response that creates it, and it names
+/// the call that closes it.
+///
+/// Deliberately a report and not a refusal. Every epic in this realm created
+/// since 2026-09-12 has an unbound ECP; gating admission on it would stop all
+/// delivery to fix a visibility problem.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct EpicControlPlaneDto {
+    /// Whether the ECP node holds a native container binding.
+    pub materialized: bool,
+    /// Live leadership seats the frozen roster declares on it.
+    pub declared_seats: u32,
+    /// How many of those hold a native session, and so could take a turn.
+    pub staffed_seats: u32,
+    /// The exact supported call that advances materialization, or `None` when
+    /// the control plane is already whole.
+    pub completes_with: Option<String>,
+}
+
 /// One epic after it was applied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct AppliedEpicDto {
@@ -4380,6 +4407,8 @@ pub struct AppliedEpicDto {
     /// resolution, including when it happened, and therefore differs on every
     /// call. Reporting it here made drift detection fire on every replay.
     pub bundle_hash: String,
+    /// What this epic's control plane actually is, beside what it declares.
+    pub control_plane: EpicControlPlaneDto,
     /// The tasks, in the order they were stated.
     pub tasks: Vec<AppliedTaskDto>,
 }

@@ -37,17 +37,17 @@ use kontor_api::applications::{
     ApplyEpicRequest, ArmRequest, AuthorizationProjectionDto, BacklogImportAppliedDto,
     BacklogImportApplyRequest, BacklogImportPreviewDto, BacklogImportRequest, BlockedTaskDto,
     BudgetBoundsDto, BudgetBoundsRequest, CreditBalanceDto, DisarmRequest,
-    EnsureAccountProfileRequest, EnsureProjectRequest, EpicExecutionScopeDto, EpicImportStateDto,
-    EpicProjectionDto, EpicTaskProjectionDto, HeadroomCeilingsDto, InitialExecutionHoldPreviewDto,
-    InitialExecutionHoldRequest, LifecycleAction, LifecycleOutcomeDto, LifecycleRequest,
-    ModelCatalogDto, PreviewEpicDto, PreviewEpicTaskDto, ProbeProviderQuotaRequest, ProjectDto,
-    ProviderQuotaStateDto, ProviderUsageObservationDto, PublicationDecisionDto,
-    PublicationIdentityRequest, PublicationMergeDto, PublicationMergeRequest,
-    PublishedTeamRevisionDto, QuotaProvenanceDto, QuotaSourceRangeDto, QuotaWindowDto,
-    ReadyTaskDto, ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto, SchedulerPlanDto,
-    SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto, SeatProviderQuotaDto,
-    SeatQuotaStateDto, StartRequest, StartedSeatDto, SubjectAuthorityDto, TeamDraftDto,
-    TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
+    EnsureAccountProfileRequest, EnsureProjectRequest, EpicControlPlaneDto, EpicExecutionScopeDto,
+    EpicImportStateDto, EpicProjectionDto, EpicTaskProjectionDto, HeadroomCeilingsDto,
+    InitialExecutionHoldPreviewDto, InitialExecutionHoldRequest, LifecycleAction,
+    LifecycleOutcomeDto, LifecycleRequest, ModelCatalogDto, PreviewEpicDto, PreviewEpicTaskDto,
+    ProbeProviderQuotaRequest, ProjectDto, ProviderQuotaStateDto, ProviderUsageObservationDto,
+    PublicationDecisionDto, PublicationIdentityRequest, PublicationMergeDto,
+    PublicationMergeRequest, PublishedTeamRevisionDto, QuotaProvenanceDto, QuotaSourceRangeDto,
+    QuotaWindowDto, ReadyTaskDto, ResumeAdmissionsRequest, RevisionRefDto, RuntimeCapabilityDto,
+    SchedulerPlanDto, SchedulerResumeDto, SchedulerStartDto, SeatProjectionDto,
+    SeatProviderQuotaDto, SeatQuotaStateDto, StartRequest, StartedSeatDto, SubjectAuthorityDto,
+    TeamDraftDto, TeamDraftRequest, TeamDraftSlotDto, TeamRunProjectionDto, TeamTemplateCatalogDto,
     TeamsProjectionDto, WorkProfileCatalogDto,
 };
 use kontor_api::applications::{
@@ -1980,6 +1980,7 @@ impl Services {
             // receipt-served replay of an unchanged graph disagree with the
             // apply that created it.
             bundle_hash: String::new(),
+            control_plane: self.epic_control_plane(project_id, epic_id)?,
             tasks: applied,
         })
     }
@@ -6432,6 +6433,98 @@ impl Services {
         )?;
         self.materialize_roster_seats(project_id, &control, &roster, now)?;
         Ok(())
+    }
+
+    /// What this epic's control plane actually is, beside what it declares.
+    ///
+    /// [`Self::govern_epic`] freezes a roster, ensures the ECP node and creates
+    /// one seat binding per mandatory role. Every one of those is a row. None of
+    /// them binds a native workspace or launches a seat, so an epic is born with
+    /// leadership that exists only on paper — and, because
+    /// [`Self::roster_governance`] answers `Seated` from the bindings alone, it
+    /// reports that leadership as present. A delivery workspace gets its native
+    /// from scheduler admission, so the normal outcome is a bound ESW beside an
+    /// unbound ECP with nothing saying the difference matters. That is OG-052.
+    ///
+    /// This reports the difference rather than refusing it. Two reasons, and the
+    /// second is the load-bearing one: materializing natively needs a reachable
+    /// runtime, and `govern_epic` runs inside `epic-apply`, which must not start
+    /// requiring one to create an epic; and every epic in this realm created
+    /// since 2026-09-12 has an unbound ECP, so gating admission on it would stop
+    /// all delivery to fix a visibility problem.
+    ///
+    /// An epic with no control plane at all is `materialized: false` with no
+    /// seats, not an error: "not placed yet" is a normal state for a node, and
+    /// it is exactly the state this is built to describe.
+    fn epic_control_plane(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<EpicControlPlaneDto, ApiError> {
+        let scope = self.resolve_scope(
+            project_id,
+            &SemanticTopologyTargetDto::EpicControl { epic_id },
+        )?;
+        let nodes = self.scope_nodes(project_id, &scope)?;
+        // Matched on the scope's kind, never "the first node this epic has":
+        // an epic owns its ESW as well as its ECP, and the ESW holds none of
+        // the control-plane seats.
+        let Some(control) = scope
+            .kind
+            .as_ref()
+            .and_then(|kind| nodes.iter().find(|node| &node.kind == kind))
+        else {
+            return Ok(EpicControlPlaneDto {
+                materialized: false,
+                declared_seats: 0,
+                staffed_seats: 0,
+                completes_with: Some(
+                    "kontor_topology_ensure then kontor_topology_materialize on scope epic_control"
+                        .to_owned(),
+                ),
+            });
+        };
+        let state = self.state()?;
+        let materialized = state
+            .with_store(|store| store.get_topology_node_container(project_id, control.id))
+            .map_err(|error| self.refuse(&error))?
+            .is_some();
+        let seats = state
+            .with_store(|store| store.list_seat_bindings(project_id, control.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .filter(|seat| seat.lifecycle != TopologyLifecycle::Retired)
+            .collect::<Vec<_>>();
+        let mut staffed = 0_u32;
+        for seat in &seats {
+            if state
+                .with_store(|store| store.get_hosted_topology_seat(project_id, seat.id))
+                .map_err(|error| self.refuse(&error))?
+                .is_some()
+            {
+                staffed = staffed.saturating_add(1);
+            }
+        }
+        let declared = u32::try_from(seats.len()).unwrap_or(u32::MAX);
+        // Most-blocking first: a seat cannot be launched into a workspace that
+        // was never bound, so naming the seat call while the node is unbound
+        // would send the operator at the step that cannot yet succeed.
+        let completes_with = if !materialized {
+            Some("kontor_topology_materialize on scope epic_control".to_owned())
+        } else if staffed < declared {
+            Some(
+                "kontor_core_team_materialize with a native route for each unstaffed role"
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
+        Ok(EpicControlPlaneDto {
+            materialized,
+            declared_seats: declared,
+            staffed_seats: staffed,
+            completes_with,
+        })
     }
 
     /// Whether one epic has the governed leadership its roster mandates.
@@ -25916,6 +26009,7 @@ impl ApplicationOperations for Services {
                 .map(|team| team.definition.hash().as_str().to_owned()),
             initial_hold,
             bundle_hash: String::new(),
+            control_plane: self.epic_control_plane(project_id, applied.mini_project_id)?,
             tasks: applied
                 .tasks
                 .into_iter()

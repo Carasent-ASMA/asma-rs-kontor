@@ -4619,6 +4619,77 @@ async fn reapplying_the_identical_epic_writes_nothing_and_drift_is_refused() {
     assert_eq!(reused.status, 409, "{}", reused.body);
 }
 
+/// A newly applied epic says, in the same response that creates it, that its
+/// leadership exists only on paper — and names the call that changes that.
+///
+/// `govern_epic` freezes the roster, ensures the ECP node and creates a seat
+/// binding per mandatory role. All rows. Nothing there binds a native workspace
+/// or launches a seat, while the epic's delivery workspace gets its native from
+/// scheduler admission — so the normal result is a bound ESW beside an unbound
+/// ECP, and before ASMA-8199 nothing in any response said so. Every epic in the
+/// live realm created since 2026-09-12 is in exactly this state, which is why
+/// this is reported rather than refused.
+///
+/// The assertion that carries the fix is `completes_with`. `materialized: false`
+/// alone is satisfied by a field that is always false; naming the exact next
+/// call is what makes the report actionable, and it has to be the *node* call
+/// while the node is unbound, because a seat cannot be launched into a
+/// workspace that does not exist yet.
+#[tokio::test]
+async fn a_new_epic_reports_leadership_declared_but_not_materialized() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "ecp-1", "Kontor", "/tmp/kontor-ecp").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+    let body = epic_body(
+        revision,
+        "Epic with paper leadership",
+        &category,
+        serde_json::json!([{"title": "Only task"}]),
+    );
+
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("ecp-epic-1")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    let plane = &applied.json()["control_plane"];
+    assert_eq!(
+        plane["materialized"], false,
+        "epic-apply binds no native workspace, and must not claim it did"
+    );
+    assert_eq!(
+        plane["completes_with"], "kontor_topology_materialize on scope epic_control",
+        "an unbound control plane names the node call, not the seat call"
+    );
+    assert_eq!(
+        plane["staffed_seats"], 0,
+        "no seat holds a native session at creation"
+    );
+    assert!(
+        plane["declared_seats"].as_u64().expect("a count") > 0,
+        "the roster does declare leadership — that is the whole asymmetry"
+    );
+
+    // And the report survives a replay, because it describes the epic rather
+    // than the call: a served receipt that answered `materialized: true` would
+    // be worse than no report at all.
+    let again = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("ecp-epic-1")
+        .send(&world)
+        .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.json()["control_plane"], *plane);
+}
+
 /// Legacy imports may add one explicit short-code mapping without changing the
 /// task, epic, lifecycle or ticket identities. Descriptions, Jira keys and
 /// internal ids remain unavailable as implicit display-name sources.
