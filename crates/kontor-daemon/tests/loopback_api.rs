@@ -4915,6 +4915,18 @@ async fn held_work_names_its_lift_condition_and_owner_on_both_surfaces() {
         .find(|row| row["task_id"] == task.as_str())
         .cloned()
         .unwrap_or_else(|| panic!("the held task is blocked: {}", plan.body));
+    // Blocked is only half the contract: work that is both blocked and ready is
+    // still offered to an admitting scheduler, so the absence is what proves the
+    // hold actually withheld it.
+    assert!(
+        plan.json()["ready"]
+            .as_array()
+            .expect("ready")
+            .iter()
+            .all(|row| row["task_id"] != task.as_str()),
+        "held work is withheld from ready, not merely annotated: {}",
+        plan.body
+    );
     let planned_hold = &planned["hold"];
     assert_eq!(
         planned_hold["lift_condition"], "jira_graph_confirmed",
@@ -4931,6 +4943,12 @@ async fn held_work_names_its_lift_condition_and_owner_on_both_surfaces() {
         "the prose a person wrote survives beside the predicate"
     );
 
+    assert!(
+        planned_hold["authorization_id"].is_string(),
+        "the hold names the authorization it came from: {}",
+        plan.body
+    );
+
     let snapshot = Call::get(format!("/v1/projects/{project}/tasks/{task}"))
         .signed_as(&world, "observer")
         .send(&world)
@@ -4940,6 +4958,15 @@ async fn held_work_names_its_lift_condition_and_owner_on_both_surfaces() {
         snapshot.json()["value"]["hold"],
         *planned_hold,
         "scheduler-plan and task-get must agree about the same hold"
+    );
+    // The state, not only the hold beside it. A `ready` task carrying a hold is
+    // the exact defect REQ-004 names: every surface that reads state alone —
+    // console, CLI, an operator's eye — still calls held work available.
+    assert_eq!(
+        snapshot.json()["value"]["state"],
+        "blocked",
+        "held work reports as blocked, not ready: {}",
+        snapshot.body
     );
 
     // And once the condition is met and the hold has lifted, neither surface
@@ -4961,6 +4988,15 @@ async fn held_work_names_its_lift_condition_and_owner_on_both_surfaces() {
     assert!(
         after.json()["value"]["hold"].is_null(),
         "the hold lifted, so nothing is holding this task: {}",
+        after.body
+    );
+    // And the projection is not one-way. A blocked state that outlived its hold
+    // would stop the work the lift just released, which is precisely why the
+    // durable aggregate was never transitioned.
+    assert_eq!(
+        after.json()["value"]["state"],
+        "ready",
+        "a lifted hold leaves no stale blocked projection: {}",
         after.body
     );
 }

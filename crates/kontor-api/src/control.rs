@@ -19,7 +19,7 @@ use futures::stream::Stream;
 use kontor_core::id::{AgentRunId, EventCursor, IdempotencyKey, ProjectId};
 use kontor_core::realm::RealmCursor;
 use kontor_core::repository::{RealmRepository, RunInspection, TaskInspection};
-use kontor_core::state::{DerivedRunState, Freshness};
+use kontor_core::state::{DerivedRunState, Freshness, TaskState};
 use serde::Deserialize;
 
 use crate::auth::CallerCapability;
@@ -553,12 +553,26 @@ fn task_dto(
     jira_binding: crate::dto::JiraBindingDto,
     hold: Option<crate::dto::HeldWorkDto>,
 ) -> TaskDto {
+    // An unlifted hold reads as `blocked` here while the durable aggregate is
+    // left alone. Persisting the transition would need a receipt-backed resume
+    // to undo, but ASMA-8194 lifts a conditional hold on the hold's own terms —
+    // so a stored `Blocked` could outlive the hold that caused it and strand
+    // work that is once again eligible.
+    //
+    // Only `Ready` is projected. In-progress or terminal work keeps its durable
+    // state, because historical revocation evidence is not a statement about
+    // work that already moved past admission.
+    let state = if hold.is_some() && inspection.task.state == TaskState::Ready {
+        TaskState::Blocked
+    } else {
+        inspection.task.state
+    };
     TaskDto {
         hold,
         task_id: inspection.task.id,
         project_id: inspection.task.project_id,
         title: inspection.task.title.clone(),
-        state: inspection.task.state,
+        state,
         revision: inspection.task.revision,
         jira_binding,
         current_phase: inspection
