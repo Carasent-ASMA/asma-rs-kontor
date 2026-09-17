@@ -1187,3 +1187,67 @@ OQ-B remains deferred.
 - The candidate was not pushed, published, merged, or deployed.
 - The preserved AgentRun, SeatBinding and TeamRun identities are untouched.
 - No gate was waived, and no retry behaviour was weakened to achieve the fix.
+
+## 2026-09-17 current-master salvage and Gate 18
+
+The stranded branch `fix/ASMA-8110-gate-recovery-binding-integrity` is retained
+as historical source and is no longer the publication candidate. Its 18
+unmerged commits were replayed onto current `origin/master` as the fresh branch
+`fix/ASMA-8110-gate-verdict-recovery-salvage-20260917`. This preserves the
+original history and avoids publishing the two-week-stale integration base.
+The old branch is designated **superseded by the fresh salvage** once the exact
+attested fresh head is merged; it is not deleted by this disposition.
+
+The fresh branch started at `86ba6065494eabb5fbe56e1ec4d6b432f08779ed`
+(schema 99). The only replay conflict was the route-fence area already changed
+by PR #230: current master's production implementation was retained and the
+ASMA-8110 fleet regression fixture/tests were added alongside it. No production
+route implementation from master was replaced.
+
+Current-master integration exposed four additional issues before an archive
+could pass:
+
+| Finding | Bounded correction |
+|---|---|
+| Rust 1.97 clippy failures inherited from PRs #217 and #229 | use `next_back()` for the double-ended iterator and derive `project_id` inside `prove_challenged_turn` |
+| August session-key assertion contradicted ASMA-8191 / PR #222 | prove an ordinary stable idempotency key is accepted, replays identically and creates one timeline message |
+| concurrent first open could spend the ordinary 30-second SQLite busy timeout under full-suite load | keep the ordinary timeout unchanged and grant the first migration-lock acquisition one additional bounded 30-second attempt |
+| the KON-MVP-18 pilot still expected the pre-PR #229 ambiguous-delivery type and `unavailable` API code | assert `DeliveryConfirmationUnknown` and `delivery_unconfirmed`, the stable contracts that forbid a blind resend after a possibly committed effect |
+
+### Final candidate
+
+| | |
+|---|---|
+| **Base** | `86ba6065494eabb5fbe56e1ec4d6b432f08779ed` |
+| **Candidate SHA** | `1c1f549fbabbe5273cf4b8b67a3be19713fb7b7b` |
+| **Tree SHA** | `e929e860ad8bc57737e4244fd40c4b852a1f12a5` |
+| **Schema** | 99 |
+| **Archive exit** | **0** |
+| **Gate 18 log digest** | `ac6f2c1761e5d8397ec174c9cdd8119fd96a70ca950aa2e5e2b07ff8764cc4a6` |
+
+### Append-only salvage gate ledger
+
+| Gate | Result | Log digest |
+|---|---|---|
+| 13 | failed: inherited Rust 1.97 clippy errors | `337f52c1feebfcd776588b58e68de6a71eccaaeb122c505592273253d66b5bf4` |
+| 14 | failed: stale pre-ASMA-8191 session-key assertion | `ad1ca4b3ac7a0708ac1c3d6952bb738f632932cacb3e4b2cf83f3afa8fb39446` |
+| 15 | failed: `a_concurrent_first_open_initializes_exactly_one_realm` hit `DatabaseBusy` under full-suite load | `0969c54fd32731fe7371742ee127aefd6e51e3e45f8101b05888c0d2269c62d4` |
+| 16 | failed: pilot expected the obsolete ambiguous-delivery classification; all effects and replay counts were correct | `3fc2856ae8cd82cee0b79e4a1b17544f02bb9d0a1704915bf941faa84107b878` |
+| 17 | infrastructure failure before validation: sandbox DNS could not resolve crates.io | `daed354fc9d41a0474de4da2564de6a23828a208cfade3fdd16c199e3dbbabd5` |
+| 18 | **passed** | `ac6f2c1761e5d8397ec174c9cdd8119fd96a70ca950aa2e5e2b07ff8764cc4a6` |
+
+Gate 18 ran `python3 scripts/verify-tree.py --mode archive` from a clean
+`git archive` export of the exact candidate. `Cargo.lock` regenerated
+byte-identically; fmt and clippy with `-D warnings` passed; the Rust workspace
+reported **2535 passed, 0 failed, 9 ignored** across 144 summaries; `loopback_api`
+reported **360 passed, 0 failed, 1 ignored**; the schema suite reported **58
+passed**, including the concurrent first-open case and the unchanged ordinary
+busy-writer timeout; both pilot binaries passed. RustSec audit passed with the
+repository's nine allowed warnings, cargo-deny passed, frozen pnpm install and
+typecheck passed, Vitest reported **305 passed** across 17 files, and the
+production dependency audit reported no known vulnerabilities.
+
+No topology, TeamRun, task, gate, seat or Jira state was changed while producing
+this salvage. No duplicate topology or run was created. The already completed
+ASMA-8110 task and its preserved TeamRun remain closed; this is publication and
+integration evidence for the epic closeout path.

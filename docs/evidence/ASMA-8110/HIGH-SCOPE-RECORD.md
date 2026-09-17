@@ -558,6 +558,43 @@ complete log digest is
 Independent verification must evaluate this exact candidate and the separate
 evidence-only commit before gate acceptance or publication.
 
+## 2026-09-17 publication-salvage scope
+
+The operator disposition is **salvage**, using a fresh branch from current
+master. The stale 18-commit branch remains preserved as historical source and is
+designated superseded once the fresh attested head merges. It is not rebased,
+force-pushed or deleted.
+
+The fresh integration base is
+`86ba6065494eabb5fbe56e1ec4d6b432f08779ed` at schema 99. The final code/test
+candidate is `1c1f549fbabbe5273cf4b8b67a3be19713fb7b7b`, tree
+`e929e860ad8bc57737e4244fd40c4b852a1f12a5`. It carries the 18 historical
+follow-ups plus bounded compatibility repairs required by today's master:
+
+- retain PR #230's production route-fence implementation while adding the
+  unique ASMA-8110 fleet fixture and regression coverage;
+- clear inherited Rust 1.97 clippy failures from PRs #217 and #229 without
+  changing their behavior;
+- align the stale session-key assertion with ASMA-8191 / PR #222;
+- preserve the normal 30-second SQLite busy timeout while allowing the first
+  migration-lock acquisition one additional bounded attempt;
+- align the pilot with the current `delivery_unconfirmed` safety contract after
+  a write may have committed.
+
+Gate 18 exited 0. Its log digest is
+`ac6f2c1761e5d8397ec174c9cdd8119fd96a70ca950aa2e5e2b07ff8764cc4a6`.
+The clean archive recorded 2535 Rust tests passed, 0 failed and 9 ignored; 360
+loopback tests passed with one ignored; the 58-test schema suite and both pilots
+passed; and 305 console tests passed. Lockfile byte comparison, fmt, clippy,
+RustSec audit, cargo-deny, frozen install, typecheck and production dependency
+audit all passed. Gates 13 through 17 remain append-only failed evidence in the
+high-change record.
+
+This scope does not reopen the completed ASMA-8110 task or its closed TeamRun.
+It authorizes publication/integration of the salvaged follow-ups and the epic
+closeout evidence only. No topology, TeamRun, task, gate, seat or Jira mutation
+was made during salvage, and no ASMA-8100 receipt or state was touched.
+
 ## Rejection-fence role resolution addendum (gate rejection sequence 4)
 
 Independent verification rejected candidate `18923bd` under receipt
