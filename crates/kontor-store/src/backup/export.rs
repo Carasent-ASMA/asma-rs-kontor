@@ -1110,6 +1110,10 @@ fn redaction_summary() -> RedactionSummary {
             "native leadership-session identity is runtime-local placement authority; a verified same-Realm snapshot preserves it byte-for-byte",
         ),
         (
+            "turn_correlation_challenges",
+            "a challenge addresses one live native binding and is same-Realm dispatch authority; snapshots preserve it, redacted cross-Realm exports do not",
+        ),
+        (
             "import_receipts",
             "destination-local import authority is not forwarded; a later import mints its own receipt",
         ),

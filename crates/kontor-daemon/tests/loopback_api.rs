@@ -4755,6 +4755,77 @@ async fn reapplying_the_identical_epic_writes_nothing_and_drift_is_refused() {
     assert_eq!(reused.status, 409, "{}", reused.body);
 }
 
+/// A newly applied epic says, in the same response that creates it, that its
+/// leadership exists only on paper — and names the call that changes that.
+///
+/// `govern_epic` freezes the roster, ensures the ECP node and creates a seat
+/// binding per mandatory role. All rows. Nothing there binds a native workspace
+/// or launches a seat, while the epic's delivery workspace gets its native from
+/// scheduler admission — so the normal result is a bound ESW beside an unbound
+/// ECP, and before ASMA-8199 nothing in any response said so. Every epic in the
+/// live realm created since 2026-09-12 is in exactly this state, which is why
+/// this is reported rather than refused.
+///
+/// The assertion that carries the fix is `completes_with`. `materialized: false`
+/// alone is satisfied by a field that is always false; naming the exact next
+/// call is what makes the report actionable, and it has to be the *node* call
+/// while the node is unbound, because a seat cannot be launched into a
+/// workspace that does not exist yet.
+#[tokio::test]
+async fn a_new_epic_reports_leadership_declared_but_not_materialized() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "ecp-1", "Kontor", "/tmp/kontor-ecp").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+    let body = epic_body(
+        revision,
+        "Epic with paper leadership",
+        &category,
+        serde_json::json!([{"title": "Only task"}]),
+    );
+
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("ecp-epic-1")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    let plane = &applied.json()["control_plane"];
+    assert_eq!(
+        plane["materialized"], false,
+        "epic-apply binds no native workspace, and must not claim it did"
+    );
+    assert_eq!(
+        plane["completes_with"], "kontor_topology_materialize on scope epic_control",
+        "an unbound control plane names the node call, not the seat call"
+    );
+    assert_eq!(
+        plane["staffed_seats"], 0,
+        "no seat holds a native session at creation"
+    );
+    assert!(
+        plane["declared_seats"].as_u64().expect("a count") > 0,
+        "the roster does declare leadership — that is the whole asymmetry"
+    );
+
+    // And the report survives a replay, because it describes the epic rather
+    // than the call: a served receipt that answered `materialized: true` would
+    // be worse than no report at all.
+    let again = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("ecp-epic-1")
+        .send(&world)
+        .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.json()["control_plane"], *plane);
+}
+
 /// Legacy imports may add one explicit short-code mapping without changing the
 /// task, epic, lifecycle or ticket identities. Descriptions, Jira keys and
 /// internal ids remain unavailable as implicit display-name sources.
@@ -13112,6 +13183,474 @@ async fn legacy_artifacts_do_not_advance_a_recovered_rejection_until_a_fresh_aut
     assert_eq!(
         routes[0].origin,
         kontor_core::repository::GateRouteOrigin::Recovered
+    );
+}
+
+/// A pack whose slot ids name *seats* and whose roles name what those seats
+/// *are* -- `implement` filling `fence-implementer` -- which is the shape of
+/// every calibrated ASMA team and the shape no fixture in this suite had. Where
+/// the two coincide, as they do in the MVP pack, reading a slot id as a role is
+/// indistinguishable from resolving it.
+const SLOT_ROLE_FENCE_PACK: &str =
+    include_str!("../../../tests/fixtures/pilot/slot-role-fence-pack.json");
+
+/// Register the slot-role fence pack, bootstrap an epic pinned to its category,
+/// and seat the team.
+async fn fence_seated(world: &World, slug: &'static str) -> (Bootstrapped, Vec<String>) {
+    let pack: serde_json::Value =
+        serde_json::from_str(SLOT_ROLE_FENCE_PACK).expect("the fence pack parses");
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack": pack}),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-pack"))
+    .send(world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+
+    let created = ensure_project(world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    register_test_delivery_slots(
+        world,
+        &project,
+        &[("scope", "SA"), ("implement", "SWE"), ("verify", "QA")],
+    );
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Lead", "harness": "fake.runtime",
+            "credential_alias": "lead", "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-account"))
+    .send(world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Fence epic",
+            "slot-role-fence-v1",
+            serde_json::json!([{"title": "The task"}]),
+        ),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-epic"))
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let seed = Bootstrapped {
+        project,
+        epic: applied.json()["epic_id"].as_str().expect("id").to_owned(),
+        task: applied.json()["tasks"][0]["task_id"]
+            .as_str()
+            .expect("id")
+            .to_owned(),
+        task_revision: applied.json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("revision"),
+        account: account.json()["account_profile_id"]
+            .as_str()
+            .expect("id")
+            .to_owned(),
+    };
+    let runs = seat_existing(world, &seed, slug).await;
+    (seed, runs)
+}
+
+/// The route this workflow is currently fenced by.
+fn only_route(world: &World, seed: &Bootstrapped) -> kontor_core::repository::GateRejectionRoute {
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let workflow = active_workflow(world, seed);
+    let routes = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_gate_rejection_routes(project, workflow.id))
+        .expect("routes read");
+    assert_eq!(routes.len(), 1, "the rejection routed exactly once");
+    routes[0].clone()
+}
+
+/// ASMA-8189. A rejection fence asks which *role* re-authored the phase the work
+/// was returned to, while a settled turn carries the *slot* that authored it.
+/// Comparing the two as text answers correctly only for a team that spells a
+/// slot and its role the same way; every calibrated ASMA team does not, so a
+/// valid rework never released the fence and the workflow stayed at its
+/// implementation phase with its evidence and gates intact.
+///
+/// The mutants this kills: reading `role_slot_id` as a logical role; resolving
+/// the mapping against anything other than the route-time run's frozen team;
+/// and treating an unresolvable slot as a release rather than as a fence.
+#[tokio::test]
+async fn a_rejection_fence_releases_for_the_slot_the_pinned_team_maps_to_the_handoff_role() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = fence_seated(&world, "slot-role-fence").await;
+
+    // The pinned team names seats, not roles: this is the whole premise.
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let task = TaskId::parse(&seed.task).expect("task id");
+    let seated_run = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_team_runs_for_task(project, task))
+        .expect("the task's team runs read")
+        .first()
+        .map(|(id, _)| *id)
+        .expect("a seated run");
+    let assignments = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_team_run(project, seated_run))
+        .expect("the seated run reads")
+        .expect("the seated run exists")
+        .snapshot
+        .slot_role_assignments()
+        .expect("the frozen team maps its slots");
+    assert_eq!(
+        assignments
+            .get(&kontor_core::id::RoleSlotId::parse("implement").expect("a slot id"))
+            .map(kontor_core::id::RoleKey::as_str),
+        Some("fence-implementer"),
+        "the slot and the role it fills are different names"
+    );
+
+    // Drive the workflow to its gate: every phase's producer settles its own
+    // artifact from its own seat.
+    for (index, (slot, artifact)) in [
+        ("scope", "fence-scope-record"),
+        ("implement", "fence-change"),
+        ("verify", "fence-verification-report"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let run = run_with_role(&world, &runs, slot).await;
+        let settled = settle_turn(
+            &world,
+            &seed,
+            &run,
+            slot,
+            serde_json::json!([artifact]),
+            &format!("slot-role-fence-produce-{index}"),
+        )
+        .await;
+        assert_eq!(settled.status, 200, "{slot}: {}", settled.body);
+    }
+    assert_eq!(
+        workflow_position(&world, &seed).0,
+        "fence-verification",
+        "the producers' own turns advanced the workflow to the gate"
+    );
+
+    // The verifier rejects. The work returns to the implementation phase, whose
+    // inbound edge names the role `fence-implementer` -- never the slot.
+    let (uri, revision, gate) = gate_record_target(&world, &seed).await;
+    assert_eq!(gate, "fence-verification-gate");
+    let rejected = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": "fence-verifier",
+            "evaluator_account": seed.account,
+            "evidence": [],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("slot-role-fence-reject")
+    .send(&world)
+    .await;
+    assert_eq!(rejected.status, 200, "{}", rejected.body);
+    let (target, routed_revision) = workflow_position(&world, &seed);
+    assert_eq!(target, "fence-implementation");
+    let route = only_route(&world, &seed);
+    assert_eq!(
+        route.team_run_id, seated_run,
+        "the route froze the seated run"
+    );
+
+    // Reconciliation re-reads the pre-rejection evidence as often as it likes.
+    for _ in 0..3 {
+        world.daemon.reconcile().await;
+        assert_eq!(
+            workflow_position(&world, &seed),
+            (target.clone(), routed_revision),
+            "the rejected evidence must not walk the workflow back out"
+        );
+    }
+
+    // Mismatched mapping: the verifier's own slot fills `fence-verifier`, so its
+    // turn is not the rework the rejection asked for however well it is formed.
+    let verifier = run_with_role(&world, &runs, "verify").await;
+    let wrong_role = settle_turn(
+        &world,
+        &seed,
+        &verifier,
+        "verify",
+        serde_json::json!(["fence-change"]),
+        "slot-role-fence-wrong-role",
+    )
+    .await;
+    assert_eq!(wrong_role.status, 200, "{}", wrong_role.body);
+    assert_eq!(
+        workflow_position(&world, &seed),
+        (target.clone(), routed_revision),
+        "a slot filling another role does not release the fence"
+    );
+
+    // Missing mapping: a turn from a slot the frozen team never declared proves
+    // nothing about who authored the rework, so it must fence rather than pass.
+    settle_turn_on_team_run(
+        &world,
+        &seed,
+        route.team_run_id,
+        "ghost",
+        "[\"fence-change\"]",
+        "2027-01-05T00:00:00Z",
+    );
+    world.daemon.reconcile().await;
+    // Advancement is computed when a turn settles, so the fence is only asked
+    // about that row once something asks the workflow to move. An empty turn
+    // from a slot filling another role cannot itself release anything, which is
+    // what makes it a nudge rather than a second subject.
+    let nudge = settle_turn(
+        &world,
+        &seed,
+        &verifier,
+        "verify",
+        serde_json::json!([]),
+        "slot-role-fence-ghost-nudge",
+    )
+    .await;
+    assert_eq!(nudge.status, 200, "{}", nudge.body);
+    assert_eq!(
+        workflow_position(&world, &seed),
+        (target.clone(), routed_revision),
+        "an undeclared slot resolves to no role and releases nothing"
+    );
+
+    // The rework itself. The `implement` slot is what the seat carries; the
+    // pinned team is what says it fills `fence-implementer`.
+    let implementer = run_with_role(&world, &runs, "implement").await;
+    let rework = settle_turn(
+        &world,
+        &seed,
+        &implementer,
+        "implement",
+        serde_json::json!(["fence-change"]),
+        "slot-role-fence-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+    let (phase_after, revision_after) = workflow_position(&world, &seed);
+    assert_ne!(
+        phase_after, target,
+        "the slot the pinned team maps to the handoff role releases the fence"
+    );
+    assert!(
+        revision_after > routed_revision,
+        "releasing the fence lets ordinary advancement resume"
+    );
+
+    // Nothing about the identity of the work changed to achieve that: the same
+    // task, the same TeamRun, the same seats, the same single route.
+    let after = only_route(&world, &seed);
+    assert_eq!(after.team_run_id, route.team_run_id);
+    assert_eq!(after.rejection_receipt_id, route.rejection_receipt_id);
+    assert_eq!(after.task_id, route.task_id);
+    assert_eq!(after.rejection_target, route.rejection_target);
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_team_runs_for_task(project, task))
+            .expect("the task's team runs read")
+            .len(),
+        1,
+        "releasing a fence creates no second TeamRun"
+    );
+    for slot in ["scope", "implement", "verify"] {
+        assert_eq!(
+            run_with_role(&world, &runs, slot).await,
+            run_with_role(&world, &runs, slot).await,
+            "the {slot} seat is the one that was seated"
+        );
+    }
+}
+
+/// A second TeamRun on the same task whose frozen team binds the same slot ids
+/// to *different* logical roles.
+///
+/// Built through the store because only the identity and the frozen bytes
+/// matter: the scenario asks which run's team document the fence consults, not
+/// how a divergent team could come to exist.
+fn later_team_run_with_rebound_slots(
+    world: &World,
+    seed: &Bootstrapped,
+    rebind: &[(&str, &str)],
+    after: &str,
+) -> TeamRunId {
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let task = TaskId::parse(&seed.task).expect("task id");
+    let first = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_team_runs_for_task(project, task))
+        .expect("the task's team runs read")
+        .first()
+        .map(|(id, _)| *id)
+        .expect("a seated run");
+    let mut snapshot = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_team_run(project, first))
+        .expect("the seated run reads")
+        .expect("the seated run exists")
+        .snapshot;
+    let mut definition: serde_json::Value =
+        serde_json::from_str(snapshot.definition.json()).expect("the frozen definition is JSON");
+    for slot in definition["slots"]
+        .as_array_mut()
+        .expect("the frozen definition declares slots")
+    {
+        let id = slot["id"].as_str().expect("a slot id").to_owned();
+        if let Some((_, role)) = rebind.iter().find(|(name, _)| *name == id) {
+            slot["role"]["role"] = serde_json::json!(role);
+        }
+    }
+    snapshot.definition =
+        CanonicalDocument::from_value(&definition).expect("the rebound team canonicalizes");
+    let later = TeamRunId::generate();
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.create_team_run(&kontor_core::repository::NewTeamRun {
+                id: later,
+                project_id: project,
+                task_id: task,
+                snapshot: snapshot.clone(),
+                created_at: kontor_core::id::parse_utc_timestamp(after)
+                    .expect("a canonical instant"),
+            })
+        })
+        .expect("a second team run is created for the same task");
+    later
+}
+
+/// ASMA-8189. The mapping is read from the run the *route* froze, never from
+/// whichever team document is nearest to hand.
+///
+/// A later TeamRun on the same task binds `implement` to the verifier's role. A
+/// fence that resolved the rework's slot against that run — or against the
+/// template as it stands now — would read the rework as the wrong role and hold
+/// a fence the route-time team says is released.
+#[tokio::test]
+async fn a_rejection_fence_resolves_its_roles_against_the_run_the_route_froze() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = fence_seated(&world, "fence-route-time-team").await;
+
+    for (index, (slot, artifact)) in [
+        ("scope", "fence-scope-record"),
+        ("implement", "fence-change"),
+        ("verify", "fence-verification-report"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let run = run_with_role(&world, &runs, slot).await;
+        let settled = settle_turn(
+            &world,
+            &seed,
+            &run,
+            slot,
+            serde_json::json!([artifact]),
+            &format!("fence-route-time-produce-{index}"),
+        )
+        .await;
+        assert_eq!(settled.status, 200, "{slot}: {}", settled.body);
+    }
+
+    let (uri, revision, gate) = gate_record_target(&world, &seed).await;
+    let rejected = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": "fence-verifier",
+            "evaluator_account": seed.account,
+            "evidence": [],
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("fence-route-time-reject")
+    .send(&world)
+    .await;
+    assert_eq!(rejected.status, 200, "{gate}: {}", rejected.body);
+    let (target, routed_revision) = workflow_position(&world, &seed);
+    assert_eq!(target, "fence-implementation");
+    let route = only_route(&world, &seed);
+
+    // A later run for the same task, whose frozen team says `implement` fills
+    // the verifier's role. It is what a "current team" lookup would find.
+    let rebound = later_team_run_with_rebound_slots(
+        &world,
+        &seed,
+        &[("implement", "fence-verifier")],
+        "2027-02-01T00:00:00Z",
+    );
+    assert_ne!(rebound, route.team_run_id);
+    let project = ProjectId::parse(&seed.project).expect("project id");
+    let task = TaskId::parse(&seed.task).expect("task id");
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_team_runs_for_task(project, task))
+            .expect("the task's team runs read")
+            .last()
+            .map(|(id, _)| *id),
+        Some(rebound),
+        "the rebound run is what a latest-run lookup would pick, which is the trap"
+    );
+
+    // The rework is settled on the route-time run, whose own frozen team maps
+    // `implement` to `fence-implementer`. That is the document that decides.
+    let implementer = run_with_role(&world, &runs, "implement").await;
+    let rework = settle_turn(
+        &world,
+        &seed,
+        &implementer,
+        "implement",
+        serde_json::json!(["fence-change"]),
+        "fence-route-time-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+    let (phase_after, revision_after) = workflow_position(&world, &seed);
+    assert_ne!(
+        phase_after, target,
+        "the route-time team's mapping is the one the fence reads"
+    );
+    assert!(revision_after > routed_revision);
+    assert_eq!(
+        only_route(&world, &seed).team_run_id,
+        route.team_run_id,
+        "the route still names the run it froze"
     );
 }
 
@@ -22529,6 +23068,727 @@ fn observe_post_turn_status(
         .fake
         .observe_post_turn_state_change(&held, kontor_api::now())
         .expect("the runtime records the post-turn status")
+}
+
+#[tokio::test]
+async fn an_ambiguous_history_only_settles_after_one_server_owned_challenge() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "turn-correlation").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("run id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("role slot").to_owned();
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let agent_run_id = AgentRunId::parse(&agent_run).expect("agent run id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, agent_run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let binding = before.binding.clone().expect("the run is bound");
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the binding is held");
+    // Two content positions with no MessageId reproduce the only fact Kontor
+    // can safely conclude from the historical Paseo 0.8.0 transcript:
+    // correlation is ambiguous. Neither position is caller-selectable through
+    // the new challenge API.
+    world
+        .fake
+        .observe_uncorrelated_user_message(&held, "uncorrelated historical one", kontor_api::now())
+        .expect("the first uncorrelated position exists");
+    world
+        .fake
+        .observe_uncorrelated_user_message(&held, "uncorrelated historical two", kontor_api::now())
+        .expect("the second uncorrelated position exists");
+    let task_id = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, before.team_run_id)
+            .expect("team reads")
+            .expect("team exists")
+            .task_id
+    });
+    let task = world.daemon.state().with_store(|store| {
+        store
+            .get_task(project_id, task_id)
+            .expect("task reads")
+            .expect("task exists")
+    });
+    let role_slot_id = RoleSlotId::parse(&role_slot).expect("role slot");
+    let topology_seat = world.daemon.state().with_store(|store| {
+        let node = store
+            .get_task_topology_node(project_id, task_id)
+            .expect("task topology reads")
+            .expect("task topology exists");
+        let mut matching = store
+            .list_seat_bindings(project_id, node.id)
+            .expect("task seats read")
+            .into_iter()
+            .filter(|seat| {
+                seat.lifecycle == TopologyLifecycle::Active
+                    && seat.task_id == Some(task_id)
+                    && seat.team_run_id == Some(before.team_run_id)
+                    && seat.role_slot_id == role_slot_id
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "the run has one exact topology seat");
+        matching.remove(0)
+    });
+    let historical_report_checksum =
+        ContentHash::parse("3f667be8feac65ef1e8331fa872966cf6868d173e8405921b931749168df1ee8")
+            .expect("the approved historical report hash");
+    let report_checksum =
+        ContentHash::parse("0a425a0c42dfe904411e5ca417e7c04df31991e0e8047798245f84ea2704fa4a")
+            .expect("the current approved report hash");
+    let correction_report_checksum =
+        ContentHash::parse("0ad932926ae6813bd134468b53986c61339bf45de41b9aec237441edf512009c")
+            .expect("the approved identity-correction report hash");
+    let evidence = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "type": "operational_gap",
+        "project_id": project,
+        "report_sha256": report_checksum.as_str(),
+        "asma_8118_paseo_0_8_correlation_addendum_20260914": {
+            "report_sha256": historical_report_checksum.as_str(),
+            "blocker": {
+                "code": "runtime_proof_unavailable",
+                "settlement_attempted": false
+            },
+            "readback": {
+                "task": {"id": task_id.to_string(), "revision": task.revision.get()},
+                "team_run_id": before.team_run_id.to_string(),
+                "agent_run": {"id": agent_run, "revision": before.revision.get()},
+                "seat_binding_id": binding.id.to_string(),
+                "native_id": binding.identity.native_id.as_str()
+            },
+            "canonical_timeline": {
+                "epoch": 2,
+                "end_sequence": 385,
+                "next": null,
+                "paseo_version": "0.8.0",
+                "user_message_sequences": [1, 144],
+                "correlation_fields": {
+                    "message_id": "null for every event",
+                    "native_event_id": "null for every event"
+                }
+            }
+        },
+        "asma_8118_binding_identity_correction_20260914": {
+            "exact_identity": {
+                "topology_seat_binding_id": topology_seat.id.to_string(),
+                "runtime_binding_id": binding.id.to_string(),
+                "runtime_binding_generation": binding.identity.generation,
+                "agent_run_id": before.id.to_string(),
+                "agent_run_revision": before.revision.get()
+            },
+            "report_sha256": correction_report_checksum.as_str()
+        },
+        "closeout_recovery_20260914": {
+            "asma_8118": {"artifact": "high-scope-record"}
+        }
+    }))
+    .expect("the evidence canonicalizes");
+    let proposal = world.daemon.state().with_store(|store| {
+        let provenance = kontor_store::memory::MemoryProvenance {
+            source: "operator".to_owned(),
+            source_id: None,
+            legacy_last_write_wins: false,
+            history_unavailable: false,
+        };
+        let (proposal, _) = store
+            .propose_memory_revision(
+                project_id,
+                "turn-correlation-gap",
+                0,
+                &evidence,
+                &provenance,
+                "test-author",
+            )
+            .expect("the gap is proposed");
+        store
+            .approve_memory_revision(
+                project_id,
+                "turn-correlation-gap",
+                &proposal.revision_id,
+                1,
+                "test-reviewer",
+            )
+            .expect("the gap is approved");
+        proposal
+    });
+
+    // A caller-invented historical MessageId and positions remain ordinary
+    // proof and fail because the canonical event carries no subject identity.
+    let turns_before = world.daemon.state().with_store(|store| {
+        store
+            .list_settled_turns(project_id, task_id)
+            .expect("turns read")
+            .len()
+    });
+    let fabricated = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task.revision.get(),
+            "runtime_proof": {
+                "message_id": kontor_runtime::request::MessageId::generate().to_string(),
+                "message_position": {"epoch": 1, "sequence": 1},
+                "response_position": {"epoch": 1, "sequence": 3}
+            },
+            "artifacts": ["high-scope-record"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-fabricated-history")
+    .send(&world)
+    .await;
+    assert_eq!(fabricated.status, 409, "{}", fabricated.body);
+    assert_eq!(
+        world.daemon.state().with_store(|store| store
+            .list_settled_turns(project_id, task_id)
+            .expect("turns read")
+            .len()),
+        turns_before,
+        "ambiguous history cannot create a role-turn receipt"
+    );
+
+    let challenge_request = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": task.revision.get(),
+        "expected_run_revision": before.revision.get(),
+        "artifact": "high-scope-record",
+        "evidence_revision_id": proposal.revision_id,
+        "evidence_content_hash": proposal.document.hash().as_str(),
+        "report_checksum": report_checksum.as_str()
+    });
+    let challenge_uri =
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turn-correlation:challenge-preview");
+    for (item_id, changes) in [
+        (
+            "turn-correlation-gap-runtime-as-seat",
+            vec![(
+                "/asma_8118_binding_identity_correction_20260914/exact_identity/topology_seat_binding_id",
+                serde_json::json!(binding.id.to_string()),
+            )],
+        ),
+        (
+            "turn-correlation-gap-seat-as-runtime",
+            vec![(
+                "/asma_8118_binding_identity_correction_20260914/exact_identity/runtime_binding_id",
+                serde_json::json!(topology_seat.id.to_string()),
+            )],
+        ),
+        (
+            "turn-correlation-gap-abbreviated-null-strings",
+            vec![
+                (
+                    "/asma_8118_paseo_0_8_correlation_addendum_20260914/canonical_timeline/correlation_fields/message_id",
+                    serde_json::json!("null"),
+                ),
+                (
+                    "/asma_8118_paseo_0_8_correlation_addendum_20260914/canonical_timeline/correlation_fields/native_event_id",
+                    serde_json::json!("null"),
+                ),
+            ],
+        ),
+    ] {
+        let mut swapped: serde_json::Value =
+            serde_json::from_str(evidence.json()).expect("the evidence JSON reads");
+        for (pointer, wrong_value) in changes {
+            *swapped
+                .pointer_mut(pointer)
+                .expect("the evidence field exists") = wrong_value;
+        }
+        let swapped = CanonicalDocument::from_value(&swapped).expect("the swap canonicalizes");
+        let swapped_proposal = world.daemon.state().with_store(|store| {
+            let provenance = kontor_store::memory::MemoryProvenance {
+                source: "operator".to_owned(),
+                source_id: None,
+                legacy_last_write_wins: false,
+                history_unavailable: false,
+            };
+            let (proposal, _) = store
+                .propose_memory_revision(
+                    project_id,
+                    item_id,
+                    0,
+                    &swapped,
+                    &provenance,
+                    "test-author",
+                )
+                .expect("the mismatched gap is proposed");
+            store
+                .approve_memory_revision(
+                    project_id,
+                    item_id,
+                    &proposal.revision_id,
+                    1,
+                    "test-reviewer",
+                )
+                .expect("the mismatched gap is approved");
+            proposal
+        });
+        let refused = Call::post(
+            &challenge_uri,
+            &serde_json::json!({
+                "role_slot": role_slot,
+                "expected_task_revision": task.revision.get(),
+                "expected_run_revision": before.revision.get(),
+                "artifact": "high-scope-record",
+                "evidence_revision_id": swapped_proposal.revision_id,
+                "evidence_content_hash": swapped_proposal.document.hash().as_str(),
+                "report_checksum": report_checksum.as_str()
+            }),
+        )
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+        assert_eq!(
+            refused.status, 409,
+            "a mislabeled identity or abbreviated correlation field must refuse: {}",
+            refused.body
+        );
+    }
+    let calls_before_preview = world.fake.calls().len();
+    let preview = Call::post(&challenge_uri, &challenge_request)
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["historical_backfill_supported"], false);
+    assert_eq!(
+        preview.json()["seat_binding_id"],
+        topology_seat.id.to_string()
+    );
+    assert_eq!(preview.json()["runtime_binding_id"], binding.id.to_string());
+    assert_eq!(
+        preview.json()["native_id"],
+        binding.identity.native_id.as_str()
+    );
+    assert!(
+        world.fake.calls()[calls_before_preview..]
+            .iter()
+            .all(|call| !matches!(call, AdapterCall::CorrelationChallengeSend(..))),
+        "preview performs no native send"
+    );
+
+    let apply_uri =
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turn-correlation:challenge-apply");
+    let apply_body = serde_json::json!({
+        "challenge": challenge_request,
+        "preview_hash": preview.json()["preview_hash"]
+    });
+    // Lose the first acknowledgement after the fake has committed the exact
+    // message. The durable row is now `dispatching`: replay may search after
+    // its boundary, but the CAS can never grant a second first send.
+    world.fake.lose_next_send_ack();
+    let uncertain = Call::post(&apply_uri, &apply_body)
+        .signed_as(&world, "operator")
+        .with_key("turn-correlation-challenge")
+        .send(&world)
+        .await;
+    assert_eq!(uncertain.status, 503, "{}", uncertain.body);
+    let after_uncertain = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge_by_key("turn-correlation-challenge")
+            .expect("challenge reads")
+            .expect("challenge exists")
+    });
+    assert_eq!(
+        after_uncertain.state,
+        kontor_store::TurnCorrelationState::Dispatching
+    );
+    let message_id = after_uncertain.message_id.as_str().to_owned();
+    let sends_after_first = world
+        .fake
+        .calls()
+        .iter()
+        .filter(|call| matches!(call, AdapterCall::CorrelationChallengeSend(_, _, true)))
+        .count();
+    assert_eq!(
+        sends_after_first, 1,
+        "exactly one first-dispatch claim wins"
+    );
+
+    let bypass_preview = Call::post(&challenge_uri, &challenge_request)
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(bypass_preview.status, 200, "{}", bypass_preview.body);
+    let bypass = Call::post(
+        &apply_uri,
+        &serde_json::json!({
+            "challenge": challenge_request,
+            "preview_hash": bypass_preview.json()["preview_hash"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-challenge-bypass-key")
+    .send(&world)
+    .await;
+    assert_eq!(bypass.status, 409, "{}", bypass.body);
+    assert!(
+        world.daemon.state().with_store(|store| store
+            .turn_correlation_challenge_by_key("turn-correlation-challenge-bypass-key")
+            .expect("the bypass key reads")
+            .is_none()),
+        "the partial unique index leaves no second durable challenge"
+    );
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::CorrelationChallengeSend(_, _, true)))
+            .count(),
+        sends_after_first,
+        "a fresh idempotency key cannot send a second active challenge"
+    );
+
+    let reconciled = Call::post(&apply_uri, &apply_body)
+        .signed_as(&world, "operator")
+        .with_key("turn-correlation-challenge")
+        .send(&world)
+        .await;
+    assert_eq!(reconciled.status, 200, "{}", reconciled.body);
+    assert_eq!(reconciled.json()["state"], "acknowledged");
+    assert_eq!(reconciled.json()["message_id"], message_id);
+    assert_eq!(reconciled.json()["applied"], "unchanged");
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::CorrelationChallengeSend(_, _, true)))
+            .count(),
+        sends_after_first,
+        "a lost acknowledgement is reconciled without another first send"
+    );
+    assert_eq!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::CorrelationChallengeSend(_, _, false)))
+            .count(),
+        1,
+        "the uncertain replay is explicitly reconciliation-only"
+    );
+
+    let calls_after_acknowledgement = world.fake.calls().len();
+    let replayed = Call::post(&apply_uri, &apply_body)
+        .signed_as(&world, "operator")
+        .with_key("turn-correlation-challenge")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["message_id"], message_id);
+    assert_eq!(world.fake.calls().len(), calls_after_acknowledgement);
+
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge_by_key("turn-correlation-challenge")
+            .expect("challenge reads")
+            .expect("challenge exists")
+    });
+    world
+        .fake
+        .observe_correlation_challenge_completion(
+            &held,
+            stored.expected_response.as_str(),
+            kontor_api::now(),
+        )
+        .expect("the exact confirmation lands");
+    let settle_body = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": task.revision.get(),
+        "correlation_challenge_message_id": message_id,
+        "artifacts": ["high-scope-record"]
+    });
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &settle_body,
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["applied"], "created");
+    let consumed = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge(project_id, &ExternalId::parse(&message_id).expect("id"))
+            .expect("challenge reads")
+            .expect("challenge exists")
+    });
+    assert_eq!(consumed.state, kontor_store::TurnCorrelationState::Settled);
+    assert_eq!(
+        consumed
+            .settled_turn_id
+            .expect("the turn is linked")
+            .to_string(),
+        settled.json()["turn_id"].as_str().expect("turn id")
+    );
+
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, agent_run_id)
+            .expect("run reads")
+            .expect("run exists")
+    });
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.team_run_id, before.team_run_id);
+    assert_eq!(after.role, before.role);
+    assert_eq!(after.binding, before.binding);
+    assert!(after.terminal.is_none());
+
+    // Prepare a second, independently server-owned challenge at the now-current
+    // run revision. Moving the task after acknowledgement must invalidate that
+    // challenge even when the caller supplies the task's new revision.
+    let current_task = world.daemon.state().with_store(|store| {
+        store
+            .get_task(project_id, task_id)
+            .expect("task reads")
+            .expect("task exists")
+    });
+    let stale_evidence = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "type": "operational_gap",
+        "project_id": project,
+        "report_sha256": report_checksum.as_str(),
+        "asma_8118_paseo_0_8_correlation_addendum_20260914": {
+            "report_sha256": historical_report_checksum.as_str(),
+            "blocker": {
+                "code": "runtime_proof_unavailable",
+                "settlement_attempted": false
+            },
+            "readback": {
+                "task": {"id": task_id.to_string(), "revision": current_task.revision.get()},
+                "team_run_id": after.team_run_id.to_string(),
+                "agent_run": {"id": after.id.to_string(), "revision": after.revision.get()},
+                "seat_binding_id": binding.id.to_string(),
+                "native_id": binding.identity.native_id.as_str()
+            },
+            "canonical_timeline": {
+                "epoch": 2,
+                "end_sequence": 385,
+                "next": null,
+                "paseo_version": "0.8.0",
+                "user_message_sequences": [1, 144],
+                "correlation_fields": {
+                    "message_id": "null for every event",
+                    "native_event_id": "null for every event"
+                }
+            }
+        },
+        "asma_8118_binding_identity_correction_20260914": {
+            "exact_identity": {
+                "topology_seat_binding_id": topology_seat.id.to_string(),
+                "runtime_binding_id": binding.id.to_string(),
+                "runtime_binding_generation": binding.identity.generation,
+                "agent_run_id": after.id.to_string(),
+                "agent_run_revision": after.revision.get()
+            },
+            "report_sha256": correction_report_checksum.as_str()
+        },
+        "closeout_recovery_20260914": {
+            "asma_8118": {"artifact": "high-scope-record"}
+        }
+    }))
+    .expect("the stale-task evidence canonicalizes");
+    let stale_proposal = world.daemon.state().with_store(|store| {
+        let provenance = kontor_store::memory::MemoryProvenance {
+            source: "operator".to_owned(),
+            source_id: None,
+            legacy_last_write_wins: false,
+            history_unavailable: false,
+        };
+        let (proposal, _) = store
+            .propose_memory_revision(
+                project_id,
+                "turn-correlation-stale-task-gap",
+                0,
+                &stale_evidence,
+                &provenance,
+                "test-author",
+            )
+            .expect("the second gap is proposed");
+        store
+            .approve_memory_revision(
+                project_id,
+                "turn-correlation-stale-task-gap",
+                &proposal.revision_id,
+                1,
+                "test-reviewer",
+            )
+            .expect("the second gap is approved");
+        proposal
+    });
+    let stale_request = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_task_revision": current_task.revision.get(),
+        "expected_run_revision": after.revision.get(),
+        "artifact": "high-scope-record",
+        "evidence_revision_id": stale_proposal.revision_id,
+        "evidence_content_hash": stale_proposal.document.hash().as_str(),
+        "report_checksum": report_checksum.as_str()
+    });
+    let stale_preview = Call::post(&challenge_uri, &stale_request)
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(stale_preview.status, 200, "{}", stale_preview.body);
+    let stale_applied = Call::post(
+        &apply_uri,
+        &serde_json::json!({
+            "challenge": stale_request,
+            "preview_hash": stale_preview.json()["preview_hash"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-stale-task-challenge")
+    .send(&world)
+    .await;
+    assert_eq!(stale_applied.status, 200, "{}", stale_applied.body);
+    let stale_message_id = stale_applied.json()["message_id"]
+        .as_str()
+        .expect("the second challenge id")
+        .to_owned();
+    let stale_challenge = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge(
+                project_id,
+                &ExternalId::parse(&stale_message_id).expect("challenge id"),
+            )
+            .expect("challenge reads")
+            .expect("challenge exists")
+    });
+    world
+        .fake
+        .observe_uncorrelated_user_message(&held, stale_challenge.body.as_str(), kontor_api::now())
+        .expect("a second exact identity-poor challenge body is reproduced");
+    let stale_response_position = world
+        .fake
+        .observe_correlation_challenge_completion(
+            &held,
+            stale_challenge.expected_response.as_str(),
+            kontor_api::now(),
+        )
+        .expect("the second exact confirmation lands");
+    let duplicate_body_settlement = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": current_task.revision.get(),
+            "correlation_challenge_message_id": stale_message_id,
+            "artifacts": ["high-scope-record"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-duplicate-body-settle")
+    .send(&world)
+    .await;
+    assert_eq!(
+        duplicate_body_settlement.status, 409,
+        "{}",
+        duplicate_body_settlement.body
+    );
+    assert_eq!(duplicate_body_settlement.code(), "idempotency_conflict");
+
+    let moved = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/lifecycle"),
+        &serde_json::json!({
+            "action": "block",
+            "task_id": task_id,
+            "expected_revision": current_task.revision.get(),
+            "reason": "prove the acknowledged challenge is revision fenced"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-move-task")
+    .send(&world)
+    .await;
+    assert_eq!(moved.status, 200, "{}", moved.body);
+    let moved_revision = AggregateRevision::parse(
+        moved.json()["revision"]
+            .as_u64()
+            .expect("the moved task revision"),
+    )
+    .expect("a positive revision");
+
+    let stale_settlement = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": moved_revision.get(),
+            "correlation_challenge_message_id": stale_message_id,
+            "artifacts": ["high-scope-record"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-correlation-stale-task-settle")
+    .send(&world)
+    .await;
+    assert_eq!(stale_settlement.status, 409, "{}", stale_settlement.body);
+
+    // Defence in depth: bypass the daemon method and ask the store to insert a
+    // role turn at the moved revision. The v97 trigger independently requires
+    // the challenge's frozen task revision and rejects the row atomically.
+    let store_refusal = world.daemon.state().with_store(|store| {
+        store
+            .settle_role_turn(&kontor_store::NewRoleTurn {
+                id: kontor_core::id::RoleTurnId::generate(),
+                project_id,
+                task_id,
+                team_run_id: after.team_run_id,
+                agent_run_id: after.id,
+                role_slot_id: RoleSlotId::parse(&role_slot).expect("role slot"),
+                idempotency_key: "turn-correlation-store-stale-task".to_owned(),
+                task_revision: moved_revision,
+                binding_generation: binding.identity.generation,
+                runtime_proof: Some(kontor_store::RoleTurnRuntimeProof {
+                    message_id: stale_message_id.clone(),
+                    timeline_epoch: stale_challenge.message_epoch.expect("message epoch"),
+                    message_sequence: stale_challenge.message_sequence.expect("message sequence"),
+                    response_sequence: stale_response_position.sequence,
+                    runtime_observation_cursor: kontor_core::id::EventCursor::parse(1)
+                        .expect("positive cursor"),
+                }),
+                authority_tier: "operator",
+                account_profile: after.account_profile_id,
+                artifacts: [
+                    kontor_core::id::ArtifactKey::parse("high-scope-record").expect("artifact")
+                ]
+                .into_iter()
+                .collect(),
+                evidence_hash: ContentHash::of(b"store task-revision trigger regression"),
+                settled_at: kontor_api::now(),
+            })
+            .expect_err("storage independently rejects a moved-task challenge")
+    });
+    assert!(
+        store_refusal.to_string().contains("constraint refused"),
+        "the v97 challenge constraint is the refusing fence: {store_refusal}"
+    );
+    let still_acknowledged = world.daemon.state().with_store(|store| {
+        store
+            .turn_correlation_challenge(
+                project_id,
+                &ExternalId::parse(&stale_message_id).expect("challenge id"),
+            )
+            .expect("challenge reads")
+            .expect("challenge remains")
+    });
+    assert_eq!(
+        still_acknowledged.state,
+        kontor_store::TurnCorrelationState::Acknowledged,
+        "the rejected moved-task insert neither settles nor rewrites the challenge"
+    );
 }
 
 #[tokio::test]
@@ -45608,39 +46868,40 @@ async fn a_partially_seated_candidate_claims_progress_and_an_unattached_one_does
         .expect("an agent run id")
         .to_owned();
 
+    let blocked_plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let blocker = &blocked_plan.json()["blocked"][0];
+    assert_eq!(blocker["code"], "runtime_attachment_unconfirmed");
+    assert!(
+        blocker["action"]
+            .as_str()
+            .expect("an action")
+            .contains("kontor_scheduler_resume")
+    );
+    assert_eq!(blocker["evidence"][0]["owner"], "kontor_scheduler");
+    assert_eq!(blocker["evidence"][0]["team_run_id"], preserved_team_run);
+    assert_eq!(blocker["evidence"][0]["agent_run_id"], preserved_agent_run);
+    assert_eq!(blocker["evidence"][0]["desired"], "run_requested");
+    assert_eq!(blocker["evidence"][0]["observed"], "unknown");
+    assert!(blocker["evidence"][0]["binding"].is_null());
+
     // (1) The earlier slot attaches and the later one still refuses. The
     // candidate is reported blocked and contributes no started seat, but the
     // task has demonstrably begun and its own state has to say so.
     world.fake.allowing_launch_of(&architect);
-    let partial = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
-        &serde_json::json!({
-            "expected_revision": epic_revision,
-            "admissions": [{
-                "team_run_id": preserved_team_run,
-                "agent_run_id": preserved_agent_run,
-            }],
-        }),
-    )
-    .signed_as(&world, "operator")
-    .with_key("partial-resume")
-    .send(&world)
-    .await;
-    assert_eq!(partial.status, 200, "{}", partial.body);
-    assert!(
-        partial.json()["started"]
-            .as_array()
-            .expect("started")
-            .is_empty(),
-        "the refused later slot yields no started seat: {}",
-        partial.body
-    );
-    assert_eq!(
-        partial.json()["blocked"].as_array().expect("blocked").len(),
-        1,
-        "the candidate is still blocked, and its refusal stays fail-closed: {}",
-        partial.body
-    );
+    let scanner = world
+        .daemon
+        .spawn_admission_reconciler(std::time::Duration::from_millis(5));
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    scanner.abort();
 
     let after_partial = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(&world, "observer")
@@ -45663,23 +46924,13 @@ async fn a_partially_seated_candidate_claims_progress_and_an_unattached_one_does
     );
     let progressed_revision = task["revision"].as_u64().expect("a revision");
 
-    // (3) Replaying the exact same resume changes nothing: the transition is
-    // reached once, and a replay neither repeats it nor walks the task back.
-    let replayed = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
-        &serde_json::json!({
-            "expected_revision": epic_revision,
-            "admissions": [{
-                "team_run_id": preserved_team_run,
-                "agent_run_id": preserved_agent_run,
-            }],
-        }),
-    )
-    .signed_as(&world, "operator")
-    .with_key("partial-resume")
-    .send(&world)
-    .await;
-    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    // (3) Once the original root is attached, another automatic scan is inert:
+    // it neither repeats the transition nor walks the task back.
+    let replay = world
+        .daemon
+        .spawn_admission_reconciler(std::time::Duration::from_millis(5));
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    replay.abort();
 
     let after_replay = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(&world, "observer")
@@ -48868,5 +50119,75 @@ async fn a_consultation_with_no_recorded_subject_refuses_to_be_named() {
                 | AdapterCall::LaunchConsultation(_)
         )),
         "an unnameable consultation must refuse before any native effect",
+    );
+}
+
+/// ASMA-8119: a confirmed Jira key addresses exactly the subject its UUID does.
+///
+/// The key is not a second way to *find* a subject — it reaches the same route
+/// and the same operation, and the server decides what it names. So the two
+/// spellings are asserted to return the same document, and every way a key can
+/// be wrong is asserted to refuse before that operation runs.
+#[tokio::test]
+async fn a_confirmed_jira_key_addresses_the_same_subject_as_its_uuid() {
+    let server = MockServer::start().await;
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let (world, _config) = world_with_jira(&server, project_id).await;
+    seed_confirmed_epic_binding(&world, project_id, epic_id).await;
+
+    let by_uuid = Call::get(format!("/v1/projects/{project_id}/epics/{epic_id}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(by_uuid.status, 200, "{}", by_uuid.body);
+
+    let by_key = Call::get(format!("/v1/projects/{project_id}/epics/ASMA-1"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(by_key.status, 200, "{}", by_key.body);
+    assert_eq!(
+        by_key.json(),
+        by_uuid.json(),
+        "the confirmed key resolves to the very same epic"
+    );
+
+    // The key names an epic, so it must not satisfy a route that addresses a
+    // task. This is the check the store's resolver deliberately does not make.
+    let wrong_kind = Call::get(format!("/v1/projects/{project_id}/tasks/ASMA-1"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        wrong_kind.status.is_client_error() || wrong_kind.status.is_server_error(),
+        "an epic key must not address a task: {} {}",
+        wrong_kind.status,
+        wrong_kind.body
+    );
+
+    // A well-formed key with no confirmed binding in this project is refused.
+    let unknown = Call::get(format!("/v1/projects/{project_id}/epics/ASMA-4242"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        unknown.status.is_client_error() || unknown.status.is_server_error(),
+        "an unbound key is refused: {} {}",
+        unknown.status,
+        unknown.body
+    );
+
+    // Case is never repaired, so a lowercase spelling stays a refusal rather
+    // than quietly becoming the confirmed key.
+    let malformed = Call::get(format!("/v1/projects/{project_id}/epics/asma-1"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        malformed.status.is_client_error() || malformed.status.is_server_error(),
+        "a non-canonical key is refused: {} {}",
+        malformed.status,
+        malformed.body
     );
 }

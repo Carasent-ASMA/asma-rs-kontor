@@ -24,8 +24,9 @@ use kontor_core::compaction::CompactionStatus;
 use kontor_core::id::{
     AccountProfileId, ArtifactKey, CanonicalDocument, CommandReceiptId, ContentHash, CurrencyCode,
     ExternalName, GateKey, IdempotencyKey, IntakeReceiptId, ModuleKey, Money, PhaseKey, ProjectId,
-    RoleKey, SchemaVersion, SkillKey, SourceEventId, SpecVersion, TaskId, Timestamp,
-    WorkProfileKey, parse_utc_timestamp, validate_module_key, validate_open_key,
+    RoleKey, RoleSlotId, SchemaVersion, SkillKey, SourceEventId, SpecVersion, TaskId,
+    TeamTemplateId, Timestamp, WorkProfileKey, parse_utc_timestamp, validate_module_key,
+    validate_open_key,
 };
 use kontor_core::id::{AggregateRevision, CalendarProfileId, SCHEMA_VERSION, WorkCalendarId};
 use kontor_core::spec::ProjectSessionTopologySpec;
@@ -38,7 +39,7 @@ use kontor_core::spec::{
     ProposedWorkGraph, ProviderQuotaKind, ProviderQuotaSource, ProviderRef, RequestedContextPolicy,
     ResolvedWorkProfileSnapshot, RoleContextSeed, Shareability, ShareabilityClass,
     ShareabilityClassifier, ShareabilityProvenance, ShareabilityTier, TeamContextPolicySeed,
-    TriggerSpec, WorkProfileSpec, resolve_context_window,
+    TeamRunSnapshot, TriggerSpec, WorkProfileSpec, resolve_context_window,
 };
 use proptest::prelude::*;
 
@@ -2124,4 +2125,127 @@ fn classification_spellings_are_stable_and_closed() {
             *class
         );
     }
+}
+
+/// Freeze one team document into a run snapshot.
+fn frozen_definition(definition: serde_json::Value) -> TeamRunSnapshot {
+    TeamRunSnapshot {
+        schema_version: SCHEMA_VERSION,
+        template_id: TeamTemplateId::parse("01936f5a-0000-7000-8000-0000000000fe")
+            .expect("a template id"),
+        template_version: SpecVersion::parse(1).expect("a spec version"),
+        definition: CanonicalDocument::from_value(&definition)
+            .expect("the frozen definition canonicalizes"),
+        role_authority: Vec::new(),
+        context_policy: TeamContextPolicySeed::default(),
+    }
+}
+
+/// A frozen team whose slots are declared exactly as a pack declares them.
+fn frozen_team(slots: serde_json::Value) -> TeamRunSnapshot {
+    frozen_definition(serde_json::json!({"schema_version": 1, "slots": slots}))
+}
+
+fn frozen_slot(text: &str) -> RoleSlotId {
+    RoleSlotId::parse(text).expect("a role slot id")
+}
+
+/// A slot id is an address, not a role. The two coincide in small teams, which
+/// is exactly why reading one as the other survives its own tests and then
+/// fences a real workflow shut.
+#[test]
+fn a_frozen_slot_resolves_to_the_role_it_fills_and_never_to_its_own_name() {
+    let team = frozen_team(serde_json::json!([
+        {"id": "scope", "role": {"role": "fleet-scope-architect", "version": 1}},
+        {"id": "implement", "role": {"role": "fleet-implementer", "version": 1}},
+        {"id": "verify", "role": {"role": "fleet-verifier", "version": 1}},
+    ]));
+    let assignments = team
+        .slot_role_assignments()
+        .expect("the frozen team maps its slots");
+
+    assert_eq!(
+        assignments.get(&frozen_slot("implement")),
+        Some(&RoleKey::parse("fleet-implementer").expect("a role key"))
+    );
+    assert_eq!(
+        assignments.get(&frozen_slot("verify")),
+        Some(&RoleKey::parse("fleet-verifier").expect("a role key"))
+    );
+    assert!(
+        !assignments
+            .values()
+            .any(|role| role.as_str() == "implement" || role.as_str() == "verify"),
+        "no slot's own name is ever the answer"
+    );
+    assert_eq!(
+        assignments.get(&frozen_slot("audit")),
+        None,
+        "a slot the team never declared fills nothing"
+    );
+
+    // A team that does spell both the same still resolves through the document
+    // rather than by coincidence.
+    let coincident = frozen_team(serde_json::json!([
+        {"id": "builder", "role": {"role": "builder", "version": 1}},
+    ]));
+    assert_eq!(
+        coincident
+            .slot_role_assignments()
+            .expect("the frozen team maps its slots")
+            .get(&frozen_slot("builder")),
+        Some(&RoleKey::parse("builder").expect("a role key"))
+    );
+}
+
+/// The mapping decides who may release a rejection fence, so a document that
+/// cannot answer unambiguously must refuse rather than pick.
+#[test]
+fn an_ambiguous_or_incomplete_frozen_team_names_no_role_at_all() {
+    // The same slot id twice, filling different roles. Resolving it to either
+    // entry would let document order decide authority.
+    assert!(
+        frozen_team(serde_json::json!([
+            {"id": "implement", "role": {"role": "fleet-implementer", "version": 1}},
+            {"id": "implement", "role": {"role": "fleet-verifier", "version": 1}},
+        ]))
+        .slot_role_assignments()
+        .is_err(),
+        "a duplicated slot id is ambiguous, not last-one-wins"
+    );
+    // Duplicated even to the same role: the document is still malformed, and a
+    // reader that tolerated it would be tolerating the ambiguous case too.
+    assert!(
+        frozen_team(serde_json::json!([
+            {"id": "implement", "role": {"role": "fleet-implementer", "version": 1}},
+            {"id": "implement", "role": {"role": "fleet-implementer", "version": 1}},
+        ]))
+        .slot_role_assignments()
+        .is_err()
+    );
+    // A slot with no role, a slot with no id, and a slot whose id is not a key.
+    assert!(
+        frozen_team(serde_json::json!([{"id": "implement"}]))
+            .slot_role_assignments()
+            .is_err()
+    );
+    assert!(
+        frozen_team(serde_json::json!([{"role": {"role": "fleet-implementer", "version": 1}}]))
+            .slot_role_assignments()
+            .is_err()
+    );
+    assert!(
+        frozen_team(serde_json::json!([
+            {"id": "", "role": {"role": "fleet-implementer", "version": 1}},
+        ]))
+        .slot_role_assignments()
+        .is_err()
+    );
+    // A document that declares no slots names nobody, which is not the same
+    // answer as naming everybody.
+    assert!(
+        frozen_definition(serde_json::json!({"schema_version": 1}))
+            .slot_role_assignments()
+            .is_err()
+    );
 }

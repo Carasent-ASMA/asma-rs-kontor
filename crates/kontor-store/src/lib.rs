@@ -45,6 +45,7 @@ mod reconciliation;
 mod repository;
 mod scheduler;
 mod teams;
+mod turn_correlation;
 
 use std::path::Path;
 
@@ -92,9 +93,12 @@ pub use reconciliation::{
 };
 pub use scheduler::{
     AdmissionCommit, AdmissionOutcome, LeaseEventKind, LeaseKind, LeaseRelease, LeaseRenewal,
-    RecordedRejection, RecoverableAdmission, ResourceLease,
+    RecordedRejection, RecoverableAdmission, ResourceLease, UnconfirmedAdmission,
 };
 pub use teams::{StoredTeamDraft, StoredTeamRevision, StoredTeamsProjection};
+pub use turn_correlation::{
+    NewTurnCorrelationChallenge, TurnCorrelationChallenge, TurnCorrelationState,
+};
 
 /// Everything the store can refuse.
 #[derive(Debug, thiserror::Error)]
