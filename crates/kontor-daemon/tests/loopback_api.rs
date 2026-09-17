@@ -1853,7 +1853,10 @@ async fn a_non_loopback_bind_is_refused_and_leaves_nothing_behind() {
 
 #[tokio::test]
 async fn a_second_daemon_on_one_state_root_fails_and_two_roots_are_two_realms() {
-    let first = World::open().await;
+    // Both worlds are created here rather than cloned from the process template:
+    // the identities are what this test is about, and a clone shares the
+    // template's (see the harness on why a realm row cannot be re-identified).
+    let first = World::open_created_realm().await;
     let second = Daemon::start(
         DaemonConfig::at(first.directory.path()).with_port(0),
         RuntimeRegistry::new(),
@@ -1863,7 +1866,7 @@ async fn a_second_daemon_on_one_state_root_fails_and_two_roots_are_two_realms() 
         "one state root holds one daemon: the second must fail cleanly"
     );
 
-    let other = World::open().await;
+    let other = World::open_created_realm().await;
     assert_ne!(
         first.realm_id(),
         other.realm_id(),
@@ -2322,6 +2325,28 @@ async fn a_mutation_without_an_idempotency_key_is_refused() {
         .await;
     assert_eq!(answer.status, 400);
     assert_eq!(answer.code(), "invalid_request");
+}
+
+#[tokio::test]
+async fn a_refused_identifier_names_which_one_it_was() {
+    // OG-038 is what an anonymous refusal costs. `message_hosted_seat` parses a
+    // project id, a seat binding id and the `Idempotency-Key`; every one of them
+    // answered "the identifier is not in canonical form". Three investigations
+    // read that, blamed the seat binding, and abandoned the only route to a
+    // leadership seat while the realm stopped scheduling.
+    let world = World::open().await;
+    let answer = Call::get("/v1/projects/not-a-project-id")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(answer.status, 400, "{}", answer.body);
+    assert_eq!(answer.code(), "invalid_request");
+    assert_eq!(
+        answer.json()["subject"],
+        "ProjectId",
+        "a refusal names the type that rejected the value: {}",
+        answer.body
+    );
 }
 
 #[tokio::test]
@@ -3658,7 +3683,9 @@ async fn the_credential_file_is_owner_only() {
 #[tokio::test]
 async fn a_write_naming_another_realms_project_resolves_to_nothing() {
     let world = World::open().await;
-    let other = World::open().await;
+    // Created, not cloned: this test is about crossing an identity boundary, and
+    // worlds cloned from one template share the template's identity.
+    let other = World::open_created_realm().await;
 
     // The ids are real — they simply belong to a different database file, which
     // is the whole of the isolation boundary. The answer names *this* realm, so
@@ -3710,7 +3737,9 @@ async fn a_task_from_another_project_in_this_realm_does_not_resolve() {
 #[tokio::test]
 async fn a_cursor_from_another_realm_is_refused_typed_before_any_read() {
     let world = World::open().await;
-    let other = World::open().await;
+    // Created, not cloned, for the same reason as the cross-realm write above:
+    // the identity is the subject of the test.
+    let other = World::open_created_realm().await;
     let (run, _) = world.launch().await;
     observe(&world, run, 1, 1);
 
@@ -6787,6 +6816,8 @@ fn well_formed_body(uri: &str) -> serde_json::Value {
                 "agent_run_id": kontor_core::id::AgentRunId::generate().to_string(),
             }],
         })
+    } else if uri.ends_with("/seat") {
+        serde_json::json!({"expected_task_revision": 1, "reason": "Complete a handoff"})
     } else if uri.ends_with("lifecycle") {
         serde_json::json!({"action": "block", "expected_revision": 1, "reason": "x"})
     } else if uri.ends_with("projects:ensure") {
@@ -6822,6 +6853,10 @@ async fn every_application_operation_refuses_an_unauthenticated_or_under_privile
         format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
         format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
         format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        format!(
+            "/v1/projects/{project}/team-runs/{}/role-slots/audit/seat",
+            TeamRunId::generate()
+        ),
         format!("/v1/projects/{project}/epics/{epic}/lifecycle"),
     ];
     for uri in &mutations {
@@ -24963,6 +24998,569 @@ async fn consecutive_turns_on_one_slot_converge_on_one_seat_and_one_session() {
     );
 }
 
+/// OG-057's four-slot shape reached through production operations: admission
+/// stops at verify, exact partial resume adopts verify and skips the absent
+/// audit AgentRun, then verify's settlement derives the targetless audit row.
+/// Catalog registration uses a small four-slot fixture so waiver cases can use
+/// the same frozen template. No AgentRun or dispatch row is inserted by the test.
+struct SeatFillWorld {
+    world: World,
+    project: ProjectId,
+    epic: MiniProjectId,
+    task: TaskId,
+    team: TeamRunId,
+    node: TopologyNodeId,
+}
+
+impl SeatFillWorld {
+    fn task_revision(&self) -> AggregateRevision {
+        self.world.daemon.state().with_store(|store| {
+            store
+                .get_task(self.project, self.task)
+                .expect("task reads")
+                .expect("task exists")
+                .revision
+        })
+    }
+
+    fn members(&self) -> Vec<kontor_core::repository::AgentRun> {
+        self.world.daemon.state().with_store(|store| {
+            store
+                .list_agent_runs_for_team_run(self.project, self.team)
+                .expect("members read")
+                .into_iter()
+                .map(|row| {
+                    store
+                        .get_agent_run(self.project, row.agent_run_id)
+                        .expect("run reads")
+                        .expect("run exists")
+                })
+                .collect()
+        })
+    }
+
+    async fn fill(&self, slot: &str, revision: AggregateRevision, key: &str) -> Answer {
+        Call::post(
+            format!("/v1/projects/{}/team-runs/{}/role-slots/{slot}/seat", self.project, self.team),
+            &serde_json::json!({"expected_task_revision": revision, "reason": "Complete the durable audit handoff"}),
+        ).signed_as(&self.world, "operator").with_key(key).send(&self.world).await
+    }
+
+    async fn settle(&self, slot: &str) -> Answer {
+        let run = self
+            .members()
+            .into_iter()
+            .find(|run| run.role.as_str() == slot)
+            .expect("the slot has a run");
+        Call::post(
+            format!("/v1/projects/{}/agent-runs/{}/turns:settle", self.project, run.id),
+            &serde_json::json!({
+                "role_slot": slot,
+                "expected_task_revision": self.task_revision(),
+                "runtime_proof": observe_current_turn(&self.world, &self.project.to_string(), &run.id.to_string()),
+                "artifacts": ["omega-a3"],
+            }),
+        ).signed_as(&self.world, "operator").with_key(format!("fill-settle-{slot}")).send(&self.world).await
+    }
+
+    async fn waive_audit(&self) {
+        let revision = self.world.daemon.state().with_store(|store| {
+            store
+                .get_team_run(self.project, self.team)
+                .expect("team reads")
+                .expect("team exists")
+                .revision
+        });
+        let answer = Call::post(
+            format!("/v1/projects/{}/team-runs/{}/role-slots/audit/waivers", self.project, self.team),
+            &serde_json::json!({"expected_team_revision": revision, "authorized_by_role": "omega-r1", "evidence": ["omega-a3"]}),
+        ).signed_as(&self.world, "admin").with_key("fill-waive").send(&self.world).await;
+        assert_eq!(answer.status, 200, "{}", answer.body);
+    }
+}
+
+async fn seat_fill_world(owed: bool) -> SeatFillWorld {
+    seat_fill_world_with_tasks(owed, 1).await
+}
+
+async fn seat_fill_world_with_tasks(owed: bool, task_count: usize) -> SeatFillWorld {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let mut pack: serde_json::Value = serde_json::from_str(OMEGA_PACK).expect("fixture pack");
+    // Register a real immutable revision; the task and TeamRun will freeze it
+    // through admission, with catalog roles distinct from slot identifiers.
+    let team = &mut pack["teams"][1];
+    let mut implement = team["slots"][0].clone();
+    implement["id"] = serde_json::json!("implement");
+    team["slots"][0]["id"] = serde_json::json!("scope");
+    team["slots"][1]["id"] = serde_json::json!("verify");
+    team["slots"][2]["id"] = serde_json::json!("audit");
+    team["slots"]
+        .as_array_mut()
+        .expect("slots")
+        .insert(1, implement);
+    team["roles"][0]["min_slots"] = serde_json::json!(2);
+    team["roles"][0]["max_slots"] = serde_json::json!(2);
+    team["handoffs"] = serde_json::json!([
+        {"from_slot":"scope", "to_slot":"implement", "after_phase":null, "required_artifacts":["omega-a1"]},
+        {"from_slot":"implement", "to_slot":"verify", "after_phase":null, "required_artifacts":["omega-a1"]},
+        {"from_slot":"verify", "to_slot":"audit", "after_phase":null, "required_artifacts":["omega-a3"]},
+    ]);
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({"pack":pack}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("fill-pack")
+    .send(&world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+    let created =
+        ensure_project(&world, "fill-project", "Seat fill", "/tmp/kontor-seat-fill").await;
+    let project =
+        ProjectId::parse(created.json()["project_id"].as_str().expect("project")).expect("id");
+    register_test_delivery_slots(
+        &world,
+        &project.to_string(),
+        &[
+            ("scope", "SA"),
+            ("implement", "SWE"),
+            ("verify", "QA"),
+            ("audit", "AUD"),
+        ],
+    );
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({"label":"Lead", "harness":"fake.runtime", "credential_alias":"lead", "enabled":true}),
+    ).signed_as(&world, "admin").with_key("fill-account").send(&world).await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            created.json()["revision"].as_u64().expect("revision"),
+            "Seat fill",
+            "omega-u-cat",
+            serde_json::Value::Array(
+                (0..task_count)
+                    .map(|index| serde_json::json!({"title":format!("Audit change {index}")}))
+                    .collect(),
+            ),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key("fill-epic")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = MiniProjectId::parse(applied.json()["epic_id"].as_str().expect("epic")).expect("id");
+    let task = TaskId::parse(
+        applied.json()["tasks"][0]["task_id"]
+            .as_str()
+            .expect("task"),
+    )
+    .expect("id");
+    confirm_test_epic_identity(&world, &project.to_string(), &epic.to_string());
+    world
+        .fake
+        .refusing_launch_of(&RoleSlotId::parse("verify").expect("slot"));
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash":plan.json()["plan_hash"]}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("fill-start")
+    .send(&world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+    assert_eq!(
+        started.json()["blocked"].as_array().expect("blocked").len(),
+        task_count,
+        "{}",
+        started.body
+    );
+    let (team, node) = world.daemon.state().with_store(|store| {
+        let runs = store
+            .list_team_runs_for_task(project, task)
+            .expect("teams read");
+        assert_eq!(runs.len(), 1, "one admitted team");
+        (
+            runs[0].0,
+            store
+                .get_task_topology_node(project, task)
+                .expect("node reads")
+                .expect("TSW exists")
+                .id,
+        )
+    });
+    let fixture = SeatFillWorld {
+        world,
+        project,
+        epic,
+        task,
+        team,
+        node,
+    };
+    let members = fixture.members();
+    assert_eq!(members.len(), 3, "audit was never reached by seating");
+    let root = members
+        .iter()
+        .find(|run| run.role.as_str() == "scope")
+        .expect("scope");
+    let verify = members
+        .iter()
+        .find(|run| run.role.as_str() == "verify")
+        .expect("verify");
+    assert!(root.binding.is_some());
+    assert!(verify.binding.is_none());
+    // Runtime census evidence of the already-created verify native is the
+    // supported exact partial-admission recovery input. This is a fake-runtime
+    // observation, not an inserted control-plane run or handoff.
+    fixture
+        .world
+        .fake
+        .load_script(
+            &RuntimeScript {
+                sessions: vec![SessionScript {
+                    native_id: "native-existing-verify".to_owned(),
+                    generation_delta: 0,
+                    correlation_slot: Some(0),
+                    correlation_text: None,
+                    state: ObservedRunState::WaitingInput,
+                    observed_at: kontor_api::now().to_string(),
+                }],
+                ..RuntimeScript::default()
+            },
+            &[CorrelationLabel::for_run(verify.id)],
+        )
+        .expect("verify is visible");
+    let resumed = Call::post(format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"), &serde_json::json!({
+        "expected_revision":applied.json()["revision"],
+        "admissions":[{"team_run_id":team, "agent_run_id":root.id,
+            "downstream":{"agent_run_id":verify.id, "expected_revision":verify.revision, "expected_native_id":"native-existing-verify"}}],
+    })).signed_as(&fixture.world, "operator").with_key("fill-resume").send(&fixture.world).await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    assert!(
+        resumed.json()["blocked"]
+            .as_array()
+            .expect("blocked")
+            .is_empty(),
+        "{}",
+        resumed.body
+    );
+    assert_eq!(
+        fixture.members().len(),
+        3,
+        "partial resume preserves the absent audit slot"
+    );
+    assert!(fixture.members().iter().all(|run| run.binding.is_some()));
+    if owed {
+        let settled = fixture.settle("verify").await;
+        assert_eq!(settled.status, 200, "{}", settled.body);
+        assert_eq!(settled.json()["follow_ups"][0]["to_role_slot"], "audit");
+        assert_eq!(
+            settled.json()["follow_ups"][0]["target_agent_run_id"],
+            serde_json::Value::Null
+        );
+        assert_eq!(settled.json()["follow_ups"][0]["dispatched"], false);
+    }
+    fixture
+}
+
+#[tokio::test]
+async fn a_declared_slot_never_seated_is_filled_and_its_durable_handoff_is_delivered_once() {
+    let fixture = seat_fill_world(true).await;
+    let siblings = fixture.members();
+    let before_task = fixture
+        .world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task(fixture.project, fixture.task))
+        .expect("task reads")
+        .expect("task");
+    let before_container = fixture
+        .world
+        .daemon
+        .state()
+        .with_store(|store| store.get_topology_node_container(fixture.project, fixture.node))
+        .expect("container reads")
+        .expect("container");
+    let audit_seat = fixture.world.daemon.state().with_store(|store| {
+        store
+            .list_seat_bindings(fixture.project, fixture.node)
+            .expect("seats read")
+            .into_iter()
+            .find(|seat| seat.role_slot_id.as_str() == "audit")
+            .expect("audit logical seat")
+    });
+    assert!(audit_seat.last_attached_at.is_none());
+    let pending = fixture
+        .world
+        .daemon
+        .state()
+        .with_store(|store| store.list_turn_dispatches(fixture.project))
+        .expect("dispatches read");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].team_run_id, fixture.team);
+    assert!(!pending[0].dispatched);
+    assert!(pending[0].target_agent_run.is_none());
+    let calls_before = fixture.world.fake.calls().len();
+    let result = fixture
+        .fill("audit", before_task.revision, "fill-audit")
+        .await;
+    assert_eq!(result.status, 200, "{}", result.body);
+    let filled = result.json();
+    assert_eq!(filled["receipt"]["applied"], "created");
+    assert_eq!(filled["team_run_id"], fixture.team.to_string());
+    assert_eq!(filled["task_id"], fixture.task.to_string());
+    assert_eq!(filled["role_slot_id"], "audit");
+    assert_eq!(filled["binding_generation"], 1);
+    let audit_id = AgentRunId::parse(filled["agent_run_id"].as_str().expect("run id")).expect("id");
+    let runs = fixture.members();
+    assert_eq!(runs.len(), 4);
+    let audit = runs
+        .iter()
+        .find(|run| run.id == audit_id)
+        .expect("audit persisted");
+    assert_eq!(audit.team_run_id, fixture.team);
+    assert_eq!(audit.role.as_str(), "audit");
+    let binding = audit.binding.as_ref().expect("audit bound");
+    assert_eq!(filled["binding_id"], binding.id.to_string());
+    assert_eq!(filled["native_id"], binding.identity.native_id.as_str());
+    assert_eq!(filled["run_lifecycle"], audit.projection.lifecycle.as_str());
+    let dispatch = &filled["dispatches"][0];
+    assert_eq!(dispatch["target_agent_run_id"], audit_id.to_string());
+    assert_eq!(dispatch["dispatched"], true);
+    assert_eq!(dispatch["message_id"], pending[0].message_id);
+    fixture.world.daemon.state().with_store(|store| {
+        let persisted = store
+            .list_turn_dispatches(fixture.project)
+            .expect("dispatches read");
+        assert_eq!(persisted.len(), 1);
+        assert!(persisted[0].dispatched);
+        assert_eq!(persisted[0].target_agent_run, Some(audit_id));
+        assert_eq!(persisted[0].message_id, pending[0].message_id);
+        let after_seat = store
+            .list_seat_bindings(fixture.project, fixture.node)
+            .expect("seats read")
+            .into_iter()
+            .find(|seat| seat.id == audit_seat.id)
+            .expect("same logical seat");
+        assert!(after_seat.last_attached_at.is_some());
+        assert_eq!(after_seat.task_id, Some(fixture.task));
+        assert_eq!(after_seat.team_run_id, Some(fixture.team));
+        let after_container = store
+            .get_topology_node_container(fixture.project, fixture.node)
+            .expect("container reads")
+            .expect("container");
+        assert_eq!(
+            after_container.topology_node_id,
+            before_container.topology_node_id
+        );
+        assert_eq!(
+            after_container.container_binding_id,
+            before_container.container_binding_id
+        );
+        assert_eq!(after_container.identity, before_container.identity);
+        assert_eq!(
+            after_container.canonical_cwd,
+            before_container.canonical_cwd
+        );
+        assert_eq!(
+            after_container.observed_kind,
+            before_container.observed_kind
+        );
+        let after_task = store
+            .get_task(fixture.project, fixture.task)
+            .expect("task reads")
+            .expect("task");
+        assert_eq!(after_task, before_task);
+        assert_eq!(after_task.mini_project_id, Some(fixture.epic));
+        assert_eq!(
+            store
+                .list_team_runs_for_task(fixture.project, fixture.task)
+                .expect("teams read")
+                .len(),
+            1
+        );
+    });
+    for sibling in &siblings {
+        assert_eq!(
+            runs.iter().find(|run| run.id == sibling.id),
+            Some(sibling),
+            "sibling id, native and state are preserved"
+        );
+    }
+    let effects = fixture.world.fake.calls();
+    let sends = effects[calls_before..]
+        .iter()
+        .filter(|call| matches!(call, AdapterCall::Send(..)))
+        .count();
+    assert_eq!(sends, 1, "one send completes the existing handoff");
+    assert!(effects[calls_before..].iter().any(|call| matches!(call,
+        AdapterCall::Send(id, message) if *id == binding.id && message.to_string() == pending[0].message_id
+    )), "the send uses the filled binding and the dispatch's original message id");
+    assert_eq!(
+        effects[calls_before..]
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::Launch(_)))
+            .count(),
+        1
+    );
+    for key in ["fill-audit", "fill-audit-fresh"] {
+        let replay = fixture.fill("audit", before_task.revision, key).await;
+        assert_eq!(replay.status, 200, "{}", replay.body);
+        assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+        assert_eq!(replay.json()["agent_run_id"], audit_id.to_string());
+        assert_eq!(replay.json()["binding_id"], binding.id.to_string());
+        assert_eq!(replay.json()["dispatches"], filled["dispatches"]);
+    }
+    assert_eq!(
+        fixture.world.fake.calls(),
+        effects,
+        "replays never reach the runtime"
+    );
+    assert_eq!(fixture.members(), runs);
+}
+
+#[tokio::test]
+async fn seat_fill_refuses_an_undeclared_frozen_slot() {
+    let fixture = seat_fill_world(true).await;
+    let before = fixture.world.fake.calls();
+    let result = fixture
+        .fill("omega-r2", fixture.task_revision(), "fill-undeclared")
+        .await;
+    assert_eq!(result.status, 400, "{}", result.body);
+    assert_eq!(result.code(), "invalid_request");
+    assert_eq!(fixture.world.fake.calls(), before);
+    assert_eq!(fixture.members().len(), 3);
+}
+
+#[tokio::test]
+async fn seat_fill_refuses_a_slot_with_no_owed_dispatch() {
+    let fixture = seat_fill_world(false).await;
+    let before = fixture.world.fake.calls();
+    let result = fixture
+        .fill("audit", fixture.task_revision(), "fill-no-owed")
+        .await;
+    assert_eq!(result.status, 400, "{}", result.body);
+    assert_eq!(result.code(), "invalid_request");
+    assert_eq!(fixture.world.fake.calls(), before);
+    assert_eq!(fixture.members().len(), 3);
+}
+
+#[tokio::test]
+async fn seat_fill_refuses_a_waived_slot_even_with_an_owed_dispatch() {
+    let fixture = seat_fill_world(true).await;
+    fixture.waive_audit().await;
+    let before = fixture.world.fake.calls();
+    let result = fixture
+        .fill("audit", fixture.task_revision(), "fill-waived")
+        .await;
+    assert_eq!(result.status, 409, "{}", result.body);
+    assert_eq!(result.code(), "revision_conflict");
+    assert_eq!(fixture.world.fake.calls(), before);
+}
+
+#[tokio::test]
+async fn seat_fill_leaves_an_already_bound_leaf_unchanged_without_an_owed_dispatch() {
+    let fixture = seat_fill_world(false).await;
+    let before = fixture.world.fake.calls();
+    let members = fixture.members();
+    let result = fixture
+        .fill("verify", fixture.task_revision(), "fill-bound")
+        .await;
+    assert_eq!(result.status, 200, "{}", result.body);
+    assert_eq!(result.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(result.json()["native_id"], "native-existing-verify");
+    assert_eq!(fixture.world.fake.calls(), before);
+    assert_eq!(fixture.members(), members);
+}
+
+#[tokio::test]
+async fn seat_fill_refuses_a_terminal_team_run() {
+    let fixture = seat_fill_world(false).await;
+    fixture.waive_audit().await;
+    for slot in ["scope", "implement", "verify"] {
+        let settled = fixture.settle(slot).await;
+        assert_eq!(settled.status, 200, "{}", settled.body);
+    }
+    assert!(
+        fixture
+            .world
+            .daemon
+            .state()
+            .with_store(|store| store.get_team_run(fixture.project, fixture.team))
+            .expect("team reads")
+            .expect("team exists")
+            .lifecycle
+            .is_terminal()
+    );
+    let before = fixture.world.fake.calls();
+    let result = fixture
+        .fill("verify", fixture.task_revision(), "fill-terminal")
+        .await;
+    assert_eq!(result.status, 409, "{}", result.body);
+    assert_eq!(result.code(), "revision_conflict");
+    assert_eq!(fixture.world.fake.calls(), before);
+}
+
+#[tokio::test]
+async fn seat_fill_refuses_a_drifted_task_revision() {
+    let fixture = seat_fill_world(true).await;
+    let before = fixture.world.fake.calls();
+    let result = fixture
+        .fill(
+            "audit",
+            AggregateRevision::parse(fixture.task_revision().get() + 1).expect("revision"),
+            "fill-stale",
+        )
+        .await;
+    assert_eq!(result.status, 409, "{}", result.body);
+    assert_eq!(result.code(), "revision_conflict");
+    assert_eq!(fixture.world.fake.calls(), before);
+}
+
+#[tokio::test]
+async fn seat_fill_cannot_borrow_another_tasks_owed_slot() {
+    let fixture = seat_fill_world_with_tasks(true, 2).await;
+    let read = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        fixture.project, fixture.epic
+    ))
+    .signed_as(&fixture.world, "observer")
+    .send(&fixture.world)
+    .await;
+    let projection = read.json();
+    let other = projection["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .find(|task| task["task_id"] != fixture.task.to_string())
+        .expect("another task");
+    let before = fixture.world.fake.calls();
+    let result = Call::post(
+        format!("/v1/projects/{}/team-runs/{}/role-slots/audit/seat", fixture.project, other["team_runs"][0]["team_run_id"].as_str().expect("other team")),
+        &serde_json::json!({"expected_task_revision":other["revision"], "reason":"Another task owes audit"}),
+    ).signed_as(&fixture.world, "operator").with_key("fill-wrong-task").send(&fixture.world).await;
+    assert_eq!(result.status, 400, "{}", result.body);
+    assert_eq!(result.code(), "invalid_request");
+    let wrong_project = Call::post(
+        format!("/v1/projects/{}/team-runs/{}/role-slots/audit/seat", ProjectId::generate(), fixture.team),
+        &serde_json::json!({"expected_task_revision":fixture.task_revision(), "reason":"Wrong project"}),
+    ).signed_as(&fixture.world, "operator").with_key("fill-wrong-project").send(&fixture.world).await;
+    assert_eq!(wrong_project.status, 404, "{}", wrong_project.body);
+    assert_eq!(fixture.world.fake.calls(), before);
+}
+
 /// One alpha team seated with `alpha-k2` deliberately never launched.
 ///
 /// `alpha-k2` is the slot whose *frozen* revision carries a `waiver_policy`
@@ -31422,10 +32020,16 @@ async fn the_mission_ceiling_counts_team_runs_and_not_the_seats_they_hold() {
         .send(world)
         .await;
     assert_eq!(capacity.status, 200, "{}", capacity.body);
+    // Against the constant, not a literal. This test is about *what the
+    // ceiling counts* — team-run envelopes, not the seats inside them — and
+    // pinning the number here made it fail for the one reason it does not
+    // test: a deliberate policy change to DEFAULT_CAPACITY, made in 3cf246d
+    // because OG-054 leaves a rebuild as the only way to move a ceiling. The
+    // value itself is asserted once, in `the_default_capacity_is_the_operational_set`.
     assert_eq!(
         capacity.json()["mission_ceiling"],
-        7,
-        "the Operational ceiling is seven: {}",
+        kontor_daemon::DEFAULT_CAPACITY.mission_max_in_flight,
+        "the mission ceiling is the composed Operational one: {}",
         capacity.body
     );
     assert_eq!(
@@ -31529,6 +32133,42 @@ async fn the_capacity_configuration_reports_the_operational_ceilings_and_guards_
     assert_eq!(applied.status, 200, "{}", applied.body);
     assert_eq!(applied.json()["ceilings"]["mission_max_in_flight"], 5);
     assert_eq!(applied.json()["revision"], 1);
+    // An apply is durable and versioned, and it is *not* in force: the Realm
+    // keeps admitting under the ceilings it composed with. This test used to
+    // assert only the echo above, so a configuration that could never take
+    // effect looked exactly like one that had — which is how a realm sat at 8
+    // envelopes against a ceiling of 7 with an applied 12 that enforced
+    // nothing.
+    assert_eq!(
+        applied.json()["restart_required"],
+        true,
+        "an apply says plainly that it is not yet enforced: {}",
+        applied.body
+    );
+
+    let after = Call::get("/v1/capacity/configuration")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    assert_eq!(
+        after.json()["ceilings"]["mission_max_in_flight"],
+        12,
+        "the composed ceilings are still what admission uses: {}",
+        after.body
+    );
+    assert_eq!(
+        after.json()["stored_ceilings"]["mission_max_in_flight"],
+        5,
+        "the stored replacement is reported rather than hidden: {}",
+        after.body
+    );
+    assert_eq!(
+        after.json()["restart_required"],
+        true,
+        "a stored configuration the daemon is not enforcing announces itself: {}",
+        after.body
+    );
 
     // The same key answers from what is durable rather than conflicting.
     let replayed = Call::post(
@@ -35379,19 +36019,61 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         "same-route recovery replay emitted duplicate native effects"
     );
 
-    let message_id = kontor_runtime::request::MessageId::generate().to_string();
+    let message_key = "asma-8001-tpm-needs-human-lsa-handoff-r7-v1";
+    let message_id = kontor_runtime::request::MessageId::derive(message_key).to_string();
+    let calls_before_handoff = world.fake.calls().len();
     let handoff = Call::post(
         format!("/v1/projects/{project}/seat-bindings/{lsa_binding}/messages"),
         &serde_json::json!({"body": "Continue the bounded epic handoff."}),
     )
     .signed_as(world, "operator")
-    .with_key(&message_id)
+    .with_key(message_key)
     .send(world)
     .await;
     assert_eq!(handoff.status, 200, "{}", handoff.body);
     assert_eq!(handoff.json()["seat_binding_id"], lsa_binding);
     assert_eq!(handoff.json()["native_id"], lsa_native);
     assert_eq!(handoff.json()["message_id"], message_id);
+    let calls_after_handoff = world.fake.calls().len();
+    assert_eq!(calls_after_handoff, calls_before_handoff + 1);
+
+    let replayed_handoff = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{lsa_binding}/messages"),
+        &serde_json::json!({"body": "Continue the bounded epic handoff."}),
+    )
+    .signed_as(world, "operator")
+    .with_key(message_key)
+    .send(world)
+    .await;
+    assert_eq!(replayed_handoff.status, 200, "{}", replayed_handoff.body);
+    assert_eq!(replayed_handoff.json(), handoff.json());
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_after_handoff,
+        "replaying a prose idempotency key repeated the native handoff"
+    );
+
+    let invalid_handoff = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{lsa_binding}/messages"),
+        &serde_json::json!({"body": "This invalid key must not reach the seat."}),
+    )
+    .signed_as(world, "operator")
+    .with_key("x".repeat(257))
+    .send(world)
+    .await;
+    assert_eq!(invalid_handoff.status, 400, "{}", invalid_handoff.body);
+    assert_eq!(invalid_handoff.code(), "invalid_request");
+    assert_eq!(
+        invalid_handoff.json()["subject"],
+        "Idempotency-Key header",
+        "the refusal did not name the offending header: {}",
+        invalid_handoff.body
+    );
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_after_handoff,
+        "an invalid Idempotency-Key reached the runtime"
+    );
 
     // Promoting again returns the same epic rather than building a second.
     let again = Call::post(
