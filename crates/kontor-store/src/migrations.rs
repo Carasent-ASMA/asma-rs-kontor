@@ -492,7 +492,21 @@ fn apply_pending(
     version: i64,
 ) -> Result<(), StoreError> {
     let _ = version;
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // A cold first open now applies the complete migration history. On a loaded
+    // machine that can outlast one connection busy timeout, even though the
+    // peer holding the lock is making legitimate progress. Give this one lock
+    // acquisition one additional bounded timeout window; every ordinary store
+    // operation keeps the connection's 30-second busy contract.
+    let lock_deadline = Instant::now() + BUSY_TIMEOUT + BUSY_TIMEOUT;
+    let transaction = loop {
+        match connection.transaction_with_behavior(TransactionBehavior::Immediate) {
+            Ok(transaction) => break transaction,
+            Err(error) if is_busy(&error) && Instant::now() < lock_deadline => {
+                std::thread::sleep(BUSY_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
 
     // Re-read the version now that the write lock is actually held. The first
     // read above was unlocked: with two processes opening the same new file at
