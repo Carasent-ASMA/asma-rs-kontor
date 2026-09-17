@@ -9631,7 +9631,7 @@ pub async fn apply_core_team_seat_claim(
     params(
         ("project_id" = String, Path, description = "The owning project"),
         ("seat_binding_id" = String, Path, description = "The persistent Core Team seat"),
-        ("Idempotency-Key" = String, Header, description = "A caller-generated UUIDv7 message id")
+        ("Idempotency-Key" = String, Header, description = "The caller's stable idempotency key")
     ),
     request_body = HostedSeatMessageRequestDto,
     responses(
