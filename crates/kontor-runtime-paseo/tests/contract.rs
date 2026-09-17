@@ -60,7 +60,9 @@ use kontor_runtime::request::{
     ReconcileSessionLabelsRequest, ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
-use kontor_runtime::timeline::{HistoryCursor, HistoryReader, TimelineBreak, TimelinePosition};
+use kontor_runtime::timeline::{
+    EventSubject, HistoryCursor, HistoryReader, TimelineBreak, TimelinePosition,
+};
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
 };
@@ -5710,6 +5712,86 @@ async fn message_same_id_yields_one_native_message_and_one_ack() {
     );
 }
 
+/// The delivery value, followed end to end.
+///
+/// Three facts, and each one is a different way for the same mistake to hide:
+/// the id Kontor puts on the wire is Paseo's `messageId`, the id Paseo echoes
+/// back on the resulting user message is `clientMessageId`, and only that echo
+/// makes a canonical event addressable. Reading the provider's own `messageId`
+/// instead would still produce an acknowledgement with a plausible position —
+/// just the wrong one — so the decoy below is the assertion, not the setup.
+#[tokio::test]
+async fn message_only_the_echoed_client_id_positions_the_kontor_message() {
+    // A user message already on the transcript whose *provider* id is the very
+    // id this send is about. Nothing else in the journal can tell the two
+    // fields apart.
+    let decoy = entry(
+        1,
+        serde_json::json!({
+            "type": "user_message",
+            "text": "synthetic text",
+            "messageId": MESSAGE,
+        }),
+    );
+    let (plane, workspace) =
+        Plane::prepared(daemon().journaling(AGENT_ID, EPOCH_RAW, vec![decoy])).await;
+    let binding = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the Implement seat launches")
+        .snapshot;
+
+    let acknowledged = plane
+        .adapter
+        .send(&message(&binding, "the next turn"))
+        .await
+        .expect("the message lands");
+
+    // What went on the wire is the Kontor id, under Paseo's own field name.
+    let sent = plane.daemon.sent_messages("send_agent_message_request");
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(
+        sent[0]["messageId"],
+        serde_json::json!(MESSAGE),
+        "the send carries the durable Kontor MessageId and never a native one"
+    );
+
+    // The echo is a second entry, and the acknowledgement's position is that
+    // entry's — not the decoy's, which has held sequence 1 all along.
+    assert_eq!(plane.daemon.journal_len(AGENT_ID), 2);
+    assert_eq!(
+        acknowledged.position.sequence, 2,
+        "the acknowledgement settles on the echoed send, not on a provider id"
+    );
+
+    // And the canonical read says the same thing event by event, which is what
+    // a settlement later reads: exactly one addressable Kontor message, at the
+    // position the acknowledgement named.
+    let page = plane
+        .adapter
+        .history(&HistoryRequest {
+            binding,
+            cursor: None,
+            page_size: 10,
+        })
+        .await
+        .expect("canonical history reads");
+    assert_eq!(
+        page.items
+            .iter()
+            .map(|event| (event.position.sequence, event.subject.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, EventSubject::None),
+            (
+                2,
+                EventSubject::Message(MessageId::parse(MESSAGE).expect("pinned"))
+            ),
+        ],
+        "a provider's own messageId is content, not an acknowledgement of our send"
+    );
+}
+
 #[tokio::test]
 async fn a_null_id_timeline_correlates_only_one_new_server_challenge() {
     let recorded = daemon().without_journal_client_message_ids();
@@ -5930,6 +6012,59 @@ async fn message_an_incomplete_confirmation_scan_never_authorizes_a_resend() {
         plane.daemon.count("rpc send_agent_message_request"),
         1,
         "stopping at a page budget is not proof that authorizes another send"
+    );
+}
+
+/// OG-058. A confirming read that could not reach the daemon is not evidence
+/// that nothing was delivered.
+///
+/// Both arms below are the same operational moment: Paseo goes away around the
+/// time it is handed a message. The confirming read is the only thing that can
+/// settle what happened, and when *it* cannot answer either, the one report
+/// that must not be produced is a bare channel fault — the control plane turns
+/// that into "nothing was changed", and an operator acting on it resends into a
+/// seat that already has the instruction.
+#[tokio::test]
+async fn message_a_confirmation_read_that_cannot_answer_is_unconfirmed_delivery() {
+    // The send is accepted, and the read that would position it dies.
+    let (accepted, binding) = launched().await;
+    accepted
+        .daemon
+        .lose_next_rpc("fetch_agent_timeline_request");
+    let refused = accepted
+        .adapter
+        .send(&message(&binding, "the next turn"))
+        .await
+        .expect_err("a read that did not answer cannot acknowledge a position");
+    assert!(
+        matches!(refused, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "an accepted send whose confirmation failed is unconfirmed delivery, not a dead channel: {refused:?}"
+    );
+    assert_eq!(
+        accepted.daemon.journal_len(AGENT_ID),
+        1,
+        "the message really is in the transcript the read could not reach"
+    );
+    assert_eq!(accepted.daemon.count("rpc send_agent_message_request"), 1);
+
+    // And the worse case, which is the one that actually happens: the channel
+    // dies *during* the send, so the confirming read fails the same way.
+    let (lost, binding) = launched().await;
+    lost.daemon.lose_next_rpc("send_agent_message_request");
+    lost.daemon.lose_next_rpc("fetch_agent_timeline_request");
+    let refused = lost
+        .adapter
+        .send(&message(&binding, "the next turn"))
+        .await
+        .expect_err("delivery began and nothing could confirm it");
+    assert!(
+        matches!(refused, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "a channel that died after delivery began must not report as one that never carried it: {refused:?}"
+    );
+    assert_eq!(
+        lost.daemon.count("rpc send_agent_message_request"),
+        1,
+        "an unconfirmed delivery is never a licence to send again"
     );
 }
 

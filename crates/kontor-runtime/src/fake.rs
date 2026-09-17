@@ -733,6 +733,14 @@ struct FakeState {
     /// Separate from the strict script queue so read-only proof calls may
     /// legitimately precede that send.
     lose_next_send_ack: bool,
+    /// Whether the next inspect should fail at the transport.
+    ///
+    /// Off the strict queue for the same reason as `lose_next_send_ack`, and a
+    /// sharper one: the readback that follows a delivery is reached *through*
+    /// that delivery, so a queued step naming the inspect would be refused by
+    /// the send it has to pass through first. The one sequence worth scripting
+    /// here is the one the queue cannot express.
+    fail_next_inspect: bool,
     /// Container retitles a runtime silently ignores once, so callers must
     /// reject the unchanged native readback instead of recording success.
     ignore_retitle_once: BTreeSet<TopologyNodeId>,
@@ -1217,6 +1225,7 @@ impl ScriptedFakeRuntime {
                 container_titles: BTreeMap::new(),
                 lose_retitle_ack_once: BTreeSet::new(),
                 lose_next_send_ack: false,
+                fail_next_inspect: false,
                 ignore_retitle_once: BTreeSet::new(),
                 task_title_scopes: BTreeMap::new(),
                 bindings: BTreeMap::new(),
@@ -1359,6 +1368,37 @@ impl ScriptedFakeRuntime {
         session.state = ObservedRunState::WaitingInput;
         session.refusal = None;
         Ok((message_position, response_position))
+    }
+
+    /// Append one tool call after a completed turn.
+    ///
+    /// The shape a terminality check exists for: turn content that is *not* a
+    /// message, landing after the response. It carries no message subject, so
+    /// nothing can mistake it for a new turn — but it is a canonical turn event,
+    /// so a response before it is no longer the last one.
+    pub fn observe_trailing_tool_call(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<TimelinePosition> {
+        let mut state = self.lock();
+        let issued = state
+            .bindings
+            .get(&binding.binding_id())
+            .filter(|issued| *issued == binding)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the runtime did not issue the binding named by the trailing tool call",
+            })?;
+        let session = state.session(&issued)?;
+        let position = session.append(
+            SessionEventKind::ToolCall,
+            EventSubject::None,
+            "trailing tool call",
+            observed_at,
+        )?;
+        session.state = ObservedRunState::WaitingInput;
+        Ok(position)
     }
 
     /// Record the exact response text a server-generated correlation challenge
@@ -1910,6 +1950,13 @@ impl ScriptedFakeRuntime {
     /// lost. Read-only calls before that send do not consume this hook.
     pub fn lose_next_send_ack(&self) {
         self.lock().lose_next_send_ack = true;
+    }
+
+    /// Fail the next inspect at the transport, leaving every earlier call
+    /// alone. This is how a *post-delivery readback* fault is described: the
+    /// send lands, and the observation that should follow it never answers.
+    pub fn fail_next_inspect(&self) {
+        self.lock().fail_next_inspect = true;
     }
 
     /// Every recorded event of the session behind `binding`.
@@ -3367,8 +3414,13 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         let lose_ack = matches!(step, Some(ScriptStep::LoseSendAck))
             || std::mem::take(&mut state.lose_next_send_ack);
         if lose_ack {
-            return Err(RuntimeError::Transport {
-                rule: "acknowledgement was lost after the message was committed",
+            // The message is in the session and the ledger above holds its
+            // acknowledgement: what was lost is the answer, not the effect.
+            // Reporting that as a bare transport fault would let the API tell
+            // its caller nothing was changed, which is false here and is the
+            // sentence that turns one instruction into two native turns.
+            return Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the acknowledgement was lost after the message was committed",
             });
         }
         Ok(acknowledgement)
@@ -3719,6 +3771,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 context_policy: None,
             },
         )?;
+        if std::mem::take(&mut state.fail_next_inspect) {
+            return Err(RuntimeError::Transport {
+                rule: "channel failed before the runtime answered",
+            });
+        }
         let step = state.take_step(
             RuntimeCapability::Inspect,
             RequestKey::Binding(request.binding.binding_id()),

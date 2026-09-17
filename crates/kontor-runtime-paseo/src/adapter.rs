@@ -911,6 +911,28 @@ const TURN_BOUNDARY_ITEM_TYPE: &str = "user_message";
 const REFUSAL_TAIL_ITEMS: u32 = 8;
 
 /// Whether a native item type is observed provider-produced content.
+/// Re-label a confirmation read that failed *after* delivery began.
+///
+/// Every caller of this has already put the message on the wire, so the one
+/// thing that is certain is that something may have landed. A bare
+/// [`RuntimeError::Transport`] does not say that: the control plane maps it to
+/// a channel fact whose advice is "nothing was changed", and a caller that
+/// believes it resends under a fresh identifier — one instruction, two native
+/// turns in the seat's transcript.
+///
+/// Only the channel fault is re-labelled. A
+/// [`RuntimeError::DuplicateMessage`] from the same read is a *definite*
+/// answer about what happened and is worth strictly more than this one, so it
+/// passes through untouched.
+fn unconfirmed_after_delivery(error: RuntimeError) -> RuntimeError {
+    match error {
+        RuntimeError::Transport { .. } => RuntimeError::DeliveryConfirmationUnknown {
+            rule: "delivery began and the confirming canonical read could not reach the runtime",
+        },
+        other => other,
+    }
+}
+
 fn provider_originated(item_type: &str) -> bool {
     PROVIDER_ORIGIN_ITEM_TYPES.contains(&item_type)
 }
@@ -6960,7 +6982,11 @@ impl RuntimeAdapter for PaseoAdapter {
                     body_hash.clone(),
                     PaseoDelivery::ConfirmationUnknown,
                 );
-                return match self.reconcile_message(&binding, request).await? {
+                return match self
+                    .reconcile_message(&binding, request)
+                    .await
+                    .map_err(unconfirmed_after_delivery)?
+                {
                     Some(acknowledgement) => Ok(acknowledgement),
                     None => Err(RuntimeError::DeliveryConfirmationUnknown {
                         rule: "the runtime channel failed after delivery began and canonical history does not yet confirm the message",
@@ -6972,7 +6998,11 @@ impl RuntimeAdapter for PaseoAdapter {
         // The position is the one the *timeline* gives it, never one this
         // adapter counted. An adapter-local counter would be a claim about where
         // the message sits in a transcript Paseo owns.
-        match self.reconcile_message(&binding, request).await? {
+        match self
+            .reconcile_message(&binding, request)
+            .await
+            .map_err(unconfirmed_after_delivery)?
+        {
             Some(acknowledgement) => Ok(acknowledgement),
             None => {
                 self.record_delivery(
