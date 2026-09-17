@@ -534,3 +534,63 @@ so its first "pass" was a stale mutant that never applied. Retargeted at
 
 All eight mutants killed on the final tree: O1, O2, O3, O4, O5 (observation) and
 M2, M3, M5 (settlement guard).
+
+## Combined head — deployment and live proof
+
+Candidate `abf3d02fe4d348bc912d46edab9fc7a158647863`, pushed to the existing
+branch (PR #229 preserved and OPEN; nothing merged, no Jira touched).
+
+| Surface | sha256 | inode |
+| --- | --- | --- |
+| `kontor-daemon` | `5dea6c1da3c877082ae473c3192c1382b50e7cecb791c78968b0224b64c5eb5a` | 495059277 → 495272145 |
+| `kontor-mcp` | `b1d6f4c8ebe8a3e42c498482831dec4bd9b02bd6cededdff6865aff9905b22bc` | already the combined head |
+
+Staged + `rename(2)`, signatures valid. pid 33050, `live`, schema 98,
+reconciliation `open`, scheduling open. The P1 rule
+`"…this message id's uniqueness is unproven"` appears once in the deployed
+daemon and zero times in its predecessor.
+
+Full clean loopback comparison on the combined head: **341 passed, 8 failed, 1
+ignored**, zero storage errors — the same 8 already proven to fail identically
+at clean `d287de7`, plus one more pass from the new regression.
+
+### Live observation, including the repaired cursor path
+
+Against real Paseo seat `01a0ad88-a492-…`, a 1551-event canonical session:
+
+```
+full read      message_id 0c885417-4c83-7d1b-b5a9-54dfcc8e3994
+               epoch 1  message 1012  response 1551
+resumed read   after=<binding>:1:1000   (deliberately BEFORE the message,
+               so the prefix scan of 1..1000 actually runs)
+               -> identical tuple, HTTP 200
+```
+
+Cursor and non-cursor reads agree, with the prefix read exercised on live data.
+That is the P1 fix working in production, not only in the fake.
+
+### Settlement receipt, and what it does and does not prove
+
+This seat carries a real post-turn settlement:
+
+```
+turn_id            01a0adee-7771-7753-9b5c-3bb63049d530
+turn_ordinal       1          role_slot  implement
+runtime_message_id 4eccb763-fa66-7987-90bf-92d498f1edfc
+message 4:3915  ->  response 4:4422
+authority admin    artifacts ["high-change"]
+evidence_hash      5d7843d14fd9cd36271eae856d6ed6fc
+settled_at         2026-09-17T05:54:41.333265Z
+```
+
+It proves the post-turn settlement path works on this exact seat: a control
+caller observed the turn after it was terminal and settled it through
+`kontor_turn_settle`.
+
+**It does not prove the new surface was used.** It was settled at 05:54:41,
+before the observation read was deployed, so its tuple was hand-derived. The
+end-to-end acceptance — observation *through the supported surface*, tuple
+relayed unchanged into settlement — is the post-turn action on the turn this
+response closes, now that both halves are deployed together for the first time.
+Claiming the 05:54 receipt as that proof would be claiming a receipt for a code
+path that did not exist when it was written.
