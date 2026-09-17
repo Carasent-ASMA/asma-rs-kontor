@@ -414,3 +414,72 @@ resumes), page-budget exhaustion, epoch change (cursor naming an unknown epoch �
 `timeline_refetch_required`), foreign cursor (refused before the runtime is
 asked), missing id, duplicate id, unfinished turn, non-terminal response, and
 forged / reused proof through the unchanged settler.
+
+
+## Suite failure counts: what they actually were
+
+Three full-suite runs reported wildly different failure counts (8, then 56, then
+a crash). The differences were **not** code. Two environmental causes, both
+mine to have noticed earlier:
+
+1. **Concurrent load.** The 56-failure run overlapped release builds and three
+   live-daemon restarts. Re-running the suspicious members individually on a
+   quiet machine — `the_credential_file_is_owner_only`,
+   `the_authority_tiers_are_enforced_per_route`,
+   `the_contract_document_lists_every_application_route_and_no_unsafe_surface`,
+   `the_model_catalog_advertises_every_route_used_by_operational_seats`,
+   `the_registry_key_matches_what_the_fake_issues`,
+   `settling_a_bounded_turn_refuses_a_forged_current_window` — all passed.
+2. **The disk was full.** The next run aborted with
+   `io error when listing tests: Os { code: 28, kind: StorageFull, message: "No
+   space left on device" }`. The volume was at 100%, 560 MiB free of 926 GiB.
+   This worktree's `target/` held 27 GB, of which 14 GB was
+   `target/debug/incremental` — a regenerable compilation cache. Dropping it
+   returned 18 GiB. Other worktrees' and other sessions' build directories were
+   left alone.
+
+No failure count from a contended or storage-starved run is reported here as a
+property of the code, and the earlier "8 pre-existing" figure is withdrawn as
+unreliable for the same reason — it came from a run that also overlapped release
+builds. The authoritative numbers are from the clean run recorded below.
+
+
+## Clean full-suite triage (authoritative run)
+
+`/tmp/clean2.log`, from the restored ASMA-8203 tree with ~90 GiB free:
+**340 passed, 8 failed, 1 ignored**, 1205s, zero storage errors.
+
+All 8 were run again at clean `d287de78bce4944d617f43d52d532f1c5d35bf8c` in a
+detached worktree with its own `CARGO_TARGET_DIR`: **0 passed, 8 failed** —
+every one reproduces at the base with none of this branch applied.
+
+| Failure | Attribution |
+| --- | --- |
+| 6 × Jira description/publication | environmental: each refuses with `"the configured native Jira connector could not answer"` (503 where 200 expected). They stand up a `wiremock::MockServer`; the connector is unreachable in this environment. Identical at base. |
+| `replaying_a_partial_admission_delivers_its_durable_follow_up` | asserts a hardcoded `expected_task_revision: 1` against a task that has moved. Identical at base. |
+| `a_session_key_must_be_a_stable_client_message_id` | **investigated as in-scope, proven not.** Master commit `9d5a81b5` (#222, ASMA-8190) deliberately changed `message_identifier` from refusing a non-`MessageId` key to `MessageId::derive`-ing one. That commit edited `loopback_api.rs` (+54 lines) but did not update this assertion, leaving it pinned to the old behaviour. Not in this branch (`git log d287de7..HEAD` does not contain it), and whether the derive or the assertion is right belongs to ASMA-8190. Not waived — attributed. |
+
+Earlier reported counts of 8 and 56 came from runs that overlapped release
+builds and live-daemon restarts, and one aborted on a full disk; none is used as
+evidence here.
+
+## MCP parity: four pins this change had to move deliberately
+
+Adding `kontor_turn_observe` failed six assertions that exist precisely so a new
+tool cannot appear unreviewed. Each was moved with its reason recorded:
+
+* worker profile size 18 → **19** (`registry.rs`), plus an explicit
+  `allows("kontor_turn_observe")`;
+* worker served-at-operator 18 → **19**, and observer-visible reads 10 → **11**
+  (`server.rs`) — an Observer-tier read widens what an observer *sees* without
+  widening authority, which is the property that assertion holds;
+* the tool's declared args now match the contract's `after` and `limit` query
+  parameters;
+* the tier allowlist gains `("kontor_turn_observe", CallerTier::Observer)`;
+* the canary's registry count 178 → **179**, advertised 177 → **178**, and
+  documented 179 → **180**.
+
+The documented count moves by two against a registry of one because the
+regenerated contract also documents master's `fill_team_run_seat` (#225), served
+but never written into the document and with no MCP tool. That gap is master's;
+it is named in the assertion rather than hidden by a matching number.

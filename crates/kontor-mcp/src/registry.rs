@@ -2904,12 +2904,26 @@ pub static REGISTRY: &[ToolSpec] = &[
         method: Method::Get,
         path: "/v1/sessions/{agent_run_id}/turns/current",
         kind: OpKind::Read,
-        args: &[req(
-            "agent_run_id",
-            Place::Path,
-            ArgType::AgentRunId,
-            "The run whose finished turn is read.",
-        )],
+        args: &[
+            req(
+                "agent_run_id",
+                Place::Path,
+                ArgType::AgentRunId,
+                "The run whose finished turn is read.",
+            ),
+            opt(
+                "after",
+                Place::Query,
+                ArgType::Text,
+                "Resume from a previous observation's anchor.",
+            ),
+            opt(
+                "limit",
+                Place::Query,
+                ArgType::U32,
+                "Maximum items per page.",
+            ),
+        ],
         about: "Read the exact current turn's message id and canonical positions, for a settlement to state.",
     },
     ToolSpec {
@@ -6668,7 +6682,11 @@ mod tests {
     #[test]
     fn the_worker_profile_includes_approved_memory_reads() {
         let worker = ServeProfile::find("worker").expect("the worker profile is declared");
-        assert_eq!(worker.tools.len(), 18, "worker v2 is exactly 18 tools");
+        // 19 since ASMA-8203 added `kontor_turn_observe`, the read a post-turn
+        // caller uses to state a settlement. The count is pinned so that adding
+        // a tool to a seat's surface stays a decision rather than a side effect.
+        assert_eq!(worker.tools.len(), 19, "worker v3 is exactly 19 tools");
+        assert!(worker.allows("kontor_turn_observe"));
         assert!(worker.allows("kontor_memory_search"));
         assert!(worker.allows("kontor_memory_history"));
     }
