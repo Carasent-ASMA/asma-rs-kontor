@@ -604,6 +604,13 @@ pub enum PaseoDelivery {
 struct EpochRegistry {
     by_raw: BTreeMap<String, u64>,
     next: u64,
+    /// Mappings allocated since the last drain, awaiting durable persistence.
+    ///
+    /// Held separately from `by_raw` because "known" and "durable" are different
+    /// facts. A number is usable in this process the instant it is allocated,
+    /// but nothing addressed by it may be exposed until the control plane has
+    /// taken this list and committed it.
+    undrained: Vec<(String, u64)>,
 }
 
 impl EpochRegistry {
@@ -632,7 +639,12 @@ impl EpochRegistry {
             }
         }
         let next = seen.iter().next_back().copied().unwrap_or(0);
-        Ok(Self { by_raw, next })
+        // Restored from a checkpoint, so nothing here is awaiting persistence.
+        Ok(Self {
+            by_raw,
+            next,
+            undrained: Vec::new(),
+        })
     }
 
     /// The Kontor epoch for `raw`, allocating one only for an epoch never seen.
@@ -642,7 +654,43 @@ impl EpochRegistry {
         }
         self.next = self.next.saturating_add(1);
         self.by_raw.insert(raw.to_owned(), self.next);
+        self.undrained.push((raw.to_owned(), self.next));
         self.next
+    }
+
+    /// Take what has not been persisted yet.
+    fn drain(&mut self) -> Vec<(String, u64)> {
+        std::mem::take(&mut self.undrained)
+    }
+
+    /// Adopt durable mappings. Known raws keep their number; the allocator
+    /// continues above the highest number in use so it can never re-issue one.
+    ///
+    /// Restored pairs are *not* marked undrained: they came from the store, so
+    /// persisting them again would be a write with nothing to record.
+    fn adopt(&mut self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
+        for (raw, epoch) in pairs {
+            if *epoch == 0 {
+                return Err(RuntimeError::Domain(DomainError::invalid(
+                    "runtime_timeline_epochs.kontor_epoch",
+                    "a timeline epoch is one-based",
+                )));
+            }
+            match self.by_raw.get(raw.as_str()) {
+                Some(known) if known != epoch => {
+                    return Err(RuntimeError::Domain(DomainError::invalid(
+                        "runtime_timeline_epochs.raw_epoch",
+                        "the durable mapping contradicts one this process already issued",
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    self.by_raw.insert(raw.clone(), *epoch);
+                }
+            }
+            self.next = self.next.max(*epoch);
+        }
+        Ok(())
     }
 
     /// Restore one exact mapping retained by a server-owned recovery record.
@@ -5326,6 +5374,14 @@ impl RuntimeAdapter for PaseoAdapter {
     /// still exist here?*. Rebuilding capabilities from a fresh
     /// `discover_capabilities` would re-grade a binding whose session never
     /// changed, which is precisely what the freeze rule exists to stop.
+    fn drain_new_timeline_epochs(&self) -> Vec<(String, u64)> {
+        self.lock().epochs.drain()
+    }
+
+    fn restore_timeline_epochs(&self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
+        self.lock().epochs.adopt(pairs)
+    }
+
     async fn restore_bindings(
         &self,
         snapshots: &[RuntimeBindingSnapshot],

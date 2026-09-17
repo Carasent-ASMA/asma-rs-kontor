@@ -844,6 +844,10 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::recover_gate_rejection),
             )
             .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase",
+                post(applications::recover_workflow_phase),
+            )
+            .route(
                 "/v1/projects/{project_id}/tasks/{task_id}/profile-selection",
                 post(applications::select_profile),
             )

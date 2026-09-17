@@ -773,6 +773,12 @@ struct FakeState {
     /// Separate from the strict script queue so read-only proof calls may
     /// legitimately precede that send.
     lose_next_send_ack: bool,
+    /// Raw->Kontor timeline epoch mappings this fake has allocated, and the
+    /// ones not yet handed to the control plane for persistence. The fake
+    /// models the same boundary a native adapter does, so the persist-before-
+    /// expose barrier can be exercised without a live runtime.
+    epoch_mappings: BTreeMap<String, u64>,
+    undrained_epochs: Vec<(String, u64)>,
     /// Whether the next inspect should fail at the transport.
     ///
     /// Off the strict queue for the same reason as `lose_next_send_ack`, and a
@@ -1268,6 +1274,8 @@ impl ScriptedFakeRuntime {
                 container_titles: BTreeMap::new(),
                 lose_retitle_ack_once: BTreeSet::new(),
                 lose_next_send_ack: false,
+                epoch_mappings: BTreeMap::new(),
+                undrained_epochs: Vec::new(),
                 fail_next_inspect: false,
                 ignore_retitle_once: BTreeSet::new(),
                 task_title_scopes: BTreeMap::new(),
@@ -2298,6 +2306,18 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     /// *does this session still exist here?*, and everything else comes out of
     /// the persisted snapshot. A fake that rebuilt capabilities here would let a
     /// re-grading bug pass its own restart test.
+    fn drain_new_timeline_epochs(&self) -> Vec<(String, u64)> {
+        std::mem::take(&mut self.lock().undrained_epochs)
+    }
+
+    fn restore_timeline_epochs(&self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        for (raw, epoch) in pairs {
+            state.epoch_mappings.insert(raw.clone(), *epoch);
+        }
+        Ok(())
+    }
+
     async fn restore_bindings(
         &self,
         snapshots: &[RuntimeBindingSnapshot],
@@ -4154,6 +4174,15 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 reason: TimelineBreak::EpochChanged,
             });
         }
+        // First sight of this raw epoch allocates a Kontor number, the same
+        // shape a native adapter has. It is surfaced through the runtime
+        // boundary rather than persisted here: adapters stay store-free.
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
+        let session = state.session(&request.binding)?;
         let recorded = &session.content[..session.history_len];
         let items: Vec<SessionEvent> = recorded
             .iter()

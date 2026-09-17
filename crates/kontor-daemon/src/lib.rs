@@ -1044,6 +1044,51 @@ impl Daemon {
                 );
                 claimed.extend(recovered);
             }
+            // Epoch continuity is restored *before* anything is read, at the
+            // same seam that re-attests bindings. A Kontor epoch number is only
+            // meaningful if the same raw native epoch resolves to it again; the
+            // adapter allocates from empty, so without this a tuple observed in
+            // one process names different content in the next — which is exactly
+            // how a settleable observation stopped being settleable across a
+            // restart.
+            let hosts: std::collections::BTreeSet<_> = family_bindings
+                .iter()
+                .map(|binding| binding.binding.identity.host.clone())
+                .collect();
+            let mut continuity = true;
+            for host in &hosts {
+                let durable = match self
+                    .state
+                    .with_store(|store| store.list_timeline_epochs(family.as_str(), host.as_str()))
+                {
+                    Ok(pairs) => pairs,
+                    Err(error) => {
+                        warn!(
+                            realm_id = %self.realm_id(),
+                            runtime = %family,
+                            detail = %error,
+                            "durable timeline epochs could not be read; scheduling stays shut"
+                        );
+                        continuity = false;
+                        break;
+                    }
+                };
+                if let Err(error) = adapter.restore_timeline_epochs(&durable) {
+                    warn!(
+                        realm_id = %self.realm_id(),
+                        runtime = %family,
+                        detail = %error,
+                        "durable timeline epochs contradict this runtime; scheduling stays shut"
+                    );
+                    continuity = false;
+                    break;
+                }
+            }
+            if !continuity {
+                settled = BarrierState::Failed;
+                continue;
+            }
+
             // Hand the claims back to the runtime that issued them. It confirms
             // each session still exists in the same generation and re-records
             // the snapshot *verbatim*, so the binding keeps the grade, limits,

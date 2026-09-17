@@ -5264,6 +5264,30 @@ pub struct RecoverGateRejectionRequest {
     pub expected_rejection_target: String,
 }
 
+/// What re-deriving a stalled workflow's phase from durable evidence did.
+///
+/// Reports the phase before and after, so a caller can see whether anything
+/// moved. `advanced: false` is the ordinary answer for a workflow already where
+/// its evidence puts it — which is exactly what makes this safe to run twice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct WorkflowPhaseRecoveryDto {
+    /// The Realm the task belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The task whose workflow was re-derived.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The phase the workflow stood at before.
+    pub previous_phase: String,
+    /// The phase its durable evidence puts it at.
+    pub current_phase: String,
+    /// The workflow revision after the projection caught up.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// Whether the stored phase actually moved.
+    pub advanced: bool,
+}
+
 /// One recovered gate rejection route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct GateRejectionRecoveryDto {
@@ -7501,6 +7525,13 @@ pub trait ApplicationOperations: Send + Sync {
         gate: &str,
         request: &RecoverGateRejectionRequest,
     ) -> Result<GateRejectionRecoveryDto, ApiError>;
+
+    /// Re-derive one stalled workflow's phase from evidence already recorded.
+    async fn recover_workflow_phase(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<WorkflowPhaseRecoveryDto, ApiError>;
 
     /// Decide what publishing one task ticket's description would do.
     async fn preview_task_description(
@@ -11470,6 +11501,54 @@ pub async fn recover_gate_rejection(
         state
             .applications()
             .recover_gate_rejection(&key, project_id, task_id, &gate_id, &request)
+            .await?,
+    ))
+}
+
+/// Catch a stalled workflow up to the phase its own durable evidence proves.
+///
+/// The advance is normally computed as a side effect of recording a gate or
+/// settling a turn. When that moment is missed — ASMA-8205 passed its
+/// `high-verification-gate` at sequence 2 and the stored phase never moved —
+/// nothing re-derives it afterwards, and the workflow stalls with complete and
+/// unambiguous evidence sitting in front of it.
+///
+/// This is that missing surface and nothing more. It records no verdict,
+/// appends no evaluation, replays no turn and chooses no phase: it runs the
+/// same deterministic projection the ordinary paths run, over evidence that is
+/// already durable. A workflow already at its evidence phase is left exactly
+/// as it is, which is what makes running it twice a no-op rather than a second
+/// advance.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    responses(
+        (status = 200, body = WorkflowPhaseRecoveryDto),
+        (status = 401), (status = 403),
+        (status = 404, description = "The task has no active workflow")
+    )
+)]
+pub async fn recover_workflow_phase(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<WorkflowPhaseRecoveryDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    // Scoped the same way its sibling recovery is. The key is required by the
+    // write convention rather than by this operation's safety: re-deriving a
+    // phase from durable evidence is idempotent on its own, and a repeat lands
+    // as `advanced: false` rather than as a second advance.
+    let (project_id, task_id, _key) = task_scope(&state, &project_id, &task_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .recover_workflow_phase(project_id, task_id)
             .await?,
     ))
 }

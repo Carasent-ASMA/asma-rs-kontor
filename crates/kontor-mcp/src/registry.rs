@@ -2051,6 +2051,29 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Record one gate verdict. A waiver requires admin authority.",
     },
     ToolSpec {
+        name: "kontor_workflow_phase_recover",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task whose workflow stalled.",
+            ),
+            IDEMPOTENCY,
+        ],
+        about: "Catch a stalled workflow up to the phase its own recorded evidence proves.",
+    },
+    ToolSpec {
         name: "kontor_gate_rejection_recover",
         // Admin, and not for the reason a waiver is. A waiver decides whether a
         // rule applies; this repairs a workflow that a defect left standing in

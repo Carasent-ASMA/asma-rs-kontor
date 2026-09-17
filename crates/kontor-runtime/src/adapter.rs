@@ -1161,6 +1161,37 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// Take the timeline-epoch mappings this adapter has allocated since the
+    /// last drain, and forget that they are new.
+    ///
+    /// The runtime boundary for epoch continuity. An adapter allocates a Kontor
+    /// epoch number the first time it sees a raw native epoch, and that number
+    /// is only meaningful if it survives a restart — but an adapter must not
+    /// reach a store to make it survive. So it surfaces the pairs here and the
+    /// control plane persists them.
+    ///
+    /// Draining is the *whole* contract: the caller has taken responsibility
+    /// for durability, so it must persist before exposing or consuming anything
+    /// addressed by these numbers. An adapter that has allocated nothing since
+    /// the last drain returns empty, which is the common case and costs a lock.
+    fn drain_new_timeline_epochs(&self) -> Vec<(String, u64)> {
+        Vec::new()
+    }
+
+    /// Seed the epoch registry from durable state before any read happens.
+    ///
+    /// Restores the exact numbers previously allocated, so a raw epoch resolves
+    /// to the same u64 it did in the last process. Pairs already known are left
+    /// alone rather than renumbered: a mapping is a bijection, and the durable
+    /// side is authoritative.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when the supplied pairs are not a bijection.
+    fn restore_timeline_epochs(&self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
+        let _ = pairs;
+        Ok(())
+    }
+
     /// Take back into this runtime's own registry the bindings a previous
     /// process issued, so a restart does not orphan a live session.
     ///

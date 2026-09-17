@@ -40,7 +40,10 @@ use std::sync::{
 use std::time::Duration;
 
 use async_trait::async_trait;
-use harness::{Answer, Call, World, at, capabilities_without, fake_family, name, secret};
+use harness::{
+    Answer, Call, World, at, capabilities_with_history_page, capabilities_without, fake_family,
+    name, secret,
+};
 use kontor_accounts::{KeychainBackend, KeychainFailure, KeychainTarget, UsageReading};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
@@ -12249,6 +12252,267 @@ fn rewind_to_unrouted_rejection(world: &World, seed: &Bootstrapped, rejection: &
         )
         .expect("the workflow is rewound");
     assert_eq!(moved, 1);
+}
+
+/// ASMA-8205 / ASMA-8199. A workflow whose stored phase lags its own durable
+/// evidence is caught up, once.
+///
+/// The advance is normally a side effect of recording a gate or settling a
+/// turn. ASMA-8205 passed its `high-verification-gate` at sequence 2 and the
+/// stored phase never moved, and nothing could re-derive it afterwards — the
+/// evidence was complete and unambiguous and the workflow was simply stuck.
+///
+/// The fixture reproduces the drift the same way the rejection tests do, by
+/// rewinding the stored phase behind evidence that is already recorded. What
+/// the repair must then prove is not only that it advances, but that it is a
+/// projection and not a second verdict: nothing is appended, no turn is
+/// replayed, and running it again moves nothing.
+#[tokio::test]
+async fn a_stalled_workflow_is_caught_up_to_its_evidence_exactly_once() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "phase-drift").await;
+    // The turns this records are the evidence the drift sits on top of. Its
+    // rejection is then unwound, because ASMA-8205 was not a *fenced* workflow —
+    // its fence had already been released by a rework turn. What was left was a
+    // stored phase that simply never caught up with complete evidence, and that
+    // is what this reproduces.
+    let rejection = record_a_rejection(&world, &seed, &runs, "phase-drift").await;
+    rewind_to_unrouted_rejection(&world, &seed, &rejection);
+    // Rewind only the stored phase to the workflow's entry, leaving every
+    // evaluation, route and turn exactly where they are. That is the ASMA-8205
+    // shape: durable evidence sitting ahead of the projection, with no
+    // supported way to reconcile the two.
+    let advanced_workflow = active_workflow(&world, &seed);
+    let entry = advanced_workflow
+        .snapshot
+        .definition
+        .phases
+        .iter()
+        .map(|phase| phase.id.clone())
+        .find(|candidate| {
+            !advanced_workflow
+                .snapshot
+                .definition
+                .edges
+                .iter()
+                .any(|edge| &edge.to == candidate)
+        })
+        .expect("the definition has an entry phase");
+    {
+        let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+        let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+        let moved = connection
+            .execute(
+                "UPDATE task_workflows SET current_phase = ?1 WHERE project_id = ?2 AND id = ?3",
+                rusqlite::params![
+                    entry.as_str(),
+                    seed.project,
+                    advanced_workflow.id.to_string()
+                ],
+            )
+            .expect("the stored phase is rewound");
+        assert_eq!(moved, 1);
+    }
+    let stalled = active_workflow(&world, &seed);
+    assert_eq!(
+        stalled.current_phase, entry,
+        "the fixture reproduces a workflow standing behind its own evidence"
+    );
+
+    let census_before = rejection_census(&world);
+    let uri = format!(
+        "/v1/projects/{}/tasks/{}/workflow:recover-phase",
+        seed.project, seed.task
+    );
+
+    // An operator may not do this: re-deriving a phase is an admin repair.
+    let refused = Call::post(&uri, &serde_json::json!({}))
+        .signed_as(&world, "operator")
+        .with_key("phase-drift-recover-operator")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
+    let first = Call::post(&uri, &serde_json::json!({}))
+        .signed_as(&world, "admin")
+        .with_key("phase-drift-recover-1")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(
+        first.json()["advanced"],
+        serde_json::json!(true),
+        "the fixture must actually drift, or this proves nothing: {}",
+        first.body
+    );
+    let landed = active_workflow(&world, &seed);
+    assert_ne!(
+        landed.current_phase, stalled.current_phase,
+        "recovery moved the stored phase"
+    );
+    assert_eq!(
+        first.json()["current_phase"],
+        serde_json::json!(landed.current_phase.as_str()),
+        "the answer names the phase the store now holds: {}",
+        first.body
+    );
+
+    // Idempotent: a second call re-derives the same phase and moves nothing.
+    // This is the assertion that a recovery surface must never double-advance.
+    // A *different* key, deliberately: a replayed key would be answered from
+    // the receipt and prove nothing about the operation being idempotent.
+    let second = Call::post(&uri, &serde_json::json!({}))
+        .signed_as(&world, "admin")
+        .with_key("phase-drift-recover-2")
+        .send(&world)
+        .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    assert_eq!(
+        second.json()["advanced"],
+        serde_json::json!(false),
+        "a workflow already at its evidence phase must not advance again: {}",
+        second.body
+    );
+    let settled = active_workflow(&world, &seed);
+    assert_eq!(
+        settled.current_phase, landed.current_phase,
+        "the second call changed the stored phase"
+    );
+    assert_eq!(
+        settled.revision, landed.revision,
+        "a no-op recovery must not burn a revision"
+    );
+
+    // Never *past* the evidence. A recovery that kept stepping would walk the
+    // definition to its last phase, and every assertion above would still hold
+    // — it advanced, then stopped, and wrote nothing. The boundary is the only
+    // thing that distinguishes catching up from running away: the phase it
+    // lands on may be incomplete (that is the work still to do), but the phase
+    // *before* it must be finished.
+    let produced: BTreeSet<_> = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.list_settled_turns(
+                ProjectId::parse(&seed.project).expect("a project id"),
+                TaskId::parse(&seed.task).expect("a task id"),
+            )
+        })
+        .expect("settled turns read")
+        .iter()
+        .flat_map(|turn| turn.artifacts.iter().cloned())
+        .collect();
+    if landed.current_phase != stalled.current_phase {
+        let predecessor = landed
+            .snapshot
+            .definition
+            .edges
+            .iter()
+            .find(|edge| edge.to == landed.current_phase)
+            .map(|edge| edge.from.clone())
+            .expect("an advanced phase has an inbound edge");
+        let required = landed
+            .snapshot
+            .definition
+            .phases
+            .iter()
+            .find(|phase| phase.id == predecessor)
+            .map(|phase| phase.required_artifacts.clone())
+            .unwrap_or_default();
+        assert!(
+            required.iter().all(|artifact| produced.contains(artifact)),
+            "recovery stepped past its evidence: landed on {} whose predecessor {} still needs {:?}",
+            landed.current_phase.as_str(),
+            predecessor.as_str(),
+            required
+        );
+    }
+
+    // The over-advance boundary. Recovery may stop early — a gate this test
+    // does not recompute can hold it back, and stopping short is safe. What it
+    // must never do is *step over* a phase whose own evidence is missing, which
+    // is exactly what a projection without a stop condition does: it walks the
+    // definition to the end.
+    //
+    // So every phase strictly between where the workflow stalled and where it
+    // landed must have its required artifacts already produced.
+    let mut walk = stalled.current_phase.clone();
+    let mut crossed = Vec::new();
+    while walk != landed.current_phase {
+        let Some(next) = landed
+            .snapshot
+            .definition
+            .edges
+            .iter()
+            .find(|edge| edge.from == walk)
+            .map(|edge| edge.to.clone())
+        else {
+            break;
+        };
+        crossed.push(walk.clone());
+        walk = next;
+    }
+    // Artifacts are only half of a phase's completion; its declared gates are
+    // the other half, and in practice the gate is what holds a phase open. A
+    // check that looked only at artifacts would wave through exactly the
+    // over-advance it exists to catch.
+    let gate_states = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.gate_states(
+                ProjectId::parse(&seed.project).expect("a project id"),
+                landed.id,
+            )
+        })
+        .expect("gate states read");
+    for phase in &crossed {
+        let declared = landed
+            .snapshot
+            .definition
+            .phases
+            .iter()
+            .find(|declared| &declared.id == phase)
+            .expect("a crossed phase is declared");
+        let missing: Vec<_> = declared
+            .required_artifacts
+            .iter()
+            .filter(|artifact| !produced.contains(*artifact))
+            .map(|artifact| artifact.as_str().to_owned())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "recovery stepped over {} on its way to {}, but it still needs {missing:?}",
+            phase.as_str(),
+            landed.current_phase.as_str()
+        );
+        let open: Vec<_> = declared
+            .gates
+            .iter()
+            .filter(|gate| {
+                !gate_states
+                    .get(*gate)
+                    .is_some_and(|state| state.satisfies_requirement())
+            })
+            .map(|gate| gate.as_str().to_owned())
+            .collect();
+        assert!(
+            open.is_empty(),
+            "recovery stepped over {} on its way to {}, but its gates {open:?} are not satisfied",
+            phase.as_str(),
+            landed.current_phase.as_str()
+        );
+    }
+
+    // And it is a projection, not a verdict: nothing was appended anywhere a
+    // gate recording or a settlement would have written.
+    assert_eq!(
+        rejection_census(&world),
+        census_before,
+        "recovery appended no evaluation, route, turn or receipt",
+    );
 }
 
 /// The recovery URI for one task's gate.
@@ -24673,8 +24937,9 @@ async fn settling_a_bounded_turn_reads_only_the_claimed_current_window() {
             .iter()
             .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::History(_)))
             .count(),
-        1,
-        "settlement must not crawl unrelated history before the claimed current message: {calls:?}",
+        2,
+        "settlement reads the bounded window and then asks once whether anything \
+         follows the claimed response — never the whole tail: {calls:?}",
     );
 }
 
@@ -24767,8 +25032,9 @@ async fn settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open() {
     assert_eq!(stale_completion.code(), "revision_conflict");
     assert_eq!(
         world.fake.calls().len(),
-        calls_before_stale + 2,
-        "the stale proof performs only the fresh inspect and bounded history read",
+        calls_before_stale + 3,
+        "the stale proof performs the fresh inspect, the bounded window read and \
+         the one anchored read past the claimed response",
     );
     assert!(
         world
@@ -24979,8 +25245,9 @@ async fn refuse_forged_current_window(
     );
     assert_eq!(
         world.fake.calls().len(),
-        calls_before + 2,
-        "{forgery}: a forged window costs one fresh inspect and one bounded history read",
+        calls_before + 3,
+        "{forgery}: a forged window costs one fresh inspect, one bounded window \
+         read and one anchored read past the claimed response",
     );
     let (turns, dispatches) = world.daemon.state().with_store(|store| {
         (
@@ -25321,6 +25588,48 @@ async fn observing_a_current_turn_fails_closed_on_every_unreadable_shape() {
     assert_eq!(other_epoch.code(), "timeline_refetch_required");
 }
 
+/// ASMA-8203. The persist-before-expose barrier, at the API boundary.
+///
+/// A Kontor epoch number is allocated by the adapter on first sight of a raw
+/// native epoch. It is only meaningful if it survives a restart, so nothing
+/// addressed by it may reach a caller — or be consumed by settlement — before
+/// the mapping is durable. The assertion is ordering, not existence: by the
+/// time a read has returned, the row is already committed.
+#[tokio::test]
+async fn a_history_read_persists_its_epoch_mapping_before_returning() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, _snapshot) = world.launch().await;
+
+    // The host the fake's bindings carry, read from the binding itself so the
+    // assertion cannot drift from the scope the mapping is keyed under.
+    let host = _snapshot.identity().host.as_str().to_owned();
+    let kind = fake_family();
+    let before = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(kind.as_str(), &host))
+        .unwrap_or_default();
+
+    let timeline = Call::get(format!("/v1/sessions/{run}/timeline?limit=5"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(timeline.status, 200, "{}", timeline.body);
+    let epoch = timeline.json()["epoch"].as_u64().expect("an epoch");
+
+    // Already durable at the moment the page was handed over.
+    let after = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(kind.as_str(), &host))
+        .expect("durable epochs read");
+    assert!(
+        after.iter().any(|(_, mapped)| *mapped == epoch),
+        "the epoch the caller was given is durable before it was given: before={before:?} after={after:?}"
+    );
+}
+
 /// A duplicate that straddles the `after` cursor is still a duplicate.
 ///
 /// The P1 the audit found. `after` used to scope duplicate tracking to the
@@ -25495,6 +25804,146 @@ async fn observing_a_current_turn_pages_a_long_session_and_resumes_from_its_anch
         "an exhausted anchor resumes or reports nothing new, never a broken read: {} {}",
         resumed.status,
         resumed.body
+    );
+}
+
+/// The terminality question has to be *asked*, not inferred from the window.
+///
+/// Bounding the window at the claimed response means a later turn can fall
+/// entirely outside it. When the window page happens to overshoot, the existing
+/// last-turn check still catches such a turn — which makes it easy to believe
+/// the anchored read is redundant. Size the page so the window ends exactly at
+/// the response and the next turn lands on the page after it, and the anchored
+/// read is the only thing standing between a stale tuple and a settlement.
+#[tokio::test]
+async fn a_later_turn_beyond_the_window_page_still_refuses_a_stale_tuple() {
+    // Two events per page: the window is exactly the claimed turn.
+    let world = World::open_with(capabilities_with_history_page(2)).await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "og-061-beyond-window").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let task = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]
+        .clone();
+    let revision = task["revision"].as_u64().expect("a revision");
+    let task_id = TaskId::parse(task["task_id"].as_str().expect("a task id")).expect("a task id");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+
+    let stale = observe_current_turn(&world, &project, &agent_run);
+    // A newer turn, landing past the window page the stale tuple describes.
+    let _newer = observe_current_turn(&world, &project, &agent_run);
+
+    let refused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": stale,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("og-061-beyond-window-settle")
+    .send(&world)
+    .await;
+    assert_eq!(
+        refused.status, 409,
+        "a turn that is no longer current must refuse even when the newer turn \
+         falls outside the window page: {}",
+        refused.body
+    );
+    assert_eq!(refused.code(), "revision_conflict", "{}", refused.body);
+    let turns = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_settled_turns(project_id, task_id))
+        .expect("settled turns read");
+    assert!(turns.is_empty(), "the refusal wrote nothing: {turns:?}");
+}
+
+/// OG-061. A proof that sits early in a long session settles.
+///
+/// ASMA-8201 (`12:6 -> 12:263`) and ASMA-8202 (`13:11 -> 13:296`) named turns a
+/// handful of events into their epoch, and settlement proved terminality by
+/// paging from the claimed message to the *end* of the session. The cost was
+/// therefore the distance to the tail, not the size of the turn, so a verifier
+/// response early in a long epoch could not be settled at all — while a
+/// terminal-anchor timeline read of the same session answered in one page and
+/// `runtime_capabilities` reported the plane reachable. The failure surfaced as
+/// "the session's runtime could not be reached", pointing at a healthy runtime.
+///
+/// The fixture reproduces that shape: a short turn, then a long tail behind it,
+/// with the history page narrowed so the old full-forward scan could not have
+/// finished inside its budget. What must happen now is that the turn settles.
+#[tokio::test]
+async fn an_early_proof_in_a_long_session_settles_without_reading_the_tail() {
+    // A narrow page, so the distance the proof has to cover is visible in the
+    // read count rather than hidden inside one generous page.
+    let world = World::open_with(capabilities_with_history_page(4)).await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "og-061-early-proof").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a revision");
+
+    // The turn being settled, early in the session.
+    let proof = observe_current_turn(&world, &project, &agent_run);
+
+    // Then a long tail of non-turn content behind it. Status changes are not
+    // turn events, so the response stays terminal — but the old scan still had
+    // to read every one of them to discover that.
+    for _ in 0..60 {
+        let _ = observe_post_turn_status(&world, &project, &agent_run);
+    }
+
+    let calls_before = world.fake.calls().len();
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": proof,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("og-061-early-proof-settle")
+    .send(&world)
+    .await;
+    assert_eq!(
+        settled.status, 200,
+        "an early proof behind a long tail must still settle: {}",
+        settled.body
+    );
+    assert_eq!(settled.json()["turn_ordinal"], 1);
+
+    // And it did not read the tail to get there. The old path needed a page per
+    // trailing event; this one is bounded by the window and the anchored read.
+    let reads = world.fake.calls()[calls_before..]
+        .iter()
+        .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::History(_)))
+        .count();
+    // The window itself is two events — one page. Everything else this read
+    // spends is the terminality question, and the claimed message's distance
+    // from the start of the session no longer enters into it at all.
+    assert!(
+        reads <= 1 + 60 / 4 + 2,
+        "settlement read {reads} pages; the window is one page and the rest is \
+         the bounded terminality read, not a walk from the claimed message"
     );
 }
 

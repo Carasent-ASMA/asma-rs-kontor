@@ -105,6 +105,18 @@ pub(crate) fn every_capability() -> RuntimeCapabilities {
     }
 }
 
+/// The same declaration with a narrower history page.
+///
+/// A settlement proves terminality by reading to the end of the session, so its
+/// cost is the distance from the claimed message to the tail divided by the
+/// page size. Shrinking the page is how a test reaches the scan's page budget
+/// without building a session of thousands of events.
+pub(crate) fn capabilities_with_history_page(page: u32) -> RuntimeCapabilities {
+    let mut declared = every_capability();
+    declared.limits.max_history_page = page;
+    declared
+}
+
 /// The same declaration, minus the named capabilities.
 pub(crate) fn capabilities_without(missing: &[RuntimeCapability]) -> RuntimeCapabilities {
     let mut declared = every_capability();
