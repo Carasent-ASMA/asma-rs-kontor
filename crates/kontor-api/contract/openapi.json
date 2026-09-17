@@ -1412,6 +1412,144 @@
         }
       }
     },
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Persist and deliver or reconcile one exact server-owned challenge.",
+        "operationId": "apply_turn_correlation_challenge",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The exact persistent seat run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TurnCorrelationChallengeApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnCorrelationChallengeDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "The preview moved or the key names another challenge"
+          },
+          "503": {
+            "description": "Delivery is uncertain; replay may reconcile but never resend"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Preview one new server-owned correlation challenge without runtime effects.",
+        "operationId": "preview_turn_correlation_challenge",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The exact persistent seat run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TurnCorrelationChallengePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnCorrelationChallengePreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "The identity, revision, binding, evidence, or native tail moved"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle": {
       "post": {
         "tags": [
@@ -21752,6 +21890,13 @@
             },
             "description": "The artifacts the turn produced."
           },
+          "correlation_challenge_message_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A server-generated challenge MessageId, mutually exclusive with\n`runtime_proof`. Kontor loads the message coordinate from its durable\nchallenge and selects the terminal response server-side."
+          },
           "expected_task_revision": {
             "type": "integer",
             "format": "int64",
@@ -23727,6 +23872,195 @@
             "description": "The work profile revision the work it proposes would use."
           }
         }
+      },
+      "TurnCorrelationChallengeApplyRequest": {
+        "type": "object",
+        "description": "Apply request bound to one exact no-write challenge preview.",
+        "required": [
+          "challenge",
+          "preview_hash"
+        ],
+        "properties": {
+          "challenge": {
+            "$ref": "#/components/schemas/TurnCorrelationChallengePreviewRequest",
+            "description": "The request whose server-owned boundary was previewed."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash returned by the preview."
+          }
+        },
+        "additionalProperties": false
+      },
+      "TurnCorrelationChallengeDto": {
+        "type": "object",
+        "description": "Durable result of applying a server-owned correlation challenge.",
+        "required": [
+          "preview",
+          "message_id",
+          "state",
+          "applied"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call created the durable challenge intent."
+          },
+          "message_id": {
+            "type": "string",
+            "description": "Unpredictable server MessageId frozen before native contact."
+          },
+          "message_position": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TurnTimelinePositionDto",
+                "description": "Exact canonical position found by the adapter, once acknowledged."
+              }
+            ]
+          },
+          "preview": {
+            "$ref": "#/components/schemas/TurnCorrelationChallengePreviewDto",
+            "description": "The no-write plan this application consumed."
+          },
+          "state": {
+            "type": "string",
+            "description": "`prepared`, `dispatching`, `acknowledged`, or `settled`."
+          }
+        }
+      },
+      "TurnCorrelationChallengePreviewDto": {
+        "type": "object",
+        "description": "Exact no-write plan for creating one future correlation point.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "task_id",
+          "team_run_id",
+          "agent_run_id",
+          "seat_binding_id",
+          "runtime_binding_id",
+          "native_id",
+          "artifact",
+          "evidence_revision_id",
+          "evidence_content_hash",
+          "report_checksum",
+          "boundary",
+          "preview_hash",
+          "historical_backfill_supported"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "Existing agent-run identity retained by the plan."
+          },
+          "artifact": {
+            "type": "string",
+            "description": "Verified artifact and approved evidence."
+          },
+          "boundary": {
+            "$ref": "#/components/schemas/TurnTimelinePositionDto",
+            "description": "Canonical tail observed without writing to the runtime."
+          },
+          "evidence_content_hash": {
+            "type": "string",
+            "description": "Hash of the exact approved evidence content."
+          },
+          "evidence_revision_id": {
+            "type": "string",
+            "description": "Approved immutable evidence revision."
+          },
+          "historical_backfill_supported": {
+            "type": "boolean",
+            "description": "Always false: ambiguous historical turns are not backfilled."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "Native session identity retained by the plan."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash binding every identity, revision, evidence fact and boundary."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Exact project/task/team/run/binding identities retained by the plan."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that verified the plan."
+          },
+          "report_checksum": {
+            "type": "string",
+            "description": "Approved operational-gap report checksum."
+          },
+          "runtime_binding_id": {
+            "type": "string",
+            "description": "Exact issued runtime binding retained by the plan."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "Exact active topology SeatBinding retained by the plan."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Existing task retained by the plan."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "Existing team-run identity retained by the plan."
+          }
+        }
+      },
+      "TurnCorrelationChallengePreviewRequest": {
+        "type": "object",
+        "description": "Read-only request for a new server-owned correlation challenge.\n\nHistorical message and response coordinates are deliberately absent.",
+        "required": [
+          "role_slot",
+          "expected_task_revision",
+          "expected_run_revision",
+          "artifact",
+          "evidence_revision_id",
+          "evidence_content_hash",
+          "report_checksum"
+        ],
+        "properties": {
+          "artifact": {
+            "type": "string",
+            "description": "Exact artifact whose unchanged bytes the native must confirm."
+          },
+          "evidence_content_hash": {
+            "type": "string",
+            "description": "Hash of that exact immutable memory document."
+          },
+          "evidence_revision_id": {
+            "type": "string",
+            "description": "Current approved memory revision carrying the operational-gap evidence."
+          },
+          "expected_run_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Agent-run revision the recovery evidence describes.",
+            "minimum": 0
+          },
+          "expected_task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Task revision the recovery evidence describes.",
+            "minimum": 0
+          },
+          "report_checksum": {
+            "type": "string",
+            "description": "Approved report checksum embedded in that document."
+          },
+          "role_slot": {
+            "type": "string",
+            "description": "Exact role slot held by the addressed run."
+          }
+        },
+        "additionalProperties": false
       },
       "TurnFollowUpDto": {
         "type": "object",

@@ -104,6 +104,7 @@ pub mod quota;
 pub mod realm;
 pub mod receipt;
 pub mod repository;
+pub mod selector;
 pub mod spec;
 pub mod state;
 pub mod succession;

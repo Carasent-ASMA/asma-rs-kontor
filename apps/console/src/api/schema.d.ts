@@ -567,6 +567,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Persist and deliver or reconcile one exact server-owned challenge. */
+        post: operations["apply_turn_correlation_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview one new server-owned correlation challenge without runtime effects. */
+        post: operations["preview_turn_correlation_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle": {
         parameters: {
             query?: never;
@@ -8538,6 +8572,12 @@ export interface components {
             /** @description The artifacts the turn produced. */
             artifacts?: string[];
             /**
+             * @description A server-generated challenge MessageId, mutually exclusive with
+             *     `runtime_proof`. Kontor loads the message coordinate from its durable
+             *     challenge and selects the terminal response server-side.
+             */
+            correlation_challenge_message_id?: string | null;
+            /**
              * Format: int64
              * @description The task revision the caller believes is current.
              */
@@ -9500,6 +9540,85 @@ export interface components {
             version: number;
             /** @description The work profile revision the work it proposes would use. */
             work_profile: components["schemas"]["RevisionRefDto"];
+        };
+        /** @description Apply request bound to one exact no-write challenge preview. */
+        TurnCorrelationChallengeApplyRequest: {
+            /** @description The request whose server-owned boundary was previewed. */
+            challenge: components["schemas"]["TurnCorrelationChallengePreviewRequest"];
+            /** @description Hash returned by the preview. */
+            preview_hash: string;
+        };
+        /** @description Durable result of applying a server-owned correlation challenge. */
+        TurnCorrelationChallengeDto: {
+            /** @description Whether this call created the durable challenge intent. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description Unpredictable server MessageId frozen before native contact. */
+            message_id: string;
+            message_position?: null | components["schemas"]["TurnTimelinePositionDto"];
+            /** @description The no-write plan this application consumed. */
+            preview: components["schemas"]["TurnCorrelationChallengePreviewDto"];
+            /** @description `prepared`, `dispatching`, `acknowledged`, or `settled`. */
+            state: string;
+        };
+        /** @description Exact no-write plan for creating one future correlation point. */
+        TurnCorrelationChallengePreviewDto: {
+            /** @description Existing agent-run identity retained by the plan. */
+            agent_run_id: string;
+            /** @description Verified artifact and approved evidence. */
+            artifact: string;
+            /** @description Canonical tail observed without writing to the runtime. */
+            boundary: components["schemas"]["TurnTimelinePositionDto"];
+            /** @description Hash of the exact approved evidence content. */
+            evidence_content_hash: string;
+            /** @description Approved immutable evidence revision. */
+            evidence_revision_id: string;
+            /** @description Always false: ambiguous historical turns are not backfilled. */
+            historical_backfill_supported: boolean;
+            /** @description Native session identity retained by the plan. */
+            native_id: string;
+            /** @description Hash binding every identity, revision, evidence fact and boundary. */
+            preview_hash: string;
+            /** @description Exact project/task/team/run/binding identities retained by the plan. */
+            project_id: string;
+            /** @description Realm that verified the plan. */
+            realm_id: string;
+            /** @description Approved operational-gap report checksum. */
+            report_checksum: string;
+            /** @description Exact issued runtime binding retained by the plan. */
+            runtime_binding_id: string;
+            /** @description Exact active topology SeatBinding retained by the plan. */
+            seat_binding_id: string;
+            /** @description Existing task retained by the plan. */
+            task_id: string;
+            /** @description Existing team-run identity retained by the plan. */
+            team_run_id: string;
+        };
+        /**
+         * @description Read-only request for a new server-owned correlation challenge.
+         *
+         *     Historical message and response coordinates are deliberately absent.
+         */
+        TurnCorrelationChallengePreviewRequest: {
+            /** @description Exact artifact whose unchanged bytes the native must confirm. */
+            artifact: string;
+            /** @description Hash of that exact immutable memory document. */
+            evidence_content_hash: string;
+            /** @description Current approved memory revision carrying the operational-gap evidence. */
+            evidence_revision_id: string;
+            /**
+             * Format: int64
+             * @description Agent-run revision the recovery evidence describes.
+             */
+            expected_run_revision: number;
+            /**
+             * Format: int64
+             * @description Task revision the recovery evidence describes.
+             */
+            expected_task_revision: number;
+            /** @description Approved report checksum embedded in that document. */
+            report_checksum: string;
+            /** @description Exact role slot held by the addressed run. */
+            role_slot: string;
         };
         /** @description One follow-up a settled turn derived. */
         TurnFollowUpDto: {
@@ -10973,6 +11092,122 @@ export interface operations {
             };
             /** @description The predecessor lacks the required terminal evidence */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_turn_correlation_challenge: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The exact persistent seat run */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TurnCorrelationChallengeApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnCorrelationChallengeDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The preview moved or the key names another challenge */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery is uncertain; replay may reconcile but never resend */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_turn_correlation_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The exact persistent seat run */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TurnCorrelationChallengePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnCorrelationChallengePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The identity, revision, binding, evidence, or native tail moved */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -888,6 +888,14 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::settle_turn),
             )
             .route(
+                "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview",
+                post(applications::preview_turn_correlation_challenge),
+            )
+            .route(
+                "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply",
+                post(applications::apply_turn_correlation_challenge),
+            )
+            .route(
                 "/v1/projects/{project_id}/agent-runs/{agent_run_id}/handoffs:attest-late",
                 post(applications::attest_late_handoff),
             )

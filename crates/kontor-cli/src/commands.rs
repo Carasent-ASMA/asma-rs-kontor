@@ -108,6 +108,8 @@ const fn value_name(ty: ArgType) -> &'static str {
             "N"
         }
         ArgType::Bool => "true|false",
+        ArgType::EpicSelector => "EPIC_UUID_OR_JIRA_KEY",
+        ArgType::TaskSelector => "TASK_UUID_OR_JIRA_KEY",
         ArgType::TextArray | ArgType::ObjectArray(_) => "JSON_ARRAY",
         ArgType::Json => "JSON",
         ArgType::Timestamp => "RFC3339",

@@ -61,8 +61,9 @@ use kontor_runtime::adapter::{
     ConsultationPermissionAck, ConsultationPermissionInspectRequest,
     ConsultationPermissionInspection, ConsultationPermissionResponseRequest,
     ConsultationRouteProvenance, ConsultationSeatRetireOutcome, ConsultationSeatRetireRequest,
-    ConsultationSessionReleaseRequest, HostedSeatClaimOutcome, HostedSeatClaimPredecessor,
-    HostedSeatClaimPreview, HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatInspection,
+    ConsultationSessionReleaseRequest, CorrelationChallengeAck, CorrelationChallengeBoundary,
+    HostedSeatClaimOutcome, HostedSeatClaimPredecessor, HostedSeatClaimPreview,
+    HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatInspection,
     HostedSeatLaunchRequest, HostedSeatMessageOutcome, HostedSeatMessageRequest,
     HostedSeatNativeState, HostedSeatRetireOutcome, HostedSeatRetireRequest,
     HostedSeatTitleConflict, LaunchOutcome, MessageAck, PermissionAck, PersistentSeatInspection,
@@ -88,14 +89,15 @@ use kontor_runtime::observation::{
 };
 use kontor_runtime::refusal::{RefusalProvenance, TransientRefusal};
 use kontor_runtime::request::{
-    AdoptRequest, CancelRequest, CompactRequest, CorrelationLabel, HistoryRequest, InspectRequest,
-    LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
+    AdoptRequest, CancelRequest, CompactRequest, CorrelationChallengeCompletionRequest,
+    CorrelationChallengeRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchRequest,
+    LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
     ReconcileSessionLabelsRequest, ReconciledSessionLabels, ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{
     Admission, EventSubject, HistoryCursor, HistoryPage, LiveSubscription, MessageLedger,
-    PermissionLedger, SessionEvent, TimelineBreak, TimelinePosition,
+    PermissionLedger, SessionEvent, SessionEventKind, TimelineBreak, TimelinePosition,
 };
 use kontor_runtime::workspace::{
     WorkspaceBinding, WorkspaceBindingSnapshot, WorkspaceCorrelationEvidence, WorkspaceLabel,
@@ -641,6 +643,28 @@ impl EpochRegistry {
         self.next = self.next.saturating_add(1);
         self.by_raw.insert(raw.to_owned(), self.next);
         self.next
+    }
+
+    /// Restore one exact mapping retained by a server-owned recovery record.
+    ///
+    /// Unlike `resolve`, this never chooses a number. Both sides were observed
+    /// before dispatch and are accepted only when they do not contradict an
+    /// existing forward or inverse mapping.
+    fn bind(&mut self, raw: &str, epoch: u64) -> RuntimeResult<()> {
+        if epoch == 0
+            || self.by_raw.get(raw).is_some_and(|known| *known != epoch)
+            || self
+                .by_raw
+                .iter()
+                .any(|(known_raw, known_epoch)| known_raw != raw && *known_epoch == epoch)
+        {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            });
+        }
+        self.by_raw.entry(raw.to_owned()).or_insert(epoch);
+        self.next = self.next.max(epoch);
+        Ok(())
     }
 
     /// The Kontor epoch for `raw`, without allocating.
@@ -3303,6 +3327,131 @@ impl PaseoAdapter {
         }
         Ok(found.map(|position| (position, hits)))
     }
+
+    /// Read the complete canonical suffix after one server-owned native epoch
+    /// anchor, preserving each raw entry beside its normalized position.
+    ///
+    /// This is reserved for correlation challenges because ordinary timeline
+    /// consumers must not receive message text. The text remains inside the
+    /// adapter and is compared only for exact equality with a frozen server
+    /// challenge or response.
+    async fn challenge_suffix(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        after: TimelinePosition,
+        native_epoch: &ExternalId,
+    ) -> RuntimeResult<Vec<(PaseoTimelineEntry, TimelinePosition)>> {
+        self.lock()
+            .epochs
+            .bind(native_epoch.as_str(), after.epoch)?;
+        let native_id = binding.identity().native_id.as_str();
+        let mut cursor = PaseoTimelineCursor {
+            epoch: native_epoch.as_str().to_owned(),
+            seq: after.sequence,
+        };
+        let mut found = Vec::new();
+        let mut complete = false;
+        for _ in 0..RECONCILE_PAGE_BUDGET {
+            let page = self
+                .fetch_canonical(
+                    native_id,
+                    PaseoDirection::After,
+                    Some(&cursor),
+                    100,
+                    PaseoProjection::Canonical,
+                )
+                .await?;
+            if page.epoch != native_epoch.as_str() {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::EpochChanged,
+                });
+            }
+            self.resolve_epoch(&page.epoch, Some(after.epoch))?;
+            let normalized = self.normalize_page(&page, after.epoch)?;
+            if normalized.len() != page.entries.len() {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::SequenceGap,
+                });
+            }
+            found.extend(
+                page.entries
+                    .iter()
+                    .cloned()
+                    .zip(normalized.iter().map(|event| event.position)),
+            );
+            if !page.has_newer {
+                complete = true;
+                break;
+            }
+            let Some(end) = page.end_cursor else {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::SequenceGap,
+                });
+            };
+            if end.epoch != native_epoch.as_str() || end.seq <= cursor.seq {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::SequenceGap,
+                });
+            }
+            cursor = end;
+        }
+        if !complete {
+            return Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "correlation-challenge history reached its safety limit; do not resend",
+            });
+        }
+        Ok(found)
+    }
+
+    async fn reconcile_correlation_challenge(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        request: &CorrelationChallengeRequest,
+    ) -> RuntimeResult<Option<CorrelationChallengeAck>> {
+        let suffix = self
+            .challenge_suffix(binding, request.after, &request.native_epoch)
+            .await?;
+        let wanted_id = request.message_id.to_string();
+        let mut exact = Vec::new();
+        for (entry, position) in suffix {
+            let carries_wanted_id = entry.item.client_message_id.as_deref() == Some(&wanted_id);
+            let carries_other_id = entry.item.client_message_id.is_some() && !carries_wanted_id;
+            let same_body = entry.item.text.as_deref() == Some(request.body.as_str());
+            let user_message = entry.item.item_type == "user_message";
+            if carries_wanted_id && (!user_message || !same_body) {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+            if user_message && same_body && !carries_other_id {
+                exact.push((
+                    position,
+                    parse_wire_timestamp("PaseoTimelineEntry.timestamp", &entry.timestamp)?,
+                ));
+            }
+        }
+        if exact.len() > 1 {
+            return Err(RuntimeError::DuplicateMessage {
+                rule: "the exact server correlation challenge appears more than once",
+            });
+        }
+        let Some((position, accepted_at)) = exact.first().copied() else {
+            return Ok(None);
+        };
+        let message = MessageAck {
+            message_id: request.message_id,
+            binding_id: binding.binding_id(),
+            position,
+            accepted_at,
+        };
+        self.record_delivery(
+            request.message_id,
+            request.body_hash(),
+            PaseoDelivery::Acknowledged(message.clone()),
+        );
+        Ok(Some(CorrelationChallengeAck {
+            message,
+            native_epoch: request.native_epoch.clone(),
+        }))
+    }
 }
 
 /// Everything a retitle decides before it renames anything.
@@ -4841,6 +4990,17 @@ impl PaseoAdapter {
         let mut title_conflicts = Vec::new();
         for agent in self.fetch_project_agents(&project, false).await? {
             if agent.id == claimant.id || predecessor_id == Some(agent.id.as_str()) {
+                continue;
+            }
+            // A visible seat title is unique inside the native container that
+            // hosts it, not across every task workspace in the Paseo project.
+            // Keep the project-wide census (it is also how a replay finds a
+            // released conflict), but discard sibling workspaces before either
+            // title ownership or cleanup-replay logic is evaluated. The
+            // claimant and any predecessor were already checked against this
+            // exact workspace/cwd above, so this only narrows the collision
+            // domain; it does not weaken either identity or ownership fencing.
+            if agent.workspace_id.as_deref() != Some(workspace_id) {
                 continue;
             }
             let title_collides = agent.title.as_deref() == Some(request.display_name.as_str());
@@ -6825,6 +6985,222 @@ impl RuntimeAdapter for PaseoAdapter {
                 })
             }
         }
+    }
+
+    async fn correlation_challenge_boundary(
+        &self,
+        snapshot: &RuntimeBindingSnapshot,
+    ) -> RuntimeResult<CorrelationChallengeBoundary> {
+        let binding = self.attested(snapshot)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::History,
+        )
+        .await?;
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&binding),
+                placement: None,
+                current_generation: Some(self.generation()),
+                demand: Some(LimitDemand::HistoryPage(1)),
+                context_policy: None,
+            },
+        )?;
+        let native_id = binding.identity().native_id.as_str();
+        let agent = self.fetch_agent(native_id).await?;
+        self.verify_seat_placement(&binding, &agent).await?;
+        let page = self
+            .fetch_canonical(
+                native_id,
+                PaseoDirection::Tail,
+                None,
+                1,
+                PaseoProjection::Canonical,
+            )
+            .await?;
+        if page.has_newer {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::SequenceGap,
+            });
+        }
+        let expected = self
+            .lock()
+            .cursors
+            .get(&binding.binding_id())
+            .map(|position| position.epoch);
+        let epoch = self.resolve_epoch(&page.epoch, expected)?;
+        let items = self.normalize_page(&page, epoch)?;
+        let position = items
+            .last()
+            .map_or_else(|| TimelinePosition::start_of(epoch), |event| event.position);
+        self.lock().cursors.insert(binding.binding_id(), position);
+        Ok(CorrelationChallengeBoundary {
+            position,
+            native_epoch: ExternalId::parse(&page.epoch)?,
+        })
+    }
+
+    async fn send_correlation_challenge(
+        &self,
+        request: &CorrelationChallengeRequest,
+    ) -> RuntimeResult<CorrelationChallengeAck> {
+        let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[
+                crate::wire::PASEO_PERMISSION_WORKSPACE_READ,
+                crate::wire::PASEO_PERMISSION_WORKSPACE_WRITE,
+            ],
+            RuntimeCapability::SendMessage,
+        )
+        .await?;
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::SendMessage,
+                autonomous: true,
+                account_pinned: false,
+                binding: Some(&binding),
+                placement: None,
+                current_generation: Some(self.generation()),
+                demand: Some(LimitDemand::MessageBytes(request.body.as_str().len() as u64)),
+                context_policy: None,
+            },
+        )?;
+        if let Some(acknowledgement) = self
+            .reconcile_correlation_challenge(&binding, request)
+            .await?
+        {
+            return Ok(acknowledgement);
+        }
+        if !request.may_dispatch {
+            return Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the durably claimed correlation challenge is not yet present; retry may reconcile but must not resend",
+            });
+        }
+
+        let native_id = binding.identity().native_id.as_str();
+        let fresh = self.fetch_agent(native_id).await?;
+        self.verify_seat_placement(&binding, &fresh).await?;
+        self.ensure_provider_available(&fresh.provider)?;
+        let rpc = PaseoRpc::send_message(
+            self.next_request_id(),
+            native_id,
+            &request.message_id.to_string(),
+            request.body.as_str(),
+        );
+        let sent = self.transport.request(&rpc).await;
+        if let Ok(frame) = sent {
+            let accepted: PaseoSendAccepted = frame.resolve(&rpc, "PaseoSendAccepted")?;
+            if accepted.agent_id != native_id || !accepted.accepted {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+        }
+        match self
+            .reconcile_correlation_challenge(&binding, request)
+            .await?
+        {
+            Some(acknowledgement) => Ok(acknowledgement),
+            None => Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the correlation challenge may have landed but exact canonical content does not confirm it; do not resend",
+            }),
+        }
+    }
+
+    async fn prove_correlation_challenge_completion(
+        &self,
+        request: &CorrelationChallengeCompletionRequest,
+    ) -> RuntimeResult<TimelinePosition> {
+        let binding = self.attested(&request.binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::History,
+        )
+        .await?;
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&binding),
+                placement: None,
+                current_generation: Some(self.generation()),
+                demand: Some(LimitDemand::HistoryPage(100)),
+                context_policy: None,
+            },
+        )?;
+        let native_id = binding.identity().native_id.as_str();
+        let agent = self.fetch_agent(native_id).await?;
+        self.verify_seat_placement(&binding, &agent).await?;
+        if agent.status != PaseoAgentStatus::Idle || !agent.pending_permissions.is_empty() {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the exact challenged session is not idle and permission-clear",
+            });
+        }
+        if request.message_position.sequence == 0
+            || request.after.epoch != request.message_position.epoch
+            || request.after.sequence >= request.message_position.sequence
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        let suffix = self
+            .challenge_suffix(&binding, request.after, &request.native_epoch)
+            .await?;
+        let mut message_matches = 0usize;
+        let mut challenge_body_positions = Vec::new();
+        let mut response_positions = Vec::new();
+        let mut last_content = None;
+        let wanted_id = request.message_id.to_string();
+        for (entry, position) in suffix {
+            let kind = crate::wire::classify_item(&entry.item.item_type);
+            if entry.item.item_type == "user_message"
+                && entry.item.text.as_deref() == Some(request.body.as_str())
+            {
+                challenge_body_positions.push(position);
+            }
+            if position == request.message_position
+                && entry.item.item_type == "user_message"
+                && entry.item.text.as_deref() == Some(request.body.as_str())
+                && entry
+                    .item
+                    .client_message_id
+                    .as_deref()
+                    .is_none_or(|id| id == wanted_id)
+            {
+                message_matches += 1;
+            }
+            if position.sequence > request.message_position.sequence
+                && entry.item.item_type == "assistant_message"
+                && entry.item.text.as_deref() == Some(request.expected_response.as_str())
+            {
+                response_positions.push(position);
+            }
+            if !matches!(kind, SessionEventKind::StateChange | SessionEventKind::Log) {
+                last_content = Some(position);
+            }
+        }
+        if challenge_body_positions.len() > 1 {
+            return Err(RuntimeError::DuplicateMessage {
+                rule: "the exact server correlation challenge body appears more than once after its boundary",
+            });
+        }
+        if message_matches != 1
+            || challenge_body_positions.first().copied() != Some(request.message_position)
+            || response_positions.len() != 1
+            || last_content != response_positions.first().copied()
+        {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the exact server correlation challenge has no unique terminal confirmation",
+            });
+        }
+        Ok(response_positions[0])
     }
 
     async fn cancel(&self, request: &CancelRequest) -> RuntimeResult<ControlPlaneObservation> {
