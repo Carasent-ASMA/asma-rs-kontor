@@ -35941,19 +35941,61 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         "same-route recovery replay emitted duplicate native effects"
     );
 
-    let message_id = kontor_runtime::request::MessageId::generate().to_string();
+    let message_key = "asma-8001-tpm-needs-human-lsa-handoff-r7-v1";
+    let message_id = kontor_runtime::request::MessageId::derive(message_key).to_string();
+    let calls_before_handoff = world.fake.calls().len();
     let handoff = Call::post(
         format!("/v1/projects/{project}/seat-bindings/{lsa_binding}/messages"),
         &serde_json::json!({"body": "Continue the bounded epic handoff."}),
     )
     .signed_as(world, "operator")
-    .with_key(&message_id)
+    .with_key(message_key)
     .send(world)
     .await;
     assert_eq!(handoff.status, 200, "{}", handoff.body);
     assert_eq!(handoff.json()["seat_binding_id"], lsa_binding);
     assert_eq!(handoff.json()["native_id"], lsa_native);
     assert_eq!(handoff.json()["message_id"], message_id);
+    let calls_after_handoff = world.fake.calls().len();
+    assert_eq!(calls_after_handoff, calls_before_handoff + 1);
+
+    let replayed_handoff = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{lsa_binding}/messages"),
+        &serde_json::json!({"body": "Continue the bounded epic handoff."}),
+    )
+    .signed_as(world, "operator")
+    .with_key(message_key)
+    .send(world)
+    .await;
+    assert_eq!(replayed_handoff.status, 200, "{}", replayed_handoff.body);
+    assert_eq!(replayed_handoff.json(), handoff.json());
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_after_handoff,
+        "replaying a prose idempotency key repeated the native handoff"
+    );
+
+    let invalid_handoff = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{lsa_binding}/messages"),
+        &serde_json::json!({"body": "This invalid key must not reach the seat."}),
+    )
+    .signed_as(world, "operator")
+    .with_key("x".repeat(257))
+    .send(world)
+    .await;
+    assert_eq!(invalid_handoff.status, 400, "{}", invalid_handoff.body);
+    assert_eq!(invalid_handoff.code(), "invalid_request");
+    assert_eq!(
+        invalid_handoff.json()["subject"],
+        "Idempotency-Key header",
+        "the refusal did not name the offending header: {}",
+        invalid_handoff.body
+    );
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_after_handoff,
+        "an invalid Idempotency-Key reached the runtime"
+    );
 
     // Promoting again returns the same epic rather than building a second.
     let again = Call::post(
