@@ -637,7 +637,7 @@ async fn message_idempotency(
     let replayed = first.status == 200 && repeat.status == 200 && first.json() == repeat.json();
     let conflicted = conflict.status == 409 && conflict.code() == "idempotency_conflict";
     let lost_then_replayed = lost.status == 503
-        && lost.code() == "unavailable"
+        && lost.code() == "delivery_unconfirmed"
         && recovered.status == 200
         && recovered.json()["value"]["message_id"] == json!(lost_key);
     // Five dispatches — two keys posted twice, plus the contradiction, which is
@@ -654,7 +654,7 @@ async fn message_idempotency(
              original acknowledgement — \
              same epoch, same sequence, same `accepted_at` — rather than a fresh one; the same key \
              with different content was refused 409 `idempotency_conflict`; and a send whose \
-             acknowledgement was lost after committing answered 503 `unavailable` and then \
+             acknowledgement was lost after committing answered 503 `delivery_unconfirmed` and then \
              replayed its original receipt on retry instead of sending a second message",
             &[artifact],
         );
