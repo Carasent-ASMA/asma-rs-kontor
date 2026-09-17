@@ -1853,7 +1853,10 @@ async fn a_non_loopback_bind_is_refused_and_leaves_nothing_behind() {
 
 #[tokio::test]
 async fn a_second_daemon_on_one_state_root_fails_and_two_roots_are_two_realms() {
-    let first = World::open().await;
+    // Both worlds are created here rather than cloned from the process template:
+    // the identities are what this test is about, and a clone shares the
+    // template's (see the harness on why a realm row cannot be re-identified).
+    let first = World::open_created_realm().await;
     let second = Daemon::start(
         DaemonConfig::at(first.directory.path()).with_port(0),
         RuntimeRegistry::new(),
@@ -1863,7 +1866,7 @@ async fn a_second_daemon_on_one_state_root_fails_and_two_roots_are_two_realms() 
         "one state root holds one daemon: the second must fail cleanly"
     );
 
-    let other = World::open().await;
+    let other = World::open_created_realm().await;
     assert_ne!(
         first.realm_id(),
         other.realm_id(),
@@ -3816,7 +3819,9 @@ async fn the_credential_file_is_owner_only() {
 #[tokio::test]
 async fn a_write_naming_another_realms_project_resolves_to_nothing() {
     let world = World::open().await;
-    let other = World::open().await;
+    // Created, not cloned: this test is about crossing an identity boundary, and
+    // worlds cloned from one template share the template's identity.
+    let other = World::open_created_realm().await;
 
     // The ids are real — they simply belong to a different database file, which
     // is the whole of the isolation boundary. The answer names *this* realm, so
@@ -3868,7 +3873,9 @@ async fn a_task_from_another_project_in_this_realm_does_not_resolve() {
 #[tokio::test]
 async fn a_cursor_from_another_realm_is_refused_typed_before_any_read() {
     let world = World::open().await;
-    let other = World::open().await;
+    // Created, not cloned, for the same reason as the cross-realm write above:
+    // the identity is the subject of the test.
+    let other = World::open_created_realm().await;
     let (run, _) = world.launch().await;
     observe(&world, run, 1, 1);
 
