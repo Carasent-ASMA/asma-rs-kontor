@@ -3644,7 +3644,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 )
             })
             .map(|event| event.position)
-            .last();
+            .next_back();
         if challenge_body_positions.len() > 1 {
             return Err(RuntimeError::DuplicateMessage {
                 rule: "the exact server correlation challenge body appears more than once after its boundary",

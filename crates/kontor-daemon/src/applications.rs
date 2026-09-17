@@ -16620,7 +16620,6 @@ impl Services {
     /// and expected response come from the immutable challenge row.
     async fn prove_challenged_turn(
         &self,
-        project_id: ProjectId,
         task: &kontor_core::repository::Task,
         run: &kontor_core::repository::AgentRun,
         binding: &RuntimeBinding,
@@ -16629,6 +16628,7 @@ impl Services {
         now: Timestamp,
     ) -> Result<RoleTurnRuntimeProof, ApiError> {
         let state = self.state()?;
+        let project_id = task.project_id;
         let message_id =
             MessageId::parse(challenge_message_id).map_err(|error| self.refuse_domain(&error))?;
         let external_message_id =
@@ -29345,16 +29345,8 @@ impl ApplicationOperations for Services {
         } else if let Some(challenge_message_id) =
             request.correlation_challenge_message_id.as_deref()
         {
-            self.prove_challenged_turn(
-                project_id,
-                &task,
-                &run,
-                binding,
-                challenge_message_id,
-                &artifacts,
-                now,
-            )
-            .await?
+            self.prove_challenged_turn(&task, &run, binding, challenge_message_id, &artifacts, now)
+                .await?
         } else {
             return Err(self.deny(
                 ApiErrorCode::RevisionConflict,
