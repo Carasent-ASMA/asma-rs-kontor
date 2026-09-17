@@ -821,6 +821,10 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::resume_admissions),
             )
             .route(
+                "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat",
+                post(applications::fill_team_run_seat),
+            )
+            .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/lifecycle",
                 post(applications::lifecycle),
             )

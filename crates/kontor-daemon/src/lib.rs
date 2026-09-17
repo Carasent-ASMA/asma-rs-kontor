@@ -108,16 +108,16 @@ pub const COMPLETION_SCAN_INTERVAL: Duration = Duration::from_secs(30);
 /// recomposing, is to read this whole struct out of the state root next to
 /// `runtimes.json`, not to spread ten numbers across the argument parser.
 pub const DEFAULT_CAPACITY: CapacityConfig = CapacityConfig {
-    global_max_in_flight: 16,
-    project_max_in_flight: 8,
-    mission_max_in_flight: 7,
+    global_max_in_flight: 24,
+    project_max_in_flight: 14,
+    mission_max_in_flight: 12,
     account_max_in_flight: 4,
     provider_max_in_flight: 4,
-    runtime_max_in_flight: 8,
+    runtime_max_in_flight: 14,
     adaptive: AdaptiveWindowConfig {
         initial: 4,
         floor: 1,
-        ceiling: 7,
+        ceiling: 12,
         growth_step: 1,
     },
     // No headroom policy by default: this constant exists to preserve what
@@ -1237,15 +1237,15 @@ mod tests {
     /// against, or a pass could admit work the mission budget then refuses.
     #[test]
     fn the_default_capacity_is_the_operational_set() {
-        assert_eq!(DEFAULT_CAPACITY.global_max_in_flight, 16);
-        assert_eq!(DEFAULT_CAPACITY.project_max_in_flight, 8);
-        assert_eq!(DEFAULT_CAPACITY.mission_max_in_flight, 7);
+        assert_eq!(DEFAULT_CAPACITY.global_max_in_flight, 24);
+        assert_eq!(DEFAULT_CAPACITY.project_max_in_flight, 14);
+        assert_eq!(DEFAULT_CAPACITY.mission_max_in_flight, 12);
         assert_eq!(DEFAULT_CAPACITY.account_max_in_flight, 4);
         assert_eq!(DEFAULT_CAPACITY.provider_max_in_flight, 4);
-        assert_eq!(DEFAULT_CAPACITY.runtime_max_in_flight, 8);
+        assert_eq!(DEFAULT_CAPACITY.runtime_max_in_flight, 14);
         assert_eq!(DEFAULT_CAPACITY.adaptive.initial, 4);
         assert_eq!(DEFAULT_CAPACITY.adaptive.floor, 1);
-        assert_eq!(DEFAULT_CAPACITY.adaptive.ceiling, 7);
+        assert_eq!(DEFAULT_CAPACITY.adaptive.ceiling, 12);
         assert_eq!(DEFAULT_CAPACITY.adaptive.growth_step, 1);
         const {
             assert!(

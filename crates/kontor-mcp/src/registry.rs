@@ -1767,6 +1767,47 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Resume exact incomplete admissions without recreating run identities. Partial teams may only adopt one explicitly named existing native; they never create a replacement.",
     },
     ToolSpec {
+        name: "kontor_team_run_seat_fill",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "team_run_id",
+                Place::Path,
+                ArgType::TeamRunId,
+                "The existing admitted TeamRun.",
+            ),
+            req(
+                "role_slot_id",
+                Place::Path,
+                ArgType::OpenKey,
+                "The slot declared by the frozen TeamRun snapshot.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_task_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The task revision observed before materialization.",
+            ),
+            req(
+                "reason",
+                Place::Body,
+                ArgType::Text,
+                "Why the operator is filling this owed slot.",
+            ),
+        ],
+        about: "Fill exactly one declared, unwaived slot inside an existing TeamRun when it is owed an undelivered handoff. Reuses the admitted placement and frozen model route; an already-bound slot is unchanged.",
+    },
+    ToolSpec {
         name: "kontor_lifecycle_transition",
         tier: CallerTier::Operator,
         method: Method::Post,

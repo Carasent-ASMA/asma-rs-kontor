@@ -122,6 +122,43 @@ impl MessageId {
         parse_kontor_uuid("MessageId", text).map(Self)
     }
 
+    /// Derive a stable identifier from a caller's idempotency key.
+    ///
+    /// Every Kontor write takes a caller-chosen `idempotency_key`, and the
+    /// documented vocabulary for one is any non-empty, trimmed, control-free
+    /// string. Pushing into a session is the single exception: the message id
+    /// *is* the idempotency record, so the route needed a `MessageId` and got
+    /// one by parsing the header — which silently required a UUIDv7 of a
+    /// caller that had no reason to supply one, and refused everyone else
+    /// through a message naming no header and no field.
+    ///
+    /// Deriving closes that gap without weakening the contract the id exists
+    /// for. The same key always yields the same identifier, so a retry is
+    /// still answered from the ledger rather than by repeating the effect,
+    /// and a key that already *is* a canonical `MessageId` keeps parsing to
+    /// itself — so callers who were passing one are unaffected.
+    ///
+    /// The result is not time-ordered, which a generated v7 is. Nothing reads
+    /// a message id as a clock: it is stored as text and compared for
+    /// equality, and this crate already ships a fixed-prefix deterministic v7
+    /// for tests that the parser accepts exactly like a live one.
+    #[must_use]
+    pub fn derive(key: &str) -> Self {
+        let digest = ContentHash::of(key.as_bytes());
+        let hex = digest.as_str().as_bytes();
+        let mut bytes = [0u8; 16];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            let hi = (hex[index * 2] as char).to_digit(16).unwrap_or(0) as u8;
+            let lo = (hex[index * 2 + 1] as char).to_digit(16).unwrap_or(0) as u8;
+            *byte = (hi << 4) | lo;
+        }
+        // Stamp version 7 and the RFC 4122 variant so the value is a UUID of
+        // the one version `parse` admits.
+        bytes[6] = (bytes[6] & 0x0f) | 0x70;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        Self(Uuid::from_bytes(bytes))
+    }
+
     /// Borrow the underlying UUID.
     #[must_use]
     pub const fn as_uuid(&self) -> &Uuid {
@@ -821,6 +858,41 @@ mod tests {
         let label = CorrelationLabel::for_run(run);
         let parsed = CorrelationLabel::parse(&label.to_string()).expect("a Kontor label parses");
         assert_eq!(parsed.agent_run_id(), run);
+    }
+
+    #[test]
+    fn a_derived_message_id_is_stable_and_parses_as_one() {
+        let derived = MessageId::derive("asma-8001-tpm-needs-human-lsa-handoff-r7-v1");
+        assert_eq!(
+            derived,
+            MessageId::derive("asma-8001-tpm-needs-human-lsa-handoff-r7-v1"),
+            "the same idempotency key must always answer with the same id"
+        );
+        assert_eq!(
+            MessageId::parse(&derived.to_string()).expect("a derived id is canonical"),
+            derived,
+            "a derived id must round-trip through the parser that guards the route"
+        );
+    }
+
+    #[test]
+    fn distinct_idempotency_keys_derive_distinct_message_ids() {
+        assert_ne!(
+            MessageId::derive("asma-8190-handoff-v1"),
+            MessageId::derive("asma-8190-handoff-v2"),
+            "a retry key and a new key must not collapse onto one message"
+        );
+    }
+
+    #[test]
+    fn a_key_that_is_already_a_message_id_parses_to_itself() {
+        let generated = MessageId::generate();
+        let text = generated.to_string();
+        assert_eq!(
+            MessageId::parse(&text).expect("a canonical v7 parses"),
+            generated,
+            "callers already passing a UUIDv7 keep the identifier they chose"
+        );
     }
 
     #[test]
