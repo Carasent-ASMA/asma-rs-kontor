@@ -49,7 +49,7 @@ use crate::wire::parse_wire_timestamp;
 use async_trait::async_trait;
 use kontor_core::compaction::CompactionReceipt;
 use kontor_core::id::{
-    AgentRunId, CanonicalDocument, ContentHash, ExternalId, ExternalName, RoleSlotId,
+    AgentRunId, BoundedText, CanonicalDocument, ContentHash, ExternalId, ExternalName, RoleSlotId,
     RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp, TopologyNodeId,
 };
 use kontor_core::repository::RuntimeBinding;
@@ -5015,6 +5015,7 @@ impl PaseoAdapter {
                     request.display_name.as_str(),
                     &labels,
                     request.prompt.as_str(),
+                    request.role_prompt.as_ref().map(BoundedText::as_str),
                     request.credential.expose_secret(),
                 )?;
                 let frame = self.transport.request(&creation).await?;

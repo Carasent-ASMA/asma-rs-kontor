@@ -1212,6 +1212,8 @@ impl PaseoRpc {
     /// `create_agent_request` for one persistent hosted leadership seat. The
     /// credential uses the same secret-only frame channel as consultation
     /// credentials, while the seat retains its supervised provider mode.
+    /// The durable persona uses Paseo's creation-only `config.systemPrompt`;
+    /// `initialPrompt` remains the first bounded handoff.
     #[allow(clippy::too_many_arguments)]
     pub fn hosted_seat_agent_create(
         request_id: String,
@@ -1221,10 +1223,11 @@ impl PaseoRpc {
         title: &str,
         labels: &BTreeMap<String, String>,
         prompt: &str,
+        role_prompt: Option<&str>,
         credential: &str,
     ) -> RuntimeResult<Self> {
         let mode = paseo_mode(model_rung.provider.0.as_str(), SeatAutonomy::Supervised)?;
-        Self::scoped_seat_agent_create(
+        let mut request = Self::scoped_seat_agent_create(
             request_id,
             workspace_id,
             canonical_cwd,
@@ -1234,7 +1237,11 @@ impl PaseoRpc {
             prompt,
             credential,
             mode,
-        )
+        )?;
+        if let Some(role_prompt) = role_prompt {
+            request.message["config"]["systemPrompt"] = serde_json::json!(role_prompt);
+        }
+        Ok(request)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2567,6 +2574,7 @@ mod tests {
             "LSA",
             &labels(),
             "continue governed leadership",
+            None,
             "leadership-seat-secret",
         )
         .expect("a hosted Claude account route");
@@ -3095,6 +3103,7 @@ mod tests {
             "Lead",
             &labels,
             "go",
+            None,
             "secret",
         )
         .expect("the evidenced create builds");

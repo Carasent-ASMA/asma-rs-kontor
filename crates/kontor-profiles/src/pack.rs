@@ -23,9 +23,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use kontor_core::consultation::CommitteeTemplateSpec;
 use kontor_core::id::TeamRunId;
 use kontor_core::id::{
-    ArtifactKey, CanonicalDocument, ContentHash, ExternalName, GateKey, PhaseKey, RoleCode,
-    RoleKey, SchemaVersion, SkillKey, SpecVersion, TeamTemplateId, Timestamp, TopologyKindKey,
-    WorkProfileKey, validate_open_key,
+    ArtifactKey, BoundedText, CanonicalDocument, ContentHash, ExternalName, GateKey, PhaseKey,
+    RoleCode, RoleKey, SchemaVersion, SkillKey, SpecVersion, TeamTemplateId, Timestamp,
+    TopologyKindKey, WorkProfileKey, validate_open_key,
 };
 use kontor_core::spec::{
     PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec,
@@ -285,6 +285,15 @@ impl OperationalDelivery {
     }
 }
 
+/// One standard role's launch-time system prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RolePrompt {
+    /// The standard catalog role this text is the persona of.
+    pub role_code: RoleCode,
+    /// The system prompt delivered when a seat in that role is created.
+    pub prompt: BoundedText,
+}
+
 /// The Operational domain data bundled independently of Foundation profiles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationalDomainPack {
@@ -298,6 +307,13 @@ pub struct OperationalDomainPack {
     pub role_catalogs: Vec<RoleCatalogRevision>,
     /// How delivery work is placed in the topology this data declares.
     pub delivery: OperationalDelivery,
+    /// The launch-time system prompt each standard role is opened under.
+    ///
+    /// Optional and sparse on purpose: a role with no entry is launched with no
+    /// system prompt, exactly as every role was before this table existed, so
+    /// adding one role's persona says nothing about any other role's.
+    #[serde(default)]
+    pub role_prompts: Vec<RolePrompt>,
 }
 
 impl OperationalDomainPack {
@@ -391,7 +407,37 @@ impl OperationalDomainPack {
                 ));
             }
         }
+        let mut prompted = BTreeSet::new();
+        for role_prompt in &self.role_prompts {
+            if catalog.role(&role_prompt.role_code).is_none() {
+                return Err(DomainError::invalid(
+                    "OperationalDomainPack",
+                    "a role prompt names a role code the catalog does not declare",
+                ));
+            }
+            if role_prompt.prompt.as_str().trim().is_empty() {
+                return Err(DomainError::invalid(
+                    "OperationalDomainPack",
+                    "a role prompt carries no text",
+                ));
+            }
+            if !prompted.insert(&role_prompt.role_code) {
+                return Err(DomainError::invalid(
+                    "OperationalDomainPack",
+                    "declares two prompts for one role code",
+                ));
+            }
+        }
         Ok(())
+    }
+
+    /// The system prompt one standard role is opened under, if configured.
+    #[must_use]
+    pub fn role_prompt(&self, role_code: &RoleCode) -> Option<&BoundedText> {
+        self.role_prompts
+            .iter()
+            .find(|entry| &entry.role_code == role_code)
+            .map(|entry| &entry.prompt)
     }
 }
 
