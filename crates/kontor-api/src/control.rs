@@ -396,7 +396,14 @@ pub fn idempotency_key(state: &ApiState, headers: &HeaderMap) -> Result<Idempote
                 "every mutation must carry an Idempotency-Key header",
             )
         })?;
-    IdempotencyKey::parse(value).map_err(|error| ApiError::from_domain(state.realm_id(), &error))
+    IdempotencyKey::parse(value).map_err(|_| {
+        state
+            .refuse(
+                ApiErrorCode::InvalidRequest,
+                "the Idempotency-Key header is invalid",
+            )
+            .about("Idempotency-Key header")
+    })
 }
 
 /// Parse a caller-supplied identifier.
