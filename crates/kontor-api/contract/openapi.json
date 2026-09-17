@@ -12108,6 +12108,13 @@
             "type": "string",
             "description": "The account profile that granted it."
           },
+          "lift_condition": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What would end this hold, beside the prose that says why it exists.\n\n`None` on a live grant, which has no terms left to meet, and on the\nnarrow arm and disarm answers that do not consult the ledger. A hold\nread back from its epic always states it, because \"why work is held\" and\n\"what would release it\" are different questions and only the second one\ncan be acted on."
+          },
           "max_concurrency": {
             "type": "integer",
             "format": "int32",
@@ -16845,12 +16852,17 @@
           "scope",
           "state",
           "held_by",
-          "reason"
+          "reason",
+          "lift_condition"
         ],
         "properties": {
           "held_by": {
             "type": "string",
-            "description": "The account profile that will record the hold."
+            "description": "The account profile that will record the hold. Its owner."
+          },
+          "lift_condition": {
+            "type": "string",
+            "description": "The machine-checkable condition apply will record, resolved — so a\ncaller that named none sees `manual` here rather than an absence it has\nto interpret."
           },
           "reason": {
             "type": "string",
@@ -16876,7 +16888,14 @@
         "properties": {
           "held_by": {
             "type": "string",
-            "description": "The account profile recording the kickoff hold."
+            "description": "The account profile recording the kickoff hold. Its owner."
+          },
+          "lift_condition": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What would end the hold, as something Kontor can evaluate.\n\n`reason` is prose: it reads well and decides nothing, so before this\nfield the only thing that ever lifted a hold was a human calling\n`execution-arm`, and an epic whose stated condition had been true for\ndays sat idle because nobody was asked to look.\n\nAbsent means [`HoldLiftCondition::Manual`], which is what every hold\nrecorded before this field existed actually meant. A caller that says\nnothing gets exactly the behaviour it already had."
           },
           "reason": {
             "type": "string",

@@ -177,6 +177,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "runtime_reconciliation_members",
     "runtime_reconciliation_results",
     "runtime_replay_consumers",
+    "runtime_timeline_epochs",
     "schedule_overrides",
     "scheduler_admission_events",
     "source_events",

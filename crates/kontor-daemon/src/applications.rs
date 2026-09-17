@@ -6665,6 +6665,8 @@ impl Services {
             staffed_seats: staffed,
             completes_with,
         })
+    }
+
     /// Whether one hold's recorded condition is now true.
     ///
     /// Every arm reads only Kontor's own durable state — no runtime call, no
