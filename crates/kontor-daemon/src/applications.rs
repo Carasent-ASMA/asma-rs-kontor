@@ -1369,10 +1369,11 @@ impl Services {
     /// actually been authored again.
     ///
     /// Releasing it takes one role turn that is *all* of: settled strictly after
-    /// the route, on this task's preserved active TeamRun, by the role the
-    /// pinned profile puts on the edge out of the rejection target, carrying
-    /// every artifact that phase requires. A reviewer's turn, an empty turn, a
-    /// turn on another run and a turn that produced none of the required
+    /// the route, on this task's preserved active TeamRun, from a slot that run's
+    /// pinned team maps to the role the profile puts on the edge into the
+    /// rejection target, carrying every artifact that phase requires. A
+    /// reviewer's turn, an empty turn, a turn on another run, a turn from a slot
+    /// filling some other role and a turn that produced none of the required
     /// artifacts each fail at least one of those and leave the fence closed.
     fn rejection_fence_holds(
         &self,
@@ -1427,6 +1428,52 @@ impl Services {
         // reusable, which is precisely the state a recovered rejection is found
         // in and a new bounded turn is handed into.
         let preserved_run = route.team_run_id;
+        // How that run's pinned team names its seats.
+        //
+        // `handoff_role` is a *logical role* -- `fleet-implementer` -- while a
+        // settled turn carries a *slot id* -- `implement` -- because a slot is
+        // what a run's role column stores. Only the team document relates the
+        // two, so the mapping is read from the preserved run's frozen
+        // definition. Comparing the slot's own text against the role instead
+        // happens to work for a team that names both the same and silently
+        // fences shut every team that does not, which is the whole of the
+        // defect this resolution exists to close.
+        //
+        // Taken from the route's own run rather than the task's current one or
+        // the template as it stands now: a mapping that could be edited after
+        // the fact would let a later change decide whether a past rejection
+        // releases.
+        //
+        // Resolved only when a role is actually required. An entry phase names
+        // nobody, and a fence that rests on freshness, run and artifacts alone
+        // must not start depending on a team document it never consults.
+        let pinned_roles = if handoff_role.is_some() {
+            let run = state
+                .with_store(|store| store.get_team_run(project_id, preserved_run))
+                .map_err(|error| self.refuse(&error))?;
+            match run.map(|run| run.snapshot.slot_role_assignments()) {
+                Some(Ok(assignments)) => Some(assignments),
+                // Fail closed, and say so. A route whose run is gone, or whose
+                // frozen team cannot be read unambiguously, cannot prove *any*
+                // turn was authored by the role the rework needs -- so no turn
+                // releases it. Resolving the ambiguity in the rework's favour
+                // would hand a rejected phase back its own rejected evidence,
+                // which is the one outcome this fence exists to prevent.
+                other => {
+                    tracing::warn!(
+                        task_id = %workflow.task_id,
+                        workflow_id = %workflow.id,
+                        team_run_id = %preserved_run,
+                        detail = ?other.map(Result::err),
+                        "a rejection fence holds because the route-time team run \
+                         resolves no slot-to-role mapping"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let released = state
             .with_store(|store| store.list_settled_turns(project_id, workflow.task_id))
             .map_err(|error| self.refuse(&error))?
@@ -1434,9 +1481,12 @@ impl Services {
             .any(|turn| {
                 turn.settled_at > route.routed_at
                     && turn.team_run_id == preserved_run
-                    && handoff_role
-                        .as_ref()
-                        .is_none_or(|role| turn.role_slot_id.as_role_key() == role)
+                    && handoff_role.as_ref().is_none_or(|role| {
+                        pinned_roles
+                            .as_ref()
+                            .and_then(|assignments| assignments.get(&turn.role_slot_id))
+                            .is_some_and(|slot_role| slot_role == role)
+                    })
                     && required
                         .iter()
                         .all(|artifact| turn.artifacts.contains(artifact))
