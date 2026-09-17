@@ -577,7 +577,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // occupancy binds, so a created native whose acknowledgement was lost is
     // never left with no durable statement of what it was launched under
     // (both ASMA-8193).
-    assert_eq!(SCHEMA_VERSION, 103);
+    // v104 closes the other half of that immutability: the intent is append-only,
+    // because deleting one and inserting it again lands a different autonomy on
+    // the same occupancy generation without ever performing an update.
+    assert_eq!(SCHEMA_VERSION, 104);
 }
 
 #[test]

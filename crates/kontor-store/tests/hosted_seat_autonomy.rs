@@ -777,3 +777,97 @@ fn the_schema_refuses_to_rewrite_a_recorded_decision() {
         "the schema itself refuses it: {refusal:?}"
     );
 }
+
+/// The gate's sequence-2 blocker: `BEFORE UPDATE` is only half of immutability.
+///
+/// The row's identity is exactly (project_id, seat_binding_id,
+/// occupancy_generation), so deleting one and inserting it again is a pair of
+/// perfectly legal statements that lands a *different* authority on the same
+/// occupancy generation without ever performing an update. v103's trigger never
+/// fires, and the repository's `prepare` guard cannot help either -- it refuses
+/// a second authority only for a generation it can still see, and the delete
+/// presents an empty slot.
+///
+/// Written against the connection rather than through the repository on
+/// purpose. The point is that the *schema* refuses it, so no future caller can
+/// reach the substitution by going around `prepare`.
+#[test]
+fn a_recorded_launch_intent_cannot_be_deleted() {
+    let fixture = Fixture::build();
+    let seat = fixture.seat("LSA", "epic.lsa");
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&intent(&fixture, seat, SeatAutonomy::Supervised))
+        .expect("the intent is recorded before the native call");
+
+    let connection = Connection::open(&fixture.db_path).expect("a second connection opens");
+    let refusal = connection
+        .execute(
+            "DELETE FROM hosted_topology_seat_launch_intents WHERE seat_binding_id = ?1",
+            [seat.to_string()],
+        )
+        .expect_err("a recorded launch intent is append-only");
+
+    assert!(
+        refusal.to_string().contains("append-only"),
+        "the schema itself refuses the removal: {refusal:?}"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+            .expect("the intent reads")
+            .expect("the intent is still there")
+            .autonomy,
+        SeatAutonomy::Supervised,
+        "the decision survives the attempt to remove it"
+    );
+}
+
+/// The substitution the delete was a step towards, attempted end to end.
+///
+/// A caller that cannot update the authority and cannot remove the row has no
+/// third way to restate what one occupancy generation was launched under.
+#[test]
+fn delete_and_reinsert_cannot_restate_a_generations_authority() {
+    let fixture = Fixture::build();
+    let seat = fixture.seat("LSA", "epic.lsa");
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&intent(&fixture, seat, SeatAutonomy::Supervised))
+        .expect("the intent is recorded");
+
+    let mut connection = Connection::open(&fixture.db_path).expect("a second connection opens");
+    let transaction = connection.transaction().expect("a transaction begins");
+    let substitution = transaction
+        .execute(
+            "DELETE FROM hosted_topology_seat_launch_intents WHERE seat_binding_id = ?1",
+            [seat.to_string()],
+        )
+        .and_then(|_| {
+            transaction.execute(
+                "INSERT INTO hosted_topology_seat_launch_intents
+                     (project_id, seat_binding_id, occupancy_generation, autonomy,
+                      model_rung, state, observed_native_id, prepared_at, installed_at)
+                 VALUES (?1, ?2, 1, 'bounded', '{\"provider\":\"codex\"}',
+                         'prepared', NULL, '2026-09-17T09:00:00Z', NULL)",
+                rusqlite::params![fixture.project_id.to_string(), seat.to_string()],
+            )
+        });
+    assert!(
+        substitution.is_err(),
+        "delete-then-reinsert substituted a wider authority for the same generation"
+    );
+    drop(transaction);
+
+    assert_eq!(
+        fixture
+            .store
+            .get_hosted_seat_launch_intent(fixture.project_id, seat, 1)
+            .expect("the intent reads")
+            .expect("the intent is still there")
+            .autonomy,
+        SeatAutonomy::Supervised,
+        "the authority the native was actually created under is what remains"
+    );
+}
