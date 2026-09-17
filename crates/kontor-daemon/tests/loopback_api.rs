@@ -3235,20 +3235,38 @@ async fn the_same_key_with_different_content_is_an_idempotency_conflict() {
 }
 
 #[tokio::test]
-async fn a_session_key_must_be_a_stable_client_message_id() {
+async fn a_session_key_uses_the_standard_stable_idempotency_vocabulary() {
     let world = World::open().await;
     world.script(HISTORY_LIVE);
     let (run, _) = world.launch().await;
-    let answer = Call::post(
+    let key = "not-a-message-id";
+    let expected = kontor_runtime::request::MessageId::derive(key).to_string();
+    let first = Call::post(
         format!("/v1/sessions/{run}/messages"),
         &serde_json::json!({"body": "hello"}),
     )
     .signed_as(&world, "operator")
-    .with_key("not-a-message-id")
+    .with_key(key)
     .send(&world)
     .await;
-    assert_eq!(answer.status, 400);
-    assert_eq!(answer.code(), "invalid_request");
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(first.json()["value"]["message_id"], expected);
+
+    let replayed = Call::post(
+        format!("/v1/sessions/{run}/messages"),
+        &serde_json::json!({"body": "hello"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(key)
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["value"]["message_id"], expected);
+    assert_eq!(
+        timeline_message_count(&world, &run, &expected).await,
+        1,
+        "an ordinary stable key derives one message identity across retries",
+    );
 }
 
 #[tokio::test]
