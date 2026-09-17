@@ -483,3 +483,54 @@ The documented count moves by two against a registry of one because the
 regenerated contract also documents master's `fill_team_run_seat` (#225), served
 but never written into the document and with no MCP tool. That gap is master's;
 it is named in the assertion rather than hidden by a matching number.
+
+## High-audit-gate P1 — duplicate detection across the resume cursor
+
+Gate receipt `01a0ae13-8c9f-70d3-a868-b93a9f8fc883`: **REJECTED**, and correctly.
+
+`ObserveQuery::after` let the scan start late, and the duplicate ledger was
+built only from what that scan walked. A message id whose first occurrence sat
+in the skipped prefix was therefore counted once, not twice, and reported as a
+clean current turn.
+
+Nothing downstream recovered it, which is what made this a P1 rather than a
+cosmetic gap:
+
+* `prove_current_turn` begins its scan **immediately before** the claimed
+  message position — deliberately, so a long-lived seat is readable at all — so
+  it sees the same single occurrence;
+* the store's single-use constraint refuses an id that has already **settled**,
+  not one that has already **appeared**.
+
+An id delivered twice could be observed clean and then settled.
+
+### Fix — the observation seam only
+
+`prefix_occurrences` reads the window the main scan skipped, over the same
+canonical path, counting exactly one id. It is not a second verifier: it decides
+nothing and returns a count the caller refuses on. `kontor_turn_settle` is
+untouched and remains the sole settlement authority; no invariant is relaxed.
+
+It fails closed. A prefix that cannot be read to the cursor inside the page
+budget leaves uniqueness unproven, and unproven uniqueness is refused rather
+than reported as a clean turn.
+
+### Regression and mutation
+
+`observing_refuses_a_duplicate_that_straddles_the_resume_cursor` places the first
+occurrence of M early, a valid anchor strictly after it, and the repeat of M
+after that anchor. Observation must refuse with the divergence rule; a control
+read without the cursor refuses too, so the cursor is not the only path that
+catches it.
+
+Mutant **O5** scopes detection back to the suffix. The regression kills it, and
+the red output is the defect verbatim — `200` reporting the duplicated id at
+`1:17` with a response at `1:18`, exactly the tuple that would then have been
+settled.
+
+O3 was retargeted in the same pass: the fix rewrote the line its anchor matched,
+so its first "pass" was a stale mutant that never applied. Retargeted at
+`if occurrences > 1`, it is killed.
+
+All eight mutants killed on the final tree: O1, O2, O3, O4, O5 (observation) and
+M2, M3, M5 (settlement guard).

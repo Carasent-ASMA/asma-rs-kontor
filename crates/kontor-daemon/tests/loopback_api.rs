@@ -23219,6 +23219,97 @@ async fn observing_a_current_turn_fails_closed_on_every_unreadable_shape() {
     assert_eq!(other_epoch.code(), "timeline_refetch_required");
 }
 
+/// A duplicate that straddles the `after` cursor is still a duplicate.
+///
+/// The P1 the audit found. `after` used to scope duplicate tracking to the
+/// suffix, so a first occurrence sitting in the skipped prefix was simply not
+/// counted — and nothing downstream recovers it. Settlement's own scan begins
+/// immediately before the occurrence it is handed, so it sees one too, and the
+/// store refuses an id that already *settled*, not one that already *appeared*.
+/// An id delivered twice could therefore be observed clean and then settled.
+#[tokio::test]
+async fn observing_refuses_a_duplicate_that_straddles_the_resume_cursor() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+
+    // First occurrence of M, deliberately early.
+    let duplicated = kontor_runtime::request::MessageId::generate();
+    let (first_at, _) = world
+        .fake
+        .observe_turn_completion(&held, duplicated, kontor_api::now())
+        .expect("the first occurrence");
+
+    // Unrelated turns, so the cursor can sit strictly between the two.
+    for _ in 0..3 {
+        world
+            .fake
+            .observe_turn_completion(
+                &held,
+                kontor_runtime::request::MessageId::generate(),
+                kontor_api::now(),
+            )
+            .expect("an unrelated turn");
+    }
+    let boundary = world
+        .fake
+        .observe_turn_completion(
+            &held,
+            kontor_runtime::request::MessageId::generate(),
+            kontor_api::now(),
+        )
+        .expect("the turn the cursor will point past")
+        .1;
+
+    // Second occurrence of the same id, after where the caller will resume.
+    world
+        .fake
+        .observe_turn_completion(&held, duplicated, kontor_api::now())
+        .expect("the repeat");
+
+    // A perfectly valid anchor, strictly after the first occurrence.
+    let after = kontor_runtime::timeline::HistoryCursor::issue(snapshot.binding_id(), boundary);
+    assert!(
+        boundary.sequence > first_at.sequence,
+        "the cursor must sit after the first occurrence for this to be the reported hole"
+    );
+
+    let observed = Call::get(format!(
+        "/v1/sessions/{run}/turns/current?after={}",
+        after.as_str()
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(
+        observed.status, 409,
+        "a duplicate hidden in the skipped prefix must still refuse: {}",
+        observed.body
+    );
+    assert_eq!(observed.code(), "revision_conflict", "{}", observed.body);
+    assert_eq!(
+        observed.json()["rule"],
+        "this message id appears more than once in the session's canonical content",
+        "{}",
+        observed.body
+    );
+
+    // And the control: read without the cursor, the same divergence is refused,
+    // so the cursor is not the only path that catches it.
+    let whole = Call::get(format!("/v1/sessions/{run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(whole.status, 409, "{}", whole.body);
+    assert_eq!(whole.code(), "revision_conflict");
+}
+
 /// A long session is paged, not truncated, and the anchor it hands back is a
 /// resume point rather than decoration.
 #[tokio::test]

@@ -281,6 +281,67 @@ pub async fn timeline(
 /// told so and hands back the anchor it reached, which is what `after` is for.
 const OBSERVE_PAGE_BUDGET: usize = 64;
 
+/// How many times `wanted` appears at or before `through`, read from the origin.
+///
+/// Exists only because `after` lets the main scan start late. It is the *same*
+/// canonical read, over the window that scan skipped, counting one id — not a
+/// second opinion about what the current turn is. Nothing here decides anything:
+/// it returns a count, and the caller refuses on it.
+///
+/// Fails closed. A prefix that cannot be read to `through` inside the budget
+/// leaves uniqueness unproven, and an unproven uniqueness must not be reported
+/// as a clean turn.
+async fn prefix_occurrences(
+    session: &Session,
+    realm_id: RealmId,
+    page_size: u32,
+    through: TimelinePosition,
+    wanted: MessageId,
+) -> Result<usize, ApiError> {
+    let mut cursor = None;
+    let mut reader: Option<HistoryReader> = None;
+    let mut found = 0usize;
+    for _ in 0..OBSERVE_PAGE_BUDGET {
+        let mut page = session
+            .adapter
+            .history(&HistoryRequest {
+                binding: session.snapshot.clone(),
+                cursor,
+                page_size,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+        let reader = reader
+            .get_or_insert_with(|| HistoryReader::start(session.snapshot.binding_id(), page.epoch));
+        reader
+            .accept_page(&mut page)
+            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+        for event in &page.items {
+            if event.position.sequence > through.sequence {
+                break;
+            }
+            if let EventSubject::Message(id) = &event.subject
+                && *id == wanted
+            {
+                found += 1;
+            }
+        }
+        if reader.anchor().sequence >= through.sequence {
+            return Ok(found);
+        }
+        match page.next {
+            Some(next) => cursor = Some(next),
+            None => return Ok(found),
+        }
+    }
+    Err(ApiError::new(
+        realm_id,
+        ApiErrorCode::Unavailable,
+        "the prefix before the supplied cursor could not be read, so this message id's uniqueness is unproven",
+    )
+    .advising("observe again without `after` so the whole canonical history is read"))
+}
+
 /// Where an observation resumes from.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ObserveQuery {
@@ -446,7 +507,22 @@ pub async fn observe_current_turn(
     })?;
     // One id, one turn. The same id twice is divergence and is worth strictly
     // less than no answer: a caller cannot tell which of them it is settling.
-    if seen.get(&message_id).copied().unwrap_or_default() > 1 {
+    //
+    // `seen` only covers what this scan walked, so with an `after` cursor it
+    // covers only the suffix. That is not enough, and nothing downstream closes
+    // the gap: settlement's own scan starts immediately before the occurrence it
+    // is handed, and the store refuses an id that already *settled*, not one
+    // that merely already *appeared*. A first occurrence sitting in the skipped
+    // prefix would therefore be invisible to every layer. So when a cursor was
+    // used, the prefix is read for this exact id before the tuple is reported.
+    let occurrences = seen.get(&message_id).copied().unwrap_or_default()
+        + match resume {
+            None => 0,
+            Some(resume_at) => {
+                prefix_occurrences(&session, realm_id, page_size, resume_at, message_id).await?
+            }
+        };
+    if occurrences > 1 {
         return Err(ApiError::new(
             realm_id,
             ApiErrorCode::RevisionConflict,
