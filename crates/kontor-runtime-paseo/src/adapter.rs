@@ -4218,7 +4218,26 @@ impl PaseoAdapter {
     /// [`RuntimeError::LaunchNotAdmitted`] when the daemon does not advertise the
     /// feature, or when the provider cannot express the declared posture.
     fn opencode_delivery_gate(&self, request: &LaunchRequest) -> RuntimeResult<bool> {
-        let provider = request.model_rung().provider.0.as_str();
+        self.opencode_posture_gate(request.model_rung().provider.0.as_str(), request.autonomy())
+    }
+
+    /// The gate itself, on the two inputs any seat has.
+    ///
+    /// Extracted so that "a leadership seat proves its posture the way a
+    /// delivery seat does" is true by construction rather than by two copies of
+    /// the rule agreeing. It matters more here than anywhere else in the
+    /// posture code, because on OpenCode the *mode* cannot tell the two
+    /// authorities apart: `paseo_mode` answers `build` for both `Supervised`
+    /// and `Bounded`, so `verify_agent_route`'s mode comparison passes
+    /// identically either way. The whole difference lives in the `permission`
+    /// block carried in `providerOptions` — which means an OpenCode seat's
+    /// autonomy is only ever proved by the daemon acknowledging it applied that
+    /// block, and a launch that skips this gate proves nothing at all.
+    ///
+    /// # Errors
+    /// [`RuntimeError::LaunchNotAdmitted`] when the daemon does not advertise
+    /// the feature, or when the provider cannot express the declared posture.
+    fn opencode_posture_gate(&self, provider: &str, autonomy: SeatAutonomy) -> RuntimeResult<bool> {
         if crate::client::built_in_provider(provider) != "opencode" {
             return Ok(false);
         }
@@ -4235,7 +4254,7 @@ impl PaseoAdapter {
         // And the provider must be able to express the declared posture at all.
         // The refusal is `paseo_mode`'s own, so an advisory seat on a provider
         // with no contained mode is refused here rather than at the wire.
-        crate::posture::render_posture(provider, request.autonomy(), &[])?;
+        crate::posture::render_posture(provider, autonomy, &[])?;
         Ok(true)
     }
 
@@ -5146,6 +5165,14 @@ impl PaseoAdapter {
         let effective_scope = self.effective_scope(&request.scope)?;
         let project = self.require_project_for(&effective_scope)?;
         let generation = self.generation();
+        // The same gate a delivery seat passes, before any native effect. On
+        // OpenCode the mode proves nothing about autonomy -- `Supervised` and
+        // `Bounded` both render `build` -- so a leadership seat launched on a
+        // daemon that cannot apply `providerOptions` would carry no provable
+        // authority and no destructive floor while still reading back as
+        // agreeing. Refused here, where refusing is free.
+        let opencode_leadership =
+            self.opencode_posture_gate(request.model_rung.provider.0.as_str(), request.autonomy)?;
 
         request.container.ensure_correlated()?;
         request.container.ensure_generation(generation)?;
@@ -5277,6 +5304,21 @@ impl PaseoAdapter {
         // makes the pair evidence: a seat that came back in another mode fails
         // correlation instead of quietly running under it.
         Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
+        // And on OpenCode the mode is not the evidence. The advertised feature
+        // said the daemon *can* apply this seat's typed providerOptions; only
+        // this per-agent acknowledgement says it *did*, and the permission block
+        // it carries is the sole thing separating a bounded leadership seat from
+        // a supervised one -- and the sole place the destructive bash floor is
+        // written. An unacknowledged seat is refused rather than bound.
+        //
+        // Applied to an adopted native as well as a created one: a seat this
+        // adapter recovers from the census binds on exactly the evidence a fresh
+        // one does, or not at all.
+        if opencode_leadership && !agent.provider_options_applied() {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "the runtime did not report providerOptionsApplied for this hosted seat, so its posture is unproved",
+            });
+        }
         Ok(ConsultationLaunchOutcome {
             identity: self.identity(ExternalId::parse(&agent.id)?, generation),
             provider_session_id: agent

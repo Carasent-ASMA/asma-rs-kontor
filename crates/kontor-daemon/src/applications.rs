@@ -7186,6 +7186,65 @@ impl Services {
         })
     }
 
+    /// Reconcile the active occupancy's launch intent against the native it holds.
+    ///
+    /// The intent is written before the native call and consumed when the occupancy
+    /// commits, which leaves one window between those two writes: the route
+    /// replacement can commit the successor occupancy and then lose the process
+    /// before the intent is installed. A replay of that command finds the
+    /// replacement already done — `core_team_route_plan` reads the predecessor out
+    /// of history and reports the active native as the successor — so it correctly
+    /// launches nothing and creates no duplicate topology, and for exactly that
+    /// reason it used to skip the install that lived inside the launching branch.
+    /// The intent then stayed `prepared` forever while its occupancy was bound,
+    /// which is the one state the row is supposed to make impossible: `prepared`
+    /// means "a native may exist that nothing has claimed yet".
+    ///
+    /// Called once, after every path that settles a successor, so "the active
+    /// occupancy's intent is reconciled" holds by construction rather than because
+    /// several branches each remembered to do it. Idempotent: an already-installed
+    /// intent naming this native is unchanged, and a seat whose generation predates
+    /// the intent table simply has nothing to reconcile.
+    fn reconcile_hosted_seat_launch_intent(
+        &self,
+        state: &ApiState,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        occupancy: &StoredHostedTopologySeat,
+    ) -> Result<(), ApiError> {
+        let Some(generation) = state
+            .with_store(|store| {
+                store.hosted_topology_seat_occupancy_generation(project_id, seat_binding_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(());
+        };
+        let Some(intent) = state
+            .with_store(|store| {
+                store.get_hosted_seat_launch_intent(project_id, seat_binding_id, generation)
+            })
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(());
+        };
+        if intent.state == HostedSeatLaunchIntentState::Installed {
+            return Ok(());
+        }
+        state
+            .with_store(|store| {
+                store.install_hosted_seat_launch_intent(
+                    project_id,
+                    seat_binding_id,
+                    generation,
+                    &occupancy.native_identity.native_id,
+                    occupancy.observed_at,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
+    }
+
     async fn core_team_route_plan(
         &self,
         project_id: ProjectId,
@@ -22690,17 +22749,6 @@ impl ApplicationOperations for Services {
                 .map_err(|error| self.refuse(&error))?;
             state
                 .with_store(|store| {
-                    store.install_hosted_seat_launch_intent(
-                        project_id,
-                        plan.binding.id,
-                        successor_occupancy_generation,
-                        &successor.native_identity.native_id,
-                        successor.observed_at,
-                    )
-                })
-                .map_err(|error| self.refuse(&error))?;
-            state
-                .with_store(|store| {
                     store.observe_seat_binding(
                         project_id,
                         plan.binding.id,
@@ -22715,6 +22763,12 @@ impl ApplicationOperations for Services {
                 .map_err(|error| self.refuse(&error))?;
             successor
         };
+        // Every path above settles an active occupancy: a replacement this call
+        // launched, a replacement a lost process already committed, or an
+        // unchanged predecessor. All three must leave the intent reconciled, so
+        // the reconciliation lives here rather than inside the branch that
+        // happens to launch.
+        self.reconcile_hosted_seat_launch_intent(state, project_id, plan.binding.id, &successor)?;
         let receipt_id = self.record(
             key,
             project_id,

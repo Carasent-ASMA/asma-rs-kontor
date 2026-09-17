@@ -34529,6 +34529,218 @@ async fn partial_epic_admission_reuses_its_frozen_definition_after_default_chang
 /// acknowledgement is lost *after* the native is created, the plane default
 /// then moves, and the replay converges on the authority the native was
 /// actually created under, on the same native, without minting a second one.
+/// ASMA-8193 audit P1-2: a route replacement whose process died between
+/// committing the successor occupancy and installing its launch intent.
+///
+/// The intent is written before the native call and consumed when the occupancy
+/// commits, so those two writes bracket a window. A replay of the command finds
+/// the replacement already done -- `core_team_route_plan` reads the predecessor
+/// out of history and reports the active native as the successor -- and
+/// therefore correctly launches nothing and creates no duplicate topology. For
+/// exactly that reason it used to skip the install, which lived inside the
+/// branch that launches. The intent then stayed `prepared` for good while its
+/// occupancy was bound, which is the single state the row exists to make
+/// impossible: `prepared` means "a native may exist that nothing has claimed".
+///
+/// The crashed process is simulated through the same store calls it would have
+/// made -- prepare the successor's intent, commit the replacement -- and then
+/// the command is replayed through its real endpoint.
+#[tokio::test]
+async fn a_route_replacement_that_died_before_installing_its_intent_converges_on_replay() {
+    let composed = compose_realm("/tmp/kontor-route-intent-replay").await;
+    let world = &composed.world;
+    let project = ProjectId::parse(&composed.project).expect("project");
+    let epic = MiniProjectId::parse(&composed.epic).expect("epic");
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({"target": {"scope": "epic_control", "epic_id": epic}, "expected_revision": composed.project_revision}),
+    )
+    .signed_as(world, "operator")
+    .with_key("route-intent-materialize")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let launched = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "routes": [{"role_code": "LSA", "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}}],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("route-intent-hosted-launch")
+    .send(world)
+    .await;
+    assert_eq!(launched.status, 200, "{}", launched.body);
+
+    let control = world.daemon.state().with_store(|store| {
+        store
+            .list_topology_nodes(project, Some(epic))
+            .expect("nodes")
+            .into_iter()
+            .find(|node| node.kind.as_str() == "ECP")
+            .expect("the epic control plane")
+    });
+    let lsa = world.daemon.state().with_store(|store| {
+        store
+            .list_seat_bindings(project, control.id)
+            .expect("seats")
+            .into_iter()
+            .find(|seat| seat.role.role_code.as_str() == "LSA")
+            .expect("the LSA seat")
+            .id
+    });
+    let predecessor = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_hosted_topology_seat(project, lsa))
+        .expect("the occupancy reads")
+        .expect("the LSA occupancy is bound");
+
+    // The process that is about to die: it resolved the successor's authority,
+    // recorded the intent, launched, and committed the replacement.
+    let successor = kontor_core::repository::StoredHostedTopologySeat {
+        native_identity: NativeRuntimeIdentity {
+            runtime_kind: predecessor.native_identity.runtime_kind.clone(),
+            host: predecessor.native_identity.host.clone(),
+            generation: predecessor.native_identity.generation,
+            native_id: ExternalId::parse("lsa-successor-native").expect("a native id"),
+        },
+        observed_at: predecessor.observed_at,
+        ..predecessor.clone()
+    };
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.prepare_hosted_seat_launch_intent(
+                &kontor_core::repository::StoredHostedSeatLaunchIntent {
+                    project_id: project,
+                    seat_binding_id: lsa,
+                    occupancy_generation: 2,
+                    autonomy: successor.autonomy,
+                    model_rung: successor.model_rung.clone(),
+                    state: HostedSeatLaunchIntentState::Prepared,
+                    observed_native_id: None,
+                    prepared_at: successor.observed_at,
+                    installed_at: None,
+                },
+            )
+        })
+        .expect("the crashed process recorded its intent");
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.replace_hosted_topology_seat_route(
+                &predecessor,
+                &successor,
+                successor.observed_at,
+                "authorized Core Team provider/model route correction",
+            )
+        })
+        .expect("the crashed process committed the replacement");
+
+    // The window, asserted before the replay so the test cannot pass vacuously.
+    let stranded = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_hosted_seat_launch_intent(project, lsa, 2))
+        .expect("the intent reads")
+        .expect("the successor intent exists");
+    assert_eq!(
+        stranded.state,
+        HostedSeatLaunchIntentState::Prepared,
+        "this test is only meaningful while the successor intent is unreconciled"
+    );
+
+    // The replay, through the real endpoint, naming the predecessor the caller
+    // last read -- which is now in history.
+    let route_request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": lsa.to_string(),
+        "expected_native_id": predecessor.native_identity.native_id.as_str(),
+        "expected_generation": predecessor.native_identity.generation,
+        "desired_model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"},
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &route_request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+
+    let mut apply_body = route_request.clone();
+    apply_body["preview_hash"] = preview.json()["preview_hash"].clone();
+    let launches_before = world
+        .fake
+        .calls()
+        .iter()
+        .filter(|call| matches!(call, AdapterCall::LaunchHostedSeat(id) if *id == lsa))
+        .count();
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &apply_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("route-intent-replay")
+    .send(world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+
+    // Converged: the intent is reconciled against the native the occupancy
+    // already holds.
+    let reconciled = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_hosted_seat_launch_intent(project, lsa, 2))
+        .expect("the intent reads")
+        .expect("the successor intent is still there");
+    assert_eq!(
+        reconciled.state,
+        HostedSeatLaunchIntentState::Installed,
+        "the replay left the successor's launch intent unreconciled"
+    );
+    assert_eq!(
+        reconciled
+            .observed_native_id
+            .as_ref()
+            .map(ExternalId::as_str),
+        Some("lsa-successor-native"),
+        "the intent must name the native its occupancy actually holds"
+    );
+    assert_eq!(
+        reconciled.autonomy, successor.autonomy,
+        "reconciliation records the native and never restates the authority"
+    );
+
+    // And no duplicate topology: the replacement was already done, so the
+    // replay launches nothing and the occupancy still holds the same native.
+    let launches_after = world
+        .fake
+        .calls()
+        .iter()
+        .filter(|call| matches!(call, AdapterCall::LaunchHostedSeat(id) if *id == lsa))
+        .count();
+    assert_eq!(
+        launches_after, launches_before,
+        "the replay launched a second native for an occupancy that was already filled"
+    );
+    let active = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_hosted_topology_seat(project, lsa))
+        .expect("the occupancy reads")
+        .expect("the occupancy is bound");
+    assert_eq!(
+        active.native_identity.native_id.as_str(),
+        "lsa-successor-native",
+        "the replay moved the occupancy it was supposed to leave alone"
+    );
+}
+
 #[tokio::test]
 async fn a_lost_launch_acknowledgement_keeps_the_autonomy_its_native_was_created_under() {
     let composed = compose_realm("/tmp/kontor-hosted-lost-launch-ack").await;

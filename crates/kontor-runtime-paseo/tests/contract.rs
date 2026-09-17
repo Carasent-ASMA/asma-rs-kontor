@@ -10997,3 +10997,182 @@ async fn the_retitle_and_the_bind_path_agree_on_what_a_container_is_called() {
     );
     assert!(!preview.changed, "so there is nothing to repair");
 }
+
+/// One OpenCode leadership launch, with the daemon's per-agent acknowledgement
+/// and the advertised capability both under the caller's control.
+///
+/// `applied` is what the created agent reports for `providerOptionsApplied`:
+/// `Some(true)` is the only value a launch may bind on, `Some(false)` the
+/// daemon saying it did not apply the block, `None` a daemon that never answers.
+async fn opencode_leadership_launch(
+    autonomy: SeatAutonomy,
+    applied: Option<bool>,
+    capable: bool,
+) -> (
+    RuntimeResult<kontor_runtime::adapter::ConsultationLaunchOutcome>,
+    Vec<serde_json::Value>,
+) {
+    let seat_binding_id = SeatBindingId::generate();
+    let mut workspace = v(WORKSPACE_ROOT_LOCAL);
+    workspace["entries"][0]["name"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+    workspace["entries"][0]["title"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+
+    let mut agent = opencode_agent("unused", applied, false);
+    agent["agent"]["title"] = serde_json::json!("LSA · ASMA-7744");
+    agent["agent"]["labels"] = serde_json::json!({
+        "jira.epic": "ASMA-7744",
+        "kontor.project_id": MINI_PROJECT,
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+        "kontor.role": "lsa",
+        "kontor.role_slot_id": "lsa",
+        "kontor.workspace_id": WORKSPACE_ID,
+        "kontor.worktree": CWD,
+    });
+
+    let base = if capable {
+        opencode_capable_daemon()
+    } else {
+        // Same daemon, without the advertised feature.
+        daemon()
+    };
+    let recorded = base
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", workspace)
+        .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+        .answering_rpc(
+            "create_agent_request",
+            serde_json::json!({"status": "agent_created", "agent": {"id": AGENT_ID}}),
+        )
+        .answering_rpc("fetch_agent_request", agent);
+    let plane = Plane::fresh(recorded);
+    plane
+        .adapter
+        .prepare_project("cmd-hosted-opencode", &project_name())
+        .await
+        .expect("the epic project is prepared");
+    let container = plane
+        .adapter
+        .prepare_container(&ecp_request(node(NODE_A), bound_root(node(NODE_B))))
+        .await
+        .expect("the existing exact ECP is bound")
+        .snapshot;
+
+    let outcome = plane
+        .adapter
+        .launch_hosted_seat(&HostedSeatLaunchRequest {
+            seat_binding_id,
+            role_slot_id: slot("lsa"),
+            display_name: name("LSA · ASMA-7744"),
+            container,
+            cwd: root(),
+            scope: epic_execution_scope(),
+            prompt: text("continue epic leadership through Kontor"),
+            credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+                "kontor-seat-v2.test.3.redacted".to_owned(),
+            ),
+            fenced_predecessor_native_ids: Vec::new(),
+            model_rung: opencode_rung(),
+            autonomy,
+            context_policy: standard_context_policy(),
+            requested_at: at("2026-08-16T09:10:00Z"),
+        })
+        .await;
+    let creates = plane.daemon.sent_messages("create_agent_request");
+    (outcome, creates)
+}
+
+/// ASMA-8193 audit P1-1: an OpenCode leadership seat's autonomy is only ever
+/// proved by the permission block, never by the mode.
+///
+/// `paseo_mode` answers `build` for **both** `Supervised` and `Bounded` on
+/// OpenCode, so `verify_agent_route`'s mode comparison passes identically under
+/// either authority. The prior leadership test was Claude-only, where the modes
+/// differ (`auto` vs `bypassPermissions`), so it could not observe that — and a
+/// mutant that forced `SeatAutonomy::Supervised` on this path survived it.
+///
+/// This asserts the thing that actually differs: the `permission` block the
+/// create carries. A forced-`Supervised` mutant changes those entries and dies
+/// here.
+#[tokio::test]
+async fn an_opencode_leadership_launch_carries_the_permission_block_it_asked_for() {
+    let (outcome, creates) =
+        opencode_leadership_launch(SeatAutonomy::Bounded, Some(true), true).await;
+    outcome.expect("a bounded OpenCode leadership seat launches");
+    let [create] = creates.as_slice() else {
+        panic!("exactly one create was sent: {creates:?}")
+    };
+    let permission = &create["config"]["providerOptions"]["permission"];
+
+    let bounded = kontor_runtime_paseo::render_posture("opencode", SeatAutonomy::Bounded, &[])
+        .expect("opencode expresses bounded")
+        .permission
+        .expect("a bounded block");
+    let supervised =
+        kontor_runtime_paseo::render_posture("opencode", SeatAutonomy::Supervised, &[])
+            .expect("opencode expresses supervised")
+            .permission
+            .expect("a supervised block");
+    assert_ne!(
+        bounded, supervised,
+        "this test only means something because the two blocks differ"
+    );
+    assert_eq!(
+        permission, &bounded,
+        "the leadership seat was created under an authority other than the one it asked for"
+    );
+
+    // And the floor is inside that same block, on the authority that could
+    // otherwise have relaxed it.
+    for pattern in kontor_runtime_paseo::DESTRUCTIVE_BASH_DENIES {
+        assert_eq!(
+            permission["bash"][*pattern], "deny",
+            "a bounded OpenCode leadership seat must still refuse `{pattern}`"
+        );
+    }
+}
+
+/// The per-agent acknowledgement is what a leadership launch binds on.
+///
+/// A daemon that does not answer, or answers `false`, has not applied the block
+/// that carries both the authority and the floor. The seat is refused rather
+/// than bound, exactly as a delivery seat is.
+#[tokio::test]
+async fn an_opencode_leadership_seat_is_refused_when_its_posture_is_unproved() {
+    for applied in [None, Some(false)] {
+        let (outcome, creates) =
+            opencode_leadership_launch(SeatAutonomy::Bounded, applied, true).await;
+        assert!(
+            matches!(
+                outcome,
+                Err(RuntimeError::LaunchNotAdmitted { rule })
+                    if rule.contains("providerOptionsApplied")
+            ),
+            "an unacknowledged OpenCode leadership posture must not bind: {outcome:?}"
+        );
+        assert_eq!(
+            creates.len(),
+            1,
+            "the refusal must follow one create, never a second attempt"
+        );
+    }
+}
+
+/// A daemon that cannot apply the block is refused before any native effect.
+#[tokio::test]
+async fn an_opencode_leadership_launch_is_refused_with_no_native_effect() {
+    let (outcome, creates) =
+        opencode_leadership_launch(SeatAutonomy::Bounded, Some(true), false).await;
+    assert!(
+        matches!(
+            outcome,
+            Err(RuntimeError::LaunchNotAdmitted { rule })
+                if rule.contains("providerOptionsApplied")
+        ),
+        "an incapable daemon must be refused: {outcome:?}"
+    );
+    assert!(
+        creates.is_empty(),
+        "a refusal on the advertised capability must cost no native effect"
+    );
+}
