@@ -726,6 +726,14 @@ struct FakeState {
     /// Separate from the strict script queue so read-only proof calls may
     /// legitimately precede that send.
     lose_next_send_ack: bool,
+    /// Whether the next inspect should fail at the transport.
+    ///
+    /// Off the strict queue for the same reason as `lose_next_send_ack`, and a
+    /// sharper one: the readback that follows a delivery is reached *through*
+    /// that delivery, so a queued step naming the inspect would be refused by
+    /// the send it has to pass through first. The one sequence worth scripting
+    /// here is the one the queue cannot express.
+    fail_next_inspect: bool,
     /// Container retitles a runtime silently ignores once, so callers must
     /// reject the unchanged native readback instead of recording success.
     ignore_retitle_once: BTreeSet<TopologyNodeId>,
@@ -1210,6 +1218,7 @@ impl ScriptedFakeRuntime {
                 container_titles: BTreeMap::new(),
                 lose_retitle_ack_once: BTreeSet::new(),
                 lose_next_send_ack: false,
+                fail_next_inspect: false,
                 ignore_retitle_once: BTreeSet::new(),
                 task_title_scopes: BTreeMap::new(),
                 bindings: BTreeMap::new(),
@@ -1840,6 +1849,13 @@ impl ScriptedFakeRuntime {
     /// lost. Read-only calls before that send do not consume this hook.
     pub fn lose_next_send_ack(&self) {
         self.lock().lose_next_send_ack = true;
+    }
+
+    /// Fail the next inspect at the transport, leaving every earlier call
+    /// alone. This is how a *post-delivery readback* fault is described: the
+    /// send lands, and the observation that should follow it never answers.
+    pub fn fail_next_inspect(&self) {
+        self.lock().fail_next_inspect = true;
     }
 
     /// Every recorded event of the session behind `binding`.
@@ -3285,8 +3301,13 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         let lose_ack = matches!(step, Some(ScriptStep::LoseSendAck))
             || std::mem::take(&mut state.lose_next_send_ack);
         if lose_ack {
-            return Err(RuntimeError::Transport {
-                rule: "acknowledgement was lost after the message was committed",
+            // The message is in the session and the ledger above holds its
+            // acknowledgement: what was lost is the answer, not the effect.
+            // Reporting that as a bare transport fault would let the API tell
+            // its caller nothing was changed, which is false here and is the
+            // sentence that turns one instruction into two native turns.
+            return Err(RuntimeError::DeliveryConfirmationUnknown {
+                rule: "the acknowledgement was lost after the message was committed",
             });
         }
         Ok(acknowledgement)
@@ -3420,6 +3441,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 context_policy: None,
             },
         )?;
+        if std::mem::take(&mut state.fail_next_inspect) {
+            return Err(RuntimeError::Transport {
+                rule: "channel failed before the runtime answered",
+            });
+        }
         let step = state.take_step(
             RuntimeCapability::Inspect,
             RequestKey::Binding(request.binding.binding_id()),

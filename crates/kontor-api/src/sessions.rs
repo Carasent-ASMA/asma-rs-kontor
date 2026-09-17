@@ -434,6 +434,25 @@ pub async fn stream(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+/// Re-state a refusal that happened *after* the message was delivered.
+///
+/// The code is kept — whatever went wrong with the readback really did go
+/// wrong, and a caller's backoff for it is still right. What is replaced is the
+/// claim the caller would otherwise act on. An ordinary channel refusal advises
+/// "nothing was changed"; here the most important thing in the world did
+/// change, and a caller who resends under a fresh idempotency key puts a second
+/// copy of one instruction into a live seat's transcript.
+fn after_delivery(error: ApiError) -> ApiError {
+    ApiError::new(
+        error.realm_id,
+        error.code,
+        "the message was delivered and acknowledged, but the session readback that follows it did not answer",
+    )
+    .advising(
+        "replay this exact idempotency key: it returns the original acknowledgement and repairs the session projection. Never resend under a new one",
+    )
+}
+
 /// Deliver one message into a session.
 ///
 /// The `Idempotency-Key` *is* the stable client message id: it must parse as one,
@@ -501,6 +520,10 @@ pub async fn send_message(
     // together. A replay follows this same path, repairing a projection left
     // stale when an earlier acknowledgement or post-send inspect was lost.
     let reduced_at = now();
+    // Past this line the message is delivered and its acknowledgement is in
+    // hand. Everything that remains is *projection*, and a projection fault
+    // must never be reported as a failed delivery: the readback is how Kontor
+    // learns what the seat is now doing, not how the seat learns what to do.
     let observation = session
         .adapter
         .inspect(&InspectRequest {
@@ -508,13 +531,16 @@ pub async fn send_message(
             requested_at: reduced_at,
         })
         .await
-        .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
-    state.applications().persist_session_observation(
-        session.project_id,
-        session.agent_run_id,
-        &observation,
-        reduced_at,
-    )?;
+        .map_err(|error| after_delivery(ApiError::from_runtime(realm_id, &error)))?;
+    state
+        .applications()
+        .persist_session_observation(
+            session.project_id,
+            session.agent_run_id,
+            &observation,
+            reduced_at,
+        )
+        .map_err(after_delivery)?;
     Ok(Json(ReceiptEnvelope::new(
         realm_id,
         MessageAckDto::from(&acknowledged),
