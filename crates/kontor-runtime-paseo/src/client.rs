@@ -1212,6 +1212,8 @@ impl PaseoRpc {
     /// `create_agent_request` for one persistent hosted leadership seat. The
     /// credential uses the same secret-only frame channel as consultation
     /// credentials.
+    /// The durable persona uses Paseo's creation-only `config.systemPrompt`;
+    /// `initialPrompt` remains the first bounded handoff.
     ///
     /// The posture is *rendered*, not just spelled as a mode. Until ASMA-8193
     /// this called [`paseo_mode`] with a hardcoded
@@ -1233,6 +1235,7 @@ impl PaseoRpc {
         title: &str,
         labels: &BTreeMap<String, String>,
         prompt: &str,
+        role_prompt: Option<&str>,
         credential: &str,
         autonomy: SeatAutonomy,
     ) -> RuntimeResult<Self> {
@@ -1255,6 +1258,9 @@ impl PaseoRpc {
         if let Some(permission) = posture.permission {
             request.message["config"]["providerOptions"] =
                 serde_json::json!({ "permission": permission });
+        }
+        if let Some(role_prompt) = role_prompt {
+            request.message["config"]["systemPrompt"] = serde_json::json!(role_prompt);
         }
         Ok(request)
     }
@@ -2636,6 +2642,7 @@ mod tests {
                 "LSA",
                 &labels(),
                 "continue governed leadership",
+                None,
                 "leadership-seat-secret",
                 autonomy,
             )
@@ -2673,6 +2680,7 @@ mod tests {
             "LSA",
             &labels(),
             "continue governed leadership",
+            None,
             "leadership-seat-secret",
             SeatAutonomy::Bounded,
         )
@@ -3315,6 +3323,7 @@ mod tests {
             "Lead",
             &labels,
             "go",
+            None,
             "secret",
             SeatAutonomy::Supervised,
         )
