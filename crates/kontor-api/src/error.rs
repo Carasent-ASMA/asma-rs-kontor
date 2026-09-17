@@ -108,7 +108,23 @@ closed_enum! {
         /// containers, and the repair is a decision a human makes.
         PlacementBlocked => "placement_blocked",
         /// A dependency could not be reached. A fact about the channel only.
+        ///
+        /// Load bearing: this code's action tells a caller *nothing was
+        /// changed*. It may therefore only be used when nothing was — that is,
+        /// when the failure happened before any effect was attempted. A channel
+        /// that died *after* a write was put on the wire is
+        /// [`Self::DeliveryUnconfirmed`], not this.
         Unavailable => "unavailable",
+        /// A write was put on the wire and the channel failed before its
+        /// outcome could be confirmed. It may well have landed.
+        ///
+        /// Separate from [`Self::Unavailable`] for one reason, and it is not a
+        /// shade of meaning: the two demand opposite actions. `unavailable`
+        /// says nothing happened, so retry. This says something may have
+        /// happened, so *read before you act* — and never resend under a fresh
+        /// identifier, because that is how one instruction becomes two native
+        /// turns in a seat's transcript.
+        DeliveryUnconfirmed => "delivery_unconfirmed",
         /// The provider rejected the exact configured account credential while
         /// answering its fixed usage endpoint.
         ProviderUnauthorized => "provider_unauthorized",
@@ -164,9 +180,10 @@ impl ApiErrorCode {
             // what a spent ceiling is, and it is the status a client already
             // knows to back off and retry on.
             Self::CapacityExhausted => StatusCode::TOO_MANY_REQUESTS,
-            Self::ReconciliationPending | Self::Unavailable | Self::ProviderUnreachable => {
-                StatusCode::SERVICE_UNAVAILABLE
-            }
+            Self::ReconciliationPending
+            | Self::Unavailable
+            | Self::DeliveryUnconfirmed
+            | Self::ProviderUnreachable => StatusCode::SERVICE_UNAVAILABLE,
             Self::ProviderUnauthorized => StatusCode::BAD_GATEWAY,
             Self::ProviderUnsupported => StatusCode::UNPROCESSABLE_ENTITY,
         }
@@ -212,6 +229,9 @@ impl ApiErrorCode {
             Self::HandoffUnsettled => "settle the outstanding turn before terminalizing the run",
             Self::PlacementBlocked => "resolve where the work belongs in the topology, then retry",
             Self::Unavailable => "retry once the dependency answers; nothing was changed",
+            Self::DeliveryUnconfirmed => {
+                "read this session's timeline for the exact idempotency key to learn the outcome, then replay that same key; never resend under a new one"
+            }
             Self::ProviderUnauthorized => {
                 "reauthenticate the exact configured provider account, then retry"
             }
@@ -702,7 +722,7 @@ impl ApiError {
             ),
             RuntimeError::DeliveryConfirmationUnknown { .. } => Self::new(
                 realm_id,
-                ApiErrorCode::Unavailable,
+                ApiErrorCode::DeliveryUnconfirmed,
                 "the message may have reached the session but canonical history has not confirmed its position",
             )
             .advising(
@@ -1015,7 +1035,17 @@ mod tests {
             },
         );
 
-        assert_eq!(refusal.code, ApiErrorCode::Unavailable);
+        // OG-058. This used to be reported as `unavailable`, and the warning
+        // lived only in the action text. That is not enough: this enum's own
+        // contract is that a client branches on the code "and on nothing else",
+        // so a caller doing exactly what it was told saw the code whose
+        // meaning is *nothing happened* and resent.
+        assert_eq!(refusal.code, ApiErrorCode::DeliveryUnconfirmed);
+        assert_ne!(
+            refusal.code,
+            ApiErrorCode::Unavailable,
+            "a delivery that may have landed must not share a code with one that never left"
+        );
         assert_eq!(refusal.code.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             refusal.rule,
@@ -1023,5 +1053,28 @@ mod tests {
         );
         assert!(refusal.action.contains("do not resend"));
         assert!(!refusal.action.contains("nothing was changed"));
+    }
+
+    /// The two codes are told apart by the one sentence a caller acts on.
+    #[test]
+    fn only_the_pre_effect_code_may_promise_that_nothing_changed() {
+        assert!(
+            ApiErrorCode::Unavailable
+                .default_action()
+                .contains("nothing was changed"),
+            "the channel-only code keeps its promise; that is what makes it useful"
+        );
+        assert!(
+            !ApiErrorCode::DeliveryUnconfirmed
+                .default_action()
+                .contains("nothing was changed"),
+            "the post-effect code must never make that promise"
+        );
+        assert!(
+            ApiErrorCode::DeliveryUnconfirmed
+                .default_action()
+                .contains("never resend under a new one"),
+            "and it has to name the unsafe act, not merely decline to promise"
+        );
     }
 }

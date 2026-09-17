@@ -45,20 +45,24 @@ use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
 use kontor_runtime::adapter::{
     ConsultationPermissionInspectRequest, ConsultationPermissionResponseRequest,
-    HostedSeatClaimRequest, HostedSeatInspectRequest, HostedSeatLaunchRequest,
-    HostedSeatMessageRequest, HostedSeatNativeState, HostedSeatRetireRequest, LaunchOutcome,
-    PersistentSeatNativeState, RetitleSeatRequest, RuntimeAdapter, RuntimeError, RuntimeResult,
+    CorrelationChallengeBoundary, HostedSeatClaimRequest, HostedSeatInspectRequest,
+    HostedSeatLaunchRequest, HostedSeatMessageRequest, HostedSeatNativeState,
+    HostedSeatRetireRequest, LaunchOutcome, PersistentSeatNativeState, RetitleSeatRequest,
+    RuntimeAdapter, RuntimeError, RuntimeResult,
 };
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability, TrustGrade};
 use kontor_runtime::observation::{ReconciliationAction, ReconciliationFinding};
 use kontor_runtime::request::{
-    AdoptRequest, CancelRequest, HistoryRequest, InspectRequest, LaunchParts, LaunchPlacement,
+    AdoptRequest, CancelRequest, CorrelationChallengeCompletionRequest,
+    CorrelationChallengeRequest, HistoryRequest, InspectRequest, LaunchParts, LaunchPlacement,
     LaunchRequest, LiveSubscribeRequest, MessageId, PermissionDecision, PermissionResponseRequest,
     ReconcileSessionLabelsRequest, ResumeRequest, SendMessageRequest,
 };
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
-use kontor_runtime::timeline::{HistoryCursor, HistoryReader, TimelineBreak, TimelinePosition};
+use kontor_runtime::timeline::{
+    EventSubject, HistoryCursor, HistoryReader, TimelineBreak, TimelinePosition,
+};
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
 };
@@ -5708,6 +5712,204 @@ async fn message_same_id_yields_one_native_message_and_one_ack() {
     );
 }
 
+/// The delivery value, followed end to end.
+///
+/// Three facts, and each one is a different way for the same mistake to hide:
+/// the id Kontor puts on the wire is Paseo's `messageId`, the id Paseo echoes
+/// back on the resulting user message is `clientMessageId`, and only that echo
+/// makes a canonical event addressable. Reading the provider's own `messageId`
+/// instead would still produce an acknowledgement with a plausible position —
+/// just the wrong one — so the decoy below is the assertion, not the setup.
+#[tokio::test]
+async fn message_only_the_echoed_client_id_positions_the_kontor_message() {
+    // A user message already on the transcript whose *provider* id is the very
+    // id this send is about. Nothing else in the journal can tell the two
+    // fields apart.
+    let decoy = entry(
+        1,
+        serde_json::json!({
+            "type": "user_message",
+            "text": "synthetic text",
+            "messageId": MESSAGE,
+        }),
+    );
+    let (plane, workspace) =
+        Plane::prepared(daemon().journaling(AGENT_ID, EPOCH_RAW, vec![decoy])).await;
+    let binding = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the Implement seat launches")
+        .snapshot;
+
+    let acknowledged = plane
+        .adapter
+        .send(&message(&binding, "the next turn"))
+        .await
+        .expect("the message lands");
+
+    // What went on the wire is the Kontor id, under Paseo's own field name.
+    let sent = plane.daemon.sent_messages("send_agent_message_request");
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(
+        sent[0]["messageId"],
+        serde_json::json!(MESSAGE),
+        "the send carries the durable Kontor MessageId and never a native one"
+    );
+
+    // The echo is a second entry, and the acknowledgement's position is that
+    // entry's — not the decoy's, which has held sequence 1 all along.
+    assert_eq!(plane.daemon.journal_len(AGENT_ID), 2);
+    assert_eq!(
+        acknowledged.position.sequence, 2,
+        "the acknowledgement settles on the echoed send, not on a provider id"
+    );
+
+    // And the canonical read says the same thing event by event, which is what
+    // a settlement later reads: exactly one addressable Kontor message, at the
+    // position the acknowledgement named.
+    let page = plane
+        .adapter
+        .history(&HistoryRequest {
+            binding,
+            cursor: None,
+            page_size: 10,
+        })
+        .await
+        .expect("canonical history reads");
+    assert_eq!(
+        page.items
+            .iter()
+            .map(|event| (event.position.sequence, event.subject.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, EventSubject::None),
+            (
+                2,
+                EventSubject::Message(MessageId::parse(MESSAGE).expect("pinned"))
+            ),
+        ],
+        "a provider's own messageId is content, not an acknowledgement of our send"
+    );
+}
+
+#[tokio::test]
+async fn a_null_id_timeline_correlates_only_one_new_server_challenge() {
+    let recorded = daemon().without_journal_client_message_ids();
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let binding = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the exact seat launches")
+        .snapshot;
+    plane.daemon.append_journal_item(
+        AGENT_ID,
+        serde_json::json!({
+            "type": "user_message",
+            "text": "an older uncorrelated request",
+            "clientMessageId": null,
+        }),
+    );
+    plane.daemon.append_journal_item(
+        AGENT_ID,
+        serde_json::json!({
+            "type": "user_message",
+            "text": "another older uncorrelated request",
+            "clientMessageId": null,
+        }),
+    );
+    let CorrelationChallengeBoundary {
+        position: after,
+        native_epoch,
+    } = plane
+        .adapter
+        .correlation_challenge_boundary(&binding)
+        .await
+        .expect("the canonical tail is an exact post-history boundary");
+    assert_eq!(after.sequence, 2, "the challenge starts after old history");
+    let body = text("Kontor correlation challenge nonce-8118: verify the frozen artifact.");
+    let expected_response = text("Confirmed: the frozen artifact and checksum are unchanged.");
+    let request = CorrelationChallengeRequest {
+        binding: binding.clone(),
+        message_id: MessageId::parse(MESSAGE).expect("pinned"),
+        body: body.clone(),
+        after,
+        native_epoch: native_epoch.clone(),
+        may_dispatch: true,
+        sent_at: at("2026-08-10T09:40:00Z"),
+    };
+
+    plane.daemon.lose_next_rpc("send_agent_message_request");
+    let acknowledgement = plane
+        .adapter
+        .send_correlation_challenge(&request)
+        .await
+        .expect("canonical content reconciles the challenge after its acknowledgement is lost");
+    assert_eq!(acknowledgement.message.position.sequence, 3);
+    assert_eq!(
+        plane.daemon.journal_client_message_ids(AGENT_ID),
+        vec![None, None, None],
+        "the proof does not depend on a native client id"
+    );
+
+    let mut reconcile_only = request.clone();
+    reconcile_only.may_dispatch = false;
+    assert_eq!(
+        plane
+            .adapter
+            .send_correlation_challenge(&reconcile_only)
+            .await
+            .expect("a retry only reconciles the exact body"),
+        acknowledgement
+    );
+    assert_eq!(
+        plane.daemon.count("rpc send_agent_message_request"),
+        1,
+        "a durable retry never sends the challenge twice"
+    );
+
+    plane.daemon.append_journal_item(
+        AGENT_ID,
+        serde_json::json!({
+            "type": "assistant_message",
+            "text": expected_response.as_str(),
+        }),
+    );
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_request", v(AGENT_IDLE_FINISHED));
+    let completion = CorrelationChallengeCompletionRequest {
+        binding: binding.clone(),
+        message_id: request.message_id,
+        message_position: acknowledgement.message.position,
+        after: request.after,
+        native_epoch,
+        body: body.clone(),
+        expected_response,
+    };
+    let terminal = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect("one exact terminal response proves the new turn");
+    assert_eq!(terminal.sequence, 4);
+    assert_eq!(binding.binding_id(), acknowledgement.message.binding_id);
+
+    plane.daemon.append_journal_item(
+        AGENT_ID,
+        serde_json::json!({
+            "type": "user_message",
+            "text": body.as_str(),
+            "clientMessageId": null,
+        }),
+    );
+    let duplicate = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect_err("a repeated exact challenge body is never accepted as one turn");
+    assert!(matches!(duplicate, RuntimeError::DuplicateMessage { .. }));
+}
+
 #[tokio::test]
 async fn message_a_changed_body_under_one_id_is_rejected() {
     let (plane, binding) = launched().await;
@@ -5810,6 +6012,59 @@ async fn message_an_incomplete_confirmation_scan_never_authorizes_a_resend() {
         plane.daemon.count("rpc send_agent_message_request"),
         1,
         "stopping at a page budget is not proof that authorizes another send"
+    );
+}
+
+/// OG-058. A confirming read that could not reach the daemon is not evidence
+/// that nothing was delivered.
+///
+/// Both arms below are the same operational moment: Paseo goes away around the
+/// time it is handed a message. The confirming read is the only thing that can
+/// settle what happened, and when *it* cannot answer either, the one report
+/// that must not be produced is a bare channel fault — the control plane turns
+/// that into "nothing was changed", and an operator acting on it resends into a
+/// seat that already has the instruction.
+#[tokio::test]
+async fn message_a_confirmation_read_that_cannot_answer_is_unconfirmed_delivery() {
+    // The send is accepted, and the read that would position it dies.
+    let (accepted, binding) = launched().await;
+    accepted
+        .daemon
+        .lose_next_rpc("fetch_agent_timeline_request");
+    let refused = accepted
+        .adapter
+        .send(&message(&binding, "the next turn"))
+        .await
+        .expect_err("a read that did not answer cannot acknowledge a position");
+    assert!(
+        matches!(refused, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "an accepted send whose confirmation failed is unconfirmed delivery, not a dead channel: {refused:?}"
+    );
+    assert_eq!(
+        accepted.daemon.journal_len(AGENT_ID),
+        1,
+        "the message really is in the transcript the read could not reach"
+    );
+    assert_eq!(accepted.daemon.count("rpc send_agent_message_request"), 1);
+
+    // And the worse case, which is the one that actually happens: the channel
+    // dies *during* the send, so the confirming read fails the same way.
+    let (lost, binding) = launched().await;
+    lost.daemon.lose_next_rpc("send_agent_message_request");
+    lost.daemon.lose_next_rpc("fetch_agent_timeline_request");
+    let refused = lost
+        .adapter
+        .send(&message(&binding, "the next turn"))
+        .await
+        .expect_err("delivery began and nothing could confirm it");
+    assert!(
+        matches!(refused, RuntimeError::DeliveryConfirmationUnknown { .. }),
+        "a channel that died after delivery began must not report as one that never carried it: {refused:?}"
+    );
+    assert_eq!(
+        lost.daemon.count("rpc send_agent_message_request"),
+        1,
+        "an unconfirmed delivery is never a licence to send again"
     );
 }
 
@@ -8669,6 +8924,77 @@ async fn an_existing_session_claim_preserves_identity_and_releases_duplicate_tit
     assert_eq!(outcome.claim.model_rung, preview.model_rung);
     assert_eq!(plane.daemon.count("agent update agt_implement"), 1);
     assert_eq!(plane.daemon.count("agent update agt_conflict"), 1);
+    assert_eq!(plane.daemon.count("agent archive"), 0);
+}
+
+/// Hosted-seat titles are scoped to their exact native container. A delivery
+/// seat in a sibling TSW may legitimately carry the same role title; its Kontor
+/// ownership remains authoritative in that workspace and must neither block nor
+/// be rewritten by an ECP claim.
+#[tokio::test]
+async fn a_sibling_workspace_title_does_not_block_an_exact_hosted_seat_claim() {
+    let seat_binding_id = SeatBindingId::generate();
+    let canonical_title = "SWE";
+    let mut claimant = v(AGENT);
+    claimant["agent"]["title"] = serde_json::json!("hand-started SWE");
+    claimant["agent"]["labels"] = serde_json::json!({});
+
+    let mut sibling = claimant.clone();
+    sibling["agent"]["id"] = serde_json::json!("agt_sibling_swe");
+    sibling["agent"]["title"] = serde_json::json!(canonical_title);
+    sibling["agent"]["workspaceId"] = serde_json::json!("wks_sibling_tsw");
+    sibling["agent"]["cwd"] = serde_json::json!("/w/sibling-tsw");
+    sibling["agent"]["runtimeInfo"]["sessionId"] = serde_json::json!("prov_sess_sibling");
+    sibling["agent"]["persistence"]["sessionId"] = serde_json::json!("prov_sess_sibling");
+    sibling["agent"]["labels"] = serde_json::json!({
+        "kontor.seat_binding_id": SeatBindingId::generate().to_string(),
+        "kontor.hosted_seat": "true",
+        "kontor.role_slot": "swe",
+        "kontor.workspace_id": "wks_sibling_tsw",
+        "kontor.worktree": "/w/sibling-tsw"
+    });
+    let listing = serde_json::json!({
+        "requestId": "req-fixture",
+        "entries": [
+            { "agent": claimant["agent"].clone(), "project": claimant["project"].clone() },
+            { "agent": sibling["agent"].clone(), "project": sibling["project"].clone() }
+        ],
+        "pageInfo": { "nextCursor": null, "prevCursor": null, "hasMore": false }
+    });
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_ROOT_LOCAL))
+        .answering_rpc("fetch_agent_request", claimant)
+        .answering_rpc("fetch_agents_request", listing);
+    let plane = Plane::fresh(recorded);
+    plane
+        .adapter
+        .prepare_project("cmd-seat-claim-sibling", &project_name())
+        .await
+        .expect("the epic project is prepared");
+
+    let preview = plane
+        .adapter
+        .preview_hosted_seat_claim(&HostedSeatClaimRequest {
+            seat_binding_id,
+            role_slot_id: slot("swe"),
+            display_name: name(canonical_title),
+            container_native_id: external(WORKSPACE_ID),
+            cwd: root(),
+            scope: epic_execution_scope(),
+            claimant_native_id: external(AGENT_ID),
+            expected_claimant_provider_session_id: None,
+            expected_predecessor: None,
+            requested_at: at("2026-09-14T17:30:00Z"),
+        })
+        .await
+        .expect("a sibling TSW title is outside the ECP collision domain");
+
+    assert!(preview.title_conflicts.is_empty());
+    assert_eq!(preview.identity.native_id.as_str(), AGENT_ID);
+    assert_eq!(plane.daemon.count("agent update"), 0);
     assert_eq!(plane.daemon.count("agent archive"), 0);
 }
 

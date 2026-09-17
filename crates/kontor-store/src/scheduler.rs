@@ -402,11 +402,98 @@ pub struct RecoverableAdmission {
     pub launch_key: IdempotencyKey,
 }
 
+/// One durable admission whose first run has no runtime attachment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnconfirmedAdmission {
+    /// The epic that owns the task.
+    pub epic_id: MiniProjectId,
+    /// The preserved TeamRun envelope.
+    pub team_run_id: TeamRunId,
+    /// The preserved first AgentRun.
+    pub agent_run_id: AgentRunId,
+    /// When the immutable admission was recorded.
+    pub admitted_at: Timestamp,
+    /// The original decision and launch key used for an exact replay.
+    pub recovery: RecoverableAdmission,
+}
+
 // ---------------------------------------------------------------------------
 // Reads for the snapshot
 // ---------------------------------------------------------------------------
 
 impl SqliteStore {
+    /// Read admitted roots that still have no runtime evidence or binding.
+    ///
+    /// These rows are the exact crash/retry seam: admission and launch intent
+    /// committed, while the runtime attachment did not. Already-observed,
+    /// attached, terminal, and partially seated runs are deliberately absent.
+    pub fn unconfirmed_admissions(
+        &self,
+        project_id: Option<ProjectId>,
+        epic_id: Option<MiniProjectId>,
+        limit: u32,
+    ) -> RepositoryResult<Vec<UnconfirmedAdmission>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT task.mini_project_id, event.team_run_id, event.agent_run_id,
+                        event.decided_at, event.evidence, receipt.idempotency_key
+                 FROM scheduler_admission_events AS event
+                 JOIN tasks AS task
+                   ON task.project_id = event.project_id AND task.id = event.task_id
+                 JOIN team_runs AS team
+                   ON team.project_id = event.project_id AND team.id = event.team_run_id
+                 JOIN agent_runs AS run
+                   ON run.project_id = event.project_id AND run.id = event.agent_run_id
+                 JOIN command_receipts AS receipt
+                   ON receipt.project_id = event.project_id
+                  AND receipt.id = event.launch_receipt_id
+                 LEFT JOIN runtime_bindings AS binding
+                   ON binding.project_id = run.project_id AND binding.agent_run_id = run.id
+                 WHERE event.decision = 'admitted'
+                   AND (?1 IS NULL OR event.project_id = ?1)
+                   AND (?2 IS NULL OR task.mini_project_id = ?2)
+                   AND task.mini_project_id IS NOT NULL
+                   AND team.lifecycle = 'queued'
+                   AND run.lifecycle = 'queued'
+                   AND run.desired_state = 'run_requested'
+                   AND run.observed_state = 'unknown'
+                   AND run.derived_state = 'pending_confirmation'
+                   AND binding.id IS NULL
+                 ORDER BY event.decided_at, event.id
+                 LIMIT ?3",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![
+                project_id.map(|id| id.to_string()),
+                epic_id.map(|id| id.to_string()),
+                limit
+            ])
+            .map_err(backend)?;
+        let mut admissions = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            #[derive(serde::Deserialize)]
+            struct StoredAdmission {
+                admitted: AdmittedCandidate,
+            }
+
+            let evidence: String = row.get(4).map_err(backend)?;
+            let stored = from_json::<StoredAdmission>(&evidence)?;
+            admissions.push(UnconfirmedAdmission {
+                epic_id: MiniProjectId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
+                team_run_id: TeamRunId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
+                agent_run_id: AgentRunId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
+                admitted_at: read_timestamp(&row.get::<_, String>(3).map_err(backend)?)?,
+                recovery: RecoverableAdmission {
+                    admitted: stored.admitted,
+                    launch_key: IdempotencyKey::parse(&row.get::<_, String>(5).map_err(backend)?)?,
+                },
+            });
+        }
+        Ok(admissions)
+    }
+
     /// Read the immutable scheduler decision behind one launch command.
     ///
     /// This is the recovery half of admission: the scheduler start may have

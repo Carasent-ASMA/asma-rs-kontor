@@ -16,7 +16,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 
 use crate::body::Json;
 use futures::stream::Stream;
-use kontor_core::id::{AgentRunId, EventCursor, IdempotencyKey, ProjectId, TaskId};
+use kontor_core::id::{AgentRunId, EventCursor, IdempotencyKey, ProjectId};
 use kontor_core::realm::RealmCursor;
 use kontor_core::repository::{RealmRepository, RunInspection, TaskInspection};
 use kontor_core::state::{DerivedRunState, Freshness};
@@ -137,7 +137,7 @@ pub async fn task_snapshot(
 ) -> Result<Json<SnapshotDto<TaskDto>>, ApiError> {
     caller.require(&state, CallerCapability::Observer)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
-    let task_id = parse_id(&state, TaskId::parse(&task_id))?;
+    let task_id = crate::applications::resolve_task_selector(&state, project_id, &task_id)?;
     let snapshot = state
         .with_store(|store| store.snapshot_task_inspection(project_id, task_id))
         .map_err(|error| ApiError::from_repository(state.realm_id(), &error))?;
@@ -383,17 +383,38 @@ pub fn idempotency_key(state: &ApiState, headers: &HeaderMap) -> Result<Idempote
                 "every mutation must carry an Idempotency-Key header",
             )
         })?;
-    IdempotencyKey::parse(value).map_err(|error| ApiError::from_domain(state.realm_id(), &error))
+    IdempotencyKey::parse(value).map_err(|_| {
+        state
+            .refuse(
+                ApiErrorCode::InvalidRequest,
+                "the Idempotency-Key header is invalid",
+            )
+            .about("Idempotency-Key header")
+    })
 }
 
 /// Parse a caller-supplied identifier.
+///
+/// The refusal is built from the domain error rather than replacing it. That
+/// error already knows which type rejected the value and which invariant it
+/// violated, and [`ApiError::from_domain`] already renders both — naming the
+/// subject and, for a nested value, the structural path. Discarding it and
+/// answering "the identifier is not in canonical form" was the same refusal
+/// for all 215 call sites, so a caller holding two identifiers could not tell
+/// which one was wrong.
+///
+/// ASMA-8191 is what that cost. `message_hosted_seat` parses a project id, a
+/// seat binding id and the `Idempotency-Key`; the key was the one being
+/// refused, and this message named none of them. Three separate investigations
+/// read it, blamed the seat binding, and recorded OG-038 against the wrong
+/// component while the realm stopped scheduling. With the subject attached it
+/// would have said `MessageId`.
+///
+/// Nothing here widens what is disclosed: a subject is a type name and a path
+/// is structural, never a value, which is the invariant [`DomainError`] is
+/// documented to hold.
 pub fn parse_id<T>(state: &ApiState, parsed: kontor_core::DomainResult<T>) -> Result<T, ApiError> {
-    parsed.map_err(|_| {
-        state.refuse(
-            ApiErrorCode::InvalidRequest,
-            "the identifier is not in canonical form",
-        )
-    })
+    parsed.map_err(|error| ApiError::from_domain(state.realm_id(), &error))
 }
 
 /// Resolve a context-window policy from explicit inputs, and change nothing.

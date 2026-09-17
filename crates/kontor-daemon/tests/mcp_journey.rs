@@ -627,6 +627,12 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             "idempotency_key": "journey-epic-1",
             "expected_revision": revision,
             "name": "Bootstrap epic",
+            // The runtime-facing scope code below places the epic; this is the
+            // separate supported field that persists the active immutable
+            // namespace. Seating derives its display item code from the
+            // persisted one, so a journey that declares only the scope has an
+            // epic nothing can be named under.
+            "epic_backlog_code": "JOURNEY",
             "execution_scope": {
                 "external_epic_key": "ASMA-8000",
                 "short_title": "Bootstrap epic",

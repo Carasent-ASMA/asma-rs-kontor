@@ -410,6 +410,8 @@ fn check_value(
         ArgType::ProjectId
         | ArgType::MiniProjectId
         | ArgType::TaskId
+        | ArgType::EpicSelector
+        | ArgType::TaskSelector
         | ArgType::TeamRunId
         | ArgType::AgentRunId
         | ArgType::AccountProfileId
@@ -564,6 +566,12 @@ fn parse_domain(ty: ArgType, text: &str) -> Result<(), kontor_core::DomainError>
         ArgType::ProjectId => id::ProjectId::parse(text).map(drop),
         ArgType::MiniProjectId => id::MiniProjectId::parse(text).map(drop),
         ArgType::TaskId => id::TaskId::parse(text).map(drop),
+        // A selector is refused here for exactly the reason the note below
+        // gives: a malformed key must not travel to the daemon. Which
+        // subject a well-formed key names is the store's decision, not
+        // this layer's, so only the spelling is checked.
+        ArgType::EpicSelector => kontor_core::selector::EpicSelector::parse(text).map(drop),
+        ArgType::TaskSelector => kontor_core::selector::TaskSelector::parse(text).map(drop),
         ArgType::TeamRunId => id::TeamRunId::parse(text).map(drop),
         ArgType::AgentRunId => id::AgentRunId::parse(text).map(drop),
         ArgType::AccountProfileId => id::AccountProfileId::parse(text).map(drop),
@@ -624,6 +632,51 @@ mod tests {
         assert!(parse_domain(ArgType::EpicBacklogCode, "KOP").is_ok());
         assert!(parse_domain(ArgType::EpicBacklogCode, "kop").is_err());
         assert!(parse_domain(ArgType::EpicBacklogCode, "8001").is_err());
+    }
+
+    #[test]
+    fn a_subject_selector_takes_either_spelling_and_nothing_else() {
+        // Both accepted spellings.
+        assert!(parse_domain(ArgType::TaskSelector, UUID).is_ok());
+        assert!(parse_domain(ArgType::TaskSelector, "ASMA-8119").is_ok());
+        assert!(parse_domain(ArgType::EpicSelector, UUID).is_ok());
+        assert!(parse_domain(ArgType::EpicSelector, "ASMA-8049").is_ok());
+        // Case is never repaired, and a bare project key is not a key.
+        assert!(parse_domain(ArgType::TaskSelector, "asma-8119").is_err());
+        assert!(parse_domain(ArgType::TaskSelector, "ASMA").is_err());
+        assert!(parse_domain(ArgType::TaskSelector, "ASMA-0").is_err());
+        assert!(parse_domain(ArgType::TaskSelector, "").is_err());
+        // Widening the subject must not have widened the plain id types.
+        assert!(parse_domain(ArgType::TaskId, "ASMA-8119").is_err());
+        assert!(parse_domain(ArgType::MiniProjectId, "ASMA-8049").is_err());
+    }
+
+    #[test]
+    fn a_confirmed_key_fills_the_same_route_as_a_uuid() {
+        // The point of the selector: one route, either spelling, no by-key twin.
+        let request = build(
+            spec("kontor_task_get"),
+            &serde_json::json!({ "project_id": UUID, "task_id": "ASMA-8119" }),
+        )
+        .expect("a confirmed key is a well-formed call");
+        assert_eq!(request.method, Method::Get);
+        assert_eq!(
+            request.path,
+            format!("/v1/projects/{UUID}/tasks/ASMA-8119"),
+            "the key is passed through for the server to resolve"
+        );
+    }
+
+    #[test]
+    fn a_malformed_key_never_reaches_the_daemon() {
+        let refusal = build(
+            spec("kontor_task_get"),
+            &serde_json::json!({ "project_id": UUID, "task_id": "asma-8119" }),
+        );
+        assert!(
+            refusal.is_err(),
+            "a lowercase key is refused before dispatch"
+        );
     }
 
     #[test]
@@ -984,6 +1037,71 @@ mod tests {
             "a settlement body would be a client naming how a run ended"
         );
         assert_eq!(request.idempotency_key.as_deref(), Some("settle-1"));
+    }
+
+    #[test]
+    fn correlation_challenge_preview_and_apply_route_exactly_once_through_the_generic_client() {
+        let evidence_hash = "a".repeat(64);
+        let report_checksum = "b".repeat(64);
+        let challenge = serde_json::json!({
+            "role_slot": "swe",
+            "expected_task_revision": 2,
+            "expected_run_revision": 6,
+            "artifact": "high-scope-record",
+            "evidence_revision_id": UUID,
+            "evidence_content_hash": evidence_hash,
+            "report_checksum": report_checksum
+        });
+        let preview = build(
+            spec("kontor_turn_correlation_challenge_preview"),
+            &serde_json::json!({
+                "project_id": UUID,
+                "agent_run_id": UUID,
+                "role_slot": challenge["role_slot"],
+                "expected_task_revision": challenge["expected_task_revision"],
+                "expected_run_revision": challenge["expected_run_revision"],
+                "artifact": challenge["artifact"],
+                "evidence_revision_id": challenge["evidence_revision_id"],
+                "evidence_content_hash": challenge["evidence_content_hash"],
+                "report_checksum": challenge["report_checksum"]
+            }),
+        )
+        .expect("the read-only preview builds");
+        assert_eq!(
+            preview.path,
+            format!("/v1/projects/{UUID}/agent-runs/{UUID}/turn-correlation:challenge-preview")
+        );
+        assert!(preview.idempotency_key.is_none());
+        assert!(
+            preview
+                .body
+                .as_ref()
+                .is_some_and(|body| body.get("message_position").is_none())
+        );
+
+        let apply = build(
+            spec("kontor_turn_correlation_challenge_apply"),
+            &serde_json::json!({
+                "project_id": UUID,
+                "agent_run_id": UUID,
+                "idempotency_key": "challenge-apply-once",
+                "challenge": challenge,
+                "preview_hash": "c".repeat(64)
+            }),
+        )
+        .expect("the preview-bound apply builds");
+        assert_eq!(
+            apply.path,
+            format!("/v1/projects/{UUID}/agent-runs/{UUID}/turn-correlation:challenge-apply")
+        );
+        assert_eq!(
+            apply.idempotency_key.as_deref(),
+            Some("challenge-apply-once")
+        );
+        assert_eq!(
+            apply.body.as_ref().and_then(|body| body.get("challenge")),
+            Some(&challenge)
+        );
     }
 
     #[test]

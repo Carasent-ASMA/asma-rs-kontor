@@ -821,6 +821,10 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::resume_admissions),
             )
             .route(
+                "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat",
+                post(applications::fill_team_run_seat),
+            )
+            .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/lifecycle",
                 post(applications::lifecycle),
             )
@@ -882,6 +886,14 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle",
                 post(applications::settle_turn),
+            )
+            .route(
+                "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview",
+                post(applications::preview_turn_correlation_challenge),
+            )
+            .route(
+                "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply",
+                post(applications::apply_turn_correlation_challenge),
             )
             .route(
                 "/v1/projects/{project_id}/agent-runs/{agent_run_id}/handoffs:attest-late",
@@ -990,6 +1002,10 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/sessions/{agent_run_id}/timeline",
             get(sessions::timeline),
+        )
+        .route(
+            "/v1/sessions/{agent_run_id}/turns/current",
+            get(sessions::observe_current_turn),
         )
         .route("/v1/sessions/{agent_run_id}/stream", get(sessions::stream))
         .route(
