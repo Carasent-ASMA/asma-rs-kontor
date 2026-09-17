@@ -73,7 +73,7 @@ pub use graph::{
     BacklogImport, EpicApplication, EpicExecutionScope, EpicExecutionScopeDeclaration, EpicTask,
     EpicTicketLink, IdempotencyBinding, NewRoleSlotWaiver, NewRoleTurn, ProfileSelection,
     ProjectEnsure, RegisteredPack, RoleTurnReplay, RoleTurnRuntimeProof, SeatRow, SettledTurn,
-    StoredAuthorization, StoredBindingSnapshot, StoredComment, StoredConflict,
+    StoredAuthorization, StoredBindingSnapshot, StoredComment, StoredConflict, StoredHeldWork,
     StoredProfileSelectionOutcome, StoredWaiver, TeamTemplateSource, TurnDispatch,
 };
 pub use jira::{

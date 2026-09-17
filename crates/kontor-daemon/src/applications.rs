@@ -12108,6 +12108,7 @@ fn blocked_task(
     code: &str,
     action: &'static str,
     evidence: &[kontor_scheduler::model::RejectionEvidence],
+    hold: Option<kontor_api::dto::HeldWorkDto>,
 ) -> BlockedTaskDto {
     BlockedTaskDto {
         task_id,
@@ -12117,6 +12118,7 @@ fn blocked_task(
             .iter()
             .map(|item| serde_json::to_value(item).unwrap_or(serde_json::Value::Null))
             .collect(),
+        hold,
     }
 }
 
@@ -12135,6 +12137,10 @@ fn seat_block(task_id: TaskId, refusal: &ApiError) -> BlockedTaskDto {
         code: refusal.code.as_str().to_owned(),
         action: refusal.action.to_owned(),
         evidence: vec![evidence],
+        // A seat refusal happens after admission, which held work never
+        // reaches. There is no hold to report here, and inventing a lookup
+        // would only be able to answer `None`.
+        hold: None,
     }
 }
 
@@ -26139,12 +26145,25 @@ impl ApplicationOperations for Services {
                     code,
                     evidence,
                     ..
-                } => blocked.push(blocked_task(
-                    *task_id,
-                    code.public_code(),
-                    code.next_action(),
-                    evidence,
-                )),
+                } => {
+                    // Resolved per blocked task rather than only for the
+                    // authorization codes: a held task blocked for a second
+                    // reason as well is still held, and hiding the hold
+                    // whenever another reason exists sends an operator chasing
+                    // the wrong one.
+                    let hold = state
+                        .with_store(|store| {
+                            store.held_work(project_id, *task_id, Some(epic_id), kontor_api::now())
+                        })
+                        .map_err(|error| self.refuse(&error))?;
+                    blocked.push(blocked_task(
+                        *task_id,
+                        code.public_code(),
+                        code.next_action(),
+                        evidence,
+                        hold.map(Into::into),
+                    ));
+                }
             }
         }
         Ok(SchedulerPlanDto {
@@ -26288,12 +26307,25 @@ impl ApplicationOperations for Services {
                     code,
                     evidence,
                     ..
-                } => blocked.push(blocked_task(
-                    *task_id,
-                    code.public_code(),
-                    code.next_action(),
-                    evidence,
-                )),
+                } => {
+                    // Resolved per blocked task rather than only for the
+                    // authorization codes: a held task blocked for a second
+                    // reason as well is still held, and hiding the hold
+                    // whenever another reason exists sends an operator chasing
+                    // the wrong one.
+                    let hold = state
+                        .with_store(|store| {
+                            store.held_work(project_id, *task_id, Some(epic_id), kontor_api::now())
+                        })
+                        .map_err(|error| self.refuse(&error))?;
+                    blocked.push(blocked_task(
+                        *task_id,
+                        code.public_code(),
+                        code.next_action(),
+                        evidence,
+                        hold.map(Into::into),
+                    ));
+                }
             }
         }
         // A task with a live seat is being worked on, and the task's own state has

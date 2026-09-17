@@ -154,10 +154,23 @@ pub async fn task_snapshot(
     let jira_binding = state
         .with_store(|store| store.jira_task_binding_state(project_id, task_id))
         .map_err(|error| ApiError::from_repository(state.realm_id(), &error))?;
+    // The same store function `scheduler-plan` calls. A task that reads as
+    // ready here while the planner refuses it as held is the disagreement
+    // REQ-004 exists to remove, so there is one resolver and not two.
+    let hold = state
+        .with_store(|store| {
+            store.held_work(
+                project_id,
+                task_id,
+                inspection.task.mini_project_id,
+                crate::now(),
+            )
+        })
+        .map_err(|error| ApiError::from_repository(state.realm_id(), &error))?;
     Ok(Json(SnapshotDto {
         realm_id: state.realm_id(),
         snapshot_cursor: cursor,
-        value: task_dto(&inspection, jira_binding.into()),
+        value: task_dto(&inspection, jira_binding.into(), hold.map(Into::into)),
     }))
 }
 
@@ -528,8 +541,13 @@ fn run_dto(state: &ApiState, inspection: &RunInspection) -> RunDto {
 }
 
 /// Build the wire view of one task inspection.
-fn task_dto(inspection: &TaskInspection, jira_binding: crate::dto::JiraBindingDto) -> TaskDto {
+fn task_dto(
+    inspection: &TaskInspection,
+    jira_binding: crate::dto::JiraBindingDto,
+    hold: Option<crate::dto::HeldWorkDto>,
+) -> TaskDto {
     TaskDto {
+        hold,
         task_id: inspection.task.id,
         project_id: inspection.task.project_id,
         title: inspection.task.title.clone(),

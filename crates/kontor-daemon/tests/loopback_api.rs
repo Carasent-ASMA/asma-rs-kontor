@@ -4656,6 +4656,263 @@ async fn live_epic_grants(world: &World, project: &str, epic: &str) -> Vec<serde
         .collect()
 }
 
+/// Held work says it is held, says what would release it and who owns that, and
+/// says the same thing on both surfaces.
+///
+/// Before this, a held task was indistinguishable from ready work on every
+/// surface that showed it. `scheduler-plan` said `authorization_blocked` and
+/// advised calling `kontor_execution_arm` — the right move for an epic somebody
+/// chose to stop, and the wrong move for one waiting on a condition that has
+/// not happened yet — while `task-get` said `ready` and mentioned no hold at
+/// all. An operator's only way to tell which was to arm it and see.
+///
+/// The equality assertion is the point. REQ-004 asks the two surfaces to agree,
+/// and they agree here because one store function answers both; two resolvers
+/// that merely matched today would be the same defect waiting.
+#[tokio::test]
+async fn held_work_names_its_lift_condition_and_owner_on_both_surfaces() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "held-vis", "Kontor", "/tmp/kontor-held-vis").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Kickoff holder",
+            "harness": "fake.runtime",
+            "credential_alias": "kickoff-holder",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("held-vis-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let mut body = epic_body(
+        revision,
+        "Held visibility",
+        &category,
+        serde_json::json!([{"title": "First"}]),
+    );
+    body["initial_hold"] = serde_json::json!({
+        "held_by": account_id,
+        "reason": "Kickoff hold until the graph is bound",
+        "lift_condition": "jira_graph_confirmed",
+    });
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("held-vis-apply")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let planned = plan.json()["blocked"]
+        .as_array()
+        .expect("blocked")
+        .iter()
+        .find(|row| row["task_id"] == task.as_str())
+        .cloned()
+        .unwrap_or_else(|| panic!("the held task is blocked: {}", plan.body));
+    let planned_hold = &planned["hold"];
+    assert_eq!(
+        planned_hold["lift_condition"], "jira_graph_confirmed",
+        "the planner names what would release the work: {}",
+        plan.body
+    );
+    assert_eq!(
+        planned_hold["owner"], account_id,
+        "and who owns lifting it: {}",
+        plan.body
+    );
+    assert_eq!(
+        planned_hold["reason"], "Kickoff hold until the graph is bound",
+        "the prose a person wrote survives beside the predicate"
+    );
+
+    let snapshot = Call::get(format!("/v1/projects/{project}/tasks/{task}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(snapshot.status, 200, "{}", snapshot.body);
+    assert_eq!(
+        snapshot.json()["value"]["hold"],
+        *planned_hold,
+        "scheduler-plan and task-get must agree about the same hold"
+    );
+
+    // And once the condition is met and the hold has lifted, neither surface
+    // reports a hold: a stale hold is as misleading as a missing one, and the
+    // revocation itself is append-only evidence that never stops existing.
+    confirm_test_epic_identity(&world, &project, &epic);
+    let started = start_epic(&world, &project, &epic, "held-vis-start").await;
+    assert!(
+        started.status == 200 || started.status == 409,
+        "{}",
+        started.body
+    );
+
+    let after = Call::get(format!("/v1/projects/{project}/tasks/{task}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    assert!(
+        after.json()["value"]["hold"].is_null(),
+        "the hold lifted, so nothing is holding this task: {}",
+        after.body
+    );
+}
+
+/// A re-held epic is held on its newest terms, not on its first.
+///
+/// A hold is append-only evidence: the revocation that opened the kickoff never
+/// stops existing, so an epic that was lifted and then stood down again carries
+/// two revoked covers. The one in force is the newest, and reporting the first
+/// would tell an operator what the epic waited for when it was created — the
+/// stale answer REQ-004 exists to remove, in the same shape as the missing one.
+#[tokio::test]
+async fn a_reheld_epic_is_held_on_its_newest_terms_not_its_first() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "reheld", "Kontor", "/tmp/kontor-reheld").await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let revision = created.json()["revision"].as_u64().expect("revision");
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Kickoff holder",
+            "harness": "fake.runtime",
+            "credential_alias": "reheld-holder",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("reheld-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let mut body = epic_body(
+        revision,
+        "Re-held",
+        &category,
+        serde_json::json!([{"title": "First"}]),
+    );
+    body["initial_hold"] = serde_json::json!({
+        "held_by": account_id,
+        "reason": "Kickoff hold until the graph is bound",
+        "lift_condition": "jira_graph_confirmed",
+    });
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(&world, "admin")
+        .with_key("reheld-apply")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+
+    // The kickoff hold lifts on its condition, leaving exactly one live grant.
+    confirm_test_epic_identity(&world, &project, &epic);
+    let started = start_epic(&world, &project, &epic, "reheld-start").await;
+    assert!(
+        started.status == 200 || started.status == 409,
+        "{}",
+        started.body
+    );
+    let grants = live_epic_grants(&world, &project, &epic).await;
+    assert_eq!(
+        grants.len(),
+        1,
+        "the hold lifted into exactly one grant: {}",
+        started.body
+    );
+
+    // Then the epic is stood down: a second revocation, newer than the first,
+    // with terms of its own and no condition.
+    let disarmed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:disarm"),
+        &serde_json::json!({
+            "authorization_id": grants[0]["authorization_id"],
+            "revoked_by": account_id,
+            "reason": "Re-held pending QA sign-off"
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("reheld-disarm")
+    .send(&world)
+    .await;
+    assert_eq!(disarmed.status, 200, "{}", disarmed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    let planned = plan.json()["blocked"]
+        .as_array()
+        .expect("blocked")
+        .iter()
+        .find(|row| row["task_id"] == task.as_str())
+        .cloned()
+        .unwrap_or_else(|| panic!("the re-held task is blocked: {}", plan.body));
+    assert_eq!(
+        planned["hold"]["reason"], "Re-held pending QA sign-off",
+        "the newest revoked cover is the one in force: {}",
+        plan.body
+    );
+    assert_eq!(
+        planned["hold"]["lift_condition"], "manual",
+        "a stand-down recorded no condition, so a person decides: {}",
+        plan.body
+    );
+    assert_eq!(
+        planned["hold"]["owner"], account_id,
+        "and the stand-down's own owner owns lifting it: {}",
+        plan.body
+    );
+}
+
 /// A hold lifts itself when its recorded condition comes true, and a hold that
 /// recorded no condition never does.
 ///

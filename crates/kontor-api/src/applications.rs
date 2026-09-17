@@ -4784,6 +4784,17 @@ pub struct BlockedTaskDto {
     /// The structural evidence behind it. Positions and ids, never values.
     #[schema(value_type = Vec<Object>)]
     pub evidence: Vec<serde_json::Value>,
+    /// The hold standing over it, when it is held.
+    ///
+    /// `code` says the planner refused; this says whether a *person* stopped
+    /// this work and what would start it again. `authorization_blocked` alone
+    /// cannot tell an epic somebody deliberately stopped from one waiting on a
+    /// condition that has not happened yet, and it advised arming either way.
+    ///
+    /// Resolved through the same store function `task-get` uses, so the two
+    /// surfaces agree by construction rather than by two code paths matching.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold: Option<crate::dto::HeldWorkDto>,
 }
 
 /// What the planner decided, and what it decided against.

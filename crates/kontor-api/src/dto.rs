@@ -26,6 +26,7 @@ use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceipt, CommandRec
 use kontor_core::repository::{
     HistoryGapKind, HistoryGapMarker, RunInspection, RuntimeEvent, TaskInspection,
 };
+use kontor_core::spec::HoldLiftCondition;
 use kontor_core::state::{
     DesiredRunState, Freshness, GateState, ObservedRunState, RunLifecycle, TaskState,
     TerminalOutcome,
@@ -488,6 +489,44 @@ pub struct AppliedRevisionsDto {
     pub persona_scenario_version: Option<SpecVersion>,
 }
 
+/// Why work is held, what would release it, and who owns that decision.
+///
+/// A hold is a revoked covering authorization. Before this, a held task was
+/// indistinguishable from ready work on every surface that showed it: the
+/// scheduler said `authorization_blocked` and advised calling
+/// `kontor_execution_arm`, which is the right move for an epic somebody chose
+/// to stop and the wrong move for one waiting on a condition that has not
+/// happened yet. Neither surface said which it was, so an operator's only way
+/// to find out was to arm it and see.
+///
+/// `reason` is the prose a person wrote; `lift_condition` is what Kontor
+/// evaluates. Both are reported, and neither substitutes for the other.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct HeldWorkDto {
+    /// The revoked authorization doing the holding.
+    pub authorization_id: String,
+    /// The machine-checkable condition that would release it.
+    #[schema(value_type = String)]
+    pub lift_condition: HoldLiftCondition,
+    /// The account that recorded the hold, and owns lifting it.
+    #[schema(value_type = String)]
+    pub owner: AccountProfileId,
+    /// The durable prose reason recorded with the revocation.
+    #[schema(value_type = String)]
+    pub reason: ExternalName,
+}
+
+impl From<kontor_store::StoredHeldWork> for HeldWorkDto {
+    fn from(held: kontor_store::StoredHeldWork) -> Self {
+        Self {
+            authorization_id: held.authorization_id.to_string(),
+            lift_condition: held.lift_condition,
+            owner: held.owner,
+            reason: held.reason,
+        }
+    }
+}
+
 /// One task, its active workflow and the gates reduced from its evaluations.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct TaskDto {
@@ -516,6 +555,13 @@ pub struct TaskDto {
     pub gates: std::collections::BTreeMap<GateKey, GateState>,
     /// The pinned specification revisions in force.
     pub applied: AppliedRevisionsDto,
+    /// The hold standing over it, when it is held.
+    ///
+    /// Resolved through the same store function `scheduler-plan` uses, so the
+    /// two surfaces agree by construction rather than by two code paths
+    /// happening to match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold: Option<HeldWorkDto>,
     /// When it last changed.
     #[schema(value_type = String, format = DateTime)]
     pub updated_at: Timestamp,

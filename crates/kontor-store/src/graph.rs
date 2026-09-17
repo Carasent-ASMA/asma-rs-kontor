@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use kontor_core::DomainError;
 use kontor_core::authority::{AuthoritySubject, SubjectAuthority};
 use kontor_core::backlog_identity::{EpicBacklogCode, LegacyEpicBacklogCode};
-use kontor_core::calendar::ExecutionAuthorization;
+use kontor_core::calendar::{ExecutionAuthorization, WorkScope};
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, ArtifactKey, CommandReceiptId, ConnectorKey,
     ContentHash, EventCursor, ExecutionAuthorizationId, ExternalId, ExternalName, MiniProjectId,
@@ -697,6 +697,23 @@ pub struct StoredAuthorization {
     pub authorization: ExecutionAuthorization,
     /// Its revocation, once it has been disarmed.
     pub revocation: Option<AuthorizationRevocation>,
+}
+
+/// One hold standing over one task: what would end it, and who owns it.
+///
+/// `reason` is the prose a person wrote and `lift_condition` is the predicate
+/// Kontor evaluates. Both are reported: the prose says why a human held it, the
+/// condition says what ends it, and neither substitutes for the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredHeldWork {
+    /// The revoked authorization doing the holding.
+    pub authorization_id: ExecutionAuthorizationId,
+    /// The machine-checkable condition that would release it.
+    pub lift_condition: HoldLiftCondition,
+    /// The account that recorded the hold.
+    pub owner: AccountProfileId,
+    /// The durable prose reason recorded with the revocation.
+    pub reason: ExternalName,
 }
 
 impl StoredAuthorization {
@@ -2072,6 +2089,61 @@ impl SqliteStore {
         }
         transaction.commit().map_err(backend)?;
         Ok(())
+    }
+
+    /// The hold standing over one task, if it is held.
+    ///
+    /// One function, deliberately, because `scheduler-plan` and `task-get` are
+    /// required to agree about held work. Two call sites resolving "what is
+    /// holding this" independently is exactly how they would come to disagree,
+    /// and a caller reading one surface while acting on the other is the
+    /// failure that makes a hold look like a bug.
+    ///
+    /// Held means covered by a revoked grant and by no live one. A live grant
+    /// anywhere over the task ends the hold, whatever revoked grants remain in
+    /// the history — this is append-only evidence, so old revocations never
+    /// stop existing and must not keep answering.
+    ///
+    /// # Errors
+    /// Backend failures, and a stored condition outside the closed vocabulary.
+    pub fn held_work(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        epic_id: Option<MiniProjectId>,
+        now: Timestamp,
+    ) -> RepositoryResult<Option<StoredHeldWork>> {
+        let stored = self.list_authorizations(project_id)?;
+        let covers = |authorization: &ExecutionAuthorization| match &authorization.scope {
+            WorkScope::Project => true,
+            WorkScope::MiniProject { mini_project_id } => Some(*mini_project_id) == epic_id,
+            WorkScope::Task { task_id: scoped } => *scoped == task_id,
+        };
+        if stored
+            .iter()
+            .any(|entry| covers(&entry.authorization) && entry.arms(now, epic_id, Some(task_id)))
+        {
+            return Ok(None);
+        }
+        // The newest revoked cover is the one in force: an epic re-held after a
+        // grant expired is held on today's terms, not on the first ones.
+        let Some(entry) = stored
+            .iter()
+            .filter(|entry| covers(&entry.authorization) && entry.revocation.is_some())
+            .max_by_key(|entry| entry.authorization.created_at)
+        else {
+            return Ok(None);
+        };
+        let revocation = entry
+            .revocation
+            .as_ref()
+            .expect("filtered to revoked authorizations");
+        Ok(Some(StoredHeldWork {
+            authorization_id: entry.authorization.id,
+            lift_condition: self.get_hold_lift_condition(project_id, entry.authorization.id)?,
+            owner: revocation.revoked_by,
+            reason: revocation.reason.clone(),
+        }))
     }
 
     /// What would lift one hold.
