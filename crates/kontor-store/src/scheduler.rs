@@ -570,7 +570,7 @@ impl SqliteStore {
         Ok(trees)
     }
 
-    /// Every task with a non-terminal run, across the Realm.
+    /// Every task with a non-terminal TeamRun envelope, across the Realm.
     ///
     /// This is what a caller assembling a [`kontor_scheduler::SchedulingSnapshot`]
     /// puts in `in_flight_tasks`: it answers both "is this task already running"
@@ -587,10 +587,8 @@ impl SqliteStore {
         let mut statement = self
             .connection
             .prepare(&format!(
-                "SELECT DISTINCT team.task_id FROM agent_runs AS run
-                 JOIN team_runs AS team
-                   ON team.project_id = run.project_id AND team.id = run.team_run_id
-                 WHERE run.lifecycle NOT IN ({TERMINAL_LIFECYCLES})
+                "SELECT DISTINCT team.task_id FROM team_runs AS team
+                 WHERE team.lifecycle NOT IN ({TERMINAL_LIFECYCLES})
                  ORDER BY team.task_id"
             ))
             .map_err(backend)?;
@@ -1265,7 +1263,7 @@ fn ensure_no_open_serialization_peer(
     Ok(())
 }
 
-/// Refuse when `task_id` has any non-terminal run.
+/// Refuse when `task_id` has any non-terminal TeamRun envelope.
 fn ensure_no_open_run(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
@@ -1275,11 +1273,9 @@ fn ensure_no_open_run(
     let open: i64 = transaction
         .query_row(
             &format!(
-                "SELECT count(*) FROM agent_runs AS run
-                 JOIN team_runs AS team
-                   ON team.project_id = run.project_id AND team.id = run.team_run_id
+                "SELECT count(*) FROM team_runs AS team
                  WHERE team.project_id = ?1 AND team.task_id = ?2
-                   AND run.lifecycle NOT IN ({TERMINAL_LIFECYCLES})"
+                   AND team.lifecycle NOT IN ({TERMINAL_LIFECYCLES})"
             ),
             params![project_id.to_string(), task_id.to_string()],
             |row| row.get(0),

@@ -21,6 +21,8 @@
 //!   not see;
 //! * a replayed admission that queues a second run, a second lease or a second
 //!   launch;
+//! * classifying an open TeamRun by its children, so a stranded envelope admits
+//!   a duplicate replacement;
 //! * an expired lease that concludes something about the run that held it;
 //! * a stale holder that can still renew or release after its token advanced;
 //! * a capacity ceiling trusted from the snapshot rather than recounted.
@@ -37,11 +39,15 @@ use kontor_core::id::{
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     CalendarRepository, CommandRepository, CredentialReference, CredentialReferenceKind,
-    NewAccountProfile, NewAgentRun, NewCommandIntent, NewMiniProject, NewProject, NewTask,
-    NewTeamRun, ProjectRepository, RepositoryError, RunRepository, SpecRepository,
+    NewAbandonReceipt, NewAccountProfile, NewAgentRun, NewCommandIntent, NewMiniProject,
+    NewProject, NewTask, NewTeamRun, ProjectRepository, RepositoryError, RunClosure, RunRepository,
+    SpecRepository,
 };
 use kontor_core::spec::{BudgetBounds, RoleAuthority, TeamRunSnapshot, TeamTemplateRevision};
-use kontor_core::state::{DesiredRunState, RunLifecycle, TaskState};
+use kontor_core::state::{
+    DesiredRunState, RunLifecycle, TaskState, TerminalEvidence, TerminalEvidenceSource,
+    TerminalOutcome,
+};
 use kontor_scheduler::{
     AdmissionEventId, AdmittedCandidate, CalendarAdmission, CapacityConfig, CapacityLimitKind,
     CapacitySnapshot, OrderingInputs, RejectionCode, RejectionEvidence,
@@ -1259,10 +1265,10 @@ fn a_pre_fix_module_lease_recovers_its_declared_task_worktree() {
 /// Every other exclusion has a gap for this case: the task's own module lease does
 /// not contend with the task that holds it, the launch idempotency key is the
 /// caller's to vary, and the task row may still read `ready`. So the transaction
-/// refuses a task that already has an open run, whatever else is different about
-/// the second request.
+/// refuses a task that already has an open TeamRun envelope, whatever else is
+/// different about the second request.
 #[test]
-fn one_task_is_never_admitted_twice_even_with_a_fresh_key_and_no_module() {
+fn a_non_terminal_team_run_blocks_replacement_after_its_only_child_ends() {
     let harness = Harness::new();
     let scope = harness.scope("twice");
     let task = harness.task(&scope, "Admitted once", TaskState::Ready);
@@ -1281,6 +1287,55 @@ fn one_task_is_never_admitted_twice_even_with_a_fresh_key_and_no_module() {
             now(),
         ))
         .expect("the first admission commits");
+
+    // Leave the TeamRun envelope open after its only child ends. This is the
+    // stranded state that must keep both admission and snapshot classification
+    // anchored to the envelope rather than to its children.
+    let run = harness
+        .store
+        .get_agent_run(scope.project, first_parts.agent_run)
+        .expect("the first run is readable")
+        .expect("the first run exists");
+    let abandon_intent = document("abandon-child-only");
+    let abandon_receipt = harness
+        .store
+        .record_abandon_receipt(&NewAbandonReceipt {
+            project_id: scope.project,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: IdempotencyKey::parse("abandon-child-only").expect("a valid key"),
+            target: AggregateRef::AgentRun {
+                agent_run_id: first_parts.agent_run,
+            },
+            target_revision: run.revision,
+            intent: abandon_intent.clone(),
+            recorded_at: now(),
+        })
+        .expect("the abandon receipt is recorded");
+    harness
+        .store
+        .close_agent_run(&RunClosure {
+            project_id: scope.project,
+            agent_run_id: first_parts.agent_run,
+            expected_revision: run.revision,
+            evidence: TerminalEvidence {
+                outcome: TerminalOutcome::Abandoned,
+                source: TerminalEvidenceSource::OperatorAbandon {
+                    receipt_id: abandon_receipt,
+                },
+                evidence_hash: abandon_intent.hash().clone(),
+                closed_at: now(),
+            },
+        })
+        .expect("the only child run closes");
+    assert_eq!(
+        harness
+            .store
+            .get_team_run(scope.project, first_parts.team_run)
+            .expect("the team run is readable")
+            .expect("the team run exists")
+            .lifecycle,
+        RunLifecycle::Queued
+    );
 
     // A second instance, deciding from a snapshot taken before the first
     // committed: a different launch key, a different run, no module to collide on.
