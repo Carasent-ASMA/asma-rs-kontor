@@ -8939,6 +8939,28 @@ impl TopologyRepository for SqliteStore {
             }
         }
 
+        // Leaves before roots, and here rather than in any one caller: a
+        // retired child is finished *with*, but it is still addressable and may
+        // still hold a native container. Archiving its parent first would strand
+        // that child under an ancestor nothing may reach, and leave the native
+        // cleanup order deciding itself from whichever route happened to run.
+        if lifecycle == TopologyLifecycle::Archived {
+            let open_children: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM topology_nodes
+                     WHERE project_id = ?1 AND parent_id = ?2 AND lifecycle != 'archived'",
+                    params![project_id.to_string(), id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if open_children > 0 {
+                return Err(conflict(
+                    "topology node",
+                    "the node still has children that are not archived",
+                ));
+            }
+        }
+
         transaction
             .execute(
                 "UPDATE topology_nodes SET lifecycle = ?1, revision = revision + 1, updated_at = ?2

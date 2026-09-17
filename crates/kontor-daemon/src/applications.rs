@@ -10131,8 +10131,108 @@ impl Services {
         })
     }
 
-    /// Complete native child cleanup before its logical archive is recorded.
-    async fn archive_native_child(
+    /// Whether this node still holds active seats or active direct children.
+    ///
+    /// One read shared by the archive route and the completion gate, so the two
+    /// cannot drift into disagreeing about what "still busy" means.
+    fn hosts_active_work(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        let seats = state
+            .with_store(|store| store.list_seat_bindings(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?;
+        let children = state
+            .with_store(|store| store.list_project_topology_nodes(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(seats
+            .iter()
+            .any(|seat| seat.lifecycle == TopologyLifecycle::Active)
+            || children.iter().any(|child| {
+                child.parent_id == Some(node.id) && child.lifecycle == TopologyLifecycle::Active
+            }))
+    }
+
+    /// Refuse an epic-scoped native root's retirement or archival until that
+    /// epic's completion is durably `Done`.
+    ///
+    /// The root is the epic's whole native place: once it is gone, the evidence
+    /// that the work finished cannot be gathered from the runtime any more. So
+    /// completion is read here, before either the logical transition or any
+    /// runtime effect, and only the one terminal phase that means *finished*
+    /// passes. `NeedsHuman` is terminal too, and deliberately does not: it is a
+    /// hold awaiting a decision, not a closed epic.
+    ///
+    /// The shape comes from the node's own pinned specification revision rather
+    /// than from whatever it currently holds, so a root that never materialized
+    /// is gated exactly like one that did. Anything that is not a native root
+    /// passes untouched — a child's ordering is the store's invariant, not this
+    /// one.
+    fn ensure_root_completion_done(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        node: &SessionTopologyNode,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the node's pinned topology revision is not published in this project",
+                )
+            })?;
+        let declared = spec
+            .node_kinds
+            .iter()
+            .find(|declared| declared.kind == node.kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the pinned specification no longer declares this node's kind",
+                )
+            })?;
+        let projection = ContainerProjection::resolve(&declared.projection_capabilities)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if projection != ContainerProjection::NativeRoot {
+            return Ok(());
+        }
+        // Structure first. While live seats or children remain beneath the
+        // node, the existing structural refusal is both more specific and the
+        // one callers already depend on, and completion has nothing to add to
+        // it — the node is not going anywhere either way, because the store
+        // refuses the transition below. Answering "no completion run yet" here
+        // would replace "your child is still live" with a less useful truth.
+        if self.hosts_active_work(project_id, node)? {
+            return Ok(());
+        }
+        // A missing run refuses as `NotFound` and an undecodable one as
+        // `Unavailable`, both from the accessors themselves. Neither is read as
+        // "nothing to check".
+        let completion = self.require_completion(project_id, epic_id)?;
+        if self.completion_state(&completion)?.phase != CompletionPhase::Done {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the epic's completion is not done, so its native root stays addressable",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Complete native cleanup before a logical archive is recorded.
+    ///
+    /// One route for both materialized shapes. The node's persisted binding
+    /// says which it is — a workspace is a child and is addressed beneath its
+    /// exact native project ancestor, a project is the root and has none — and
+    /// the adapter re-derives the same distinction from the request rather than
+    /// trusting this caller for it.
+    async fn archive_native_container(
         &self,
         project_id: ProjectId,
         node: &SessionTopologyNode,
@@ -10144,19 +10244,7 @@ impl Services {
                 "native cleanup requires a retired topology node",
             ));
         }
-        let seats = state
-            .with_store(|store| store.list_seat_bindings(project_id, node.id))
-            .map_err(|error| self.refuse(&error))?;
-        let children = state
-            .with_store(|store| store.list_project_topology_nodes(project_id))
-            .map_err(|error| self.refuse(&error))?;
-        if seats
-            .iter()
-            .any(|seat| seat.lifecycle == TopologyLifecycle::Active)
-            || children.iter().any(|child| {
-                child.parent_id == Some(node.id) && child.lifecycle == TopologyLifecycle::Active
-            })
-        {
+        if self.hosts_active_work(project_id, node)? {
             return Err(self.deny(
                 ApiErrorCode::PlacementBlocked,
                 "the archive target still hosts active work",
@@ -10179,54 +10267,65 @@ impl Services {
         else {
             return Ok(());
         };
-        if binding.observed_kind != ObservedContainerKind::Workspace {
-            return Err(self.deny(
-                ApiErrorCode::UnsupportedCapability,
-                "native root archive is not supported; preserve the bound project",
-            ));
-        }
-        let mut parent_id = node.parent_id;
-        let mut native_parent = None;
-        while let Some(id) = parent_id {
-            let parent = state
-                .with_store(|store| store.get_topology_node(project_id, id))
-                .map_err(|error| self.refuse(&error))?
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "the archive target has missing persisted ancestry",
-                    )
-                })?;
-            if let Some(parent_binding) = state
-                .with_store(|store| store.get_topology_node_container(project_id, id))
-                .map_err(|error| self.refuse(&error))?
-                && parent_binding.observed_kind == ObservedContainerKind::Project
-            {
-                if parent_binding.identity.runtime_kind != binding.identity.runtime_kind
-                    || parent_binding.identity.host != binding.identity.host
+        // The persisted binding decides the shape, exactly as the retitle route
+        // decides it. A node kind's declared capabilities say what it *would*
+        // materialize as; what it actually holds is what cleanup must address.
+        let projection = match binding.observed_kind {
+            ObservedContainerKind::Project => ContainerProjection::NativeRoot,
+            ObservedContainerKind::Workspace => ContainerProjection::NativeChild,
+        };
+        // Paseo can fetch a workspace only inside an exact native project, and
+        // that ancestry is durable Kontor state rather than adapter cache. Walk
+        // the logical parents until a persisted binding names the native
+        // project; never scan every runtime project or infer it from a title.
+        // A root has no such ancestor and must not claim one.
+        let bound_project_native_id = if projection == ContainerProjection::NativeChild {
+            let mut parent_id = node.parent_id;
+            let mut native_parent = None;
+            while let Some(id) = parent_id {
+                let parent = state
+                    .with_store(|store| store.get_topology_node(project_id, id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the archive target has missing persisted ancestry",
+                        )
+                    })?;
+                if let Some(parent_binding) = state
+                    .with_store(|store| store.get_topology_node_container(project_id, id))
+                    .map_err(|error| self.refuse(&error))?
+                    && parent_binding.observed_kind == ObservedContainerKind::Project
                 {
-                    return Err(self.deny(
-                        ApiErrorCode::StaleBinding,
-                        "the native child's persisted parent belongs to another runtime host",
-                    ));
+                    if parent_binding.identity.runtime_kind != binding.identity.runtime_kind
+                        || parent_binding.identity.host != binding.identity.host
+                    {
+                        return Err(self.deny(
+                            ApiErrorCode::StaleBinding,
+                            "the native child's persisted parent belongs to another runtime host",
+                        ));
+                    }
+                    native_parent = Some(parent_binding.identity.native_id);
+                    break;
                 }
-                native_parent = Some(parent_binding.identity.native_id);
-                break;
+                parent_id = parent.parent_id;
             }
-            parent_id = parent.parent_id;
-        }
-        let archive = kontor_runtime::container::ArchiveContainerRequest {
-            topology_node_id: node.id,
-            container_binding_id: ContainerBindingId::parse(binding.container_binding_id.as_str())
-                .map_err(|error| self.refuse_domain(&error))?,
-            projection: ContainerProjection::NativeChild,
-            identity: binding.identity.clone(),
-            bound_project_native_id: native_parent.ok_or_else(|| {
+            Some(native_parent.ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
                     "the native child has no persisted project ancestor",
                 )
-            })?,
+            })?)
+        } else {
+            None
+        };
+        let archive = kontor_runtime::container::ArchiveContainerRequest {
+            topology_node_id: node.id,
+            container_binding_id: ContainerBindingId::parse(binding.container_binding_id.as_str())
+                .map_err(|error| self.refuse_domain(&error))?,
+            projection,
+            identity: binding.identity.clone(),
+            bound_project_native_id,
             canonical_cwd: WorkspaceRoot::parse(
                 binding
                     .canonical_cwd
@@ -10234,7 +10333,7 @@ impl Services {
                     .ok_or_else(|| {
                         self.deny(
                             ApiErrorCode::PlacementBlocked,
-                            "the native child has no persisted directory",
+                            "the native container has no persisted directory",
                         )
                     })?
                     .as_str(),
@@ -10340,8 +10439,14 @@ impl Services {
                 )
             })?;
             self.ensure_no_team_definition_migration(project_id, epic_id)?;
+            // Both terminal directions, not just the destructive one: a retired
+            // root is already unusable, so gating only the archive would let an
+            // incomplete epic lose its native place in two steps instead of one.
+            if lifecycle != TopologyLifecycle::Active {
+                self.ensure_root_completion_done(project_id, epic_id, &node)?;
+            }
             if lifecycle == TopologyLifecycle::Archived {
-                self.archive_native_child(project_id, &node).await?;
+                self.archive_native_container(project_id, &node).await?;
                 self.ensure_no_team_definition_migration(project_id, epic_id)?;
             }
         }

@@ -58773,3 +58773,342 @@ async fn route_apply_threads_the_proved_placement_into_the_retirement() {
     )));
     assert_ne!(world.fake.hosted_seat_native_id(binding_id), Some(native));
 }
+
+/// ASMA-8204: an epic closes leaves-first, and only once it is durably done.
+///
+/// The order under test is the whole contract — retired seats, archived ECP,
+/// then and only then the ESW whose native root is physically removed. Each
+/// earlier step is attempted *out* of order first, because an ordering that is
+/// merely documented is an ordering the next caller gets to disagree with.
+#[tokio::test]
+async fn an_epic_root_archives_last_and_only_when_its_completion_is_done() {
+    let composed = compose_realm("/tmp/kontor-8204-root-closeout").await;
+    let world = &composed.world;
+    let project = ProjectId::parse(&composed.project).expect("project");
+    let epic = MiniProjectId::parse(&composed.epic).expect("epic");
+
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": epic},
+            "expected_revision": composed.project_revision
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("8204-materialize")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let seated = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "routes": [{"role_code": "LSA", "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}}]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("8204-seats")
+    .send(world)
+    .await;
+    assert_eq!(seated.status, 200, "{}", seated.body);
+
+    let node_of = |kind: &str| {
+        world.daemon.state().with_store(|store| {
+            store
+                .list_topology_nodes(project, Some(epic))
+                .expect("nodes")
+                .into_iter()
+                .find(|node| node.kind.as_str() == kind)
+                .unwrap_or_else(|| panic!("the epic holds a {kind}"))
+        })
+    };
+    let reread = |id: TopologyNodeId| {
+        world.daemon.state().with_store(|store| {
+            store
+                .get_topology_node(project, id)
+                .expect("node")
+                .expect("retained")
+        })
+    };
+    let esw = node_of("ESW");
+    let ecp = node_of("ECP");
+    assert_eq!(ecp.parent_id, Some(esw.id), "the ECP hangs off the ESW");
+    let root_binding = world.daemon.state().with_store(|store| {
+        store
+            .get_topology_node_container(project, esw.id)
+            .expect("binding")
+            .expect("the epic root is materialized")
+    });
+    assert_eq!(
+        root_binding.observed_kind,
+        kontor_core::state::ObservedContainerKind::Project,
+        "the ESW is the epic's native root"
+    );
+
+    let esw_retire = format!("/v1/projects/{project}/topology/nodes/{}/retire", esw.id);
+    let esw_archive = format!("/v1/projects/{project}/topology/nodes/{}/archive", esw.id);
+    let root_archives = || {
+        world
+            .fake
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, AdapterCall::ArchiveContainer(id) if *id == esw.id))
+            .count()
+    };
+
+    // ---- Out of order, while the ECP below it is still active ----
+    let early_retire = Call::post(
+        &esw_retire,
+        &serde_json::json!({"expected_revision": esw.revision, "reason": "too early"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("8204-early-retire")
+    .send(world)
+    .await;
+    assert_ne!(
+        early_retire.status, 200,
+        "a root with live topology beneath it must not retire: {}",
+        early_retire.body
+    );
+    let early_archive = Call::post(
+        &esw_archive,
+        &serde_json::json!({"expected_revision": esw.revision, "reason": "too early"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("8204-early-archive")
+    .send(world)
+    .await;
+    assert_ne!(
+        early_archive.status, 200,
+        "a root may not skip straight to archived: {}",
+        early_archive.body
+    );
+    assert_eq!(root_archives(), 0, "no native root effect was reached");
+    assert_eq!(reread(esw.id).lifecycle, TopologyLifecycle::Active);
+
+    // ---- Leaves first: seats, then the ECP ----
+    for seat in world
+        .daemon
+        .state()
+        .with_store(|store| store.list_seat_bindings(project, ecp.id).expect("seats"))
+    {
+        let retired = Call::post(
+            format!("/v1/projects/{project}/seat-bindings/{}/retire", seat.id),
+            &serde_json::json!({"expected_revision": seat.revision, "reason": "closeout"}),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!("8204-seat-{}", seat.id))
+        .send(world)
+        .await;
+        assert_eq!(retired.status, 200, "{}", retired.body);
+    }
+    let ecp_retired = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{}/retire", ecp.id),
+        &serde_json::json!({"expected_revision": ecp.revision, "reason": "closeout"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("8204-ecp-retire")
+    .send(world)
+    .await;
+    assert_eq!(ecp_retired.status, 200, "{}", ecp_retired.body);
+
+    // ---- The completion gate, with the ECP below already non-active ----
+    let compiled = kontor_scheduler::compile(
+        kontor_scheduler::operational_default().expect("the built-in profile"),
+    )
+    .expect("it compiles");
+    let missing = Call::post(
+        &esw_retire,
+        &serde_json::json!({"expected_revision": reread(esw.id).revision, "reason": "no completion"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("8204-retire-without-completion")
+    .send(world)
+    .await;
+    assert_ne!(
+        missing.status, 200,
+        "an epic with no completion run may not lose its native root: {}",
+        missing.body
+    );
+
+    let open = kontor_scheduler::start(&compiled, SeatBindingId::generate(), Vec::new())
+        .expect("a completion run starts");
+    let stored = |state: &kontor_scheduler::CompletionState| StoredEpicCompletion {
+        project_id: project,
+        mini_project_id: epic,
+        profile_id: compiled.profile.id.clone(),
+        profile_version: compiled.profile.version,
+        definition_hash: compiled.definition_hash.clone(),
+        state: serde_json::to_value(state).expect("the state serializes"),
+        revision: state.revision,
+        updated_at: at("2026-09-17T09:00:00Z"),
+    };
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.create_epic_completion(&stored(&open)))
+        .expect("the open run seeds");
+    let unfinished = Call::post(
+        &esw_retire,
+        &serde_json::json!({"expected_revision": reread(esw.id).revision, "reason": "still working"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("8204-retire-while-open")
+    .send(world)
+    .await;
+    assert_ne!(
+        unfinished.status, 200,
+        "an unfinished epic may not lose its native root: {}",
+        unfinished.body
+    );
+
+    // `NeedsHuman` is terminal, and still is not done.
+    let mut held = open.clone();
+    held.phase = kontor_scheduler::CompletionPhase::NeedsHuman;
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.update_epic_completion(&stored(&held), open.revision))
+        .expect("the held run updates");
+    let awaiting = Call::post(
+        &esw_retire,
+        &serde_json::json!({"expected_revision": reread(esw.id).revision, "reason": "awaiting a human"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("8204-retire-while-needs-human")
+    .send(world)
+    .await;
+    assert_ne!(
+        awaiting.status, 200,
+        "a held epic may not lose its native root: {}",
+        awaiting.body
+    );
+    assert_eq!(reread(esw.id).lifecycle, TopologyLifecycle::Active);
+    assert_eq!(root_archives(), 0);
+
+    let mut done = open.clone();
+    done.phase = kontor_scheduler::CompletionPhase::Done;
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.update_epic_completion(&stored(&done), held.revision))
+        .expect("the finished run updates");
+    let retired = Call::post(
+        &esw_retire,
+        &serde_json::json!({"expected_revision": reread(esw.id).revision, "reason": "epic done"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("8204-retire-when-done")
+    .send(world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+    assert_eq!(reread(esw.id).lifecycle, TopologyLifecycle::Retired);
+
+    // ---- Leaves before roots, with nothing else left to refuse ----
+    //
+    // The ESW is retired, its seats are gone, its completion is done and its
+    // only child is retired — so the *sole* reason this archive can fail is
+    // that the child is not archived yet. Asserted here rather than earlier
+    // because earlier the "must be retired" gate answered first, which made the
+    // same assertion pass without ever reaching the child invariant.
+    let blocked = Call::post(
+        &esw_archive,
+        &serde_json::json!({
+            "expected_revision": reread(esw.id).revision,
+            "reason": "the child is not archived yet"
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("8204-archive-before-child")
+    .send(world)
+    .await;
+    assert_ne!(
+        blocked.status, 200,
+        "a retired-but-unarchived child must block its parent: {}",
+        blocked.body
+    );
+    assert_eq!(root_archives(), 0, "and reach no native root effect");
+    assert_eq!(reread(esw.id).lifecycle, TopologyLifecycle::Retired);
+    assert_eq!(
+        reread(ecp.id).lifecycle,
+        TopologyLifecycle::Retired,
+        "the child is the one thing still short of archived"
+    );
+    // Ordering is refused twice over — the store invariant and the runtime's
+    // own occupancy check — so this end-to-end probe deliberately does not
+    // assert *which* layer answered. Each is pinned where it is attributable:
+    // the store by `a_retired_but_unarchived_child_blocks_its_parents_archive`,
+    // the adapter by the Paseo contract's `occupied-by-a-workspace` case. What
+    // this proves is the flip: the identical request settles below, once the
+    // child — and nothing else — has been archived.
+
+    let ecp_archived = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{}/archive", ecp.id),
+        &serde_json::json!({"expected_revision": reread(ecp.id).revision, "reason": "closeout"}),
+    )
+    .signed_as(world, "operator")
+    .with_key("8204-ecp-archive")
+    .send(world)
+    .await;
+    assert_eq!(ecp_archived.status, 200, "{}", ecp_archived.body);
+    assert_eq!(reread(ecp.id).lifecycle, TopologyLifecycle::Archived);
+
+    // ---- The root's own archive: one native removal, survived a lost ack ----
+    let archive_body = serde_json::json!({
+        "expected_revision": reread(esw.id).revision,
+        "reason": "remove the epic's native root"
+    });
+    world.fake.lose_next_archive_ack(esw.id);
+    let uncertain = Call::post(&esw_archive, &archive_body)
+        .signed_as(world, "operator")
+        .with_key("8204-root-archive")
+        .send(world)
+        .await;
+    assert_ne!(
+        uncertain.status, 200,
+        "an unconfirmed native removal must not close logical cleanup"
+    );
+    assert_eq!(reread(esw.id).lifecycle, TopologyLifecycle::Retired);
+
+    let retried = Call::post(&esw_archive, &archive_body)
+        .signed_as(world, "operator")
+        .with_key("8204-root-archive")
+        .send(world)
+        .await;
+    assert_eq!(retried.status, 200, "{}", retried.body);
+    let replayed = Call::post(&esw_archive, &archive_body)
+        .signed_as(world, "operator")
+        .with_key("8204-root-archive")
+        .send(world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replayed.json()["receipt"]["receipt_id"],
+        retried.json()["receipt"]["receipt_id"],
+        "one durable receipt for the whole retried intent"
+    );
+    assert_eq!(
+        root_archives(),
+        1,
+        "the retry proved prior absence instead of removing a second time"
+    );
+    world.daemon.state().with_store(|store| {
+        assert_eq!(
+            store
+                .get_topology_node(project, esw.id)
+                .expect("node")
+                .expect("history retained")
+                .lifecycle,
+            TopologyLifecycle::Archived
+        );
+        assert_eq!(
+            store
+                .get_topology_node_container(project, esw.id)
+                .expect("binding")
+                .expect("the binding survives native absence"),
+            root_binding,
+            "identity evidence outlives the container it names"
+        );
+    });
+}
