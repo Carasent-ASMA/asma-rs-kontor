@@ -30,10 +30,9 @@
 //! There is no route that creates a native session, names a runtime endpoint,
 //! carries a credential value, or writes a store row the domain did not decide
 //! on. A seat exists because the scheduler admitted work and the runtime agreed
-//! to fill it; `scheduler:start` and its exact recovery companion
-//! `scheduler:resume` are the only operations in this module that reach a
-//! runtime, and both use the same durable admission path a background scheduler
-//! would.
+//! to fill it. `scheduler:start` commits that admission; `scheduler:resume`
+//! recovers it, and the bounded TeamRun seat fill completes a declared slot
+//! already owed a durable handoff inside the same admission.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -4903,6 +4902,63 @@ pub struct SchedulerResumeDto {
     pub receipt: MutationReceiptDto,
 }
 
+/// Fill one frozen, unwaived role slot that is owed a durable follow-up.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FillTeamRunSeatRequest {
+    /// The task revision observed before authorizing materialization.
+    #[schema(value_type = u64)]
+    pub expected_task_revision: AggregateRevision,
+    /// Why the operator is completing this admitted team's missing seat.
+    #[schema(value_type = String)]
+    pub reason: BoundedText,
+}
+
+/// Readback of one durable handoff to the requested slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TeamRunSeatDispatchDto {
+    /// The settlement that derived this handoff.
+    pub settled_turn_id: String,
+    /// The stable message identity, retained across delivery attempts.
+    pub message_id: String,
+    /// The target recorded by successful delivery, if any.
+    pub target_agent_run_id: Option<String>,
+    /// True only when the runtime acknowledged the send.
+    pub dispatched: bool,
+}
+
+/// The preserved admission, its filled seat and the durable delivery readback.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FilledTeamRunSeatDto {
+    /// Owning realm.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The admitted task, unchanged by this operation.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The existing team envelope.
+    #[schema(value_type = String)]
+    pub team_run_id: TeamRunId,
+    /// The slot selected from that envelope's frozen snapshot.
+    #[schema(value_type = String)]
+    pub role_slot_id: RoleSlotId,
+    /// The current run filling the slot.
+    #[schema(value_type = String)]
+    pub agent_run_id: AgentRunId,
+    /// The runtime binding read back from the run.
+    pub binding_id: String,
+    /// Generation of the runtime identity.
+    pub binding_generation: u64,
+    /// The native session identity read back from the binding.
+    pub native_id: String,
+    /// Persisted lifecycle of the filled run.
+    pub run_lifecycle: String,
+    /// All durable handoffs for this exact TeamRun and slot.
+    pub dispatches: Vec<TeamRunSeatDispatchDto>,
+    /// The operator command's receipt.
+    pub receipt: MutationReceiptDto,
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -7244,6 +7300,16 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &ResumeAdmissionsRequest,
     ) -> Result<SchedulerResumeDto, ApiError>;
+
+    /// Materialize one declared slot inside an existing admission and retry its handoff.
+    async fn fill_team_run_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        role_slot_id: &RoleSlotId,
+        request: &FillTeamRunSeatRequest,
+    ) -> Result<FilledTeamRunSeatDto, ApiError>;
 
     /// Move a task or the epic through one legal, evidenced transition.
     async fn lifecycle(
@@ -10259,8 +10325,8 @@ pub async fn respond_consultation_permission(
     // Same rule as the session and seat routes: the response id is the
     // idempotency record, so it comes from the caller's key — but any valid
     // key will do, and one that already is a `MessageId` keeps its identity.
-    let response_id = MessageId::parse(key.as_str())
-        .unwrap_or_else(|_| MessageId::derive(key.as_str()));
+    let response_id =
+        MessageId::parse(key.as_str()).unwrap_or_else(|_| MessageId::derive(key.as_str()));
     Ok(Json(
         state
             .applications()
@@ -10905,6 +10971,46 @@ pub async fn resume_admissions(
         state
             .applications()
             .resume_admissions(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Fill a declared, unwaived slot whose durable follow-up cannot be delivered.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("team_run_id" = String, Path, description = "The existing admitted team"),
+        ("role_slot_id" = String, Path, description = "The frozen role slot"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = FillTeamRunSeatRequest,
+    responses(
+        (status = 200, body = FilledTeamRunSeatDto),
+        (status = 400, description = "The slot is undeclared or is not owed a follow-up"),
+        (status = 401), (status = 403), (status = 404),
+        (status = 409, description = "Revision, lifecycle, waiver or placement refuses the fill"),
+        (status = 503, description = "Reconciliation or runtime is unavailable")
+    )
+)]
+pub async fn fill_team_run_seat(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, team_run_id, role_slot_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<FillTeamRunSeatRequest>,
+) -> Result<Json<FilledTeamRunSeatDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let team_run_id = parse_id(&state, TeamRunId::parse(&team_run_id))?;
+    let role_slot_id = parse_id(&state, RoleSlotId::parse(&role_slot_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .fill_team_run_seat(&key, project_id, team_run_id, &role_slot_id, &request)
             .await?,
     ))
 }
