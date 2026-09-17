@@ -697,6 +697,7 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
             "kontor_completion_get",
             "kontor_ticket_claim",
             "kontor_turn_settle",
+            "kontor_turn_observe",
             "kontor_gate_record",
             "kontor_session_message_send",
             "kontor_ticket_comments_pull",
@@ -2896,6 +2897,20 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "Compact one run's session context in place, at a proven safe point.",
+    },
+    ToolSpec {
+        name: "kontor_turn_observe",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/sessions/{agent_run_id}/turns/current",
+        kind: OpKind::Read,
+        args: &[req(
+            "agent_run_id",
+            Place::Path,
+            ArgType::AgentRunId,
+            "The run whose finished turn is read.",
+        )],
+        about: "Read the exact current turn's message id and canonical positions, for a settlement to state.",
     },
     ToolSpec {
         name: "kontor_session_message_send",

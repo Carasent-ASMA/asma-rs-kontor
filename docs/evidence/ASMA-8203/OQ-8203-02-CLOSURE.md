@@ -335,3 +335,82 @@ seconds (attempt 1, schema-incompatible binary, rolled back). Attempt 2 left the
 realm running without master's #225 for approximately 12 minutes before it was
 detected and repaired by attempt 3. No data loss: attempt 1's binary refused
 before opening the database, and attempts 2 and 3 both opened schema 98 normally.
+
+
+## Full loopback suite, and an eighth pre-existing failure
+
+The full `kontor-daemon --test loopback_api` run completed at **329 passed, 8
+failed, 1 ignored** (1049s). The eighth failure is one the earlier targeted runs
+never reached:
+
+```
+a_session_key_must_be_a_stable_client_message_id
+  left: 200   right: 400
+```
+
+It asserts that a non-`MessageId` `Idempotency-Key` on
+`POST /v1/sessions/{id}/messages` is refused `400 invalid_request`. It now
+returns 200, because `message_identifier` derives an id instead of refusing:
+
+```rust
+MessageId::parse(key.as_str()).unwrap_or_else(|_| MessageId::derive(key.as_str()))
+```
+
+**This is not caused by this patch.** `crates/kontor-api/src/sessions.rs` is
+touched here only by the OG-058 `after_delivery` change; `git diff` against the
+base shows no edit to `message_identifier`. Verified the same way as the other
+seven: a detached worktree at clean `d287de78bce4944d617f43d52d532f1c5d35bf8c`
+with its own `CARGO_TARGET_DIR` fails identically, `left: 200, right: 400`, with
+none of this branch's changes applied. Master changed the derive behaviour and
+did not update the assertion.
+
+Eight failures, eight verified pre-existing at the base commit. It is worth
+saying explicitly that the earlier handoffs reported only focused and affected
+suites; this failure was invisible to those and surfaced only on a full run.
+
+## The observation surface (ASMA-8203 durable requirement)
+
+`GET /v1/sessions/{agent_run_id}/turns/current`, served as `kontor_turn_observe`
+at Observer tier. Reports the Kontor message id the runtime echoed and the two
+canonical positions bounding the turn, with field names matching
+`TurnRuntimeProofRequest` so relaying into a settlement is a copy.
+
+Read-only by construction: same canonical history path `/timeline` uses, same
+cursor, same `HistoryReader` validation. It writes nothing, attests nothing,
+settles nothing. `kontor_turn_settle` is **unmodified** and remains the only
+validator and only writer — the end-to-end regression asserts both that an
+observation relayed verbatim is accepted and that a tampered one is still
+refused.
+
+### Mutation evidence — and two tests that were vacuous until it ran
+
+| Mutant | Deliberate defect | First result | After strengthening |
+| --- | --- | --- | --- |
+| O1 | answer even when the seat is not freshly waiting | **survived** | killed |
+| O2 | stop requiring the response to be the last canonical turn event | **survived** | killed |
+| O3 | treat a repeated message id as an answer rather than divergence | killed | killed |
+| O4 | answer from a partial scan instead of refusing at the page budget | **survived** | killed |
+
+Three of the four initially survived, which means those tests proved nothing on
+their own axes:
+
+* O1 survived because the still-working case asserted only `409
+  revision_conflict`, and a later guard refuses that shape too. Fixed by pinning
+  the exact rule so the liveness check must be what refused.
+* O2 survived because no test placed turn content *after* the response. Fixed by
+  adding `observe_trailing_tool_call` to the fake — a tool call carries no
+  message subject, so nothing reads it as a new turn, which is precisely why
+  terminality needs its own check rather than falling out of the message scan.
+* O4 survived because the pagination test stayed inside the 64-page budget.
+  Fixed by reading the same long session at `limit=1`, far past the budget.
+
+Recording this rather than only the final green: the first three tests looked
+reasonable and were not.
+
+### Coverage
+
+Pagination (41 turns read at `limit=3`, newest turn correctly reported, anchor
+resumes), page-budget exhaustion, epoch change (cursor naming an unknown epoch →
+`timeline_refetch_required`), foreign cursor (refused before the runtime is
+asked), missing id, duplicate id, unfinished turn, non-terminal response, and
+forged / reused proof through the unchanged settler.

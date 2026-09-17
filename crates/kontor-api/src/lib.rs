@@ -995,6 +995,10 @@ pub fn router(state: ApiState) -> Router {
             "/v1/sessions/{agent_run_id}/timeline",
             get(sessions::timeline),
         )
+        .route(
+            "/v1/sessions/{agent_run_id}/turns/current",
+            get(sessions::observe_current_turn),
+        )
         .route("/v1/sessions/{agent_run_id}/stream", get(sessions::stream))
         .route(
             "/v1/sessions/{agent_run_id}/messages",

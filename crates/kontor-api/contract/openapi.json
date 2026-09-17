@@ -8731,6 +8731,93 @@
         }
       }
     },
+    "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Fill a declared, unwaived slot whose durable follow-up cannot be delivered.",
+        "operationId": "fill_team_run_seat",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_run_id",
+            "in": "path",
+            "description": "The existing admitted team",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "role_slot_id",
+            "in": "path",
+            "description": "The frozen role slot",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FillTeamRunSeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilledTeamRunSeatDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The slot is undeclared or is not owed a follow-up"
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": "Revision, lifecycle, waiver or placement refuses the fill"
+          },
+          "503": {
+            "description": "Reconciliation or runtime is unavailable"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/waivers": {
       "post": {
         "tags": [
@@ -10375,6 +10462,68 @@
           },
           "409": {
             "description": "The timeline must be refetched from the start"
+          },
+          "422": {
+            "description": "This runtime cannot replay content"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{agent_run_id}/turns/current": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Observe the exact current turn, without asserting anything about it.",
+        "description": "This exists because a delivery seat cannot settle itself: it has no way to\nname the canonical position of a response it has not returned yet. A\npost-turn control caller can, and until now it had to hand-derive the tuple\nfrom a timeline read. Hand-derivation is exactly where a wrong position comes\nfrom, and a wrong position is what settlement's guard then has to catch.\n\nRead-only by construction. It runs the same canonical history path\n`/timeline` does — same cursor, same `HistoryReader` validation, so a gap, a\nredelivery or an epoch change is refused here too — and it writes nothing,\nattests nothing and settles nothing. `turns:settle` re-derives all of it and\nremains the only validator: an observation is a convenience for the caller,\nnever evidence on its own.\n\nThe turn it reports is the *last complete* one: the final canonically\naddressed Kontor message, and the terminal provider response that closed it.\nA seat still working has no such pair and is reported as unfinished rather\nthan as a turn whose end has not arrived.",
+        "operationId": "observe_current_turn",
+        "parameters": [
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "description": "The Kontor agent run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Resume from a previous anchor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum items per page",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The exact current turn",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObservedTurnDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No completed turn is visible in the scanned window"
+          },
+          "409": {
+            "description": "The seat is still working, or the history broke"
           },
           "422": {
             "description": "This runtime cannot replay content"
@@ -12246,17 +12395,22 @@
         "required": [
           "realm_id",
           "ceilings",
+          "restart_required",
           "revision",
           "snapshot_cursor"
         ],
         "properties": {
           "ceilings": {
             "$ref": "#/components/schemas/CapacityCeilingsDto",
-            "description": "The effective values."
+            "description": "The effective values: what this Realm is admitting under right now,\nwhich are the ceilings it was composed with."
           },
           "realm_id": {
             "type": "string",
             "description": "The Realm it governs."
+          },
+          "restart_required": {
+            "type": "boolean",
+            "description": "Whether a stored configuration exists that the running daemon is not\nenforcing.\n\nTrue means someone applied ceilings that are inert: the row is durable,\nthe revision moved, and admission is still using the composed values."
           },
           "revision": {
             "type": "integer",
@@ -12268,6 +12422,17 @@
             "type": "integer",
             "format": "int64",
             "description": "The position this read is consistent with."
+          },
+          "stored_ceilings": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CapacityCeilingsDto",
+                "description": "The stored replacement, when one exists and differs from [`Self::ceilings`].\n\nAn applied configuration is persisted and versioned but is not what the\nrunning daemon enforces, so a read that answered only with the composed\nnumbers let `apply` look like it had taken effect when it had not. This\nfield is the difference, and [`Self::restart_required`] is the verdict."
+              }
+            ]
           }
         }
       },
@@ -15921,6 +16086,95 @@
           }
         }
       },
+      "FillTeamRunSeatRequest": {
+        "type": "object",
+        "description": "Fill one frozen, unwaived role slot that is owed a durable follow-up.",
+        "required": [
+          "expected_task_revision",
+          "reason"
+        ],
+        "properties": {
+          "expected_task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The task revision observed before authorizing materialization.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the operator is completing this admitted team's missing seat."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FilledTeamRunSeatDto": {
+        "type": "object",
+        "description": "The preserved admission, its filled seat and the durable delivery readback.",
+        "required": [
+          "realm_id",
+          "task_id",
+          "team_run_id",
+          "role_slot_id",
+          "agent_run_id",
+          "binding_id",
+          "binding_generation",
+          "native_id",
+          "run_lifecycle",
+          "dispatches",
+          "receipt"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The current run filling the slot."
+          },
+          "binding_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Generation of the runtime identity.",
+            "minimum": 0
+          },
+          "binding_id": {
+            "type": "string",
+            "description": "The runtime binding read back from the run."
+          },
+          "dispatches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamRunSeatDispatchDto"
+            },
+            "description": "All durable handoffs for this exact TeamRun and slot."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The native session identity read back from the binding."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Owning realm."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The operator command's receipt."
+          },
+          "role_slot_id": {
+            "type": "string",
+            "description": "The slot selected from that envelope's frozen snapshot."
+          },
+          "run_lifecycle": {
+            "type": "string",
+            "description": "Persisted lifecycle of the filled run."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The admitted task, unchanged by this operation."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "The existing team envelope."
+          }
+        }
+      },
       "GapDto": {
         "type": "object",
         "description": "A recorded discontinuity a reader is owed.",
@@ -17460,6 +17714,55 @@
           "runtime_kind": {
             "type": "string",
             "description": "The runtime family that answered."
+          }
+        }
+      },
+      "ObservedTurnDto": {
+        "type": "object",
+        "description": "The exact current turn, as canonical history records it.\n\nRead-only, and deliberately not a proof. It is what a post-turn control\ncaller needs in order to *state* a settlement: the Kontor message id the\nruntime echoed back, and the two canonical positions bounding the turn it\nopened. `turns:settle` re-derives every one of these itself and is the only\nthing that decides whether they are true — this surface never writes, never\nattests, and being able to read it grants nothing.\n\nThe fields are named to match `TurnRuntimeProofRequest` exactly, so relaying\nan observation into a settlement is a copy rather than a transcription.",
+        "required": [
+          "realm_id",
+          "agent_run_id",
+          "message_id",
+          "timeline_epoch",
+          "message_sequence",
+          "response_sequence",
+          "anchor"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "The run whose session was read."
+          },
+          "anchor": {
+            "type": "string",
+            "description": "The position the scan stopped at, so a caller reading a long session can\nresume rather than start over."
+          },
+          "message_id": {
+            "type": "string",
+            "description": "The Kontor message id the runtime echoed on the current user message."
+          },
+          "message_sequence": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The canonical sequence of that exact user message.",
+            "minimum": 0
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm the session belongs to."
+          },
+          "response_sequence": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The canonical sequence of the turn's terminal provider response.",
+            "minimum": 0
+          },
+          "timeline_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The canonical epoch both positions belong to.",
+            "minimum": 0
           }
         }
       },
@@ -22706,6 +23009,36 @@
           "team_run_id": {
             "type": "string",
             "description": "The team run."
+          }
+        }
+      },
+      "TeamRunSeatDispatchDto": {
+        "type": "object",
+        "description": "Readback of one durable handoff to the requested slot.",
+        "required": [
+          "settled_turn_id",
+          "message_id",
+          "dispatched"
+        ],
+        "properties": {
+          "dispatched": {
+            "type": "boolean",
+            "description": "True only when the runtime acknowledged the send."
+          },
+          "message_id": {
+            "type": "string",
+            "description": "The stable message identity, retained across delivery attempts."
+          },
+          "settled_turn_id": {
+            "type": "string",
+            "description": "The settlement that derived this handoff."
+          },
+          "target_agent_run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target recorded by successful delivery, if any."
           }
         }
       },

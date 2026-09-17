@@ -1363,6 +1363,37 @@ impl ScriptedFakeRuntime {
         Ok((message_position, response_position))
     }
 
+    /// Append one tool call after a completed turn.
+    ///
+    /// The shape a terminality check exists for: turn content that is *not* a
+    /// message, landing after the response. It carries no message subject, so
+    /// nothing can mistake it for a new turn — but it is a canonical turn event,
+    /// so a response before it is no longer the last one.
+    pub fn observe_trailing_tool_call(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<TimelinePosition> {
+        let mut state = self.lock();
+        let issued = state
+            .bindings
+            .get(&binding.binding_id())
+            .filter(|issued| *issued == binding)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the runtime did not issue the binding named by the trailing tool call",
+            })?;
+        let session = state.session(&issued)?;
+        let position = session.append(
+            SessionEventKind::ToolCall,
+            EventSubject::None,
+            "trailing tool call",
+            observed_at,
+        )?;
+        session.state = ObservedRunState::WaitingInput;
+        Ok(position)
+    }
+
     /// Append one canonical non-content status event after a completed turn.
     ///
     /// Native runtimes may report the transition to waiting after emitting the

@@ -22900,6 +22900,411 @@ async fn refuse_forged_current_window(
     );
 }
 
+/// ASMA-8203. The observation surface, end to end into the unchanged settler.
+///
+/// The point of the surface is that a post-turn caller no longer hand-derives
+/// the tuple, because hand-derivation is where a wrong position comes from. So
+/// the assertion that matters is not what the read *says* — it is that what it
+/// says is accepted verbatim by a `turns:settle` that re-derives everything
+/// itself and was not modified.
+#[tokio::test]
+async fn an_observed_turn_is_the_tuple_settlement_accepts_verbatim() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "turn-observe-e2e").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let task = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]
+        .clone();
+    let revision = task["revision"].as_u64().expect("a revision");
+    let task_id = TaskId::parse(task["task_id"].as_str().expect("a task id")).expect("a task id");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+
+    let _earlier = observe_current_turn(&world, &project, &agent_run);
+    let expected = observe_current_turn(&world, &project, &agent_run);
+
+    let observed = Call::get(format!("/v1/sessions/{agent_run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(observed.status, 200, "{}", observed.body);
+    let body = observed.json();
+
+    // It names the *current* turn, not the earlier one it also walked past.
+    assert_eq!(
+        body["message_id"], expected["message_id"],
+        "{}",
+        observed.body
+    );
+    assert_eq!(
+        body["timeline_epoch"],
+        expected["message_position"]["epoch"]
+    );
+    assert_eq!(
+        body["message_sequence"],
+        expected["message_position"]["sequence"]
+    );
+    assert_eq!(
+        body["response_sequence"],
+        expected["response_position"]["sequence"]
+    );
+
+    // Reading is not writing: an observation records no turn and dispatches
+    // nothing, which is what keeps `turns:settle` the only writer.
+    let (turns, dispatches) = world.daemon.state().with_store(|store| {
+        (
+            store
+                .list_settled_turns(project_id, task_id)
+                .expect("turns read"),
+            store
+                .list_turn_dispatches(project_id)
+                .expect("dispatches read"),
+        )
+    });
+    assert!(turns.is_empty(), "observing settles nothing: {turns:?}");
+    assert!(dispatches.is_empty(), "observing dispatches nothing");
+
+    // And the whole point: relayed verbatim, the unchanged settler accepts it.
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": {
+                "message_id": body["message_id"],
+                "message_position": {
+                    "epoch": body["timeline_epoch"],
+                    "sequence": body["message_sequence"],
+                },
+                "response_position": {
+                    "epoch": body["timeline_epoch"],
+                    "sequence": body["response_sequence"],
+                },
+            },
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-observe-e2e-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["turn_ordinal"], 1);
+
+    // Single-use survives the new surface: observing the same finished turn
+    // again still yields the same tuple, and settling it a second time under a
+    // fresh key is refused.
+    let again = Call::get(format!("/v1/sessions/{agent_run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.json()["message_id"], body["message_id"]);
+    let reused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": {
+                "message_id": body["message_id"],
+                "message_position": {
+                    "epoch": body["timeline_epoch"],
+                    "sequence": body["message_sequence"],
+                },
+                "response_position": {
+                    "epoch": body["timeline_epoch"],
+                    "sequence": body["response_sequence"],
+                },
+            },
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-observe-e2e-reuse")
+    .send(&world)
+    .await;
+    assert_eq!(reused.status, 409, "{}", reused.body);
+
+    // A tampered observation is still caught by the settler, which is the
+    // statement that this surface grants no authority.
+    let forged = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": {
+                "message_id": kontor_runtime::request::MessageId::generate().to_string(),
+                "message_position": {
+                    "epoch": body["timeline_epoch"],
+                    "sequence": body["message_sequence"],
+                },
+                "response_position": {
+                    "epoch": body["timeline_epoch"],
+                    "sequence": body["response_sequence"],
+                },
+            },
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("turn-observe-e2e-forged")
+    .send(&world)
+    .await;
+    assert_eq!(forged.status, 409, "{}", forged.body);
+    assert_eq!(forged.code(), "revision_conflict");
+}
+
+/// The cases the surface has to refuse rather than answer approximately.
+#[tokio::test]
+async fn observing_a_current_turn_fails_closed_on_every_unreadable_shape() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let uri = format!("/v1/sessions/{run}/turns/current");
+
+    // 1. Nothing addressed yet. A launch alone is not a turn, and answering with
+    //    the newest arbitrary event is exactly the inference that is banned.
+    let empty = Call::get(&uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        empty.status == 404 || empty.status == 409,
+        "an unaddressed session has no current turn: {} {}",
+        empty.status,
+        empty.body
+    );
+
+    // 2. A seat still working. The message exists; the turn has not ended, so
+    //    there is no terminal response to name.
+    let key = kontor_runtime::request::MessageId::generate().to_string();
+    let sent = Call::post(
+        format!("/v1/sessions/{run}/messages"),
+        &serde_json::json!({"body": "do the work"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(&key)
+    .send(&world)
+    .await;
+    assert_eq!(sent.status, 200, "{}", sent.body);
+    let working = Call::get(&uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(working.status, 409, "{}", working.body);
+    assert_eq!(working.code(), "revision_conflict");
+    assert_eq!(
+        working.json()["rule"],
+        "this seat is not waiting after a finished turn, so it has no current turn to observe",
+        "the refusal must come from the liveness check, not from a later guard that happens \
+         to also refuse: {}",
+        working.body
+    );
+
+    // 3. A finished turn reads cleanly.
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+    let duplicated = kontor_runtime::request::MessageId::generate();
+    world
+        .fake
+        .observe_turn_completion(&held, duplicated, kontor_api::now())
+        .expect("a completed turn");
+    let good = Call::get(&uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(good.status, 200, "{}", good.body);
+    assert_eq!(
+        good.json()["message_id"],
+        serde_json::json!(duplicated.to_string())
+    );
+
+    // 4. The same id twice is divergence, not a luckier answer: a caller cannot
+    //    tell which of them it would be settling.
+    world
+        .fake
+        .observe_turn_completion(&held, duplicated, kontor_api::now())
+        .expect("the runtime repeats the id");
+    let diverged = Call::get(&uri)
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(diverged.status, 409, "{}", diverged.body);
+    assert_eq!(diverged.code(), "revision_conflict", "{}", diverged.body);
+
+    // 4b. Turn content after the response means the turn described is not the
+    //     current one. A tool call carries no message subject, so nothing reads
+    //     it as a new turn — which is exactly why terminality needs its own
+    //     check rather than falling out of the message scan.
+    let (fresh_world, fresh_run, fresh_snapshot) = {
+        let w = World::open().await;
+        w.script(HISTORY_LIVE);
+        let (r, snap) = w.launch().await;
+        (w, r, snap)
+    };
+    let fresh_held = fresh_world
+        .daemon
+        .state()
+        .sessions()
+        .get(fresh_snapshot.binding_id())
+        .expect("the process holds the binding");
+    fresh_world
+        .fake
+        .observe_turn_completion(
+            &fresh_held,
+            kontor_runtime::request::MessageId::generate(),
+            kontor_api::now(),
+        )
+        .expect("a completed turn");
+    fresh_world
+        .fake
+        .observe_trailing_tool_call(&fresh_held, kontor_api::now())
+        .expect("turn content lands after the response");
+    let trailing = Call::get(format!("/v1/sessions/{fresh_run}/turns/current"))
+        .signed_as(&fresh_world, "observer")
+        .send(&fresh_world)
+        .await;
+    assert_eq!(trailing.status, 409, "{}", trailing.body);
+    assert_eq!(
+        trailing.json()["rule"],
+        "the newest turn's response is not the last canonical turn event",
+        "{}",
+        trailing.body
+    );
+
+    // 5. A cursor from another session is refused before the runtime is asked,
+    //    and a cursor naming an epoch this session never had is a refetch, not a
+    //    fresh scan that silently starts over.
+    let foreign = Call::get(format!(
+        "/v1/sessions/{run}/turns/current?after={}",
+        kontor_runtime::timeline::HistoryCursor::issue(
+            RuntimeBindingId::generate(),
+            kontor_runtime::timeline::TimelinePosition {
+                epoch: 1,
+                sequence: 1
+            },
+        )
+        .as_str()
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(foreign.status, 400, "{}", foreign.body);
+
+    let other_epoch = Call::get(format!(
+        "/v1/sessions/{run}/turns/current?after={}",
+        kontor_runtime::timeline::HistoryCursor::issue(
+            snapshot.binding_id(),
+            kontor_runtime::timeline::TimelinePosition {
+                epoch: 99,
+                sequence: 1
+            },
+        )
+        .as_str()
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(other_epoch.status, 409, "{}", other_epoch.body);
+    assert_eq!(other_epoch.code(), "timeline_refetch_required");
+}
+
+/// A long session is paged, not truncated, and the anchor it hands back is a
+/// resume point rather than decoration.
+#[tokio::test]
+async fn observing_a_current_turn_pages_a_long_session_and_resumes_from_its_anchor() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+
+    // Well past one page, so the scan has to continue rather than answer from
+    // the first page it was given.
+    for _ in 0..40 {
+        world
+            .fake
+            .observe_turn_completion(
+                &held,
+                kontor_runtime::request::MessageId::generate(),
+                kontor_api::now(),
+            )
+            .expect("a completed turn");
+    }
+    let newest = kontor_runtime::request::MessageId::generate();
+    let (message_at, response_at) = world
+        .fake
+        .observe_turn_completion(&held, newest, kontor_api::now())
+        .expect("the newest completed turn");
+
+    let observed = Call::get(format!("/v1/sessions/{run}/turns/current?limit=3"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(observed.status, 200, "{}", observed.body);
+    assert_eq!(
+        observed.json()["message_id"],
+        serde_json::json!(newest.to_string()),
+        "a paged scan reports the newest turn, not the last one on some page: {}",
+        observed.body
+    );
+    assert_eq!(
+        observed.json()["message_sequence"],
+        serde_json::json!(message_at.sequence)
+    );
+    assert_eq!(
+        observed.json()["response_sequence"],
+        serde_json::json!(response_at.sequence)
+    );
+
+    // A scan that cannot reach the end says so instead of answering from the
+    // part it saw. At one item per page this session is far past the budget, and
+    // the newest turn is nowhere near the pages it managed to read — so an
+    // answer here would be confidently wrong rather than merely partial.
+    let starved = Call::get(format!("/v1/sessions/{run}/turns/current?limit=1"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(starved.status, 503, "{}", starved.body);
+    assert_eq!(
+        starved.json()["rule"],
+        "the canonical scan reached its page budget before the end of this session",
+        "{}",
+        starved.body
+    );
+
+    // The anchor resumes: reading again from it reaches the same turn without
+    // starting over.
+    let anchor = observed.json()["anchor"]
+        .as_str()
+        .expect("an anchor")
+        .to_owned();
+    let resumed = Call::get(format!("/v1/sessions/{run}/turns/current?after={anchor}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert!(
+        resumed.status == 200 || resumed.status == 404,
+        "an exhausted anchor resumes or reports nothing new, never a broken read: {} {}",
+        resumed.status,
+        resumed.body
+    );
+}
+
 /// ASMA-8203. The negative half of the current-turn proof.
 ///
 /// `settling_a_bounded_turn_leaves_the_seat_live_and_the_run_open` covers the
