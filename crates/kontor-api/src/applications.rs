@@ -53,7 +53,7 @@ use kontor_core::id::{
 use kontor_core::naming::AiShortName;
 use kontor_core::selector::{EpicSelector, TaskSelector};
 use kontor_core::spec::{
-    CodeCategory, CodeLifecycle, EpicPresence, RoleSegment, ShareabilityClass,
+    CodeCategory, CodeLifecycle, EpicPresence, HoldLiftCondition, RoleSegment, ShareabilityClass,
     ShareabilityClassifier, ShareabilityProvenance,
 };
 use kontor_core::state::{PlacementState, TopologyLifecycle};
@@ -4150,12 +4150,25 @@ pub struct EpicExecutionScopeDto {
 /// governable by the scheduler.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct InitialExecutionHoldRequest {
-    /// The account profile recording the kickoff hold.
+    /// The account profile recording the kickoff hold. Its owner.
     #[schema(value_type = String)]
     pub held_by: AccountProfileId,
     /// Why work must remain ineligible after the graph is created.
     #[schema(value_type = String)]
     pub reason: ExternalName,
+    /// What would end the hold, as something Kontor can evaluate.
+    ///
+    /// `reason` is prose: it reads well and decides nothing, so before this
+    /// field the only thing that ever lifted a hold was a human calling
+    /// `execution-arm`, and an epic whose stated condition had been true for
+    /// days sat idle because nobody was asked to look.
+    ///
+    /// Absent means [`HoldLiftCondition::Manual`], which is what every hold
+    /// recorded before this field existed actually meant. A caller that says
+    /// nothing gets exactly the behaviour it already had.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub lift_condition: Option<HoldLiftCondition>,
 }
 
 /// The no-write projection of a requested covering kickoff hold.
@@ -4165,12 +4178,17 @@ pub struct InitialExecutionHoldPreviewDto {
     pub scope: String,
     /// Apply persists the authorization already revoked.
     pub state: String,
-    /// The account profile that will record the hold.
+    /// The account profile that will record the hold. Its owner.
     #[schema(value_type = String)]
     pub held_by: AccountProfileId,
     /// The durable reason apply will record.
     #[schema(value_type = String)]
     pub reason: ExternalName,
+    /// The machine-checkable condition apply will record, resolved — so a
+    /// caller that named none sees `manual` here rather than an absence it has
+    /// to interpret.
+    #[schema(value_type = String)]
+    pub lift_condition: HoldLiftCondition,
 }
 
 /// What `epics:apply` is asked for.
@@ -4622,6 +4640,15 @@ pub struct AuthorizationProjectionDto {
     /// The recorded reason for revocation.
     #[schema(value_type = Option<String>)]
     pub revocation_reason: Option<ExternalName>,
+    /// What would end this hold, beside the prose that says why it exists.
+    ///
+    /// `None` on a live grant, which has no terms left to meet, and on the
+    /// narrow arm and disarm answers that do not consult the ledger. A hold
+    /// read back from its epic always states it, because "why work is held" and
+    /// "what would release it" are different questions and only the second one
+    /// can be acted on.
+    #[schema(value_type = Option<String>)]
+    pub lift_condition: Option<HoldLiftCondition>,
 }
 
 /// The resource bounds one grant was taken under, on the wire.

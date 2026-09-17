@@ -4776,6 +4776,684 @@ async fn a_new_epic_reports_leadership_declared_but_not_materialized() {
     let world = World::open_empty().await;
     world.daemon.reconcile().await;
     let created = ensure_project(&world, "ecp-1", "Kontor", "/tmp/kontor-ecp").await;
+/// Plan, then start on exactly that plan.
+///
+/// A start names the plan it acts on, so the pair has to be taken together;
+/// the interesting answer here is what the epic's authorizations look like
+/// afterwards, not what start itself returned.
+async fn start_epic(world: &World, project: &str, epic: &str, key: &str) -> Answer {
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    assert_eq!(plan.status, 200, "{}", plan.body);
+    Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({"plan_hash": plan.json()["plan_hash"]}),
+    )
+    .signed_as(world, "operator")
+    .with_key(key)
+    .send(world)
+    .await
+}
+
+/// Every authorization covering one epic that is not revoked.
+///
+/// A hold is a revoked grant, so "held" is exactly "no live grant" — which is
+/// what makes this the honest oracle for a self-lift rather than looking for a
+/// particular receipt.
+async fn live_epic_grants(world: &World, project: &str, epic: &str) -> Vec<serde_json::Value> {
+    epic_authorizations(world, project, epic)
+        .await
+        .into_iter()
+        .filter(|grant| grant["revoked_at"].is_null())
+        .collect()
+}
+
+/// Every authorization covering one epic, live or revoked.
+async fn epic_authorizations(world: &World, project: &str, epic: &str) -> Vec<serde_json::Value> {
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    projection.json()["authorizations"]
+        .as_array()
+        .expect("authorizations")
+        .clone()
+}
+
+/// A kickoff hold ends itself at the boundary that makes its own terms true.
+///
+/// A kickoff hold is a covering authorization persisted already revoked, so a
+/// new epic is never governable and default-allow at any crash boundary. That
+/// worked. What it never carried was a statement of what would end it: `reason`
+/// is prose — this realm's own says "kickoff hold until Jira binding and
+/// worktrees are confirmed" — which reads well and decides nothing. So the only
+/// thing that ever lifted a hold was a human typing `execution-arm`, and an
+/// epic whose stated condition had been true for days sat idle because nobody
+/// was asked to look.
+///
+/// The three arms run one identical sequence and differ only in what the hold
+/// recorded and what the graph actually is, which is what makes this evidence
+/// rather than a demonstration:
+///
+/// * `kickoff_ready` over a graph that becomes bound *and* placed — lifts;
+/// * `manual` over that same graph — never lifts, because `manual` is not "no
+///   condition", it is the statement that a person decides;
+/// * `kickoff_ready` over a graph whose task nobody can seat — does not lift,
+///   because the recorded hold named worktrees as well as Jira, and a
+///   Jira-only reading of it would release work with nowhere to run.
+///
+/// The lift is observed *before* any `scheduler:start`, which is the whole
+/// correction: the condition is evaluated at the durable boundary that makes it
+/// true, not as a side effect of an operator endpoint that can be refused.
+#[tokio::test]
+async fn a_kickoff_hold_lifts_itself_at_the_boundary_that_satisfies_its_terms() {
+    const EPIC_KEY: &str = "ASMA-9401";
+    const TASK_KEY: &str = "ASMA-9402";
+
+    for (label, condition, places_task, lifts) in [
+        ("ready", "kickoff_ready", true, true),
+        ("manual", "manual", true, false),
+        ("unplaced", "kickoff_ready", false, false),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/rest/api/3/issue/{EPIC_KEY}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": EPIC_KEY,
+                "id": "909401",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                    "parent": null,
+                    "summary": "Kickoff epic",
+                    "description": {"type":"doc","version":1,"content":[{
+                        "type":"paragraph","content":[{"type":"text","text":"Kickoff epic"}]
+                    }]},
+                    "labels": []
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/rest/api/3/issue/{TASK_KEY}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": TASK_KEY,
+                "id": "909402",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "issuetype": {"name": "Task", "hierarchyLevel": 0},
+                    "parent": {"key": EPIC_KEY},
+                    "summary": "Kickoff task",
+                    "description": {"type":"doc","version":1,"content":[{
+                        "type":"paragraph","content":[{"type":"text","text":"Kickoff task"}]
+                    }]},
+                    "labels": []
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let project_id = ProjectId::generate();
+        let config_root = tempfile::tempdir().expect("Jira config root");
+        std::fs::write(
+            config_root.path().join("jira.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "projects": [{
+                    "project_id": project_id.to_string(),
+                    "endpoint": server.uri(),
+                    "project_key": "ASMA",
+                    "credential_alias": "work"
+                }]
+            }))
+            .expect("Jira configuration serializes"),
+        )
+        .expect("Jira configuration is written");
+        let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+            config_root.path(),
+            Arc::new(JiraFixtureKeychain),
+        )
+        .expect("Jira configuration loads");
+        let world = World::open_empty_with_jira(connectors).await;
+        world.daemon.reconcile().await;
+        world.daemon.state().with_store(|store| {
+            store
+                .create_project(&NewProject {
+                    id: project_id,
+                    name: name(&format!("Kickoff hold {label}")),
+                    root_path: name(&format!("/tmp/kontor-kickoff-{label}")),
+                    created_at: at("2026-09-17T09:00:00Z"),
+                })
+                .expect("the project is created");
+        });
+        let project = project_id.to_string();
+        register_mvp_delivery_slots(&world, &project);
+        let category = first_category(&world).await;
+
+        let account = Call::post(
+            format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+            &serde_json::json!({
+                "label": "Kickoff holder",
+                "harness": "fake.runtime",
+                "credential_alias": "kickoff-holder",
+                "enabled": true
+            }),
+        )
+        .signed_as(&world, "admin")
+        .with_key("kickoff-account")
+        .send(&world)
+        .await;
+        assert_eq!(account.status, 200, "{}", account.body);
+        let account_id = account.json()["account_profile_id"]
+            .as_str()
+            .expect("an account id")
+            .to_owned();
+
+        let mut body = epic_body(
+            1,
+            &format!("Kickoff {label}"),
+            &category,
+            serde_json::json!([{"title": "First"}]),
+        );
+        body["tasks"][0]["ticket_links"] = serde_json::json!([{
+            "connector": "connector.jira",
+            "external_issue_key": TASK_KEY,
+        }]);
+        if !places_task {
+            // A task is placed either because it declared a worktree or because
+            // one could be derived from a tracker key it carries. Removing all
+            // three is the only way to reach a task nobody can seat, and it is
+            // reachable in life: a graph whose keys arrive later.
+            let task = body["tasks"][0]
+                .as_object_mut()
+                .expect("the task request is an object");
+            task.remove("worktree");
+            task.remove("ticket_links");
+            body.as_object_mut()
+                .expect("the epic request is an object")
+                .remove("execution_scope");
+        }
+        body["initial_hold"] = serde_json::json!({
+            "held_by": account_id,
+            "reason": "Kickoff hold until Jira binding and worktrees are confirmed",
+            "lift_condition": condition,
+        });
+
+        // The preview resolves the condition rather than echoing it, so a
+        // caller reads what will be recorded instead of what it happened to
+        // send.
+        let preview = Call::post(format!("/v1/projects/{project}/epics:preview"), &body)
+            .signed_as(&world, "admin")
+            .send(&world)
+            .await;
+        assert_eq!(preview.status, 200, "{}", preview.body);
+        assert_eq!(preview.json()["initial_hold"]["lift_condition"], condition);
+
+        let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+            .signed_as(&world, "admin")
+            .with_key("kickoff-apply")
+            .send(&world)
+            .await;
+        assert_eq!(applied.status, 200, "{}", applied.body);
+        let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+        let task = applied.json()["tasks"][0]["task_id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+        assert_eq!(
+            applied.json()["initial_hold"]["lift_condition"],
+            condition,
+            "applying a hold reads back the terms it recorded: {}",
+            applied.body
+        );
+
+        // A hold blocks scheduling and states both who holds it and what would
+        // end it. "Why work is held" and "what would release it" are different
+        // questions, and only the second one can be acted on.
+        assert!(
+            live_epic_grants(&world, &project, &epic).await.is_empty(),
+            "the epic starts held: its only authorization is the revoked one"
+        );
+        let held = epic_authorizations(&world, &project, &epic).await;
+        assert_eq!(held.len(), 1, "exactly one covering authorization exists");
+        assert_eq!(held[0]["revoked_by"], account_id);
+        assert_eq!(held[0]["lift_condition"], condition);
+
+        // Whether the graph will become placed is settled at apply, so it is
+        // asserted here rather than inferred from the outcome.
+        let declared_worktree = world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store.task_worktree(project_id, TaskId::parse(&task).expect("a task id"))
+            })
+            .expect("the declared worktree reads");
+        assert_eq!(
+            declared_worktree.is_some(),
+            places_task,
+            "the {label} arm must decide placement at apply, not at lift"
+        );
+
+        let materialization = serde_json::json!({
+            "epic": {"mode": "link", "issue_key": EPIC_KEY},
+            "tasks": {(task.clone()): {"mode": "link", "issue_key": TASK_KEY}}
+        });
+        let jira_preview = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/jira:preview"),
+            &materialization,
+        )
+        .signed_as(&world, "admin")
+        .send(&world)
+        .await;
+        assert_eq!(jira_preview.status, 200, "{}", jira_preview.body);
+        let epic_revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await
+            .json()["revision"]
+            .as_u64()
+            .expect("an epic revision");
+        let jira_apply_body = serde_json::json!({
+            "materialization": materialization,
+            "preview_hash": jira_preview.json()["preview_hash"],
+            "expected_revision": epic_revision
+        });
+        let materialized = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/jira:apply"),
+            &jira_apply_body,
+        )
+        .signed_as(&world, "admin")
+        .with_key("kickoff-materialize")
+        .send(&world)
+        .await;
+        assert_eq!(materialized.status, 200, "{}", materialized.body);
+        assert_eq!(materialized.json()["activated"], true);
+
+        // The whole correction, asserted before any `scheduler:start` exists to
+        // be blamed for it.
+        let grants = live_epic_grants(&world, &project, &epic).await;
+        if lifts {
+            assert_eq!(
+                grants.len(),
+                1,
+                "the recorded condition came true at this boundary, so the hold stopped holding: {}",
+                materialized.body
+            );
+            assert_eq!(
+                grants[0]["created_by"], account_id,
+                "a self-lift is the hold's own terms being met, not a new party deciding"
+            );
+            assert!(
+                grants[0]["capability_receipt_id"]
+                    .as_str()
+                    .is_some_and(|receipt| !receipt.is_empty()),
+                "a lift leaves the evidence an ordinary execution-arm leaves"
+            );
+        } else {
+            assert!(
+                grants.is_empty(),
+                "the {label} arm's terms are not met, so the hold still holds"
+            );
+        }
+
+        // Re-running the boundary must not mint a second grant. It is currently
+        // refused before it ever reaches the lift — a second `jira:apply` over
+        // an already-materialized epic is refused whether the key repeats (409)
+        // or is fresh (503), and identically in all three arms including
+        // `manual`, where nothing lifts at all. That refusal predates this
+        // change and is not what is under test here, so what is asserted is the
+        // invariant that is: an attempt to re-run the boundary leaves every
+        // authorization exactly as it was, whatever it answered.
+        let settled = epic_authorizations(&world, &project, &epic).await;
+        let replayed = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/jira:apply"),
+            &jira_apply_body,
+        )
+        .signed_as(&world, "admin")
+        .with_key("kickoff-materialize")
+        .send(&world)
+        .await;
+        assert_eq!(
+            epic_authorizations(&world, &project, &epic).await,
+            settled,
+            "the {label} arm's authorizations moved under a replay that answered {}: {}",
+            replayed.status,
+            replayed.body
+        );
+
+        // And start only ever consumes what the boundary already decided. The
+        // lift no longer lives here, so a refused or stale start cannot become
+        // a way to arm an epic that its own terms have not released.
+        let started = start_epic(&world, &project, &epic, "kickoff-start").await;
+        assert!(
+            started.status == 200 || started.status == 409,
+            "{}",
+            started.body
+        );
+        assert_eq!(
+            epic_authorizations(&world, &project, &epic).await,
+            settled,
+            "start observes authorization; it never writes it: {}",
+            started.body
+        );
+    }
+}
+/// One Jira-backed world whose epic and task may simply be linked, and the
+/// project, account and category an epic apply needs.
+///
+/// Link materialization reads each issue back and judges it; it never creates,
+/// so these two readbacks are the connector's whole surface here. The server
+/// and its configuration root are held rather than returned by value because
+/// dropping either would take the endpoint down mid-test.
+struct KickoffWorld {
+    world: World,
+    project_id: ProjectId,
+    project: String,
+    category: String,
+    account_id: String,
+    _server: MockServer,
+    _config_root: tempfile::TempDir,
+}
+
+async fn kickoff_world(label: &str, epic_key: &str, task_key: &str) -> KickoffWorld {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/rest/api/3/issue/{epic_key}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": epic_key,
+            "id": "909411",
+            "fields": {
+                "project": {"key": "ASMA"},
+                "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+                "parent": null,
+                "summary": "Kickoff epic",
+                "description": {"type":"doc","version":1,"content":[{
+                    "type":"paragraph","content":[{"type":"text","text":"Kickoff epic"}]
+                }]},
+                "labels": []
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/rest/api/3/issue/{task_key}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "key": task_key,
+            "id": "909412",
+            "fields": {
+                "project": {"key": "ASMA"},
+                "issuetype": {"name": "Task", "hierarchyLevel": 0},
+                "parent": {"key": epic_key},
+                "summary": "Kickoff task",
+                "description": {"type":"doc","version":1,"content":[{
+                    "type":"paragraph","content":[{"type":"text","text":"Kickoff task"}]
+                }]},
+                "labels": []
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let project_id = ProjectId::generate();
+    let config_root = tempfile::tempdir().expect("Jira config root");
+    std::fs::write(
+        config_root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(),
+                "endpoint": server.uri(),
+                "project_key": "ASMA",
+                "credential_alias": "work"
+            }]
+        }))
+        .expect("Jira configuration serializes"),
+    )
+    .expect("Jira configuration is written");
+    let connectors = kontor_jira::JiraConnectors::read_with_keychain(
+        config_root.path(),
+        Arc::new(JiraFixtureKeychain),
+    )
+    .expect("Jira configuration loads");
+    let world = World::open_empty_with_jira(connectors).await;
+    world.daemon.reconcile().await;
+    world.daemon.state().with_store(|store| {
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name(&format!("Kickoff hold {label}")),
+                root_path: name(&format!("/tmp/kontor-kickoff-{label}")),
+                created_at: at("2026-09-17T09:00:00Z"),
+            })
+            .expect("the project is created");
+    });
+    let project = project_id.to_string();
+    register_mvp_delivery_slots(&world, &project);
+    let category = first_category(&world).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Kickoff holder",
+            "harness": "fake.runtime",
+            "credential_alias": "kickoff-holder",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("kickoff-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    KickoffWorld {
+        world,
+        project_id,
+        project,
+        category,
+        account_id,
+        _server: server,
+        _config_root: config_root,
+    }
+}
+
+/// A hold that never recorded any terms is manual, and stays held through the
+/// boundary that would have released one that had.
+///
+/// Every hold applied since v99 records a row, including `manual`, so the only
+/// way to hold an authorization with *no* row is the way that predates the
+/// table: arm, then disarm. That is exactly the shape of every hold this realm
+/// recorded before ASMA-8194, and it must not acquire a self-lift it was never
+/// given — the read that turns an absent row into `manual` is the only thing
+/// standing between those holds and an automatic release.
+///
+/// The graph is deliberately made fully kickoff-ready — epic and task bound,
+/// task placed — so that the *condition* is the only reason it does not lift.
+/// A legacy hold over a graph that could not have lifted anyway would prove
+/// nothing.
+#[tokio::test]
+async fn a_hold_that_recorded_no_terms_is_manual_and_survives_the_lift_boundary() {
+    const EPIC_KEY: &str = "ASMA-9411";
+    const TASK_KEY: &str = "ASMA-9412";
+    let fixture = kickoff_world("legacy", EPIC_KEY, TASK_KEY).await;
+    let (world, project) = (&fixture.world, fixture.project.as_str());
+
+    let mut body = epic_body(
+        1,
+        "Legacy hold",
+        &fixture.category,
+        serde_json::json!([{"title": "First"}]),
+    );
+    body["tasks"][0]["ticket_links"] = serde_json::json!([{
+        "connector": "connector.jira",
+        "external_issue_key": TASK_KEY,
+    }]);
+    // No `initial_hold`: this epic is never handed terms, which is the whole
+    // point. The hold arrives the pre-v99 way, below.
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(world, "admin")
+        .with_key("legacy-apply")
+        .send(world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": applied.json()["revision"],
+            "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z",
+            "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "granted_by": fixture.account_id,
+            "reason": "Arm it before holding it"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("legacy-arm")
+    .send(world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+    let authorization = armed.json()["authorization_id"]
+        .as_str()
+        .expect("an authorization id")
+        .to_owned();
+
+    let epic_revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await
+        .json()["revision"]
+        .as_u64()
+        .expect("an epic revision");
+    let disarmed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:disarm"),
+        &serde_json::json!({
+            "authorization_id": authorization,
+            "expected_revision": epic_revision,
+            "revoked_by": fixture.account_id,
+            "reason": "Kickoff hold until Jira binding and worktrees are confirmed"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("legacy-disarm")
+    .send(world)
+    .await;
+    assert_eq!(disarmed.status, 200, "{}", disarmed.body);
+
+    // A revoked covering authorization with no row in the condition ledger:
+    // the pre-v99 hold, reachable only this way now that applying one always
+    // records its terms.
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store.get_hold_lift_condition(
+                    fixture.project_id,
+                    kontor_core::id::ExecutionAuthorizationId::parse(&authorization)
+                        .expect("an authorization id"),
+                )
+            })
+            .map(|condition| condition == kontor_core::spec::HoldLiftCondition::Manual)
+            .expect("the absent condition reads"),
+        "a hold with no recorded row means manual, which is what it meant before the row existed"
+    );
+    let held = epic_authorizations(world, project, &epic).await;
+    assert_eq!(
+        held.len(),
+        1,
+        "exactly one covering authorization: {held:?}"
+    );
+    assert_eq!(
+        held[0]["lift_condition"], "manual",
+        "the readback states manual rather than inventing terms nobody recorded"
+    );
+    assert!(
+        live_epic_grants(world, project, &epic).await.is_empty(),
+        "the epic is held"
+    );
+
+    // The graph becomes everything `kickoff_ready` asks for. A hold that had
+    // recorded those terms would lift here; this one recorded none.
+    let materialization = serde_json::json!({
+        "epic": {"mode": "link", "issue_key": EPIC_KEY},
+        "tasks": {(task.clone()): {"mode": "link", "issue_key": TASK_KEY}}
+    });
+    let jira_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/jira:preview"),
+        &materialization,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(jira_preview.status, 200, "{}", jira_preview.body);
+    let epic_revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await
+        .json()["revision"]
+        .as_u64()
+        .expect("an epic revision");
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/jira:apply"),
+        &serde_json::json!({
+            "materialization": materialization,
+            "preview_hash": jira_preview.json()["preview_hash"],
+            "expected_revision": epic_revision
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("legacy-materialize")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    assert_eq!(materialized.json()["activated"], true);
+
+    assert!(
+        live_epic_grants(world, project, &epic).await.is_empty(),
+        "a hold that was never given terms must not acquire them: {}",
+        materialized.body
+    );
+    assert_eq!(
+        epic_authorizations(world, project, &epic).await,
+        held,
+        "and nothing about it moved"
+    );
+}
+
+/// The terms of a hold are part of the operation its key names.
+///
+/// `reason` is prose and `lift_condition` decides what happens, so replaying an
+/// apply under the same key with *different* terms is not a replay — it is a
+/// second, different command wearing the first one's key. If the condition were
+/// left out of the intent, the two would hash identically and the second call
+/// would be answered with the first one's result, silently keeping terms the
+/// caller had just tried to change.
+///
+/// The unchanged-body replay is asserted first and deliberately: without it, an
+/// intent that conflicted with *everything* would pass the interesting half of
+/// this test.
+#[tokio::test]
+async fn one_apply_key_cannot_carry_two_different_hold_conditions() {
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let created = ensure_project(&world, "hold-terms", "Kontor", "/tmp/kontor-hold-terms").await;
     let project = created.json()["project_id"]
         .as_str()
         .expect("id")
@@ -4824,6 +5502,161 @@ async fn a_new_epic_reports_leadership_declared_but_not_materialized() {
         .await;
     assert_eq!(again.status, 200, "{}", again.body);
     assert_eq!(again.json()["control_plane"], *plane);
+
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Kickoff holder",
+            "harness": "fake.runtime",
+            "credential_alias": "kickoff-holder",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("terms-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let body_with = |condition: Option<&str>| {
+        let mut body = epic_body(
+            revision,
+            "Hold terms",
+            &category,
+            serde_json::json!([{"title": "First"}]),
+        );
+        let mut hold = serde_json::json!({
+            "held_by": account_id,
+            "reason": "Kickoff hold until Jira binding and worktrees are confirmed",
+        });
+        if let Some(condition) = condition {
+            hold["lift_condition"] = serde_json::json!(condition);
+        }
+        body["initial_hold"] = hold;
+        body
+    };
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &body_with(Some("kickoff_ready")),
+    )
+    .signed_as(&world, "admin")
+    .with_key("terms-apply")
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"].as_str().expect("id").to_owned();
+
+    // The identical call is still a replay.
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &body_with(Some("kickoff_ready")),
+    )
+    .signed_as(&world, "admin")
+    .with_key("terms-apply")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["epic_id"], epic);
+
+    // The same key with different terms is a different command.
+    let changed = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &body_with(Some("manual")),
+    )
+    .signed_as(&world, "admin")
+    .with_key("terms-apply")
+    .send(&world)
+    .await;
+    assert_eq!(changed.status, 409, "{}", changed.body);
+    assert_eq!(changed.json()["code"], "idempotency_conflict");
+    assert_eq!(
+        changed.json()["rule"],
+        "the idempotency key was already used for a different operation"
+    );
+
+    // And the refused call changed nothing: the hold still states the terms it
+    // was applied with.
+    let held = epic_authorizations(&world, &project, &epic).await;
+    assert_eq!(
+        held.len(),
+        1,
+        "exactly one covering authorization: {held:?}"
+    );
+    assert_eq!(held[0]["lift_condition"], "kickoff_ready");
+
+    // A caller that names no condition keeps the pre-field intent bytes, so its
+    // own apply stays replayable. This is the compatibility half of "widened
+    // only when named": every hold applied before the field existed named
+    // nothing, and every one of those receipts has to keep replaying.
+    //
+    // In its own project, because two epics in one project contend for the
+    // short codes and backlog code this fixture hands out, and that refusal
+    // would say nothing about hold terms.
+    let silent_project = ensure_project(
+        &world,
+        "hold-terms-silent",
+        "Kontor",
+        "/tmp/kontor-hold-terms-silent",
+    )
+    .await;
+    let silent_id = silent_project.json()["project_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let silent_account = Call::post(
+        format!("/v1/projects/{silent_id}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Kickoff holder",
+            "harness": "fake.runtime",
+            "credential_alias": "kickoff-holder",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("silent-account")
+    .send(&world)
+    .await;
+    assert_eq!(silent_account.status, 200, "{}", silent_account.body);
+    let mut silent = epic_body(
+        silent_project.json()["revision"]
+            .as_u64()
+            .expect("revision"),
+        "Hold terms unspoken",
+        &category,
+        serde_json::json!([{"title": "First"}]),
+    );
+    silent["initial_hold"] = serde_json::json!({
+        "held_by": silent_account.json()["account_profile_id"],
+        "reason": "Kickoff hold until Jira binding and worktrees are confirmed",
+    });
+    let first = Call::post(format!("/v1/projects/{silent_id}/epics:apply"), &silent)
+        .signed_as(&world, "admin")
+        .with_key("terms-apply-omitted")
+        .send(&world)
+        .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let silent_epic = first.json()["epic_id"].as_str().expect("id").to_owned();
+    let again = Call::post(format!("/v1/projects/{silent_id}/epics:apply"), &silent)
+        .signed_as(&world, "admin")
+        .with_key("terms-apply-omitted")
+        .send(&world)
+        .await;
+    assert_eq!(
+        again.status, 200,
+        "an apply that named no condition must stay replayable: {}",
+        again.body
+    );
+    assert_eq!(again.json()["epic_id"], silent_epic);
+    assert_eq!(
+        epic_authorizations(&world, &silent_id, &silent_epic).await[0]["lift_condition"],
+        "manual",
+        "an unstated condition resolves to manual in the readback, without having been in the intent"
+    );
 }
 
 /// Legacy imports may add one explicit short-code mapping without changing the

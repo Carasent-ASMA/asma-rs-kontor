@@ -367,6 +367,7 @@ const MIGRATIONS: &[&str] = &[
     // one future turn on an exact existing binding; ambiguous history remains
     // permanently ineligible for backfill.
     include_str!("../migrations/0099_turn_correlation_challenges.sql"),
+    include_str!("../migrations/0099_hold_lift_conditions.sql"),
 ];
 
 const _: () = assert!(

@@ -82,6 +82,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "execution_authorization_revocations",
     "execution_authorization_tasks",
     "execution_authorizations",
+    "execution_hold_conditions",
     "external_comments",
     "external_ticket_observations",
     "external_workflow_specs",
@@ -557,6 +558,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // accepted only when one receipt maps to one mutation. v99 adds the
     // immutable future-turn correlation challenge; no historical runtime
     // position can enter that ledger.
+    // v99 records what would end a kickoff hold beside the revocation that is
+    // the hold, so a hold can state its own terms instead of only its prose
+    // reason, and an absent row still means `manual` (ASMA-8194).
     assert_eq!(SCHEMA_VERSION, 99);
 }
 
@@ -2756,6 +2760,81 @@ fn the_schema_contains_exactly_the_expected_tables_and_they_are_all_strict() {
         .map(|name| name.expect("a name"))
         .collect();
     assert!(lax.is_empty(), "every table must be STRICT, found {lax:?}");
+}
+
+/// A recorded hold condition is evidence: it cannot be edited, and it cannot be
+/// withdrawn.
+///
+/// Both halves matter, and the delete half is the quiet one. The read path
+/// treats an absent row as `manual`, so removing the row leaves no gap to
+/// notice — it converts a hold that would have lifted itself into one that
+/// waits for a human forever, and nothing in the projection says so. The closed
+/// vocabulary is checked here too, because a value the domain cannot parse is a
+/// hold that never lifts and never explains why (ASMA-8194).
+#[test]
+fn v99_records_a_hold_lift_condition_that_can_neither_be_edited_nor_withdrawn() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    // The condition's only foreign key is to the revocation that makes an
+    // authorization a hold. This test is about the table's own rules, so the
+    // surrounding graph is deliberately not built.
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("foreign keys can be disabled");
+
+    let hold = "0193f000-0000-7000-8000-000000000099";
+    connection
+        .execute(
+            "INSERT INTO execution_hold_conditions
+                 (project_id, authorization_id, condition, recorded_at)
+             VALUES ('0193f000-0000-7000-8000-000000000001', ?1, 'kickoff_ready',
+                     '2026-09-17T09:00:00Z')",
+            [hold],
+        )
+        .expect("a hold may record what would end it");
+
+    assert!(
+        connection
+            .execute(
+                "UPDATE execution_hold_conditions SET condition = 'manual'
+                 WHERE authorization_id = ?1",
+                [hold],
+            )
+            .is_err(),
+        "the terms of a hold must not move while it holds"
+    );
+    assert!(
+        connection
+            .execute(
+                "DELETE FROM execution_hold_conditions WHERE authorization_id = ?1",
+                [hold],
+            )
+            .is_err(),
+        "deleting the row would silently demote a self-lifting hold to manual"
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO execution_hold_conditions
+                     (project_id, authorization_id, condition, recorded_at)
+                 VALUES ('0193f000-0000-7000-8000-000000000001',
+                         '0193f000-0000-7000-8000-000000000098', 'whenever',
+                         '2026-09-17T09:00:00Z')",
+                [],
+            )
+            .is_err(),
+        "a condition outside the closed vocabulary is a hold nothing can evaluate"
+    );
+
+    let stored: String = connection
+        .query_row(
+            "SELECT condition FROM execution_hold_conditions WHERE authorization_id = ?1",
+            [hold],
+            |row| row.get(0),
+        )
+        .expect("the original condition is still readable");
+    assert_eq!(stored, "kickoff_ready");
 }
 
 #[test]
