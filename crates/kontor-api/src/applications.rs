@@ -4609,6 +4609,15 @@ pub struct AuthorizationProjectionDto {
     /// The recorded reason for revocation.
     #[schema(value_type = Option<String>)]
     pub revocation_reason: Option<ExternalName>,
+    /// What would end this hold, beside the prose that says why it exists.
+    ///
+    /// `None` on a live grant, which has no terms left to meet, and on the
+    /// narrow arm and disarm answers that do not consult the ledger. A hold
+    /// read back from its epic always states it, because "why work is held" and
+    /// "what would release it" are different questions and only the second one
+    /// can be acted on.
+    #[schema(value_type = Option<String>)]
+    pub lift_condition: Option<HoldLiftCondition>,
 }
 
 /// The resource bounds one grant was taken under, on the wire.

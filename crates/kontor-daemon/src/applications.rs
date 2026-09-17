@@ -2073,7 +2073,13 @@ impl Services {
                 )
             })
             .map_err(|error| self.refuse(&error))?;
-        Ok(held)
+        // The disarm answered before the condition existed, so the terms are
+        // stated here. A caller that applied a hold reads back what would end
+        // it, rather than having to ask the epic again.
+        Ok(AuthorizationProjectionDto {
+            lift_condition: Some(condition),
+            ..held
+        })
     }
 
     /// Every agent run in one team run, loaded whole.
@@ -6458,9 +6464,10 @@ impl Services {
     /// Whether one hold's recorded condition is now true.
     ///
     /// Every arm reads only Kontor's own durable state — no runtime call, no
-    /// external fetch. That bound is what makes this safe to evaluate on every
-    /// scheduler pass: it cannot fail for a reason that has nothing to do with
-    /// the epic, and it cannot turn a busy Jira into a stuck epic.
+    /// external fetch. That bound is what makes this safe to evaluate inline at
+    /// the boundary that can make it true: it cannot fail for a reason that has
+    /// nothing to do with the epic, and it cannot turn a busy Jira into a stuck
+    /// epic.
     ///
     /// [`HoldLiftCondition::Manual`] is always false. It is not "no condition",
     /// it is the statement that a person decides, and the whole point of the
@@ -6474,58 +6481,46 @@ impl Services {
         let state = self.state()?;
         match condition {
             HoldLiftCondition::Manual => Ok(false),
-            HoldLiftCondition::JiraGraphConfirmed => {
+            HoldLiftCondition::KickoffReady => {
                 let epic_bound = state
                     .with_store(|store| store.confirmed_jira_epic_key(project_id, epic_id))
                     .map_err(|error| self.refuse(&error))?
                     .is_some();
                 let tasks = state
-                    .with_store(|store| store.list_tasks(project_id))
+                    .with_store(|store| store.list_epic_tasks(project_id, epic_id))
                     .map_err(|error| self.refuse(&error))?;
                 let mut every_task_bound = true;
-                for task in tasks
-                    .into_iter()
-                    .filter(|task| task.mini_project_id == Some(epic_id))
-                {
+                let mut every_task_placed = true;
+                for task in tasks {
                     if state
                         .with_store(|store| store.confirmed_jira_task_key(project_id, task.id))
                         .map_err(|error| self.refuse(&error))?
                         .is_none()
                     {
                         every_task_bound = false;
-                        break;
                     }
-                }
-                Ok(jira_graph_is_confirmed(epic_bound, every_task_bound))
-            }
-            HoldLiftCondition::LeadershipStaffed => {
-                for role_code in [MANDATORY_PROGRAM_ROLE, MANDATORY_LEAD_ROLE] {
-                    // A role with no live seat at all is unstaffed, not an
-                    // error: "the control plane is not ready yet" is precisely
-                    // the state this condition waits on.
-                    let seat = match self.epic_control_seat(project_id, epic_id, role_code) {
-                        Ok(seat) => seat,
-                        Err(error)
-                            if matches!(
-                                error.code,
-                                ApiErrorCode::PlacementBlocked | ApiErrorCode::RoleSlotUnbound
-                            ) =>
-                        {
-                            return Ok(false);
-                        }
-                        Err(error) => return Err(error),
-                    };
-                    // A binding is a row. Only a native is a seat that could
-                    // take the handoff this condition exists to wait for.
+                    // The durable declaration, which is what "worktrees are
+                    // confirmed" can mean at kickoff. A claim the scheduler
+                    // verified and a workspace placement preflight proved are
+                    // both later facts, produced during the admission this hold
+                    // exists to withhold — requiring either would make the hold
+                    // wait on itself.
                     if state
-                        .with_store(|store| store.get_hosted_topology_seat(project_id, seat))
+                        .with_store(|store| store.task_worktree(project_id, task.id))
                         .map_err(|error| self.refuse(&error))?
                         .is_none()
                     {
-                        return Ok(false);
+                        every_task_placed = false;
+                    }
+                    if !every_task_bound && !every_task_placed {
+                        break;
                     }
                 }
-                Ok(true)
+                Ok(kickoff_is_ready(
+                    epic_bound,
+                    every_task_bound,
+                    every_task_placed,
+                ))
             }
         }
     }
@@ -12156,8 +12151,17 @@ fn evidence_of(authorization: &ExecutionAuthorization) -> AuthorizationEvidence 
 }
 
 /// The wire view of one stored authorization.
-fn authorization_dto(stored: &kontor_store::StoredAuthorization) -> AuthorizationProjectionDto {
+///
+/// `lift_condition` is passed rather than read, because this is a pure shape
+/// over an already-loaded row: only a caller that consulted the condition
+/// ledger may claim a hold's terms, and a caller that did not says `None`
+/// instead of implying `manual`.
+fn authorization_dto(
+    stored: &kontor_store::StoredAuthorization,
+    lift_condition: Option<HoldLiftCondition>,
+) -> AuthorizationProjectionDto {
     AuthorizationProjectionDto {
+        lift_condition,
         authorization_id: stored.authorization.id.to_string(),
         scope: match stored.authorization.scope {
             WorkScope::Project => "project".to_owned(),
@@ -12414,19 +12418,6 @@ async fn freeze_seat_context_policy(
 /// that already said what a seat may do keeps saying it, and a realm that
 /// declares nothing at either level behaves exactly as it did before either
 /// existed. A `runtimes.json` still at generation 4 can only reach step 3.
-/// Whether a whole epic graph is externally bound.
-///
-/// Separated from the reads that answer its two questions, because the state
-/// that matters most cannot be built through a supported call: Kontor's Jira
-/// materialization batches cover an epic *and every one of its tasks* at once
-/// and refuse anything narrower, so "the epic is bound and a task is not" is
-/// unreachable from the outside. It is reachable in life — a task added after a
-/// batch confirmed is unbound — and it is precisely the case a check that
-/// looked only at the epic would get wrong.
-const fn jira_graph_is_confirmed(epic_bound: bool, every_task_bound: bool) -> bool {
-    epic_bound && every_task_bound
-}
-
 fn freeze_seat_autonomy(
     snapshot: &TeamRunSnapshot,
     slot: &RoleSlotId,
@@ -12439,6 +12430,24 @@ fn freeze_seat_autonomy(
             .or(plane_default)
             .unwrap_or_else(SeatAutonomy::standard),
     )
+}
+
+/// Whether a whole epic graph has finished kickoff.
+///
+/// Separated from the reads that answer its three questions, because the states
+/// that decide it cannot all be built through a supported call: Kontor's Jira
+/// materialization batches cover an epic *and every one of its tasks* at once
+/// and refuse anything narrower, so "the epic is bound and a task is not" is
+/// unreachable from the outside. Each is reachable in life — a task added after
+/// a batch confirmed is unbound, and a task carrying neither its own ticket key
+/// nor an epic key is never given a worktree at all — and each is exactly the
+/// case a check that looked only at the epic, or only at Jira, would get wrong.
+const fn kickoff_is_ready(
+    epic_bound: bool,
+    every_task_bound: bool,
+    every_task_placed: bool,
+) -> bool {
+    epic_bound && every_task_bound && every_task_placed
 }
 
 /// Select the primary model rung from the team run's immutable template.
@@ -18866,6 +18875,17 @@ impl ApplicationOperations for Services {
                 )
             })
             .map_err(|error| self.refuse(&error))?;
+        // This is the boundary the kickoff condition was waiting for, and the
+        // whole of ASMA-8194: the graph is now bound end to end and the epic is
+        // active, so a hold that said it would end here ends here — without
+        // anyone being asked to look, and without a scheduler pass to carry it.
+        //
+        // After the activation rather than before it, because that ordering is
+        // what makes the evaluation honest: every fact the condition reads is
+        // already durable when it is read. A refusal here refuses the
+        // materialization it belongs to; there is no state in which the epic is
+        // activated and its satisfied hold is silently still holding.
+        self.lift_satisfied_holds(project_id, epic_id).await?;
         let mut confirmed = Vec::with_capacity(prepared.preview.items.len());
         for confirmed_batch_id in &batch_ids {
             confirmed.extend(
@@ -25352,16 +25372,29 @@ impl ApplicationOperations for Services {
                 );
         }
         if let Some(hold) = &request.initial_hold {
+            let mut hold_intent = serde_json::json!({
+                "held_by": hold.held_by.to_string(),
+                "reason": hold.reason.as_str(),
+            });
+            // The hold's terms are part of the operation, so idempotency
+            // protects them: the same key with a different lift condition is a
+            // different command, not a replay of this one. Widened only when a
+            // condition was actually named, in the same way ASMA-7941 widened
+            // the task intent — a caller that says nothing keeps the pre-field
+            // intent bytes, so its existing apply receipt stays replayable.
+            if let Some(condition) = hold.lift_condition {
+                hold_intent
+                    .as_object_mut()
+                    .expect("a hold intent is an object")
+                    .insert(
+                        "lift_condition".to_owned(),
+                        serde_json::json!(condition.as_str()),
+                    );
+            }
             intent_document
                 .as_object_mut()
                 .expect("an epic intent is an object")
-                .insert(
-                    "initial_hold".to_owned(),
-                    serde_json::json!({
-                        "held_by": hold.held_by.to_string(),
-                        "reason": hold.reason.as_str(),
-                    }),
-                );
+                .insert("initial_hold".to_owned(), hold_intent);
         }
         let intent = self.intent(&intent_document)?;
         if let Some(receipt) = self.replayed(key, &intent, None)? {
@@ -25898,8 +25931,28 @@ impl ApplicationOperations for Services {
                     stored.authorization.scope.covers(Some(epic_id), None)
                         || matches!(stored.authorization.scope, WorkScope::Project)
                 })
-                .map(authorization_dto)
-                .collect(),
+                .map(|stored| {
+                    // Only a revoked authorization is a hold, and only a hold
+                    // has terms. Reading the ledger for a live grant would
+                    // report `manual` for something that is not waiting on
+                    // anyone.
+                    let lift_condition = if stored.revocation.is_some() {
+                        Some(
+                            state
+                                .with_store(|store| {
+                                    store.get_hold_lift_condition(
+                                        project_id,
+                                        stored.authorization.id,
+                                    )
+                                })
+                                .map_err(|error| self.refuse(&error))?,
+                        )
+                    } else {
+                        None
+                    };
+                    Ok(authorization_dto(stored, lift_condition))
+                })
+                .collect::<Result<Vec<_>, ApiError>>()?,
             scheduling_open: state.barrier().state().is_open(),
         })
     }
@@ -25992,7 +26045,7 @@ impl ApplicationOperations for Services {
                         "the replayed receipt names an authorization this realm no longer has",
                     )
                 })?;
-            return Ok(authorization_dto(&granted));
+            return Ok(authorization_dto(&granted, None));
         }
 
         let receipt = self.record(
@@ -26024,10 +26077,13 @@ impl ApplicationOperations for Services {
         state
             .with_store(|store| store.insert_authorization(&authorization))
             .map_err(|error| self.refuse(&error))?;
-        Ok(authorization_dto(&kontor_store::StoredAuthorization {
-            authorization,
-            revocation: None,
-        }))
+        Ok(authorization_dto(
+            &kontor_store::StoredAuthorization {
+                authorization,
+                revocation: None,
+            },
+            None,
+        ))
     }
 
     async fn disarm(
@@ -26075,8 +26131,13 @@ impl ApplicationOperations for Services {
         }
         if stored.revocation.is_some() {
             // Already disarmed, and the request that says so has been proved to be
-            // the same one. Re-asserting something already true is an answer.
-            return Ok(authorization_dto(&stored));
+            // the same one. Re-asserting something already true is an answer, and
+            // it answers with the hold's terms, which a caller re-reading a hold
+            // is precisely what wants.
+            let condition = state
+                .with_store(|store| store.get_hold_lift_condition(project_id, id))
+                .map_err(|error| self.refuse(&error))?;
+            return Ok(authorization_dto(&stored, Some(condition)));
         }
         if replay {
             // The key recorded this disarm, but the authorization is not revoked:
@@ -26105,10 +26166,13 @@ impl ApplicationOperations for Services {
         state
             .with_store(|store| store.revoke_authorization(project_id, id, &revocation))
             .map_err(|error| self.refuse(&error))?;
-        Ok(authorization_dto(&kontor_store::StoredAuthorization {
-            authorization: stored.authorization,
-            revocation: Some(revocation),
-        }))
+        Ok(authorization_dto(
+            &kontor_store::StoredAuthorization {
+                authorization: stored.authorization,
+                revocation: Some(revocation),
+            },
+            None,
+        ))
     }
 
     async fn plan(
@@ -26177,12 +26241,6 @@ impl ApplicationOperations for Services {
                 "startup reconciliation has not finished, so nothing may be admitted",
             ));
         }
-        // Before anything is judged: a hold whose recorded condition has come
-        // true stops holding. This is the whole of ASMA-8194 — the condition
-        // was already stated at kickoff, and the only thing missing was
-        // something that looked. It is evaluated here rather than in `plan`
-        // because a plan commits nothing, and lifting a hold is a write.
-        self.lift_satisfied_holds(project_id, epic_id).await?;
         let intent = self.intent(&serde_json::json!({
             "schema_version": 1,
             "operation": "scheduler_start",
@@ -37196,8 +37254,8 @@ mod tests {
         FrozenCommitteeRoute, IdentityDecision, QuotaOutlook, Services,
         account_for_explicit_provider_alias, consultation_account_rungs, counts_towards_completion,
         eligible_roots, ensure_unambiguous_generic_consultation_routes, freeze_seat_autonomy,
-        jira_graph_is_confirmed, re_review_remediation_identity, render_legacy_container_name,
-        seat_block, select_committee_allocation, slot_prompt,
+        kickoff_is_ready, re_review_remediation_identity, render_legacy_container_name, seat_block,
+        select_committee_allocation, slot_prompt,
     };
     use kontor_api::error::ApiError;
     use kontor_core::id::{
@@ -37619,26 +37677,35 @@ mod tests {
         );
     }
 
-    /// `jira_graph_confirmed` is about the graph, and every part of it counts.
+    /// Kickoff readiness is about the whole graph, and every part of it counts.
     ///
-    /// The whole truth table, because the interesting row cannot be reached
-    /// end to end: a Jira materialization batch covers an epic and every one of
-    /// its tasks and refuses anything narrower, so a loopback test can only
-    /// produce "none bound" or "all bound". `(true, false)` — the epic's issue
-    /// exists while a task's does not — is reachable in life, when a task is
-    /// added after a batch confirmed, and it is exactly what a check that
-    /// looked only at the epic would get wrong.
+    /// The whole truth table, because the interesting rows cannot all be
+    /// reached end to end: a Jira materialization batch covers an epic and
+    /// every one of its tasks and refuses anything narrower, so a loopback test
+    /// can only produce "none bound" or "all bound". `(true, false, _)` — the
+    /// epic's issue exists while a task's does not — is reachable in life, when
+    /// a task is added after a batch confirmed.
+    ///
+    /// The placement column is the half the provisional branch omitted. The
+    /// recorded hold says "until Jira binding *and worktrees* are confirmed",
+    /// so `(true, true, false)` — a fully bound graph holding a task nobody can
+    /// seat — must not lift, and that is precisely the row a Jira-only check
+    /// gets wrong.
     #[test]
-    fn a_jira_graph_is_confirmed_only_when_the_epic_and_every_task_are() {
-        assert!(jira_graph_is_confirmed(true, true));
+    fn kickoff_is_ready_only_when_the_epic_and_every_task_are_bound_and_placed() {
+        assert!(kickoff_is_ready(true, true, true));
         assert!(
-            !jira_graph_is_confirmed(true, false),
+            !kickoff_is_ready(true, true, false),
+            "a bound graph with an unplaced task is not kickoff: the hold named worktrees too"
+        );
+        assert!(
+            !kickoff_is_ready(true, false, true),
             "an epic whose own issue exists still has an unbound task: kickoff is not finished"
         );
         assert!(
-            !jira_graph_is_confirmed(false, true),
+            !kickoff_is_ready(false, true, true),
             "and tasks alone are not the graph either"
         );
-        assert!(!jira_graph_is_confirmed(false, false));
+        assert!(!kickoff_is_ready(false, false, false));
     }
 }

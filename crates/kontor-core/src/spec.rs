@@ -3975,8 +3975,9 @@ closed_enum! {
     ///
     /// Each value is a predicate Kontor can evaluate against its own durable
     /// state, with no runtime call and no external fetch. That bound is what
-    /// makes a self-lift safe to run on every scheduler pass: evaluating it
-    /// cannot fail for a reason that has nothing to do with the epic.
+    /// makes a self-lift safe to evaluate at a durable state-change boundary:
+    /// it cannot fail for a reason that has nothing to do with the epic, and a
+    /// busy Jira cannot become a stuck epic.
     HoldLiftCondition, "HoldLiftCondition" {
         /// Only a human lifts it, by arming.
         ///
@@ -3984,19 +3985,20 @@ closed_enum! {
         /// before this type existed said nothing about lifting, and must not
         /// acquire a self-lift it was never given.
         Manual => "manual",
-        /// The epic and every task it owns carry a confirmed external binding.
+        /// Kickoff finished: the graph is externally bound, and every task it
+        /// owns has somewhere to run.
         ///
-        /// The condition this realm's own kickoffs actually state. Jira
-        /// materialization is the last step of kickoff, so "the graph is bound"
-        /// is the machine-checkable spelling of "kickoff finished".
-        JiraGraphConfirmed => "jira_graph_confirmed",
-        /// Every mandatory leadership role holds a native session.
+        /// The machine-checkable spelling of the hold this realm actually
+        /// records — "until Jira binding and worktrees are confirmed" — and of
+        /// both its halves rather than the Jira one alone. Concretely: the epic
+        /// carries a confirmed Jira binding, and every task it owns carries
+        /// both a confirmed Jira binding and a durable declared worktree.
         ///
-        /// The handoff condition. A hold that waits for this lifts when the
-        /// epic has an architect and a program manager that are not the
-        /// operator — which is the state the kickoff contract calls a handoff,
-        /// and which `epic-apply` alone never reaches.
-        LeadershipStaffed => "leadership_staffed",
+        /// Runtime placement is deliberately *not* part of it. A claim verified
+        /// by the scheduler, or a workspace proven by placement preflight, is a
+        /// fact admission itself produces — so a kickoff hold that waited on
+        /// one would be waiting on the thing it is holding back.
+        KickoffReady => "kickoff_ready",
     }
 }
 

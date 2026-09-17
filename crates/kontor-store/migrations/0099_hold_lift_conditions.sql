@@ -16,8 +16,7 @@ CREATE TABLE execution_hold_conditions (
     -- The closed vocabulary of `HoldLiftCondition`. Constrained here as well as
     -- in the domain because a value this table cannot evaluate is a hold that
     -- never lifts, and that failure is silent.
-    condition        TEXT NOT NULL CHECK (condition IN
-                         ('manual', 'jira_graph_confirmed', 'leadership_staffed')),
+    condition        TEXT NOT NULL CHECK (condition IN ('manual', 'kickoff_ready')),
     recorded_at      TEXT NOT NULL
                          CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*Z'),
     PRIMARY KEY (project_id, authorization_id),
@@ -28,10 +27,18 @@ CREATE TABLE execution_hold_conditions (
         ON DELETE RESTRICT
 ) STRICT;
 
--- Append-only, like every other piece of evidence in this schema. A condition
--- that could be edited after the fact is a hold whose terms move while it holds.
+-- Append-only, like every other piece of evidence in this schema, and refused
+-- in both directions. A condition that could be edited after the fact is a hold
+-- whose terms move while it holds. A condition that could be *deleted* is worse
+-- and quieter: the read path treats an absent row as `manual`, so a delete does
+-- not leave a gap to notice — it silently converts a self-lifting hold into one
+-- that waits for a human forever.
 CREATE TRIGGER execution_hold_conditions_no_update
 BEFORE UPDATE ON execution_hold_conditions
 BEGIN SELECT RAISE(ABORT, 'a hold lift condition is evidence, not a draft'); END;
+
+CREATE TRIGGER execution_hold_conditions_no_delete
+BEFORE DELETE ON execution_hold_conditions
+BEGIN SELECT RAISE(ABORT, 'a hold lift condition is evidence, and evidence is not withdrawn'); END;
 
 PRAGMA user_version = 99;
