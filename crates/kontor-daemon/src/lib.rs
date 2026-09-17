@@ -629,6 +629,10 @@ impl Daemon {
             }
             let mut ticker = tokio::time::interval(period);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // The rotation position, carried across ticks so each bounded scan
+            // resumes where the last one stopped instead of re-reading the
+            // oldest page forever.
+            let mut cursor = None;
             loop {
                 tokio::select! {
                     _ = stopping.changed() => return,
@@ -636,7 +640,7 @@ impl Daemon {
                 }
                 tokio::select! {
                     _ = stopping.changed() => return,
-                    result = applications.recover_unconfirmed_admissions(UNCONFIRMED_ADMISSION_SCAN_LIMIT) => match result {
+                    result = applications.recover_unconfirmed_admissions(UNCONFIRMED_ADMISSION_SCAN_LIMIT, &mut cursor) => match result {
                         Ok((recovered, blocked)) if recovered > 0 || blocked > 0 => info!(
                             recovered,
                             blocked,

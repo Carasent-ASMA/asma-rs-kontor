@@ -415,6 +415,32 @@ pub struct UnconfirmedAdmission {
     pub admitted_at: Timestamp,
     /// The original decision and launch key used for an exact replay.
     pub recovery: RecoverableAdmission,
+    /// This row's position in the scan order, for resuming after it.
+    pub scan_key: AdmissionScanKey,
+}
+
+/// One position in the admission scan order.
+///
+/// A bounded scan that always started at the oldest row could only ever see
+/// its own first page, so a page of admissions that never recover would hide
+/// every admission behind them. This is the resume point that lets the next
+/// scan continue past what the last one already saw.
+///
+/// It holds `decided_at` and `id` exactly as the row stored them, so the keyset
+/// comparison is made against the stored bytes and cannot drift through a parse
+/// and re-format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmissionScanKey {
+    decided_at: String,
+    event_id: String,
+}
+
+impl AdmissionScanKey {
+    /// The admission event this position names.
+    #[must_use]
+    pub fn event_id(&self) -> &str {
+        &self.event_id
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -431,13 +457,15 @@ impl SqliteStore {
         &self,
         project_id: Option<ProjectId>,
         epic_id: Option<MiniProjectId>,
+        after: Option<&AdmissionScanKey>,
         limit: u32,
     ) -> RepositoryResult<Vec<UnconfirmedAdmission>> {
         let mut statement = self
             .connection
             .prepare(
                 "SELECT task.mini_project_id, event.team_run_id, event.agent_run_id,
-                        event.decided_at, event.evidence, receipt.idempotency_key
+                        event.decided_at, event.evidence, receipt.idempotency_key,
+                        event.id
                  FROM scheduler_admission_events AS event
                  JOIN tasks AS task
                    ON task.project_id = event.project_id AND task.id = event.task_id
@@ -460,6 +488,9 @@ impl SqliteStore {
                    AND run.observed_state = 'unknown'
                    AND run.derived_state = 'pending_confirmation'
                    AND binding.id IS NULL
+                   AND (?4 IS NULL
+                        OR event.decided_at > ?4
+                        OR (event.decided_at = ?4 AND event.id > ?5))
                  ORDER BY event.decided_at, event.id
                  LIMIT ?3",
             )
@@ -468,7 +499,9 @@ impl SqliteStore {
             .query(params![
                 project_id.map(|id| id.to_string()),
                 epic_id.map(|id| id.to_string()),
-                limit
+                limit,
+                after.map(|key| key.decided_at.clone()),
+                after.map(|key| key.event_id.clone())
             ])
             .map_err(backend)?;
         let mut admissions = Vec::new();
@@ -480,14 +513,19 @@ impl SqliteStore {
 
             let evidence: String = row.get(4).map_err(backend)?;
             let stored = from_json::<StoredAdmission>(&evidence)?;
+            let decided_at: String = row.get(3).map_err(backend)?;
             admissions.push(UnconfirmedAdmission {
                 epic_id: MiniProjectId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
                 team_run_id: TeamRunId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
                 agent_run_id: AgentRunId::parse(&row.get::<_, String>(2).map_err(backend)?)?,
-                admitted_at: read_timestamp(&row.get::<_, String>(3).map_err(backend)?)?,
+                admitted_at: read_timestamp(&decided_at)?,
                 recovery: RecoverableAdmission {
                     admitted: stored.admitted,
                     launch_key: IdempotencyKey::parse(&row.get::<_, String>(5).map_err(backend)?)?,
+                },
+                scan_key: AdmissionScanKey {
+                    decided_at,
+                    event_id: row.get(6).map_err(backend)?,
                 },
             });
         }

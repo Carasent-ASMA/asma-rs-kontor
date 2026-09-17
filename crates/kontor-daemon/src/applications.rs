@@ -282,7 +282,7 @@ use kontor_scheduler::{
 use kontor_store::authority::{AuthorityError, SubjectOrigins};
 use kontor_store::publication::{NewPublicationAttestation, PublicationAttestation};
 use kontor_store::{
-    AdmissionCommit, Applied, AuthorizationRevocation, BacklogImport,
+    AdmissionCommit, AdmissionScanKey, Applied, AuthorizationRevocation, BacklogImport,
     ConsultationPermissionDecision, ConsultationPermissionResponseStatus, EpicApplication,
     EpicExecutionScopeDeclaration, EpicTask, EpicTicketLink, IdempotencyBinding, JiraIntentKind,
     JiraItemKind, JiraMaterializationRecoveryItem, NewJiraMaterializationBatch,
@@ -858,14 +858,33 @@ impl Services {
     pub(crate) async fn recover_unconfirmed_admissions(
         &self,
         limit: u32,
+        cursor: &mut Option<AdmissionScanKey>,
     ) -> Result<(usize, usize), ApiError> {
         let state = self.state()?;
         if !state.barrier().state().is_open() {
             return Ok((0, 0));
         }
-        let admissions = state
-            .with_store(|store| store.unconfirmed_admissions(None, None, limit))
+        // Resume after what the previous scan already saw. A scan that always
+        // restarted at the oldest row could only ever reach its own first
+        // page, so `limit` admissions that never recover would hide every
+        // admission behind them for as long as they stayed eligible.
+        let mut admissions = state
+            .with_store(|store| store.unconfirmed_admissions(None, None, cursor.as_ref(), limit))
             .map_err(|error| self.refuse(&error))?;
+        // An empty read behind a cursor means the order is exhausted, not that
+        // there is nothing to do: wrap to the oldest and rotate again.
+        if admissions.is_empty() && cursor.is_some() {
+            *cursor = None;
+            admissions = state
+                .with_store(|store| store.unconfirmed_admissions(None, None, None, limit))
+                .map_err(|error| self.refuse(&error))?;
+        }
+        // Advance past every row this scan took, recovered or refused. A
+        // blocked admission that held its place would be retried forever ahead
+        // of the ones it is blocking, which is the starvation this prevents.
+        if let Some(last) = admissions.last() {
+            *cursor = Some(last.scan_key.clone());
+        }
         let attempted = !admissions.is_empty();
         let mut recovered = 0;
         let mut blocked = 0;
@@ -26742,7 +26761,7 @@ impl ApplicationOperations for Services {
         let document = plan_digest(&plan).map_err(|error| self.refuse_domain(&error))?;
         let unconfirmed: BTreeMap<TaskId, UnconfirmedAdmission> = state
             .with_store(|store| {
-                store.unconfirmed_admissions(Some(project_id), Some(epic_id), u32::MAX)
+                store.unconfirmed_admissions(Some(project_id), Some(epic_id), None, u32::MAX)
             })
             .map_err(|error| self.refuse(&error))?
             .into_iter()

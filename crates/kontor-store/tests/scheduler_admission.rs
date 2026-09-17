@@ -48,7 +48,8 @@ use kontor_scheduler::{
     CapacitySnapshot, OrderingInputs, RejectionCode, RejectionEvidence,
 };
 use kontor_store::{
-    AdmissionCommit, LeaseEventKind, LeaseRelease, LeaseRenewal, RecordedRejection, SqliteStore,
+    AdmissionCommit, AdmissionScanKey, LeaseEventKind, LeaseRelease, LeaseRenewal,
+    RecordedRejection, SqliteStore,
 };
 use rusqlite::Connection;
 use tempfile::TempDir;
@@ -630,12 +631,141 @@ fn unconfirmed_admissions_are_unknown_unbound_queued_roots_only() {
 
     let recoverable = harness
         .store
-        .unconfirmed_admissions(Some(scope.project), Some(scope.mission), 10)
+        .unconfirmed_admissions(Some(scope.project), Some(scope.mission), None, 10)
         .expect("unconfirmed admissions are readable");
     assert_eq!(recoverable.len(), 1);
     assert_eq!(recoverable[0].team_run_id, parts.team_run);
     assert_eq!(recoverable[0].agent_run_id, parts.agent_run);
     assert_eq!(recoverable[0].recovery.launch_key, parts.launch_key);
+}
+
+#[test]
+fn a_blocked_first_page_cannot_hide_later_admissions() {
+    // The resident scan's bound. Sixteen admissions that never recover are
+    // exactly one page, which is what made them able to hide everything else.
+    const PAGE: u32 = 16;
+    const CANDIDATES: usize = 20;
+
+    let harness = Harness::new();
+    let scope = harness.scope("fair-rotation");
+    let peers = BTreeSet::new();
+
+    // Twenty eligible admissions in a known order. Distinct `decided_at`
+    // values make the scan order total, so "the first page" is a fact rather
+    // than a tie-break.
+    let mut order = Vec::new();
+    for index in 0..CANDIDATES {
+        let task = harness.task(&scope, &format!("Candidate {index:02}"), TaskState::Ready);
+        let admitted = harness.admitted(&scope, task, None, None);
+        let parts = Parts::new(&format!("fair-{index:02}"));
+        let decided_at = at(&format!("2026-08-12T09:00:{:02}Z", index + 1));
+        let mut request = commit(
+            &scope,
+            &admitted,
+            &peers,
+            &parts,
+            &scope.template,
+            decided_at,
+        );
+        request.evidence = recovery_document(&admitted);
+        harness
+            .store
+            .admit_candidate(&request)
+            .expect("the admission commits");
+        order.push(parts.agent_run);
+    }
+
+    let page = |after: Option<&AdmissionScanKey>| {
+        harness
+            .store
+            .unconfirmed_admissions(Some(scope.project), Some(scope.mission), after, PAGE)
+            .expect("unconfirmed admissions are readable")
+    };
+
+    // The first page is the oldest sixteen and nothing else. This is the whole
+    // of what a scan that always restarted at the oldest row could ever see.
+    let first = page(None);
+    assert_eq!(first.len(), PAGE as usize, "the scan stays bounded");
+    assert_eq!(
+        first
+            .iter()
+            .map(|admission| admission.agent_run_id)
+            .collect::<Vec<_>>(),
+        order[..PAGE as usize].to_vec(),
+        "the first page is the oldest admissions, in order"
+    );
+
+    // None of the later admissions is in that page. Without a resume point a
+    // page that never recovers would be re-read forever and these four would
+    // never be attempted at all — the starvation this guards.
+    for later in &order[PAGE as usize..] {
+        assert!(
+            !first
+                .iter()
+                .any(|admission| &admission.agent_run_id == later),
+            "a later admission must not be reachable in the first page"
+        );
+    }
+
+    // Resuming after the first page reaches exactly the admissions it hid,
+    // while every one of those sixteen is still eligible and untouched.
+    let second = page(Some(&first[first.len() - 1].scan_key));
+    assert_eq!(
+        second
+            .iter()
+            .map(|admission| admission.agent_run_id)
+            .collect::<Vec<_>>(),
+        order[PAGE as usize..].to_vec(),
+        "the scan behind a blocked page reaches the admissions it was hiding"
+    );
+
+    // Past the last admission the cursored read is empty. That is the signal to
+    // wrap, not a statement that there is nothing to do.
+    let exhausted = page(Some(&second[second.len() - 1].scan_key));
+    assert!(
+        exhausted.is_empty(),
+        "past the last admission a cursored scan reads nothing"
+    );
+
+    // Following the resident rule exactly — resume after the last row seen, and
+    // wrap when a cursored read comes back empty — every eligible admission is
+    // visited even though not one of them ever recovers.
+    let mut cursor: Option<AdmissionScanKey> = None;
+    let mut seen: BTreeSet<AgentRunId> = BTreeSet::new();
+    let mut scans = 0;
+    while scans < 8 && seen.len() < CANDIDATES {
+        let mut batch = page(cursor.as_ref());
+        if batch.is_empty() && cursor.is_some() {
+            cursor = None;
+            batch = page(None);
+        }
+        assert!(
+            batch.len() <= PAGE as usize,
+            "no scan may exceed the bound it was given"
+        );
+        if let Some(last) = batch.last() {
+            cursor = Some(last.scan_key.clone());
+        }
+        seen.extend(batch.iter().map(|admission| admission.agent_run_id));
+        scans += 1;
+    }
+    assert_eq!(
+        seen.len(),
+        CANDIDATES,
+        "every eligible admission is eventually revisited under the bound"
+    );
+
+    // And the rotation returns to the beginning rather than stopping at the
+    // end: after wrapping, the oldest page is readable again.
+    let wrapped = page(None);
+    assert_eq!(
+        wrapped
+            .iter()
+            .map(|admission| admission.agent_run_id)
+            .collect::<Vec<_>>(),
+        order[..PAGE as usize].to_vec(),
+        "wrapping returns the rotation to the oldest admissions"
+    );
 }
 
 #[test]
