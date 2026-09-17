@@ -13062,6 +13062,45 @@ impl SqliteStore {
         gate_rejection_route_by_source(&transaction, project_id, rejection_receipt_id)
     }
 
+    /// Every active workflow a rejection route still fences, as
+    /// `(project, task)`.
+    ///
+    /// Exactly the population a build that corrected the fence predicate has to
+    /// reconsider: a workflow sitting on a phase some route returned it to. The
+    /// join is the same condition [`SqliteStore::active_gate_rejection_fence`]
+    /// applies to one workflow, so this cannot report a workflow that reads as
+    /// unfenced, and it reports nothing at all for a realm that never rejected
+    /// a gate.
+    ///
+    /// # Errors
+    /// Backend failures and unreadable stored identities.
+    pub fn list_fenced_task_workflows(&self) -> RepositoryResult<Vec<(ProjectId, TaskId)>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT DISTINCT workflow.project_id, workflow.task_id
+                 FROM task_workflows AS workflow
+                 JOIN task_gate_rejection_routes AS route
+                   ON route.project_id = workflow.project_id
+                  AND route.workflow_id = workflow.id
+                  AND route.rejection_target = workflow.current_phase
+                 WHERE workflow.active = 1
+                 ORDER BY workflow.project_id, workflow.task_id",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(backend)?;
+        let mut fenced = Vec::new();
+        for row in rows {
+            let (project, task) = row.map_err(backend)?;
+            fenced.push((ProjectId::parse(&project)?, TaskId::parse(&task)?));
+        }
+        Ok(fenced)
+    }
+
     /// The route currently fencing one active workflow, if any.
     ///
     /// A route fences only while the workflow is still sitting at the phase it
