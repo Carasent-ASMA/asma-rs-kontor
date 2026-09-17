@@ -871,20 +871,17 @@ impl Services {
         let mut admissions = state
             .with_store(|store| store.unconfirmed_admissions(None, None, cursor.as_ref(), limit))
             .map_err(|error| self.refuse(&error))?;
-        // An empty read behind a cursor means the order is exhausted, not that
-        // there is nothing to do: wrap to the oldest and rotate again.
-        if admissions.is_empty() && cursor.is_some() {
+        if scan_reached_the_end(admissions.is_empty(), cursor.is_some()) {
             *cursor = None;
             admissions = state
                 .with_store(|store| store.unconfirmed_admissions(None, None, None, limit))
                 .map_err(|error| self.refuse(&error))?;
         }
-        // Advance past every row this scan took, recovered or refused. A
-        // blocked admission that held its place would be retried forever ahead
-        // of the ones it is blocking, which is the starvation this prevents.
-        if let Some(last) = admissions.last() {
-            *cursor = Some(last.scan_key.clone());
-        }
+        let scanned: Vec<AdmissionScanKey> = admissions
+            .iter()
+            .map(|admission| admission.scan_key.clone())
+            .collect();
+        *cursor = scan_resume_point(&scanned, cursor.take());
         let attempted = !admissions.is_empty();
         let mut recovered = 0;
         let mut blocked = 0;
@@ -12177,6 +12174,33 @@ fn seat_block(task_id: TaskId, refusal: &ApiError) -> BlockedTaskDto {
         code: refusal.code.as_str().to_owned(),
         action: refusal.action.to_owned(),
         evidence: vec![evidence],
+    }
+}
+
+/// Whether an empty bounded scan means the rotation reached the end of the
+/// order rather than that there is nothing to do.
+///
+/// Only a read made *behind* a resume point can exhaust the order. An empty
+/// read from the start genuinely has no eligible admission. Without this
+/// distinction the rotation would stop at the end and never revisit anything,
+/// which is the same starvation as never leaving the start.
+const fn scan_reached_the_end(read_was_empty: bool, had_cursor: bool) -> bool {
+    read_was_empty && had_cursor
+}
+
+/// Where a bounded scan leaves the rotation.
+///
+/// The resume point is the *last* row the scan took, not the first: resuming
+/// after the first would re-read the rest of the page on every tick and crawl
+/// forward one admission at a time. A scan that took nothing leaves the
+/// position it was given, so a wrap that found nothing stays at the start.
+fn scan_resume_point(
+    scanned: &[AdmissionScanKey],
+    previous: Option<AdmissionScanKey>,
+) -> Option<AdmissionScanKey> {
+    match scanned.last() {
+        Some(last) => Some(last.clone()),
+        None => previous,
     }
 }
 
@@ -38135,11 +38159,11 @@ mod tests {
         assert_eq!(Services::write_key_for(&entry, &unchanged), entry);
     }
     use super::{
-        FrozenCommitteeRoute, IdentityDecision, QuotaOutlook, Services,
+        AdmissionScanKey, FrozenCommitteeRoute, IdentityDecision, QuotaOutlook, Services,
         account_for_explicit_provider_alias, consultation_account_rungs, counts_towards_completion,
         eligible_roots, ensure_unambiguous_generic_consultation_routes, freeze_seat_autonomy,
-        re_review_remediation_identity, render_legacy_container_name, seat_block,
-        select_committee_allocation, slot_prompt,
+        re_review_remediation_identity, render_legacy_container_name, scan_reached_the_end,
+        scan_resume_point, seat_block, select_committee_allocation, slot_prompt,
     };
     use kontor_api::error::ApiError;
     use kontor_core::id::{
@@ -38149,6 +38173,69 @@ mod tests {
     use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef, SeatAutonomy};
     use kontor_core::state::TaskState;
     use kontor_runtime::adapter::RuntimeError;
+
+    fn position(second: u32) -> AdmissionScanKey {
+        AdmissionScanKey::new(
+            format!("2026-08-12T09:00:{second:02}Z"),
+            format!("0000000a-0000-4000-8000-0000000000{second:02}"),
+        )
+    }
+
+    /// Only a read made behind a resume point can exhaust the scan order.
+    ///
+    /// Both halves matter. Without `read_was_empty` the rotation would restart
+    /// while it still had a page to work through, re-reading the oldest
+    /// admissions forever. Without `had_cursor` an empty realm would be
+    /// treated as an exhausted one and wrap on every tick.
+    #[test]
+    fn only_an_empty_read_behind_a_cursor_ends_the_rotation() {
+        assert!(
+            scan_reached_the_end(true, true),
+            "an empty read behind a cursor has exhausted the order and must wrap"
+        );
+        assert!(
+            !scan_reached_the_end(false, true),
+            "a scan that still returned rows has not reached the end"
+        );
+        assert!(
+            !scan_reached_the_end(true, false),
+            "an empty read from the start has nothing to do, it has not wrapped"
+        );
+        assert!(
+            !scan_reached_the_end(false, false),
+            "a first scan that returned rows is simply underway"
+        );
+    }
+
+    /// A scan resumes after the last admission it took, so the next scan moves
+    /// on by a whole page instead of re-reading the one it just saw.
+    #[test]
+    fn a_scan_resumes_after_the_last_admission_it_took() {
+        let scanned = vec![position(1), position(2), position(3)];
+        assert_eq!(
+            scan_resume_point(&scanned, None),
+            Some(position(3)),
+            "the resume point is the last row scanned, not the first"
+        );
+        assert_ne!(
+            scan_resume_point(&scanned, None),
+            Some(position(1)),
+            "resuming after the first row would crawl one admission per tick"
+        );
+    }
+
+    /// A scan that took nothing leaves the rotation where it was, so a wrap
+    /// that found an empty realm stays at the start rather than inventing a
+    /// position.
+    #[test]
+    fn a_scan_that_took_nothing_leaves_the_position_alone() {
+        assert_eq!(scan_resume_point(&[], None), None);
+        assert_eq!(
+            scan_resume_point(&[], Some(position(7))),
+            Some(position(7)),
+            "an empty scan must not discard the position it was given"
+        );
+    }
     use kontor_runtime::scope::{EpicScope, ExecutionScope};
     use kontor_scheduler::headroom::{EligibleAccount, HeadroomConfig};
     use std::collections::BTreeSet;

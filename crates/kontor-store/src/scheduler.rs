@@ -436,6 +436,18 @@ pub struct AdmissionScanKey {
 }
 
 impl AdmissionScanKey {
+    /// Name a position in the scan order directly.
+    ///
+    /// The values must be the ones the row stored, because the keyset
+    /// comparison is made against those columns verbatim.
+    #[must_use]
+    pub fn new(decided_at: impl Into<String>, event_id: impl Into<String>) -> Self {
+        Self {
+            decided_at: decided_at.into(),
+            event_id: event_id.into(),
+        }
+    }
+
     /// The admission event this position names.
     #[must_use]
     pub fn event_id(&self) -> &str {
