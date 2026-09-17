@@ -13151,6 +13151,26 @@ fn capacity_config(ceilings: &CapacityCeilingsDto) -> CapacityConfig {
     }
 }
 
+/// The policy a durable capacity document carries.
+///
+/// The startup loader and the read surface both come through here, so a realm
+/// can never compose one set of ceilings and report another. Validating is part
+/// of the conversion rather than the caller's job: a document reaching this
+/// function came back from storage, and storage is not where the domain's rules
+/// were applied.
+///
+/// # Errors
+/// Returns [`kontor_core::DomainError`] when the document is not a ceilings
+/// document this build understands, or carries a set the domain refuses.
+pub(crate) fn stored_capacity(
+    document: &CanonicalDocument,
+) -> kontor_core::DomainResult<CapacityConfig> {
+    let stored: StoredCeilings = document.deserialize()?;
+    let capacity = capacity_config(&stored.ceilings);
+    capacity.validate()?;
+    Ok(capacity)
+}
+
 /// One catalog entry, as a reference projection reports it.
 fn role_entry_dto(entry: &kontor_core::spec::RoleCatalogEntry) -> RoleCatalogEntryDto {
     RoleCatalogEntryDto {
@@ -20464,24 +20484,33 @@ impl ApplicationOperations for Services {
                 store.set_capacity_configuration(&document, &binding, request.expected_revision)
             })
             .map_err(|error| self.refuse(&error))?;
+        let written = stored
+            .ceilings
+            .deserialize::<StoredCeilings>()
+            .map(|stored| stored.ceilings)
+            .map_err(|error| self.refuse_domain(&error))?;
         Ok(CapacityConfigurationDto {
             realm_id: state.realm_id(),
+            // What was just written is durable but not composed, so it governs
+            // admission from the next start rather than from this request. Saying
+            // so is the whole point: an apply that answers 200 and changes
+            // nothing about admission is exactly the shape that hid this for as
+            // long as it did.
+            //
+            // "Not composed" is not the same as "different", though. An apply of
+            // the ceilings already in force leaves nothing for a restart to
+            // reveal, and announcing one would send an operator to restart a
+            // realm that is already enforcing exactly what they asked for.
+            restart_required: written != ceilings_dto(self.capacity),
             // The stored document, not the composed one: this answer is about
             // the record that was just written. The Realm keeps admitting under
             // the ceilings it started with until it next composes — re-reading
             // them between planning a batch and committing it could refuse a
             // candidate the plan had already admitted.
-            ceilings: stored
-                .ceilings
-                .deserialize::<StoredCeilings>()
-                .map(|stored| stored.ceilings)
-                .map_err(|error| self.refuse_domain(&error))?,
-            // What was just written is durable but not composed, so it is not
-            // yet in force. Saying so here is the whole point: an apply that
-            // answers 200 and changes nothing about admission is exactly the
-            // shape that hid this for as long as it did.
+            ceilings: written,
+            // The durable replacement is this answer's own `ceilings`; a second
+            // copy would say nothing the caller cannot already read.
             stored_ceilings: None,
-            restart_required: true,
             revision: stored.revision,
             snapshot_cursor: self.cursor()?,
         })
