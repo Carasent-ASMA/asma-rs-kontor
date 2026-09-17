@@ -24,7 +24,7 @@ use kontor_core::id::{
 };
 use kontor_core::repository::AgentRun;
 use kontor_core::spec::{
-    ContextPolicySource, ContextWindowClass, ContextWindowPolicy, RoleContextSeed,
+    ContextPolicySource, ContextWindowClass, ContextWindowPolicy, RoleContextSeed, SeatAutonomy,
     TeamContextPolicySeed, TeamRunSnapshot, TeamTemplateRevision,
 };
 use kontor_core::state::{
@@ -423,6 +423,75 @@ fn every_seed_template_round_trips_byte_and_hash_identically() {
         let snapshot = TeamRunSnapshot::from_revision(&revision, SCHEMA_VERSION);
         let frozen = TeamTemplateSpec::from_snapshot(&snapshot).expect("the run snapshot reads");
         assert_eq!(&frozen, template);
+    }
+}
+
+/// ASMA-8192. The autonomy floor is declared, and declared *additively*.
+///
+/// The pack is the configuration half of the floor: `freeze_seat_autonomy`
+/// reads the role slot first, so a slot that declares nothing can only reach
+/// the plane default. This proves the bundled pack now declares it, and proves
+/// the declaration arrived as a new revision rather than as an edit to the one
+/// already published — KON-OP-22 D7 recorded an in-place rewrite of this file's
+/// `"version": 1` as a defect, and a published revision is immutable in the
+/// store besides.
+///
+/// The successor check is the sharp one: rebuilding v2 from v1 through
+/// `revise_team_template` and demanding byte equality means v2 may differ from
+/// v1 in the autonomy fields and the version number and in nothing else. A
+/// model rung, a gate authority or a handoff edited into the new revision under
+/// cover of this change fails here.
+#[test]
+fn the_bundled_pack_declares_per_slot_autonomy_as_a_new_revision() {
+    let pack = bundled_teams().expect("the bundled team pack loads");
+    let second = SpecVersion::parse(2).expect("v2");
+
+    let published: Vec<&TeamTemplateSpec> = pack
+        .teams
+        .iter()
+        .filter(|team| team.version == SpecVersion::FIRST)
+        .collect();
+    assert!(
+        !published.is_empty(),
+        "the pack still ships the revisions already published"
+    );
+
+    for first in published {
+        assert!(
+            first.slots.iter().all(|slot| slot.autonomy.is_none()),
+            "the published revision {} declares no autonomy, exactly as it was published",
+            first.template_id
+        );
+
+        let shipped = pack
+            .teams
+            .iter()
+            .find(|team| team.template_id == first.template_id && team.version == second)
+            .unwrap_or_else(|| {
+                panic!("template {} ships a v2 revision", first.template_id)
+            });
+
+        for slot in &shipped.slots {
+            assert_eq!(
+                slot.autonomy,
+                Some(SeatAutonomy::Bounded),
+                "slot {} of {} acts within what Kontor authorized without asking again",
+                slot.id,
+                shipped.name
+            );
+        }
+
+        let successor = revise_team_template(first, |template| {
+            for slot in &mut template.slots {
+                slot.autonomy = Some(SeatAutonomy::Bounded);
+            }
+        })
+        .expect("declaring autonomy is a valid revision");
+        assert_eq!(
+            &successor, shipped,
+            "v2 of {} is v1 plus the autonomy declaration and nothing else",
+            first.template_id
+        );
     }
 }
 
