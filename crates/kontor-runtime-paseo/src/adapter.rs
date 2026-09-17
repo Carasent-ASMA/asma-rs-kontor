@@ -1665,7 +1665,7 @@ impl PaseoAdapter {
             return Err(RuntimeError::CorrelationFailed);
         }
         if !agent.is_archived() {
-            Self::verify_agent_route(&agent, &request.model_rung, SeatAutonomy::Supervised)?;
+            Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
         }
         Ok(Some(agent))
     }
@@ -5198,6 +5198,7 @@ impl PaseoAdapter {
                     &labels,
                     request.prompt.as_str(),
                     request.credential.expose_secret(),
+                    request.autonomy,
                 )?;
                 let frame = self.transport.request(&creation).await?;
                 let status: serde_json::Value =
@@ -5224,7 +5225,10 @@ impl PaseoAdapter {
         };
         let agent = self.fetch_agent(&native_id).await?;
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
-        Self::verify_agent_route(&agent, &request.model_rung, SeatAutonomy::Supervised)?;
+        // The readback asserts the autonomy the launch asked for, which is what
+        // makes the pair evidence: a seat that came back in another mode fails
+        // correlation instead of quietly running under it.
+        Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
         Ok(ConsultationLaunchOutcome {
             identity: self.identity(ExternalId::parse(&agent.id)?, generation),
             provider_session_id: agent
@@ -5790,6 +5794,7 @@ impl RuntimeAdapter for PaseoAdapter {
             seat_binding_id: request.seat_binding_id,
             identity: request.identity.clone(),
             model_rung: request.model_rung.clone(),
+            autonomy: request.autonomy,
             requested_at: request.requested_at,
         };
         let Some(before) = self.hosted_seat_agent(&inspect).await? else {

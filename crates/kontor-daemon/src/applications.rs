@@ -177,9 +177,9 @@ use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
     CommandRepository, CompletionWrite, CredentialReference, CredentialReferenceKind,
-    IntakeOutcome, IntakeRepository, LegacyConsultationTopicCorrection,
-    LegacyEpicBacklogCodeCorrection, MigrationObjectKind, MiniProject,
-    MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
+    HostedSeatLaunchIntentState, IntakeOutcome, IntakeRepository,
+    LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection, MigrationObjectKind,
+    MiniProject, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
     NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
     NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
     NewConsultationRecoveryAttempt, NewGateEvaluation, NewLocalCommand, NewMiniProject,
@@ -191,11 +191,12 @@ use kontor_core::repository::{
     StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
     StoredCompletionWakeDelivery, StoredConsultationProfileRevision, StoredConsultationRun,
     StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
-    SuccessionRepository, TaskTransitionRequest, TaskWorkflow, TeamDefinitionMigrationObservation,
-    TeamDefinitionMigrationState, TeamDefinitionMigrationSubject,
-    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketLink, TicketRepository,
-    TopologyContainerRecovery, TopologyRepository, WorkflowRepository,
+    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
+    StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest, TaskWorkflow,
+    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
+    TicketLink, TicketRepository, TopologyContainerRecovery, TopologyRepository,
+    WorkflowRepository,
 };
 use kontor_core::spec::HoldLiftCondition;
 use kontor_core::spec::{
@@ -7295,6 +7296,10 @@ impl Services {
                     seat_binding_id: binding.id,
                     identity: predecessor.native_identity.clone(),
                     model_rung: predecessor.model_rung.clone(),
+                    // The authority this native was launched under, not the one
+                    // the plane would grant a new seat today. Re-resolving here
+                    // makes a liveness probe fail whenever the default moved.
+                    autonomy: predecessor.autonomy,
                     requested_at: kontor_api::now(),
                 })
                 .await
@@ -9895,6 +9900,10 @@ impl Services {
                         seat_binding_id,
                         identity: hosted.native_identity.clone(),
                         model_rung: hosted.model_rung.clone(),
+                        // Retirement must describe the seat being retired. A
+                        // freshly resolved default refuses the retire before
+                        // archival, which is the wedge that blocks replacement.
+                        autonomy: hosted.autonomy,
                         requested_at: now,
                     })
                     .await
@@ -9911,6 +9920,7 @@ impl Services {
                     seat_binding_id,
                     identity: hosted.native_identity.clone(),
                     model_rung: hosted.model_rung.clone(),
+                    autonomy: hosted.autonomy,
                     requested_at: now,
                 })
                 .await
@@ -12646,13 +12656,55 @@ fn freeze_seat_autonomy(
     slot: &RoleSlotId,
     plane_default: Option<SeatAutonomy>,
 ) -> kontor_core::DomainResult<SeatAutonomy> {
-    Ok(
+    Ok(resolve_seat_autonomy(
         kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?
             .slot(slot)
-            .and_then(|seat| seat.autonomy)
-            .or(plane_default)
-            .unwrap_or_else(SeatAutonomy::standard),
-    )
+            .and_then(|seat| seat.autonomy),
+        plane_default,
+    ))
+}
+
+/// The occupancy generation a Core Team materialization creates.
+///
+/// Materialization is a seat's first filler, and the credential it is handed is
+/// fenced to generation 1; the launch intent is keyed the same way so the two
+/// describe one occupancy rather than two.
+const FIRST_HOSTED_OCCUPANCY: u64 = 1;
+
+/// The three-source order itself, shared by every seat Kontor launches.
+///
+/// Extracted so that "a leadership seat resolves the way a delivery seat does"
+/// is true by construction rather than by two copies of the order agreeing.
+/// A mutant that reverses the first two arms, or that reaches the fallback
+/// early, is one edit that both paths' tests observe.
+const fn resolve_seat_autonomy(
+    declared: Option<SeatAutonomy>,
+    plane_default: Option<SeatAutonomy>,
+) -> SeatAutonomy {
+    match (declared, plane_default) {
+        (Some(autonomy), _) | (None, Some(autonomy)) => autonomy,
+        (None, None) => SeatAutonomy::standard(),
+    }
+}
+
+/// Freeze how much one persistent leadership seat may do before it has to ask.
+///
+/// The same order [`freeze_seat_autonomy`] takes, on the inputs a Core Team
+/// seat actually has. A Core Team role slot carries no `autonomy` declaration —
+/// only a team template's slot does — so step 1 has no input here and the
+/// runtime's `permission_posture` is the most specific answer available.
+///
+/// That is the whole of ASMA-8193. An LSA or TPM seat used to read a hardcoded
+/// [`SeatAutonomy::Supervised`] inside the Paseo adapter: the one seat an epic
+/// has for acting without the operator was the one seat no configuration could
+/// reach, so `runtimes.json` could declare `permission_posture: autonomous` and
+/// leadership would still stop and ask.
+///
+/// A realm that declares nothing still gets [`SeatAutonomy::standard`], so this
+/// grants no authority on its own — it makes the existing declaration apply
+/// where it already should have.
+const fn freeze_hosted_seat_autonomy(plane_default: Option<SeatAutonomy>) -> SeatAutonomy {
+    resolve_seat_autonomy(None, plane_default)
 }
 
 /// Whether a whole epic graph has finished kickoff.
@@ -22094,6 +22146,54 @@ impl ApplicationOperations for Services {
                     seat_binding_id,
                 ))
                 .map_err(|error| self.refuse_domain(&error))?;
+                // Launch intent, not live configuration, survives a lost
+                // acknowledgement and a restart.
+                //
+                // Three sources in order, and the middle one is the whole point.
+                // A bound occupancy is authoritative. Failing that, a *prepared
+                // intent* means a previous attempt already resolved this
+                // generation's authority and may have created the native before
+                // its acknowledgement was lost — so the replay must ask for what
+                // that native was started with, not what the plane says now.
+                // Only a seat with neither is genuinely new, and only then is
+                // the plane default read.
+                let autonomy = if let Some(existing) = state
+                    .with_store(|store| store.get_hosted_topology_seat(project_id, seat_binding_id))
+                    .map_err(|error| self.refuse(&error))?
+                {
+                    existing.autonomy
+                } else if let Some(intent) = state
+                    .with_store(|store| {
+                        store.get_hosted_seat_launch_intent(
+                            project_id,
+                            seat_binding_id,
+                            FIRST_HOSTED_OCCUPANCY,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?
+                {
+                    intent.autonomy
+                } else {
+                    freeze_hosted_seat_autonomy(adapter.declared_autonomy())
+                };
+                // Recorded before the effect, so the window between a created
+                // native and its persisted occupancy is never empty. This is
+                // idempotent for the same decision and refuses a different one.
+                state
+                    .with_store(|store| {
+                        store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+                            project_id,
+                            seat_binding_id,
+                            occupancy_generation: FIRST_HOSTED_OCCUPANCY,
+                            autonomy,
+                            model_rung: model_rung.clone(),
+                            state: HostedSeatLaunchIntentState::Prepared,
+                            observed_native_id: None,
+                            prepared_at: kontor_api::now(),
+                            installed_at: None,
+                        })
+                    })
+                    .map_err(|error| self.refuse(&error))?;
                 let outcome = adapter
                     .launch_hosted_seat(&HostedSeatLaunchRequest {
                         seat_binding_id,
@@ -22110,6 +22210,7 @@ impl ApplicationOperations for Services {
                         ),
                         fenced_predecessor_native_ids: Vec::new(),
                         model_rung: model_rung.clone(),
+                        autonomy,
                         context_policy: context_policy.clone(),
                         requested_at: kontor_api::now(),
                     })
@@ -22120,11 +22221,25 @@ impl ApplicationOperations for Services {
                     seat_binding_id,
                     model_rung: model_rung.clone(),
                     native_identity: outcome.identity,
+                    autonomy,
                     provider_session_id: outcome.provider_session_id,
                     observed_at: outcome.observed_at,
                 };
                 state
                     .with_store(|store| store.bind_hosted_topology_seat(&hosted))
+                    .map_err(|error| self.refuse(&error))?;
+                // The occupancy is durable now, so the intent has done its work
+                // and is reconciled against the native it actually produced.
+                state
+                    .with_store(|store| {
+                        store.install_hosted_seat_launch_intent(
+                            project_id,
+                            seat_binding_id,
+                            FIRST_HOSTED_OCCUPANCY,
+                            &hosted.native_identity.native_id,
+                            hosted.observed_at,
+                        )
+                    })
                     .map_err(|error| self.refuse(&error))?;
                 state
                     .with_store(|store| {
@@ -22245,6 +22360,7 @@ impl ApplicationOperations for Services {
                     seat_binding_id: plan.binding.id,
                     identity: plan.predecessor.native_identity.clone(),
                     model_rung: plan.predecessor.model_rung.clone(),
+                    autonomy: plan.predecessor.autonomy,
                     requested_at: kontor_api::now(),
                 })
                 .await
@@ -22314,6 +22430,39 @@ impl ApplicationOperations for Services {
                     store.list_hosted_topology_seat_history_native_ids(project_id, plan.binding.id)
                 })
                 .map_err(|error| self.refuse(&error))?;
+            // A successor is a new generation, so the plane default is the
+            // right source — but only the *first* time this runs. If a previous
+            // attempt already resolved it and lost its acknowledgement, that
+            // decision is what the native out there was created under, and the
+            // replay has to converge on it rather than resolve again.
+            let successor_autonomy = match state
+                .with_store(|store| {
+                    store.get_hosted_seat_launch_intent(
+                        project_id,
+                        plan.binding.id,
+                        successor_occupancy_generation,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+            {
+                Some(intent) => intent.autonomy,
+                None => freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+            };
+            state
+                .with_store(|store| {
+                    store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+                        project_id,
+                        seat_binding_id: plan.binding.id,
+                        occupancy_generation: successor_occupancy_generation,
+                        autonomy: successor_autonomy,
+                        model_rung: plan.desired.clone(),
+                        state: HostedSeatLaunchIntentState::Prepared,
+                        observed_native_id: None,
+                        prepared_at: kontor_api::now(),
+                        installed_at: None,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
             let outcome = adapter
                 .launch_hosted_seat(&HostedSeatLaunchRequest {
                     seat_binding_id: plan.binding.id,
@@ -22331,6 +22480,12 @@ impl ApplicationOperations for Services {
                     ),
                     fenced_predecessor_native_ids,
                     model_rung: plan.desired.clone(),
+                    // The one place a changed plane default legitimately takes
+                    // effect. This is a new occupancy generation created through
+                    // the audited retire/replace path, and the predecessor it
+                    // supersedes has already been archived with the authority it
+                    // ran under, so nothing is rewritten by resolving afresh.
+                    autonomy: successor_autonomy,
                     context_policy,
                     requested_at: kontor_api::now(),
                 })
@@ -22341,6 +22496,7 @@ impl ApplicationOperations for Services {
                 seat_binding_id: plan.binding.id,
                 model_rung: plan.desired.clone(),
                 native_identity: outcome.identity,
+                autonomy: successor_autonomy,
                 provider_session_id: outcome.provider_session_id,
                 observed_at: outcome.observed_at,
             };
@@ -22351,6 +22507,17 @@ impl ApplicationOperations for Services {
                         &successor,
                         retired.archived_at,
                         "authorized Core Team provider/model route correction",
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            state
+                .with_store(|store| {
+                    store.install_hosted_seat_launch_intent(
+                        project_id,
+                        plan.binding.id,
+                        successor_occupancy_generation,
+                        &successor.native_identity.native_id,
+                        successor.observed_at,
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
@@ -22488,6 +22655,18 @@ impl ApplicationOperations for Services {
             seat_binding_id: plan.binding.id,
             model_rung: runtime_outcome.claim.model_rung.clone(),
             native_identity: runtime_outcome.claim.identity.clone(),
+            // A claim adopts a session Kontor did not launch. The claim preview
+            // reads back the route the claimant is actually running, but no
+            // runtime reports the authority a live session was started under,
+            // so there is no readback to agree with here the way there is on a
+            // launch. Resolving the plane default would hand an adopted foreign
+            // session whatever the plane currently permits on no evidence at
+            // all; the predecessor's value would be worse still, since the
+            // claimant is a different native that never ran under it.
+            //
+            // Kontor records what it can prove: the least authority the domain
+            // has. Widening it is the audited retire/replace path's job.
+            autonomy: SeatAutonomy::standard(),
             provider_session_id: runtime_outcome.claim.provider_session_id.clone(),
             observed_at: runtime_outcome.claim.observed_at,
         };
@@ -38382,8 +38561,9 @@ mod tests {
     use super::{
         FrozenCommitteeRoute, IdentityDecision, QuotaOutlook, Services,
         account_for_explicit_provider_alias, consultation_account_rungs, counts_towards_completion,
-        eligible_roots, ensure_unambiguous_generic_consultation_routes, freeze_seat_autonomy,
-        kickoff_is_ready, re_review_remediation_identity, render_legacy_container_name, seat_block,
+        eligible_roots, ensure_unambiguous_generic_consultation_routes,
+        freeze_hosted_seat_autonomy, freeze_seat_autonomy, kickoff_is_ready,
+        re_review_remediation_identity, render_legacy_container_name, seat_block,
         select_committee_allocation, slot_prompt,
     };
     use kontor_api::error::ApiError;
@@ -38836,5 +39016,43 @@ mod tests {
             "and tasks alone are not the graph either"
         );
         assert!(!kickoff_is_ready(false, false, false));
+    }
+
+    /// A leadership seat reads the same configuration a delivery seat reads.
+    ///
+    /// Before ASMA-8193 there was nothing to test: the Paseo adapter launched
+    /// every hosted LSA/TPM seat under a hardcoded
+    /// [`SeatAutonomy::Supervised`], so the epic's own architect was the one
+    /// seat `runtimes.json` could not reach. The assertion that matters is the
+    /// *agreement* — a delivery seat that declared nothing at slot level and a
+    /// leadership seat, handed one plane default, answer the same thing. A
+    /// mutant that restores the constant breaks the pair, not one side of it.
+    #[test]
+    fn a_leadership_seat_resolves_the_same_plane_default_a_delivery_seat_does() {
+        let (undeclared, slot) = snapshot_declaring(None);
+
+        for plane_default in [
+            None,
+            Some(SeatAutonomy::Supervised),
+            Some(SeatAutonomy::Bounded),
+            Some(SeatAutonomy::Advisory),
+        ] {
+            assert_eq!(
+                freeze_hosted_seat_autonomy(plane_default),
+                freeze_seat_autonomy(&undeclared, &slot, plane_default).expect("resolves"),
+                "leadership and delivery must read one configuration, not two"
+            );
+        }
+
+        assert_eq!(
+            freeze_hosted_seat_autonomy(None),
+            SeatAutonomy::Supervised,
+            "a realm that declares nothing grants nothing: this is not a new authority"
+        );
+        assert_eq!(
+            freeze_hosted_seat_autonomy(Some(SeatAutonomy::Bounded)),
+            SeatAutonomy::Bounded,
+            "and a realm that did declare one finally reaches its leadership seats"
+        );
     }
 }

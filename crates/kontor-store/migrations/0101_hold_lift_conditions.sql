@@ -41,4 +41,4 @@ CREATE TRIGGER execution_hold_conditions_no_delete
 BEFORE DELETE ON execution_hold_conditions
 BEGIN SELECT RAISE(ABORT, 'a hold lift condition is evidence, and evidence is not withdrawn'); END;
 
-PRAGMA user_version = 99;
+PRAGMA user_version = 101;

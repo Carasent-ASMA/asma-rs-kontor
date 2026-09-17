@@ -28,7 +28,7 @@ use kontor_core::repository::{
     TopologyRepository,
 };
 use kontor_core::spec::{
-    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, Shareability, ShareabilityTier,
+    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, SeatAutonomy, Shareability, ShareabilityTier,
     TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot, TeamTemplateRevision,
     TopologySnapshot,
 };
@@ -970,6 +970,7 @@ fn an_exact_rename_pending_seat_can_be_retired_before_migration_confirmation() {
                 effort: None,
             },
             native_identity: identity("agent_hosted_architect"),
+            autonomy: SeatAutonomy::Supervised,
             provider_session_id: None,
             observed_at: at("2026-09-02T09:46:00Z"),
         })

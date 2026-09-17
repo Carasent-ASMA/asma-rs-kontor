@@ -8620,6 +8620,7 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
             ),
             fenced_predecessor_native_ids: Vec::new(),
             model_rung: model_rung(),
+            autonomy: SeatAutonomy::standard(),
             context_policy: standard_context_policy(),
             requested_at: at("2026-08-16T09:10:00Z"),
         })
@@ -8629,6 +8630,105 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
     assert!(outcome.created);
     assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
     assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
+}
+
+/// REQ-001: a leadership seat launches under the autonomy it was given, and the
+/// readback proves it rather than a config diff asserting it.
+///
+/// Both directions are exercised against the real entry point. A seat asked for
+/// `Bounded` that comes back `bypassPermissions` launches; the same seat coming
+/// back `auto` — the mode it would have had before ASMA-8193 — is refused as a
+/// mismatch rather than bound and quietly run under the wrong authority.
+///
+/// The refusal arm is the load-bearing one. Restoring the hardcoded
+/// `SeatAutonomy::Supervised` in either the create or the verify makes exactly
+/// one of these two arms fail, so neither can be satisfied by a constant.
+#[tokio::test]
+async fn a_leadership_seat_launches_and_reads_back_the_autonomy_it_was_given() {
+    for (reported_mode, agrees) in [("bypassPermissions", true), ("auto", false)] {
+        let seat_binding_id = SeatBindingId::generate();
+        let mut workspace = v(WORKSPACE_ROOT_LOCAL);
+        workspace["entries"][0]["name"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+        workspace["entries"][0]["title"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+
+        let mut agent = v(AGENT);
+        agent["agent"]["title"] = serde_json::json!("LSA · ASMA-7744");
+        agent["agent"]["currentModeId"] = serde_json::json!(reported_mode);
+        agent["agent"]["labels"] = serde_json::json!({
+            "jira.epic": "ASMA-7744",
+            "kontor.project_id": MINI_PROJECT,
+            "kontor.seat_binding_id": seat_binding_id.to_string(),
+            "kontor.hosted_seat": "true",
+            "kontor.role": "lsa",
+            "kontor.role_slot_id": "lsa",
+            "kontor.workspace_id": WORKSPACE_ID,
+            "kontor.worktree": CWD,
+        });
+
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", workspace)
+            .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+            .answering_rpc(
+                "create_agent_request",
+                serde_json::json!({
+                    "status": "agent_created",
+                    "agent": {"id": AGENT_ID}
+                }),
+            )
+            .answering_rpc("fetch_agent_request", agent);
+        let plane = Plane::fresh(recorded);
+        plane
+            .adapter
+            .prepare_project("cmd-hosted-bounded", &project_name())
+            .await
+            .expect("the epic project is prepared");
+        let container = plane
+            .adapter
+            .prepare_container(&ecp_request(node(NODE_A), bound_root(node(NODE_B))))
+            .await
+            .expect("the existing exact ECP is bound")
+            .snapshot;
+
+        let outcome = plane
+            .adapter
+            .launch_hosted_seat(&HostedSeatLaunchRequest {
+                seat_binding_id,
+                role_slot_id: slot("lsa"),
+                display_name: name("LSA · ASMA-7744"),
+                container,
+                cwd: root(),
+                scope: epic_execution_scope(),
+                prompt: text("continue epic leadership through Kontor"),
+                credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+                    "kontor-seat-v2.test.3.redacted".to_owned(),
+                ),
+                fenced_predecessor_native_ids: Vec::new(),
+                model_rung: model_rung(),
+                autonomy: SeatAutonomy::Bounded,
+                context_policy: standard_context_policy(),
+                requested_at: at("2026-08-16T09:10:00Z"),
+            })
+            .await;
+
+        if agrees {
+            let outcome = outcome.expect("a bounded leadership seat launches");
+            assert!(outcome.created);
+            assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
+        } else {
+            assert!(
+                matches!(
+                    outcome,
+                    Err(RuntimeError::PermissionModeMismatch { ref expected, ref found, .. })
+                        if expected.as_deref() == Some("bypassPermissions")
+                            && found.as_deref() == Some("auto")
+                ),
+                "a seat that came back supervised must be refused, not bound: {outcome:?}"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -8750,6 +8850,7 @@ async fn a_fenced_historical_hosted_native_does_not_block_its_successor() {
         ),
         fenced_predecessor_native_ids: Vec::new(),
         model_rung: model_rung(),
+        autonomy: SeatAutonomy::standard(),
         context_policy: standard_context_policy(),
         requested_at: at("2026-08-16T09:10:00Z"),
     };
@@ -9020,6 +9121,7 @@ async fn an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved()
             native_id: external(AGENT_ID),
         },
         model_rung: model_rung(),
+        autonomy: SeatAutonomy::standard(),
         requested_at: at("2026-08-20T05:10:00Z"),
     };
 
@@ -9078,6 +9180,7 @@ async fn hosted_seat_retirement_replays_when_exact_fetch_hides_the_archive() {
             native_id: external(AGENT_ID),
         },
         model_rung: model_rung(),
+        autonomy: SeatAutonomy::standard(),
         requested_at: at("2026-08-20T05:10:00Z"),
     };
 
@@ -9119,6 +9222,7 @@ async fn hosted_cleanup_refuses_running_or_moved_sessions_before_native_retireme
                 native_id: external(AGENT_ID),
             },
             model_rung: model_rung(),
+            autonomy: SeatAutonomy::standard(),
             requested_at: at("2026-09-05T12:00:00Z"),
             placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
                 workspace_native_id: external(WORKSPACE_ID),
@@ -9183,6 +9287,7 @@ async fn hosted_seat_inspection_reports_an_exact_hidden_archive_without_mutation
             native_id: external(AGENT_ID),
         },
         model_rung: model_rung(),
+        autonomy: SeatAutonomy::standard(),
         requested_at: at("2026-08-20T05:10:00Z"),
     };
 
@@ -9214,6 +9319,7 @@ async fn hosted_seat_inspection_reports_a_missing_exact_native_without_mutation(
             native_id: external(AGENT_ID),
         },
         model_rung: model_rung(),
+        autonomy: SeatAutonomy::standard(),
         requested_at: at("2026-08-20T05:10:00Z"),
     };
 
@@ -9257,6 +9363,7 @@ async fn an_archived_hosted_seat_replays_before_live_permission_mode_validation(
             native_id: external(AGENT_ID),
         },
         model_rung: model_rung(),
+        autonomy: SeatAutonomy::standard(),
         requested_at: at("2026-08-20T05:10:00Z"),
     };
 

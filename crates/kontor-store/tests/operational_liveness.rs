@@ -17,7 +17,7 @@ use kontor_core::repository::{
     StoredHostedTopologySeat, TopologyRepository,
 };
 use kontor_core::spec::{
-    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, Shareability, ShareabilityTier,
+    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, SeatAutonomy, Shareability, ShareabilityTier,
     TopologySnapshot,
 };
 use kontor_core::state::{
@@ -793,6 +793,7 @@ fn newest_completion_wake_is_stable_per_hosted_tpm_occupancy() {
         seat_binding_id: tpm,
         model_rung: rung.clone(),
         native_identity: identity("tpm-predecessor", 7),
+        autonomy: SeatAutonomy::Supervised,
         provider_session_id: Some(
             ExternalId::parse("thread-predecessor").expect("a provider session id"),
         ),

@@ -93,6 +93,9 @@ const EXPECTED_TABLES: &[&str] = &[
     // topology seats.
     "hosted_topology_seats",
     "hosted_topology_seat_history",
+    // Schema v100 (ASMA-8193): the authority one hosted launch resolved,
+    // written before the native call and consumed when the occupancy binds.
+    "hosted_topology_seat_launch_intents",
     // Schema v7 (KON-MVP-21): which importer produced a holiday source revision,
     // what the request asked for, and the chain that makes one import current.
     "holiday_import_batches",
@@ -558,10 +561,22 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // accepted only when one receipt maps to one mutation. v99 adds the
     // immutable future-turn correlation challenge; no historical runtime
     // position can enter that ledger.
-    // v99 records what would end a kickoff hold beside the revocation that is
+    //
+    // The ASMA-8190 integration then lands four lane migrations in one head, so
+    // their numbers are assigned here rather than in the lanes that wrote them.
+    // v100 makes Kontor's timeline-epoch numbering durable, so the same raw
+    // runtime epoch resolves to the same number across a restart (ASMA-8203).
+    // v101 records what would end a kickoff hold beside the revocation that is
     // the hold, so a hold can state its own terms instead of only its prose
     // reason, and an absent row still means `manual` (ASMA-8194).
-    assert_eq!(SCHEMA_VERSION, 99);
+    // v102 freezes a hosted leadership seat's autonomy beside its occupancy
+    // generation, in both the active and the historical row, and backfills every
+    // pre-feature row to the only launch mode any of them can have had. v103
+    // records that authority *before* the native call and consumes it when the
+    // occupancy binds, so a created native whose acknowledgement was lost is
+    // never left with no durable statement of what it was launched under
+    // (both ASMA-8193).
+    assert_eq!(SCHEMA_VERSION, 103);
 }
 
 #[test]

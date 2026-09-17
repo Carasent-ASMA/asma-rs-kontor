@@ -1107,7 +1107,7 @@ fn redaction_summary() -> RedactionSummary {
         ),
         (
             "hosted_topology_seats",
-            "native leadership-session identity is runtime-local placement authority; a verified same-Realm snapshot preserves it byte-for-byte",
+            "native leadership-session identity and the autonomy its occupancy generation runs under are runtime-local placement authority; a verified same-Realm snapshot preserves them byte-for-byte",
         ),
         (
             "turn_correlation_challenges",
