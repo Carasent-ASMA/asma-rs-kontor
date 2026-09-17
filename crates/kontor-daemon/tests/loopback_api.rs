@@ -45533,39 +45533,40 @@ async fn a_partially_seated_candidate_claims_progress_and_an_unattached_one_does
         .expect("an agent run id")
         .to_owned();
 
+    let blocked_plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    let blocker = &blocked_plan.json()["blocked"][0];
+    assert_eq!(blocker["code"], "runtime_attachment_unconfirmed");
+    assert!(
+        blocker["action"]
+            .as_str()
+            .expect("an action")
+            .contains("kontor_scheduler_resume")
+    );
+    assert_eq!(blocker["evidence"][0]["owner"], "kontor_scheduler");
+    assert_eq!(blocker["evidence"][0]["team_run_id"], preserved_team_run);
+    assert_eq!(blocker["evidence"][0]["agent_run_id"], preserved_agent_run);
+    assert_eq!(blocker["evidence"][0]["desired"], "run_requested");
+    assert_eq!(blocker["evidence"][0]["observed"], "unknown");
+    assert!(blocker["evidence"][0]["binding"].is_null());
+
     // (1) The earlier slot attaches and the later one still refuses. The
     // candidate is reported blocked and contributes no started seat, but the
     // task has demonstrably begun and its own state has to say so.
     world.fake.allowing_launch_of(&architect);
-    let partial = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
-        &serde_json::json!({
-            "expected_revision": epic_revision,
-            "admissions": [{
-                "team_run_id": preserved_team_run,
-                "agent_run_id": preserved_agent_run,
-            }],
-        }),
-    )
-    .signed_as(&world, "operator")
-    .with_key("partial-resume")
-    .send(&world)
-    .await;
-    assert_eq!(partial.status, 200, "{}", partial.body);
-    assert!(
-        partial.json()["started"]
-            .as_array()
-            .expect("started")
-            .is_empty(),
-        "the refused later slot yields no started seat: {}",
-        partial.body
-    );
-    assert_eq!(
-        partial.json()["blocked"].as_array().expect("blocked").len(),
-        1,
-        "the candidate is still blocked, and its refusal stays fail-closed: {}",
-        partial.body
-    );
+    let scanner = world
+        .daemon
+        .spawn_admission_reconciler(std::time::Duration::from_millis(5));
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    scanner.abort();
 
     let after_partial = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(&world, "observer")
@@ -45588,23 +45589,13 @@ async fn a_partially_seated_candidate_claims_progress_and_an_unattached_one_does
     );
     let progressed_revision = task["revision"].as_u64().expect("a revision");
 
-    // (3) Replaying the exact same resume changes nothing: the transition is
-    // reached once, and a replay neither repeats it nor walks the task back.
-    let replayed = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
-        &serde_json::json!({
-            "expected_revision": epic_revision,
-            "admissions": [{
-                "team_run_id": preserved_team_run,
-                "agent_run_id": preserved_agent_run,
-            }],
-        }),
-    )
-    .signed_as(&world, "operator")
-    .with_key("partial-resume")
-    .send(&world)
-    .await;
-    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    // (3) Once the original root is attached, another automatic scan is inert:
+    // it neither repeats the transition nor walks the task back.
+    let replay = world
+        .daemon
+        .spawn_admission_reconciler(std::time::Duration::from_millis(5));
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    replay.abort();
 
     let after_replay = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(&world, "observer")

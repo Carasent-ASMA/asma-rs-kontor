@@ -31,8 +31,9 @@ use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, CommandReceiptId,
     CurrencyCode, ExecutionAuthorizationId, ExternalId, ExternalName, IdempotencyKey,
-    MiniProjectId, ModuleKey, Money, ProjectId, ResourceLeaseId, RuntimeKindKey, SCHEMA_VERSION,
-    SpecVersion, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, Timestamp, parse_utc_timestamp,
+    MiniProjectId, ModuleKey, Money, ProjectId, ResourceLeaseId, RuntimeBindingId, RuntimeKindKey,
+    SCHEMA_VERSION, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId, Timestamp,
+    parse_utc_timestamp,
 };
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
@@ -90,6 +91,14 @@ fn document(marker: &str) -> CanonicalDocument {
         "marker": marker,
     }))
     .expect("a canonical document")
+}
+
+fn recovery_document(admitted: &AdmittedCandidate) -> CanonicalDocument {
+    CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "admitted": admitted,
+    }))
+    .expect("recovery evidence")
 }
 
 /// Ceilings wide enough that only a test that narrows one sees a capacity refusal.
@@ -552,6 +561,81 @@ fn exact_recovery_decodes_the_durable_qnr_admission_shape() {
         recovered.admitted.runtime_kind,
         RuntimeKindKey::parse("paseo.agent").expect("the durable runtime kind")
     );
+}
+
+#[test]
+fn unconfirmed_admissions_are_unknown_unbound_queued_roots_only() {
+    let harness = Harness::new();
+    let scope = harness.scope("unconfirmed-roots");
+    let peers = BTreeSet::new();
+
+    let task = harness.task(&scope, "Unconfirmed", TaskState::Ready);
+    let admitted = harness.admitted(&scope, task, None, None);
+    let parts = Parts::new("unconfirmed");
+    let mut request = commit(&scope, &admitted, &peers, &parts, &scope.template, now());
+    request.evidence = recovery_document(&admitted);
+    harness
+        .store
+        .admit_candidate(&request)
+        .expect("the unconfirmed admission commits");
+
+    let observed_task = harness.task(&scope, "Observed", TaskState::Ready);
+    let observed = harness.admitted(&scope, observed_task, None, None);
+    let observed_parts = Parts::new("observed");
+    let mut observed_request = commit(
+        &scope,
+        &observed,
+        &peers,
+        &observed_parts,
+        &scope.template,
+        now(),
+    );
+    observed_request.evidence = recovery_document(&observed);
+    harness
+        .store
+        .admit_candidate(&observed_request)
+        .expect("the observed admission commits");
+
+    let bound_task = harness.task(&scope, "Bound", TaskState::Ready);
+    let bound = harness.admitted(&scope, bound_task, None, None);
+    let bound_parts = Parts::new("bound");
+    let mut bound_request = commit(&scope, &bound, &peers, &bound_parts, &scope.template, now());
+    bound_request.evidence = recovery_document(&bound);
+    harness
+        .store
+        .admit_candidate(&bound_request)
+        .expect("the bound admission commits");
+
+    let raw = harness.raw();
+    raw.execute(
+        "UPDATE agent_runs SET observed_state = 'queued' WHERE project_id = ?1 AND id = ?2",
+        rusqlite::params![
+            scope.project.to_string(),
+            observed_parts.agent_run.to_string()
+        ],
+    )
+    .expect("the runtime observation is represented");
+    raw.execute(
+        "INSERT INTO runtime_bindings
+             (id, project_id, agent_run_id, runtime_kind, host, generation, native_id, bound_at)
+         VALUES (?1, ?2, ?3, 'sa.runtime', 'host-1', 7, 'native-1', ?4)",
+        rusqlite::params![
+            RuntimeBindingId::generate().to_string(),
+            scope.project.to_string(),
+            bound_parts.agent_run.to_string(),
+            now().to_string()
+        ],
+    )
+    .expect("the runtime binding is represented");
+
+    let recoverable = harness
+        .store
+        .unconfirmed_admissions(Some(scope.project), Some(scope.mission), 10)
+        .expect("unconfirmed admissions are readable");
+    assert_eq!(recoverable.len(), 1);
+    assert_eq!(recoverable[0].team_run_id, parts.team_run);
+    assert_eq!(recoverable[0].agent_run_id, parts.agent_run);
+    assert_eq!(recoverable[0].recovery.launch_key, parts.launch_key);
 }
 
 #[test]
