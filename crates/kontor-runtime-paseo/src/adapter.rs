@@ -887,6 +887,24 @@ const TURN_BOUNDARY_ITEM_TYPE: &str = "user_message";
 const REFUSAL_TAIL_ITEMS: u32 = 8;
 
 /// Whether a native item type is observed provider-produced content.
+/// Whether one reported working directory lies inside a canonical root.
+///
+/// Normalized through [`WorkspaceRoot`] on both sides so `/w/epic` cannot be
+/// read as containing `/w/epic-2`: containment is decided on whole path
+/// components, never on a raw string prefix. An unparsable cwd is *not*
+/// treated as outside — a directory the runtime reports and this adapter
+/// cannot read is exactly the case where refusing costs least.
+fn within(cwd: &str, root: &WorkspaceRoot) -> bool {
+    let Ok(cwd) = WorkspaceRoot::parse(cwd) else {
+        return true;
+    };
+    cwd == *root
+        || cwd
+            .as_str()
+            .strip_prefix(root.as_str())
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 fn provider_originated(item_type: &str) -> bool {
     PROVIDER_ORIGIN_ITEM_TYPES.contains(&item_type)
 }
@@ -1312,6 +1330,169 @@ impl PaseoAdapter {
             return Err(RuntimeError::UnsupportedCapability { capability });
         }
         Ok(())
+    }
+
+    /// Archive one bound native child: prove the exact workspace, empty it, and
+    /// prove it gone.
+    ///
+    /// The parent is the one the persisted binding names. A workspace id is
+    /// unique only beneath its project, so a census that did not fix the parent
+    /// first could settle cleanup against somebody else's identically-numbered
+    /// child.
+    async fn archive_bound_child(
+        &self,
+        request: &kontor_runtime::container::ArchiveContainerRequest,
+        native_id: &str,
+        parent: &ExternalId,
+    ) -> RuntimeResult<bool> {
+        let find_exact = async {
+            let mut found = Vec::new();
+            let projects = self.fetch_projects().await?;
+            if !projects.iter().any(|project| project.id == parent.as_str()) {
+                return Err(RuntimeError::StaleBinding {
+                    rule: "the native child's bound project is absent",
+                });
+            }
+            for project in projects {
+                found.extend(
+                    self.fetch_workspaces(&project.id)
+                        .await?
+                        .into_iter()
+                        .filter(|workspace| workspace.id == native_id),
+                );
+            }
+            match found.len() {
+                0 => Ok(None),
+                1 => Ok(found.pop()),
+                _ => Err(RuntimeError::CorrelationFailed),
+            }
+        };
+        let before: Option<PaseoWorkspace> = find_exact.await?;
+        // Check even when the workspace is absent: a dangling active session
+        // is not successful cleanup of this binding.
+        if self
+            .fetch_agents(&BTreeMap::new(), false)
+            .await?
+            .iter()
+            .any(|agent| agent.workspace_id.as_deref() == Some(native_id) && !agent.is_archived())
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the native child still contains an unarchived session",
+            });
+        }
+        let changed = if let Some(workspace) = before {
+            if workspace.project_id != parent.as_str()
+                || WorkspaceRoot::parse(&workspace.workspace_directory)? != request.canonical_cwd
+                || workspace.is_paseo_owned_worktree()
+                || !matches!(
+                    workspace.workspace_kind,
+                    PaseoWorkspaceKind::LocalCheckout | PaseoWorkspaceKind::Directory
+                )
+            {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the archive target changed parent, directory or filesystem ownership",
+                });
+            }
+            self.require_workspace_quiet(native_id, &request.canonical_cwd)
+                .await?;
+            // A lost acknowledgement is recoverable only by complete fresh
+            // absence readback below. Never substitute a CLI exit code for it.
+            let _archive_ack = self
+                .transport
+                .run(&PaseoCommand::workspace_archive(native_id))
+                .await;
+            true
+        } else {
+            false
+        };
+        for project in self.fetch_projects().await? {
+            if self
+                .fetch_workspaces(&project.id)
+                .await?
+                .iter()
+                .any(|workspace| workspace.id == native_id)
+            {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Remove one bound, non-adopted native root and prove that exact id absent.
+    ///
+    /// This is the only irreversible effect the adapter has, so every gate in
+    /// it is a refusal and none of them is a search: the project is selected by
+    /// the id the binding froze, never by display name, remote or path. The
+    /// order — identity, canonical root, emptiness, then advertised capability
+    /// — is the order in which being wrong costs less.
+    ///
+    /// The acknowledgement is deliberately discarded, exactly as
+    /// [`Self::archive_bound_child`] discards the CLI's. A daemon that removed
+    /// the project and then lost the reply is indistinguishable on the wire
+    /// from one that refused, and only the fresh complete listing below can
+    /// tell those apart — so that listing is the sole evidence, and a retry
+    /// after prior absence reports `false` rather than removing anything again.
+    async fn archive_bound_root(
+        &self,
+        request: &kontor_runtime::container::ArchiveContainerRequest,
+        native_id: &str,
+    ) -> RuntimeResult<bool> {
+        let before = self
+            .fetch_projects()
+            .await?
+            .into_iter()
+            .find(|project| project.id == native_id);
+        let changed = if let Some(project) = before {
+            if WorkspaceRoot::parse(&project.root_path)? != request.canonical_cwd {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the native root came back rooted in another directory",
+                });
+            }
+            // Leaves before roots, proved against the runtime rather than
+            // inferred from the logical plane that asked.
+            if !self.fetch_workspaces(native_id).await?.is_empty() {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the native root still holds a workspace",
+                });
+            }
+            // A session whose directory is inside the root is live work in the
+            // tree about to be removed, whether or not any workspace still
+            // lists it. This reads a path only to *refuse*: nothing is ever
+            // selected for removal by one.
+            if self
+                .fetch_agents(&BTreeMap::new(), false)
+                .await?
+                .iter()
+                .any(|agent| !agent.is_archived() && within(&agent.cwd, &request.canonical_cwd))
+            {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the native root still contains an unarchived session",
+                });
+            }
+            if !self
+                .fetch_server_info()
+                .await?
+                .supports(crate::wire::PaseoFeature::ProjectRemove)
+            {
+                return Err(RuntimeError::UnsupportedCapability {
+                    capability: RuntimeCapability::Retire,
+                });
+            }
+            let rpc = PaseoRpc::project_remove(self.next_request_id(), native_id);
+            let _remove_ack = self.transport.request(&rpc).await;
+            true
+        } else {
+            false
+        };
+        if self
+            .fetch_projects()
+            .await?
+            .iter()
+            .any(|project| project.id == native_id)
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(changed)
     }
 
     async fn fetch_projects(&self) -> RuntimeResult<Vec<PaseoProject>> {
@@ -6055,7 +6236,15 @@ impl RuntimeAdapter for PaseoAdapter {
         })
     }
 
-    /// Archive one retired native child by exact persisted identity and fresh readback.
+    /// Archive one retired native container by exact persisted identity and
+    /// fresh readback.
+    ///
+    /// The shared preamble is everything that is true of both shapes: the
+    /// connection's permissions, the ancestry the projection admits, the
+    /// runtime host and generation, operator adoption, and agreement with the
+    /// registered binding. Only after all of that does the request reach the
+    /// one branch that differs — what "this container" physically *is*, and
+    /// therefore what removing it means.
     async fn archive_container(
         &self,
         request: &kontor_runtime::container::ArchiveContainerRequest,
@@ -6068,17 +6257,15 @@ impl RuntimeAdapter for PaseoAdapter {
             RuntimeCapability::Retire,
         )
         .await?;
-        if request.projection != ContainerProjection::NativeChild {
-            return Err(RuntimeError::WorkspaceMismatch {
-                rule: "only an explicitly bound native child may be archived",
-            });
-        }
+        // What ancestry this shape may name at all, decided before any of it is
+        // looked up.
+        let parent = request.parent_project()?;
         if request.identity.runtime_kind != self.config.runtime_kind
             || request.identity.host != self.config.host_key
             || request.identity.generation > self.generation()
         {
             return Err(RuntimeError::StaleBinding {
-                rule: "the child belongs to another runtime host or a future generation",
+                rule: "the container belongs to another runtime host or a future generation",
             });
         }
         let native_id = request.identity.native_id.as_str();
@@ -6106,79 +6293,10 @@ impl RuntimeAdapter for PaseoAdapter {
                 rule: "the archive request contradicts the registered container binding",
             });
         }
-        let find_exact = async {
-            let mut found = Vec::new();
-            let projects = self.fetch_projects().await?;
-            if !projects
-                .iter()
-                .any(|project| project.id == request.bound_project_native_id.as_str())
-            {
-                return Err(RuntimeError::StaleBinding {
-                    rule: "the native child's bound project is absent",
-                });
-            }
-            for project in projects {
-                found.extend(
-                    self.fetch_workspaces(&project.id)
-                        .await?
-                        .into_iter()
-                        .filter(|workspace| workspace.id == native_id),
-                );
-            }
-            match found.len() {
-                0 => Ok(None),
-                1 => Ok(found.pop()),
-                _ => Err(RuntimeError::CorrelationFailed),
-            }
+        let changed = match parent {
+            Some(parent) => self.archive_bound_child(request, native_id, parent).await?,
+            None => self.archive_bound_root(request, native_id).await?,
         };
-        let before: Option<PaseoWorkspace> = find_exact.await?;
-        // Check even when the workspace is absent: a dangling active session
-        // is not successful cleanup of this binding.
-        if self
-            .fetch_agents(&BTreeMap::new(), false)
-            .await?
-            .iter()
-            .any(|agent| agent.workspace_id.as_deref() == Some(native_id) && !agent.is_archived())
-        {
-            return Err(RuntimeError::WorkspaceMismatch {
-                rule: "the native child still contains an unarchived session",
-            });
-        }
-        let changed = if let Some(workspace) = before {
-            if workspace.project_id != request.bound_project_native_id.as_str()
-                || WorkspaceRoot::parse(&workspace.workspace_directory)? != request.canonical_cwd
-                || workspace.is_paseo_owned_worktree()
-                || !matches!(
-                    workspace.workspace_kind,
-                    PaseoWorkspaceKind::LocalCheckout | PaseoWorkspaceKind::Directory
-                )
-            {
-                return Err(RuntimeError::WorkspaceMismatch {
-                    rule: "the archive target changed parent, directory or filesystem ownership",
-                });
-            }
-            self.require_workspace_quiet(native_id, &request.canonical_cwd)
-                .await?;
-            // A lost acknowledgement is recoverable only by complete fresh
-            // absence readback below. Never substitute a CLI exit code for it.
-            let _archive_ack = self
-                .transport
-                .run(&PaseoCommand::workspace_archive(native_id))
-                .await;
-            true
-        } else {
-            false
-        };
-        for project in self.fetch_projects().await? {
-            if self
-                .fetch_workspaces(&project.id)
-                .await?
-                .iter()
-                .any(|workspace| workspace.id == native_id)
-            {
-                return Err(RuntimeError::CorrelationFailed);
-            }
-        }
         Ok(kontor_runtime::container::ArchiveContainerOutcome {
             request: request.clone(),
             changed,

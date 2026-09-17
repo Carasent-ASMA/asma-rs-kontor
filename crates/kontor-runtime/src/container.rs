@@ -484,23 +484,61 @@ pub struct RetitleContainerOutcome {
     pub changed: bool,
 }
 
-/// Archive one retired native child, addressed exclusively by durable binding.
+/// Archive one retired native container, addressed exclusively by durable binding.
+///
+/// Both materialized shapes travel through one request. A
+/// [`ContainerProjection::NativeChild`] is addressed *under* an exact parent
+/// project, because a workspace id is only unique beneath the project that
+/// holds it. A [`ContainerProjection::NativeRoot`] is the project, so it has no
+/// parent to name — and carrying one anyway would be a claim about ancestry the
+/// binding never recorded. [`Self::parent_project`] is the only place that
+/// distinction is read, so no adapter can quietly accept the other pairing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveContainerRequest {
-    /// Logical node whose completed native child is being removed.
+    /// Logical node whose completed native container is being removed.
     pub topology_node_id: TopologyNodeId,
     /// Stable binding identity retained after cleanup.
     pub container_binding_id: ContainerBindingId,
-    /// Persisted native shape; only a native child may be archived.
+    /// Persisted native shape; only a materialized container may be archived.
     pub projection: ContainerProjection,
     /// Complete native identity, including host and generation.
     pub identity: NativeRuntimeIdentity,
     /// Exact native project from the persisted ancestor binding.
-    pub bound_project_native_id: ExternalId,
-    /// Canonical child directory recorded when it was bound.
+    ///
+    /// Present for a child, absent for a root. See [`Self::parent_project`].
+    pub bound_project_native_id: Option<ExternalId>,
+    /// Canonical directory recorded when the container was bound.
     pub canonical_cwd: WorkspaceRoot,
     /// Requested observation instant.
     pub requested_at: Timestamp,
+}
+
+impl ArchiveContainerRequest {
+    /// The exact parent project this request is addressed under, if it has one.
+    ///
+    /// A child without a parent cannot be addressed at all, and a root *with*
+    /// one is a contradiction rather than a harmless extra field: it would let a
+    /// caller name an ancestry the root binding does not have, and the only
+    /// honest answer is to refuse before any native effect.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::WorkspaceMismatch`] when the projection and the
+    /// parent disagree, or when the projection materializes no container.
+    pub fn parent_project(&self) -> RuntimeResult<Option<&ExternalId>> {
+        match (self.projection, self.bound_project_native_id.as_ref()) {
+            (ContainerProjection::NativeChild, Some(parent)) => Ok(Some(parent)),
+            (ContainerProjection::NativeChild, None) => Err(RuntimeError::WorkspaceMismatch {
+                rule: "a native child archive names no parent project",
+            }),
+            (ContainerProjection::NativeRoot, None) => Ok(None),
+            (ContainerProjection::NativeRoot, Some(_)) => Err(RuntimeError::WorkspaceMismatch {
+                rule: "a native root archive names a parent project it cannot have",
+            }),
+            (ContainerProjection::LogicalOnly, _) => Err(RuntimeError::WorkspaceMismatch {
+                rule: "a logical-only node has no native container to archive",
+            }),
+        }
+    }
 }
 
 /// Verified native absence, retaining all of the original identities.

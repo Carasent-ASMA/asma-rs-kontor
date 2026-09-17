@@ -7742,7 +7742,7 @@ fn archive_child() -> kontor_runtime::container::ArchiveContainerRequest {
             generation: 1,
             native_id: external(WORKSPACE_ID),
         },
-        bound_project_native_id: external(PROJECT_ID),
+        bound_project_native_id: Some(external(PROJECT_ID)),
         canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
         requested_at: at("2026-09-05T10:00:00Z"),
     }
@@ -7794,7 +7794,8 @@ async fn native_child_archive_refuses_unsafe_targets_before_any_mutation() {
         "foreign-parent",
         "wrong-cwd",
         "owned-worktree",
-        "root",
+        "root-claiming-a-parent",
+        "child-naming-no-parent",
         "foreign-host",
         "future-generation",
         "active-session",
@@ -7814,7 +7815,9 @@ async fn native_child_archive_refuses_unsafe_targets_before_any_mutation() {
         plane.daemon.forget_queued_rpc("fetch_workspaces_request");
         let mut request = archive_child();
         match case {
-            "foreign-parent" => request.bound_project_native_id = external("prj_somebody_else"),
+            "foreign-parent" => {
+                request.bound_project_native_id = Some(external("prj_somebody_else"));
+            }
             "git-worktree" => plane.daemon.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_ONE)),
             "running-script" => plane.daemon.set_answer_rpc("workspace.script.list.request", serde_json::json!({"workspaceId": WORKSPACE_ID, "scripts": [{"lifecycle": "running"}], "error": null})),
             "terminal" => plane.daemon.set_answer_rpc("list_terminals_request", serde_json::json!({"cwd": CWD, "terminals": [{"id": "interactive-shell"}]})),
@@ -7827,7 +7830,11 @@ async fn native_child_archive_refuses_unsafe_targets_before_any_mutation() {
             "owned-worktree" => plane
                 .daemon
                 .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_PASEO_OWNED)),
-            "root" => request.projection = ContainerProjection::NativeRoot,
+            // A root has no parent to name, and a child cannot be addressed
+            // without one. Both are refused by the request's own shape, before
+            // the adapter looks anything up.
+            "root-claiming-a-parent" => request.projection = ContainerProjection::NativeRoot,
+            "child-naming-no-parent" => request.bound_project_native_id = None,
             "foreign-host" => request.identity.host = name("another-host"),
             "future-generation" => request.identity.generation = 2,
             "active-session" | "orphan-session" => {
@@ -10441,4 +10448,202 @@ async fn the_retitle_and_the_bind_path_agree_on_what_a_container_is_called() {
         "a repair must not rename a container the bind path named correctly"
     );
     assert!(!preview.changed, "so there is nothing to repair");
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8204: native root cleanup
+// ---------------------------------------------------------------------------
+
+/// A daemon whose epic root is empty: no workspaces left, no sessions left.
+///
+/// That is the only state a root may be removed from, so it is the fixture the
+/// positive cases start in and the negative cases each break in exactly one way.
+fn root_archive_daemon() -> RecordedPaseo {
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    recorded
+}
+
+/// The epic root itself, addressed by the identity its binding froze.
+fn archive_root() -> kontor_runtime::container::ArchiveContainerRequest {
+    kontor_runtime::container::ArchiveContainerRequest {
+        topology_node_id: node(NODE_A),
+        container_binding_id: ContainerBindingId::generate(),
+        projection: ContainerProjection::NativeRoot,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(PROJECT_ID),
+        },
+        // A root is the project. There is no ancestor to name.
+        bound_project_native_id: None,
+        canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
+        requested_at: at("2026-09-17T10:00:00Z"),
+    }
+}
+
+#[tokio::test]
+async fn native_root_removal_proves_absence_and_replays_after_a_lost_ack() {
+    for lost_ack in [false, true] {
+        let plane = Plane::fresh(root_archive_daemon());
+        // Present once, then gone: the census before the removal and the proof
+        // after it are the same route answering twice.
+        plane.daemon.forget_queued_rpc("project.list.request");
+        plane
+            .daemon
+            .queue_answer_rpc("project.list.request", v(PROJECT_LIST));
+        plane
+            .daemon
+            .set_answer_rpc("project.list.request", v(PROJECT_LIST_EMPTY));
+        if lost_ack {
+            plane.daemon.lose_next_rpc("project.remove.request");
+        }
+        let request = archive_root();
+
+        let first = plane
+            .adapter
+            .archive_container(&request)
+            .await
+            .expect("a proved-absent root settles cleanup");
+        assert!(first.changed, "the first pass removed the project");
+        assert_eq!(first.request, request, "the answer names the same identity");
+        assert_eq!(
+            plane.daemon.mutations(),
+            vec!["rpc project.remove.request".to_owned()],
+            "exactly one native removal, whatever the acknowledgement did"
+        );
+        assert_eq!(
+            plane
+                .daemon
+                .sent_messages("project.remove.request")
+                .first()
+                .and_then(|sent| sent.get("projectId").cloned()),
+            Some(serde_json::json!(PROJECT_ID)),
+            "removal is addressed by exact id and nothing else"
+        );
+
+        plane.daemon.take_calls();
+        let retry = plane
+            .adapter
+            .archive_container(&request)
+            .await
+            .expect("prior absence is recovered, not repeated");
+        assert!(!retry.changed, "a retry after absence changed nothing");
+        assert_eq!(retry.request, request);
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "a replay must not remove a second time"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_root_removal_refuses_unsafe_targets_before_any_mutation() {
+    // Each case is paired with the refusal it must produce. Asserting only
+    // "it errored" would let a case pass on somebody else's gate — which is
+    // exactly how a guard gets deleted without a test noticing.
+    for (case, expected) in [
+        (
+            "adopted",
+            "adopted containers are preserved by scoped cleanup",
+        ),
+        (
+            "occupied-by-a-workspace",
+            "the native root still holds a workspace",
+        ),
+        (
+            "occupied-by-a-session",
+            "the native root still contains an unarchived session",
+        ),
+        (
+            "wrong-cwd",
+            "the native root came back rooted in another directory",
+        ),
+        ("no-remove-capability", "UnsupportedCapability"),
+        (
+            "foreign-host",
+            "the container belongs to another runtime host or a future generation",
+        ),
+        (
+            "future-generation",
+            "the container belongs to another runtime host or a future generation",
+        ),
+        (
+            "root-claiming-a-parent",
+            "a native root archive names a parent project it cannot have",
+        ),
+    ] {
+        let mut config = config();
+        if case == "adopted" {
+            config
+                .adopted_containers
+                .insert(node(NODE_A), external(PROJECT_ID));
+        }
+        let plane = Plane::build_with_config(
+            root_archive_daemon(),
+            PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+            config,
+        );
+        let mut request = archive_root();
+        match case {
+            "adopted" => {}
+            "occupied-by-a-workspace" => plane
+                .daemon
+                .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_ONE)),
+            "occupied-by-a-session" => plane
+                .daemon
+                .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT)),
+            "wrong-cwd" => {
+                request.canonical_cwd = WorkspaceRoot::parse("/w/somewhere-else").expect("cwd");
+            }
+            "no-remove-capability" => {
+                let mut identity = v(SERVER_INFO);
+                identity["features"]["projectRemove"] = serde_json::json!(false);
+                plane.daemon.set_identity(&identity);
+            }
+            "foreign-host" => request.identity.host = name("another-host"),
+            "future-generation" => request.identity.generation = 2,
+            "root-claiming-a-parent" => {
+                request.bound_project_native_id = Some(external(PROJECT_ID));
+            }
+            _ => unreachable!(),
+        }
+        let Err(error) = plane.adapter.archive_container(&request).await else {
+            panic!("{case} must refuse, but cleanup settled");
+        };
+        assert!(
+            format!("{error:?}").contains(expected),
+            "{case} must refuse on its own gate, not another: {error:?}"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "{case} must mutate nothing"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_root_removal_does_not_trust_an_ack_without_absence() {
+    let plane = Plane::fresh(root_archive_daemon());
+    // The daemon keeps listing the project after answering the removal. An
+    // acknowledgement is not evidence; the listing is, and it disagrees.
+    plane
+        .daemon
+        .set_answer_rpc("project.remove.request", serde_json::json!({}));
+    let request = archive_root();
+    assert!(
+        matches!(
+            plane.adapter.archive_container(&request).await,
+            Err(RuntimeError::CorrelationFailed)
+        ),
+        "a root still present after removal is not cleanup"
+    );
+    assert_eq!(
+        plane.daemon.mutations(),
+        vec!["rpc project.remove.request".to_owned()],
+        "the removal was attempted exactly once before the census refused it"
+    );
 }

@@ -254,6 +254,15 @@ pub enum PaseoFeature {
     ProjectList,
     /// Projects can be created over the protocol.
     ProjectAdd,
+    /// A project can be removed through a supported operation.
+    ///
+    /// Asked as an advertised capability and never as a version floor, for the
+    /// same reason [`Self::ProviderOptionsApplied`] is: this is the one
+    /// operation in the adapter whose effect cannot be walked back, so a
+    /// daemon that has not said it supports removal is not driven into it on
+    /// the strength of its version string. The supported 0.8.0 baseline
+    /// advertises it.
+    ProjectRemove,
     /// One project may hold many workspaces.
     WorkspaceMultiplicity,
     /// A subscription can be narrowed to one agent's timeline.
@@ -295,6 +304,7 @@ impl PaseoFeature {
             Self::StableProjectIdentity => "stableProjectIdentity",
             Self::ProjectList => "projectList",
             Self::ProjectAdd => "projectAdd",
+            Self::ProjectRemove => "projectRemove",
             Self::WorkspaceMultiplicity => "workspaceMultiplicity",
             Self::SelectiveAgentTimeline => "selectiveAgentTimeline",
             Self::ProjectRename => "projectRename",
