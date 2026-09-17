@@ -22851,6 +22851,7 @@ async fn refuse_forged_current_window(
     key: &str,
     proof: serde_json::Value,
     forgery: &str,
+    rule: &str,
 ) {
     let project_id = ProjectId::parse(project).expect("a project id");
     let calls_before = world.fake.calls().len();
@@ -22871,8 +22872,8 @@ async fn refuse_forged_current_window(
     assert_eq!(refused.code(), "revision_conflict", "{forgery}");
     assert_eq!(
         refused.json()["rule"],
-        "the supplied message and terminal position are not the exact current runtime turn",
-        "{forgery}: the refusal must name the current-turn rule and not some earlier guard",
+        rule,
+        "{forgery}: the refusal must name its own rule and not some earlier guard",
     );
     assert_eq!(
         world.fake.calls().len(),
@@ -22947,6 +22948,7 @@ async fn settling_a_bounded_turn_refuses_a_forged_current_window() {
         "turn-forged-identity",
         forged_identity,
         "a different valid message id",
+        "the supplied message and terminal position are not the exact current runtime turn",
     )
     .await;
 
@@ -22970,6 +22972,7 @@ async fn settling_a_bounded_turn_refuses_a_forged_current_window() {
         "turn-forged-message-position",
         forged_message_position,
         "a wrong user-message position",
+        "the supplied message and terminal position are not the exact current runtime turn",
     )
     .await;
 
@@ -22985,8 +22988,9 @@ async fn settling_a_bounded_turn_refuses_a_forged_current_window() {
         &role_slot,
         revision,
         "turn-forged-terminal-position",
-        current,
+        current.clone(),
         "a response position that is no longer terminal",
+        "the supplied message and terminal position are not the exact current runtime turn",
     )
     .await;
 
@@ -23007,6 +23011,28 @@ async fn settling_a_bounded_turn_refuses_a_forged_current_window() {
         "turn-forged-response-position",
         forged_response,
         "a response position holding a non-message event",
+        "the supplied message and terminal position are not the exact current runtime turn",
+    )
+    .await;
+
+    // The tuple that spans two turns, and the one every other check here waves
+    // through. Each half is genuine: the older message really is at the
+    // position claimed for it, and the newest response really is the terminal
+    // event. Only the window drawn between them is a lie, and settling it would
+    // attribute this seat's newest work to an older message.
+    let mut spanning = current.clone();
+    spanning["response_position"] = newest["response_position"].clone();
+    refuse_forged_current_window(
+        &world,
+        &project,
+        task_id,
+        &agent_run,
+        &role_slot,
+        revision,
+        "turn-forged-spanning-window",
+        spanning,
+        "an older message paired with a newer turn's terminal response",
+        "a newer runtime message lies inside the claimed window, so it spans more than the current turn",
     )
     .await;
 

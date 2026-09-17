@@ -15781,6 +15781,14 @@ impl Services {
         ));
         let mut message_matches = 0usize;
         let mut response_matches = 0usize;
+        // Any *other* addressable Kontor message inside the claimed window. The
+        // three counts above can all be satisfied by a tuple that pairs an older
+        // message with a later turn's terminal response: the id really is at the
+        // position claimed for it, that response really is terminal, and the
+        // turn in between is simply never looked at. That tuple is not the
+        // current turn, and settling it attributes this seat's newest work to
+        // an older message.
+        let mut newer_messages_inside = 0usize;
         let mut last_turn_position = None;
         let mut exhausted = false;
         let page_size = issued
@@ -15817,6 +15825,17 @@ impl Services {
                 {
                     response_matches += 1;
                 }
+                // Strictly after the claimed message and no later than the
+                // claimed response. Tool calls, permissions and the response
+                // itself carry no message subject and are ordinary turn
+                // content; another *addressed* message is a turn boundary.
+                if event.position.epoch == message_position.epoch
+                    && event.position.sequence > message_position.sequence
+                    && event.position.sequence <= response_position.sequence
+                    && matches!(event.subject, EventSubject::Message(_))
+                {
+                    newer_messages_inside += 1;
+                }
                 if !matches!(
                     event.kind,
                     SessionEventKind::StateChange | SessionEventKind::Log
@@ -15840,6 +15859,18 @@ impl Services {
             return Err(self.deny(
                 ApiErrorCode::RevisionConflict,
                 "the supplied message and terminal position are not the exact current runtime turn",
+            ));
+        }
+        // Last, and only when everything else checked out. Each half of the
+        // tuple is then genuine — the id really is at the position claimed for
+        // it, and that response really is terminal — and the window drawn
+        // between them is the one thing left that can be wrong. Reported apart
+        // because it wants a different correction: re-read the current turn,
+        // rather than re-read the positions.
+        if newer_messages_inside != 0 {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "a newer runtime message lies inside the claimed window, so it spans more than the current turn",
             ));
         }
         let (projection, _) =
