@@ -179,27 +179,29 @@ use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
     CommandRepository, CompletionWrite, CredentialReference, CredentialReferenceKind,
-    IntakeOutcome, IntakeRepository, LegacyConsultationTopicCorrection,
-    LegacyEpicBacklogCodeCorrection, MigrationObjectKind, MiniProject,
-    MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
+    HostedSeatLaunchIntentState, IntakeOutcome, IntakeRepository,
+    LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection, MigrationObjectKind,
+    MiniProject, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
     NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
     NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
-    NewConsultationRecoveryAttempt, NewCoreTeamRouteSuccession, NewGateEvaluation, NewLocalCommand,
-    NewMiniProject, NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding,
-    NewSessionTopologyNode, NewSourceEvent, NewTeamDefinitionMigration,
-    NewTeamDefinitionMigrationTarget, NewTeamRun, OpenQuestionRepository, ProjectRepository,
-    ProjectTeamDefinitionDefault, ProjectTopologyDefault, ProviderUsageObservation,
-    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
-    SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
-    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationProfileRevision,
-    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
-    StoredEpicRoster, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
+    NewConsultationRecoveryAttempt, NewCoreTeamRouteSuccession,
+    NewGateEvaluation, NewLocalCommand, NewMiniProject,
+    NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode,
+    NewSourceEvent, NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, NewTeamRun,
+    OpenQuestionRepository, ProjectRepository, ProjectTeamDefinitionDefault,
+    ProjectTopologyDefault, ProviderUsageObservation, RealmRepository, RepositoryError,
+    RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition, SpecRepository,
+    StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
+    StoredCompletionWakeDelivery, StoredConsultationProfileRevision, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
+    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
     StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest, TaskWorkflow,
     TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
     TicketLink, TicketRepository, TopologyContainerRecovery, TopologyRepository,
     WorkflowRepository,
 };
+use kontor_core::spec::HoldLiftCondition;
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
     ContextPolicySnapshot, EffectiveContextPolicy, EffortLevel, EpicPresence, IntakeReceipt,
@@ -2276,7 +2278,7 @@ impl Services {
         )
         .await?;
         let disarm_key = self.epic_apply_child_key(parent_key, "initial-hold-disarm")?;
-        <Self as ApplicationOperations>::disarm(
+        let held = <Self as ApplicationOperations>::disarm(
             self,
             &disarm_key,
             project_id,
@@ -2287,7 +2289,35 @@ impl Services {
                 reason: request.reason.clone(),
             },
         )
-        .await
+        .await?;
+        // After the revocation, never before it: the condition's foreign key
+        // points at the revocation, which is what makes "a lift condition on
+        // something that is not a hold" unrepresentable.
+        //
+        // Recorded even when it is `manual`, so the hold states its terms
+        // explicitly rather than by saying nothing. The read path still treats
+        // an absent row as manual, because holds predating this table said
+        // nothing and must not acquire a self-lift they were never given.
+        let condition = request.lift_condition.unwrap_or(HoldLiftCondition::Manual);
+        let authorization_id = ExecutionAuthorizationId::parse(&held.authorization_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        self.state()?
+            .with_store(|store| {
+                store.record_hold_lift_condition(
+                    project_id,
+                    authorization_id,
+                    condition,
+                    kontor_api::now(),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        // The disarm answered before the condition existed, so the terms are
+        // stated here. A caller that applied a hold reads back what would end
+        // it, rather than having to ask the epic again.
+        Ok(AuthorizationProjectionDto {
+            lift_condition: Some(condition),
+            ..held
+        })
     }
 
     /// Every agent run in one team run, loaded whole.
@@ -5089,8 +5119,27 @@ impl Services {
         {
             return Ok(false);
         }
+        // The same ledger the operator path writes, for the same reason and in
+        // the same order: before the runtime is asked to accept it. A follow-up
+        // is a Kontor-minted id in a session exactly like a direct send, and an
+        // observation of the turn it opens has to be able to prove it
+        // unambiguous without reading the whole transcript. The dispatch row
+        // fixes the id across retries, so a replay recognises its own issuance
+        // rather than writing a second one.
+        state.record_message_issuance(
+            request.binding.identity(),
+            request.binding.binding_id(),
+            message_id,
+            "handoff_dispatch",
+            &message_id.to_string(),
+        )?;
         match adapter.send(&request).await {
-            Ok(_) => {
+            Ok(acknowledged) => {
+                // The same delivery position the operator path records, for the
+                // same reason: a follow-up is a Kontor-minted id in a session,
+                // and an observation of the turn it opens has to be able to tell
+                // the occurrence Kontor delivered from any other mention of it.
+                state.record_message_delivery(message_id, acknowledged.position)?;
                 state
                     .with_store(|store| {
                         store.mark_turn_dispatched(settled.id, &handoff.to_slot, target)
@@ -6761,6 +6810,158 @@ impl Services {
         })
     }
 
+    /// Whether one hold's recorded condition is now true.
+    ///
+    /// Every arm reads only Kontor's own durable state — no runtime call, no
+    /// external fetch. That bound is what makes this safe to evaluate inline at
+    /// the boundary that can make it true: it cannot fail for a reason that has
+    /// nothing to do with the epic, and it cannot turn a busy Jira into a stuck
+    /// epic.
+    ///
+    /// [`HoldLiftCondition::Manual`] is always false. It is not "no condition",
+    /// it is the statement that a person decides, and the whole point of the
+    /// type is that a hold cannot lift itself without having said it would.
+    fn hold_lift_satisfied(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        condition: HoldLiftCondition,
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        match condition {
+            HoldLiftCondition::Manual => Ok(false),
+            HoldLiftCondition::KickoffReady => {
+                let epic_bound = state
+                    .with_store(|store| store.confirmed_jira_epic_key(project_id, epic_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .is_some();
+                let tasks = state
+                    .with_store(|store| store.list_epic_tasks(project_id, epic_id))
+                    .map_err(|error| self.refuse(&error))?;
+                let mut every_task_bound = true;
+                let mut every_task_placed = true;
+                for task in tasks {
+                    if state
+                        .with_store(|store| store.confirmed_jira_task_key(project_id, task.id))
+                        .map_err(|error| self.refuse(&error))?
+                        .is_none()
+                    {
+                        every_task_bound = false;
+                    }
+                    // The durable declaration, which is what "worktrees are
+                    // confirmed" can mean at kickoff. A claim the scheduler
+                    // verified and a workspace placement preflight proved are
+                    // both later facts, produced during the admission this hold
+                    // exists to withhold — requiring either would make the hold
+                    // wait on itself.
+                    if state
+                        .with_store(|store| store.task_worktree(project_id, task.id))
+                        .map_err(|error| self.refuse(&error))?
+                        .is_none()
+                    {
+                        every_task_placed = false;
+                    }
+                    if !every_task_bound && !every_task_placed {
+                        break;
+                    }
+                }
+                Ok(kickoff_is_ready(
+                    epic_bound,
+                    every_task_bound,
+                    every_task_placed,
+                ))
+            }
+        }
+    }
+
+    /// Lift every hold on this epic whose recorded condition has come true.
+    ///
+    /// A hold is a covering authorization persisted already revoked. Lifting it
+    /// is arming a replacement, which is exactly what the human did by hand —
+    /// so this mints an ordinary grant with an ordinary command receipt, and
+    /// the evidence a lift leaves is the same evidence an `execution-arm`
+    /// leaves. Nothing about the governance bar moves: the replacement covers
+    /// the epic, and every gate, gate evaluator and completion rule still
+    /// applies to what runs under it.
+    ///
+    /// Idempotent twice over. An epic that already holds a live grant is left
+    /// alone, because it is no longer held and a second grant would only widen
+    /// concurrency behind the operator's back. And the arm's key is derived
+    /// from the hold it lifts, so a retry after any interruption converges the
+    /// same authorization instead of minting another.
+    async fn lift_satisfied_holds(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let stored = state
+            .with_store(|store| store.list_authorizations(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let covering = stored.iter().filter(|entry| {
+            entry.authorization.scope
+                == WorkScope::MiniProject {
+                    mini_project_id: epic_id,
+                }
+        });
+        // Already armed is already lifted. Checked before any condition is
+        // evaluated, so the common case costs nothing.
+        if covering
+            .clone()
+            .any(|entry| entry.arms(now, Some(epic_id), None))
+        {
+            return Ok(());
+        }
+        for entry in covering {
+            if entry.revocation.is_none() {
+                continue;
+            }
+            let id = entry.authorization.id;
+            let condition = state
+                .with_store(|store| store.get_hold_lift_condition(project_id, id))
+                .map_err(|error| self.refuse(&error))?;
+            if !self.hold_lift_satisfied(project_id, epic_id, condition)? {
+                continue;
+            }
+            let epic = self.epic_row(project_id, epic_id)?;
+            let key = IdempotencyKey::parse(&format!("hold-lift-{id}"))
+                .map_err(|error| self.refuse_domain(&error))?;
+            let reason = ExternalName::parse(&format!(
+                "self-lifted: the recorded condition {condition} is satisfied"
+            ))
+            .map_err(|error| self.refuse_domain(&error))?;
+            <Self as ApplicationOperations>::arm(
+                self,
+                &key,
+                project_id,
+                epic_id,
+                &ArmRequest {
+                    expected_revision: epic.revision,
+                    tasks: Vec::new(),
+                    allowed_start: None,
+                    allowed_end: None,
+                    max_concurrency: Some(entry.authorization.max_concurrency),
+                    budget: None,
+                    // The owner the hold recorded. A self-lift is the hold's
+                    // own terms being met, not a new party deciding.
+                    granted_by: entry
+                        .revocation
+                        .as_ref()
+                        .map_or(entry.authorization.created_by, |revocation| {
+                            revocation.revoked_by
+                        }),
+                    reason,
+                },
+            )
+            .await?;
+            // One lift per pass. The epic now holds a live grant, so every
+            // remaining hold on it is moot until that grant is itself revoked.
+            return Ok(());
+        }
+        Ok(())
+    }
+
     /// Whether one epic has the governed leadership its roster mandates.
     ///
     /// The snapshot's answer to [`RosterGovernance`], resolved here rather than
@@ -7240,6 +7441,10 @@ impl Services {
                     seat_binding_id: binding.id,
                     identity: predecessor.native_identity.clone(),
                     model_rung: predecessor.model_rung.clone(),
+                    // The authority this native was launched under, not the one
+                    // the plane would grant a new seat today. Re-resolving here
+                    // makes a liveness probe fail whenever the default moved.
+                    autonomy: predecessor.autonomy,
                     requested_at: kontor_api::now(),
                 })
                 .await
@@ -10319,6 +10524,10 @@ impl Services {
                         seat_binding_id,
                         identity: hosted.native_identity.clone(),
                         model_rung: hosted.model_rung.clone(),
+                        // Retirement must describe the seat being retired. A
+                        // freshly resolved default refuses the retire before
+                        // archival, which is the wedge that blocks replacement.
+                        autonomy: hosted.autonomy,
                         requested_at: now,
                     })
                     .await
@@ -10335,6 +10544,7 @@ impl Services {
                     seat_binding_id,
                     identity: hosted.native_identity.clone(),
                     model_rung: hosted.model_rung.clone(),
+                    autonomy: hosted.autonomy,
                     requested_at: now,
                 })
                 .await
@@ -12798,8 +13008,17 @@ fn evidence_of(authorization: &ExecutionAuthorization) -> AuthorizationEvidence 
 }
 
 /// The wire view of one stored authorization.
-fn authorization_dto(stored: &kontor_store::StoredAuthorization) -> AuthorizationProjectionDto {
+///
+/// `lift_condition` is passed rather than read, because this is a pure shape
+/// over an already-loaded row: only a caller that consulted the condition
+/// ledger may claim a hold's terms, and a caller that did not says `None`
+/// instead of implying `manual`.
+fn authorization_dto(
+    stored: &kontor_store::StoredAuthorization,
+    lift_condition: Option<HoldLiftCondition>,
+) -> AuthorizationProjectionDto {
     AuthorizationProjectionDto {
+        lift_condition,
         authorization_id: stored.authorization.id.to_string(),
         scope: match stored.authorization.scope {
             WorkScope::Project => "project".to_owned(),
@@ -13078,13 +13297,73 @@ fn freeze_seat_autonomy(
     slot: &RoleSlotId,
     plane_default: Option<SeatAutonomy>,
 ) -> kontor_core::DomainResult<SeatAutonomy> {
-    Ok(
+    Ok(resolve_seat_autonomy(
         kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?
             .slot(slot)
-            .and_then(|seat| seat.autonomy)
-            .or(plane_default)
-            .unwrap_or_else(SeatAutonomy::standard),
-    )
+            .and_then(|seat| seat.autonomy),
+        plane_default,
+    ))
+}
+
+/// The occupancy generation a Core Team materialization creates.
+///
+/// Materialization is a seat's first filler, and the credential it is handed is
+/// fenced to generation 1; the launch intent is keyed the same way so the two
+/// describe one occupancy rather than two.
+const FIRST_HOSTED_OCCUPANCY: u64 = 1;
+
+/// The three-source order itself, shared by every seat Kontor launches.
+///
+/// Extracted so that "a leadership seat resolves the way a delivery seat does"
+/// is true by construction rather than by two copies of the order agreeing.
+/// A mutant that reverses the first two arms, or that reaches the fallback
+/// early, is one edit that both paths' tests observe.
+const fn resolve_seat_autonomy(
+    declared: Option<SeatAutonomy>,
+    plane_default: Option<SeatAutonomy>,
+) -> SeatAutonomy {
+    match (declared, plane_default) {
+        (Some(autonomy), _) | (None, Some(autonomy)) => autonomy,
+        (None, None) => SeatAutonomy::standard(),
+    }
+}
+
+/// Freeze how much one persistent leadership seat may do before it has to ask.
+///
+/// The same order [`freeze_seat_autonomy`] takes, on the inputs a Core Team
+/// seat actually has. A Core Team role slot carries no `autonomy` declaration —
+/// only a team template's slot does — so step 1 has no input here and the
+/// runtime's `permission_posture` is the most specific answer available.
+///
+/// That is the whole of ASMA-8193. An LSA or TPM seat used to read a hardcoded
+/// [`SeatAutonomy::Supervised`] inside the Paseo adapter: the one seat an epic
+/// has for acting without the operator was the one seat no configuration could
+/// reach, so `runtimes.json` could declare `permission_posture: autonomous` and
+/// leadership would still stop and ask.
+///
+/// A realm that declares nothing still gets [`SeatAutonomy::standard`], so this
+/// grants no authority on its own — it makes the existing declaration apply
+/// where it already should have.
+const fn freeze_hosted_seat_autonomy(plane_default: Option<SeatAutonomy>) -> SeatAutonomy {
+    resolve_seat_autonomy(None, plane_default)
+}
+
+/// Whether a whole epic graph has finished kickoff.
+///
+/// Separated from the reads that answer its three questions, because the states
+/// that decide it cannot all be built through a supported call: Kontor's Jira
+/// materialization batches cover an epic *and every one of its tasks* at once
+/// and refuse anything narrower, so "the epic is bound and a task is not" is
+/// unreachable from the outside. Each is reachable in life — a task added after
+/// a batch confirmed is unbound, and a task carrying neither its own ticket key
+/// nor an epic key is never given a worktree at all — and each is exactly the
+/// case a check that looked only at the epic, or only at Jira, would get wrong.
+const fn kickoff_is_ready(
+    epic_bound: bool,
+    every_task_bound: bool,
+    every_task_placed: bool,
+) -> bool {
+    epic_bound && every_task_bound && every_task_placed
 }
 
 /// Select the primary model rung from the team run's immutable template.
@@ -16964,6 +17243,80 @@ impl Services {
         })
     }
 
+    /// How many pages of *trailing* content a terminality check will read.
+    ///
+    /// Proving that nothing follows the claimed response means reading what
+    /// follows it, so this cannot be made free — but it is now the only part of
+    /// the proof that depends on the session's length, and it starts at the
+    /// response rather than at the message. The budget matches the scan it
+    /// replaced, so this path is never worse than the one it supersedes, and a
+    /// session that exceeds it is reported as an incomplete scan rather than
+    /// quietly called terminal.
+    const TRAILING_PAGE_BUDGET: usize = 64;
+
+    /// The refusal a proof scan owes when a canonical read did not answer.
+    ///
+    /// Two unlike facts wear the same 503 if they are not separated here. A read
+    /// that simply did not answer is an incomplete scan: the tuple is not in
+    /// question and retrying is the right advice. A read the runtime refused
+    /// *again* after being asked which epoch it is in is not retryable at all —
+    /// the positions name a numbering this runtime no longer maps, which is what
+    /// a restart with no durable epoch mappings leaves behind — and the only way
+    /// forward is to observe the turn again and settle the tuple that
+    /// observation returns. Telling an operator to retry that one would be
+    /// telling them to wait for something that cannot happen.
+    fn unreadable_proof_scan(&self, error: &ApiError, unreadable: &'static str) -> ApiError {
+        if error.code == ApiErrorCode::TimelineRefetchRequired {
+            return self.deny(
+                ApiErrorCode::TimelineRefetchRequired,
+                "the claimed positions name a timeline epoch this runtime no longer maps, so this turn must be observed again before it can settle",
+            );
+        }
+        self.deny(ApiErrorCode::ProofScanIncomplete, unreadable)
+    }
+
+    /// One anchored page of a settlement proof scan, with a single bounded
+    /// recovery when the runtime refuses the cursor.
+    ///
+    /// `timeline_refetch_required` is not "the read failed". It is the runtime
+    /// saying the cursor addresses a numbering it is not in — because it
+    /// declared the page a break, or because this process has no raw epoch for
+    /// the number the cursor names at all. A scan that treats it as a failure
+    /// reports an unreadable session while the very same session reads fine to
+    /// anyone who asks without a cursor, which is precisely the shape this
+    /// settlement path was seen taking after a restart left the epoch registry
+    /// empty.
+    ///
+    /// So it is answered, once: re-read which epoch the session is in — one
+    /// call, no content, no walk to the origin — then ask the anchored question
+    /// again. Once is the whole budget. A second refusal is not transient, and
+    /// it is *not* reported as an incomplete scan either: the positions the
+    /// caller holds name a numbering this runtime no longer has, and the way
+    /// out of that is a fresh observation of the turn, not a retry of the same
+    /// tuple. Nothing here writes, on either outcome.
+    async fn proof_scan_page(
+        &self,
+        state: &kontor_api::state::ApiState,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        issued: &kontor_runtime::capability::IssuedBinding,
+        cursor: Option<HistoryCursor>,
+        page_size: u32,
+    ) -> Result<kontor_runtime::timeline::HistoryPage, ApiError> {
+        let request = HistoryRequest {
+            binding: issued.snapshot().clone(),
+            cursor,
+            page_size,
+        };
+        // Through the same barrier and the same single recovery every derived
+        // read uses. A settlement must never consume a position addressed by an
+        // epoch number that is not yet durable: if this process died here, the
+        // next one would resolve the same raw epoch to something else and the
+        // tuple would name different content.
+        state
+            .history_recovering_epoch_once(adapter, issued.snapshot().identity(), &request)
+            .await
+    }
+
     /// Re-read the exact bound session and prove that the message named by the
     /// caller is the current completed turn, not a delayed prior notification.
     async fn prove_current_turn(
@@ -17058,7 +17411,7 @@ impl Services {
         // an older message.
         let mut newer_messages_inside = 0usize;
         let mut last_turn_position = None;
-        let mut exhausted = false;
+        let mut covered = false;
         let page_size = issued
             .snapshot()
             .capabilities
@@ -17072,14 +17425,30 @@ impl Services {
             ));
         }
         for _ in 0..64 {
-            let page = adapter
-                .history(&HistoryRequest {
-                    binding: issued.snapshot().clone(),
-                    cursor,
-                    page_size,
-                })
+            let page = self
+                .proof_scan_page(state, adapter.as_ref(), &issued, cursor, page_size)
                 .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                .map_err(|error| {
+                    // The plane is not necessarily down: capabilities report it
+                    // reachable and bounded reads succeed. What failed is this
+                    // scan, which has to walk from the claimed message to the
+                    // end of the session to prove terminality — so a proof that
+                    // sits early in a long epoch reads almost all of it. Saying
+                    // "the runtime could not be reached" sends an operator to
+                    // look at a healthy runtime.
+                    tracing::warn!(
+                        agent_run_id = %run.id,
+                        claimed_message = %message_position.sequence,
+                        reached = last_turn_position
+                            .map_or(0, |position: TimelinePosition| position.sequence),
+                        detail = %error,
+                        "a settlement proof scan could not reach the end of the session"
+                    );
+                    self.unreadable_proof_scan(
+                        &error,
+                        "the canonical proof scan could not be read to the end of this session",
+                    )
+                })?;
             for event in &page.items {
                 if event.position == message_position
                     && event.kind == SessionEventKind::Message
@@ -17111,17 +17480,91 @@ impl Services {
                     last_turn_position = Some(event.position);
                 }
             }
+            // The window ends at the claimed response. Everything the exact-turn
+            // proof needs about *content* lives between the message and the
+            // response; what lies beyond is a question about terminality, and
+            // reading the whole tail to answer it is what made a proof sitting
+            // early in a long epoch unsettleable. That question is asked below,
+            // anchored, in one read.
+            if page
+                .items
+                .last()
+                .is_some_and(|event| event.position.sequence >= response_position.sequence)
+            {
+                covered = true;
+                break;
+            }
             match page.next {
                 Some(next) => cursor = Some(next),
                 None => {
-                    exhausted = true;
+                    covered = last_turn_position
+                        .is_some_and(|position| position.sequence >= response_position.sequence);
                     break;
                 }
             }
         }
-        if !exhausted
-            || message_matches != 1
+        // Reaching the page budget means the scan stopped short, not that the
+        // caller's tuple is wrong. Reporting it as "not the exact current turn"
+        // accuses an operator of a forgery when the daemon simply ran out of
+        // reads — and leaves them with no way to tell the two apart.
+        if !covered {
+            return Err(self.deny(
+                ApiErrorCode::ProofScanIncomplete,
+                "the canonical proof scan reached its page budget before the claimed response",
+            ));
+        }
+        // Terminality, asked directly instead of inferred from having read
+        // everything. Anchored *at* the claimed response, so the runtime is
+        // asked only "is there anything after this?" — one bounded read for a
+        // session of any length. A trailing status change is not a turn and does
+        // not unseat the response, which is why the kind filter is the same one
+        // the window uses.
+        let mut after = Some(HistoryCursor::issue(binding.id, response_position));
+        let mut later_turn_event = false;
+        let mut settled_tail = false;
+        for _ in 0..Self::TRAILING_PAGE_BUDGET {
+            let page = self
+                .proof_scan_page(state, adapter.as_ref(), &issued, after, page_size)
+                .await
+                .map_err(|error| {
+                    tracing::warn!(
+                        agent_run_id = %run.id,
+                        claimed_response = response_position.sequence,
+                        detail = %error,
+                        "a settlement could not read past the claimed response"
+                    );
+                    self.unreadable_proof_scan(
+                        &error,
+                        "the canonical read after the claimed response did not answer",
+                    )
+                })?;
+            if page.items.iter().any(|event| {
+                !matches!(
+                    event.kind,
+                    SessionEventKind::StateChange | SessionEventKind::Log
+                )
+            }) {
+                later_turn_event = true;
+                settled_tail = true;
+                break;
+            }
+            match page.next {
+                Some(next) => after = Some(next),
+                None => {
+                    settled_tail = true;
+                    break;
+                }
+            }
+        }
+        if !settled_tail {
+            return Err(self.deny(
+                ApiErrorCode::ProofScanIncomplete,
+                "the canonical read after the claimed response reached its page budget",
+            ));
+        }
+        if message_matches != 1
             || response_matches != 1
+            || later_turn_event
             || last_turn_position != Some(response_position)
         {
             return Err(self.deny(
@@ -20127,6 +20570,17 @@ impl ApplicationOperations for Services {
                 )
             })
             .map_err(|error| self.refuse(&error))?;
+        // This is the boundary the kickoff condition was waiting for, and the
+        // whole of ASMA-8194: the graph is now bound end to end and the epic is
+        // active, so a hold that said it would end here ends here — without
+        // anyone being asked to look, and without a scheduler pass to carry it.
+        //
+        // After the activation rather than before it, because that ordering is
+        // what makes the evaluation honest: every fact the condition reads is
+        // already durable when it is read. A refusal here refuses the
+        // materialization it belongs to; there is no state in which the epic is
+        // activated and its satisfied hold is silently still holding.
+        self.lift_satisfied_holds(project_id, epic_id).await?;
         let mut confirmed = Vec::with_capacity(prepared.preview.items.len());
         for confirmed_batch_id in &batch_ids {
             confirmed.extend(
@@ -22518,6 +22972,54 @@ impl ApplicationOperations for Services {
                     seat_binding_id,
                 ))
                 .map_err(|error| self.refuse_domain(&error))?;
+                // Launch intent, not live configuration, survives a lost
+                // acknowledgement and a restart.
+                //
+                // Three sources in order, and the middle one is the whole point.
+                // A bound occupancy is authoritative. Failing that, a *prepared
+                // intent* means a previous attempt already resolved this
+                // generation's authority and may have created the native before
+                // its acknowledgement was lost — so the replay must ask for what
+                // that native was started with, not what the plane says now.
+                // Only a seat with neither is genuinely new, and only then is
+                // the plane default read.
+                let autonomy = if let Some(existing) = state
+                    .with_store(|store| store.get_hosted_topology_seat(project_id, seat_binding_id))
+                    .map_err(|error| self.refuse(&error))?
+                {
+                    existing.autonomy
+                } else if let Some(intent) = state
+                    .with_store(|store| {
+                        store.get_hosted_seat_launch_intent(
+                            project_id,
+                            seat_binding_id,
+                            FIRST_HOSTED_OCCUPANCY,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?
+                {
+                    intent.autonomy
+                } else {
+                    freeze_hosted_seat_autonomy(adapter.declared_autonomy())
+                };
+                // Recorded before the effect, so the window between a created
+                // native and its persisted occupancy is never empty. This is
+                // idempotent for the same decision and refuses a different one.
+                state
+                    .with_store(|store| {
+                        store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+                            project_id,
+                            seat_binding_id,
+                            occupancy_generation: FIRST_HOSTED_OCCUPANCY,
+                            autonomy,
+                            model_rung: model_rung.clone(),
+                            state: HostedSeatLaunchIntentState::Prepared,
+                            observed_native_id: None,
+                            prepared_at: kontor_api::now(),
+                            installed_at: None,
+                        })
+                    })
+                    .map_err(|error| self.refuse(&error))?;
                 let outcome = adapter
                     .launch_hosted_seat(&HostedSeatLaunchRequest {
                         seat_binding_id,
@@ -22534,6 +23036,7 @@ impl ApplicationOperations for Services {
                         ),
                         fenced_predecessor_native_ids: Vec::new(),
                         model_rung: model_rung.clone(),
+                        autonomy,
                         context_policy: context_policy.clone(),
                         requested_at: kontor_api::now(),
                     })
@@ -22544,11 +23047,25 @@ impl ApplicationOperations for Services {
                     seat_binding_id,
                     model_rung: model_rung.clone(),
                     native_identity: outcome.identity,
+                    autonomy,
                     provider_session_id: outcome.provider_session_id,
                     observed_at: outcome.observed_at,
                 };
                 state
                     .with_store(|store| store.bind_hosted_topology_seat(&hosted))
+                    .map_err(|error| self.refuse(&error))?;
+                // The occupancy is durable now, so the intent has done its work
+                // and is reconciled against the native it actually produced.
+                state
+                    .with_store(|store| {
+                        store.install_hosted_seat_launch_intent(
+                            project_id,
+                            seat_binding_id,
+                            FIRST_HOSTED_OCCUPANCY,
+                            &hosted.native_identity.native_id,
+                            hosted.observed_at,
+                        )
+                    })
                     .map_err(|error| self.refuse(&error))?;
                 state
                     .with_store(|store| {
@@ -22945,6 +23462,7 @@ impl ApplicationOperations for Services {
                     seat_binding_id: plan.binding.id,
                     identity: plan.predecessor.native_identity.clone(),
                     model_rung: plan.predecessor.model_rung.clone(),
+                    autonomy: plan.predecessor.autonomy,
                     requested_at: kontor_api::now(),
                 })
                 .await
@@ -22979,6 +23497,11 @@ impl ApplicationOperations for Services {
                     }
                     adapter
                         .retire_hosted_seat(&HostedSeatRetireRequest {
+                            // The authority the predecessor was launched under,
+                            // read from its frozen occupancy rather than
+                            // recomputed: a seat retired under a mode it never
+                            // ran in is refused by the runtime's own readback.
+                            autonomy: plan.predecessor.autonomy,
                             // The exact placement this succession was previewed
                             // against. Without it the runtime archives whatever
                             // now answers to the native id, which is how a
@@ -23090,6 +23613,39 @@ impl ApplicationOperations for Services {
                     store.list_hosted_topology_seat_history_native_ids(project_id, plan.binding.id)
                 })
                 .map_err(|error| self.refuse(&error))?;
+            // A successor is a new generation, so the plane default is the
+            // right source — but only the *first* time this runs. If a previous
+            // attempt already resolved it and lost its acknowledgement, that
+            // decision is what the native out there was created under, and the
+            // replay has to converge on it rather than resolve again.
+            let successor_autonomy = match state
+                .with_store(|store| {
+                    store.get_hosted_seat_launch_intent(
+                        project_id,
+                        plan.binding.id,
+                        successor_occupancy_generation,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+            {
+                Some(intent) => intent.autonomy,
+                None => freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+            };
+            state
+                .with_store(|store| {
+                    store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+                        project_id,
+                        seat_binding_id: plan.binding.id,
+                        occupancy_generation: successor_occupancy_generation,
+                        autonomy: successor_autonomy,
+                        model_rung: plan.desired.clone(),
+                        state: HostedSeatLaunchIntentState::Prepared,
+                        observed_native_id: None,
+                        prepared_at: kontor_api::now(),
+                        installed_at: None,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
             let outcome = adapter
                 .launch_hosted_seat(&HostedSeatLaunchRequest {
                     seat_binding_id: plan.binding.id,
@@ -23107,6 +23663,12 @@ impl ApplicationOperations for Services {
                     ),
                     fenced_predecessor_native_ids,
                     model_rung: plan.desired.clone(),
+                    // The one place a changed plane default legitimately takes
+                    // effect. This is a new occupancy generation created through
+                    // the audited retire/replace path, and the predecessor it
+                    // supersedes has already been archived with the authority it
+                    // ran under, so nothing is rewritten by resolving afresh.
+                    autonomy: successor_autonomy,
                     context_policy,
                     requested_at: kontor_api::now(),
                 })
@@ -23117,6 +23679,7 @@ impl ApplicationOperations for Services {
                 seat_binding_id: plan.binding.id,
                 model_rung: plan.desired.clone(),
                 native_identity: outcome.identity,
+                autonomy: successor_autonomy,
                 provider_session_id: outcome.provider_session_id,
                 observed_at: outcome.observed_at,
             };
@@ -23181,6 +23744,17 @@ impl ApplicationOperations for Services {
                 })
                 .map_err(|error| self.refuse(&error))?;
             succession_evidence = Some((readback, readback_document.hash().clone()));
+            state
+                .with_store(|store| {
+                    store.install_hosted_seat_launch_intent(
+                        project_id,
+                        plan.binding.id,
+                        successor_occupancy_generation,
+                        &successor.native_identity.native_id,
+                        successor.observed_at,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
             state
                 .with_store(|store| {
                     store.observe_seat_binding(
@@ -23337,6 +23911,18 @@ impl ApplicationOperations for Services {
             seat_binding_id: plan.binding.id,
             model_rung: runtime_outcome.claim.model_rung.clone(),
             native_identity: runtime_outcome.claim.identity.clone(),
+            // A claim adopts a session Kontor did not launch. The claim preview
+            // reads back the route the claimant is actually running, but no
+            // runtime reports the authority a live session was started under,
+            // so there is no readback to agree with here the way there is on a
+            // launch. Resolving the plane default would hand an adopted foreign
+            // session whatever the plane currently permits on no evidence at
+            // all; the predecessor's value would be worse still, since the
+            // claimant is a different native that never ran under it.
+            //
+            // Kontor records what it can prove: the least authority the domain
+            // has. Widening it is the audited retire/replace path's job.
+            autonomy: SeatAutonomy::standard(),
             provider_session_id: runtime_outcome.claim.provider_session_id.clone(),
             observed_at: runtime_outcome.claim.observed_at,
         };
@@ -27045,16 +27631,29 @@ impl ApplicationOperations for Services {
                 );
         }
         if let Some(hold) = &request.initial_hold {
+            let mut hold_intent = serde_json::json!({
+                "held_by": hold.held_by.to_string(),
+                "reason": hold.reason.as_str(),
+            });
+            // The hold's terms are part of the operation, so idempotency
+            // protects them: the same key with a different lift condition is a
+            // different command, not a replay of this one. Widened only when a
+            // condition was actually named, in the same way ASMA-7941 widened
+            // the task intent — a caller that says nothing keeps the pre-field
+            // intent bytes, so its existing apply receipt stays replayable.
+            if let Some(condition) = hold.lift_condition {
+                hold_intent
+                    .as_object_mut()
+                    .expect("a hold intent is an object")
+                    .insert(
+                        "lift_condition".to_owned(),
+                        serde_json::json!(condition.as_str()),
+                    );
+            }
             intent_document
                 .as_object_mut()
                 .expect("an epic intent is an object")
-                .insert(
-                    "initial_hold".to_owned(),
-                    serde_json::json!({
-                        "held_by": hold.held_by.to_string(),
-                        "reason": hold.reason.as_str(),
-                    }),
-                );
+                .insert("initial_hold".to_owned(), hold_intent);
         }
         let intent = self.intent(&intent_document)?;
         if let Some(receipt) = self.replayed(key, &intent, None)? {
@@ -27341,6 +27940,9 @@ impl ApplicationOperations for Services {
                     state: "revoked".to_owned(),
                     held_by: hold.held_by,
                     reason: hold.reason.clone(),
+                    // Resolved, not echoed: a caller that named no condition
+                    // sees `manual` rather than an absence it has to interpret.
+                    lift_condition: hold.lift_condition.unwrap_or(HoldLiftCondition::Manual),
                 }
             }),
             tasks: preview
@@ -27589,8 +28191,28 @@ impl ApplicationOperations for Services {
                     stored.authorization.scope.covers(Some(epic_id), None)
                         || matches!(stored.authorization.scope, WorkScope::Project)
                 })
-                .map(authorization_dto)
-                .collect(),
+                .map(|stored| {
+                    // Only a revoked authorization is a hold, and only a hold
+                    // has terms. Reading the ledger for a live grant would
+                    // report `manual` for something that is not waiting on
+                    // anyone.
+                    let lift_condition = if stored.revocation.is_some() {
+                        Some(
+                            state
+                                .with_store(|store| {
+                                    store.get_hold_lift_condition(
+                                        project_id,
+                                        stored.authorization.id,
+                                    )
+                                })
+                                .map_err(|error| self.refuse(&error))?,
+                        )
+                    } else {
+                        None
+                    };
+                    Ok(authorization_dto(stored, lift_condition))
+                })
+                .collect::<Result<Vec<_>, ApiError>>()?,
             scheduling_open: state.barrier().state().is_open(),
         })
     }
@@ -27683,7 +28305,7 @@ impl ApplicationOperations for Services {
                         "the replayed receipt names an authorization this realm no longer has",
                     )
                 })?;
-            return Ok(authorization_dto(&granted));
+            return Ok(authorization_dto(&granted, None));
         }
 
         let receipt = self.record(
@@ -27715,10 +28337,13 @@ impl ApplicationOperations for Services {
         state
             .with_store(|store| store.insert_authorization(&authorization))
             .map_err(|error| self.refuse(&error))?;
-        Ok(authorization_dto(&kontor_store::StoredAuthorization {
-            authorization,
-            revocation: None,
-        }))
+        Ok(authorization_dto(
+            &kontor_store::StoredAuthorization {
+                authorization,
+                revocation: None,
+            },
+            None,
+        ))
     }
 
     async fn disarm(
@@ -27766,8 +28391,13 @@ impl ApplicationOperations for Services {
         }
         if stored.revocation.is_some() {
             // Already disarmed, and the request that says so has been proved to be
-            // the same one. Re-asserting something already true is an answer.
-            return Ok(authorization_dto(&stored));
+            // the same one. Re-asserting something already true is an answer, and
+            // it answers with the hold's terms, which a caller re-reading a hold
+            // is precisely what wants.
+            let condition = state
+                .with_store(|store| store.get_hold_lift_condition(project_id, id))
+                .map_err(|error| self.refuse(&error))?;
+            return Ok(authorization_dto(&stored, Some(condition)));
         }
         if replay {
             // The key recorded this disarm, but the authorization is not revoked:
@@ -27796,10 +28426,13 @@ impl ApplicationOperations for Services {
         state
             .with_store(|store| store.revoke_authorization(project_id, id, &revocation))
             .map_err(|error| self.refuse(&error))?;
-        Ok(authorization_dto(&kontor_store::StoredAuthorization {
-            authorization: stored.authorization,
-            revocation: Some(revocation),
-        }))
+        Ok(authorization_dto(
+            &kontor_store::StoredAuthorization {
+                authorization: stored.authorization,
+                revocation: Some(revocation),
+            },
+            None,
+        ))
     }
 
     async fn plan(
@@ -28918,6 +29551,45 @@ impl ApplicationOperations for Services {
                 digest: citation.digest,
             }),
             receipt_id: receipt.id.to_string(),
+        })
+    }
+
+    async fn recover_workflow_phase(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<kontor_api::applications::WorkflowPhaseRecoveryDto, ApiError> {
+        let state = self.state()?;
+        // Read the stored phase first, so the answer can say whether anything
+        // actually moved rather than just reporting where we ended up.
+        let before = state
+            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the task has no active workflow to recover",
+                )
+            })?;
+        // The same deterministic projection every other path runs. It writes
+        // only phase advances it derives, and it derives them only from
+        // evidence that is already durable — so no verdict is recorded, no
+        // evaluation appended and no turn replayed. A workflow already at its
+        // evidence phase returns unchanged, which is what makes this idempotent.
+        //
+        // `Unambiguous` rather than `Declared`: recovery derives, it does not
+        // choose. Where a phase has several declared edges out, taking the
+        // first would make an operator-invoked repair silently pick a route
+        // nobody asked for, and standing still is the safe answer.
+        let after =
+            self.advance_workflow_from_evidence(project_id, task_id, PhaseRoute::Unambiguous)?;
+        Ok(kontor_api::applications::WorkflowPhaseRecoveryDto {
+            realm_id: state.realm_id(),
+            task_id,
+            previous_phase: before.current_phase.as_str().to_owned(),
+            current_phase: after.current_phase.as_str().to_owned(),
+            revision: after.revision,
+            advanced: before.current_phase != after.current_phase,
         })
     }
 
@@ -39185,7 +39857,8 @@ mod tests {
     use super::{
         FrozenCommitteeRoute, IdentityDecision, QuotaOutlook, Services,
         account_for_explicit_provider_alias, consultation_account_rungs, counts_towards_completion,
-        eligible_roots, ensure_unambiguous_generic_consultation_routes, freeze_seat_autonomy,
+        eligible_roots, ensure_unambiguous_generic_consultation_routes,
+        freeze_hosted_seat_autonomy, freeze_seat_autonomy, kickoff_is_ready,
         re_review_remediation_identity, render_legacy_container_name, seat_block,
         select_committee_allocation, slot_prompt,
     };
@@ -39606,6 +40279,76 @@ mod tests {
         assert_eq!(
             freeze_seat_autonomy(&declared, &slot, None).expect("resolves"),
             SeatAutonomy::Advisory,
+        );
+    }
+
+    /// Kickoff readiness is about the whole graph, and every part of it counts.
+    ///
+    /// The whole truth table, because the interesting rows cannot all be
+    /// reached end to end: a Jira materialization batch covers an epic and
+    /// every one of its tasks and refuses anything narrower, so a loopback test
+    /// can only produce "none bound" or "all bound". `(true, false, _)` — the
+    /// epic's issue exists while a task's does not — is reachable in life, when
+    /// a task is added after a batch confirmed.
+    ///
+    /// The placement column is the half the provisional branch omitted. The
+    /// recorded hold says "until Jira binding *and worktrees* are confirmed",
+    /// so `(true, true, false)` — a fully bound graph holding a task nobody can
+    /// seat — must not lift, and that is precisely the row a Jira-only check
+    /// gets wrong.
+    #[test]
+    fn kickoff_is_ready_only_when_the_epic_and_every_task_are_bound_and_placed() {
+        assert!(kickoff_is_ready(true, true, true));
+        assert!(
+            !kickoff_is_ready(true, true, false),
+            "a bound graph with an unplaced task is not kickoff: the hold named worktrees too"
+        );
+        assert!(
+            !kickoff_is_ready(true, false, true),
+            "an epic whose own issue exists still has an unbound task: kickoff is not finished"
+        );
+        assert!(
+            !kickoff_is_ready(false, true, true),
+            "and tasks alone are not the graph either"
+        );
+        assert!(!kickoff_is_ready(false, false, false));
+    }
+
+    /// A leadership seat reads the same configuration a delivery seat reads.
+    ///
+    /// Before ASMA-8193 there was nothing to test: the Paseo adapter launched
+    /// every hosted LSA/TPM seat under a hardcoded
+    /// [`SeatAutonomy::Supervised`], so the epic's own architect was the one
+    /// seat `runtimes.json` could not reach. The assertion that matters is the
+    /// *agreement* — a delivery seat that declared nothing at slot level and a
+    /// leadership seat, handed one plane default, answer the same thing. A
+    /// mutant that restores the constant breaks the pair, not one side of it.
+    #[test]
+    fn a_leadership_seat_resolves_the_same_plane_default_a_delivery_seat_does() {
+        let (undeclared, slot) = snapshot_declaring(None);
+
+        for plane_default in [
+            None,
+            Some(SeatAutonomy::Supervised),
+            Some(SeatAutonomy::Bounded),
+            Some(SeatAutonomy::Advisory),
+        ] {
+            assert_eq!(
+                freeze_hosted_seat_autonomy(plane_default),
+                freeze_seat_autonomy(&undeclared, &slot, plane_default).expect("resolves"),
+                "leadership and delivery must read one configuration, not two"
+            );
+        }
+
+        assert_eq!(
+            freeze_hosted_seat_autonomy(None),
+            SeatAutonomy::Supervised,
+            "a realm that declares nothing grants nothing: this is not a new authority"
+        );
+        assert_eq!(
+            freeze_hosted_seat_autonomy(Some(SeatAutonomy::Bounded)),
+            SeatAutonomy::Bounded,
+            "and a realm that did declare one finally reaches its leadership seats"
         );
     }
 }

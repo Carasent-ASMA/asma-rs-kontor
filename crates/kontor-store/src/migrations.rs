@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 100;
+pub const SCHEMA_VERSION: i64 = 106;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -367,9 +367,33 @@ const MIGRATIONS: &[&str] = &[
     // one future turn on an exact existing binding; ambiguous history remains
     // permanently ineligible for backfill.
     include_str!("../migrations/0099_turn_correlation_challenges.sql"),
-    // Schema v100. One Core Team route succession becomes recoverable across
+    // Schema v100. Kontor's own timeline-epoch numbering becomes durable, so the
+    // same raw runtime epoch resolves to the same number after a restart and a
+    // proof observed in one process still names the same content in the next.
+    include_str!("../migrations/0100_runtime_timeline_epochs.sql"),
+    // Schema v101. A kickoff hold records what would end it beside the
+    // revocation that is the hold, so a hold states its own terms instead of
+    // only its prose reason; an absent row still means `manual`.
+    include_str!("../migrations/0101_hold_lift_conditions.sql"),
+    // Schema v102. A hosted leadership seat's autonomy is frozen beside its
+    // occupancy generation, so inspect, retire, restart and replay read what
+    // the seat was launched under instead of recomputing a mutable default.
+    include_str!("../migrations/0102_hosted_seat_autonomy_generation.sql"),
+    // Schema v103. The authority a hosted-seat launch resolved is recorded
+    // before the native call and consumed when the occupancy binds, so a lost
+    // acknowledgement cannot leave a live native whose intent nothing holds.
+    include_str!("../migrations/0103_hosted_seat_launch_intents.sql"),
+    // Schema v104. Every client message id Kontor issues is recorded against the
+    // exact binding it was issued to, so proving one unambiguous is a key lookup
+    // rather than a walk of the session's whole canonical content.
+    include_str!("../migrations/0104_runtime_message_issuances.sql"),
+    // Schema v105. The position each issued message was acknowledged at, so a
+    // bounded observation can ask "is this the occurrence Kontor delivered?"
+    // instead of "is this the only occurrence?", which needs a scan.
+    include_str!("../migrations/0105_runtime_message_delivery_positions.sql"),
+    // Schema v106. One Core Team route succession becomes recoverable across
     // the interval between its committed store transition and its receipt.
-    include_str!("../migrations/0100_core_team_route_succession_recovery.sql"),
+    include_str!("../migrations/0106_core_team_route_succession_recovery.sql"),
 ];
 
 const _: () = assert!(

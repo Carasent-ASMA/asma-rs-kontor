@@ -53,7 +53,7 @@ use kontor_core::id::{
 use kontor_core::naming::AiShortName;
 use kontor_core::selector::{EpicSelector, TaskSelector};
 use kontor_core::spec::{
-    CodeCategory, CodeLifecycle, EpicPresence, RoleSegment, ShareabilityClass,
+    CodeCategory, CodeLifecycle, EpicPresence, HoldLiftCondition, RoleSegment, ShareabilityClass,
     ShareabilityClassifier, ShareabilityProvenance,
 };
 use kontor_core::state::{PlacementState, TopologyLifecycle};
@@ -4393,12 +4393,25 @@ pub struct EpicExecutionScopeDto {
 /// governable by the scheduler.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct InitialExecutionHoldRequest {
-    /// The account profile recording the kickoff hold.
+    /// The account profile recording the kickoff hold. Its owner.
     #[schema(value_type = String)]
     pub held_by: AccountProfileId,
     /// Why work must remain ineligible after the graph is created.
     #[schema(value_type = String)]
     pub reason: ExternalName,
+    /// What would end the hold, as something Kontor can evaluate.
+    ///
+    /// `reason` is prose: it reads well and decides nothing, so before this
+    /// field the only thing that ever lifted a hold was a human calling
+    /// `execution-arm`, and an epic whose stated condition had been true for
+    /// days sat idle because nobody was asked to look.
+    ///
+    /// Absent means [`HoldLiftCondition::Manual`], which is what every hold
+    /// recorded before this field existed actually meant. A caller that says
+    /// nothing gets exactly the behaviour it already had.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub lift_condition: Option<HoldLiftCondition>,
 }
 
 /// The no-write projection of a requested covering kickoff hold.
@@ -4408,12 +4421,17 @@ pub struct InitialExecutionHoldPreviewDto {
     pub scope: String,
     /// Apply persists the authorization already revoked.
     pub state: String,
-    /// The account profile that will record the hold.
+    /// The account profile that will record the hold. Its owner.
     #[schema(value_type = String)]
     pub held_by: AccountProfileId,
     /// The durable reason apply will record.
     #[schema(value_type = String)]
     pub reason: ExternalName,
+    /// The machine-checkable condition apply will record, resolved — so a
+    /// caller that named none sees `manual` here rather than an absence it has
+    /// to interpret.
+    #[schema(value_type = String)]
+    pub lift_condition: HoldLiftCondition,
 }
 
 /// What `epics:apply` is asked for.
@@ -4865,6 +4883,15 @@ pub struct AuthorizationProjectionDto {
     /// The recorded reason for revocation.
     #[schema(value_type = Option<String>)]
     pub revocation_reason: Option<ExternalName>,
+    /// What would end this hold, beside the prose that says why it exists.
+    ///
+    /// `None` on a live grant, which has no terms left to meet, and on the
+    /// narrow arm and disarm answers that do not consult the ledger. A hold
+    /// read back from its epic always states it, because "why work is held" and
+    /// "what would release it" are different questions and only the second one
+    /// can be acted on.
+    #[schema(value_type = Option<String>)]
+    pub lift_condition: Option<HoldLiftCondition>,
 }
 
 /// The resource bounds one grant was taken under, on the wire.
@@ -5478,6 +5505,30 @@ pub struct RecoverGateRejectionRequest {
     /// Compared, never applied: naming a different phase is refused rather than
     /// obeyed, so this cannot become a way to choose where rejected work lands.
     pub expected_rejection_target: String,
+}
+
+/// What re-deriving a stalled workflow's phase from durable evidence did.
+///
+/// Reports the phase before and after, so a caller can see whether anything
+/// moved. `advanced: false` is the ordinary answer for a workflow already where
+/// its evidence puts it — which is exactly what makes this safe to run twice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct WorkflowPhaseRecoveryDto {
+    /// The Realm the task belongs to.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The task whose workflow was re-derived.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// The phase the workflow stood at before.
+    pub previous_phase: String,
+    /// The phase its durable evidence puts it at.
+    pub current_phase: String,
+    /// The workflow revision after the projection caught up.
+    #[schema(value_type = u64)]
+    pub revision: AggregateRevision,
+    /// Whether the stored phase actually moved.
+    pub advanced: bool,
 }
 
 /// One recovered gate rejection route.
@@ -7717,6 +7768,13 @@ pub trait ApplicationOperations: Send + Sync {
         gate: &str,
         request: &RecoverGateRejectionRequest,
     ) -> Result<GateRejectionRecoveryDto, ApiError>;
+
+    /// Re-derive one stalled workflow's phase from evidence already recorded.
+    async fn recover_workflow_phase(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<WorkflowPhaseRecoveryDto, ApiError>;
 
     /// Decide what publishing one task ticket's description would do.
     async fn preview_task_description(
@@ -11686,6 +11744,54 @@ pub async fn recover_gate_rejection(
         state
             .applications()
             .recover_gate_rejection(&key, project_id, task_id, &gate_id, &request)
+            .await?,
+    ))
+}
+
+/// Catch a stalled workflow up to the phase its own durable evidence proves.
+///
+/// The advance is normally computed as a side effect of recording a gate or
+/// settling a turn. When that moment is missed — ASMA-8205 passed its
+/// `high-verification-gate` at sequence 2 and the stored phase never moved —
+/// nothing re-derives it afterwards, and the workflow stalls with complete and
+/// unambiguous evidence sitting in front of it.
+///
+/// This is that missing surface and nothing more. It records no verdict,
+/// appends no evaluation, replays no turn and chooses no phase: it runs the
+/// same deterministic projection the ordinary paths run, over evidence that is
+/// already durable. A workflow already at its evidence phase is left exactly
+/// as it is, which is what makes running it twice a no-op rather than a second
+/// advance.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    responses(
+        (status = 200, body = WorkflowPhaseRecoveryDto),
+        (status = 401), (status = 403),
+        (status = 404, description = "The task has no active workflow")
+    )
+)]
+pub async fn recover_workflow_phase(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<WorkflowPhaseRecoveryDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    // Scoped the same way its sibling recovery is. The key is required by the
+    // write convention rather than by this operation's safety: re-deriving a
+    // phase from durable evidence is idempotent on its own, and a repeat lands
+    // as `advanced: false` rather than as a second advance.
+    let (project_id, task_id, _key) = task_scope(&state, &project_id, &task_id, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .recover_workflow_phase(project_id, task_id)
             .await?,
     ))
 }

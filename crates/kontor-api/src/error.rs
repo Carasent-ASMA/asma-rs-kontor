@@ -115,6 +115,20 @@ closed_enum! {
         /// that died *after* a write was put on the wire is
         /// [`Self::DeliveryUnconfirmed`], not this.
         Unavailable => "unavailable",
+        /// A settlement's canonical proof scan could not be completed, so the
+        /// proof was neither accepted nor rejected.
+        ///
+        /// Distinct from [`Self::Unavailable`], which blames the channel, and
+        /// from [`Self::RevisionConflict`], which blames the caller's tuple.
+        /// Both were wrong here: the runtime answers bounded reads and reports
+        /// itself reachable, and the tuple may be perfectly valid — the daemon
+        /// simply could not read far enough to decide. Saying "the runtime
+        /// could not be reached" sends an operator to look at a healthy plane,
+        /// and saying the tuple is not the current turn accuses them of a
+        /// forgery they did not commit.
+        ///
+        /// Nothing was changed: the scan runs entirely before any write.
+        ProofScanIncomplete => "proof_scan_incomplete",
         /// A write was put on the wire and the channel failed before its
         /// outcome could be confirmed. It may well have landed.
         ///
@@ -183,6 +197,7 @@ impl ApiErrorCode {
             Self::ReconciliationPending
             | Self::Unavailable
             | Self::DeliveryUnconfirmed
+            | Self::ProofScanIncomplete
             | Self::ProviderUnreachable => StatusCode::SERVICE_UNAVAILABLE,
             Self::ProviderUnauthorized => StatusCode::BAD_GATEWAY,
             Self::ProviderUnsupported => StatusCode::UNPROCESSABLE_ENTITY,
@@ -229,6 +244,9 @@ impl ApiErrorCode {
             Self::HandoffUnsettled => "settle the outstanding turn before terminalizing the run",
             Self::PlacementBlocked => "resolve where the work belongs in the topology, then retry",
             Self::Unavailable => "retry once the dependency answers; nothing was changed",
+            Self::ProofScanIncomplete => {
+                "settle again naming the same turn once the session's canonical history is readable to its end; the proof was neither accepted nor rejected and nothing was changed"
+            }
             Self::DeliveryUnconfirmed => {
                 "read this session's timeline for the exact idempotency key to learn the outcome, then replay that same key; never resend under a new one"
             }

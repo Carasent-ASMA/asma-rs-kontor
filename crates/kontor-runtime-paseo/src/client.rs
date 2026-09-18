@@ -1211,7 +1211,19 @@ impl PaseoRpc {
 
     /// `create_agent_request` for one persistent hosted leadership seat. The
     /// credential uses the same secret-only frame channel as consultation
-    /// credentials, while the seat retains its supervised provider mode.
+    /// credentials.
+    ///
+    /// The posture is *rendered*, not just spelled as a mode. Until ASMA-8193
+    /// this called [`paseo_mode`] with a hardcoded
+    /// [`SeatAutonomy::Supervised`], which had two consequences: a leadership
+    /// seat could not be configured at all, and — because only
+    /// [`render_posture`](crate::posture::render_posture) emits the
+    /// `permission` block — an OpenCode LSA was created with **no**
+    /// `DESTRUCTIVE_BASH_DENIES` floor, since the block is the only place that
+    /// floor is written. Going through the same renderer the delivery path uses
+    /// gives a leadership seat both halves at once, and means a seat's `--mode`
+    /// and its permission block are two uses of one evaluation rather than two
+    /// evaluations that must be kept in step.
     #[allow(clippy::too_many_arguments)]
     pub fn hosted_seat_agent_create(
         request_id: String,
@@ -1222,9 +1234,14 @@ impl PaseoRpc {
         labels: &BTreeMap<String, String>,
         prompt: &str,
         credential: &str,
+        autonomy: SeatAutonomy,
     ) -> RuntimeResult<Self> {
-        let mode = paseo_mode(model_rung.provider.0.as_str(), SeatAutonomy::Supervised)?;
-        Self::scoped_seat_agent_create(
+        // No allowances: a bounded relaxation of the floor is a per-task
+        // operator declaration, and a persistent leadership seat is not scoped
+        // to one task. The floor applies to it whole.
+        let posture =
+            crate::posture::render_posture(model_rung.provider.0.as_str(), autonomy, &[])?;
+        let mut request = Self::scoped_seat_agent_create(
             request_id,
             workspace_id,
             canonical_cwd,
@@ -1233,8 +1250,13 @@ impl PaseoRpc {
             labels,
             prompt,
             credential,
-            mode,
-        )
+            posture.mode,
+        )?;
+        if let Some(permission) = posture.permission {
+            request.message["config"]["providerOptions"] =
+                serde_json::json!({ "permission": permission });
+        }
+        Ok(request)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2557,26 +2579,81 @@ mod tests {
         ));
     }
 
+    /// A leadership seat launches under the autonomy it was *given*, and its
+    /// credential still travels only in the frame.
+    ///
+    /// The mode assertion is ASMA-8193. This create used to call
+    /// [`paseo_mode`] with a hardcoded [`SeatAutonomy::Supervised`], so an LSA
+    /// seat launched `auto` — asking the operator per guarded call — no matter
+    /// what `runtimes.json` declared. The epic's own architect was the one seat
+    /// configuration could not reach.
+    ///
+    /// Both arms are asserted from one table rather than one arm being pinned:
+    /// a mutant that ignores the argument and returns the old constant passes a
+    /// single-value test whenever that value is the one chosen.
     #[test]
-    fn hosted_leadership_uses_supervised_mode_and_the_same_secret_only_frame() {
+    fn hosted_leadership_launches_under_its_declared_autonomy() {
+        for (autonomy, expected) in [
+            (SeatAutonomy::Supervised, "auto"),
+            (SeatAutonomy::Bounded, "bypassPermissions"),
+            (SeatAutonomy::Advisory, "plan"),
+        ] {
+            let request = PaseoRpc::hosted_seat_agent_create(
+                "request-1".to_owned(),
+                "wks_1",
+                "/w/epic",
+                &route("claude-personal", "claude-opus-5", None),
+                "LSA",
+                &labels(),
+                "continue governed leadership",
+                "leadership-seat-secret",
+                autonomy,
+            )
+            .expect("a hosted Claude account route");
+            assert_eq!(
+                request.message["config"]["modeId"], expected,
+                "a {autonomy} leadership seat must launch {expected}"
+            );
+            assert!(request.message.get("env").is_none());
+            assert!(!format!("{request:?}").contains("leadership-seat-secret"));
+            assert_eq!(
+                request.envelope()["message"]["env"]["KONTOR_AUTH"],
+                "leadership-seat-secret"
+            );
+        }
+    }
+
+    /// The destructive floor reaches a leadership seat, on the one harness that
+    /// reads a block rather than a mode.
+    ///
+    /// This is the half of ASMA-8193 that is a security fix rather than a
+    /// configuration one. The hosted create called [`paseo_mode`] directly, and
+    /// only [`render_posture`](crate::posture::render_posture) emits the
+    /// `permission` block that carries [`DESTRUCTIVE_BASH_DENIES`] — so an
+    /// OpenCode LSA was created with no floor at all. Every pattern is asserted,
+    /// because a block naming only some of them leaves the rest to whatever an
+    /// operator's global config said.
+    #[test]
+    fn a_leadership_seat_carries_the_destructive_floor() {
         let request = PaseoRpc::hosted_seat_agent_create(
             "request-1".to_owned(),
             "wks_1",
             "/w/epic",
-            &route("claude-personal", "claude-opus-5", None),
+            &route("opencode", "deepseek/deepseek-v4-flash", None),
             "LSA",
             &labels(),
             "continue governed leadership",
             "leadership-seat-secret",
+            SeatAutonomy::Bounded,
         )
-        .expect("a hosted Claude account route");
-        assert_eq!(request.message["config"]["modeId"], "auto");
-        assert!(request.message.get("env").is_none());
-        assert!(!format!("{request:?}").contains("leadership-seat-secret"));
-        assert_eq!(
-            request.envelope()["message"]["env"]["KONTOR_AUTH"],
-            "leadership-seat-secret"
-        );
+        .expect("a hosted OpenCode route");
+        let bash = &request.message["config"]["providerOptions"]["permission"]["bash"];
+        for pattern in crate::posture::DESTRUCTIVE_BASH_DENIES {
+            assert_eq!(
+                bash[*pattern], "deny",
+                "a bounded leadership seat must still refuse `{pattern}`"
+            );
+        }
     }
 
     /// Every launch states the authority it runs under, and the three intents
@@ -3096,6 +3173,7 @@ mod tests {
             &labels,
             "go",
             "secret",
+            SeatAutonomy::Supervised,
         )
         .expect("the evidenced create builds");
 

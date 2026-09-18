@@ -49,7 +49,7 @@ use crate::receipt::{
 use crate::spec::{
     CanonicalSourceEvent, CatalogRoleRef, ExecutionCapability, IntakeReceipt,
     PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec,
-    ResolvedWorkProfileSnapshot, RoleCatalogRevision, Shareability, SourceIdentity,
+    ResolvedWorkProfileSnapshot, RoleCatalogRevision, SeatAutonomy, Shareability, SourceIdentity,
     TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot, TeamTemplateRevision,
     TopologySnapshot, TriggerSpec, WorkProfileSpec,
 };
@@ -542,6 +542,19 @@ pub struct StoredHostedTopologySeat {
     pub model_rung: crate::spec::ModelRung,
     /// Exact native runtime identity.
     pub native_identity: NativeRuntimeIdentity,
+    /// Authority this occupancy generation was launched under, frozen.
+    ///
+    /// Resolved once, when the generation is created, and then read back rather
+    /// than recomputed. The plane default is mutable configuration; a seat's
+    /// authority is not. Recomputing it on a later inspect or retire compares a
+    /// live default against a native that was launched under the old one, which
+    /// is what wedged the governed replacement path: the mismatch refuses the
+    /// retire *before* archival, so the very command that would install a
+    /// correctly-routed successor is the one the mismatch blocks.
+    ///
+    /// A configuration change therefore reaches a seat only through the audited
+    /// retire/replace path, as a new generation.
+    pub autonomy: SeatAutonomy,
     /// Provider conversation id, when exposed.
     pub provider_session_id: Option<ExternalId>,
     /// Runtime readback instant.
@@ -620,6 +633,52 @@ pub struct StoredCoreTeamRouteSuccession {
     pub recorded_at: Timestamp,
     /// Instant the receipt binding was completed.
     pub receipted_at: Option<Timestamp>,
+}
+
+/// Whether a hosted-seat launch intent has been reconciled with its native.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedSeatLaunchIntentState {
+    /// Written before the native call, not yet reconciled.
+    Prepared,
+    /// Reconciled against the native the launch actually produced.
+    Installed,
+}
+
+/// The authority one hosted-seat launch resolved, recorded *before* the launch.
+///
+/// Persisting the occupancy after the native answer leaves a window: the native
+/// is created, the acknowledgement is lost or the process exits, and nothing
+/// durable says what authority that native was asked for. A replay then resolves
+/// the plane default afresh, finds the native already there in the old mode, and
+/// refuses on the readback mismatch — which does not merely fail safe, it
+/// strands the seat, because the mismatch blocks the very path that could
+/// retire and replace it.
+///
+/// This row closes that window. It is written before the effect, carries the
+/// exact resolved autonomy, and is consumed when the occupancy binds. A replay
+/// inside the window reads it instead of the live default, so the launch intent
+/// survives a lost acknowledgement and a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredHostedSeatLaunchIntent {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Logical seat the intent is for.
+    pub seat_binding_id: SeatBindingId,
+    /// Occupancy generation this launch creates.
+    pub occupancy_generation: u64,
+    /// Exact authority resolved before the native call. Immutable once written.
+    pub autonomy: SeatAutonomy,
+    /// Frozen route the same launch asked for.
+    pub model_rung: crate::spec::ModelRung,
+    /// Whether the native has been reconciled against this intent.
+    pub state: HostedSeatLaunchIntentState,
+    /// The native the launch produced, once observed.
+    pub observed_native_id: Option<ExternalId>,
+    /// When the intent was recorded, before the effect.
+    pub prepared_at: Timestamp,
+    /// When the occupancy consumed it.
+    pub installed_at: Option<Timestamp>,
 }
 
 /// One immutable Committee finding or Judge aggregate.

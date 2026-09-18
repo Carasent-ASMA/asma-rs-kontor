@@ -483,6 +483,12 @@ const INITIAL_EXECUTION_HOLD: &[FieldSpec] = &[
         ArgType::ExternalName,
         "Why work must remain ineligible after kickoff.",
     ),
+    optional_field(
+        "lift_condition",
+        ArgType::Text,
+        "What would end the hold, so it can state its own terms rather than only \
+         its prose reason. Absent still means `manual`.",
+    ),
 ];
 
 /// One explicit provider/model route for an authorized recovery operation.
@@ -2049,6 +2055,29 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "Record one gate verdict. A waiver requires admin authority.",
+    },
+    ToolSpec {
+        name: "kontor_workflow_phase_recover",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task whose workflow stalled.",
+            ),
+            IDEMPOTENCY,
+        ],
+        about: "Catch a stalled workflow up to the phase its own recorded evidence proves.",
     },
     ToolSpec {
         name: "kontor_gate_rejection_recover",

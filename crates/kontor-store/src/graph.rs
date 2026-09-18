@@ -44,7 +44,9 @@ use kontor_core::repository::{
     MiniProject, NewLocalCommand, NewTaskWorkflow, Project, RepositoryError, RepositoryResult,
     Task, TicketLink, validate_dependency_graph,
 };
-use kontor_core::spec::{ResolvedWorkProfileSnapshot, TeamTemplateRevision, WorkProfileSpec};
+use kontor_core::spec::{
+    HoldLiftCondition, ResolvedWorkProfileSnapshot, TeamTemplateRevision, WorkProfileSpec,
+};
 use kontor_core::state::{ImportedTaskState, TaskState};
 use kontor_core::ticket::StatusConflictKind;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -2011,6 +2013,99 @@ impl SqliteStore {
         transaction.commit().map_err(backend)?;
         Ok(())
     }
+
+    /// Record what would lift one already-revoked authorization.
+    ///
+    /// Separate from the revocation because a revocation is evidence and this
+    /// schema never updates evidence. The caller records the revocation first;
+    /// the foreign key makes "a lift condition on something that is not a hold"
+    /// unrepresentable rather than merely discouraged.
+    ///
+    /// Converges on replay, and refuses to move. Epic apply is replay-safe as a
+    /// whole, so this runs again with the same inputs whenever a receipt is
+    /// served rather than recorded; a plain insert made the second call a
+    /// revision conflict and broke the replay it sits inside. Recording the
+    /// same condition twice is therefore a no-op, and recording a *different*
+    /// one is refused — the terms of a hold do not move while it holds.
+    ///
+    /// # Errors
+    /// Refuses an unknown or unrevoked authorization, and a second, different
+    /// condition for one hold.
+    pub fn record_hold_lift_condition(
+        &self,
+        project_id: ProjectId,
+        authorization_id: ExecutionAuthorizationId,
+        condition: HoldLiftCondition,
+        recorded_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        let transaction = self.begin()?;
+        transaction
+            .execute(
+                "INSERT INTO execution_hold_conditions
+                     (project_id, authorization_id, condition, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (project_id, authorization_id) DO NOTHING",
+                params![
+                    project_id.to_string(),
+                    authorization_id.to_string(),
+                    condition.as_str(),
+                    text(recorded_at)
+                ],
+            )
+            .map_err(backend)?;
+        // Read back rather than trusting the insert: `DO NOTHING` is silent
+        // about *why* it did nothing, and "a row already said something else"
+        // must not be mistaken for "this call succeeded".
+        let stored: String = transaction
+            .query_row(
+                "SELECT condition FROM execution_hold_conditions
+                 WHERE project_id = ?1 AND authorization_id = ?2",
+                params![project_id.to_string(), authorization_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if stored != condition.as_str() {
+            return Err(conflict(
+                "execution hold condition",
+                "already records a different lift condition for this hold",
+            ));
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// What would lift one hold.
+    ///
+    /// A hold with no row is [`HoldLiftCondition::Manual`], which is what every
+    /// hold recorded before this table existed actually meant: nothing about
+    /// self-lifting was promised to it, so it must not acquire one.
+    ///
+    /// # Errors
+    /// Backend failures, and a stored value outside the closed vocabulary —
+    /// which is a condition nothing can evaluate, and therefore a hold that
+    /// would never lift.
+    pub fn get_hold_lift_condition(
+        &self,
+        project_id: ProjectId,
+        authorization_id: ExecutionAuthorizationId,
+    ) -> RepositoryResult<HoldLiftCondition> {
+        let stored: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT condition FROM execution_hold_conditions
+                 WHERE project_id = ?1 AND authorization_id = ?2",
+                params![project_id.to_string(), authorization_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        match stored {
+            None => Ok(HoldLiftCondition::Manual),
+            // A stored value outside the vocabulary is a hold nothing can ever
+            // evaluate, so it is surfaced rather than quietly read as manual.
+            Some(stored) => Ok(HoldLiftCondition::parse(&stored)?),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3816,6 +3911,281 @@ pub struct StoredBindingSnapshot {
 }
 
 impl SqliteStore {
+    /// Durably record newly allocated timeline-epoch mappings for one runtime.
+    ///
+    /// The barrier ASMA-8203 exists for: a Kontor epoch number must be durable
+    /// *before* any tuple carrying it is handed to a caller or consumed by
+    /// settlement. One transaction, so a crash either leaves the mapping absent
+    /// — and nothing was exposed under it — or leaves it complete.
+    ///
+    /// Existing rows are never rewritten. `ON CONFLICT DO NOTHING` is the whole
+    /// continuity guarantee: a raw epoch that already has a number keeps it, so
+    /// restoring a registry can never renumber what `role_turns` already
+    /// settled under.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn persist_timeline_epochs(
+        &self,
+        runtime_kind: &str,
+        host: &str,
+        pairs: &[(String, u64)],
+        recorded_at: Timestamp,
+    ) -> RepositoryResult<()> {
+        if pairs.is_empty() {
+            return Ok(());
+        }
+        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO runtime_timeline_epochs
+                         (runtime_kind, host, raw_epoch, kontor_epoch, recorded_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT (runtime_kind, host, raw_epoch) DO NOTHING",
+                )
+                .map_err(backend)?;
+            for (raw, epoch) in pairs {
+                statement
+                    .execute(params![
+                        runtime_kind,
+                        host,
+                        raw.as_str(),
+                        i64::try_from(*epoch).unwrap_or(i64::MAX),
+                        recorded_at.to_string(),
+                    ])
+                    .map_err(backend)?;
+            }
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// Every durable epoch mapping this runtime allocated, for registry restore.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn list_timeline_epochs(
+        &self,
+        runtime_kind: &str,
+        host: &str,
+    ) -> RepositoryResult<Vec<(String, u64)>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT raw_epoch, kontor_epoch FROM runtime_timeline_epochs
+                 WHERE runtime_kind = ?1 AND host = ?2 ORDER BY kontor_epoch",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![runtime_kind, host])
+            .map_err(backend)?;
+        let mut pairs = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            let raw: String = row.get(0).map_err(backend)?;
+            let epoch: i64 = row.get(1).map_err(backend)?;
+            pairs.push((raw, u64::try_from(epoch).unwrap_or_default()));
+        }
+        Ok(pairs)
+    }
+
+    /// Record that Kontor issued one client message id to one exact binding.
+    ///
+    /// The write that makes observation bounded. Uniqueness is enforced by the
+    /// primary key inside the transaction rather than checked beforehand: a
+    /// check-then-write would leave the window this ledger exists to close.
+    ///
+    /// A **replay** is recognised, not refused. The same id presented again for
+    /// the same binding, session and idempotency key is the retry of an effect
+    /// the runtime may already have committed, and it returns `Ok` having
+    /// written nothing. The same id against a *different* session is the thing
+    /// that must never be true, and it refuses.
+    ///
+    /// # Errors
+    /// Backend failures, and a conflict when this id was already issued
+    /// somewhere else.
+    pub fn record_message_issuance(
+        &self,
+        issuance: &MessageIssuance,
+    ) -> RepositoryResult<MessageIssuanceOutcome> {
+        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
+        let written = transaction
+            .execute(
+                "INSERT INTO runtime_message_issuances
+                     (message_id, runtime_kind, host, runtime_binding_id,
+                      native_session_id, idempotency_key, provenance, issued_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (message_id) DO NOTHING",
+                params![
+                    issuance.message_id.as_str(),
+                    issuance.runtime_kind.as_str(),
+                    issuance.host.as_str(),
+                    issuance.runtime_binding_id.as_str(),
+                    issuance.native_session_id.as_str(),
+                    issuance.idempotency_key.as_str(),
+                    issuance.provenance.as_str(),
+                    issuance.issued_at.to_string(),
+                ],
+            )
+            .map_err(backend)?;
+        if written == 1 {
+            transaction.commit().map_err(backend)?;
+            return Ok(MessageIssuanceOutcome::Recorded);
+        }
+        // Already there. Whether that is this caller's own retry or a different
+        // session claiming an issued id is decided by the row, not by the
+        // caller's say-so.
+        let held: (String, String, String) = transaction
+            .query_row(
+                "SELECT runtime_binding_id, native_session_id, idempotency_key
+                   FROM runtime_message_issuances WHERE message_id = ?1",
+                params![issuance.message_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        if held.0 == issuance.runtime_binding_id
+            && held.1 == issuance.native_session_id
+            && held.2 == issuance.idempotency_key
+        {
+            return Ok(MessageIssuanceOutcome::Replayed);
+        }
+        Err(RepositoryError::Conflict {
+            subject: "runtime_message_issuances.message_id",
+            rule: "this client message id was already issued to a different session",
+        })
+    }
+
+    /// Record where an issued message was acknowledged to have landed.
+    ///
+    /// First write wins, and a contradictory one refuses. A retry of a delivery
+    /// whose acknowledgement was lost presents the same position and is a no-op;
+    /// a *different* position for an id already delivered is the runtime saying
+    /// the message landed twice, which is exactly the divergence the position
+    /// exists to catch, so it is refused here rather than resolved by
+    /// overwriting.
+    ///
+    /// # Errors
+    /// Backend failures, a conflict when this id was already delivered
+    /// elsewhere, and a conflict when no issuance was recorded at all — a
+    /// delivery for an id this realm never issued is not a row to repair.
+    pub fn record_message_delivery(
+        &self,
+        message_id: &str,
+        epoch: u64,
+        sequence: u64,
+    ) -> RepositoryResult<()> {
+        let epoch = i64::try_from(epoch).unwrap_or(i64::MAX);
+        let sequence = i64::try_from(sequence).unwrap_or(i64::MAX);
+        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
+        let held: Option<(Option<i64>, Option<i64>)> = transaction
+            .query_row(
+                "SELECT delivered_epoch, delivered_sequence
+                   FROM runtime_message_issuances WHERE message_id = ?1",
+                params![message_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(held) = held else {
+            return Err(RepositoryError::Conflict {
+                subject: "runtime_message_issuances.message_id",
+                rule: "no issuance was recorded for the message this delivery names",
+            });
+        };
+        match held {
+            (Some(at_epoch), Some(at_sequence)) => {
+                transaction.commit().map_err(backend)?;
+                if at_epoch == epoch && at_sequence == sequence {
+                    return Ok(());
+                }
+                return Err(RepositoryError::Conflict {
+                    subject: "runtime_message_issuances.delivered_sequence",
+                    rule: "this client message id was already delivered at a different position",
+                });
+            }
+            _ => {
+                transaction
+                    .execute(
+                        "UPDATE runtime_message_issuances
+                            SET delivered_epoch = ?2, delivered_sequence = ?3
+                          WHERE message_id = ?1",
+                        params![message_id, epoch, sequence],
+                    )
+                    .map_err(backend)?;
+            }
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    /// The issuance recorded for one client message id, if Kontor issued it.
+    ///
+    /// Absence is meaningful and is not an error: it means this realm never
+    /// minted that id, or minted it before the ledger existed.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn message_issuance(&self, message_id: &str) -> RepositoryResult<Option<MessageIssuance>> {
+        type IssuanceRow = (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<i64>,
+            Option<i64>,
+        );
+        let row: Option<IssuanceRow> = self
+            .connection
+            .query_row(
+                "SELECT message_id, runtime_kind, host, runtime_binding_id,
+                        native_session_id, idempotency_key, provenance, issued_at,
+                        delivered_epoch, delivered_sequence
+                   FROM runtime_message_issuances WHERE message_id = ?1",
+                params![message_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|row| {
+            Ok(MessageIssuance {
+                message_id: row.0,
+                runtime_kind: row.1,
+                host: row.2,
+                runtime_binding_id: row.3,
+                native_session_id: row.4,
+                idempotency_key: row.5,
+                provenance: row.6,
+                issued_at: read_timestamp(&row.7)?,
+                delivered_at: match (row.8, row.9) {
+                    (Some(epoch), Some(sequence)) => Some((
+                        u64::try_from(epoch).unwrap_or_default(),
+                        u64::try_from(sequence).unwrap_or_default(),
+                    )),
+                    _ => None,
+                },
+            })
+        })
+        .transpose()
+    }
+
     /// Keep the frozen snapshot a runtime issued for one binding.
     ///
     /// Replaceable, because a rebind for the same binding id issues a new
@@ -3936,6 +4306,48 @@ pub struct NewRoleSlotWaiver {
     pub evidence_hash: ContentHash,
     /// When it was recorded.
     pub recorded_at: Timestamp,
+}
+
+/// One recorded issuance of a Kontor-minted client message id.
+///
+/// The identity-bearing half — binding, native session and idempotency key — is
+/// what a replay must match and what a different session claiming an already
+/// issued id will fail to match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageIssuance {
+    /// The client message id Kontor minted.
+    pub message_id: String,
+    /// The runtime family it was issued into.
+    pub runtime_kind: String,
+    /// The host of that runtime.
+    pub host: String,
+    /// The exact runtime binding it was issued to.
+    pub runtime_binding_id: String,
+    /// The native session behind that binding when it was issued.
+    pub native_session_id: String,
+    /// The caller's stable key for the issuing call.
+    pub idempotency_key: String,
+    /// Which Kontor path issued it.
+    pub provenance: String,
+    /// When it was recorded, before the runtime was asked to accept it.
+    pub issued_at: Timestamp,
+    /// Where the runtime acknowledged it landing, once it did.
+    ///
+    /// `None` until a delivery is acknowledged, and permanently `None` for a
+    /// delivery whose acknowledgement was lost. A bounded observation treats
+    /// absence as "this realm cannot say which occurrence it meant" and refuses,
+    /// rather than assuming the newest one is the delivery.
+    pub delivered_at: Option<(u64, u64)>,
+}
+
+/// What recording an issuance did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageIssuanceOutcome {
+    /// A first issuance; the row is new.
+    Recorded,
+    /// The same id, binding, session and key as the row already held. The
+    /// caller is retrying an effect the runtime may already have committed.
+    Replayed,
 }
 
 /// One recorded waiver.

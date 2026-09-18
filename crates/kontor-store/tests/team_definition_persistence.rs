@@ -25,7 +25,7 @@ use kontor_core::repository::{
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyRepository,
 };
 use kontor_core::spec::{
-    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, Shareability, ShareabilityTier,
+    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, SeatAutonomy, Shareability, ShareabilityTier,
     TeamDefinitionSnapshot, TeamDefinitionSpec, TopologySnapshot,
 };
 use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind};
@@ -256,6 +256,7 @@ fn bind_hosted_seats(
                 seat_binding_id: *seat_binding_id,
                 model_rung: rung.clone(),
                 native_identity: native_identity.clone(),
+                autonomy: SeatAutonomy::Supervised,
                 provider_session_id: None,
                 observed_at: f.created_at,
             })

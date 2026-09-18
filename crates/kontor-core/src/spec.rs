@@ -4021,6 +4021,47 @@ pub struct ExecutionCapability {
     pub execution_authorization: ExecutionAuthorizationId,
 }
 
+closed_enum! {
+    /// What must become true before a kickoff hold stops holding.
+    ///
+    /// A hold is a covering authorization persisted already revoked, so a new
+    /// epic is never governable and default-allow at any crash boundary. It
+    /// worked; what it never carried was a statement of what would end it. The
+    /// reason was prose — "kickoff hold until Jira binding and worktrees are
+    /// confirmed" — which reads well and decides nothing, so the only thing
+    /// that ever lifted a hold was a human typing `execution-arm`. An epic
+    /// whose stated condition had been true for days sat idle because nobody
+    /// was asked to look.
+    ///
+    /// Each value is a predicate Kontor can evaluate against its own durable
+    /// state, with no runtime call and no external fetch. That bound is what
+    /// makes a self-lift safe to evaluate at a durable state-change boundary:
+    /// it cannot fail for a reason that has nothing to do with the epic, and a
+    /// busy Jira cannot become a stuck epic.
+    HoldLiftCondition, "HoldLiftCondition" {
+        /// Only a human lifts it, by arming.
+        ///
+        /// The default, and what every existing hold means: a hold recorded
+        /// before this type existed said nothing about lifting, and must not
+        /// acquire a self-lift it was never given.
+        Manual => "manual",
+        /// Kickoff finished: the graph is externally bound, and every task it
+        /// owns has somewhere to run.
+        ///
+        /// The machine-checkable spelling of the hold this realm actually
+        /// records — "until Jira binding and worktrees are confirmed" — and of
+        /// both its halves rather than the Jira one alone. Concretely: the epic
+        /// carries a confirmed Jira binding, and every task it owns carries
+        /// both a confirmed Jira binding and a durable declared worktree.
+        ///
+        /// Runtime placement is deliberately *not* part of it. A claim verified
+        /// by the scheduler, or a workspace proven by placement preflight, is a
+        /// fact admission itself produces — so a kickoff hold that waited on
+        /// one would be waiting on the thing it is holding back.
+        KickoffReady => "kickoff_ready",
+    }
+}
+
 /// Whether a trigger may arm work by itself.
 ///
 /// There is deliberately no unbounded variant and no default: auto-arming always
