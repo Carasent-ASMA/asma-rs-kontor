@@ -1503,6 +1503,7 @@ impl Services {
         &self,
         project_id: ProjectId,
         task_id: TaskId,
+        route: PhaseRoute,
     ) -> Result<TaskWorkflow, ApiError> {
         let state = self.state()?;
         loop {
@@ -1530,16 +1531,24 @@ impl Services {
             if ready == workflow.current_phase {
                 return Ok(workflow);
             }
-            let Some(next) = workflow
+            let mut leaving = workflow
                 .snapshot
                 .definition
                 .edges
                 .iter()
-                .find(|edge| edge.from == workflow.current_phase)
-                .map(|edge| edge.to.clone())
-            else {
+                .filter(|edge| edge.from == workflow.current_phase);
+            let Some(edge) = leaving.next() else {
                 return Ok(workflow);
             };
+            // A caller-driven settlement follows the profile's declared order,
+            // which is the behaviour every existing advance already has. An
+            // unattended catch-up does not: where a phase leads to more than one
+            // successor, choosing between them is a decision this projection has
+            // no authority to make, so it stops and leaves the branch to a turn.
+            if route == PhaseRoute::Unambiguous && leaving.next().is_some() {
+                return Ok(workflow);
+            }
+            let next = edge.to.clone();
             state
                 .with_store(|store| {
                     store.advance_phase(&kontor_core::repository::PhaseAdvance {
@@ -1553,6 +1562,78 @@ impl Services {
                 .map_err(|error| self.refuse(&error))?;
             state.signals().appended();
         }
+    }
+
+    /// Reproject every workflow a rejection route still fences.
+    ///
+    /// Ordinary advancement is driven by a caller: a settled turn or a
+    /// non-rejecting gate record reprojects the task it touched. That is enough
+    /// while the predicate deciding a fence is correct, and not enough the
+    /// moment it is corrected — a realm whose qualifying turn and passing gate
+    /// verdict became durable under the earlier predicate has no settlement
+    /// left to make, so nothing would ever ask the question again and the
+    /// workflow would sit on its rejection target forever.
+    ///
+    /// This asks it once per supported startup. It reads only durable evidence
+    /// and writes, at most, the phase advance that evidence already justifies:
+    /// no turn is replayed, no gate evaluation is re-recorded, and the rejection
+    /// route is never rewritten or removed. Running it again on a converged
+    /// realm therefore finds nothing to do, which is what makes a restart loop
+    /// safe.
+    ///
+    /// It fails closed in both directions. The enumeration is exactly the
+    /// fenced population, so a realm that never rejected a gate is untouched;
+    /// and a task whose state cannot be read is skipped rather than advanced,
+    /// because an unreadable workflow is not a workflow that proved anything.
+    ///
+    /// Returns how many workflows actually moved.
+    ///
+    /// # Errors
+    /// Only when the fenced population itself cannot be enumerated.
+    pub fn catch_up_fenced_workflows(&self) -> Result<usize, ApiError> {
+        let state = self.state()?;
+        let fenced = state
+            .with_store(SqliteStore::list_fenced_task_workflows)
+            .map_err(|error| self.refuse(&error))?;
+        let mut advanced: usize = 0;
+        for (project_id, task_id) in fenced {
+            let before = match state
+                .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+            {
+                Ok(Some(workflow)) => workflow.current_phase,
+                Ok(None) => continue,
+                Err(detail) => {
+                    tracing::warn!(
+                        project_id = %project_id,
+                        task_id = %task_id,
+                        detail = %detail,
+                        "a fenced workflow could not be read; it stays where it is"
+                    );
+                    continue;
+                }
+            };
+            match self.advance_workflow_from_evidence(project_id, task_id, PhaseRoute::Unambiguous)
+            {
+                Ok(workflow) if workflow.current_phase != before => {
+                    advanced = advanced.saturating_add(1);
+                    tracing::info!(
+                        project_id = %project_id,
+                        task_id = %task_id,
+                        from = %before.as_str(),
+                        to = %workflow.current_phase.as_str(),
+                        "a fenced workflow converged on evidence that was already durable"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    project_id = %project_id,
+                    task_id = %task_id,
+                    detail = %error.code.as_str(),
+                    "a fenced workflow could not be reprojected; it stays where it is"
+                ),
+            }
+        }
+        Ok(advanced)
     }
 
     fn latest_handoff_receipt(
@@ -12521,6 +12602,23 @@ struct Seating<'a> {
 /// yields every slot as a root, which is the honest reading: with nothing to wait
 /// for, there is nothing to be downstream of. `TeamTemplateSpec::validate` already
 /// refuses a cyclic handoff graph, so the first case does not reach here.
+/// How a phase projection picks the successor of a phase whose evidence is
+/// complete.
+///
+/// The two differ only where a phase leads to more than one successor, and only
+/// because of who is asking. A caller-driven settlement resolves that the way
+/// the pinned profile declares it, which is what every advance has always done.
+/// An unattended catch-up refuses to resolve it at all: choosing a branch on a
+/// realm's behalf, with no turn behind the choice, is not a projection of
+/// evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhaseRoute {
+    /// Follow the profile's first declared edge out of the phase.
+    Declared,
+    /// Advance only where exactly one edge leaves the phase.
+    Unambiguous,
+}
+
 fn eligible_roots(team: &kontor_teams::spec::TeamTemplateSpec) -> BTreeSet<RoleSlotId> {
     let downstream: BTreeSet<&RoleSlotId> = team
         .handoffs
@@ -16964,7 +17062,6 @@ impl Services {
     /// and expected response come from the immutable challenge row.
     async fn prove_challenged_turn(
         &self,
-        project_id: ProjectId,
         task: &kontor_core::repository::Task,
         run: &kontor_core::repository::AgentRun,
         binding: &RuntimeBinding,
@@ -16973,6 +17070,7 @@ impl Services {
         now: Timestamp,
     ) -> Result<RoleTurnRuntimeProof, ApiError> {
         let state = self.state()?;
+        let project_id = task.project_id;
         let message_id =
             MessageId::parse(challenge_message_id).map_err(|error| self.refuse_domain(&error))?;
         let external_message_id =
@@ -28457,7 +28555,7 @@ impl ApplicationOperations for Services {
         // before that rejection; the responsible seat must settle the routed
         // phase once more before ordinary evidence advancement resumes.
         if verdict != GateVerdict::Rejected {
-            self.advance_workflow_from_evidence(project_id, task_id)?;
+            self.advance_workflow_from_evidence(project_id, task_id, PhaseRoute::Declared)?;
         }
         state.signals().appended();
         Ok(GateVerdictDto {
@@ -28497,7 +28595,8 @@ impl ApplicationOperations for Services {
         // evidence that is already durable — so no verdict is recorded, no
         // evaluation appended and no turn replayed. A workflow already at its
         // evidence phase returns unchanged, which is what makes this idempotent.
-        let after = self.advance_workflow_from_evidence(project_id, task_id)?;
+        let after =
+            self.advance_workflow_from_evidence(project_id, task_id, PhaseRoute::Declared)?;
         Ok(kontor_api::applications::WorkflowPhaseRecoveryDto {
             realm_id: state.realm_id(),
             task_id,
@@ -29907,16 +30006,8 @@ impl ApplicationOperations for Services {
         } else if let Some(challenge_message_id) =
             request.correlation_challenge_message_id.as_deref()
         {
-            self.prove_challenged_turn(
-                project_id,
-                &task,
-                &run,
-                binding,
-                challenge_message_id,
-                &artifacts,
-                now,
-            )
-            .await?
+            self.prove_challenged_turn(&task, &run, binding, challenge_message_id, &artifacts, now)
+                .await?
         } else {
             return Err(self.deny(
                 ApiErrorCode::RevisionConflict,
@@ -29995,7 +30086,7 @@ impl ApplicationOperations for Services {
         // be trusted to answer — the certifier decides it from the template's
         // declared slots. Until every one is accounted for this is a no-op.
         let (team_run_closed, _) = self.settle_team(project_id, &run, now)?;
-        self.advance_workflow_from_evidence(project_id, task_id)?;
+        self.advance_workflow_from_evidence(project_id, task_id, PhaseRoute::Declared)?;
         let follow_ups = self.derive_follow_ups(project_id, &settled, now).await?;
 
         Ok(SettledTurnDto {
@@ -30645,9 +30736,7 @@ impl ApplicationOperations for Services {
         let recorded_successor_id = recorded_successor.map(|successor| successor.id);
         let slot_members: Vec<_> = members
             .iter()
-            .filter(|run| {
-                !run.is_operator_abandoned_unbound() && recorded_successor_id != Some(run.id)
-            })
+            .filter(|run| recorded_successor_id != Some(run.id))
             .cloned()
             .collect();
 
@@ -33556,11 +33645,15 @@ impl Services {
                 )
             })?;
         let recorded_successor_id = recorded_successor.map(|run| run.id);
+        // The roster handed to hydration must stay complete. An abandoned
+        // unbound run in another slot is still that slot's root while a live
+        // successor names it as its audit parent, and dropping it here makes
+        // the successor rootless -- refusing a succession this slot authorized.
+        // `TeamRunSlots::hydrate` is the single authority that keeps referenced
+        // abandoned parents and discards unreferenced ones.
         let slot_members: Vec<_> = members
             .iter()
-            .filter(|run| {
-                !run.is_operator_abandoned_unbound() && recorded_successor_id != Some(run.id)
-            })
+            .filter(|run| recorded_successor_id != Some(run.id))
             .cloned()
             .collect();
         let bindings: Vec<_> = members

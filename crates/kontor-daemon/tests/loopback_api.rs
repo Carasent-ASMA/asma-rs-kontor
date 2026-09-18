@@ -1458,6 +1458,11 @@ impl Respond for MultiHopEpicJira {
 /// answered reads, because the whole failure is that a write never happened and
 /// a read never noticed. This one keeps the description, applies a `PUT` to it
 /// and serves what it now holds, so a test can assert what a reader would see.
+///
+/// It reports the immutable id [`jira_issue_id`] derives from its key, which is
+/// the same value a confirmed binding records. Identity resolution reads an
+/// issue back by that id, so a fixture without one cannot be answered at all,
+/// and one reporting a different id looks like a renamed issue.
 #[derive(Clone)]
 struct DescriptionJira {
     key: &'static str,
@@ -1553,7 +1558,14 @@ impl Respond for DescriptionJira {
             return ResponseTemplate::new(200)
                 .set_body_json(serde_json::json!({"transitions": []}));
         }
-        if !path.contains(&format!("/rest/api/3/issue/{}", self.key)) {
+        // Addressable by the current key *and* by the immutable id, because
+        // identity resolution reads an issue back by whichever it holds.
+        if !path.contains(&format!("/rest/api/3/issue/{}", self.key))
+            && !path.contains(&format!(
+                "/rest/api/3/issue/{}",
+                jira_issue_id(self.key).as_str()
+            ))
+        {
             return ResponseTemplate::new(404);
         }
         if request.method.as_str() == "PUT" {
@@ -1587,6 +1599,10 @@ impl Respond for DescriptionJira {
         let held = self.body.lock().expect("the body is not poisoned").clone();
         ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "key": self.key,
+            // The immutable REST id, derived exactly as a confirmed binding
+            // derives it. Without one the connector cannot answer at all; with
+            // a different one the key looks like it was renamed.
+            "id": jira_issue_id(self.key).as_str(),
             "fields": {
                 "project": {"key": "ASMA"},
                 "status": {
@@ -3408,20 +3424,38 @@ async fn the_same_key_with_different_content_is_an_idempotency_conflict() {
 }
 
 #[tokio::test]
-async fn a_session_key_must_be_a_stable_client_message_id() {
+async fn a_session_key_uses_the_standard_stable_idempotency_vocabulary() {
     let world = World::open().await;
     world.script(HISTORY_LIVE);
     let (run, _) = world.launch().await;
-    let answer = Call::post(
+    let key = "not-a-message-id";
+    let expected = kontor_runtime::request::MessageId::derive(key).to_string();
+    let first = Call::post(
         format!("/v1/sessions/{run}/messages"),
         &serde_json::json!({"body": "hello"}),
     )
     .signed_as(&world, "operator")
-    .with_key("not-a-message-id")
+    .with_key(key)
     .send(&world)
     .await;
-    assert_eq!(answer.status, 400);
-    assert_eq!(answer.code(), "invalid_request");
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(first.json()["value"]["message_id"], expected);
+
+    let replayed = Call::post(
+        format!("/v1/sessions/{run}/messages"),
+        &serde_json::json!({"body": "hello"}),
+    )
+    .signed_as(&world, "operator")
+    .with_key(key)
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["value"]["message_id"], expected);
+    assert_eq!(
+        timeline_message_count(&world, &run, &expected).await,
+        1,
+        "an ordinary stable key derives one message identity across retries",
+    );
 }
 
 #[tokio::test]
@@ -14987,6 +15021,889 @@ async fn a_rejection_fence_resolves_its_roles_against_the_run_the_route_froze() 
     );
 }
 
+/// A pack built for the one shape the fence has to tell apart. Its rejection
+/// target is *not* the entry phase, so the edge leading into it names a logical
+/// role — and its team deliberately separates the two identities that name
+/// collides with. The concrete slot `implement` carries the logical role
+/// `fleet-implementer`, while a decoy slot *spelled* `fleet-implementer`
+/// carries `fleet-reviewer` instead. A fence that compared slot addresses to
+/// role names would read both of those backwards.
+const FLEET_PACK: &str = include_str!("../../kontor-profiles/tests/fixtures/custom-pack-f.json");
+
+/// A seated fleet task sitting at `high-verification` with every earlier phase
+/// authored, ready for its gate to pass or reject.
+struct FleetWorld {
+    seed: Bootstrapped,
+    runs: Vec<String>,
+}
+
+/// Seat the fleet team and author `high-scope`, `high-implementation` and
+/// `high-verification` in order, leaving the workflow on the gated phase.
+async fn fleet_at_verification(world: &World, slug: &'static str) -> FleetWorld {
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let pack: serde_json::Value = serde_json::from_str(FLEET_PACK).expect("the fleet pack parses");
+    let registered = Call::post(
+        "/v1/catalog/packs:register",
+        &serde_json::json!({ "pack": pack }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-register"))
+    .send(world)
+    .await;
+    assert_eq!(registered.status, 200, "{}", registered.body);
+
+    let created = ensure_project(world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    register_test_delivery_slots(
+        world,
+        &project,
+        &[
+            ("scope", "SA"),
+            ("implement", "SWE"),
+            ("review", "AUD"),
+            ("fleet-implementer", "UAT"),
+        ],
+    );
+    let revision = created.json()["revision"].as_u64().expect("a revision");
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Fleet lead", "harness": "fake.runtime",
+            "credential_alias": "fleet-lead", "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-account"))
+    .send(world)
+    .await;
+    let account = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            revision,
+            "Fleet epic",
+            "fleet-cat",
+            serde_json::json!([{"title": "Fleet task"}]),
+        ),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-epic-apply"))
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    let epic_revision = applied.json()["revision"].as_u64().expect("a revision");
+    confirm_test_epic_identity(world, &project, &epic);
+
+    let armed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
+        &serde_json::json!({
+            "expected_revision": epic_revision, "tasks": [],
+            "allowed_start": "2020-01-01T00:00:00Z", "allowed_end": "2099-01-01T00:00:00Z",
+            "max_concurrency": 1,
+            "granted_by": account, "reason": "Run the fleet task"
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{slug}-arm"))
+    .send(world)
+    .await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    let plan = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .send(world)
+    .await;
+    let plan_hash = plan.json()["plan_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    let started = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
+        &serde_json::json!({ "plan_hash": plan_hash }),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("{slug}-start"))
+    .send(world)
+    .await;
+    assert_eq!(started.status, 200, "{}", started.body);
+
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    let task = projection.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+    let task_revision = projection.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("a task revision");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let team_run_id = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_team_runs_for_task(project_id, task_id))
+        .expect("the team runs read")
+        .into_iter()
+        .next_back()
+        .map(|(id, _)| id)
+        .expect("the admission created a team run");
+    let runs: Vec<String> = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+        .expect("the seats read")
+        .into_iter()
+        .filter(|row| row.native_id.is_some())
+        .map(|row| row.agent_run_id.to_string())
+        .collect();
+    let seed = Bootstrapped {
+        project,
+        epic,
+        task,
+        task_revision,
+        account,
+    };
+    assert_eq!(
+        runs.len(),
+        4,
+        "every declared fleet slot is seated, decoy included"
+    );
+
+    // Author each phase in order. Every settlement carries exactly the artifact
+    // its own phase declares, so the workflow walks to the gated phase on
+    // evidence rather than on a claim.
+    for (slot, artifact, phase) in [
+        ("scope", "high-scope-record", "high-implementation"),
+        ("implement", "high-change", "high-verification"),
+        ("review", "high-verification-report", "high-verification"),
+    ] {
+        let run = run_with_role(world, &runs, slot).await;
+        let settled = settle_turn(
+            world,
+            &seed,
+            &run,
+            slot,
+            serde_json::json!([artifact]),
+            &format!("{slug}-author-{slot}"),
+        )
+        .await;
+        assert_eq!(settled.status, 200, "{}", settled.body);
+        assert_eq!(
+            workflow_position(world, &seed).0,
+            phase,
+            "authoring {slot} leaves the workflow on {phase}"
+        );
+    }
+    FleetWorld { seed, runs }
+}
+
+/// The route row this fleet task's active workflow carries.
+fn fleet_route(world: &World, seed: &Bootstrapped) -> kontor_core::repository::GateRejectionRoute {
+    let project = ProjectId::parse(&seed.project).expect("a project id");
+    let workflow = active_workflow(world, seed).id;
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.list_gate_rejection_routes(project, workflow))
+        .expect("the routes read")
+        .into_iter()
+        .next()
+        .expect("the rejection routed")
+}
+
+/// Reject the fleet task's verification gate through the ordinary path.
+async fn reject_the_fleet_gate(world: &World, seed: &Bootstrapped, key: &str) -> (String, u64) {
+    let (uri, revision, gate) = gate_record_target(world, seed).await;
+    assert_eq!(gate, "fleet-verification-gate");
+    let gate_spec = active_workflow(world, seed)
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == gate)
+        .expect("the gate is frozen")
+        .clone();
+    let rejected = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": gate_spec.evaluator_roles[0].as_str(),
+            "evaluator_account": seed.account,
+            "evidence": [],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(key.to_owned())
+    .send(world)
+    .await;
+    assert_eq!(rejected.status, 200, "{}", rejected.body);
+    (gate, revision)
+}
+
+/// F-8110-R9. The rejection target is a phase with an inbound edge, so the
+/// fence names the logical role that edge hands the rework to. A settled turn
+/// records the *slot* it was taken in, and this template maps slot `implement`
+/// onto role `fleet-implementer` — two different strings for the same seat.
+/// Comparing them directly leaves the fence standing forever on rework that
+/// satisfies every condition it states, which is the incident this reproduces:
+/// reject, author a fresh `high-change`, pass the gate, and reconciliation must
+/// carry the workflow past `high-implementation` without rewriting anything.
+#[tokio::test]
+async fn a_fresh_high_change_turn_releases_a_non_entry_fence_through_its_logical_role() {
+    let world = World::open_empty_with_a_plane().await;
+    let fleet = fleet_at_verification(&world, "fleet-fence").await;
+    let FleetWorld { seed, runs } = &fleet;
+
+    reject_the_fleet_gate(&world, seed, "fleet-fence-reject").await;
+    let (phase, routed_revision) = workflow_position(&world, seed);
+    assert_eq!(
+        phase, "high-implementation",
+        "the gate routes the work back to a phase that is not the entry phase"
+    );
+    let route = fleet_route(&world, seed);
+    assert_eq!(route.rejection_target.as_str(), "high-implementation");
+    let preserved_run = route.team_run_id;
+
+    // The artifacts the reviewer just rejected are still durable, and must not
+    // walk the workflow straight back out of the phase it was returned to.
+    for _ in 0..3 {
+        world.daemon.reconcile().await;
+        assert_eq!(
+            workflow_position(&world, seed),
+            (phase.clone(), routed_revision),
+            "pre-rejection evidence does not release the fence"
+        );
+    }
+
+    // The fresh rework: the seat whose slot carries the handed-to logical role,
+    // on the route's own TeamRun, carrying the phase's required artifact.
+    let implementer = run_with_role(&world, runs, "implement").await;
+    let rework = settle_turn(
+        &world,
+        seed,
+        &implementer,
+        "implement",
+        serde_json::json!(["high-change"]),
+        "fleet-fence-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+    let (after_rework, revision_after_rework) = workflow_position(&world, seed);
+    assert_eq!(
+        after_rework, "high-verification",
+        "a fresh high-change settlement by the handed-to role releases the fence"
+    );
+    assert!(revision_after_rework > routed_revision);
+
+    // The turn that released it belonged to the route's own preserved run, and
+    // it was found by its logical role rather than by its slot spelling.
+    let project = ProjectId::parse(&seed.project).expect("a project id");
+    let task_id = TaskId::parse(&seed.task).expect("a task id");
+    let released_by = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_settled_turns(project, task_id))
+        .expect("the settled turns read")
+        .into_iter()
+        .rfind(|turn| turn.role_slot_id.as_role_key().as_str() == "implement")
+        .expect("the rework turn is durable");
+    assert_eq!(released_by.team_run_id, preserved_run);
+    assert_ne!(
+        released_by.role_slot_id.as_role_key().as_str(),
+        "fleet-implementer",
+        "the releasing slot is spelled differently from the role it carries"
+    );
+
+    // The gate now passes on the re-authored evidence, and reconciliation keeps
+    // the workflow past the rejection target instead of replaying the route.
+    let before = rejection_census(&world);
+    let (uri, revision, gate) = gate_record_target(&world, seed).await;
+    let gate_spec = active_workflow(&world, seed)
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == gate)
+        .expect("the gate is frozen")
+        .clone();
+    let passed = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "passed",
+            "evaluator_role": gate_spec.evaluator_roles[0].as_str(),
+            "evaluator_account": seed.account,
+            "evidence": gate_spec
+                .required_evidence
+                .iter()
+                .map(kontor_core::id::ArtifactKey::as_str)
+                .collect::<Vec<_>>(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("fleet-fence-pass")
+    .send(&world)
+    .await;
+    assert_eq!(passed.status, 200, "{}", passed.body);
+
+    for _ in 0..3 {
+        world.daemon.reconcile().await;
+        assert_ne!(
+            workflow_position(&world, seed).0,
+            "high-implementation",
+            "the released workflow does not fall back to the rejection target"
+        );
+    }
+
+    // Nothing was replayed or rewritten to get here: the route row is the same
+    // immutable record, and reconciliation wrote no new rows.
+    let after = fleet_route(&world, seed);
+    assert_eq!(after.team_run_id, preserved_run);
+    assert_eq!(after.routed_at, route.routed_at);
+    assert_eq!(after.to_revision, route.to_revision);
+    assert_eq!(after.rejection_receipt_id, route.rejection_receipt_id);
+    let census_after = rejection_census(&world);
+    assert_eq!(
+        census_after
+            .iter()
+            .find(|(table, _)| *table == "task_gate_rejection_routes"),
+        before
+            .iter()
+            .find(|(table, _)| *table == "task_gate_rejection_routes"),
+        "reconciliation records no second route"
+    );
+    assert_eq!(
+        census_after
+            .iter()
+            .find(|(table, _)| *table == "role_turns"),
+        before.iter().find(|(table, _)| *table == "role_turns"),
+        "reconciliation settles no turn of its own"
+    );
+}
+
+/// The decoy: a slot whose *address* is spelled exactly like the logical role
+/// the edge requires, but which carries a different role. Resolving the slot
+/// through the frozen template is what tells these apart; a fence that trusted
+/// the spelling would hand the release to the wrong seat entirely.
+#[tokio::test]
+async fn a_slot_spelled_like_the_required_role_cannot_release_the_fence() {
+    let world = World::open_empty_with_a_plane().await;
+    let fleet = fleet_at_verification(&world, "fleet-decoy").await;
+    let FleetWorld { seed, runs } = &fleet;
+
+    reject_the_fleet_gate(&world, seed, "fleet-decoy-reject").await;
+    let (phase, routed_revision) = workflow_position(&world, seed);
+    assert_eq!(phase, "high-implementation");
+    let route = fleet_route(&world, seed);
+
+    // The decoy seat is on the route's own TeamRun, settles strictly after the
+    // route, and carries exactly the artifact the rejection target requires.
+    // Every condition but the one that matters is satisfied.
+    let decoy = run_with_role(&world, runs, "fleet-implementer").await;
+    let decoy_turn = settle_turn(
+        &world,
+        seed,
+        &decoy,
+        "fleet-implementer",
+        serde_json::json!(["high-change"]),
+        "fleet-decoy-turn",
+    )
+    .await;
+    assert_eq!(decoy_turn.status, 200, "{}", decoy_turn.body);
+    let settled = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.list_settled_turns(
+                ProjectId::parse(&seed.project).expect("a project id"),
+                TaskId::parse(&seed.task).expect("a task id"),
+            )
+        })
+        .expect("the settled turns read")
+        .into_iter()
+        .rfind(|turn| turn.role_slot_id.as_role_key().as_str() == "fleet-implementer")
+        .expect("the decoy turn is durable");
+    assert_eq!(
+        settled.team_run_id, route.team_run_id,
+        "the decoy is on the route's own preserved run"
+    );
+    assert!(
+        settled.settled_at > route.routed_at,
+        "and strictly after it"
+    );
+    assert!(
+        settled
+            .artifacts
+            .contains(&kontor_core::id::ArtifactKey::parse("high-change").expect("an artifact")),
+        "and carries the required artifact"
+    );
+
+    for _ in 0..3 {
+        world.daemon.reconcile().await;
+        assert_eq!(
+            workflow_position(&world, seed),
+            (phase.clone(), routed_revision),
+            "a slot spelled like the required role does not carry that role"
+        );
+    }
+
+    // The seat that does carry the role releases it, which is what proves the
+    // fence was closed on identity rather than on something incidental.
+    let implementer = run_with_role(&world, runs, "implement").await;
+    let rework = settle_turn(
+        &world,
+        seed,
+        &implementer,
+        "implement",
+        serde_json::json!(["high-change"]),
+        "fleet-decoy-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+    assert_ne!(
+        workflow_position(&world, seed).0,
+        "high-implementation",
+        "the seat carrying the handed-to logical role releases the fence"
+    );
+}
+
+/// Row identities a catch-up must leave exactly as it found them.
+fn fence_evidence_census(
+    state_root: &std::path::Path,
+    project: &str,
+) -> Vec<(String, Vec<String>)> {
+    let database = state_root.join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    [
+        (
+            "task_gate_rejection_routes",
+            "SELECT gate_key || '|' || gate_sequence || '|' || rejection_target || '|' \
+             || routed_at || '|' || team_run_id || '|' || to_revision \
+             FROM task_gate_rejection_routes WHERE project_id = ?1 ORDER BY 1",
+        ),
+        (
+            "role_turns",
+            "SELECT id || '|' || role_slot_id || '|' || team_run_id || '|' || artifacts \
+             || '|' || settled_at FROM role_turns WHERE project_id = ?1 ORDER BY 1",
+        ),
+        (
+            "task_gate_evaluations",
+            "SELECT gate_key || '|' || sequence || '|' || verdict || '|' || recorded_at \
+             FROM task_gate_evaluations WHERE project_id = ?1 ORDER BY 1",
+        ),
+    ]
+    .into_iter()
+    .map(|(table, query)| {
+        let mut statement = connection
+            .prepare(query)
+            .unwrap_or_else(|error| panic!("`{table}` is readable: {error}"));
+        let rows: Vec<String> = statement
+            .query_map(rusqlite::params![project], |row| row.get::<_, String>(0))
+            .expect("the rows project")
+            .map(|row| row.expect("a projected row"))
+            .collect();
+        (table.to_owned(), rows)
+    })
+    .collect()
+}
+
+/// Pin an already-advanced workflow back onto the rejection target.
+///
+/// This is how a realm that ran the *earlier* build looks: the route, the
+/// qualifying turn and the passing gate verdict are all durable, and the phase
+/// never moved because the predicate that should have released the fence
+/// compared a slot address to a logical role. Rewinding the one mutable column
+/// reproduces that database rather than simulating it — every other row is the
+/// row the ordinary path actually wrote.
+fn pin_workflow_back_to(world: &World, seed: &Bootstrapped, phase: &str, revision: u64) {
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    let workflow = active_workflow(world, seed).id.to_string();
+    let moved = connection
+        .execute(
+            "UPDATE task_workflows SET current_phase = ?1, revision = ?2
+             WHERE project_id = ?3 AND id = ?4",
+            rusqlite::params![
+                phase,
+                i64::try_from(revision).expect("a small revision"),
+                seed.project,
+                workflow
+            ],
+        )
+        .expect("the workflow is pinned back");
+    assert_eq!(moved, 1);
+}
+
+/// F-8110-R10. Correcting the fence predicate is not enough on its own. Ordinary
+/// advancement only runs when a caller asks for it — a settled turn, or a gate
+/// record that did not reject — and the realms this correction exists for have
+/// nothing left to ask: their qualifying turn and their passing gate verdict are
+/// already durable. Upgrading the binary under such a realm would leave the
+/// workflow pinned on its rejection target forever, because nothing would ever
+/// reproject it.
+///
+/// So the corrected daemon asks once, at startup, and this proves it: the
+/// durable state here is exactly the stuck shape, the restart is the supported
+/// `Daemon::start` + `reconcile` path, and the advance it produces rewrites no
+/// turn, no gate evaluation and no route.
+#[tokio::test]
+async fn a_restart_converges_a_workflow_left_fenced_by_the_earlier_predicate() {
+    let world = World::open_empty_with_a_plane().await;
+    let fleet = fleet_at_verification(&world, "fleet-catchup").await;
+    let FleetWorld { seed, runs } = &fleet;
+
+    reject_the_fleet_gate(&world, seed, "fleet-catchup-reject").await;
+    let (target, routed_revision) = workflow_position(&world, seed);
+    assert_eq!(target, "high-implementation");
+    let route_before = fleet_route(&world, seed);
+
+    // The rework and the verification verdict both land through the ordinary
+    // public path, so every durable row is the row production writes.
+    let implementer = run_with_role(&world, runs, "implement").await;
+    let rework = settle_turn(
+        &world,
+        seed,
+        &implementer,
+        "implement",
+        serde_json::json!(["high-change"]),
+        "fleet-catchup-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+    let (uri, revision, gate) = gate_record_target(&world, seed).await;
+    let gate_spec = active_workflow(&world, seed)
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == gate)
+        .expect("the gate is frozen")
+        .clone();
+    let passed = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "passed",
+            "evaluator_role": gate_spec.evaluator_roles[0].as_str(),
+            "evaluator_account": seed.account,
+            "evidence": gate_spec
+                .required_evidence
+                .iter()
+                .map(kontor_core::id::ArtifactKey::as_str)
+                .collect::<Vec<_>>(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("fleet-catchup-pass")
+    .send(&world)
+    .await;
+    assert_eq!(passed.status, 200, "{}", passed.body);
+
+    // Now make the realm look like one the earlier build left behind: all of
+    // that evidence durable, and the phase still sitting on the rejection
+    // target because nothing ever released the fence.
+    pin_workflow_back_to(&world, seed, &target, routed_revision);
+    assert_eq!(
+        workflow_position(&world, seed),
+        (target.clone(), routed_revision),
+        "the fixture reproduces a workflow stuck on its rejection target"
+    );
+    let before = fence_evidence_census(world.directory.path(), &seed.project);
+    assert!(
+        before
+            .iter()
+            .any(|(table, rows)| table == "role_turns" && !rows.is_empty()),
+        "the qualifying turn is durable before the restart"
+    );
+    assert!(
+        before
+            .iter()
+            .any(|(table, rows)| table == "task_gate_evaluations" && !rows.is_empty()),
+        "the passing verdict is durable before the restart"
+    );
+
+    // The supported restart: a new process over the same state root, whose
+    // startup reconciliation is the only thing that runs.
+    let project = ProjectId::parse(&seed.project).expect("a project id");
+    let World {
+        directory,
+        daemon,
+        router,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(router);
+    drop(daemon);
+    fake.rebuild_adapter_state();
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same realm reopens");
+    assert_eq!(restarted.reconcile().await, BarrierState::Open);
+
+    let task_id = TaskId::parse(&seed.task).expect("a task id");
+    let after_restart = restarted
+        .state()
+        .with_store(|store| store.get_active_task_workflow(project, task_id))
+        .expect("the workflow reads")
+        .expect("the task has an active workflow");
+    assert_ne!(
+        after_restart.current_phase.as_str(),
+        target,
+        "startup reconciliation converges a workflow the earlier predicate left fenced"
+    );
+
+    // Doing it again changes nothing. The catch-up is a projection, so a realm
+    // that has already converged has nothing left for it to do.
+    let settled_phase = after_restart.current_phase.clone();
+    let settled_revision = after_restart.revision;
+    for _ in 0..3 {
+        assert_eq!(restarted.reconcile().await, BarrierState::Open);
+        let again = restarted
+            .state()
+            .with_store(|store| store.get_active_task_workflow(project, task_id))
+            .expect("the workflow reads")
+            .expect("the task has an active workflow");
+        assert_eq!(
+            again.current_phase, settled_phase,
+            "the catch-up is idempotent"
+        );
+        assert_eq!(
+            again.revision, settled_revision,
+            "a converged realm is not advanced again"
+        );
+    }
+
+    // The route itself is still the same immutable record it was before the
+    // restart: history, not something the catch-up reissued.
+    let route_after = restarted
+        .state()
+        .with_store(|store| store.list_gate_rejection_routes(project, after_restart.id))
+        .expect("the routes read")
+        .into_iter()
+        .next()
+        .expect("the route survives as history");
+    assert_eq!(route_after.team_run_id, route_before.team_run_id);
+    assert_eq!(route_after.routed_at, route_before.routed_at);
+    assert_eq!(route_after.to_revision, route_before.to_revision);
+    assert_eq!(
+        route_after.rejection_receipt_id,
+        route_before.rejection_receipt_id
+    );
+    assert_eq!(route_after.rejection_target, route_before.rejection_target);
+
+    // And none of it rewrote the evidence it read. Same rows, same identities.
+    let after = fence_evidence_census(&state_root, &seed.project);
+    assert_eq!(
+        after, before,
+        "the catch-up replays no turn, re-records no verdict and rewrites no route"
+    );
+    restarted.state().signals().stop();
+    drop(directory);
+}
+
+/// Re-open one already-handed-over follow-up so a restart has real delivery work.
+///
+/// The row is the one the ordinary path derived and delivered; only the
+/// delivered flag is cleared. That is the durable shape a realm carrying old
+/// undelivered handoffs has, and it is what makes the retry below reach a
+/// runtime rather than skip.
+fn reopen_one_dispatch(world: &World, seed: &Bootstrapped) -> usize {
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    connection
+        .execute(
+            "UPDATE turn_dispatches SET dispatched = 0 WHERE project_id = ?1",
+            rusqlite::params![seed.project],
+        )
+        .expect("the dispatches are re-opened")
+}
+
+/// R11. The catch-up is durable-only work on this realm's own database, and it
+/// used to run *after* the follow-up retry, which awaits a runtime. A realm
+/// carrying undelivered handoffs whose targets are long gone leaves that retry
+/// waiting, and the catch-up behind it never ran at all — so a workflow stayed
+/// fenced for a reason that had nothing to do with its own evidence.
+///
+/// This holds the retry exactly where the live realm was stuck: inside the
+/// awaited send, with the delivery neither answered nor failed. The workflow
+/// must already have converged by then, and the retry must still complete once
+/// the runtime answers.
+#[tokio::test]
+async fn a_stalled_follow_up_delivery_does_not_delay_the_fenced_catch_up() {
+    let world = World::open_empty_with_a_plane().await;
+    let fleet = fleet_at_verification(&world, "fleet-stall").await;
+    let FleetWorld { seed, runs } = &fleet;
+
+    reject_the_fleet_gate(&world, seed, "fleet-stall-reject").await;
+    let (target, routed_revision) = workflow_position(&world, seed);
+    assert_eq!(target, "high-implementation");
+
+    let implementer = run_with_role(&world, runs, "implement").await;
+    let rework = settle_turn(
+        &world,
+        seed,
+        &implementer,
+        "implement",
+        serde_json::json!(["high-change"]),
+        "fleet-stall-rework",
+    )
+    .await;
+    assert_eq!(rework.status, 200, "{}", rework.body);
+    let (uri, revision, gate) = gate_record_target(&world, seed).await;
+    let gate_spec = active_workflow(&world, seed)
+        .snapshot
+        .definition
+        .gates
+        .iter()
+        .find(|candidate| candidate.id.as_str() == gate)
+        .expect("the gate is frozen")
+        .clone();
+    let passed = Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "passed",
+            "evaluator_role": gate_spec.evaluator_roles[0].as_str(),
+            "evaluator_account": seed.account,
+            "evidence": gate_spec
+                .required_evidence
+                .iter()
+                .map(kontor_core::id::ArtifactKey::as_str)
+                .collect::<Vec<_>>(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("fleet-stall-pass")
+    .send(&world)
+    .await;
+    assert_eq!(passed.status, 200, "{}", passed.body);
+
+    // The stuck shape, plus a realm that still owes a follow-up delivery.
+    pin_workflow_back_to(&world, seed, &target, routed_revision);
+    let reopened = reopen_one_dispatch(&world, seed);
+    assert!(
+        reopened > 0,
+        "the restart has real delivery work waiting for it"
+    );
+    let before = fence_evidence_census(world.directory.path(), &seed.project);
+
+    let project = ProjectId::parse(&seed.project).expect("a project id");
+    let task_id = TaskId::parse(&seed.task).expect("a task id");
+    let World {
+        directory,
+        daemon,
+        router,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(router);
+    drop(daemon);
+    fake.rebuild_adapter_state();
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same realm reopens");
+
+    // Occupy the awaited delivery. Nothing releases it until this test does, so
+    // reaching `entered()` means startup is sitting exactly where the live realm
+    // sat: inside the retry, with the send unanswered.
+    let stall = fake.pause_next_send();
+    let reconcile = restarted.reconcile();
+    tokio::pin!(reconcile);
+    let phase_while_stalled = tokio::select! {
+        _ = &mut reconcile => panic!("the send was never reached, so nothing was stalled"),
+        () = stall.entered() => restarted
+            .state()
+            .with_store(|store| store.get_active_task_workflow(project, task_id))
+            .expect("the workflow reads")
+            .expect("the task has an active workflow")
+            .current_phase,
+    };
+    assert_ne!(
+        phase_while_stalled.as_str(),
+        target,
+        "the durable catch-up does not queue behind a runtime that has not answered"
+    );
+
+    // The retry is not skipped to achieve that. It is still in flight, and once
+    // the runtime answers, startup finishes normally and the barrier still opens.
+    stall.release();
+    assert_eq!(reconcile.await, BarrierState::Open);
+    let delivered_after: i64 = {
+        let connection = rusqlite::Connection::open(state_root.join(kontor_daemon::DATABASE_FILE))
+            .expect("the realm database opens");
+        connection
+            .query_row(
+                "SELECT count(*) FROM turn_dispatches WHERE project_id = ?1 AND dispatched = 1",
+                rusqlite::params![seed.project],
+                |row| row.get(0),
+            )
+            .expect("the dispatches are countable")
+    };
+    assert!(
+        delivered_after > 0,
+        "the follow-up retry still ran after the catch-up, and delivered"
+    );
+
+    // R9/R10 identity and idempotency still hold on this path.
+    let converged = restarted
+        .state()
+        .with_store(|store| store.get_active_task_workflow(project, task_id))
+        .expect("the workflow reads")
+        .expect("the task has an active workflow");
+    for _ in 0..3 {
+        assert_eq!(restarted.reconcile().await, BarrierState::Open);
+        let again = restarted
+            .state()
+            .with_store(|store| store.get_active_task_workflow(project, task_id))
+            .expect("the workflow reads")
+            .expect("the task has an active workflow");
+        assert_eq!(again.current_phase, converged.current_phase);
+        assert_eq!(
+            again.revision, converged.revision,
+            "a converged realm is not advanced again"
+        );
+    }
+    let after = fence_evidence_census(&state_root, &seed.project);
+    assert_eq!(
+        after, before,
+        "startup replays no turn, re-records no verdict and rewrites no route"
+    );
+    restarted.state().signals().stop();
+    drop(directory);
+}
+
 /// A gate request cites evidence; it does not create that evidence.
 #[tokio::test]
 async fn a_gate_cannot_pass_on_caller_named_unproduced_evidence() {
@@ -26052,7 +26969,7 @@ async fn observing_trusts_only_a_message_this_realm_issued_to_this_session() {
         &serde_json::json!({"body": "do the work"}),
     )
     .signed_as(&world, "operator")
-    .with_key(&key.to_string())
+    .with_key(key.to_string())
     .send(&world)
     .await;
     assert_eq!(sent.status, 200, "{}", sent.body);
@@ -31767,6 +32684,373 @@ async fn an_admin_reroutes_a_never_bound_seat_whose_handoff_recorded_no_target()
     );
 }
 
+/// Replacing one slot must hydrate the whole retained roster. An abandoned
+/// never-bound attempt in another slot is still part of that roster when its
+/// live successor names it as an audit parent. Dropping the parent before
+/// hydration makes the unrelated replacement fail because the successor looks
+/// rootless.
+#[tokio::test]
+async fn replacing_one_slot_preserves_an_abandoned_parent_in_another_slot() {
+    let (seeded, abandoned_id, abandoned_revision) =
+        abandoned_before_its_handoff("replace-with-recovered-sibling").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        seats,
+        ..
+    } = &seeded;
+    let project_id = ProjectId::parse(project).expect("a project id");
+
+    let recovery_account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Recovery verifier",
+            "harness": "fake.runtime",
+            "credential_alias": "recovery-verifier",
+            "selectable_providers": ["codex-personal"],
+            "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("replace-with-recovered-sibling-recovery-account")
+    .send(world)
+    .await;
+    assert_eq!(recovery_account.status, 200, "{}", recovery_account.body);
+
+    hand_off_to_the_unbound_slot(&seeded, "replace-with-recovered-sibling-handoff").await;
+    world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
+    let task_revision = alpha_revision(world, project, epic).await;
+    let recovered = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{abandoned_id}/successors:replace"),
+        &reroute_request(abandoned_revision, task_revision),
+    )
+    .signed_as(world, "admin")
+    .with_key("replace-with-recovered-sibling-reroute")
+    .send(world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    let recovered_id = AgentRunId::parse(
+        recovered.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the recovered successor id"),
+    )
+    .expect("a canonical recovered successor id");
+
+    let sibling = seats
+        .iter()
+        .find(|seat| seat["role_slot"] == "omega-k4")
+        .expect("the sibling slot is seated")["agent_run_id"]
+        .as_str()
+        .expect("the sibling run id")
+        .to_owned();
+    finish_natively(world, &sibling).await;
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{sibling}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(world, "operator")
+    .with_key("replace-with-recovered-sibling-settle")
+    .send(world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+
+    let sibling_id = AgentRunId::parse(&sibling).expect("a canonical sibling run id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, sibling_id)
+            .expect("the sibling reads")
+            .expect("the sibling remains")
+    });
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{sibling}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": "omega-k4",
+            "expected_predecessor_revision": before.revision.get(),
+            "expected_task_revision": alpha_revision(world, project, epic).await,
+            "binding_generation": before
+                .binding
+                .as_ref()
+                .expect("the sibling was bound")
+                .identity
+                .generation
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("replace-with-recovered-sibling-replace")
+    .send(world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+
+    let still_recovered = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, recovered_id)
+            .expect("the recovered run reads")
+            .expect("the recovered run remains")
+    });
+    assert_eq!(
+        still_recovered.parent_agent_run_id,
+        Some(abandoned_id),
+        "the unrelated replacement preserves the recovered slot's audit parent"
+    );
+}
+
+/// The retained-roster rule governs quota succession as well. Succeeding a seat
+/// hydrates the *whole* team run, so the verify slot's recovered successor —
+/// whose only root is an abandoned never-bound attempt — is part of the roster
+/// that an unrelated implementation succession must hydrate. Dropping that
+/// parent leaves the successor rootless and refuses a succession the quota
+/// evidence authorized, stranding the seat on an exhausted account.
+#[tokio::test]
+async fn succeeding_one_slot_preserves_an_abandoned_parent_in_another_slot() {
+    let (seeded, abandoned_id, abandoned_revision) =
+        abandoned_before_its_handoff("succeed-with-recovered-sibling").await;
+    let UnboundWorld {
+        world,
+        project,
+        epic,
+        seats,
+        ..
+    } = &seeded;
+    let project_id = ProjectId::parse(project).expect("a project id");
+
+    // The exact alias the never-bound reroute resolves, and nothing else.
+    let recovery_account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Recovery verifier",
+            "harness": "fake.runtime",
+            "credential_alias": "recovery-verifier",
+            "selectable_providers": ["codex-personal"],
+            "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("succeed-with-recovered-sibling-recovery-account")
+    .send(world)
+    .await;
+    assert_eq!(recovery_account.status, 200, "{}", recovery_account.body);
+
+    // The relief account the succession moves onto. It declares no alias of its
+    // own, so it neither competes with the reroute's exact resolution nor
+    // inherits the lead account's spent allowance.
+    let relief = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Relief",
+            "harness": "fake.runtime",
+            "credential_alias": "relief",
+            "enabled": true
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("succeed-with-recovered-sibling-relief-account")
+    .send(world)
+    .await;
+    assert_eq!(relief.status, 200, "{}", relief.body);
+    let relief_id = AccountProfileId::parse(
+        relief.json()["account_profile_id"]
+            .as_str()
+            .expect("the relief account id"),
+    )
+    .expect("a canonical relief account id");
+
+    // (1) The verify slot reaches the shape this regression is about: an
+    //     operator-abandoned unbound attempt that a live successor still names
+    //     as its audit parent.
+    hand_off_to_the_unbound_slot(&seeded, "succeed-with-recovered-sibling-handoff").await;
+    world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
+    let task_revision = alpha_revision(world, project, epic).await;
+    let recovered = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{abandoned_id}/successors:replace"),
+        &reroute_request(abandoned_revision, task_revision),
+    )
+    .signed_as(world, "admin")
+    .with_key("succeed-with-recovered-sibling-reroute")
+    .send(world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    let recovered_id = AgentRunId::parse(
+        recovered.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the recovered successor id"),
+    )
+    .expect("a canonical recovered successor id");
+
+    // (2) A separate slot spends its own allowance. Nothing about that fact
+    //     touches the verify slot's lineage.
+    let sibling_id = AgentRunId::parse(
+        seats
+            .iter()
+            .find(|seat| seat["role_slot"] == "omega-k4")
+            .expect("the sibling slot is seated")["agent_run_id"]
+            .as_str()
+            .expect("the sibling run id"),
+    )
+    .expect("a canonical sibling run id");
+    // This pack seats without an account pin, and quota succession is
+    // account-attributed by construction. Pin the seeded lead account so the
+    // seat owns exactly the allowance the refusal below spends.
+    let exhausted = AccountProfileId::parse(&seeded.account).expect("the seeded lead account");
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.pin_agent_run_account(project_id, sibling_id, exhausted))
+        .expect("the seat owns the account it runs on");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, sibling_id)
+            .expect("the sibling reads")
+            .expect("the sibling remains")
+    });
+    let binding = before
+        .binding
+        .as_ref()
+        .expect("the sibling was bound")
+        .clone();
+    assert_ne!(
+        exhausted, relief_id,
+        "the succession has somewhere to move to"
+    );
+    let provider = world
+        .fake
+        .launched_model(sibling_id)
+        .expect("the sibling route")
+        .provider
+        .0;
+    let resets_at = kontor_api::now() + jiff::SignedDuration::from_secs(3_600);
+    let sibling = record_runtime_quota_refusal(
+        world, project_id, sibling_id, &binding, exhausted, &provider, resets_at,
+    )
+    .await
+    .0;
+
+    // (3) Freeze the durable attempt the way `recover_quota_seat` freezes it.
+    //     The planning walk is not what this regression is about; the roster the
+    //     launch step hydrates is.
+    let (task, team, quota) = world.daemon.state().with_store(|store| {
+        let team = store
+            .get_team_run(project_id, sibling.team_run_id)
+            .expect("the team reads")
+            .expect("the team exists");
+        let task = store
+            .get_task(project_id, team.task_id)
+            .expect("the task reads")
+            .expect("the task exists");
+        let quota = store
+            .list_provider_quota_states(project_id)
+            .expect("the quota rows read")
+            .into_iter()
+            .find(|row| row.account_profile_id == exhausted && row.provider == provider)
+            .expect("the exact quota row the refusal wrote");
+        (task, team, quota)
+    });
+    let key = IdempotencyKey::parse("succeed-with-recovered-sibling-attempt")
+        .expect("an idempotency key");
+    let created_at = kontor_api::now();
+    assert!(created_at < resets_at, "the allowance is still spent");
+    world.daemon.state().with_store(|store| {
+        store
+            .create_succession_attempt(&NewSuccessionAttempt {
+                id: kontor_core::id::SuccessionAttemptId::generate(),
+                project_id,
+                task_id: task.id,
+                team_run_id: team.id,
+                role: sibling.role.clone(),
+                predecessor_agent_run_id: sibling.id,
+                predecessor_runtime_binding_id: binding.id,
+                predecessor_native_identity: binding.identity.clone(),
+                expected_task_revision: task.revision,
+                expected_team_revision: team.revision,
+                expected_predecessor_revision: sibling.revision,
+                runtime_observation_cursor: sibling
+                    .projection
+                    .last_cursor
+                    .expect("the blocked cursor"),
+                quota_provenance_id: quota.provenance_id.expect("the runtime provenance"),
+                quota_state_revision: quota.revision,
+                quota_evidence_hash: quota.evidence_hash.clone(),
+                quota_provider: quota.provider.clone(),
+                successor_model_rung: Some(ModelRung {
+                    provider: ProviderRef("test".to_owned()),
+                    model: ModelRef("test".to_owned()),
+                    effort: None,
+                }),
+                successor_account_profile_id: Some(relief_id),
+                idempotency_key: key.clone(),
+                intent_hash: ContentHash::of(b"succeed-with-recovered-sibling-intent"),
+                deferred_until: None,
+                created_at,
+            })
+            .expect("the planned attempt is frozen while the quota row blocks")
+    });
+
+    // (4) The supported route: the saga retires the predecessor and launches
+    //     the successor, hydrating the team run on the way through.
+    let succeeded = Call::post_raw(
+        format!("/v1/projects/{project}/agent-runs/{sibling_id}/successors:recover"),
+        "",
+    )
+    .signed_as(world, "admin")
+    .with_key("succeed-with-recovered-sibling-attempt")
+    .send(world)
+    .await;
+    assert_eq!(succeeded.status, 200, "{}", succeeded.body);
+
+    // The succession really happened: the implementation slot holds a bound
+    // successor of the retired seat, on the account it was moved to.
+    let successor = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store
+                .list_agent_runs_for_team_run(project_id, team.id)
+                .expect("the roster reads")
+                .into_iter()
+                .filter_map(|row| {
+                    store
+                        .get_agent_run(project_id, row.agent_run_id)
+                        .expect("the run reads")
+                })
+                .find(|run| run.parent_agent_run_id == Some(sibling_id))
+        })
+        .expect("the succeeded slot holds a successor of the retired seat");
+    assert_eq!(successor.role.as_str(), "omega-k4");
+    assert!(successor.binding.is_some(), "the successor is bound");
+    assert_eq!(
+        successor.account_profile_id,
+        Some(relief_id),
+        "the succession moved off the exhausted account"
+    );
+
+    // The point: the unrelated slot's recovery lineage is intact. Its successor
+    // still names the abandoned parent, and that parent is still a row.
+    let still_recovered = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, recovered_id)
+            .expect("the recovered run reads")
+            .expect("the recovered run remains")
+    });
+    assert_eq!(
+        still_recovered.parent_agent_run_id,
+        Some(abandoned_id),
+        "the unrelated succession preserves the recovered slot's audit parent"
+    );
+    let parent = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, abandoned_id)
+            .expect("the abandoned parent reads")
+    });
+    assert!(
+        parent.is_some(),
+        "the abandoned parent the successor names is still a row"
+    );
+}
+
 /// Two undelivered targetless handoffs are two decisions, and neither of them
 /// says which one an Admin is recovering. Widening the authority to "some row
 /// exists" would let one reroute answer a handoff it was never authorized by,
@@ -32283,7 +33567,23 @@ async fn replaying_a_partial_admission_delivers_its_durable_follow_up() {
         ),
         &serde_json::json!({
             "role_slot": "omega-k1",
-            "expected_task_revision": 1,
+            // Read, not assumed. The task really has progressed by this point,
+            // so a literal revision only held while that progress happened to
+            // stop at one. The settlement still has to present the revision it
+            // read, which is what the guard below exercises.
+            "expected_task_revision": recovered.world.daemon.state().with_store(|store| {
+                let task_id = store
+                    .get_team_run(project_id, team_run_id)
+                    .expect("the team run is readable")
+                    .expect("the team run exists")
+                    .task_id;
+                store
+                    .get_task(project_id, task_id)
+                    .expect("the task is readable")
+                    .expect("the task exists")
+                    .revision
+                    .get()
+            }),
             "runtime_proof": observe_current_turn(
                 &recovered.world,
                 &recovered.project,
@@ -50382,10 +51682,19 @@ async fn reconcile_plan_refuses_to_call_a_placeholder_body_converged() {
     .send(&world)
     .await;
     assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic_id = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
     let task_id = applied.json()["tasks"][0]["task_id"]
         .as_str()
         .expect("a task id")
         .to_owned();
+    // A declaratively applied link carries a key and no immutable identity, and
+    // nothing may act on a binding that cannot prove one. Confirm it the way a
+    // materialization would, so this test exercises the placeholder-body rule
+    // rather than stopping at the identity precondition.
+    confirm_test_epic_identity(&world, &project_id.to_string(), &epic_id);
     let installed =
         install_jira_workflow(&world, &project_id.to_string(), "placeholder-body-workflow").await;
     assert_eq!(installed.status, 200, "{}", installed.body);

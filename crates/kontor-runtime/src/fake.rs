@@ -736,6 +736,7 @@ struct FakeState {
     /// cannot name it in advance.
     lose_hosted_launch_ack_once: bool,
     pause_hosted_retire_once: Option<FakeNativePause>,
+    pause_send_once: Option<FakeNativePause>,
     /// Consultation seats keyed by their durable SeatBinding identity.
     consultations: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     consultation_runs: BTreeMap<SeatBindingId, ConsultationRunId>,
@@ -1278,6 +1279,7 @@ impl ScriptedFakeRuntime {
                 lose_hosted_retire_ack_once: BTreeSet::new(),
                 lose_hosted_launch_ack_once: false,
                 pause_hosted_retire_once: None,
+                pause_send_once: None,
                 consultations: BTreeMap::new(),
                 consultation_runs: BTreeMap::new(),
                 consultation_permissions: BTreeMap::new(),
@@ -1900,6 +1902,19 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn minted_natives(&self) -> u64 {
         self.lock().minted
+    }
+
+    /// Hold the next message send immediately before its native effect.
+    ///
+    /// A follow-up handed to a seat whose session is gone is the shape a realm
+    /// carrying old undelivered dispatches actually has: the delivery is awaited
+    /// and never answered. This lets a test occupy that wait deterministically
+    /// instead of depending on a timeout.
+    #[must_use]
+    pub fn pause_next_send(&self) -> FakeNativePause {
+        let pause = FakeNativePause::default();
+        self.lock().pause_send_once = Some(pause.clone());
+        pause
     }
 
     /// Lose one acknowledgement after exact hosted native retirement has taken effect.
@@ -3729,6 +3744,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     }
 
     async fn send(&self, request: &SendMessageRequest) -> RuntimeResult<MessageAck> {
+        let pause = { self.lock().pause_send_once.take() };
+        if let Some(pause) = pause {
+            pause.pause().await;
+        }
         let mut state = self.lock();
         let declared = state.capabilities.clone();
         let generation = state.generation;
@@ -4005,7 +4024,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 )
             })
             .map(|event| event.position)
-            .last();
+            .next_back();
         if challenge_body_positions.len() > 1 {
             return Err(RuntimeError::DuplicateMessage {
                 rule: "the exact server correlation challenge body appears more than once after its boundary",
