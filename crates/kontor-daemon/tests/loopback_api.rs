@@ -55978,6 +55978,457 @@ async fn an_exact_replay_after_the_receipt_landed_answers_from_durable_evidence(
     );
 }
 
+// ---------------------------------------------------------------------------
+// ASMA-7869 — a hosted TPM seat wedged by a prepared launch intent whose launch
+// never happened.
+//
+// `prepare_hosted_seat_launch_intent` refuses a second route for one occupancy
+// generation, which is correct while a launch is in flight and wrong forever
+// afterwards: an intent prepared before an effect that never landed pins the
+// seat to a route nothing can start, and every later materialization of that
+// generation refuses against it. The live seat is
+// 01a02b8e-8f63-7161-b043-cf8cc6d1297e, pinned to opencode/deepseek-flash.
+// ---------------------------------------------------------------------------
+
+const WEDGED_PREPARED_AT: &str = "2026-09-18T20:50:33.373705Z";
+
+/// A seat holding a never-bound prepared intent and no native at all.
+///
+/// Staged through raw SQL for the same reason the drift matrix is: no endpoint
+/// produces this state, because no endpoint is supposed to. It is what a launch
+/// that died between preparing its intent and binding its occupancy leaves.
+async fn wedged_launch_intent_seat(root: &str, key: &str) -> (Composed, String, AggregateRevision) {
+    let (composed, binding, _native, _generation) = hosted_tpm_seat(root, key).await;
+    let project = composed.project.clone();
+    // The replacement route is only approvable where a governed account can
+    // select its provider, so the wedge fixture carries one.
+    enable_provider_account(
+        &composed.world,
+        &project,
+        "codex",
+        &format!("{key}-account"),
+    )
+    .await;
+    // OpenCode is selectable in this realm, exactly as it was in the realm that
+    // produced the wedge. The ban on it as a *destination* must therefore be
+    // the explicit rule, not an accident of no account being able to pick it.
+    enable_provider_account(
+        &composed.world,
+        &project,
+        "opencode",
+        &format!("{key}-opencode"),
+    )
+    .await;
+    let database = composed
+        .world
+        .directory
+        .path()
+        .join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    connection
+        .execute(
+            "DELETE FROM hosted_topology_seats WHERE project_id = ?1 AND seat_binding_id = ?2",
+            rusqlite::params![project, binding],
+        )
+        .expect("the occupancy is removable for staging");
+    // Replaced rather than updated: the v103 immutability trigger refuses a
+    // route change without supersession evidence, which is exactly the rule
+    // under test. Staging the wedge means writing the row as the dead launch
+    // left it, not editing it into that shape.
+    connection
+        .execute(
+            "DELETE FROM hosted_topology_seat_launch_intents
+              WHERE project_id = ?1 AND seat_binding_id = ?2",
+            rusqlite::params![project, binding],
+        )
+        .expect("the intent is removable for staging");
+    connection
+        .execute(
+            "INSERT INTO hosted_topology_seat_launch_intents
+                 (project_id, seat_binding_id, occupancy_generation, autonomy, model_rung,
+                  state, observed_native_id, prepared_at, installed_at)
+             VALUES (?1, ?2, 1, 'bounded',
+                     json('{\"provider\":\"opencode\",\"model\":\"deepseek/deepseek-flash\",\"effort\":\"max\"}'),
+                     'prepared', NULL, ?3, NULL)",
+            rusqlite::params![project, binding, WEDGED_PREPARED_AT],
+        )
+        .expect("the inert intent is stageable");
+    drop(connection);
+    let project_id = ProjectId::parse(&project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let revision = composed.world.daemon.state().with_store(|store| {
+        store
+            .get_seat_binding(project_id, binding_id)
+            .expect("the binding reads")
+            .expect("the binding exists")
+            .revision
+    });
+    (composed, binding, revision)
+}
+
+fn supersede_body(binding: &str, revision: AggregateRevision) -> serde_json::Value {
+    serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_seat_binding_revision": revision.get(),
+        "occupancy_generation": 1,
+        "expected_model_route": {
+            "provider": "opencode", "model": "deepseek/deepseek-flash", "effort": "max"
+        },
+        "expected_prepared_at": WEDGED_PREPARED_AT,
+        "desired_model_route": {
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+        },
+    })
+}
+
+async fn supersede(
+    world: &World,
+    project: &str,
+    epic: &str,
+    body: &serde_json::Value,
+    key: &str,
+) -> Answer {
+    Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/launch-intents:supersede"),
+        body,
+    )
+    .signed_as(world, "admin")
+    .with_key(key.to_owned())
+    .send(world)
+    .await
+}
+
+/// One inert intent is superseded, and the logical seat is untouched.
+#[tokio::test]
+async fn a_never_bound_prepared_launch_intent_is_superseded_in_place() {
+    let (composed, binding, revision) =
+        wedged_launch_intent_seat("/tmp/kontor-7869-eligible", "asma-7869-eligible-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+    let applied = supersede(
+        world,
+        project,
+        epic,
+        &supersede_body(&binding, revision),
+        "asma-7869-eligible",
+    )
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(
+        applied.json()["superseded_model_route"]["provider"],
+        "opencode"
+    );
+    assert_eq!(
+        applied.json()["replacement_model_route"]["provider"],
+        "codex"
+    );
+    assert_eq!(applied.json()["occupancy_generation"], 1);
+
+    world.daemon.state().with_store(|store| {
+        let intent = store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 1)
+            .expect("the intent reads")
+            .expect("the intent still exists");
+        // Superseded in place: same seat, same generation, still prepared, so
+        // the launch that follows is the first launch of this occupancy.
+        assert_eq!(intent.model_rung.provider.0, "codex");
+        assert_eq!(intent.state, HostedSeatLaunchIntentState::Prepared);
+        assert!(intent.observed_native_id.is_none());
+        assert!(intent.installed_at.is_none());
+
+        // Identity preservation: the same logical binding, still active, never
+        // released, never replaced, and no second binding minted.
+        let seat = store
+            .get_seat_binding(project_id, binding_id)
+            .expect("the binding reads")
+            .expect("the binding exists");
+        assert_eq!(seat.id, binding_id);
+        assert_eq!(seat.revision, revision);
+        assert!(seat.is_non_terminal());
+        assert!(seat.released_at.is_none());
+        assert!(seat.replaced_by.is_none());
+        // And still no native: superseding an intent launches nothing.
+        assert!(
+            store
+                .get_hosted_topology_seat(project_id, binding_id)
+                .expect("the occupancy reads")
+                .is_none()
+        );
+    });
+}
+
+/// Every shape that is not an inert intent refuses, with nothing changed.
+#[tokio::test]
+async fn a_launch_intent_supersession_refuses_every_shape_that_is_not_inert() {
+    for (case, stage, patch) in [
+        (
+            "installed-occupancy",
+            Some(
+                "UPDATE hosted_topology_seat_launch_intents SET state = 'installed',
+                    installed_at = '2026-09-18T21:00:00Z',
+                    observed_native_id = 'already-installed-native'
+                  WHERE project_id = ?1 AND seat_binding_id = ?2",
+            ),
+            None,
+        ),
+        // An observed native without an installed state is not a case this
+        // suite can stage: the v103 schema ties `state = 'installed'` to
+        // `observed_native_id IS NOT NULL` with a CHECK, so the pair moves
+        // together and the `installed-occupancy` case above covers both.
+        (
+            "hosted-history-row",
+            Some(
+                "INSERT INTO hosted_topology_seat_history
+                     (seat_binding_id, project_id, generation, model_rung, runtime_kind, host,
+                      native_id, provider_session_id, observed_at, retired_at,
+                      retirement_reason, autonomy)
+                 VALUES (?2, ?1, 1, json('{\"provider\":\"codex\",\"model\":\"m\"}'),
+                         'fake.runtime', 'fake-host', 'previously-retired-native', NULL,
+                         '2026-09-18T20:00:00Z', '2026-09-18T20:30:00Z',
+                         'staged prior retirement', 'bounded')",
+            ),
+            None,
+        ),
+        (
+            "hosted-current-row",
+            Some(
+                "INSERT INTO hosted_topology_seats
+                     (seat_binding_id, project_id, model_rung, runtime_kind, host, generation,
+                      native_id, provider_session_id, observed_at, autonomy)
+                 VALUES (?2, ?1, json('{\"provider\":\"codex\",\"model\":\"m\"}'),
+                         'fake.runtime', 'fake-host', 1, 'restored-native', NULL,
+                         '2026-09-18T21:00:00Z', 'bounded')",
+            ),
+            None,
+        ),
+        (
+            "changed-binding-revision",
+            None,
+            Some(serde_json::json!({"expected_seat_binding_revision": 99})),
+        ),
+        (
+            "changed-generation",
+            None,
+            Some(serde_json::json!({"occupancy_generation": 2})),
+        ),
+        (
+            "changed-route",
+            None,
+            Some(serde_json::json!({"expected_model_route": {
+                "provider": "opencode", "model": "deepseek/deepseek-chat", "effort": "max"
+            }})),
+        ),
+        (
+            "changed-prepared-at",
+            None,
+            Some(serde_json::json!({"expected_prepared_at": "2020-01-01T00:00:00Z"})),
+        ),
+        (
+            "destination-is-opencode",
+            None,
+            Some(serde_json::json!({"desired_model_route": {
+                "provider": "opencode", "model": "deepseek/deepseek-flash", "effort": "high"
+            }})),
+        ),
+        (
+            "destination-not-approved",
+            None,
+            Some(serde_json::json!({"desired_model_route": {
+                "provider": "not-a-configured-provider", "model": "m", "effort": "high"
+            }})),
+        ),
+    ] {
+        let (composed, binding, revision) = wedged_launch_intent_seat(
+            &format!("/tmp/kontor-7869-refuse-{case}"),
+            &format!("asma-7869-refuse-{case}-seats"),
+        )
+        .await;
+        let world = &composed.world;
+        let project = &composed.project;
+        let epic = &composed.epic;
+        let project_id = ProjectId::parse(project).expect("a canonical project id");
+        let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+        if let Some(statement) = stage {
+            let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+            let connection = rusqlite::Connection::open(database).expect("the database opens");
+            let staged = connection
+                .execute(statement, rusqlite::params![project, binding])
+                .unwrap_or_else(|error| panic!("{case} is stageable: {error}"));
+            assert_eq!(staged, 1, "{case}: staging matched no row");
+            drop(connection);
+        }
+        let mut body = supersede_body(&binding, revision);
+        if let Some(patch) = patch {
+            for (field, value) in patch.as_object().expect("a patch object") {
+                body[field] = value.clone();
+            }
+        }
+        let before = world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_seat_launch_intent(project_id, binding_id, 1)
+                .expect("the intent reads")
+        });
+        let refused = supersede(
+            world,
+            project,
+            epic,
+            &body,
+            &format!("asma-7869-refuse-{case}"),
+        )
+        .await;
+        assert_ne!(
+            refused.status, 200,
+            "{case}: a non-inert shape was superseded anyway: {}",
+            refused.body
+        );
+        // The OpenCode destination is refused by several independent guards in
+        // this realm — the explicit ban, the runtime's provider catalogue and
+        // the governed account walk — so "it refused" does not prove the ban
+        // exists. Naming the exact rule does: remove the ban and this case
+        // answers with a different refusal.
+        if case == "destination-is-opencode" {
+            assert_eq!(
+                refused.json()["rule"],
+                "the replacement route must be a different, non-OpenCode approved route",
+                "{case}: refused, but not by the OpenCode ban: {}",
+                refused.body
+            );
+        }
+        let after = world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_seat_launch_intent(project_id, binding_id, 1)
+                .expect("the intent reads")
+        });
+        assert_eq!(before, after, "{case}: a refusal moved the launch intent");
+        // Identity is never touched by a refusal.
+        world.daemon.state().with_store(|store| {
+            let seat = store
+                .get_seat_binding(project_id, binding_id)
+                .expect("the binding reads")
+                .expect("the binding exists");
+            assert_eq!(
+                seat.revision, revision,
+                "{case}: the binding revision moved"
+            );
+            assert!(seat.replaced_by.is_none());
+        });
+    }
+}
+
+/// A launch or effect receipt naming the seat means the intent was never inert.
+#[tokio::test]
+async fn a_launch_intent_supersession_refuses_a_seat_with_an_effect_receipt() {
+    let (composed, binding, revision) =
+        wedged_launch_intent_seat("/tmp/kontor-7869-receipt", "asma-7869-receipt-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+
+    // A real effectful receipt for this exact seat, recorded the way the route
+    // correction records one.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the database opens");
+    let staged = connection
+        .execute(
+            "INSERT INTO command_receipts
+                 (id, project_id, idempotency_key, kind, target, target_revision, intent,
+                  intent_hash, state, attempts, created_at, updated_at, execution_mode)
+             SELECT '01a0b700-0000-7000-8000-0000000007e9', ?1, 'asma-7869-staged-effect',
+                    'correct_core_team_route', target, target_revision,
+                    json_object('operation', 'core_team_route_correction', 'seat_binding', ?2),
+                    intent_hash, state, attempts, created_at, updated_at, execution_mode
+               FROM command_receipts WHERE project_id = ?1 LIMIT 1",
+            rusqlite::params![project, binding],
+        )
+        .expect("an effect receipt is stageable");
+    assert_eq!(staged, 1);
+    drop(connection);
+
+    let refused = supersede(
+        world,
+        project,
+        epic,
+        &supersede_body(&binding, revision),
+        "asma-7869-receipt",
+    )
+    .await;
+    assert_ne!(
+        refused.status, 200,
+        "a seat with an effect receipt was superseded: {}",
+        refused.body
+    );
+}
+
+/// Exactly once: a replay answers, a changed intent under the same key refuses,
+/// and drift between the caller's read and the swap makes the swap match
+/// nothing rather than overwrite it.
+#[tokio::test]
+async fn a_launch_intent_supersession_is_exactly_once_under_replay_and_drift() {
+    let (composed, binding, revision) =
+        wedged_launch_intent_seat("/tmp/kontor-7869-once", "asma-7869-once-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let body = supersede_body(&binding, revision);
+
+    let first = supersede(world, project, epic, &body, "asma-7869-once").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+
+    // The lost acknowledgement: the caller never saw the answer and retries the
+    // same key. It must answer, not swap again.
+    let replay = supersede(world, project, epic, &body, "asma-7869-once").await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        replay.json()["replacement_model_route"],
+        first.json()["replacement_model_route"]
+    );
+    assert_eq!(
+        replay.json()["receipt"]["receipt_id"],
+        first.json()["receipt"]["receipt_id"],
+        "a replay minted a second receipt"
+    );
+
+    // The same key asking for something else is a different command.
+    let mut different = body.clone();
+    different["desired_model_route"] =
+        serde_json::json!({"provider": "codex", "model": "gpt-5.6-sol", "effort": "high"});
+    let conflict = supersede(world, project, epic, &different, "asma-7869-once").await;
+    assert_ne!(
+        conflict.status, 200,
+        "one key superseded two different intents: {}",
+        conflict.body
+    );
+
+    // A second supersession of the same occupancy, under a fresh key, is
+    // refused: the intent it names is no longer the inert one.
+    let second = supersede(world, project, epic, &body, "asma-7869-once-again").await;
+    assert_ne!(
+        second.status, 200,
+        "the same occupancy was superseded twice: {}",
+        second.body
+    );
+
+    world.daemon.state().with_store(|store| {
+        let intent = store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 1)
+            .expect("the intent reads")
+            .expect("the intent exists");
+        assert_eq!(intent.model_rung.provider.0, "codex");
+        assert_eq!(
+            intent.model_rung.effort.map(|e| e.as_str().to_owned()),
+            Some("xhigh".to_owned())
+        );
+    });
+}
+
 /// The live ASMA-8098 shape: a closed predecessor the runtime calls stale.
 ///
 /// The TPM recovery previewed cleanly and then refused at apply with 409

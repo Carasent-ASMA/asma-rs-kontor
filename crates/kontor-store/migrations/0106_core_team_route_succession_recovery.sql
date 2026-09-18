@@ -171,7 +171,7 @@ CREATE TABLE hosted_seat_launch_intent_supersessions (
     replacement_model_rung    TEXT NOT NULL CHECK (json_valid(replacement_model_rung)),
     receipt_id                TEXT NULL REFERENCES command_receipts(id) ON DELETE RESTRICT,
     recorded_at               TEXT NOT NULL
-);
+) STRICT;
 
 -- One supersession per (seat, occupancy generation). A second would mean the
 -- same inert intent was replaced twice, which no replay may produce and which
@@ -204,6 +204,62 @@ CREATE TRIGGER launch_intent_supersessions_are_undeletable
 BEFORE DELETE ON hosted_seat_launch_intent_supersessions
 BEGIN
     SELECT RAISE(ABORT, 'a recorded launch-intent supersession cannot be deleted');
+END;
+
+-- The v103 immutability rule stands, with exactly one carve-out.
+--
+-- "A launch intent records what was resolved before the native call and never
+-- changes it" is right while a launch is in flight: the native out there was
+-- created under that decision and the record must not drift away from it. It is
+-- wrong for a decision no native ever consumed. The rule as written cannot tell
+-- those apart, so an intent prepared before a launch that died pins its seat
+-- forever.
+--
+-- The carve-out is narrow and evidence-bearing. Only the route and its prepared
+-- instant may move; autonomy, generation, project and seat may not. The row must
+-- be `prepared` on both sides with no installed instant and no observed native,
+-- so an intent any native ever answered to is still immutable. And a matching
+-- supersession must already be recorded, naming this exact seat, generation,
+-- superseded route and prepared instant — so the change cannot happen without
+-- the durable statement of what was replaced and why.
+--
+-- The rest of the trigger is the exact v103 body, reproduced unchanged.
+DROP TRIGGER hosted_seat_launch_intent_decision_immutable;
+
+CREATE TRIGGER hosted_seat_launch_intent_decision_immutable
+BEFORE UPDATE ON hosted_topology_seat_launch_intents
+WHEN (OLD.autonomy <> NEW.autonomy
+   OR OLD.model_rung <> NEW.model_rung
+   OR OLD.occupancy_generation <> NEW.occupancy_generation
+   OR OLD.project_id <> NEW.project_id
+   OR OLD.seat_binding_id <> NEW.seat_binding_id
+   OR OLD.prepared_at <> NEW.prepared_at
+   OR OLD.state = 'installed')
+  AND NOT (
+      OLD.autonomy = NEW.autonomy
+      AND OLD.occupancy_generation = NEW.occupancy_generation
+      AND OLD.project_id = NEW.project_id
+      AND OLD.seat_binding_id = NEW.seat_binding_id
+      AND OLD.state = 'prepared'
+      AND NEW.state = 'prepared'
+      AND OLD.installed_at IS NULL
+      AND NEW.installed_at IS NULL
+      AND OLD.observed_native_id IS NULL
+      AND NEW.observed_native_id IS NULL
+      AND EXISTS (
+          SELECT 1
+            FROM hosted_seat_launch_intent_supersessions AS s
+           WHERE s.project_id = OLD.project_id
+             AND s.seat_binding_id = OLD.seat_binding_id
+             AND s.occupancy_generation = OLD.occupancy_generation
+             AND s.superseded_model_rung = OLD.model_rung
+             AND s.superseded_prepared_at = OLD.prepared_at
+             AND s.replacement_model_rung = NEW.model_rung
+      )
+  )
+BEGIN
+    SELECT RAISE(ABORT,
+        'a hosted-seat launch intent records what was resolved before the native call and never changes it');
 END;
 
 PRAGMA user_version = 106;

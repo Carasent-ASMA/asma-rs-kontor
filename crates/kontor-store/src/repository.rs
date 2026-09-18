@@ -4459,6 +4459,31 @@ impl SqliteStore {
             });
         }
 
+        // Recorded before the swap, not after: the v106 carve-out on the
+        // launch-intent immutability trigger only admits a route change that
+        // this exact evidence already accounts for, so the statement of what
+        // is being replaced has to exist first.
+        transaction
+            .execute(
+                "INSERT INTO hosted_seat_launch_intent_supersessions
+                     (idempotency_key, intent_hash, project_id, seat_binding_id,
+                      occupancy_generation, seat_binding_revision, superseded_model_rung,
+                      superseded_prepared_at, replacement_model_rung, receipt_id, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10)",
+                params![
+                    request.idempotency_key.as_str(),
+                    request.intent_hash.as_str(),
+                    project,
+                    binding,
+                    generation,
+                    i64::try_from(request.expected_seat_binding_revision.get()).unwrap_or(i64::MAX),
+                    expected_rung,
+                    text(request.expected_prepared_at),
+                    replacement_rung,
+                    text(request.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
         // The swap itself. Every fence the intent carries is in the predicate,
         // so a concurrent install or re-prepare makes this match zero rows
         // rather than overwrite a decision someone else just made.
@@ -4492,27 +4517,6 @@ impl SqliteStore {
             });
         }
 
-        transaction
-            .execute(
-                "INSERT INTO hosted_seat_launch_intent_supersessions
-                     (idempotency_key, intent_hash, project_id, seat_binding_id,
-                      occupancy_generation, seat_binding_revision, superseded_model_rung,
-                      superseded_prepared_at, replacement_model_rung, receipt_id, recorded_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10)",
-                params![
-                    request.idempotency_key.as_str(),
-                    request.intent_hash.as_str(),
-                    project,
-                    binding,
-                    generation,
-                    i64::try_from(request.expected_seat_binding_revision.get()).unwrap_or(i64::MAX),
-                    expected_rung,
-                    text(request.expected_prepared_at),
-                    replacement_rung,
-                    text(request.recorded_at),
-                ],
-            )
-            .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(Applied::Updated)
     }

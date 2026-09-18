@@ -104,6 +104,7 @@ const EXPECTED_TABLES: &[&str] = &[
     // what the request asked for, and the chain that makes one import current.
     "holiday_import_batches",
     "holiday_sources",
+    "hosted_seat_launch_intent_supersessions",
     // Schema v5 (KON-MVP-19): the destination half of a redacted import.
     "import_receipts",
     "imported_profile_selection_outcomes",
