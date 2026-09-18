@@ -46,3 +46,16 @@ There were no unresolved scope questions at settlement.
   zero-workspace requirement, which is the stronger gate; the `cwd` rule exists
   to catch the *dangling* session that no workspace still lists, which is the
   case the child path already guards against by workspace id.
+- **Correction after HV-001 (rejection of `0e5a0bec`):** the statement above
+  understated the residual, because the *implementation* of containment was
+  wrong for one admitted root. `WorkspaceRoot` accepts the filesystem root `/`
+  as a spellable place. The first implementation stripped the root as a text
+  prefix and then required the remainder to start with `/`, which is correct for
+  `/w/epic` against `/w/epic-2` and **false** for `/` against
+  `/dangling-session`. A live unarchived session was therefore read as outside a
+  root it was plainly inside, and the irreversible exact-id project removal
+  proceeded. That was a blocking defect in the gate, not an acceptable residual.
+  Containment is now decided by walking path components, where `/` is the single
+  `RootDir` component every absolute path begins with. The residual described
+  above — an association that is real but not expressed in the directory tree —
+  is what genuinely remains.
