@@ -1235,6 +1235,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Supersede one never-bound prepared Core Team launch intent. */
+        post: operations["supersede_core_team_launch_intent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply": {
         parameters: {
             query?: never;
@@ -2521,6 +2538,37 @@ export interface paths {
         put?: never;
         /** Close one reconciliation conflict. */
         post: operations["resolve_ticket_conflict"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Catch a stalled workflow up to the phase its own durable evidence proves.
+         * @description The advance is normally computed as a side effect of recording a gate or
+         *     settling a turn. When that moment is missed — ASMA-8205 passed its
+         *     `high-verification-gate` at sequence 2 and the stored phase never moved —
+         *     nothing re-derives it afterwards, and the workflow stalls with complete and
+         *     unambiguous evidence sitting in front of it.
+         *
+         *     This is that missing surface and nothing more. It records no verdict,
+         *     appends no evaluation, replays no turn and chooses no phase: it runs the
+         *     same deterministic projection the ordinary paths run, over evidence that is
+         *     already durable. A workflow already at its evidence phase is left exactly
+         *     as it is, which is what makes running it twice a no-op rather than a second
+         *     advance.
+         */
+        post: operations["recover_workflow_phase"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3848,6 +3896,16 @@ export interface components {
             /** @description The account profile that granted it. */
             created_by: string;
             /**
+             * @description What would end this hold, beside the prose that says why it exists.
+             *
+             *     `None` on a live grant, which has no terms left to meet, and on the
+             *     narrow arm and disarm answers that do not consult the ledger. A hold
+             *     read back from its epic always states it, because "why work is held" and
+             *     "what would release it" are different questions and only the second one
+             *     can be acted on.
+             */
+            lift_condition?: string | null;
+            /**
              * Format: int32
              * @description Maximum concurrent runs it authorizes.
              */
@@ -5066,6 +5124,61 @@ export interface components {
              */
             snapshot_cursor: number;
         };
+        /**
+         * @description Supersede one never-bound prepared launch intent with an approved route.
+         *
+         *     Every field is a fence. The operation applies to exactly one durable shape —
+         *     an intent prepared before a launch that never happened — and anything that
+         *     has since become a native, an occupancy or a recorded effect refuses.
+         */
+        CoreTeamLaunchIntentSupersedeRequest: {
+            /** @description The catalog-approved replacement route. */
+            desired_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description The exact inert route being superseded, compared verbatim. */
+            expected_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description The exact instant that inert intent was prepared, compared verbatim. */
+            expected_prepared_at: string;
+            /**
+             * Format: int64
+             * @description Epic revision the caller read.
+             */
+            expected_revision: number;
+            /**
+             * Format: int64
+             * @description The binding revision the caller read.
+             */
+            expected_seat_binding_revision: number;
+            /**
+             * Format: int64
+             * @description The occupancy generation whose inert intent is replaced.
+             */
+            occupancy_generation: number;
+            /** @description The logical seat, preserved exactly. */
+            seat_binding_id: string;
+        };
+        /** @description What one launch-intent supersession replaced, and what now stands. */
+        CoreTeamLaunchIntentSupersessionDto: {
+            /**
+             * Format: int64
+             * @description The occupancy generation whose intent was replaced; unchanged by this.
+             */
+            occupancy_generation: number;
+            /** @description Realm that recorded it. */
+            realm_id: string;
+            /** @description Audited mutation receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The approved route that now stands. */
+            replacement_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description The preserved logical seat. Never retired, never replaced. */
+            seat_binding_id: string;
+            /**
+             * Format: int64
+             * @description Unchanged binding revision the swap was fenced on.
+             */
+            seat_binding_revision: number;
+            /** @description The inert route that was superseded, retained as evidence. */
+            superseded_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+        };
         /** @description Materialize the Core Team's seats for one epic. */
         CoreTeamMaterializeRequest: {
             /**
@@ -5258,8 +5371,41 @@ export interface components {
             canonical_cwd?: string | null;
             /** @description Durable container binding. */
             container_binding_id: string;
+            /**
+             * Format: int64
+             * @description Runtime generation the container identity belongs to.
+             *
+             *     Part of the identity rather than a readback counter: a native id means
+             *     nothing outside the generation that issued it, and a restart that
+             *     replaced the container keeps the id while moving the generation.
+             */
+            container_generation: number;
+            /** @description Host the container was placed on. */
+            container_host: string;
             /** @description Exact native workspace identity. */
             container_native_id: string;
+            /** @description Runtime family the container belongs to. */
+            container_runtime_kind: string;
+            /**
+             * @description The exact native project the container hangs under — Paseo's `prj_*`.
+             *
+             *     A workspace id is only that workspace inside one native project, so a
+             *     placement that names the container without its parent is not placement
+             *     evidence. Sourced from the persisted container-binding ancestry the
+             *     adapter established and read back, never from the Kontor project id and
+             *     never from a mutable runtime title. Absent only for a native root, which
+             *     has no parent project.
+             */
+            native_parent_project_id?: string | null;
+            /**
+             * @description This realm's own project identifier for the binding.
+             *
+             *     A Kontor UUID. Deliberately named for what it is: it is not the
+             *     runtime's project identity and cannot stand in for one.
+             */
+            project_id: string;
+            /** @description The predecessor provider conversation the retirement was fenced on. */
+            provider_correlation?: string | null;
             /** @description Control-plane node hosting the seat. */
             topology_node_id: string;
         };
@@ -5286,6 +5432,21 @@ export interface components {
             predecessor_native_id: string;
             /** @description Hash the apply must name. */
             preview_hash: string;
+            /**
+             * @description The complete canonical intent document `preview_hash` is taken over.
+             *
+             *     Returned so the fence is auditable rather than opaque: a caller sees
+             *     every value the apply will compare and can re-derive `preview_hash` from
+             *     these exact bytes. It is the server's canonical form — keys ordered, no
+             *     insignificant whitespace — so the rendering is deterministic and two
+             *     previews of unchanged state are byte-identical.
+             */
+            preview_intent: Record<string, never>;
+            /**
+             * Format: int32
+             * @description Schema version of that canonical document.
+             */
+            preview_intent_schema_version: number;
             /** @description Owning project. */
             project_id: string;
             /** @description Realm that computed the plan. */
@@ -6300,8 +6461,14 @@ export interface components {
         };
         /** @description The no-write projection of a requested covering kickoff hold. */
         InitialExecutionHoldPreviewDto: {
-            /** @description The account profile that will record the hold. */
+            /** @description The account profile that will record the hold. Its owner. */
             held_by: string;
+            /**
+             * @description The machine-checkable condition apply will record, resolved — so a
+             *     caller that named none sees `manual` here rather than an absence it has
+             *     to interpret.
+             */
+            lift_condition: string;
             /** @description The durable reason apply will record. */
             reason: string;
             /** @description The hold always covers the whole epic. */
@@ -6314,8 +6481,21 @@ export interface components {
          *     governable by the scheduler.
          */
         InitialExecutionHoldRequest: {
-            /** @description The account profile recording the kickoff hold. */
+            /** @description The account profile recording the kickoff hold. Its owner. */
             held_by: string;
+            /**
+             * @description What would end the hold, as something Kontor can evaluate.
+             *
+             *     `reason` is prose: it reads well and decides nothing, so before this
+             *     field the only thing that ever lifted a hold was a human calling
+             *     `execution-arm`, and an epic whose stated condition had been true for
+             *     days sat idle because nobody was asked to look.
+             *
+             *     Absent means [`HoldLiftCondition::Manual`], which is what every hold
+             *     recorded before this field existed actually meant. A caller that says
+             *     nothing gets exactly the behaviour it already had.
+             */
+            lift_condition?: string | null;
             /** @description Why work must remain ineligible after the graph is created. */
             reason: string;
         };
@@ -10153,6 +10333,30 @@ export interface components {
             /** @description The phases it may terminate at. */
             terminal_phases: string[];
         };
+        /**
+         * @description What re-deriving a stalled workflow's phase from durable evidence did.
+         *
+         *     Reports the phase before and after, so a caller can see whether anything
+         *     moved. `advanced: false` is the ordinary answer for a workflow already where
+         *     its evidence puts it — which is exactly what makes this safe to run twice.
+         */
+        WorkflowPhaseRecoveryDto: {
+            /** @description Whether the stored phase actually moved. */
+            advanced: boolean;
+            /** @description The phase its durable evidence puts it at. */
+            current_phase: string;
+            /** @description The phase the workflow stood at before. */
+            previous_phase: string;
+            /** @description The Realm the task belongs to. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The workflow revision after the projection caught up.
+             */
+            revision: number;
+            /** @description The task whose workflow was re-derived. */
+            task_id: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -13558,6 +13762,80 @@ export interface operations {
                 content?: never;
             };
             /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    supersede_core_team_launch_intent: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoreTeamLaunchIntentSupersedeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamLaunchIntentSupersessionDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The runtime could not be reached */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -17331,6 +17609,52 @@ export interface operations {
             };
             /** @description The conflict is already resolved, or the key was reused */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recover_workflow_phase: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The task */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowPhaseRecoveryDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The task has no active workflow */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -65,7 +65,8 @@ use kontor_api::applications::{
     CompletionPhaseDto, CompletionRoundDto, CompletionStateDto, CompletionWakeDto,
     ConsultationPermissionAckDto, ConsultationPermissionInspectionDto, ConsultationSeatDto,
     ConsultationSeatRecoveryDto, ConsultationSeatRecoveryReasonDto, ConsultationVerdictDto,
-    CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
+    CoreTeamApplyRequest, CoreTeamDto, CoreTeamLaunchIntentSupersedeRequest,
+    CoreTeamLaunchIntentSupersessionDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
     CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
     CoreTeamRouteCompletionPinDto, CoreTeamRouteHeadroomEvidenceDto, CoreTeamRouteOccupantDto,
     CoreTeamRouteOutcomeDto, CoreTeamRoutePinsDto, CoreTeamRoutePlacementDto,
@@ -179,13 +180,13 @@ use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
     CommandRepository, CompletionWrite, CredentialReference, CredentialReferenceKind,
-    HostedSeatLaunchIntentState, IntakeOutcome, IntakeRepository,
-    LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection, MigrationObjectKind,
-    MiniProject, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
-    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
-    NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
-    NewConsultationRecoveryAttempt, NewCoreTeamRouteSuccession,
-    NewGateEvaluation, NewLocalCommand, NewMiniProject,
+    HostedSeatLaunchIntentState, HostedSeatLaunchIntentSupersession, IntakeOutcome,
+    IntakeRepository, LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection,
+    MigrationObjectKind, MiniProject, MiniProjectTeamDefinitionSnapshot,
+    MiniProjectTopologySnapshot, NativePlacement, NewAccountProfile, NewAdaptiveAdmissionState,
+    NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
+    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt,
+    NewCoreTeamRouteSuccession, NewGateEvaluation, NewLocalCommand, NewMiniProject,
     NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode,
     NewSourceEvent, NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, NewTeamRun,
     OpenQuestionRepository, ProjectRepository, ProjectTeamDefinitionDefault,
@@ -7888,12 +7889,7 @@ impl Services {
                 native_parent_project_id: plan.native_parent_project_id.clone(),
                 container_binding_id: plan.container.container_binding_id.clone(),
                 container_native_id: plan.container.identity.native_id.clone(),
-                container_runtime_kind: plan
-                    .container
-                    .identity
-                    .runtime_kind
-                    .as_str()
-                    .to_owned(),
+                container_runtime_kind: plan.container.identity.runtime_kind.as_str().to_owned(),
                 container_host: plan.container.identity.host.as_str().to_owned(),
                 container_generation: plan.container.identity.generation,
                 canonical_cwd: plan
@@ -23816,6 +23812,123 @@ impl ApplicationOperations for Services {
                     AppliedDto::Unchanged
                 },
                 revision: plan.epic.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
+    async fn supersede_core_team_launch_intent(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamLaunchIntentSupersedeRequest,
+    ) -> Result<CoreTeamLaunchIntentSupersessionDto, ApiError> {
+        let state = self.state()?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        if epic.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the epic moved since the caller read it",
+                )
+                .with_revision(Some(epic.revision)));
+        }
+        let superseded = parse_runtime_model_route(&request.expected_model_route)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let replacement = parse_runtime_model_route(&request.desired_model_route)
+            .map_err(|error| self.refuse_domain(&error))?;
+        // Never attempted, by contract rather than by configuration. The wedge
+        // this repair exists for is an OpenCode route nothing can launch, and a
+        // replacement that reached for it again would recreate the wedge under
+        // a new prepared_at.
+        if replacement.provider.0.eq_ignore_ascii_case("opencode")
+            || superseded.provider.0 == replacement.provider.0
+                && superseded.model.0 == replacement.model.0
+                && superseded.effort == replacement.effort
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the replacement route must be a different, non-OpenCode approved route",
+            ));
+        }
+        // Catalog-approved, proved the same way every other governed launch
+        // proves it: the runtime offers the provider and exactly one enabled
+        // account may select it.
+        let runtime_kind = self.node_runtime_kind()?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the runtime selected for Core Team placement is not configured",
+            )
+        })?;
+        if !adapter.provider_available(replacement.provider.0.as_str()) {
+            return Err(ApiError::from_runtime(
+                state.realm_id(),
+                &RuntimeError::ProviderUnavailable {
+                    provider: replacement.provider.0.clone(),
+                },
+            ));
+        }
+        self.approved_route_account(project_id, &replacement)?;
+
+        let prepared_at = kontor_core::id::parse_utc_timestamp(&request.expected_prepared_at)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "supersede_core_team_launch_intent",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "seat_binding": request.seat_binding_id.to_string(),
+            "seat_binding_revision": request.expected_seat_binding_revision.get(),
+            "occupancy_generation": request.occupancy_generation,
+            "superseded": superseded,
+            "superseded_prepared_at": prepared_at.to_string(),
+            "replacement": replacement,
+        }))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+
+        // The whole compare-and-swap, and every absence it rests on, is proved
+        // inside one transaction. Nothing is checked out here that the store
+        // does not re-prove under the lock it writes with.
+        state
+            .with_store(|store| {
+                store.supersede_hosted_seat_launch_intent(&HostedSeatLaunchIntentSupersession {
+                    idempotency_key: key.clone(),
+                    intent_hash: intent.hash().clone(),
+                    project_id,
+                    seat_binding_id: request.seat_binding_id,
+                    expected_seat_binding_revision: request.expected_seat_binding_revision,
+                    occupancy_generation: request.occupancy_generation,
+                    expected_model_rung: superseded.clone(),
+                    expected_prepared_at: prepared_at,
+                    replacement_model_rung: replacement.clone(),
+                    recorded_at: kontor_api::now(),
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::CorrectCoreTeamRoute,
+            target,
+            epic.revision,
+            &intent,
+        )?;
+        Ok(CoreTeamLaunchIntentSupersessionDto {
+            realm_id: state.realm_id(),
+            seat_binding_id: request.seat_binding_id,
+            seat_binding_revision: request.expected_seat_binding_revision,
+            occupancy_generation: request.occupancy_generation,
+            superseded_model_route: runtime_model_route_dto(&superseded),
+            replacement_model_route: runtime_model_route_dto(&replacement),
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: AppliedDto::Updated,
+                revision: epic.revision,
                 snapshot_cursor: self.cursor()?,
             },
         })

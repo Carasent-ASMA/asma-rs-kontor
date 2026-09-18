@@ -635,6 +635,66 @@ pub struct StoredCoreTeamRouteSuccession {
     pub receipted_at: Option<Timestamp>,
 }
 
+/// Replace one never-bound prepared launch intent with an approved route.
+///
+/// Every field is a fence, not a parameter. The operation exists for exactly
+/// one durable shape — an intent prepared before an effect that never happened —
+/// and anything that has since become a native, an occupancy, or a recorded
+/// effect is a different shape and must refuse. The values here are what the
+/// store re-proves inside the transaction that performs the replacement, so a
+/// concurrent launch cannot slip between the check and the write (ASMA-7869).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedSeatLaunchIntentSupersession {
+    /// The apply key this supersession is admitted under; unique, exactly once.
+    pub idempotency_key: IdempotencyKey,
+    /// Digest of the exact pre-effect intent.
+    pub intent_hash: ContentHash,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The logical seat, preserved exactly. Never released, never replaced.
+    pub seat_binding_id: SeatBindingId,
+    /// The binding revision the caller read and the store must still see.
+    pub expected_seat_binding_revision: AggregateRevision,
+    /// The occupancy generation whose inert intent is being replaced.
+    pub occupancy_generation: u64,
+    /// The exact inert route being superseded. Compared verbatim.
+    pub expected_model_rung: crate::spec::ModelRung,
+    /// The exact instant the inert intent was prepared. Compared verbatim, so a
+    /// re-prepared intent carrying the same route is still a different intent.
+    pub expected_prepared_at: Timestamp,
+    /// The catalog-approved route that replaces it.
+    pub replacement_model_rung: crate::spec::ModelRung,
+    /// Commit instant.
+    pub recorded_at: Timestamp,
+}
+
+/// One recorded launch-intent supersession.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredHostedSeatLaunchIntentSupersession {
+    /// The apply key it was admitted under.
+    pub idempotency_key: IdempotencyKey,
+    /// Digest of the pre-effect intent.
+    pub intent_hash: ContentHash,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The preserved logical seat.
+    pub seat_binding_id: SeatBindingId,
+    /// The occupancy generation whose intent was replaced.
+    pub occupancy_generation: u64,
+    /// Binding revision the swap was taken against.
+    pub seat_binding_revision: AggregateRevision,
+    /// The route that was replaced, kept verbatim.
+    pub superseded_model_rung: crate::spec::ModelRung,
+    /// When that replaced intent had been prepared.
+    pub superseded_prepared_at: Timestamp,
+    /// The route that replaced it.
+    pub replacement_model_rung: crate::spec::ModelRung,
+    /// The receipt this supersession was bound to, once recorded.
+    pub receipt_id: Option<CommandReceiptId>,
+    /// Commit instant.
+    pub recorded_at: Timestamp,
+}
+
 /// Whether a hosted-seat launch intent has been reconciled with its native.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

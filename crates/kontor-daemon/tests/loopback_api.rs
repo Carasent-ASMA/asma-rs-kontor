@@ -55917,11 +55917,20 @@ async fn an_exact_replay_after_the_receipt_landed_answers_from_durable_evidence(
         readback["successor"]["native_id"], readback["predecessor"]["native_id"],
         "a succession cannot answer with one native for both occupancies"
     );
-    assert_eq!(shape_before.2, 2, "the seat is not at the recorded occupancy");
+    assert_eq!(
+        shape_before.2, 2,
+        "the seat is not at the recorded occupancy"
+    );
 
     // The complete placement identity, each part separately present.
     let placement = &readback["placement"];
-    assert_eq!(placement["native_project_id"], project.as_str());
+    // The Kontor id is named for what it is, and the runtime's own parent
+    // project is carried separately rather than conflated with it.
+    assert_eq!(placement["project_id"], project.as_str());
+    assert_ne!(
+        placement["native_parent_project_id"], placement["project_id"],
+        "the native parent must not be the Kontor project id"
+    );
     assert!(placement["container_native_id"].is_string());
     assert!(placement["container_binding_id"].is_string());
     assert!(placement["container_runtime_kind"].is_string());
@@ -55986,7 +55995,10 @@ async fn a_terminal_predecessor_the_runtime_calls_stale_is_proved_gone() {
     for (case, rule) in [
         ("missing", "the exact native agent no longer exists"),
         ("archived", "the exact native agent is archived"),
-        ("retired", "this session has been retired and cannot be resumed"),
+        (
+            "retired",
+            "this session has been retired and cannot be resumed",
+        ),
         (
             "wrong-generation-session",
             "this runtime holds no session with that native identity in this generation",
@@ -56002,12 +56014,15 @@ async fn a_terminal_predecessor_the_runtime_calls_stale_is_proved_gone() {
         let epic = &composed.epic;
         provider_reported_headroom(world, project, "codex", &format!("asma-8187-stale-{case}"))
             .await;
+        // The predecessor really is gone in the runtime, which is the state
+        // these rules describe. The staged rule is how the runtime *reports*
+        // that, and the point of the case is that the report is believed.
+        world.fake.archive_hosted_seat(&native);
         world.fake.refuse_hosted_inspection(rule);
 
         let project_id = ProjectId::parse(project).expect("a canonical project id");
         let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
-        let body =
-            previewed_succession(world, project, epic, &binding, &native, generation).await;
+        let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
         let applied = Call::post(
             format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
             &body,
@@ -56023,7 +56038,11 @@ async fn a_terminal_predecessor_the_runtime_calls_stale_is_proved_gone() {
         );
 
         let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
-        assert_ne!(active, native.as_str(), "{case}: the seat kept its predecessor");
+        assert_ne!(
+            active,
+            native.as_str(),
+            "{case}: the seat kept its predecessor"
+        );
         assert_eq!(
             history,
             vec![native.as_str().to_owned()],
@@ -56085,8 +56104,7 @@ async fn a_stale_binding_that_is_not_absence_refuses_before_any_effect() {
         // Previewed while the predecessor still answers, so the refusal under
         // test is the one the staged rule causes and not a stale preview.
         world.fake.archive_hosted_seat(&native);
-        let body =
-            previewed_succession(world, project, epic, &binding, &native, generation).await;
+        let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
 
         let project_id = ProjectId::parse(project).expect("a canonical project id");
         let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
@@ -56320,9 +56338,10 @@ async fn a_core_team_succession_refuses_drift_in_each_fenced_identity() {
             "occupancy-generation",
             "INSERT INTO hosted_topology_seat_history
                  (seat_binding_id, project_id, generation, model_rung, runtime_kind, host,
-                  native_id, provider_session_id, observed_at, retired_at, retirement_reason)
+                  native_id, provider_session_id, observed_at, retired_at, retirement_reason,
+                  autonomy)
              SELECT ?2, ?1, 0, model_rung, runtime_kind, host, 'drifted-retired-native',
-                    NULL, observed_at, observed_at, 'staged occupancy drift'
+                    NULL, observed_at, observed_at, 'staged occupancy drift', autonomy
                FROM hosted_topology_seats WHERE project_id = ?1 AND seat_binding_id = ?2"
                 .to_owned(),
         ),

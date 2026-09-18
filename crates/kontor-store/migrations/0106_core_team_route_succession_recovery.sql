@@ -135,4 +135,75 @@ BEGIN
     SELECT RAISE(ABORT, 'a recorded Core Team route succession cannot be deleted');
 END;
 
+-- ASMA-7869. Certify the supersession of a never-bound prepared launch intent.
+--
+-- `prepare_hosted_seat_launch_intent` refuses a second route for one occupancy
+-- generation, which is right: an occupancy is launched under one authority or
+-- none. But an intent prepared before an effect that never happened is inert,
+-- and the refusal then outlives the thing it was protecting — the seat holds a
+-- route nobody can launch and nobody can change, and every later materialization
+-- of that generation refuses forever.
+--
+-- The repair replaces only such an intent, and this row is what makes that
+-- replacement auditable and exactly-once. It records what was superseded as
+-- well as what replaced it, so the inert route is never silently lost, and its
+-- unique idempotency key is what admits exactly one supersession per attempt.
+--
+-- It is deliberately not a soft delete of the intent: the intent row keeps its
+-- identity, generation and `prepared` state, so the launch that follows is the
+-- first launch of that occupancy rather than a second one.
+CREATE TABLE hosted_seat_launch_intent_supersessions (
+    idempotency_key           TEXT NOT NULL PRIMARY KEY
+        CHECK (length(idempotency_key) BETWEEN 1 AND 256),
+    intent_hash               TEXT NOT NULL CHECK (
+        length(intent_hash) = 64 AND intent_hash NOT GLOB '*[^0-9a-f]*'
+    ),
+    project_id                TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+    seat_binding_id           TEXT NOT NULL REFERENCES seat_bindings(id) ON DELETE RESTRICT,
+    occupancy_generation      INTEGER NOT NULL CHECK (occupancy_generation >= 1),
+    -- The exact binding revision the compare-and-swap was taken against.
+    seat_binding_revision     INTEGER NOT NULL CHECK (seat_binding_revision >= 1),
+    -- What was replaced, kept verbatim. An inert route that is overwritten
+    -- without being recorded cannot be audited afterwards.
+    superseded_model_rung     TEXT NOT NULL CHECK (json_valid(superseded_model_rung)),
+    superseded_prepared_at    TEXT NOT NULL,
+    -- What replaced it.
+    replacement_model_rung    TEXT NOT NULL CHECK (json_valid(replacement_model_rung)),
+    receipt_id                TEXT NULL REFERENCES command_receipts(id) ON DELETE RESTRICT,
+    recorded_at               TEXT NOT NULL
+);
+
+-- One supersession per (seat, occupancy generation). A second would mean the
+-- same inert intent was replaced twice, which no replay may produce and which
+-- would make "exactly one launch" unprovable.
+CREATE UNIQUE INDEX ux_launch_intent_supersession_occupancy
+ON hosted_seat_launch_intent_supersessions (project_id, seat_binding_id, occupancy_generation);
+
+-- Frozen on commit except the receipt binding, once, exactly as the succession
+-- ledger above. `IS NOT` throughout: a NULL compared with `<>` evaluates to
+-- NULL, which SQLite accepts as success.
+CREATE TRIGGER launch_intent_supersession_is_frozen
+BEFORE UPDATE ON hosted_seat_launch_intent_supersessions
+WHEN OLD.idempotency_key IS NOT NEW.idempotency_key
+  OR OLD.intent_hash IS NOT NEW.intent_hash
+  OR OLD.project_id IS NOT NEW.project_id
+  OR OLD.seat_binding_id IS NOT NEW.seat_binding_id
+  OR OLD.occupancy_generation IS NOT NEW.occupancy_generation
+  OR OLD.seat_binding_revision IS NOT NEW.seat_binding_revision
+  OR OLD.superseded_model_rung IS NOT NEW.superseded_model_rung
+  OR OLD.superseded_prepared_at IS NOT NEW.superseded_prepared_at
+  OR OLD.replacement_model_rung IS NOT NEW.replacement_model_rung
+  OR OLD.recorded_at IS NOT NEW.recorded_at
+  OR OLD.receipt_id IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT,
+        'a recorded launch-intent supersession cannot rewrite its durable evidence');
+END;
+
+CREATE TRIGGER launch_intent_supersessions_are_undeletable
+BEFORE DELETE ON hosted_seat_launch_intent_supersessions
+BEGIN
+    SELECT RAISE(ABORT, 'a recorded launch-intent supersession cannot be deleted');
+END;
+
 PRAGMA user_version = 106;

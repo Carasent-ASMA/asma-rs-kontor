@@ -157,6 +157,51 @@ registered; `PinnedTeamDefinitionDto` gained `Deserialize` so a stored readback
 rehydrates. Regenerated with the same two commands as before; both artefacts
 reproduce with no drift.
 
+### Sequence-2 remediation (V6/V7/V8) and dual-lineage integration
+
+Gate sequence 2 (receipt `01a0b640-8343-7cf2-8d95-655478796422`) routed the task
+back to `high-implementation` at workflow revision 6. This section records that
+turn.
+
+**V6 — the canonical preview intent is exposed.** `preview` returns
+`preview_intent`, the exact canonical document `preview_hash` is taken over, and
+`preview_intent_schema_version`. One canonicalization produces both, so a caller
+re-deriving the digest checks the bytes the server hashed.
+
+**V7 — placement identity corrected and completed.** The field that called the
+Kontor project UUID `native_project_id` was wrong and is renamed `project_id`.
+Beside it the placement now carries `native_parent_project_id` — Paseo's own
+`prj_*`, resolved through the persisted container-binding ancestry walk that the
+retitle, archive and recovery requests already use. It is resolved *before* the
+preview document is canonicalized, so it is inside the compare-and-swap intent,
+and it is persisted as its own ledger column. Replay compares the readback's
+parent against that independent column, `Option` shape included, so a rehashed
+wrong-parent readback is refused. Placement also gained container runtime kind,
+host, generation and the fenced provider correlation.
+
+**V8 — the live ASMA-8098 shape.** The TPM recovery previewed cleanly and then
+refused at apply with 409 `stale_binding` for a *closed* predecessor, because
+only `CorrelationFailed` was read as absence. `RuntimeError::proves_hosted_predecessor_absent`
+now classifies a closed list of terminal/missing `StaleBinding` rules as absence,
+in both the plan and the pre-archive apply inspection. The list is matched
+exactly and fails closed: a working, permission-waiting, wrong-runtime,
+wrong-generation or unaudited disposition still refuses with no effect, and every
+CAS and identity fence is unchanged.
+
+**Authority drift isolated.** The approved-route test now enables a second
+account *without* seeding a provider report, so authority drift is separated
+from headroom drift, and it asserts the exposed digest moves — which is what
+kills an authority-removal mutant.
+
+**Dual-lineage integration.** The live realm runs `b84315cd` on
+`origin/chore/ASMA-8190-combined-integration-head` at schema 105; that line is
+not an ancestor of `origin/master` `ae8b401f` (31/2, master at schema 99). Both
+are now ancestors of this branch. The deployed line keeps 0100–0105 unchanged and
+the ASMA-8187 migration became **0106**, so a live schema-105 realm upgrades by
+exactly one migration. Proven on a `.backup` copy of the live realm: 105 → 106,
+`integrity_check` ok, `foreign_key_check` clean, both new tables present, the
+live file untouched at 105.
+
 ### Validation run this turn
 
 Observed first-hand, on the exact tree this commit contains:
