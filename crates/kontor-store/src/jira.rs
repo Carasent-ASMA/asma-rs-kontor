@@ -211,7 +211,7 @@ pub struct JiraMaterializationRecoveryItem {
     pub marker: ExternalId,
 }
 
-/// The exact pending batch set selected by a durable recovery.
+/// The exact batch set selected by a durable recovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveredJiraMaterialization {
     /// The oldest selected batch, retained as the stable response identity.
@@ -219,6 +219,10 @@ pub struct RecoveredJiraMaterialization {
     /// Every original batch in deterministic creation order.
     pub batch_ids: Vec<ExternalId>,
     pub items: Vec<StoredJiraMaterializationItem>,
+    /// This recovery adopted one already-confirmed, all-link batch whose Jira
+    /// identities must be read back again through the ordinary confirmation
+    /// guard. Pending create recovery never sets this flag.
+    pub confirmed_link_replay: bool,
 }
 
 impl SqliteStore {
@@ -534,10 +538,12 @@ impl SqliteStore {
         Ok(items)
     }
 
-    /// Adopt one exact pending create plan for a recovery.
+    /// Adopt one exact materialization plan for a recovery.
     ///
-    /// The plan may be one batch or an exact, non-overlapping union of legacy
-    /// batch fragments. Every original item must still have the same ordinal,
+    /// A pending plan may be one batch or an exact, non-overlapping union of
+    /// legacy batch fragments. One already-confirmed batch may also be adopted
+    /// only when its preview is exact and every item is a confirmed Link for
+    /// the requested key. Every original item must still have the same ordinal,
     /// kind, task scope and marker. Requested Jira keys are appended to the
     /// immutable recovery ledger before the connector is contacted. Original
     /// batch and item ownership is never rewritten.
@@ -715,11 +721,128 @@ impl SqliteStore {
                     rule: "the recovered batch no longer matches its immutable recovery ledger",
                 });
             }
+            let confirmed_link_replay = batch_ids.len() == 1
+                && transaction
+                    .query_row(
+                        "SELECT status = 'confirmed' FROM jira_materialization_batches
+                         WHERE project_id = ?1 AND id = ?2",
+                        params![project_text, batch_id.as_str()],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(backend)?
+                && items.iter().all(|item| {
+                    item.intent_kind == JiraIntentKind::Link
+                        && item.confirmed_key.is_some()
+                        && item.readback_hash.is_some()
+                        && item.confirmed_at.is_some()
+                });
             transaction.commit().map_err(backend)?;
             return Ok(Some(RecoveredJiraMaterialization {
                 batch_id,
                 batch_ids,
                 items,
+                confirmed_link_replay,
+            }));
+        }
+
+        // Schema v95 began retaining Jira's immutable issue id. A batch that
+        // was confirmed before then has authoritative keys and hashes but NULL
+        // identities. A fresh, explicitly-authorized Link-only apply must
+        // adopt that exact historical batch instead of attempting to insert a
+        // second batch with the same `(project, epic, preview_hash)`. This is
+        // intentionally narrower than pending recovery: one confirmed batch,
+        // the same preview, all items Links, and every requested/confirmed key,
+        // ordinal, kind, task and marker equal. Create intent is never adopted
+        // here, so the caller can only perform Jira GET readback afterward.
+        let confirmed_batch_id: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM jira_materialization_batches
+                 WHERE project_id = ?1 AND epic_id = ?2
+                   AND preview_hash = ?3 AND status = 'confirmed'",
+                params![project_text, epic_text, preview_hash.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some(confirmed_batch_id) = confirmed_batch_id {
+            let batch_id = ExternalId::parse(&confirmed_batch_id)?;
+            let items = read_jira_materialization_items(&transaction, project_id, &batch_id)?;
+            let exact_confirmed_links = items.len() == recovery.len()
+                && items.iter().zip(recovery).all(|(stored, requested)| {
+                    stored.ordinal == requested.ordinal
+                        && stored.item_kind == requested.item_kind
+                        && stored.task_id == requested.task_id
+                        && stored.intent_kind == JiraIntentKind::Link
+                        && stored.requested_key.as_ref() == Some(&requested.requested_key)
+                        && stored.marker == requested.marker
+                        && stored.confirmed_key.as_ref() == Some(&requested.requested_key)
+                        && stored.readback_hash.is_some()
+                        && stored.confirmed_at.is_some()
+                });
+            if !exact_confirmed_links {
+                return Err(RepositoryError::Conflict {
+                    subject: "Jira materialization recovery",
+                    rule: "the confirmed batch with this preview is not the exact requested Link-only item set",
+                });
+            }
+            for (item, requested) in items.iter().zip(recovery) {
+                transaction
+                    .execute(
+                        "INSERT OR IGNORE INTO jira_materialization_recoveries
+                             (project_id, batch_id, item_id, recovery_receipt_id,
+                              preview_hash, ordinal, requested_key, marker, recovered_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        params![
+                            project_text,
+                            batch_id.as_str(),
+                            item.id.as_str(),
+                            recovery_receipt_id.to_string(),
+                            preview_hash.as_str(),
+                            i64::from(requested.ordinal),
+                            requested.requested_key.as_str(),
+                            requested.marker.as_str(),
+                            format_utc_timestamp(recovered_at),
+                        ],
+                    )
+                    .map_err(backend)?;
+                let stored: (String, String, i64, String, String) = transaction
+                    .query_row(
+                        "SELECT recovery_receipt_id, preview_hash, ordinal, requested_key, marker
+                         FROM jira_materialization_recoveries
+                         WHERE project_id = ?1 AND batch_id = ?2 AND item_id = ?3",
+                        params![project_text, batch_id.as_str(), item.id.as_str()],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
+                    )
+                    .map_err(backend)?;
+                if stored
+                    != (
+                        recovery_receipt_id.to_string(),
+                        preview_hash.as_str().to_owned(),
+                        i64::from(requested.ordinal),
+                        requested.requested_key.as_str().to_owned(),
+                        requested.marker.as_str().to_owned(),
+                    )
+                {
+                    return Err(RepositoryError::Conflict {
+                        subject: "Jira materialization recovery",
+                        rule: "the confirmed Link item already names another recovery",
+                    });
+                }
+            }
+            transaction.commit().map_err(backend)?;
+            return Ok(Some(RecoveredJiraMaterialization {
+                batch_id: batch_id.clone(),
+                batch_ids: vec![batch_id],
+                items,
+                confirmed_link_replay: true,
             }));
         }
 
@@ -947,6 +1070,7 @@ impl SqliteStore {
             batch_id,
             batch_ids,
             items,
+            confirmed_link_replay: false,
         }))
     }
 

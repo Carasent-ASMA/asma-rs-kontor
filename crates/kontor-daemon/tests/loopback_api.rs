@@ -11421,6 +11421,362 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
 }
 
 #[tokio::test]
+async fn jira_link_apply_adopts_an_exact_confirmed_legacy_batch_and_backfills_issue_ids() {
+    let server = MockServer::start().await;
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let task_id = TaskId::generate();
+    for (key, issue_id, kind, hierarchy, parent, summary) in [
+        (
+            "ASMA-8049",
+            "908049",
+            "Epic",
+            1,
+            serde_json::Value::Null,
+            "Existing linked Jira epic",
+        ),
+        (
+            "ASMA-8050",
+            "908050",
+            "Task",
+            0,
+            serde_json::json!({"key": "ASMA-8049"}),
+            "Existing linked Jira task",
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!("/rest/api/3/issue/{key}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": key,
+                "id": issue_id,
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "issuetype": {"name": kind, "hierarchyLevel": hierarchy},
+                    "parent": parent,
+                    "summary": summary,
+                    "description": {"type":"doc","version":1,"content":[{
+                        "type":"paragraph","content":[{"type":"text","text":"Existing Jira prose"}]
+                    }]},
+                    "labels": []
+                }
+            })))
+            .expect(3)
+            .mount(&server)
+            .await;
+    }
+
+    let (world, _config_root) = world_with_jira(&server, project_id).await;
+    let now = at("2026-09-18T09:00:00Z");
+    let unrelated_epic_id = MiniProjectId::generate();
+    world.daemon.state().with_store(|store| {
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name("Legacy confirmed Jira identity repair"),
+                root_path: name("/tmp/kontor-confirmed-jira-repair"),
+                created_at: now,
+            })
+            .expect("project");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: name("Legacy confirmed Jira epic"),
+                created_at: now,
+            })
+            .expect("epic");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: unrelated_epic_id,
+                project_id,
+                name: name("Unrelated conflicted epic"),
+                created_at: now,
+            })
+            .expect("unrelated epic");
+        store
+            .create_task(&NewTask {
+                id: task_id,
+                project_id,
+                mini_project_id: Some(epic_id),
+                title: name("Legacy confirmed Jira task"),
+                module: None,
+                state: kontor_core::state::TaskState::Ready,
+                created_at: now,
+            })
+            .expect("task");
+    });
+
+    let materialization = serde_json::json!({
+        "epic": {"mode": "link", "issue_key": "ASMA-8049"},
+        "tasks": {(task_id.to_string()): {"mode": "link", "issue_key": "ASMA-8050"}}
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira:preview"),
+        &materialization,
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let preview_hash = preview.json()["preview_hash"]
+        .as_str()
+        .expect("preview hash")
+        .to_owned();
+    let apply_body = serde_json::json!({
+        "materialization": materialization,
+        "preview_hash": preview_hash,
+        "expected_revision": 1
+    });
+    let historical = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
+        &apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("historical-confirmed-link-only-batch")
+    .send(&world)
+    .await;
+    assert_eq!(historical.status, 200, "{}", historical.body);
+    let historical_batch = historical.json()["batch_id"]
+        .as_str()
+        .expect("historical batch")
+        .to_owned();
+
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(&database).expect("legacy fixture database");
+    connection
+        .execute_batch(
+            "DROP TRIGGER jira_epic_binding_issue_id_immutable;
+             DROP TRIGGER jira_task_binding_issue_id_immutable;",
+        )
+        .expect("legacy identity guards are removed only for the fixture");
+    connection
+        .execute(
+            "UPDATE jira_epic_bindings SET external_issue_id = NULL
+             WHERE project_id = ?1 AND epic_id = ?2",
+            rusqlite::params![project_id.to_string(), epic_id.to_string()],
+        )
+        .expect("legacy epic identity is planted");
+    connection
+        .execute(
+            "UPDATE jira_task_binding_confirmations SET external_issue_id = NULL
+             WHERE project_id = ?1",
+            [project_id.to_string()],
+        )
+        .expect("legacy task identity is planted");
+    let unrelated_conflict_id = uuid::Uuid::now_v7().to_string();
+    connection
+        .execute(
+            "INSERT INTO epic_status_conflicts
+                 (id, project_id, epic_id, kind, external_issue_key,
+                  observed_status_id, observed_status_name, observed_at,
+                  payload_hash, epic_revision, spec_version, milestone, detected_at)
+             VALUES (?1, ?2, ?3, 'multiple_live_transitions', 'ASMA-8109',
+                     '10214', 'In Development', ?4, ?5, 1, 1, NULL, ?4)",
+            rusqlite::params![
+                unrelated_conflict_id,
+                project_id.to_string(),
+                unrelated_epic_id.to_string(),
+                "2026-09-18T09:01:00Z",
+                ContentHash::of(b"unrelated-conflict").as_str(),
+            ],
+        )
+        .expect("unrelated open conflict is planted");
+    drop(connection);
+
+    let repaired = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
+        &apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("repair-confirmed-link-only-batch")
+    .send(&world)
+    .await;
+    assert_eq!(repaired.status, 200, "{}", repaired.body);
+    assert_eq!(repaired.json()["batch_id"], historical_batch);
+    assert_eq!(repaired.json()["items"][0]["confirmed_key"], "ASMA-8049");
+    assert_eq!(repaired.json()["items"][1]["confirmed_key"], "ASMA-8050");
+
+    let replayed = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
+        &apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("repair-confirmed-link-only-batch")
+    .send(&world)
+    .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["batch_id"], historical_batch);
+
+    let connection = rusqlite::Connection::open(database).expect("repair readback");
+    let readback: (Option<String>, Option<String>, i64, i64, i64) = connection
+        .query_row(
+            "SELECT
+                 (SELECT external_issue_id FROM jira_epic_bindings
+                  WHERE project_id = ?1 AND epic_id = ?2),
+                 (SELECT confirmation.external_issue_id
+                  FROM canonical_jira_task_links AS ledger
+                  JOIN jira_task_binding_confirmations AS confirmation
+                    ON confirmation.project_id = ledger.project_id
+                   AND confirmation.link_id = ledger.link_id
+                  WHERE ledger.project_id = ?1 AND ledger.task_id = ?3),
+                 (SELECT count(*) FROM jira_materialization_batches
+                  WHERE project_id = ?1 AND epic_id = ?2),
+                 (SELECT count(*) FROM jira_materialization_recoveries
+                  WHERE project_id = ?1 AND batch_id = ?4),
+                 (SELECT count(*) FROM epic_status_conflicts
+                  WHERE id = ?5 AND resolved_at IS NULL)",
+            rusqlite::params![
+                project_id.to_string(),
+                epic_id.to_string(),
+                task_id.to_string(),
+                historical_batch,
+                unrelated_conflict_id,
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .expect("repair state");
+    assert_eq!(readback.0.as_deref(), Some("908049"));
+    assert_eq!(readback.1.as_deref(), Some("908050"));
+    assert_eq!(readback.2, 1, "adoption creates no replacement batch");
+    assert_eq!(readback.3, 2, "the exact adopted item set is ledgered once");
+    assert_eq!(readback.4, 1, "an unrelated open conflict is untouched");
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("Jira requests")
+            .iter()
+            .all(|request| request.method.as_str() == "GET"),
+        "confirmed Link adoption never creates or mutates Jira issues"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn confirmed_link_batch_adoption_refuses_an_immutable_issue_mismatch() {
+    let server = MockServer::start().await;
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let jira_readback = Arc::new(std::sync::Mutex::new(serde_json::json!({
+        "key": "ASMA-8049",
+        "id": "908049",
+        "fields": {
+            "project": {"key": "ASMA"},
+            "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+            "parent": null,
+            "summary": "Existing linked Jira epic",
+            "description": {"type":"doc","version":1,"content":[{
+                "type":"paragraph","content":[{"type":"text","text":"Existing Jira prose"}]
+            }]},
+            "labels": []
+        }
+    })));
+    let served_readback = Arc::clone(&jira_readback);
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-8049"))
+        .respond_with(move |_: &wiremock::Request| {
+            ResponseTemplate::new(200)
+                .set_body_json(served_readback.lock().expect("readback lock").clone())
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let (world, _config_root) = world_with_jira(&server, project_id).await;
+    let now = at("2026-09-18T10:00:00Z");
+    world.daemon.state().with_store(|store| {
+        store
+            .create_project(&NewProject {
+                id: project_id,
+                name: name("Confirmed Jira mismatch"),
+                root_path: name("/tmp/kontor-confirmed-jira-mismatch"),
+                created_at: now,
+            })
+            .expect("project");
+        store
+            .create_mini_project(&NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: name("Confirmed Jira mismatch epic"),
+                created_at: now,
+            })
+            .expect("epic");
+    });
+
+    let materialization = serde_json::json!({
+        "epic": {"mode": "link", "issue_key": "ASMA-8049"},
+        "tasks": {}
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira:preview"),
+        &materialization,
+    )
+    .signed_as(&world, "admin")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let apply_body = serde_json::json!({
+        "materialization": materialization,
+        "preview_hash": preview.json()["preview_hash"],
+        "expected_revision": 1
+    });
+    let historical = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
+        &apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("historical-confirmed-mismatch-batch")
+    .send(&world)
+    .await;
+    assert_eq!(historical.status, 200, "{}", historical.body);
+    jira_readback.lock().expect("readback lock")["id"] = serde_json::json!("DIFFERENT-ISSUE");
+
+    let refused = Call::post(
+        format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
+        &apply_body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("repair-confirmed-mismatch-batch")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.json()["code"], "revision_conflict");
+
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("mismatch readback");
+    let preserved: (Option<String>, i64) = connection
+        .query_row(
+            "SELECT external_issue_id,
+                    (SELECT count(*) FROM jira_materialization_batches
+                     WHERE project_id = ?1 AND epic_id = ?2)
+             FROM jira_epic_bindings WHERE project_id = ?1 AND epic_id = ?2",
+            rusqlite::params![project_id.to_string(), epic_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("preserved identity");
+    assert_eq!(preserved.0.as_deref(), Some("908049"));
+    assert_eq!(preserved.1, 1, "the refused adoption creates no batch");
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("Jira requests")
+            .iter()
+            .all(|request| request.method.as_str() == "GET"),
+        "mismatch proof never mutates Jira"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn identical_mixed_jira_apply_resumes_its_pending_create_in_place() {
     let server = MockServer::start().await;
     let project_id = ProjectId::generate();

@@ -19815,6 +19815,9 @@ impl ApplicationOperations for Services {
             })
             .map_err(|error| self.refuse(&error))?;
         let recovered_in_place = recovered.is_some();
+        let confirmed_link_replay = recovered
+            .as_ref()
+            .is_some_and(|recovered| recovered.confirmed_link_replay);
         let (batch_id, batch_ids, stored) = if let Some(recovered) = recovered {
             (recovered.batch_id, recovered.batch_ids, recovered.items)
         } else {
@@ -19921,7 +19924,9 @@ impl ApplicationOperations for Services {
             let item = stored_by_ordinal
                 .get(ordinal)
                 .expect("the complete ordinal map was validated above");
-            if item.item_kind != JiraItemKind::Epic || item.confirmed_key.is_some() {
+            if item.item_kind != JiraItemKind::Epic
+                || (item.confirmed_key.is_some() && !confirmed_link_replay)
+            {
                 continue;
             }
             let mut plan = base_plan.clone();
@@ -19951,7 +19956,9 @@ impl ApplicationOperations for Services {
             let item = stored_by_ordinal
                 .get(ordinal)
                 .expect("the complete ordinal map was validated above");
-            if item.confirmed_key.is_some() || item.item_kind == JiraItemKind::Epic {
+            if item.item_kind == JiraItemKind::Epic
+                || (item.confirmed_key.is_some() && !confirmed_link_replay)
+            {
                 continue;
             }
             let mut plan = base_plan.clone();
