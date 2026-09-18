@@ -2211,12 +2211,13 @@ pub struct AdvanceCompletionRequest {
     pub expected_revision: AggregateRevision,
     /// The typed operator receipt for a phase this build cannot observe.
     ///
-    /// Absent for every phase the runtime derives for itself — the ticket gate
-    /// and the Committee verdict. Present only where the pinned profile waits on
-    /// an external effect that no connector reports here, which the Operational
-    /// plan admits as "a native connector **or a typed operator receipt**".
-    /// Supplying one for a phase that does not want it is refused rather than
-    /// ignored, so a caller cannot believe it recorded something it did not.
+    /// Absent for every phase the runtime can resolve unambiguously from durable
+    /// state. A verdict selector may name one exact durable Committee result
+    /// when duplicate matching runs make automatic selection ambiguous. Other
+    /// evidence is present only where the pinned profile waits on an external
+    /// effect that no connector reports here, which the Operational plan admits
+    /// as "a native connector **or a typed operator receipt**". Supplying one for
+    /// a phase that does not want it is refused rather than ignored.
     #[serde(default)]
     pub evidence: Option<CompletionEvidenceDto>,
 }
@@ -2225,6 +2226,15 @@ pub struct AdvanceCompletionRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CompletionEvidenceDto {
+    /// Select one already-settled durable Committee result when more than one
+    /// exact result matches the completion round. The selected run still has to
+    /// pass every normal template, provenance, reconstruction, and result check;
+    /// this carries no caller-authored verdict.
+    Verdict {
+        /// The immutable Committee run whose stored result completion consumes.
+        #[schema(value_type = String)]
+        committee_run_id: CommitteeRunId,
+    },
     /// What integration actually produced, per repository.
     ///
     /// Polyrepo by construction: the plan models integration as recorded

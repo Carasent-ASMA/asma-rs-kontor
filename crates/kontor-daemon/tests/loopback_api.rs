@@ -998,6 +998,190 @@ async fn a_failed_verdict_adopts_the_replacement_tpm_in_one_atomic_transition() 
     assert_eq!(receipts, 1, "exactly one receipt stands for the transition");
 }
 
+/// An explicit selector resolves only an otherwise-ambiguous set of durable
+/// Committee results. It neither supplies a verdict nor rewrites the result
+/// that was not selected.
+#[tokio::test]
+async fn completion_selects_one_exact_committee_result_and_preserves_the_duplicate() {
+    let boundary =
+        committee_verdict_boundary("/tmp/kontor-op22-verdict-selector", "op22-selector").await;
+    let world = &boundary.composed.world;
+    let project = boundary.composed.project.clone();
+    let epic = boundary.epic.clone();
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let first_run_id = kontor_core::id::CommitteeRunId::parse(&boundary.committee_run)
+        .expect("the first Committee run id");
+    let caller = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run(project_id, ConsultationRunId::Committee(first_run_id))
+            .expect("the first Committee run reads")
+            .expect("the first Committee run exists")
+            .caller_seat_binding_id
+    });
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(epic_read.status, 200, "{}", epic_read.body);
+    let invoked = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &serde_json::json!({
+            "profile": {"id": COMMITTEE_PRESET, "version": 1},
+            "topic": "Duplicate operational gate evidence",
+            "question": "Does this second durable result satisfy the same completion round?",
+            "caller_seat_binding_id": caller,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("op22-selector-duplicate-invoke")
+    .send(world)
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let invoked_json = invoked.json();
+    let duplicate_run = invoked_json["committee_run_id"]
+        .as_str()
+        .expect("the duplicate Committee run id")
+        .to_owned();
+    let seats = invoked_json["seats"].as_array().expect("Committee seats");
+    let reviewers = seats
+        .iter()
+        .filter(|seat| {
+            seat["role_slot_id"]
+                .as_str()
+                .is_some_and(|slot| slot.starts_with("reviewer"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(reviewers.len(), 2, "{}", invoked.body);
+    let judge = seats
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "judge")
+        .expect("the judge seat");
+    let mut revision = invoked_json["receipt"]["revision"]
+        .as_u64()
+        .expect("the duplicate run revision");
+    for (index, reviewer) in reviewers.iter().enumerate() {
+        let seat_binding_id = reviewer["seat_binding_id"]
+            .as_str()
+            .expect("a reviewer SeatBinding");
+        let recorded = Call::post(
+            format!("/v1/projects/{project}/committee-runs/{duplicate_run}/findings:record"),
+            &serde_json::json!({
+                "round": 1,
+                "verdict": if index == 0 { "compliant" } else { "non_compliant" },
+                "evidence_complete": index == 0,
+                "rationale": format!("duplicate reviewer {} reported independently", index + 1),
+                "evidence_refs": [format!("evidence:duplicate-reviewer-{}", index + 1)],
+                "expected_revision": revision,
+            }),
+        )
+        .with_token(
+            world
+                .daemon
+                .state()
+                .credentials()
+                .consultation_seat_credential(
+                    SeatBindingId::parse(seat_binding_id).expect("a reviewer SeatBinding"),
+                ),
+        )
+        .with_key(format!("op22-selector-duplicate-reviewer-{}", index + 1))
+        .send(world)
+        .await;
+        assert_eq!(recorded.status, 200, "{}", recorded.body);
+        revision = recorded.json()["receipt"]["revision"]
+            .as_u64()
+            .expect("the finding revision");
+    }
+    let judge_binding = judge["seat_binding_id"]
+        .as_str()
+        .expect("the judge SeatBinding");
+    let judged = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{duplicate_run}/findings:record"),
+        &serde_json::json!({
+            "round": 1,
+            "verdict": "non_compliant",
+            "evidence_complete": false,
+            "rationale": "The duplicate conjunction fails on one independent finding.",
+            "evidence_refs": ["evidence:duplicate-reviewer-1", "evidence:duplicate-reviewer-2"],
+            "expected_revision": revision,
+        }),
+    )
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .consultation_seat_credential(
+                SeatBindingId::parse(judge_binding).expect("the judge SeatBinding"),
+            ),
+    )
+    .with_key("op22-selector-duplicate-judge")
+    .send(world)
+    .await;
+    assert_eq!(judged.status, 200, "{}", judged.body);
+    let settled = Call::post(
+        format!("/v1/projects/{project}/committee-runs/{duplicate_run}/settle"),
+        &serde_json::json!({
+            "recommendation": "Preserve this immutable duplicate.",
+            "tried_path": "A second review reached the same round conclusion.",
+            "expected_revision": judged.json()["receipt"]["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("op22-selector-duplicate-settle")
+    .send(world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    let duplicate_result_hash = settled.json()["result_hash"].clone();
+
+    let ambiguous = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({"expected_revision": boundary.standing.get()}),
+    )
+    .signed_as(world, "operator")
+    .with_key("op22-selector-ambiguous")
+    .send(world)
+    .await;
+    assert_eq!(ambiguous.status, 503, "{}", ambiguous.body);
+    assert!(
+        ambiguous
+            .body
+            .contains("more than one exact Committee result"),
+        "{}",
+        ambiguous.body
+    );
+
+    let selected = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/completion:advance"),
+        &serde_json::json!({
+            "expected_revision": boundary.standing.get(),
+            "evidence": {
+                "phase": "verdict",
+                "committee_run_id": boundary.committee_run.clone(),
+            },
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("op22-selector-canonical")
+    .send(world)
+    .await;
+    assert_eq!(selected.status, 200, "{}", selected.body);
+    assert_eq!(
+        selected.json()["state"]["rounds"][0]["committee_run_id"],
+        boundary.committee_run
+    );
+
+    let duplicate = Call::get(format!(
+        "/v1/projects/{project}/committee-runs/{duplicate_run}"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(duplicate.status, 200, "{}", duplicate.body);
+    assert_eq!(duplicate.json()["state"], "settled");
+    assert_eq!(duplicate.json()["result_hash"], duplicate_result_hash);
+}
+
 /// The same boundary with no live TPM to adopt mutates nothing at all.
 ///
 /// The Fail is real and waiting, but there is no seat the completion could

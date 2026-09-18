@@ -15087,6 +15087,9 @@ impl Services {
                     CompletionPhase::Integration | CompletionPhase::Remediating(_),
                     CompletionEvidenceDto::Integration { .. }
                 ) | (
+                    CompletionPhase::Verdict(_),
+                    CompletionEvidenceDto::Verdict { .. }
+                ) | (
                     CompletionPhase::Closeout,
                     CompletionEvidenceDto::Closeout { .. }
                 )
@@ -15119,6 +15122,13 @@ impl Services {
                 })
             }
             CompletionPhase::Verdict(round) => {
+                let selected_committee_run_id = match evidence {
+                    Some(CompletionEvidenceDto::Verdict { committee_run_id }) => {
+                        Some(*committee_run_id)
+                    }
+                    None => None,
+                    Some(_) => unreachable!("phase evidence was validated above"),
+                };
                 let runs = self
                     .state()?
                     .with_store(|store| {
@@ -15218,6 +15228,11 @@ impl Services {
                         ConsultationRunId::Committee(id) => id,
                         ConsultationRunId::Advisor(_) => continue,
                     };
+                    if selected_committee_run_id
+                        .is_some_and(|selected| selected != committee_run_id)
+                    {
+                        continue;
+                    }
                     let historical = round == 1
                         && run.round > 1
                         && run
@@ -15306,8 +15321,14 @@ impl Services {
                 }
                 if candidates.len() != 1 {
                     return Err(self.deny(
-                        ApiErrorCode::Unavailable,
-                        if candidates.is_empty() {
+                        if selected_committee_run_id.is_some() {
+                            ApiErrorCode::InvalidRequest
+                        } else {
+                            ApiErrorCode::Unavailable
+                        },
+                        if selected_committee_run_id.is_some() {
+                            "the selected Committee run is not an exact result for this completion round"
+                        } else if candidates.is_empty() {
                             "no exact Committee result matches this completion round"
                         } else {
                             "more than one exact Committee result matches this completion round"

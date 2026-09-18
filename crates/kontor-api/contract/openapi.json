@@ -11098,7 +11098,7 @@
               },
               {
                 "$ref": "#/components/schemas/CompletionEvidenceDto",
-                "description": "The typed operator receipt for a phase this build cannot observe.\n\nAbsent for every phase the runtime derives for itself — the ticket gate\nand the Committee verdict. Present only where the pinned profile waits on\nan external effect that no connector reports here, which the Operational\nplan admits as \"a native connector **or a typed operator receipt**\".\nSupplying one for a phase that does not want it is refused rather than\nignored, so a caller cannot believe it recorded something it did not."
+                "description": "The typed operator receipt for a phase this build cannot observe.\n\nAbsent for every phase the runtime can resolve unambiguously from durable\nstate. A verdict selector may name one exact durable Committee result\nwhen duplicate matching runs make automatic selection ambiguous. Other\nevidence is present only where the pinned profile waits on an external\neffect that no connector reports here, which the Operational plan admits\nas \"a native connector **or a typed operator receipt**\". Supplying one for\na phase that does not want it is refused rather than ignored."
               }
             ]
           },
@@ -13611,6 +13611,26 @@
       },
       "CompletionEvidenceDto": {
         "oneOf": [
+          {
+            "type": "object",
+            "description": "Select one already-settled durable Committee result when more than one\nexact result matches the completion round. The selected run still has to\npass every normal template, provenance, reconstruction, and result check;\nthis carries no caller-authored verdict.",
+            "required": [
+              "committee_run_id",
+              "phase"
+            ],
+            "properties": {
+              "committee_run_id": {
+                "type": "string",
+                "description": "The immutable Committee run whose stored result completion consumes."
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "verdict"
+                ]
+              }
+            }
+          },
           {
             "type": "object",
             "description": "What integration actually produced, per repository.\n\nPolyrepo by construction: the plan models integration as recorded\nPR/module/root-pointer outcomes rather than one assumed branch.",
