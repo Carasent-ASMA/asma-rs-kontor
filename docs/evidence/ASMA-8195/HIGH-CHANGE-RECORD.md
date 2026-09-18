@@ -12,6 +12,9 @@ Implements the contract in [`HIGH-SCOPE-RECORD.md`](HIGH-SCOPE-RECORD.md),
 frozen by the scope seat at `723f3385`. This record is implementation and
 mutation evidence; independent verification is the next phase's artifact.
 
+Revised 2026-09-18 for the narrow verification rework in §10. Sections 1–9
+describe the `e06317a6` candidate and are unchanged.
+
 ## Baseline
 
 Scope inspected clean `2faeb477` and observed `origin/master` at
@@ -189,3 +192,98 @@ routing the resolved hold through `unconfirmed_admission_block` (§1), and
 renumbering the branch's own migration to `0100` (§1). Both follow directly from
 rationale the scope record or the existing code had already fixed; neither
 selects a behavior the record left open.
+
+## 10 — Verification rework (2026-09-18)
+
+Full archive verification **rejected** the `e06317a6` candidate. The approved
+report is Kontor artifact
+`artifact-asma-8195-high-verification-report-e06317a` revision 1
+(`01a0b314-bb71-7e70-8889-2489d85cf8bd`). The `e06317a6` behavior and all four
+mutants passed; the rejection was a shared-schema parity break introduced
+elsewhere in the same field's lifetime.
+
+### The finding
+
+`crates/kontor-mcp/src/registry.rs::INITIAL_EXECUTION_HOLD` declared only
+`held_by` and `reason`, while `InitialExecutionHoldRequest` in the API had
+gained an optional `lift_condition`. The MCP registry declares the *input*
+schema for `kontor_epic_preview` and `kontor_epic_apply`, so the two surfaces
+disagreed about what a caller may send: a `lift_condition` accepted over HTTP
+was undeclared over MCP. That is the epic preview/apply parity break.
+
+### The correction
+
+One field, added to the shared `INITIAL_EXECUTION_HOLD` declaration:
+
+```rust
+optional_field(
+    "lift_condition",
+    ArgType::Text,
+    "What would end the hold, as something Kontor can evaluate. Absent means `manual`.",
+),
+```
+
+Optionality and type match the DTO exactly, and were read from the committed
+contract rather than inferred. `InitialExecutionHoldRequest` in
+`crates/kontor-api/contract/openapi.json` lists `required: ["held_by",
+"reason"]` — `lift_condition` is absent from it — and types the property
+`["string", "null"]`. `optional_field` sets `required: false`; `ArgType::Text`
+is the registry's plain-string type, matching `#[schema(value_type =
+Option<String>)]` on a `#[serde(default)]` field.
+
+Both call sites (`kontor_epic_preview`, `kontor_epic_apply`) share this one
+constant, so the single edit corrects both surfaces.
+
+`InitialExecutionHoldPreviewDto` — the *response* echo — keeps `lift_condition`
+required, because apply resolves an absent condition to `manual` rather than
+returning an absence the caller must interpret. That asymmetry is intended and
+is untouched.
+
+### No new regression test was needed
+
+`tests/contract/mcp_parity.rs::every_declared_nested_object_matches_the_contracts_own_dto`
+already compares, for every declared nested object, both the field-name set and
+the required-field set against the contract's own DTO. It was already red on
+`e06317a6` and named the defect precisely — the guard was correct and the
+declaration was wrong, so adding a second test would only restate it.
+
+Its pre-fix failure is therefore also the mutation receipt for this field:
+removing `lift_condition` from the declaration reproduces the verifier's finding
+exactly, so the assertion is demonstrably load-bearing rather than vacuous.
+
+```text
+before: FAILED — kontor_epic_preview's initial_hold declares a shape its DTO does not have
+          left:  {"held_by", "reason"}
+          right: {"held_by", "lift_condition", "reason"}
+after:  ok — 1 passed
+```
+
+### Archive stages run, proportionate to the change
+
+| Stage | Result |
+| --- | --- |
+| `cargo test -p kontor-tests-contract --test mcp_parity every_declared_nested_object_matches_the_contracts_own_dto -- --exact` | ok — 1 passed (red before the fix, above) |
+| `cargo test -p kontor-tests-contract` (whole crate) | ok — 104 passed across 9 targets, 0 failed |
+| `cargo test -p kontor-mcp` | ok — 72 passed, 0 failed |
+| `cargo test -p kontor-api --test openapi_contract` | ok — 3 passed; the committed contract is unchanged and undrifted |
+| `cargo test -p kontor-daemon --test loopback_api held_work_…both_surfaces -- --exact` | ok — 1 passed; the approved §2 behavior is intact |
+| `cargo check --workspace` | clean |
+| `cargo clippy -p kontor-mcp -p kontor-tests-contract --all-targets -- -D warnings` | clean |
+| `cargo fmt --all -- --check` | clean |
+
+Deliberately **not** run, as disproportionate to a one-field schema declaration:
+the full `cargo test --workspace` and the pnpm/Vitest/audit/deny stages of
+`scripts/verify-tree.py --mode archive`. The change touches no TypeScript, no
+dependency, no migration and no HTTP route; the OpenAPI document is generated
+from the API crate's annotations, not from the MCP registry, so no contract or
+console-type regeneration applies and the contract test above confirms no drift.
+The authoritative full archive run remains the verification seat's.
+
+### Verifier settlement is blocked upstream
+
+Turn settlement and the verification gate for this rework are blocked by the
+deployed proof-reader hang, which is a platform fault and not a property of this
+change. No gate verdict, settlement or proof has been recorded or reconstructed
+here, and none is claimed by this document. The red/green parity evidence above
+is preserved verbatim so the blocked verifier turn can be reconciled against it
+once the platform is repaired.

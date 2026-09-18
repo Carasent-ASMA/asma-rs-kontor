@@ -483,6 +483,11 @@ const INITIAL_EXECUTION_HOLD: &[FieldSpec] = &[
         ArgType::ExternalName,
         "Why work must remain ineligible after kickoff.",
     ),
+    optional_field(
+        "lift_condition",
+        ArgType::Text,
+        "What would end the hold, as something Kontor can evaluate. Absent means `manual`.",
+    ),
 ];
 
 /// One explicit provider/model route for an authorized recovery operation.
