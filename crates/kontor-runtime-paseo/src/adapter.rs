@@ -4556,12 +4556,12 @@ impl PaseoAdapter {
                 rule: "the compensating readback answered about another agent; the seat is left recoverable",
             }),
             Ok(_) => Err(RuntimeError::DeliveryConfirmationUnknown {
-                rule: "an invalid delivery seat still reads back live; it is left recoverable",
+                rule: "an invalid seat still reads back live; it is left recoverable",
             }),
             Err(error) => {
                 tracing::warn!(%error, agent = %native_id, "compensating readback failed");
                 Err(RuntimeError::DeliveryConfirmationUnknown {
-                    rule: "an invalid delivery seat could not be read back; it is left recoverable",
+                    rule: "an invalid seat could not be read back; it is left recoverable",
                 })
             }
         }
@@ -5299,25 +5299,50 @@ impl PaseoAdapter {
             }
         };
         let agent = self.fetch_agent(&native_id).await?;
-        self.verify_agent_placement(&agent, &workspace_id, &labels)?;
-        // The readback asserts the autonomy the launch asked for, which is what
-        // makes the pair evidence: a seat that came back in another mode fails
-        // correlation instead of quietly running under it.
-        Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
-        // And on OpenCode the mode is not the evidence. The advertised feature
-        // said the daemon *can* apply this seat's typed providerOptions; only
-        // this per-agent acknowledgement says it *did*, and the permission block
-        // it carries is the sole thing separating a bounded leadership seat from
-        // a supervised one -- and the sole place the destructive bash floor is
-        // written. An unacknowledged seat is refused rather than bound.
+        // Everything the hosted seat is admitted on, judged as one verdict.
         //
-        // Applied to an adopted native as well as a created one: a seat this
-        // adapter recovers from the census binds on exactly the evidence a fresh
-        // one does, or not at all.
-        if opencode_leadership && !agent.provider_options_applied() {
-            return Err(RuntimeError::LaunchNotAdmitted {
-                rule: "the runtime did not report providerOptionsApplied for this hosted seat, so its posture is unproved",
+        // The route readback asserts the autonomy the launch asked for, which is
+        // what makes the pair evidence: a seat that came back in another mode
+        // fails correlation instead of quietly running under it. And on OpenCode
+        // the mode is not the evidence at all -- the advertised feature said the
+        // daemon *can* apply this seat's typed providerOptions, only the
+        // per-agent acknowledgement says it *did*, and the permission block it
+        // carries is the sole thing separating a bounded leadership seat from a
+        // supervised one, as well as the sole place the destructive bash floor is
+        // written. The acknowledgement is required of an adopted native as well
+        // as a created one: a seat recovered from the census binds on exactly the
+        // evidence a fresh one does, or not at all.
+        let verdict = self
+            .verify_agent_placement(&agent, &workspace_id, &labels)
+            .and_then(|()| {
+                Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)
+            })
+            .and_then(|()| {
+                if !opencode_leadership || agent.provider_options_applied() {
+                    Ok(())
+                } else {
+                    Err(RuntimeError::LaunchNotAdmitted {
+                        rule: "the runtime did not report providerOptionsApplied for this hosted seat, so its posture is unproved",
+                    })
+                }
             });
+        // A refusal is not containment. Any of these failing on a native *this
+        // call created* leaves a live agent that Kontor will never bind: it holds
+        // this seat's labels and the seat's own KONTOR_AUTH, and nothing else
+        // will ever come back for it. So the exact native is compensated and read
+        // back terminal before the refusal is returned, and if that cleanup
+        // cannot be proven the confirmation-unknown answer is returned instead --
+        // which keeps the seat recoverable rather than reporting a removal that
+        // may not have happened.
+        //
+        // Only what this call created. An adopted native is pre-existing
+        // ownership; archiving it here would destroy the very thing the census
+        // exists to recover.
+        if let Err(invalid) = verdict {
+            if created {
+                self.compensate_invalid_seat(&agent.id).await?;
+            }
+            return Err(invalid);
         }
         Ok(ConsultationLaunchOutcome {
             identity: self.identity(ExternalId::parse(&agent.id)?, generation),

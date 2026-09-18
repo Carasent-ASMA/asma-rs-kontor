@@ -8776,6 +8776,14 @@ async fn a_leadership_seat_launches_and_reads_back_the_autonomy_it_was_given() {
         let mut agent = v(AGENT);
         agent["agent"]["title"] = serde_json::json!("LSA · ASMA-7744");
         agent["agent"]["currentModeId"] = serde_json::json!(reported_mode);
+        if !agrees {
+            // The disagreeing seat is created and then refused, so it is also
+            // compensated. The same readback serves the verdict and the
+            // compensating proof, so it reports the archive this refusal
+            // performs -- otherwise the answer would be the
+            // confirmation-unknown one, which is a different claim.
+            agent["agent"]["archivedAt"] = serde_json::json!("2026-08-16T09:11:00.000Z");
+        }
         agent["agent"]["labels"] = serde_json::json!({
             "jira.epic": "ASMA-7744",
             "kontor.project_id": MINI_PROJECT,
@@ -8799,6 +8807,10 @@ async fn a_leadership_seat_launches_and_reads_back_the_autonomy_it_was_given() {
                     "status": "agent_created",
                     "agent": {"id": AGENT_ID}
                 }),
+            )
+            .answering_rpc(
+                "archive_agent_request",
+                serde_json::json!({"status": "agent_archived"}),
             )
             .answering_rpc("fetch_agent_request", agent);
         let plane = Plane::fresh(recorded);
@@ -8848,6 +8860,13 @@ async fn a_leadership_seat_launches_and_reads_back_the_autonomy_it_was_given() {
                             && found.as_deref() == Some("auto")
                 ),
                 "a seat that came back supervised must be refused, not bound: {outcome:?}"
+            );
+            // And refusing is not enough: the native this call created is
+            // contained before the refusal is returned.
+            assert_eq!(
+                plane.daemon.count("rpc archive_agent_request"),
+                1,
+                "the refused leadership native was left live"
             );
         }
     }
@@ -11008,16 +11027,19 @@ async fn opencode_leadership_launch(
     autonomy: SeatAutonomy,
     applied: Option<bool>,
     capable: bool,
+    archived_readback: bool,
+    adopt: bool,
 ) -> (
     RuntimeResult<kontor_runtime::adapter::ConsultationLaunchOutcome>,
     Vec<serde_json::Value>,
+    usize,
 ) {
     let seat_binding_id = SeatBindingId::generate();
     let mut workspace = v(WORKSPACE_ROOT_LOCAL);
     workspace["entries"][0]["name"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
     workspace["entries"][0]["title"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
 
-    let mut agent = opencode_agent("unused", applied, false);
+    let mut agent = opencode_agent("unused", applied, archived_readback);
     agent["agent"]["title"] = serde_json::json!("LSA · ASMA-7744");
     agent["agent"]["labels"] = serde_json::json!({
         "jira.epic": "ASMA-7744",
@@ -11036,13 +11058,26 @@ async fn opencode_leadership_launch(
         // Same daemon, without the advertised feature.
         daemon()
     };
+    // An empty census makes the launch create; a census carrying this seat's
+    // exact labels makes it adopt the native already there.
+    let census = if adopt {
+        let mut list = v(AGENT_LIST_EMPTY);
+        list["entries"] = serde_json::json!([agent.clone()]);
+        list
+    } else {
+        v(AGENT_LIST_EMPTY)
+    };
     let recorded = base
         .answering_rpc("project.list.request", v(PROJECT_LIST))
         .answering_rpc("fetch_workspaces_request", workspace)
-        .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+        .answering_rpc("fetch_agents_request", census)
         .answering_rpc(
             "create_agent_request",
             serde_json::json!({"status": "agent_created", "agent": {"id": AGENT_ID}}),
+        )
+        .answering_rpc(
+            "archive_agent_request",
+            serde_json::json!({"status": "agent_archived"}),
         )
         .answering_rpc("fetch_agent_request", agent);
     let plane = Plane::fresh(recorded);
@@ -11079,7 +11114,8 @@ async fn opencode_leadership_launch(
         })
         .await;
     let creates = plane.daemon.sent_messages("create_agent_request");
-    (outcome, creates)
+    let archives = plane.daemon.count("rpc archive_agent_request");
+    (outcome, creates, archives)
 }
 
 /// ASMA-8193 audit P1-1: an OpenCode leadership seat's autonomy is only ever
@@ -11096,9 +11132,10 @@ async fn opencode_leadership_launch(
 /// here.
 #[tokio::test]
 async fn an_opencode_leadership_launch_carries_the_permission_block_it_asked_for() {
-    let (outcome, creates) =
-        opencode_leadership_launch(SeatAutonomy::Bounded, Some(true), true).await;
+    let (outcome, creates, archives) =
+        opencode_leadership_launch(SeatAutonomy::Bounded, Some(true), true, false, false).await;
     outcome.expect("a bounded OpenCode leadership seat launches");
+    assert_eq!(archives, 0, "a seat that binds is never compensated");
     let [create] = creates.as_slice() else {
         panic!("exactly one create was sent: {creates:?}")
     };
@@ -11132,19 +11169,26 @@ async fn an_opencode_leadership_launch_carries_the_permission_block_it_asked_for
     }
 }
 
-/// The per-agent acknowledgement is what a leadership launch binds on.
+/// ASMA-8193 audit P1-3: refusing an unproved leadership seat is not enough --
+/// the native this call created has to be contained.
 ///
-/// A daemon that does not answer, or answers `false`, has not applied the block
-/// that carries both the authority and the floor. The seat is refused rather
-/// than bound, exactly as a delivery seat is.
+/// The create already carries `initialPrompt`, so the agent is not idle: it
+/// holds this seat's labels and its scoped `KONTOR_AUTH`, and once the launch is
+/// refused nothing will ever come back for it. A refusal that left it live would
+/// leave an unbound leadership seat running against the epic worktree under an
+/// authority Kontor could not prove.
+///
+/// So the exact native is archived and read back terminal before the refusal is
+/// returned, exactly as a delivery seat is. The assertion is on the archive and
+/// on the terminal readback, not merely on the error.
 #[tokio::test]
-async fn an_opencode_leadership_seat_is_refused_when_its_posture_is_unproved() {
+async fn an_unproved_leadership_seat_is_archived_not_merely_refused() {
     for applied in [None, Some(false)] {
-        let (outcome, creates) =
-            opencode_leadership_launch(SeatAutonomy::Bounded, applied, true).await;
+        let (outcome, creates, archives) =
+            opencode_leadership_launch(SeatAutonomy::Bounded, applied, true, true, false).await;
         assert!(
             matches!(
-                outcome,
+                &outcome,
                 Err(RuntimeError::LaunchNotAdmitted { rule })
                     if rule.contains("providerOptionsApplied")
             ),
@@ -11155,14 +11199,72 @@ async fn an_opencode_leadership_seat_is_refused_when_its_posture_is_unproved() {
             1,
             "the refusal must follow one create, never a second attempt"
         );
+        assert_eq!(
+            archives, 1,
+            "the native this call created was left live after the refusal"
+        );
     }
+}
+
+/// Containment is for what this call created, and nothing else.
+///
+/// A native the census adopted is pre-existing ownership: an earlier attempt
+/// made it, a launch intent records what it was created under, and a later
+/// replay is supposed to find it. Archiving it because *this* attempt could not
+/// prove its posture would destroy the very thing recovery depends on, so an
+/// adopted seat is refused without being compensated.
+#[tokio::test]
+async fn an_adopted_leadership_native_is_refused_without_being_archived() {
+    let (outcome, creates, archives) =
+        opencode_leadership_launch(SeatAutonomy::Bounded, Some(false), true, false, true).await;
+    assert!(
+        matches!(
+            &outcome,
+            Err(RuntimeError::LaunchNotAdmitted { rule })
+                if rule.contains("providerOptionsApplied")
+        ),
+        "an unacknowledged adopted seat must still be refused: {outcome:?}"
+    );
+    assert!(
+        creates.is_empty(),
+        "an adopted native must not be created a second time"
+    );
+    assert_eq!(
+        archives, 0,
+        "an adopted native is pre-existing ownership and must not be archived"
+    );
+}
+
+/// And a cleanup that cannot be proven is reported as such.
+///
+/// The archive is attempted and its acknowledgement is never the proof: only a
+/// fresh reading of *this* agent as terminal settles it. A readback that still
+/// shows the seat live means the removal may not have happened, so the answer is
+/// confirmation-unknown and the seat is retained as recoverable rather than
+/// reported as contained.
+#[tokio::test]
+async fn a_leadership_cleanup_that_cannot_be_proven_stays_recoverable() {
+    let (outcome, _, archives) =
+        opencode_leadership_launch(SeatAutonomy::Bounded, Some(false), true, false, false).await;
+    assert!(
+        matches!(
+            &outcome,
+            Err(RuntimeError::DeliveryConfirmationUnknown { rule })
+                if rule.contains("recoverable")
+        ),
+        "an unprovable cleanup must not be reported as a completed one: {outcome:?}"
+    );
+    assert_eq!(
+        archives, 1,
+        "the compensation must still have been attempted"
+    );
 }
 
 /// A daemon that cannot apply the block is refused before any native effect.
 #[tokio::test]
 async fn an_opencode_leadership_launch_is_refused_with_no_native_effect() {
-    let (outcome, creates) =
-        opencode_leadership_launch(SeatAutonomy::Bounded, Some(true), false).await;
+    let (outcome, creates, _) =
+        opencode_leadership_launch(SeatAutonomy::Bounded, Some(true), false, false, false).await;
     assert!(
         matches!(
             outcome,
