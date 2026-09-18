@@ -73,6 +73,12 @@ pub struct PublicationIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicationBinding {
     /// The exact forge repositories this Kontor project may publish.
+    ///
+    /// Derived by the daemon from the durable ProjectId the forge mapping
+    /// governs and the bound task's module. A producer's observed `repository`
+    /// is a claim; this is the durable fact it is judged against. An empty set
+    /// authorizes nothing, which is the fail-closed answer for a project the
+    /// mapping does not govern.
     pub repositories: Vec<ExternalName>,
     /// The confirmed tracker key of the epic.
     pub epic_key: TrackerKey,
@@ -226,11 +232,7 @@ pub fn evaluate(
     binding: &PublicationBinding,
 ) -> PublicationDecision {
     let mut reasons = Vec::new();
-    if !binding
-        .repositories
-        .iter()
-        .any(|repository| repository == &identity.repository)
-    {
+    if !binding.repositories.contains(&identity.repository) {
         reasons.push(PublicationRefusal::RepositoryMismatch);
     }
     let allowed_branch_keys = std::iter::once(&binding.epic_key).chain(binding.task_key.iter());
@@ -244,14 +246,20 @@ pub fn evaluate(
     if identity.base_branch != binding.default_branch {
         reasons.push(PublicationRefusal::BaseBranchNotDefault);
     }
-    if let Some(title) = identity.title.as_ref() {
-        match title_key(title.as_str()) {
+    match (identity.pull_request, identity.title.as_ref()) {
+        // A pull request always carries a title, so an absent one is the
+        // missing key rather than a rule that does not apply. Skipping it let a
+        // pull request publish under no key at all.
+        (Some(_), None) => reasons.push(PublicationRefusal::TitleKeyMissing),
+        (_, Some(title)) => match title_key(title.as_str()) {
             None => reasons.push(PublicationRefusal::TitleKeyMissing),
             Some(key) if !binding.title_keys().any(|allowed| *allowed == key) => {
                 reasons.push(PublicationRefusal::TitleKeyMismatch);
             }
             Some(_) => {}
-        }
+        },
+        // Branch-only publication: a push carries no title to judge.
+        (None, None) => {}
     }
     PublicationDecision {
         accepted: reasons.is_empty(),

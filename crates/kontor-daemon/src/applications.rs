@@ -39202,8 +39202,47 @@ const fn counts_towards_completion(state: TaskState) -> bool {
 /// The only branch a publication may target. Both governed repositories use it
 /// and the plan records the assumption; a per-project default is a later field.
 const PUBLICATION_DEFAULT_BRANCH: &str = "master";
-const PUBLICATION_REPOSITORIES: [&str; 2] =
-    ["Carasent-ASMA/asma-modules", "Carasent-ASMA/asma-rs-kontor"];
+/// The one Kontor project the governed ASMA forge mapping belongs to.
+///
+/// The durable ProjectId is the boundary, not the project's root path. A path
+/// is machine-specific and a checkout can be moved or cloned elsewhere, while
+/// the id is the same fact in every replica of this realm. Authorization
+/// belongs to *this* project: no other project inherits these forge roots, by
+/// holding a confirmed tracker key or by sitting at a familiar path.
+const PUBLICATION_GOVERNED_PROJECT: &str = "01a0064a-e056-7603-9968-ef64fdaacb75";
+
+/// Whether the repository mapping below governs this project.
+///
+/// A constant that failed to parse authorizes nothing rather than everything:
+/// the comparison is against a parsed id, never against text a request carried.
+fn is_governed_publication_project(project_id: ProjectId) -> bool {
+    ProjectId::parse(PUBLICATION_GOVERNED_PROJECT).is_ok_and(|governed| governed == project_id)
+}
+
+/// The superproject repository that project's publications may target.
+///
+/// A task's own module may add one more repository, but the root always stays
+/// authorized: a module's code change and the superproject documentation that
+/// accompanies it are one unit of work published to two governed roots.
+const PUBLICATION_ROOT_REPOSITORY: &str = "Carasent-ASMA/asma-modules";
+
+/// The modules of that project that are themselves governed repositories.
+///
+/// Membership is a durable property of the module, not a caller claim and not
+/// the GitHub App's optional configuration: the App may be absent entirely and
+/// a publication must still be judged. A module missing here authorizes only
+/// the root, which is the fail-closed answer rather than a wildcard.
+const PUBLICATION_MODULE_REPOSITORIES: &[(&str, &str)] =
+    &[("_tools/asma-rs-kontor", "Carasent-ASMA/asma-rs-kontor")];
+
+/// The repository a module is governed as, when it is one of them.
+fn publication_module_repository(module: Option<&ModuleKey>) -> Option<&'static str> {
+    let module = module?;
+    PUBLICATION_MODULE_REPOSITORIES
+        .iter()
+        .find(|(key, _)| *key == module.as_str())
+        .map(|(_, repository)| *repository)
+}
 
 /// The binding a publication's branch key resolved to.
 struct ResolvedPublicationBinding {
@@ -39221,6 +39260,33 @@ struct JudgedPublication {
 }
 
 impl Services {
+    /// The repositories one binding may publish to: the governed root, plus
+    /// whatever the bound module adds. Never widened by the request.
+    ///
+    /// A project the mapping does not govern authorizes nothing at all. That is
+    /// deliberate: an unknown project has no forge mapping to apply, and
+    /// refusing every repository is the only answer that cannot lend one
+    /// project's roots to another.
+    fn authorized_repositories(
+        &self,
+        project_id: ProjectId,
+        module_repositories: &[&'static str],
+    ) -> Result<Vec<ExternalName>, ApiError> {
+        if !is_governed_publication_project(project_id) {
+            return Ok(Vec::new());
+        }
+        let mut names = Vec::with_capacity(module_repositories.len() + 1);
+        for text in
+            std::iter::once(PUBLICATION_ROOT_REPOSITORY).chain(module_repositories.iter().copied())
+        {
+            let name = ExternalName::parse(text).map_err(|error| self.refuse_domain(&error))?;
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        Ok(names)
+    }
+
     /// The epic or task whose confirmed tracker key is `key`, with every key a
     /// title under that epic may name.
     ///
@@ -39235,11 +39301,6 @@ impl Services {
         let state = self.state()?;
         let default_branch = ExternalName::parse(PUBLICATION_DEFAULT_BRANCH)
             .map_err(|error| self.refuse_domain(&error))?;
-        let repositories = PUBLICATION_REPOSITORIES
-            .iter()
-            .map(|repository| ExternalName::parse(repository))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| self.refuse_domain(&error))?;
         let epics = state
             .with_store(|store| store.list_mini_projects(project_id))
             .map_err(|error| self.refuse(&error))?;
@@ -39252,28 +39313,39 @@ impl Services {
                 .with_store(|store| store.list_epic_tasks(project_id, epic.id))
                 .map_err(|error| self.refuse(&error))?;
             let mut child_keys = Vec::with_capacity(tasks.len());
+            let mut epic_module_repositories: Vec<&'static str> = Vec::new();
             let mut matched_tasks = Vec::new();
             for task in tasks {
                 let links = state
                     .with_store(|store| store.list_task_ticket_links(project_id, task.id))
                     .map_err(|error| self.refuse(&error))?;
+                let task_repository = publication_module_repository(task.module.as_ref());
+                if let Some(repository) = task_repository
+                    && !epic_module_repositories.contains(&repository)
+                {
+                    epic_module_repositories.push(repository);
+                }
                 for task_key in links
                     .iter()
                     .filter(|link| link.connector.as_str() == "connector.jira")
                     .filter_map(|link| TrackerKey::from_external(&link.external_issue_key).ok())
                 {
                     if task_key == *key {
-                        matched_tasks.push((task.id, task_key.clone()));
+                        matched_tasks.push((task.id, task_key.clone(), task_repository));
                     }
                     child_keys.push(task_key);
                 }
             }
             if epic_key == *key {
+                // An epic branch may publish into the root and into every module
+                // its own tasks own, and nothing else.
+                let repositories =
+                    self.authorized_repositories(project_id, &epic_module_repositories)?;
                 resolved.push(ResolvedPublicationBinding {
                     epic_id: epic.id,
                     task_id: None,
                     binding: PublicationBinding {
-                        repositories: repositories.clone(),
+                        repositories,
                         epic_key: epic_key.clone(),
                         task_key: None,
                         child_keys: child_keys.clone(),
@@ -39281,12 +39353,16 @@ impl Services {
                     },
                 });
             }
-            for (task_id, task_key) in matched_tasks {
+            for (task_id, task_key, task_repository) in matched_tasks {
+                // A task branch is narrower than its epic: only the root and the
+                // task's own module, never a sibling module's repository.
+                let repositories =
+                    self.authorized_repositories(project_id, task_repository.as_slice())?;
                 resolved.push(ResolvedPublicationBinding {
                     epic_id: epic.id,
                     task_id: Some(task_id),
                     binding: PublicationBinding {
-                        repositories: repositories.clone(),
+                        repositories,
                         epic_key: epic_key.clone(),
                         task_key: Some(task_key),
                         child_keys: child_keys.clone(),

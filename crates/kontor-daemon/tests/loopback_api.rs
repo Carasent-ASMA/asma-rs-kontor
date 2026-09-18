@@ -94,9 +94,11 @@ use kontor_runtime::fake::{
 };
 use kontor_runtime::request::CorrelationLabel;
 use kontor_scheduler::model::CapacityConfig;
+use kontor_store::authority::SubjectOrigins;
 use kontor_store::{
     ConsultationPermissionResponseStatus, IdempotencyBinding, JiraIntentKind, JiraItemKind,
-    NewJiraMaterializationBatch, NewJiraMaterializationItem, RegisteredPack, TeamTemplateSource,
+    NewJiraMaterializationBatch, NewJiraMaterializationItem, ProjectEnsure, RegisteredPack,
+    TeamTemplateSource,
 };
 use kontor_teams::spec::TeamTemplateSpec;
 use secrecy::SecretString;
@@ -51485,13 +51487,79 @@ struct KeyedEpic {
     task_key: String,
 }
 
+/// The durable Kontor project the governed ASMA forge mapping belongs to.
+///
+/// Authorization keys on this id, never on a root path: the path is
+/// machine-specific, and a project sitting at the familiar one inherits
+/// nothing.
+const GOVERNED_PROJECT_ID: &str = "01a0064a-e056-7603-9968-ef64fdaacb75";
+
+/// The root path the mapping used to key on, kept only to prove it no longer
+/// confers anything.
+const FORMER_GOVERNED_ROOT: &str = "/Users/igor/carasent/asma-modules";
+
+/// The governed project, seeded under its exact durable id.
+///
+/// `projects:ensure` generates an id, and the id is the whole boundary under
+/// test, so the row is written through the same store call that handler uses.
+/// Its root path is deliberately ordinary: nothing about the path governs it.
+fn ensure_governed_project(world: &World, root_path: &str) -> String {
+    let (project, _) = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.ensure_project(&ProjectEnsure {
+                id: ProjectId::parse(GOVERNED_PROJECT_ID).expect("a project id"),
+                name: ExternalName::parse("Kontor").expect("a name"),
+                root_path: ExternalName::parse(root_path).expect("a root path"),
+                origins: SubjectOrigins::native(),
+                created_at: kontor_api::now(),
+            })
+        })
+        .expect("the governed project is created");
+    let project = project.id.to_string();
+    register_mvp_delivery_slots(world, &project);
+    project
+}
+
 async fn keyed_epic(world: &World, key: &str) -> KeyedEpic {
-    let created = ensure_project(world, key, "Kontor", &format!("/tmp/kontor-{key}")).await;
-    let project = created.json()["project_id"]
-        .as_str()
-        .expect("id")
-        .to_owned();
-    let revision = created.json()["revision"].as_u64().expect("revision");
+    keyed_epic_full(world, key, None, None).await
+}
+
+/// One applied single-task epic whose task contends for a governed module.
+///
+/// The daemon derives that module's repository into the binding, so the task
+/// may publish there as well as into the superproject root.
+async fn keyed_epic_in_module(world: &World, key: &str, module: &str) -> KeyedEpic {
+    keyed_epic_full(world, key, None, Some(module)).await
+}
+
+/// The same epic under a project the forge mapping does not govern.
+async fn keyed_epic_at_root(world: &World, key: &str, root: &str) -> KeyedEpic {
+    keyed_epic_full(world, key, Some(root), None).await
+}
+
+/// `ungoverned_root` names a project created the ordinary way, with a generated
+/// id; `None` seeds the one governed project instead.
+async fn keyed_epic_full(
+    world: &World,
+    key: &str,
+    ungoverned_root: Option<&str>,
+    module: Option<&str>,
+) -> KeyedEpic {
+    let project = match ungoverned_root {
+        Some(root) => ensure_project(world, key, "Kontor", root).await.json()["project_id"]
+            .as_str()
+            .expect("id")
+            .to_owned(),
+        None => ensure_governed_project(world, &format!("/tmp/kontor-{key}")),
+    };
+    let read = Call::get(format!("/v1/projects/{project}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    let revision = read.json()["revision"].as_u64().expect("revision");
     let category = first_category(world).await;
     let name = format!("{key} epic");
     let applied = Call::post(
@@ -51500,7 +51568,11 @@ async fn keyed_epic(world: &World, key: &str) -> KeyedEpic {
             revision,
             &name,
             &category,
-            serde_json::json!([{"title": "Publish it", "worktree": "/w/publish-it"}]),
+            serde_json::json!([{
+                "title": "Publish it",
+                "module": module,
+                "worktree": "/w/publish-it"
+            }]),
         ),
     )
     .signed_as(world, "admin")
@@ -51519,8 +51591,17 @@ async fn keyed_epic(world: &World, key: &str) -> KeyedEpic {
 const PUBLICATION_SHA: &str = "82c56f5043b436ba666962cf82a89e93e330a271";
 
 fn publication(head_branch: &str, base: &str, title: Option<&str>) -> serde_json::Value {
+    publication_in("Carasent-ASMA/asma-modules", head_branch, base, title)
+}
+
+fn publication_in(
+    repository: &str,
+    head_branch: &str,
+    base: &str,
+    title: Option<&str>,
+) -> serde_json::Value {
     let mut body = serde_json::json!({
-        "repository": "Carasent-ASMA/asma-modules",
+        "repository": repository,
         "base_branch": base,
         "head_branch": head_branch,
         "head_sha": PUBLICATION_SHA,
@@ -51530,6 +51611,16 @@ fn publication(head_branch: &str, base: &str, title: Option<&str>) -> serde_json
         body["title"] = serde_json::json!(title);
     }
     body
+}
+
+/// A push: no pull request, and therefore no title to carry.
+fn branch_publication(repository: &str, head_branch: &str) -> serde_json::Value {
+    serde_json::json!({
+        "repository": repository,
+        "base_branch": "master",
+        "head_branch": head_branch,
+        "head_sha": PUBLICATION_SHA,
+    })
 }
 
 #[tokio::test]
@@ -51618,7 +51709,7 @@ async fn a_task_branch_binds_through_the_task_key() {
     let head = format!("fix/{}-one-slice", epic.task_key);
     let previewed = Call::post(
         format!("/v1/projects/{}/publication:preview", epic.project),
-        &publication(&head, "master", None),
+        &branch_publication("Carasent-ASMA/asma-modules", &head),
     )
     .signed_as(&world, "operator")
     .send(&world)
@@ -51735,7 +51826,11 @@ async fn refused_publications_carry_stable_codes_and_are_recorded() {
     assert!(foreign.json()["epic_id"].is_null());
 
     let head = format!("feat/{}-publication-identity", epic.epic_key);
-    let mut wrong_repository = publication(&head, "master", None);
+    let mut wrong_repository = publication(
+        &head,
+        "master",
+        Some(&format!("{} Enforce the grammar", epic.epic_key)),
+    );
     wrong_repository["repository"] = serde_json::json!("Carasent-ASMA/not-this-repository");
     let refused_repository = Call::post(
         format!("/v1/projects/{}/publication:preview", epic.project),
@@ -55335,4 +55430,237 @@ async fn a_confirmed_jira_key_addresses_the_same_subject_as_its_uuid() {
         malformed.status,
         malformed.body
     );
+}
+
+/// A repository nobody authorized is refused, and the refusal is durable.
+///
+/// The 2026-09-18 verification found that `repository` was recorded and never
+/// compared, so any forge account could attest a publication against a real
+/// Kontor binding. Authorization is derived from the project's governed root
+/// and the bound task's module, never from the request or the GitHub App's
+/// optional configuration.
+#[tokio::test]
+async fn a_publication_into_an_unauthorized_repository_is_refused() {
+    let world = World::open_empty().await;
+    let epic = keyed_epic_in_module(&world, "repo-auth", "_tools/asma-rs-kontor").await;
+    let head = format!("fix/{}-one-slice", epic.task_key);
+    let title = format!("{} Publish it", epic.task_key);
+
+    // The task's own module repository is authorized.
+    let owned = Call::post(
+        format!("/v1/projects/{}/publication:preview", epic.project),
+        &publication_in(
+            "Carasent-ASMA/asma-rs-kontor",
+            &head,
+            "master",
+            Some(&title),
+        ),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(owned.status, 200, "{}", owned.body);
+    assert_eq!(
+        owned.json()["accepted"],
+        serde_json::json!(true),
+        "{}",
+        owned.body
+    );
+
+    // So is the superproject root the module hangs under.
+    let root = Call::post(
+        format!("/v1/projects/{}/publication:preview", epic.project),
+        &publication_in("Carasent-ASMA/asma-modules", &head, "master", Some(&title)),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(
+        root.json()["accepted"],
+        serde_json::json!(true),
+        "{}",
+        root.body
+    );
+
+    // A foreign owner and an unrelated repository are both refused.
+    for foreign in [
+        "WrongOrg/asma-rs-kontor",
+        "WrongOrg/asma-modules",
+        "Carasent-ASMA/asma-unrelated",
+    ] {
+        let refused = Call::post(
+            format!("/v1/projects/{}/publication:preview", epic.project),
+            &publication_in(foreign, &head, "master", Some(&title)),
+        )
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+        assert_eq!(refused.status, 200, "{}", refused.body);
+        assert_eq!(
+            refused.json()["reasons"],
+            serde_json::json!(["repository_mismatch"]),
+            "{foreign}: {}",
+            refused.body
+        );
+    }
+
+    // An attested refusal is durable evidence, exactly like any other.
+    let attested = Call::post(
+        format!("/v1/projects/{}/publication:attest", epic.project),
+        &publication_in("WrongOrg/asma-rs-kontor", &head, "master", Some(&title)),
+    )
+    .signed_as(&world, "operator")
+    .with_key("repo-auth-wrong-org")
+    .send(&world)
+    .await;
+    assert_eq!(attested.status, 200, "{}", attested.body);
+    assert_eq!(attested.json()["accepted"], serde_json::json!(false));
+    assert!(
+        attested.json()["attestation_id"].is_string(),
+        "{}",
+        attested.body
+    );
+}
+
+/// A task owning no governed module may publish only into the root.
+#[tokio::test]
+async fn a_module_less_task_is_not_authorized_for_a_module_repository() {
+    let world = World::open_empty().await;
+    let epic = keyed_epic(&world, "repo-narrow").await;
+    let head = format!("fix/{}-one-slice", epic.task_key);
+    let refused = Call::post(
+        format!("/v1/projects/{}/publication:preview", epic.project),
+        &branch_publication("Carasent-ASMA/asma-rs-kontor", &head),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(refused.status, 200, "{}", refused.body);
+    assert_eq!(
+        refused.json()["reasons"],
+        serde_json::json!(["repository_mismatch"]),
+        "{}",
+        refused.body
+    );
+}
+
+/// A pull request always carries a title; a push never needs one.
+///
+/// The same verification found that a null title skipped title validation
+/// entirely, so a pull request could publish under no confirmed key.
+#[tokio::test]
+async fn a_pull_request_without_a_title_is_refused() {
+    let world = World::open_empty().await;
+    let epic = keyed_epic(&world, "pr-title").await;
+    let head = format!("feat/{}-publication-identity", epic.epic_key);
+
+    let untitled = Call::post(
+        format!("/v1/projects/{}/publication:preview", epic.project),
+        &publication(&head, "master", None),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(untitled.status, 200, "{}", untitled.body);
+    assert_eq!(
+        untitled.json()["reasons"],
+        serde_json::json!(["pr_title_key_missing"]),
+        "{}",
+        untitled.body
+    );
+
+    // The same branch pushed without a pull request is still accepted.
+    let pushed = Call::post(
+        format!("/v1/projects/{}/publication:preview", epic.project),
+        &branch_publication("Carasent-ASMA/asma-modules", &head),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(
+        pushed.json()["accepted"],
+        serde_json::json!(true),
+        "{}",
+        pushed.body
+    );
+
+    // And with its title it is accepted as a pull request.
+    let titled = Call::post(
+        format!("/v1/projects/{}/publication:preview", epic.project),
+        &publication(
+            &head,
+            "master",
+            Some(&format!("{} Enforce the grammar", epic.epic_key)),
+        ),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(
+        titled.json()["accepted"],
+        serde_json::json!(true),
+        "{}",
+        titled.body
+    );
+}
+
+/// One project's governed roots are never another project's.
+///
+/// Two drafts of this fix were wrong in turn. The first applied the ASMA forge
+/// mapping to every project in the realm, so any project holding a confirmed
+/// tracker key authorized `Carasent-ASMA/asma-modules`. The second keyed on the
+/// project's root path, which is machine-specific. Authorization keys on the
+/// durable ProjectId, so the governed project stays governed wherever it is
+/// checked out, and a project sitting at the path the mapping once used
+/// inherits nothing.
+///
+/// `projects.root_path` is `UNIQUE`, so the ungoverned project takes the former
+/// governed root while the governed one sits at an ordinary path. That is the
+/// sharper proof anyway: each project is on the other's old evidence, and only
+/// the id decides.
+#[tokio::test]
+async fn another_project_does_not_inherit_the_governed_repositories() {
+    let world = World::open_empty().await;
+    let governed = keyed_epic(&world, "governed").await;
+    let other = keyed_epic_at_root(&world, "other", FORMER_GOVERNED_ROOT).await;
+    assert_eq!(
+        governed.project, GOVERNED_PROJECT_ID,
+        "the governed project is the one the mapping names"
+    );
+    assert_ne!(governed.project, other.project);
+
+    let governed_head = format!("feat/{}-publication-identity", governed.epic_key);
+    let accepted = Call::post(
+        format!("/v1/projects/{}/publication:preview", governed.project),
+        &branch_publication("Carasent-ASMA/asma-modules", &governed_head),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(
+        accepted.json()["accepted"],
+        serde_json::json!(true),
+        "{}",
+        accepted.body
+    );
+
+    // The same repository, the same rules, and the very root path the mapping
+    // used to key on: refused, because the id is what governs.
+    let other_head = format!("feat/{}-publication-identity", other.epic_key);
+    for repository in ["Carasent-ASMA/asma-modules", "Carasent-ASMA/asma-rs-kontor"] {
+        let refused = Call::post(
+            format!("/v1/projects/{}/publication:preview", other.project),
+            &branch_publication(repository, &other_head),
+        )
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+        assert_eq!(refused.status, 200, "{}", refused.body);
+        assert_eq!(
+            refused.json()["reasons"],
+            serde_json::json!(["repository_mismatch"]),
+            "{repository} must not be authorized for an ungoverned project: {}",
+            refused.body
+        );
+    }
 }
