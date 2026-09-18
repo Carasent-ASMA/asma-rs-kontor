@@ -167,9 +167,7 @@ async fn ambiguous_command(bundle: &mut Bundle) {
 
     let lost = matches!(
         ambiguous,
-        Err(RuntimeError::Transport {
-            rule: "acknowledgement was lost after the message was committed"
-        })
+        Err(RuntimeError::DeliveryConfirmationUnknown { .. })
     );
     let replayed = reconciled
         .as_ref()

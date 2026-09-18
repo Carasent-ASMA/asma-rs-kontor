@@ -1,0 +1,320 @@
+{
+  "schema_version": 1,
+  "pack_id": "kontor-test-slot-role-fence",
+  "version": 1,
+  "manifest": [
+    {
+      "category": "slot-role-fence-v1",
+      "label": "Slot-role fence (test)",
+      "availability": "seeded",
+      "profile": "slot-role-fence-v1",
+      "profile_version": 1
+    }
+  ],
+  "roles": [
+    {
+      "role": "fence-scope-architect",
+      "version": 1,
+      "label": "Scope architect"
+    },
+    {
+      "role": "fence-implementer",
+      "version": 1,
+      "label": "Implementer"
+    },
+    {
+      "role": "fence-verifier",
+      "version": 1,
+      "label": "Independent verifier"
+    }
+  ],
+  "skills": [
+    {
+      "skill": "fence-scoping",
+      "version": 1,
+      "label": "Scoping"
+    },
+    {
+      "skill": "fence-implementing",
+      "version": 1,
+      "label": "Implementation"
+    },
+    {
+      "skill": "fence-verifying",
+      "version": 1,
+      "label": "Verification"
+    }
+  ],
+  "contexts": [],
+  "personas": [],
+  "teams": [
+    {
+      "schema_version": 1,
+      "template_id": "01936f5a-0000-7000-8000-0000000000fe",
+      "version": 1,
+      "name": "Slot-role fence team",
+      "roles": [
+        {
+          "role": {
+            "role": "fence-scope-architect",
+            "version": 1
+          },
+          "min_slots": 1,
+          "max_slots": 1
+        },
+        {
+          "role": {
+            "role": "fence-implementer",
+            "version": 1
+          },
+          "min_slots": 1,
+          "max_slots": 1
+        },
+        {
+          "role": {
+            "role": "fence-verifier",
+            "version": 1
+          },
+          "min_slots": 1,
+          "max_slots": 1
+        }
+      ],
+      "slots": [
+        {
+          "id": "scope",
+          "role": {
+            "role": "fence-scope-architect",
+            "version": 1
+          },
+          "skills": [
+            {
+              "skill": "fence-scoping",
+              "version": 1
+            }
+          ],
+          "context": null,
+          "may_evaluate": [],
+          "may_waive": [],
+          "waiver_policy": null,
+          "model_chain": {
+            "rungs": [
+              {
+                "provider": "test",
+                "model": "test"
+              }
+            ]
+          }
+        },
+        {
+          "id": "implement",
+          "role": {
+            "role": "fence-implementer",
+            "version": 1
+          },
+          "skills": [
+            {
+              "skill": "fence-implementing",
+              "version": 1
+            }
+          ],
+          "context": null,
+          "may_evaluate": [],
+          "may_waive": [],
+          "waiver_policy": null,
+          "model_chain": {
+            "rungs": [
+              {
+                "provider": "test",
+                "model": "test"
+              }
+            ]
+          }
+        },
+        {
+          "id": "verify",
+          "role": {
+            "role": "fence-verifier",
+            "version": 1
+          },
+          "skills": [
+            {
+              "skill": "fence-verifying",
+              "version": 1
+            }
+          ],
+          "context": null,
+          "may_evaluate": [
+            "fence-verification-gate"
+          ],
+          "may_waive": [],
+          "waiver_policy": null,
+          "model_chain": {
+            "rungs": [
+              {
+                "provider": "test",
+                "model": "test"
+              }
+            ]
+          }
+        }
+      ],
+      "handoffs": [
+        {
+          "from_slot": "scope",
+          "to_slot": "implement",
+          "after_phase": null,
+          "required_artifacts": []
+        },
+        {
+          "from_slot": "implement",
+          "to_slot": "verify",
+          "after_phase": null,
+          "required_artifacts": []
+        }
+      ],
+      "max_successor_depth": 3,
+      "max_handoff_depth": 8
+    }
+  ],
+  "profiles": [
+    {
+      "schema_version": 1,
+      "id": "slot-role-fence-v1",
+      "version": 1,
+      "name": "Slot-role fence",
+      "phases": [
+        {
+          "id": "fence-scope",
+          "label": "Scope",
+          "required_artifacts": [
+            "fence-scope-record"
+          ],
+          "gates": [],
+          "rejection_route": null
+        },
+        {
+          "id": "fence-implementation",
+          "label": "Implementation",
+          "required_artifacts": [
+            "fence-change"
+          ],
+          "gates": [],
+          "rejection_route": "fence-scope"
+        },
+        {
+          "id": "fence-verification",
+          "label": "Verification",
+          "required_artifacts": [
+            "fence-verification-report"
+          ],
+          "gates": [
+            "fence-verification-gate"
+          ],
+          "rejection_route": "fence-implementation"
+        }
+      ],
+      "edges": [
+        {
+          "from": "fence-scope",
+          "to": "fence-implementation",
+          "handoff_role": "fence-implementer"
+        },
+        {
+          "from": "fence-implementation",
+          "to": "fence-verification",
+          "handoff_role": "fence-verifier"
+        }
+      ],
+      "entry_phase": "fence-scope",
+      "terminal_phases": [
+        "fence-verification"
+      ],
+      "roles": [
+        {
+          "role": "fence-scope-architect",
+          "version": 1
+        },
+        {
+          "role": "fence-implementer",
+          "version": 1
+        },
+        {
+          "role": "fence-verifier",
+          "version": 1
+        }
+      ],
+      "skills": [
+        {
+          "skill": "fence-scoping",
+          "version": 1
+        },
+        {
+          "skill": "fence-implementing",
+          "version": 1
+        },
+        {
+          "skill": "fence-verifying",
+          "version": 1
+        }
+      ],
+      "team_template": {
+        "template_id": "01936f5a-0000-7000-8000-0000000000fe",
+        "version": 1
+      },
+      "artifacts": [
+        {
+          "key": "fence-scope-record",
+          "label": "Scope record",
+          "producer_phase": "fence-scope",
+          "content_type": "document",
+          "evidence_required": true
+        },
+        {
+          "key": "fence-change",
+          "label": "Implemented change",
+          "producer_phase": "fence-implementation",
+          "content_type": "link",
+          "evidence_required": true
+        },
+        {
+          "key": "fence-verification-report",
+          "label": "Verification report",
+          "producer_phase": "fence-verification",
+          "content_type": "report",
+          "evidence_required": true
+        }
+      ],
+      "gates": [
+        {
+          "id": "fence-verification-gate",
+          "phase": "fence-verification",
+          "evaluator_roles": [
+            "fence-verifier"
+          ],
+          "required_evidence": [
+            "fence-change",
+            "fence-verification-report"
+          ],
+          "rejection_target": "fence-implementation",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        }
+      ],
+      "runtime_routing": {
+        "runtime_kind": "fake.runtime",
+        "version": 1
+      },
+      "budget_defaults": {
+        "max_tokens": 80000,
+        "max_commands": 100,
+        "max_duration_seconds": 3600,
+        "max_cost": {
+          "minor_units": 8000,
+          "currency": "NOK"
+        }
+      },
+      "calendar_policy": null,
+      "external_workflow": null
+    }
+  ]
+}

@@ -1,4 +1,4 @@
--- Schema v97. Make one Core Team route succession recoverable across the
+-- Schema v100. Make one Core Team route succession recoverable across the
 -- interval between its committed store transition and its command receipt.
 --
 -- The succession retires the predecessor, launches the successor, replaces the
@@ -124,4 +124,4 @@ BEGIN
     SELECT RAISE(ABORT, 'a recorded Core Team route succession cannot be deleted');
 END;
 
-PRAGMA user_version = 99;
+PRAGMA user_version = 100;

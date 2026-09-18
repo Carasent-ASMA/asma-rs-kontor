@@ -567,6 +567,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Persist and deliver or reconcile one exact server-owned challenge. */
+        post: operations["apply_turn_correlation_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turn-correlation:challenge-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview one new server-owned correlation challenge without runtime effects. */
+        post: operations["preview_turn_correlation_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/agent-runs/{agent_run_id}/turns:settle": {
         parameters: {
             query?: never;
@@ -2595,6 +2629,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fill a declared, unwaived slot whose durable follow-up cannot be delivered. */
+        post: operations["fill_team_run_seat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/waivers": {
         parameters: {
             query?: never;
@@ -3114,6 +3165,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{agent_run_id}/turns/current": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Observe the exact current turn, without asserting anything about it.
+         * @description This exists because a delivery seat cannot settle itself: it has no way to
+         *     name the canonical position of a response it has not returned yet. A
+         *     post-turn control caller can, and until now it had to hand-derive the tuple
+         *     from a timeline read. Hand-derivation is exactly where a wrong position comes
+         *     from, and a wrong position is what settlement's guard then has to catch.
+         *
+         *     Read-only by construction. It runs the same canonical history path
+         *     `/timeline` does — same cursor, same `HistoryReader` validation, so a gap, a
+         *     redelivery or an epoch change is refused here too — and it writes nothing,
+         *     attests nothing and settles nothing. `turns:settle` re-derives all of it and
+         *     remains the only validator: an observation is a convenience for the caller,
+         *     never evidence on its own.
+         *
+         *     The turn it reports is the *last complete* one: the final canonically
+         *     addressed Kontor message, and the terminal provider response that closed it.
+         *     A seat still working has no such pair and is reported as unfinished rather
+         *     than as a turn whose end has not arrived.
+         */
+        get: operations["observe_current_turn"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/teams": {
         parameters: {
             query?: never;
@@ -3487,6 +3574,8 @@ export interface components {
              *     call. Reporting it here made drift detection fire on every replay.
              */
             bundle_hash: string;
+            /** @description What this epic's control plane actually is, beside what it declares. */
+            control_plane: components["schemas"]["EpicControlPlaneDto"];
             /**
              * @description Kontor-owned immutable namespace for this epic. Legacy receipt replays
              *     created before schema v72 remain readable until an explicit epic apply
@@ -4012,10 +4101,21 @@ export interface components {
         };
         /** @description The current immutable capacity configuration revision. */
         CapacityConfigurationDto: {
-            /** @description The effective values. */
+            /**
+             * @description The effective values: what this Realm is admitting under right now,
+             *     which are the ceilings it was composed with.
+             */
             ceilings: components["schemas"]["CapacityCeilingsDto"];
             /** @description The Realm it governs. */
             realm_id: string;
+            /**
+             * @description Whether a stored configuration exists that the running daemon is not
+             *     enforcing.
+             *
+             *     True means someone applied ceilings that are inert: the row is durable,
+             *     the revision moved, and admission is still using the composed values.
+             */
+            restart_required: boolean;
             /**
              * Format: int64
              * @description The revision a write must present.
@@ -4026,6 +4126,7 @@ export interface components {
              * @description The position this read is consistent with.
              */
             snapshot_cursor: number;
+            stored_ceilings?: null | components["schemas"]["CapacityCeilingsDto"];
         };
         /** @description What a configuration change would do to the windows now open. */
         CapacityConfigurationPreviewDto: {
@@ -4471,6 +4572,11 @@ export interface components {
         };
         /** @description One operator-asserted completion fact, tagged by the phase it answers. */
         CompletionEvidenceDto: {
+            /** @description The immutable Committee run whose stored result completion consumes. */
+            committee_run_id: string;
+            /** @enum {string} */
+            phase: "verdict";
+        } | {
             /** @enum {string} */
             phase: "integration";
             /**
@@ -5691,6 +5797,41 @@ export interface components {
             spec_version: number;
         };
         /**
+         * @description What an epic's control plane *is*, as distinct from what its roster declares.
+         *
+         *     An epic is born with an ECP topology node and one live seat binding per
+         *     mandatory role, and both are logical rows. Nothing in that sequence binds a
+         *     native workspace or launches a seat, so an epic could report governed
+         *     leadership while no LSA and no TPM existed anywhere — a bound delivery
+         *     workspace beside an unbound control plane, with nothing saying the
+         *     difference mattered. That is OG-052, and this is the answer to it: the
+         *     difference is reported, in the same response that creates it, and it names
+         *     the call that closes it.
+         *
+         *     Deliberately a report and not a refusal. Every epic in this realm created
+         *     since 2026-09-12 has an unbound ECP; gating admission on it would stop all
+         *     delivery to fix a visibility problem.
+         */
+        EpicControlPlaneDto: {
+            /**
+             * @description The exact supported call that advances materialization, or `None` when
+             *     the control plane is already whole.
+             */
+            completes_with?: string | null;
+            /**
+             * Format: int32
+             * @description Live leadership seats the frozen roster declares on it.
+             */
+            declared_seats: number;
+            /** @description Whether the ECP node holds a native container binding. */
+            materialized: boolean;
+            /**
+             * Format: int32
+             * @description How many of those hold a native session, and so could take a turn.
+             */
+            staffed_seats: number;
+        };
+        /**
          * @description The runtime-facing identity an epic declares independently of its display
          *     name and of any process-wide runtime configuration.
          */
@@ -5910,6 +6051,44 @@ export interface components {
             recorded_at: string;
             /** @description The runtime family that reported it. */
             runtime_kind: string;
+        };
+        /** @description Fill one frozen, unwaived role slot that is owed a durable follow-up. */
+        FillTeamRunSeatRequest: {
+            /**
+             * Format: int64
+             * @description The task revision observed before authorizing materialization.
+             */
+            expected_task_revision: number;
+            /** @description Why the operator is completing this admitted team's missing seat. */
+            reason: string;
+        };
+        /** @description The preserved admission, its filled seat and the durable delivery readback. */
+        FilledTeamRunSeatDto: {
+            /** @description The current run filling the slot. */
+            agent_run_id: string;
+            /**
+             * Format: int64
+             * @description Generation of the runtime identity.
+             */
+            binding_generation: number;
+            /** @description The runtime binding read back from the run. */
+            binding_id: string;
+            /** @description All durable handoffs for this exact TeamRun and slot. */
+            dispatches: components["schemas"]["TeamRunSeatDispatchDto"][];
+            /** @description The native session identity read back from the binding. */
+            native_id: string;
+            /** @description Owning realm. */
+            realm_id: string;
+            /** @description The operator command's receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The slot selected from that envelope's frozen snapshot. */
+            role_slot_id: string;
+            /** @description Persisted lifecycle of the filled run. */
+            run_lifecycle: string;
+            /** @description The admitted task, unchanged by this operation. */
+            task_id: string;
+            /** @description The existing team envelope. */
+            team_run_id: string;
         };
         /** @description A recorded discontinuity a reader is owed. */
         GapDto: {
@@ -6644,6 +6823,47 @@ export interface components {
             observed_at: string;
             /** @description The runtime family that answered. */
             runtime_kind: string;
+        };
+        /**
+         * @description The exact current turn, as canonical history records it.
+         *
+         *     Read-only, and deliberately not a proof. It is what a post-turn control
+         *     caller needs in order to *state* a settlement: the Kontor message id the
+         *     runtime echoed back, and the two canonical positions bounding the turn it
+         *     opened. `turns:settle` re-derives every one of these itself and is the only
+         *     thing that decides whether they are true — this surface never writes, never
+         *     attests, and being able to read it grants nothing.
+         *
+         *     The fields are named to match `TurnRuntimeProofRequest` exactly, so relaying
+         *     an observation into a settlement is a copy rather than a transcription.
+         */
+        ObservedTurnDto: {
+            /** @description The run whose session was read. */
+            agent_run_id: string;
+            /**
+             * @description The position the scan stopped at, so a caller reading a long session can
+             *     resume rather than start over.
+             */
+            anchor: string;
+            /** @description The Kontor message id the runtime echoed on the current user message. */
+            message_id: string;
+            /**
+             * Format: int64
+             * @description The canonical sequence of that exact user message.
+             */
+            message_sequence: number;
+            /** @description The Realm the session belongs to. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The canonical sequence of the turn's terminal provider response.
+             */
+            response_sequence: number;
+            /**
+             * Format: int64
+             * @description The canonical epoch both positions belong to.
+             */
+            timeline_epoch: number;
         };
         /** @description Exact queued downstream run and already-created native a partial recovery adopts. */
         PartialAdmissionSeatDto: {
@@ -8695,6 +8915,12 @@ export interface components {
             /** @description The artifacts the turn produced. */
             artifacts?: string[];
             /**
+             * @description A server-generated challenge MessageId, mutually exclusive with
+             *     `runtime_proof`. Kontor loads the message coordinate from its durable
+             *     challenge and selects the terminal response server-side.
+             */
+            correlation_challenge_message_id?: string | null;
+            /**
              * Format: int64
              * @description The task revision the caller believes is current.
              */
@@ -9150,6 +9376,17 @@ export interface components {
             seats: components["schemas"]["SeatProjectionDto"][];
             /** @description The team run. */
             team_run_id: string;
+        };
+        /** @description Readback of one durable handoff to the requested slot. */
+        TeamRunSeatDispatchDto: {
+            /** @description True only when the runtime acknowledged the send. */
+            dispatched: boolean;
+            /** @description The stable message identity, retained across delivery attempts. */
+            message_id: string;
+            /** @description The settlement that derived this handoff. */
+            settled_turn_id: string;
+            /** @description The target recorded by successful delivery, if any. */
+            target_agent_run_id?: string | null;
         };
         /** @description One selectable team template revision. */
         TeamTemplateCatalogDto: {
@@ -9657,6 +9894,85 @@ export interface components {
             version: number;
             /** @description The work profile revision the work it proposes would use. */
             work_profile: components["schemas"]["RevisionRefDto"];
+        };
+        /** @description Apply request bound to one exact no-write challenge preview. */
+        TurnCorrelationChallengeApplyRequest: {
+            /** @description The request whose server-owned boundary was previewed. */
+            challenge: components["schemas"]["TurnCorrelationChallengePreviewRequest"];
+            /** @description Hash returned by the preview. */
+            preview_hash: string;
+        };
+        /** @description Durable result of applying a server-owned correlation challenge. */
+        TurnCorrelationChallengeDto: {
+            /** @description Whether this call created the durable challenge intent. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description Unpredictable server MessageId frozen before native contact. */
+            message_id: string;
+            message_position?: null | components["schemas"]["TurnTimelinePositionDto"];
+            /** @description The no-write plan this application consumed. */
+            preview: components["schemas"]["TurnCorrelationChallengePreviewDto"];
+            /** @description `prepared`, `dispatching`, `acknowledged`, or `settled`. */
+            state: string;
+        };
+        /** @description Exact no-write plan for creating one future correlation point. */
+        TurnCorrelationChallengePreviewDto: {
+            /** @description Existing agent-run identity retained by the plan. */
+            agent_run_id: string;
+            /** @description Verified artifact and approved evidence. */
+            artifact: string;
+            /** @description Canonical tail observed without writing to the runtime. */
+            boundary: components["schemas"]["TurnTimelinePositionDto"];
+            /** @description Hash of the exact approved evidence content. */
+            evidence_content_hash: string;
+            /** @description Approved immutable evidence revision. */
+            evidence_revision_id: string;
+            /** @description Always false: ambiguous historical turns are not backfilled. */
+            historical_backfill_supported: boolean;
+            /** @description Native session identity retained by the plan. */
+            native_id: string;
+            /** @description Hash binding every identity, revision, evidence fact and boundary. */
+            preview_hash: string;
+            /** @description Exact project/task/team/run/binding identities retained by the plan. */
+            project_id: string;
+            /** @description Realm that verified the plan. */
+            realm_id: string;
+            /** @description Approved operational-gap report checksum. */
+            report_checksum: string;
+            /** @description Exact issued runtime binding retained by the plan. */
+            runtime_binding_id: string;
+            /** @description Exact active topology SeatBinding retained by the plan. */
+            seat_binding_id: string;
+            /** @description Existing task retained by the plan. */
+            task_id: string;
+            /** @description Existing team-run identity retained by the plan. */
+            team_run_id: string;
+        };
+        /**
+         * @description Read-only request for a new server-owned correlation challenge.
+         *
+         *     Historical message and response coordinates are deliberately absent.
+         */
+        TurnCorrelationChallengePreviewRequest: {
+            /** @description Exact artifact whose unchanged bytes the native must confirm. */
+            artifact: string;
+            /** @description Hash of that exact immutable memory document. */
+            evidence_content_hash: string;
+            /** @description Current approved memory revision carrying the operational-gap evidence. */
+            evidence_revision_id: string;
+            /**
+             * Format: int64
+             * @description Agent-run revision the recovery evidence describes.
+             */
+            expected_run_revision: number;
+            /**
+             * Format: int64
+             * @description Task revision the recovery evidence describes.
+             */
+            expected_task_revision: number;
+            /** @description Approved report checksum embedded in that document. */
+            report_checksum: string;
+            /** @description Exact role slot held by the addressed run. */
+            role_slot: string;
         };
         /** @description One follow-up a settled turn derived. */
         TurnFollowUpDto: {
@@ -11130,6 +11446,122 @@ export interface operations {
             };
             /** @description The predecessor lacks the required terminal evidence */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_turn_correlation_challenge: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The exact persistent seat run */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TurnCorrelationChallengeApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnCorrelationChallengeDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The preview moved or the key names another challenge */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery is uncertain; replay may reconcile but never resend */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_turn_correlation_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The exact persistent seat run */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TurnCorrelationChallengePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnCorrelationChallengePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The identity, revision, binding, evidence, or native tail moved */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -17190,6 +17622,78 @@ export interface operations {
             };
         };
     };
+    fill_team_run_seat: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The existing admitted team */
+                team_run_id: string;
+                /** @description The frozen role slot */
+                role_slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FillTeamRunSeatRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilledTeamRunSeatDto"];
+                };
+            };
+            /** @description The slot is undeclared or is not owed a follow-up */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision, lifecycle, waiver or placement refuses the fill */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Reconciliation or runtime is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     waive_role_slot: {
         parameters: {
             query?: never;
@@ -18550,6 +19054,55 @@ export interface operations {
                 };
             };
             /** @description The timeline must be refetched from the start */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description This runtime cannot replay content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    observe_current_turn: {
+        parameters: {
+            query?: {
+                /** @description Resume from a previous anchor */
+                after?: string;
+                /** @description Maximum items per page */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The Kontor agent run */
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The exact current turn */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObservedTurnDto"];
+                };
+            };
+            /** @description No completed turn is visible in the scanned window */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The seat is still working, or the history broke */
             409: {
                 headers: {
                     [name: string]: unknown;

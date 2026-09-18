@@ -1902,10 +1902,16 @@ async fn lost_ack_retry_returns_original_message_once() {
         .send(&request)
         .await
         .expect_err("the acknowledgement is lost");
+    // OG-058. A lost acknowledgement is *not* a bare transport fault, and the
+    // difference is the whole contract: the control plane maps a transport
+    // fault to a refusal whose advice is "nothing was changed", and the rest of
+    // this test proves the message was committed. Every adapter owes the
+    // caller the honest variant here, because the caller's next move — replay,
+    // or resend under a fresh id — is decided by exactly this.
     assert_eq!(
         lost,
-        RuntimeError::Transport {
-            rule: "acknowledgement was lost after the message was committed",
+        RuntimeError::DeliveryConfirmationUnknown {
+            rule: "the acknowledgement was lost after the message was committed",
         }
     );
 

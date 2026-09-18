@@ -218,6 +218,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "topology_nodes",
     "topology_spec_canonicalization_receipts",
     "topology_specs",
+    "turn_correlation_challenges",
     "turn_dispatches",
     "work_calendars",
     "work_profiles",
@@ -557,9 +558,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // unrecorded. v97 confirms only pre-hook local task/gate receipts whose
     // exact durable mutations prove that their synchronous commands succeeded.
     // v98 gives those reconstructed confirmations typed, immutable provenance,
-    // accepted only when one receipt maps to one mutation. v99 makes one Core
-    // Team route succession recoverable across the interval between its
-    // committed store transition and its receipt (ASMA-8187).
+    // accepted only when one receipt maps to one mutation. v99 adds the
+    // immutable future-turn correlation challenge; no historical runtime
+    // position can enter that ledger. v100 makes one Core Team route
+    // succession recoverable across the interval between its committed store
+    // transition and its receipt (ASMA-8187).
     assert_eq!(SCHEMA_VERSION, 99);
 }
 
