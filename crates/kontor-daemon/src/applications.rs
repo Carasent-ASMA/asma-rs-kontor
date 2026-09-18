@@ -16296,10 +16296,12 @@ impl Services {
     }
 
     /// Verify the current approved operational-gap revision against the exact
-    /// task/run/topology seat/runtime binding it names. This deliberately understands only the
-    /// identity-poor Paseo evidence shape that motivated the recovery surface:
-    /// two or more user positions and no message identity on any event. It does
-    /// not read, accept, or return any historical position as correlation.
+    /// task/run/topology seat/runtime binding it names. Authorization is one
+    /// closed evidence envelope whose every field equals a value this server has
+    /// already derived, so an approved record may describe its incident in any
+    /// words while only the envelope authorizes a challenge, and only for the
+    /// identity it spells out. It does not read, accept, or return any
+    /// historical position as correlation.
     fn correlation_challenge_evidence(
         &self,
         project_id: ProjectId,
@@ -16359,72 +16361,48 @@ impl Services {
                 .pointer(pointer)
                 .and_then(serde_json::Value::as_u64)
         };
-        let addendum = "/asma_8118_paseo_0_8_correlation_addendum_20260914";
-        let correction = "/asma_8118_binding_identity_correction_20260914";
-        let exact_identity = format!("{correction}/exact_identity");
-        let readback = format!("{addendum}/readback");
-        let timeline = format!("{addendum}/canonical_timeline");
-        let users = document
-            .pointer(&format!("{timeline}/user_message_sequences"))
-            .and_then(serde_json::Value::as_array);
-        let ambiguous_identity = u64_at(&format!("{timeline}/epoch")) == Some(2)
-            && u64_at(&format!("{timeline}/end_sequence")) == Some(385)
-            && users.is_some_and(|positions| {
-                positions.as_slice() == [serde_json::json!(1), serde_json::json!(144)]
-            })
-            && text_at(&format!("{timeline}/correlation_fields/message_id"))
-                == Some("null for every event")
-            && text_at(&format!("{timeline}/correlation_fields/native_event_id"))
-                == Some("null for every event")
-            && text_at(&format!("{timeline}/paseo_version")) == Some("0.8.0")
-            && document
-                .pointer(&format!("{timeline}/next"))
-                .is_some_and(serde_json::Value::is_null);
-        let exact_blocker = text_at(&format!("{addendum}/blocker/code"))
-            == Some("runtime_proof_unavailable")
-            && document
-                .pointer(&format!("{addendum}/blocker/settlement_attempted"))
-                .and_then(serde_json::Value::as_bool)
-                == Some(false);
-        let exact = text_at("/project_id") == Some(project_id.to_string().as_str())
-            && text_at(&format!("{readback}/task/id")) == Some(task.id.to_string().as_str())
-            && u64_at(&format!("{readback}/task/revision")) == Some(task.revision.get())
-            && text_at(&format!("{readback}/team_run_id"))
+        // One closed envelope, read at one fixed pointer. Nothing else in the
+        // document is consulted, so an identifier a wider incident record
+        // happens to mention never becomes authorization for this seat.
+        let envelope = "/turn_correlation_challenge";
+        // Today `CanonicalDocument` cannot hold any other document version, so
+        // no fixture can construct a counter-example; the check is kept because
+        // `SchemaVersion::parse` accepts a range that is meant to widen, and a
+        // document written to a later shape must not be read as this one.
+        let addressed = u64_at("/schema_version") == Some(1)
+            && text_at("/type") == Some("operational_gap")
+            && u64_at(&format!("{envelope}/schema_version")) == Some(1)
+            && text_at("/project_id") == Some(project_id.to_string().as_str())
+            // The caller's report checksum is only ever confirmed against the
+            // hash the approved document itself embeds, never taken as prose.
+            && text_at("/report_sha256") == Some(request.report_checksum.as_str());
+        let exact_blocker =
+            text_at(&format!("{envelope}/blocker/code")) == Some("runtime_proof_unavailable");
+        let exact = text_at(&format!("{envelope}/task/id")) == Some(task.id.to_string().as_str())
+            && u64_at(&format!("{envelope}/task/revision")) == Some(task.revision.get())
+            && text_at(&format!("{envelope}/team_run_id"))
                 == Some(run.team_run_id.to_string().as_str())
-            && text_at(&format!("{readback}/agent_run/id")) == Some(run.id.to_string().as_str())
-            && u64_at(&format!("{readback}/agent_run/revision")) == Some(run.revision.get())
-            // Revision 21 preserves this historically mislabeled field as
-            // correction history. It names the runtime binding and must not be
-            // reinterpreted as the topology SeatBinding.
-            && text_at(&format!("{readback}/seat_binding_id"))
-                == Some(binding.id.to_string().as_str())
-            && document
-                .pointer(&format!("{readback}/runtime_binding_id"))
-                .is_none()
-            && text_at(&format!("{exact_identity}/topology_seat_binding_id"))
+            && text_at(&format!("{envelope}/agent_run/id")) == Some(run.id.to_string().as_str())
+            && u64_at(&format!("{envelope}/agent_run/revision")) == Some(run.revision.get())
+            // This seat was selected by filtering on the requested role slot,
+            // so its own slot is that request in derived form.
+            && text_at(&format!("{envelope}/role_slot"))
+                == Some(seat_binding.role_slot_id.as_str())
+            // The topology seat and the runtime binding are separate
+            // identities; neither may be presented as the other.
+            && text_at(&format!("{envelope}/topology_seat_binding_id"))
                 == Some(seat_binding.id.to_string().as_str())
-            && text_at(&format!("{exact_identity}/runtime_binding_id"))
+            && text_at(&format!("{envelope}/runtime_binding/id"))
                 == Some(binding.id.to_string().as_str())
-            && u64_at(&format!("{exact_identity}/runtime_binding_generation"))
+            && u64_at(&format!("{envelope}/runtime_binding/generation"))
                 == Some(binding.identity.generation)
-            && text_at(&format!("{exact_identity}/agent_run_id"))
-                == Some(run.id.to_string().as_str())
-            && u64_at(&format!("{exact_identity}/agent_run_revision"))
-                == Some(run.revision.get())
-            && text_at(&format!("{readback}/native_id"))
+            && text_at(&format!("{envelope}/runtime_binding/native_id"))
                 == Some(binding.identity.native_id.as_str())
-            && text_at(&format!("{addendum}/report_sha256"))
-                == Some("3f667be8feac65ef1e8331fa872966cf6868d173e8405921b931749168df1ee8")
-            // The root follows the current additive report revision. The
-            // nested correction keeps the immutable hash of revision 21.
-            && text_at("/report_sha256") == Some(request.report_checksum.as_str())
-            && text_at(&format!("{correction}/report_sha256"))
-                == Some("0ad932926ae6813bd134468b53986c61339bf45de41b9aec237441edf512009c")
-            && text_at("/closeout_recovery_20260914/asma_8118/artifact") == Some(artifact.as_str());
-        if !ambiguous_identity || !exact_blocker || !exact {
+            && text_at(&format!("{envelope}/artifact")) == Some(artifact.as_str());
+        if !addressed || !exact_blocker || !exact {
             return Err(self.deny(
                 ApiErrorCode::RevisionConflict,
-                "the approved evidence does not uniquely fence this identity-poor topology seat, runtime binding, blocker, and artifact",
+                "the approved evidence does not uniquely fence this task, run, topology seat, runtime binding, blocker, and artifact",
             ));
         }
         Ok((evidence_revision_id, artifact))

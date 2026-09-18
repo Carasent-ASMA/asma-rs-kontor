@@ -24522,57 +24522,31 @@ async fn an_ambiguous_history_only_settles_after_one_server_owned_challenge() {
         assert_eq!(matching.len(), 1, "the run has one exact topology seat");
         matching.remove(0)
     });
-    let historical_report_checksum =
-        ContentHash::parse("3f667be8feac65ef1e8331fa872966cf6868d173e8405921b931749168df1ee8")
-            .expect("the approved historical report hash");
-    let report_checksum =
-        ContentHash::parse("0a425a0c42dfe904411e5ca417e7c04df31991e0e8047798245f84ea2704fa4a")
-            .expect("the current approved report hash");
-    let correction_report_checksum =
-        ContentHash::parse("0ad932926ae6813bd134468b53986c61339bf45de41b9aec237441edf512009c")
-            .expect("the approved identity-correction report hash");
+    let report_checksum = ContentHash::of(b"the approved recovery report this evidence embeds");
+    let unrelated_report_checksum = ContentHash::of(b"a report this evidence does not embed");
+    // The envelope is the whole authorization: an ordinary operational-gap
+    // record that spells out this exact task, run, role, topology seat, runtime
+    // binding and artifact, carrying no incident name, no report-specific field
+    // names, and no historical coordinates of any kind.
     let evidence = CanonicalDocument::from_value(&serde_json::json!({
         "schema_version": 1,
         "type": "operational_gap",
         "project_id": project,
         "report_sha256": report_checksum.as_str(),
-        "asma_8118_paseo_0_8_correlation_addendum_20260914": {
-            "report_sha256": historical_report_checksum.as_str(),
-            "blocker": {
-                "code": "runtime_proof_unavailable",
-                "settlement_attempted": false
-            },
-            "readback": {
-                "task": {"id": task_id.to_string(), "revision": task.revision.get()},
-                "team_run_id": before.team_run_id.to_string(),
-                "agent_run": {"id": agent_run, "revision": before.revision.get()},
-                "seat_binding_id": binding.id.to_string(),
+        "turn_correlation_challenge": {
+            "schema_version": 1,
+            "blocker": {"code": "runtime_proof_unavailable"},
+            "task": {"id": task_id.to_string(), "revision": task.revision.get()},
+            "team_run_id": before.team_run_id.to_string(),
+            "agent_run": {"id": agent_run, "revision": before.revision.get()},
+            "role_slot": role_slot,
+            "topology_seat_binding_id": topology_seat.id.to_string(),
+            "runtime_binding": {
+                "id": binding.id.to_string(),
+                "generation": binding.identity.generation,
                 "native_id": binding.identity.native_id.as_str()
             },
-            "canonical_timeline": {
-                "epoch": 2,
-                "end_sequence": 385,
-                "next": null,
-                "paseo_version": "0.8.0",
-                "user_message_sequences": [1, 144],
-                "correlation_fields": {
-                    "message_id": "null for every event",
-                    "native_event_id": "null for every event"
-                }
-            }
-        },
-        "asma_8118_binding_identity_correction_20260914": {
-            "exact_identity": {
-                "topology_seat_binding_id": topology_seat.id.to_string(),
-                "runtime_binding_id": binding.id.to_string(),
-                "runtime_binding_generation": binding.identity.generation,
-                "agent_run_id": before.id.to_string(),
-                "agent_run_revision": before.revision.get()
-            },
-            "report_sha256": correction_report_checksum.as_str()
-        },
-        "closeout_recovery_20260914": {
-            "asma_8118": {"artifact": "high-scope-record"}
+            "artifact": "high-scope-record"
         }
     }))
     .expect("the evidence canonicalizes");
@@ -24651,41 +24625,116 @@ async fn an_ambiguous_history_only_settles_after_one_server_owned_challenge() {
     });
     let challenge_uri =
         format!("/v1/projects/{project}/agent-runs/{agent_run}/turn-correlation:challenge-preview");
-    for (item_id, changes) in [
+    for (item_id, change) in [
+        // An approved operational-gap record that never spells out an envelope
+        // authorizes nothing, however exactly it describes its own incident.
+        ("turn-correlation-gap-without-an-envelope", None),
+        // The topology seat and the runtime binding are distinct identities and
+        // neither may be presented as the other.
         (
             "turn-correlation-gap-runtime-as-seat",
-            vec![(
-                "/asma_8118_binding_identity_correction_20260914/exact_identity/topology_seat_binding_id",
+            Some((
+                "/turn_correlation_challenge/topology_seat_binding_id",
                 serde_json::json!(binding.id.to_string()),
-            )],
+            )),
         ),
         (
             "turn-correlation-gap-seat-as-runtime",
-            vec![(
-                "/asma_8118_binding_identity_correction_20260914/exact_identity/runtime_binding_id",
+            Some((
+                "/turn_correlation_challenge/runtime_binding/id",
                 serde_json::json!(topology_seat.id.to_string()),
-            )],
+            )),
         ),
         (
-            "turn-correlation-gap-abbreviated-null-strings",
-            vec![
-                (
-                    "/asma_8118_paseo_0_8_correlation_addendum_20260914/canonical_timeline/correlation_fields/message_id",
-                    serde_json::json!("null"),
-                ),
-                (
-                    "/asma_8118_paseo_0_8_correlation_addendum_20260914/canonical_timeline/correlation_fields/native_event_id",
-                    serde_json::json!("null"),
-                ),
-            ],
+            "turn-correlation-gap-another-generation",
+            Some((
+                "/turn_correlation_challenge/runtime_binding/generation",
+                serde_json::json!(binding.identity.generation + 1),
+            )),
+        ),
+        // Each fenced revision and the artifact are equalities, not hints.
+        (
+            "turn-correlation-gap-stale-task-revision",
+            Some((
+                "/turn_correlation_challenge/task/revision",
+                serde_json::json!(task.revision.get() + 1),
+            )),
+        ),
+        (
+            "turn-correlation-gap-stale-run-revision",
+            Some((
+                "/turn_correlation_challenge/agent_run/revision",
+                serde_json::json!(before.revision.get() + 1),
+            )),
+        ),
+        (
+            "turn-correlation-gap-mistyped-task-revision",
+            Some((
+                "/turn_correlation_challenge/task/revision",
+                serde_json::json!(task.revision.get().to_string()),
+            )),
+        ),
+        (
+            "turn-correlation-gap-another-artifact",
+            Some((
+                "/turn_correlation_challenge/artifact",
+                serde_json::json!("high-change"),
+            )),
+        ),
+        (
+            "turn-correlation-gap-another-role-slot",
+            Some((
+                "/turn_correlation_challenge/role_slot",
+                serde_json::json!("another-role-slot"),
+            )),
+        ),
+        (
+            "turn-correlation-gap-another-blocker",
+            Some((
+                "/turn_correlation_challenge/blocker/code",
+                serde_json::json!("quota_exhausted"),
+            )),
+        ),
+        // The report checksum is confirmed against the hash the approved
+        // document embeds, so a caller cannot supply it as unverified prose.
+        (
+            "turn-correlation-gap-unembedded-report-checksum",
+            Some((
+                "/report_sha256",
+                serde_json::json!(unrelated_report_checksum.as_str()),
+            )),
+        ),
+        // The envelope is read at one known version, and the record must be the
+        // kind of record this surface accepts. The document's own version has
+        // no case here: `CanonicalDocument` refuses any other version outright.
+        (
+            "turn-correlation-gap-another-envelope-version",
+            Some((
+                "/turn_correlation_challenge/schema_version",
+                serde_json::json!(2),
+            )),
+        ),
+        (
+            "turn-correlation-gap-another-document-type",
+            Some(("/type", serde_json::json!("incident_report"))),
+        ),
+        (
+            "turn-correlation-gap-another-project",
+            Some(("/project_id", serde_json::json!(task_id.to_string()))),
         ),
     ] {
         let mut swapped: serde_json::Value =
             serde_json::from_str(evidence.json()).expect("the evidence JSON reads");
-        for (pointer, wrong_value) in changes {
+        if let Some((pointer, wrong_value)) = change {
             *swapped
                 .pointer_mut(pointer)
                 .expect("the evidence field exists") = wrong_value;
+        } else {
+            swapped
+                .as_object_mut()
+                .expect("the evidence is a JSON object")
+                .remove("turn_correlation_challenge")
+                .expect("the envelope is present to remove");
         }
         let swapped = CanonicalDocument::from_value(&swapped).expect("the swap canonicalizes");
         let swapped_proposal = world.daemon.state().with_store(|store| {
@@ -24733,7 +24782,7 @@ async fn an_ambiguous_history_only_settles_after_one_server_owned_challenge() {
         .await;
         assert_eq!(
             refused.status, 409,
-            "a mislabeled identity or abbreviated correlation field must refuse: {}",
+            "evidence that does not exactly fence this seat must refuse: {}",
             refused.body
         );
     }
@@ -24944,43 +24993,20 @@ async fn an_ambiguous_history_only_settles_after_one_server_owned_challenge() {
         "type": "operational_gap",
         "project_id": project,
         "report_sha256": report_checksum.as_str(),
-        "asma_8118_paseo_0_8_correlation_addendum_20260914": {
-            "report_sha256": historical_report_checksum.as_str(),
-            "blocker": {
-                "code": "runtime_proof_unavailable",
-                "settlement_attempted": false
-            },
-            "readback": {
-                "task": {"id": task_id.to_string(), "revision": current_task.revision.get()},
-                "team_run_id": after.team_run_id.to_string(),
-                "agent_run": {"id": after.id.to_string(), "revision": after.revision.get()},
-                "seat_binding_id": binding.id.to_string(),
+        "turn_correlation_challenge": {
+            "schema_version": 1,
+            "blocker": {"code": "runtime_proof_unavailable"},
+            "task": {"id": task_id.to_string(), "revision": current_task.revision.get()},
+            "team_run_id": after.team_run_id.to_string(),
+            "agent_run": {"id": after.id.to_string(), "revision": after.revision.get()},
+            "role_slot": role_slot,
+            "topology_seat_binding_id": topology_seat.id.to_string(),
+            "runtime_binding": {
+                "id": binding.id.to_string(),
+                "generation": binding.identity.generation,
                 "native_id": binding.identity.native_id.as_str()
             },
-            "canonical_timeline": {
-                "epoch": 2,
-                "end_sequence": 385,
-                "next": null,
-                "paseo_version": "0.8.0",
-                "user_message_sequences": [1, 144],
-                "correlation_fields": {
-                    "message_id": "null for every event",
-                    "native_event_id": "null for every event"
-                }
-            }
-        },
-        "asma_8118_binding_identity_correction_20260914": {
-            "exact_identity": {
-                "topology_seat_binding_id": topology_seat.id.to_string(),
-                "runtime_binding_id": binding.id.to_string(),
-                "runtime_binding_generation": binding.identity.generation,
-                "agent_run_id": after.id.to_string(),
-                "agent_run_revision": after.revision.get()
-            },
-            "report_sha256": correction_report_checksum.as_str()
-        },
-        "closeout_recovery_20260914": {
-            "asma_8118": {"artifact": "high-scope-record"}
+            "artifact": "high-scope-record"
         }
     }))
     .expect("the stale-task evidence canonicalizes");
