@@ -286,6 +286,59 @@ then reverted: the scope freezes that schema and the drift belongs to #225.
 - The API, MCP registry, OpenAPI schema, completion machine and database schema
   are unchanged.
 
+## Remediation of HV-001 (verification rejection of `0e5a0bec`)
+
+Independent verification rejected candidate `0e5a0bec` with one P1, recorded as
+approved Kontor artifact
+`artifact-asma-8204-high-verification-report-0e5a0bec` revision 1
+(`01a0b34f-e702-7973-8276-6ac7a86f97be`).
+
+**HV-001 — OQ-002 filesystem-root containment false negative.** `within` decided
+containment by stripping the root as a text prefix and requiring the remainder
+to start with a separator. That is exactly right for `/w/epic` against
+`/w/epic-2`, which it must reject, and wrong for the filesystem root: stripping
+`/` from `/dangling-session` leaves `dangling-session`, with no leading
+separator. Because `WorkspaceRoot` accepts `/` as a spellable place, an epic
+root can legitimately be bound there — and a live unarchived session inside it
+was then reported as outside it. The zero-unarchived-sessions precondition was
+satisfied vacuously and the irreversible exact-id `project.remove.request`
+proceeded. The verifier's own disposable probe observed `changed = true` where a
+refusal was required.
+
+The finding is accepted in full. It is a defect in the gate, not a residual: the
+approved change artifact's OQ-002 text described the weakness as an
+outside-the-tree association, which understated it.
+
+**Correction.** Containment walks path components instead of comparing strings.
+`/` is the single `RootDir` component every absolute path begins with, and
+`epic` and `epic-2` are different components, so both cases fall out with no
+special case for the root. The predicate still only ever *refuses*, and an
+unparsable cwd still refuses into containment rather than out of it.
+
+**Coverage, and its non-vacuity.** A unit test over the predicate covers exact,
+descendant at one and several levels, the filesystem root, siblings sharing a
+textual prefix, ancestors, unrelated branches, the trailing-separator spelling,
+and five malformed spellings. `native_root_removal_refuses_a_live_session_under_the_filesystem_root`
+keeps the verifier's probe as a contract regression: root `/`, zero workspaces, a
+dangling unarchived session at `/dangling-session`, asserting both the refusal
+reason and that nothing was mutated. MUT-8204-i restores the rejected prefix
+logic and both seams fail — the unit test on the `/` case, and the contract probe
+by reaching the removal, which is the defect itself.
+
+All eight prior mutants were re-seeded and re-killed against this tree. Closeout
+ordering, the completion gate, the lost-acknowledgement replay semantics and the
+store invariant are unchanged by this remediation.
+
+**A stale-build trap, again.** While re-verifying, `a_retired_but_unarchived_child_blocks_its_parents_archive`
+failed deterministically against source that provably contained the guard, in
+both the working tree and the committed head. The cached test binary predated a
+mutant restore whose `cp` had regressed the file's mtime, so cargo considered it
+fresh. `touch` on the file restored a correct build and the test passed. Because
+this is the second time that class of error has appeared here, the final suite
+numbers below were produced from a **fresh worktree of the successor commit with
+its own target directory**, so no cached artifact from this session contributes
+to them.
+
 ## Handoff
 
 The delta is complete against the settled scope: clauses 2, 5, 6, 7 and 8 are
