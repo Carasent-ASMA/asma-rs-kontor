@@ -1015,22 +1015,48 @@ fn unconfirmed_after_delivery(error: RuntimeError) -> RuntimeError {
     }
 }
 
-/// Whether one reported working directory lies inside a canonical root.
+/// Whether one reported working directory lies at or inside a canonical root.
 ///
-/// Normalized through [`WorkspaceRoot`] on both sides so `/w/epic` cannot be
-/// read as containing `/w/epic-2`: containment is decided on whole path
-/// components, never on a raw string prefix. An unparsable cwd is *not*
-/// treated as outside — a directory the runtime reports and this adapter
-/// cannot read is exactly the case where refusing costs least.
+/// Containment is decided by walking **path components**, never by comparing
+/// raw strings. Two cases make that the only workable rule, and a textual
+/// prefix test gets exactly one of them right:
+///
+/// * `/w/epic` must not be read as containing `/w/epic-2`. A prefix test
+///   catches this only if it also demands a separator after the prefix.
+/// * the filesystem root `/` — which [`WorkspaceRoot`] accepts and normalizes
+///   as a spellable place — must contain `/dangling-session`. Demanding a
+///   separator after the prefix gets this **wrong**, because stripping `/`
+///   leaves `dangling-session` with no leading separator. That was HV-001: a
+///   live session under an epic root spelled `/` was reported as outside it,
+///   and the irreversible project removal proceeded over the top of it.
+///
+/// Component comparison answers both without a special case: `/` is the single
+/// [`std::path::Component::RootDir`], every absolute path starts with it, and
+/// `epic` and `epic-2` are simply different components.
+///
+/// An unparsable cwd is *not* treated as outside. A directory the runtime
+/// reports and this adapter cannot read is exactly the case where refusing
+/// costs least, and this predicate only ever refuses — nothing is selected for
+/// removal by a path.
 fn within(cwd: &str, root: &WorkspaceRoot) -> bool {
     let Ok(cwd) = WorkspaceRoot::parse(cwd) else {
         return true;
     };
-    cwd == *root
-        || cwd
-            .as_str()
-            .strip_prefix(root.as_str())
-            .is_some_and(|rest| rest.starts_with('/'))
+    let mut root_parts = std::path::Path::new(root.as_str()).components();
+    let mut cwd_parts = std::path::Path::new(cwd.as_str()).components();
+    loop {
+        match (root_parts.next(), cwd_parts.next()) {
+            // The root ran out first: the cwd is the root, or below it.
+            (None, _) => return true,
+            // The cwd ran out first: it is an ancestor, not a descendant.
+            (Some(_), None) => return false,
+            (Some(root_part), Some(cwd_part)) => {
+                if root_part != cwd_part {
+                    return false;
+                }
+            }
+        }
+    }
 }
 
 fn provider_originated(item_type: &str) -> bool {
@@ -10311,5 +10337,53 @@ mod refusal_probe_tests {
             .is_none()
         );
         assert!(select(&[]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod containment {
+    use super::within;
+    use kontor_runtime::workspace::WorkspaceRoot;
+
+    fn root(text: &str) -> WorkspaceRoot {
+        WorkspaceRoot::parse(text).expect("a canonical root")
+    }
+
+    #[test]
+    fn containment_is_decided_on_whole_components_including_the_filesystem_root() {
+        // Exact: a root contains itself, so a session sitting in it counts.
+        assert!(within("/w/epic", &root("/w/epic")));
+        assert!(within("/", &root("/")));
+
+        // Descendant, at one level and several.
+        assert!(within("/w/epic/task-11", &root("/w/epic")));
+        assert!(within("/w/epic/task-11/nested", &root("/w/epic")));
+
+        // HV-001: the filesystem root is a real root and contains everything
+        // absolute. A textual prefix test with a separator check returns false
+        // here, which is what let removal proceed over a live session.
+        assert!(within("/dangling-session", &root("/")));
+        assert!(within("/w/epic/task-11", &root("/")));
+
+        // Sibling sharing a textual prefix but not a component boundary.
+        assert!(!within("/w/epic-2", &root("/w/epic")));
+        assert!(!within("/w/epicary/task", &root("/w/epic")));
+
+        // Ancestor and unrelated branches are outside.
+        assert!(!within("/w", &root("/w/epic")));
+        assert!(!within("/", &root("/w/epic")));
+        assert!(!within("/other/epic", &root("/w/epic")));
+
+        // Trailing separator is the one spelling difference that is not one.
+        assert!(within("/w/epic/", &root("/w/epic")));
+
+        // Malformed: refused into containment, never out of it. A cwd this
+        // adapter cannot read must not certify an empty root.
+        for malformed in ["relative/path", "", "/w/epic/..", "/w//epic", "/w/./epic"] {
+            assert!(
+                within(malformed, &root("/w/epic")),
+                "{malformed} must refuse rather than read as outside"
+            );
+        }
     }
 }

@@ -12883,3 +12883,48 @@ async fn native_root_removal_does_not_trust_an_ack_without_absence() {
         "the removal was attempted exactly once before the census refused it"
     );
 }
+
+/// HV-001: an epic root spelled `/` still has to prove its sessions are gone.
+///
+/// The verifier's rejection probe, kept as a regression. `WorkspaceRoot` accepts
+/// the filesystem root as a spellable place, so an epic can legitimately be
+/// bound to `/` — and every absolute session directory is then inside it. The
+/// original containment test stripped the root prefix and demanded a separator
+/// after it, which is true for `/w/epic` + `/w/epic/task` and false for `/` +
+/// `/dangling-session`. A live unarchived session was therefore read as outside
+/// the root it was plainly in, and the irreversible exact-id project removal
+/// went ahead over the top of it.
+///
+/// The assertion that matters is the pair: refused *and* nothing mutated.
+#[tokio::test]
+async fn native_root_removal_refuses_a_live_session_under_the_filesystem_root() {
+    let plane = Plane::fresh(root_archive_daemon());
+
+    // The epic root is the filesystem root, and the daemon says so.
+    let mut listed = v(PROJECT_LIST);
+    listed["projects"][0]["projectRootPath"] = serde_json::json!("/");
+    plane.daemon.forget_queued_rpc("project.list.request");
+    plane.daemon.set_answer_rpc("project.list.request", listed);
+
+    // Nothing lists the session any more — it is dangling — but it is running,
+    // unarchived, and its directory is inside the root about to be removed.
+    let mut agents = v(AGENT_LIST_IMPLEMENT);
+    agents["entries"][0]["agent"]["cwd"] = serde_json::json!("/dangling-session");
+    agents["entries"][0]["agent"]["workspaceId"] = serde_json::Value::Null;
+    plane.daemon.set_answer_rpc("fetch_agents_request", agents);
+
+    let mut request = archive_root();
+    request.canonical_cwd = WorkspaceRoot::parse("/").expect("the filesystem root is a place");
+
+    let Err(error) = plane.adapter.archive_container(&request).await else {
+        panic!("a root holding a live session must refuse, but cleanup settled");
+    };
+    assert!(
+        format!("{error:?}").contains("the native root still contains an unarchived session"),
+        "it must refuse on the session gate, not another: {error:?}"
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "no project may be removed while a session is live inside it"
+    );
+}
