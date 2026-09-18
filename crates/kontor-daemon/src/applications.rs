@@ -648,6 +648,87 @@ struct PreparedCommitteeTopicCorrection {
     adapter: Arc<dyn RuntimeAdapter>,
 }
 
+/// The one fixed root a generic correlation-evidence envelope lives at.
+///
+/// Fixed rather than caller-named on purpose: a request that could choose where
+/// to look could choose a subtree that happens to match, which is authority
+/// handed to the caller (ASMA-8187 F-8187-V9).
+const GENERIC_CORRELATION_EVIDENCE_ROOT: &str = "/turn_correlation_challenge_evidence";
+
+/// The closed approved-evidence envelope a correlation challenge validates.
+///
+/// `deny_unknown_fields` throughout: an unrecognised key means this is some
+/// other document, and reading it as this one is how a validator is talked into
+/// accepting evidence nobody approved for this purpose.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenericCorrelationEvidence {
+    schema_version: u32,
+    purpose: String,
+    project_id: String,
+    task: GenericCorrelationTask,
+    team_run_id: String,
+    agent_run: GenericCorrelationAgentRun,
+    topology_seat_binding_id: String,
+    runtime_binding: GenericCorrelationRuntimeBinding,
+    blocker: GenericCorrelationBlocker,
+    artifact: String,
+    report_sha256: String,
+    canonical_timeline: GenericCorrelationTimeline,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenericCorrelationTask {
+    id: String,
+    revision: u64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenericCorrelationAgentRun {
+    id: String,
+    revision: u64,
+    role_slot_id: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenericCorrelationRuntimeBinding {
+    id: String,
+    runtime_kind: String,
+    host: String,
+    generation: u64,
+    native_id: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenericCorrelationBlocker {
+    code: String,
+    settlement_attempted: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenericCorrelationTimeline {
+    digest: String,
+    epoch: u64,
+    end_sequence: u64,
+    /// Terminal window: a continuation cursor means the evidence describes a
+    /// window that had more after it, which is not the window that was proved.
+    next: Option<serde_json::Value>,
+    user_message_sequences: Vec<u64>,
+    correlation_fields: GenericCorrelationFields,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenericCorrelationFields {
+    message_id: String,
+    native_event_id: String,
+}
+
 struct CoreTeamRoutePlan {
     epic: MiniProject,
     roster: FrozenRoster,
@@ -16911,6 +16992,121 @@ impl Services {
         Ok(exact)
     }
 
+    /// Validate one generic approved correlation-evidence envelope.
+    ///
+    /// Everything compared here comes from authoritative current state on one
+    /// side and the approved immutable document on the other. The caller names
+    /// only a revision id, a content hash, a report checksum and an artifact;
+    /// it never supplies a pointer, a task key or a historical coordinate, so a
+    /// caller cannot steer the validator at a field that happens to match.
+    ///
+    /// The envelope is a closed typed shape: an unknown field is a different
+    /// document, not an extension, and is refused rather than ignored.
+    #[allow(clippy::too_many_arguments)]
+    fn generic_correlation_evidence(
+        &self,
+        project_id: ProjectId,
+        run: &kontor_core::repository::AgentRun,
+        task: &kontor_core::repository::Task,
+        seat_binding: &SeatBinding,
+        binding: &RuntimeBinding,
+        request: &TurnCorrelationChallengePreviewRequest,
+        envelope: &serde_json::Value,
+        artifact: &ArtifactKey,
+    ) -> Result<(), ApiError> {
+        let refuse = |rule: &'static str| self.deny(ApiErrorCode::RevisionConflict, rule);
+        let evidence: GenericCorrelationEvidence = serde_json::from_value(envelope.clone())
+            .map_err(|_| {
+                refuse("the approved correlation evidence is not a valid generic envelope")
+            })?;
+        if evidence.schema_version != 1 || evidence.purpose != "turn_correlation_challenge" {
+            return Err(refuse(
+                "the approved correlation evidence declares another schema or purpose",
+            ));
+        }
+        if evidence.project_id != project_id.to_string() {
+            return Err(refuse(
+                "the approved correlation evidence names another project",
+            ));
+        }
+        if evidence.task.id != task.id.to_string() || evidence.task.revision != task.revision.get()
+        {
+            return Err(refuse(
+                "the approved correlation evidence names another task or task revision",
+            ));
+        }
+        if evidence.team_run_id != run.team_run_id.to_string() {
+            return Err(refuse(
+                "the approved correlation evidence names another TeamRun",
+            ));
+        }
+        if evidence.agent_run.id != run.id.to_string()
+            || evidence.agent_run.revision != run.revision.get()
+            || evidence.agent_run.role_slot_id != seat_binding.role_slot_id.as_str()
+        {
+            return Err(refuse(
+                "the approved correlation evidence names another AgentRun, revision or role slot",
+            ));
+        }
+        if evidence.topology_seat_binding_id != seat_binding.id.to_string() {
+            return Err(refuse(
+                "the approved correlation evidence names another active topology SeatBinding",
+            ));
+        }
+        if evidence.runtime_binding.id != binding.id.to_string()
+            || evidence.runtime_binding.runtime_kind != binding.identity.runtime_kind.as_str()
+            || evidence.runtime_binding.host != binding.identity.host.as_str()
+            || evidence.runtime_binding.generation != binding.identity.generation
+            || evidence.runtime_binding.native_id != binding.identity.native_id.as_str()
+        {
+            return Err(refuse(
+                "the approved correlation evidence names another runtime binding identity",
+            ));
+        }
+        if evidence.blocker.code != "runtime_proof_unavailable"
+            || evidence.blocker.settlement_attempted
+        {
+            return Err(refuse(
+                "the approved correlation evidence does not record an unattempted runtime-proof blocker",
+            ));
+        }
+        if evidence.artifact != artifact.as_str()
+            || evidence.report_sha256 != request.report_checksum.as_str()
+        {
+            return Err(refuse(
+                "the approved correlation evidence names another artifact or report checksum",
+            ));
+        }
+        // The identity-poor timeline this surface exists for: a terminal window
+        // with at least two user positions and no message identity on any
+        // event. Absence is stated explicitly rather than inferred from a
+        // missing key, so a truncated document cannot read as a clean one.
+        let timeline = &evidence.canonical_timeline;
+        let last_user_position = timeline
+            .user_message_sequences
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or_default();
+        if timeline.digest.trim().is_empty()
+            || timeline.next.is_some()
+            || timeline.user_message_sequences.len() < 2
+            || timeline.correlation_fields.message_id != "null for every event"
+            || timeline.correlation_fields.native_event_id != "null for every event"
+            // The window has to contain the positions it claims. An end before
+            // the last user position describes a window the evidence itself
+            // says it did not read to the end of.
+            || timeline.end_sequence < last_user_position
+            // A zero epoch is the unset default rather than an observed one.
+            || timeline.epoch == 0
+        {
+            return Err(refuse(
+                "the approved correlation evidence does not prove an identity-poor terminal timeline",
+            ));
+        }
+        Ok(())
+    }
+
     /// Verify the current approved operational-gap revision against the exact
     /// task/run/topology seat/runtime binding it names. This deliberately understands only the
     /// identity-poor Paseo evidence shape that motivated the recovery surface:
@@ -16965,6 +17161,25 @@ impl Services {
                     "the approved recovery evidence is not readable canonical JSON",
                 )
             })?;
+        // One fixed root, never a caller-supplied pointer. An approved document
+        // that carries the generic envelope is validated as that envelope; one
+        // that does not is validated as the exact legacy ASMA-8118 shape below,
+        // byte for byte. The legacy path is not weakened into aliases of the
+        // generic one — it is the historical document and stays exactly itself
+        // (ASMA-8187 F-8187-V9).
+        if let Some(envelope) = document.pointer(GENERIC_CORRELATION_EVIDENCE_ROOT) {
+            self.generic_correlation_evidence(
+                project_id,
+                run,
+                task,
+                seat_binding,
+                binding,
+                request,
+                envelope,
+                &artifact,
+            )?;
+            return Ok((evidence_revision_id, artifact));
+        }
         let text_at = |pointer: &str| {
             document
                 .pointer(pointer)
@@ -23917,6 +24132,20 @@ impl ApplicationOperations for Services {
             epic.revision,
             &intent,
         )?;
+        // Bind the receipt to the evidence it is the receipt *for*. Recording
+        // one and leaving the ledger's own column NULL would make the row
+        // unable to say which command produced it, which is exactly what the
+        // column exists to say.
+        //
+        // Run on every call rather than only the first: an exact replay whose
+        // acknowledgement was lost reaches here with the swap already recorded
+        // and the binding still absent, and this is what finishes it. Binding
+        // the same receipt again is unchanged; a different one refuses.
+        state
+            .with_store(|store| {
+                store.bind_launch_intent_supersession_receipt(key, intent.hash(), receipt_id)
+            })
+            .map_err(|error| self.refuse(&error))?;
         Ok(CoreTeamLaunchIntentSupersessionDto {
             realm_id: state.realm_id(),
             seat_binding_id: request.seat_binding_id,

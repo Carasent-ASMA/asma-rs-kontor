@@ -157,6 +157,79 @@ registered; `PinnedTeamDefinitionDto` gained `Deserialize` so a stored readback
 rehydrates. Regenerated with the same two commands as before; both artefacts
 reproduce with no drift.
 
+### Sequence-4 remediation — V7, V8, V9, V10
+
+Verification sequence 4 failed candidate `8c3a60c1` on four blockers. V6 was
+closed there and stays closed. Remediation package: approved Kontor memory
+`asma-8187-remediation-v7-v10-20260919`, revision 1, revision id
+`01a0b6be-79d3-7282-a37a-dfe7e0443c11`, approval receipt
+`01a0b6be-dd5d-7941-82f0-28077139f71c`.
+
+**F-8187-V7 — the placement mutant now dies.** The replay test type-checked
+`container_native_id`; storing the predecessor's own native there left it green.
+It now compares `container_native_id`, `container_binding_id`,
+`container_runtime_kind`, `container_host`, `container_generation` and
+`canonical_cwd` against an independent readback of the persisted container
+binding, and asserts the placement native is neither the predecessor's nor the
+successor's. The exact mutant from the report — `plan.container.identity` →
+`plan.predecessor.native_identity` — is **killed**.
+
+**F-8187-V8 — authority drift is isolated from headroom.** The old test *added*
+a second selectable account, which made `approved_route_account` ambiguous, so
+apply refused on headroom attribution whatever the digest said and a constant
+authority survived. The sole account is now **replaced**: the first is withdrawn
+and a second is enabled with its own valid pinned headroom, so exactly one
+account resolves and every other apply fence stays satisfiable. The fresh-preview
+digest assertion is unconditional. Substituting the unique account id with
+`fixed-account-authority` is **killed**.
+
+**F-8187-V9 — correlation evidence is generic.** The validator was an ASMA-8118
+document decoder with hard-coded pointers, epoch, positions and report hashes.
+It now decodes a closed typed envelope at one fixed root,
+`/turn_correlation_challenge_evidence`, `schema_version = 1`, with
+`deny_unknown_fields` on every level. The legacy ASMA-8118 path is untouched and
+still byte-exact; a document without the generic root takes it. The caller still
+names only revision id, content hash, report checksum and artifact — no pointer,
+task key or historical coordinate. Fenced against authoritative state: project
+and purpose; task id and revision; TeamRun; AgentRun id, revision and role slot;
+active topology SeatBinding; runtime binding id, kind, host, generation and
+native id; blocker `runtime_proof_unavailable` with `settlement_attempted=false`;
+artifact and report checksum; and a terminal canonical timeline with a non-empty
+digest, a non-zero epoch, an end at or after its last user position, `next=null`,
+at least two user positions and explicit null message id and native event id.
+The endpoint, request DTO, OpenAPI and durable challenge schema are unchanged —
+regeneration produces **no diff**.
+
+**F-8187-V10 — the supersession binds its receipt.** Migration 0106 declared a
+one-time `receipt_id` binding with no writer. `bind_launch_intent_supersession_receipt`
+is that writer: one-time, exact on key *and* intent hash, idempotent for the same
+receipt, refusing a different one. `supersede_core_team_launch_intent` calls it
+after `record`, on every call — so a lost acknowledgement whose first attempt
+never reached `record` finishes the binding on replay. The test asserts the
+stored receipt equals the returned one and that a foreign intent hash refuses.
+
+### Sequence-4 validation
+
+```text
+core_team 18/18 · succession 11/11 · stale 13/13 · replay 29/29 · drift 8/8
+launch_intent 4/4 · correlation 1/1 · ambiguous 2/2
+cargo fmt --all -- --check              exit 0
+KONTOR_UPDATE_CONTRACT=1 openapi_contract  3 passed
+pnpm --filter kontor-console generate:api  regenerated, no diff
+```
+
+Mutants this turn, each seeded alone and restored, zero `MUTANT` markers left:
+
+| Mutant | Result |
+| --- | --- |
+| `container_native_id` ← predecessor native | **killed** (V7) |
+| unique account id ← `fixed-account-authority` | **killed** (V8) |
+| generic runtime-generation fence removed | **killed** (V9) |
+| supersession receipt binder removed | **killed** (V10) |
+
+The verifier's own report is committed unchanged beside this correction; its
+SHA-256 is `e8504236404c353f68c9209d05399860d92ec0eb619cfd84ce5d5a285e5c95c4`.
+
 ### Sequence-2 remediation (V6/V7/V8) and dual-lineage integration
 
 Gate sequence 2 (receipt `01a0b640-8343-7cf2-8d95-655478796422`) routed the task

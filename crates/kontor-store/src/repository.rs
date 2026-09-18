@@ -4521,6 +4521,89 @@ impl SqliteStore {
         Ok(Applied::Updated)
     }
 
+    /// The receipt one recorded supersession is bound to, if it is bound yet.
+    pub fn launch_intent_supersession_receipt(
+        &self,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<Option<CommandReceiptId>>> {
+        let bound: Option<Option<String>> = self
+            .connection
+            .query_row(
+                "SELECT receipt_id FROM hosted_seat_launch_intent_supersessions
+                  WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        bound
+            .map(|id| id.as_deref().map(CommandReceiptId::parse).transpose())
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    /// Bind one recorded supersession to the receipt that completed it.
+    ///
+    /// One-time and exact. The key and the intent hash must both match the row
+    /// that was recorded, because a receipt is evidence *for a specific
+    /// command* and binding it to a different one would make the ledger assert
+    /// something it never saw. A second binding, or a different receipt on an
+    /// already-bound row, refuses rather than overwriting: the trigger in v106
+    /// forbids it in storage, and refusing here says why.
+    ///
+    /// Repeating the identical binding is unchanged, which is what lets the
+    /// lost-acknowledgement replay finish what the first attempt started.
+    pub fn bind_launch_intent_supersession_receipt(
+        &self,
+        key: &IdempotencyKey,
+        intent_hash: &ContentHash,
+        receipt_id: CommandReceiptId,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let row: Option<(String, Option<String>)> = transaction
+            .query_row(
+                "SELECT intent_hash, receipt_id
+                   FROM hosted_seat_launch_intent_supersessions
+                  WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((recorded_hash, bound)) = row else {
+            return Err(RepositoryError::NotFound {
+                subject: "hosted seat launch intent supersession",
+            });
+        };
+        if recorded_hash != intent_hash.as_str() {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent supersession",
+                rule: "the receipt names a different supersession intent",
+            });
+        }
+        if let Some(bound) = bound {
+            transaction.rollback().map_err(backend)?;
+            return if bound == receipt_id.to_string() {
+                Ok(Applied::Unchanged)
+            } else {
+                Err(RepositoryError::Conflict {
+                    subject: "hosted seat launch intent supersession",
+                    rule: "the supersession is already bound to another receipt",
+                })
+            };
+        }
+        transaction
+            .execute(
+                "UPDATE hosted_seat_launch_intent_supersessions
+                    SET receipt_id = ?2
+                  WHERE idempotency_key = ?1",
+                params![key.as_str(), receipt_id.to_string()],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(Applied::Updated)
+    }
+
     /// Read the exact authority one occupancy generation's launch resolved.
     pub fn get_hosted_seat_launch_intent(
         &self,

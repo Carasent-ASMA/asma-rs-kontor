@@ -1,171 +1,268 @@
 # ASMA-8187 high-verification report
 
-Date: 2026-09-17
+Date: 2026-09-19
 Artifact: `high-verification-report`
 Task: Jira `ASMA-8187` / Kontor `01a0a943-652b-79d0-9f0c-f4965a33d7ab`
 Phase: `high-verification`
-Verification sequence: 3
-Handed-off local candidate: `aec5c26469b99aef96ae9c28bcedb6e36a9631f6`
-First parent: `249e9a4beca0c74452ad98a2075cc45e237307b5`
-Merged upstream parent: `2e4b9985fc1073dd25c22b78349d8f36d6b1d4ec`
-Prior rejected candidate: `99ad64c9cc7a5684900f2c21d8dfb728ac4697ec`
-Original rejected candidate: `1fcd42d61b2a93ad6ee1f344d0f82f634dbc2381`
+Verification sequence: 4
+Exact pushed candidate: `8c3a60c1c81a0ae3b08b8f0a72f5462ff84d5bfe`
+Exact candidate parent: `6da164a99ded07182d494a0b2f18db5ca2fb3aa1`
+Prior verification report commit: `7ce988a3778643d7bb0c695231f16289b0d3ce23`
 Scope: [`HIGH-SCOPE-RECORD.md`](HIGH-SCOPE-RECORD.md)
 Implementation evidence: [`HIGH-CHANGE-RECORD.md`](HIGH-CHANGE-RECORD.md)
-Status: **FAIL — no exact pushed sequence-3 candidate exists, and the handed-off local tree still fails the recorded high-scope contract**
+Status: **FAIL**
 
 ## Verdict
 
-High verification fails.
+The exact pushed candidate fails high verification.
 
-The local merge candidate closes the sequence-2 schema-contract failure: schema
-generation 99 and the exact expected-table inventory agree, and all 58 schema
-tests pass. Focused stale-native succession, lost-ack/replay, generation/history,
-CAS, provider-headroom and remediation-authority tests also pass. The complete
-non-API touched-crate run, touched-crate clippy and MCP suites pass.
+V6 is closed: the public preview returns the canonical intent document, its
+schema version and the hash taken over those canonical bytes. The focused Core
+Team, stale-native, lost-ack, replay, generation/history and 12-case fence
+matrix all pass. Schema 106 applies as an ordered 100–106 line and the full
+schema suite passes. The bounded ASMA-7869 capability preserves the logical
+seat, performs no launch, refuses active/history/effect-receipt shapes, forbids
+OpenCode as the destination and replays one receipt.
 
-Three scope blockers from sequence 2 remain unchanged:
+Four blockers remain:
 
-1. preview still does not return the complete canonical intent document required
-   by the scope;
-2. durable placement readback still omits exact native-project and container-
-   generation evidence, and the named replay test accepts a deliberately wrong
-   container native id;
-3. the approved-route-authority test remains confounded by a separate headroom
-   fence and accepts removal of the server-derived account authority.
+1. **F-8187-V7 remains open.** The exact former placement mutant still survives:
+   storing the predecessor native as `placement.container_native_id` leaves the
+   named durable-replay test green.
+2. **F-8187-V8 remains open.** The exact former route-authority mutant still
+   survives: replacing the uniquely resolved account id with a constant leaves
+   the named authority-drift test green because apply independently refuses on
+   the now-ambiguous immediate-headroom lookup.
+3. **F-8187-V9 is new.** The correlation-challenge evidence validator is an
+   ASMA-8118 document decoder, not a generic approved-evidence validator. It
+   cannot validate an ASMA-8187 approved envelope.
+4. **F-8187-V10 is new.** The ASMA-7869 supersession table declares a one-time
+   receipt binding, but production code has no binder and the tests never prove
+   that `receipt_id` becomes non-null. The response replay is stable, but its
+   durable supersession evidence remains unbound to that receipt.
 
-The tree is additionally red on committed OpenAPI parity, formatting, full
-daemon, workspace clippy and archive lockfile reproduction. Exact-parent runs
-classify these as inherited: the first seven daemon failures, workspace clippy
-and lock drift reproduce on first parent `249e9a4...`; the newly merged OpenAPI,
-formatting and session-key daemon failures reproduce on upstream parent
-`2e4b9985...`. They are not presented as ASMA-8187 regressions or hidden as
-passes, but a red integrated candidate still cannot receive a pass verdict.
+The store all-target suite and touched-crate clippy are additionally red on one
+compile error in `hosted_seat_autonomy.rs`. The identical E0061 reproduces on
+the exact candidate parent, so it is inherited and is not presented as an
+ASMA-7869-tip regression or hidden as a pass.
 
-No production source or generated artifact was changed. Mutants and generated
-contract/client checks ran only in isolated candidate archives.
+No gate, production runtime, topology or task state was mutated. All mutants and
+generated-artifact checks ran in isolated archives and were restored byte-for-
+byte.
 
 ## Open-question ledger
 
-- **Subject:** exact candidate identity and publication state for verification
-  sequence 3.
-- **Attached record:** this report and the implementation handoff for
-  `ASMA-8187`.
-- **Why ambiguous:** the handed-off module checkout is local merge commit
-  `aec5c264...`, while exact remote branch readback remains `249e9a4...` and
-  `HIGH-CHANGE-RECORD.md` contains no sequence-3 candidate/remediation entry.
-- **Options observed:** implementation publishes and records `aec5c264...`;
-  implementation publishes and records a different corrective candidate; or
-  sequence-3 exact-pushed verification remains unavailable.
-- **Disposition:** unresolved. Results against `aec5c264...` are a complete
-  provisional verification of that local tree, not evidence that it is the
-  exact pushed candidate. The verification seat will not publish the fourteen
-  implementation/upstream commits ahead of the remote branch merely to publish
-  its evidence report.
+- **Subject:** exact approved ASMA-8187 correlation-evidence revision and
+  canonical envelope bytes.
+- **Attached record:** this verification report, finding F-8187-V9.
+- **Why ambiguous:** the source candidate contains only the legacy ASMA-8118
+  evidence fixture and validator. The approved ASMA-8187 memory revision named
+  during settlement is not materialized in this repository, so its revision id,
+  content hash and report checksum cannot be evidenced from the candidate.
+- **Options observed:** read the actual approved ASMA-8187 revision at operator
+  time through the existing project-scoped memory repository; invent a new
+  envelope; or borrow an unrelated ASMA-8188 envelope.
+- **Disposition:** only the first option is admissible. No ASMA-8188 envelope is
+  created, accepted or proposed by this report. Implementation and tests must
+  use a synthetic generic-v1 fixture until the operator supplies the exact live
+  approved revision through the existing request fields.
 
-## Candidate identity and boundary
+## Candidate identity and review boundary
 
 ```text
 $ git rev-parse HEAD
-aec5c26469b99aef96ae9c28bcedb6e36a9631f6
+8c3a60c1c81a0ae3b08b8f0a72f5462ff84d5bfe
 
-$ git rev-parse HEAD^1
-249e9a4beca0c74452ad98a2075cc45e237307b5
+$ git rev-parse HEAD^
+6da164a99ded07182d494a0b2f18db5ca2fb3aa1
 
-$ git rev-parse HEAD^2
-2e4b9985fc1073dd25c22b78349d8f36d6b1d4ec
+$ git status --short
+<empty before this report edit>
 
 $ git ls-remote --heads origin refs/heads/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession
-249e9a4beca0c74452ad98a2075cc45e237307b5 refs/heads/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession
+8c3a60c1c81a0ae3b08b8f0a72f5462ff84d5bfe refs/heads/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession
 ```
 
-`aec5c264...` is a merge of the sequence-2 evidence commit and upstream master.
-Its conflict resolution renumbers the ASMA-8187 succession migration to 99,
-sets `SCHEMA_VERSION` to 99 and adds `core_team_route_successions` to the exact
-table inventory. The first parent differs from `99ad64c...` only by the prior
-evidence-report commit, so its production tree is the sequence-2 candidate.
+The knowledge-graph project was consulted first. A forced refresh failed in its
+worker, while `index_status` read back the exact candidate head. Coverage then
+reported the relevant Rust files as metadata-changed and migration 0106 as not
+tracked. Structural discovery used the graph where current; every cited changed
+file and all SQL were read directly. `detect_changes` from the prior report
+commit reported 83 changed files, 935 seed symbols and 1,975 impacted symbols.
 
-The codebase knowledge graph was reindexed at the handed-off local candidate
-before source review. Candidate-versus-first-parent detection reported 27
-changed files, 241 changed seed symbols and 992 impacted symbols. Graph metadata
-matched the relevant Rust files. The SQL migration was parse-partial and was
-read directly in full.
+## Scope findings
 
-## Blocking scope findings
+### F-8187-V6 — closed: canonical preview intent is public and tested
 
-### F-8187-V6 — high: preview omits the complete deterministic intent document
+`core_team_route_plan` builds one canonical document containing the logical
+binding, occupancy, predecessor, ECP placement, topology, role, frozen pins,
+server-derived approved-route digest, headroom and desired route. It takes the
+preview hash from that document and `preview_core_team_route` parses the same
+canonical bytes back into `preview_intent`, with schema version 1.
 
-The scope requires preview to return the complete deterministic intent document
-and its hash. `core_team_route_plan` builds a canonical JSON intent internally,
-but public `CoreTeamRoutePreviewDto` at
-`crates/kontor-api/src/applications.rs:1064` exposes only selected summaries and
-the hash. It does not return the document containing every logical binding,
-occupancy, predecessor, ECP placement, route, Team Definition, topology/Core
-Team, completion, remediation and headroom fence.
+An isolated mutant returned `{}` instead of the canonical document. The exact
+authority test failed at its assertion that `preview_intent.approved_route`
+equals the exposed approved-route digest. V6 is therefore closed.
 
-This is unchanged from the first parent. A caller still cannot retain or audit
-the complete evidence to which the hash commits.
+### F-8187-V7 — blocking: exact container-native placement is still not tested
 
-### F-8187-V7 — high: durable placement readback is incomplete and its named test accepts wrong placement
+Production constructs `container_native_id` from the persisted container at
+`crates/kontor-daemon/src/applications.rs:7891`. The named replay test at
+`crates/kontor-daemon/tests/loopback_api.rs:55934` checks only that this field is
+a string. It proves the independently persisted native parent, but not the
+native workspace/container id itself.
 
-The scope defines ECP placement as logical node id, native project id, native
-workspace id, canonical cwd, container generation and provider correlation.
-`CoreTeamRoutePlacementDto` at
-`crates/kontor-api/src/applications.rs:1018` contains topology node id,
-container binding id, one generic container native id and cwd. It has no native
-project id or container generation.
+The isolated mutant changed only:
 
-An isolated mutant persisted the predecessor seat native id as
-`placement.container_native_id`. The exact named replay test at
-`crates/kontor-daemon/tests/loopback_api.rs:49354` remained green. It proves
-stable replay of stored bytes, not exact placement identity.
+```text
+container_native_id: plan.container.identity.native_id.clone()
+=>
+container_native_id: plan.predecessor.native_identity.native_id.clone()
+```
 
-### F-8187-V8 — high: the approved-route-authority test remains confounded
+`an_exact_replay_after_the_receipt_landed_answers_from_durable_evidence`
+remained green: **1 passed, 0 failed**. The previous V7 mutation survivor is
+therefore still present.
 
-The implementation includes server-derived account authority in the route
-document at `crates/kontor-daemon/src/applications.rs:6994`. The named authority
-test at `crates/kontor-daemon/tests/loopback_api.rs:49442` changes account state
-in a way that also changes independent headroom evidence.
+Required correction: compare the returned and replayed
+`container_native_id`, container generation, runtime kind, host and canonical
+cwd against an independent persisted container-binding readback, not merely
+their types or the readback document's own hash.
 
-An isolated mutant replaced the server-derived authority with a fixed constant.
-The exact named test still passed. Its refusal therefore does not prove that the
-approved-route authority digest, rather than the headroom fence, caused the
-refusal.
+### F-8187-V8 — blocking: authority drift remains confounded by headroom
 
-## Closed sequence-2 finding
+`resolved_route_authority` records the unique account id in the route digest.
+The test enables a second selectable account after preview. Although it does not
+seed a provider report for that account, apply calls `approved_route_account`
+before using the pinned report; two selectable accounts therefore refuse on
+headroom attribution independently of the route digest.
 
-### F-8187-V5 — closed: schema generation and exact table inventory agree
+The isolated mutant changed the unique-account result to the constant
+`fixed-account-authority`. The exact test
+`a_core_team_succession_refuses_an_approved_route_authority_that_moved` remained
+green: **1 passed, 0 failed**. Its fresh-preview assertion is conditional on a
+200 response, so the ambiguous fresh preview does not expose the surviving
+constant.
 
-The merge renumbers the succession migration to
-`0099_core_team_route_succession_recovery.sql`, sets `SCHEMA_VERSION = 99` at
-`crates/kontor-store/src/migrations.rs:37`, includes the new table in the exact
-inventory at `crates/kontor-store/tests/schema_v1.rs:70`, and asserts version 99
-at line 563.
+Required correction: stage authority drift without making
+`approved_route_account` ambiguous at apply—for example, replace the sole
+enabled account with another account that has separately valid pinned headroom,
+then assert both the recomputed route digest mismatch and the exact refusal
+path. The test must fail when the unique account id is constant even though all
+other apply fences remain satisfiable.
+
+### F-8187-V9 — blocking: correlation evidence is hard-coded to ASMA-8118
+
+`correlation_challenge_evidence` at
+`crates/kontor-daemon/src/applications.rs:16919` verifies the approved revision
+id and canonical document hash, but then hard-codes:
+
+- `/asma_8118_paseo_0_8_correlation_addendum_20260914`;
+- `/asma_8118_binding_identity_correction_20260914`;
+- epoch 2, end sequence 385, user positions `[1, 144]` and Paseo 0.8.0;
+- historical report hash `3f667be8…` and correction hash `0ad93292…`;
+- `/closeout_recovery_20260914/asma_8118/artifact`.
+
+The only end-to-end fixture reproduces that exact ASMA-8118 document. An
+otherwise valid ASMA-8187 approved envelope has no route through this validator.
+This blocks use of the deployed recovery surface for the settlement now in
+scope.
+
+#### Smallest safe genericization
+
+Keep the endpoint, request DTO, OpenAPI and durable challenge schema unchanged.
+Refactor only the approved-evidence decoder:
+
+1. Define a closed, typed `turn_correlation_challenge_evidence` envelope with
+   `schema_version = 1` at one fixed root inside an approved memory document.
+2. Decode either that generic v1 envelope or the exact legacy ASMA-8118 shape.
+   The legacy path remains byte-exact; it is not weakened into aliases.
+3. Do not accept a caller-supplied JSON pointer, task key, report key or
+   historical coordinate. The caller continues to name only revision id,
+   canonical content hash, report checksum and artifact.
+4. Compare the generic envelope to authoritative current state with all of
+   these exact fences:
+   - project id and evidence purpose;
+   - task id and task revision;
+   - TeamRun id;
+   - AgentRun id, revision and role slot;
+   - active topology SeatBinding id;
+   - runtime binding id, runtime kind, host, generation and native id;
+   - blocker code `runtime_proof_unavailable` and `settlement_attempted=false`;
+   - exact artifact key and report checksum;
+   - a complete canonical timeline record with its digest, native epoch/end,
+     terminal `next=null`, at least two exact user positions, and explicit
+     absence of message id and native event id on every event.
+5. Continue placing all live identities, revisions, evidence hashes and the
+   newly observed boundary in the existing preview hash.
+
+Required tests: legacy ASMA-8118 still passes; a generic ASMA-8187 fixture
+passes; every identity/evidence field above fails independently; foreign or
+mislabelled evidence fails; preview sends nothing; lost acknowledgement and
+same-key reconciliation still send only once. No ASMA-8188 envelope is needed
+or permitted.
+
+### F-8187-V10 — blocking: supersession evidence never binds its receipt
+
+Migration 0106 adds nullable `receipt_id` and a trigger allowing exactly one
+NULL-to-value update (`0106_core_team_route_succession_recovery.sql:172-200`).
+`supersede_core_team_launch_intent` records the command receipt after the atomic
+swap, but no store method or update binds that id to
+`hosted_seat_launch_intent_supersessions`. An exhaustive source search found no
+writer beyond the INSERT of NULL. The replay test compares response receipt ids
+only; it never reads the supersession row's `receipt_id`.
+
+Required correction: add a one-time exact-key/intent-hash receipt binder,
+invoke it after `record`, invoke it again on lost-ack replay when the field is
+NULL, and assert the stored receipt id equals the returned command receipt. A
+different receipt or a second binding must refuse.
+
+## ASMA-7869 bounded supersession result
+
+The capability otherwise matches the bounded request:
+
+- the bounded contract explicitly names logical SeatBinding
+  `01a02b8e-8f63-7161-b043-cf8cc6d1297e`; the isolated regression fixture
+  models the same prepared generation-1 OpenCode shape with no active occupancy
+  or history, without reading or mutating live topology;
+- the successful case leaves the same logical SeatBinding active at the same
+  revision, with no release or replacement and no native occupancy;
+- installed/observed, history, active occupancy, binding revision, generation,
+  route and prepared-time drift all refuse;
+- an effect receipt naming the seat refuses, while read-only/caller-only
+  receipts are deliberately not treated as effects;
+- the destination must be a different, governed, non-OpenCode route;
+- same-key replay returns the same receipt, changed intent conflicts and a
+  second supersession of the occupancy refuses;
+- no OpenCode launch and no new SeatBinding are produced.
+
+Independent mutants disabling the occupancy/history fence, effect-receipt fence
+and explicit OpenCode destination ban were all killed by the named tests. The
+implementation record's reported single route-predicate survivor is honest in
+shape: the migration trigger independently carries the same route evidence, so
+removing only the store predicate does not admit the defect. This verification
+does not inflate that double-guarded survivor into a kill.
+
+## Schema 100–106 result
+
+Runtime ordering is coherent: `SCHEMA_VERSION` is 106, every migration 100
+through 106 is registered once in order, each file ends at its matching
+`PRAGMA user_version`, and the exact table inventory includes both
+`core_team_route_successions` and
+`hosted_seat_launch_intent_supersessions`.
 
 ```text
 $ cargo test -p kontor-store --test schema_v1
-PASS: 58 passed, 0 failed
+PASS: 60 passed, 0 failed; 175.43s
 ```
 
-## Scope behavior exercised successfully
+Documentation headers in 0102 and 0103 still say schema v99 and v100 while
+their files end at 102 and 103. That is stale explanatory text, not executable
+migration drift, but it should be corrected with the next candidate.
 
-The local candidate successfully exercised:
+## Exact commands and results
 
-- the 18 focused Core Team cases, including stale-native CAS/refusal coverage;
-- the 11 succession cases, including lost archive/launch/store acknowledgements
-  and exact receipt replay;
-- immutable generation-1 history and one generation-2 active successor on the
-  same logical SeatBinding in the covered happy path;
-- immediate provider-headroom refusal and remediation-generation authority;
-- all non-API touched crate suites, including 209 Paseo adapter contract tests
-  (six live-daemon tests ignored) and all store integration groups;
-- 65 MCP tests and touched-crate clippy.
-
-These green results do not satisfy the three blocking contract findings.
-
-## Exact command and result record
-
-### Focused stale-native, replay and schema suites
+### Focused scope and replay
 
 ```text
 $ cargo test -p kontor-daemon --test loopback_api core_team -- --nocapture
@@ -174,153 +271,125 @@ PASS: 18 passed, 0 failed
 $ cargo test -p kontor-daemon --test loopback_api succession -- --nocapture
 PASS: 11 passed, 0 failed
 
-$ cargo test -p kontor-daemon --test loopback_api an_exact_replay_after_the_receipt_landed_answers_from_durable_evidence -- --exact
+$ cargo test -p kontor-daemon --test loopback_api launch_intent_supersession -- --nocapture
+PASS: 3 passed, 0 failed
+
+$ cargo test -p kontor-daemon --test loopback_api \
+    a_never_bound_prepared_launch_intent_is_superseded_in_place -- --exact --nocapture
 PASS: 1 passed, 0 failed
 
-$ cargo test -p kontor-store --test schema_v1
-PASS: 58 passed, 0 failed
+$ cargo test -p kontor-daemon --test loopback_api
+PASS outside sandbox: 404 passed, 0 failed, 1 ignored; 41.41s
 ```
 
-### Touched crates, MCP, formatting and lint
+The first full loopback run inside the filesystem sandbox reported 29 failures,
+all at Wiremock's local-port bind with `PermissionDenied`. The exact suite was
+rerun with loopback binding allowed and passed as above. The daemon library's
+single Wiremock failure was likewise rerun exactly and passed.
+
+### Touched crates
 
 ```text
-$ cargo test -p kontor-api -p kontor-core -p kontor-runtime -p kontor-runtime-paseo -p kontor-store
-FAIL: kontor-api openapi_contract: 2 passed, 1 failed;
-      committed openapi.json does not match the served contract
+$ SWAGGER_UI_DOWNLOAD_URL=file://<cached-v5.17.14.zip> cargo test \
+    -p kontor-api -p kontor-core -p kontor-runtime \
+    -p kontor-runtime-paseo -p kontor-mcp
+PASS: all executed suites green; Paseo contract 219 passed, 6 live tests ignored
 
-$ cargo test -p kontor-core -p kontor-runtime -p kontor-runtime-paseo -p kontor-store
-PASS: all unit, integration and doc-test groups passed;
-      209 Paseo contract tests passed, 6 live-daemon tests ignored;
-      store schema_v1 passed 58/58
-
-$ cargo test -p kontor-mcp
-PASS: 65 passed, 0 failed (57 library, 3 binary, 5 seat-contract)
-
-$ cargo fmt --all -- --check
-FAIL: rustfmt diff at crates/kontor-teams/tests/team_contract.rs:467
-
-$ cargo clippy -p kontor-api -p kontor-core -p kontor-daemon -p kontor-runtime -p kontor-runtime-paseo -p kontor-store --all-targets -- -D warnings
-PASS: exit 0
-
-$ cargo clippy --workspace --all-targets -- -D warnings
-FAIL: error[E0063], missing `observed_identity` at
-      tests/e2e/pilot_sections/domain.rs:2468
+$ cargo test -p kontor-api -p kontor-core -p kontor-runtime \
+    -p kontor-runtime-paseo -p kontor-store -p kontor-mcp
+FAIL at compile: E0061 in hosted_seat_autonomy.rs:368
 ```
 
 ### Generated OpenAPI and client parity
 
-The committed candidate fails parity before regeneration. In an isolated
-candidate archive:
+Run in an isolated `git archive` of exact HEAD:
 
 ```text
-$ KONTOR_UPDATE_CONTRACT=1 cargo test -p kontor-api --test openapi_contract
-PASS: 3 passed, 0 failed; isolated openapi.json changed
+$ KONTOR_UPDATE_CONTRACT=1 CARGO_TARGET_DIR=<candidate-target> \
+    cargo test -p kontor-api --test openapi_contract
+PASS: 3 passed, 0 failed
 
-$ apps/console/node_modules/.bin/openapi-typescript crates/kontor-api/contract/openapi.json -o apps/console/src/api/schema.d.ts
-PASS: openapi-typescript 7.13.0; isolated schema.d.ts changed
+$ cmp -s <checkout>/crates/kontor-api/contract/openapi.json \
+    <archive>/crates/kontor-api/contract/openapi.json
+PASS: exit 0
+
+$ ./node_modules/.bin/openapi-typescript \
+    ../../crates/kontor-api/contract/openapi.json -o src/api/schema.d.ts
+PASS: openapi-typescript 7.13.0
+
+$ cmp -s <checkout>/apps/console/src/api/schema.d.ts \
+    <archive>/apps/console/src/api/schema.d.ts
+PASS: exit 0
 ```
 
-The regenerated diff adds the merged seat-fill route and its DTOs plus the new
-capacity fields. Nothing was copied back to the worktree. Exact upstream parent
-`2e4b9985...` fails the same committed OpenAPI contract test (2 passed, 1
-failed), while first parent `249e9a4...` passes it (3/3). The mismatch is
-inherited from the merged upstream parent, not an ASMA-8187-only contract edit.
+The `pnpm --filter kontor-console generate:api` wrapper in the archive attempted
+an install and stopped with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`; the
+exact underlying committed generator was then run directly against the
+archive's contract and reproduced the client byte-for-byte.
 
-### Full daemon and archive verification
+### Formatting and clippy
 
 ```text
-$ cargo test -p kontor-daemon
-FAIL: library 81/81, binary 2/2 and account_pinning 5/5 passed;
-      loopback_api 349 passed, 8 failed, 1 ignored
+$ cargo fmt --all -- --check
+PASS: exit 0
 
-$ python3 scripts/verify-tree.py --mode archive
-FAIL: regenerated Cargo.lock differs byte-for-byte from the committed lockfile
+$ cargo clippy -p kontor-api -p kontor-core -p kontor-daemon -p kontor-mcp \
+    -p kontor-runtime -p kontor-runtime-paseo -p kontor-store \
+    --all-targets -- -D warnings
+FAIL at compile: the same hosted_seat_autonomy.rs E0061
 ```
-
-Seven daemon failures are the prior baseline: six Jira tests receive HTTP 503
-instead of 200, and `replaying_a_partial_admission_delivers_its_durable_follow_up`
-receives HTTP 409 instead of 200. The eighth,
-`a_session_key_must_be_a_stable_client_message_id`, receives HTTP 200 instead
-of 400.
 
 ## Exact inherited-baseline reproduction
 
-No inherited failure was masked or counted as a candidate pass.
-
-### First parent `249e9a4...`
-
-An isolated archive of the exact first parent reproduced each of the seven
-prior daemon failures with an exact named invocation:
+Candidate and exact parent were both exercised with the same focused command:
 
 ```text
-$ cargo test -p kontor-daemon --test loopback_api <name> -- --exact
-a_body_overtaken_during_a_lost_confirmation_is_refused                    503 != 200
-a_human_authored_body_is_preserved_until_replacement_is_authorized        503 != 200
-a_publication_that_never_landed_is_still_refused                          503 != 200
-a_publication_whose_confirmation_was_lost_is_settled_by_refetch           503 != 200
-an_epic_placeholder_body_is_typed_reported_and_repairable                 503 != 200
-reconcile_plan_refuses_to_call_a_placeholder_body_converged               503 != 200
-replaying_a_partial_admission_delivers_its_durable_follow_up               409 != 200
+$ cargo test -p kontor-store --test hosted_seat_autonomy --no-run
+
+8c3a60c1…: FAIL E0061 at hosted_seat_autonomy.rs:368 — method expects six
+arguments, test supplies four.
+
+6da164a99ded07182d494a0b2f18db5ca2fb3aa1: identical FAIL E0061 at the same
+file, line, call and missing `Option<&HostedSeatRouteFence>` /
+`Option<&NewCoreTeamRouteSuccession>` arguments.
 ```
 
-The exact first parent also reproduces the lock drift:
+This failure is inherited by commit `8c3a60c1`; it is not caused by the bounded
+ASMA-7869 delta. It still means the integrated candidate's all-target store and
+clippy gates are red.
+
+## Independent mutation record
+
+Each mutant was seeded alone in an isolated exact-HEAD archive. Baseline files
+were SHA-256 checked before mutation and after restoration:
 
 ```text
-$ cp Cargo.lock /private/tmp/asma-8187-seq3-base.Cargo.lock.committed
-$ cargo generate-lockfile
-$ cmp /private/tmp/asma-8187-seq3-base.Cargo.lock.committed Cargo.lock
-FAIL: files differ at char 8342, line 337
+applications.rs afacd9f62edbbbba2fdc23203d9c184cbdbe1c85dc1c9ae71669eebce60d2d44
+repository.rs   15cc9c8ca02e80bcbfb75188877ba14e5be8471890bd8175d15ba8eaa89dcbe6
 ```
 
-Workspace clippy's identical `observed_identity` compile failure was already
-reproduced against the production-identical sequence-2 base and is unchanged by
-the evidence-only first-parent commit.
-
-### Merged upstream parent `2e4b9985...`
-
-An isolated archive of the exact upstream parent reproduced all three newly
-observed merged-baseline failures:
-
-```text
-$ cargo test -p kontor-daemon --test loopback_api a_session_key_must_be_a_stable_client_message_id -- --exact
-FAIL: HTTP 200 != 400 at loopback_api.rs:3098
-
-$ cargo test -p kontor-api --test openapi_contract
-FAIL: 2 passed, 1 failed; committed contract differs from served contract
-
-$ cargo fmt --all -- --check
-FAIL: identical rustfmt diff at team_contract.rs:467
-```
-
-## Independent mutation verification
-
-Each mutant was seeded alone in an isolated archive. The candidate worktree was
-never mutated. Sources were restored and compared byte-for-byte afterward.
-
-| Mutant | Exact focused test | Result |
+| Mutant | Focused test | Result |
 | --- | --- | --- |
-| Remove preview-hash/CAS comparison | `a_core_team_succession_refuses_a_preview_whose_seat_revision_moved` | **Killed:** 200 instead of 400 |
-| Remove immediate stale-native headroom preflight | `stale_core_team_succession_refuses_when_capacity_lapsed_after_its_preview` | **Killed:** 200 instead of 409 |
-| Remove remediation occupancy-generation equality | `advance_and_remediate_judge_the_key_before_the_revision` | **Killed:** 200 instead of 409 |
-| Omit atomic succession-ledger write | `a_succession_lost_after_its_store_commit_converges_on_one_receipt` | **Killed:** committed succession absent |
-| Replace server-derived account authority with a constant | `a_core_team_succession_refuses_an_approved_route_authority_that_moved` | **SURVIVED:** 1 passed (F-8187-V8) |
-| Persist predecessor seat id as placement container id | `an_exact_replay_after_the_receipt_landed_answers_from_durable_evidence` | **SURVIVED:** 1 passed (F-8187-V7) |
+| Return `{}` instead of canonical `preview_intent` | authority-drift case | **KILLED** |
+| Persist predecessor native as placement `container_native_id` | exact replay after receipt | **SURVIVED** — F-8187-V7 |
+| Replace unique account authority with a constant | authority-drift case | **SURVIVED** — F-8187-V8 |
+| Disable active-occupancy/history absence fence | non-inert shape matrix | **KILLED** |
+| Disable effect-receipt fence | effect-receipt case | **KILLED** |
+| Remove explicit OpenCode destination ban | non-inert shape matrix | **KILLED** |
 
-Mutation score for the six named high-risk cases is **4/6 killed (66.7%)**.
-Both survivors target explicit scope evidence and remain blocking.
+Independent score: **4/6 killed (66.7%)**. The two survivors are both required
+corrections and are not discounted by the green baseline suite.
 
-## Required correction before another verification
+## Required correction before re-verification
 
-1. Return the complete canonical preview intent document beside its hash.
-2. Persist and assert exact native project/workspace, container generation and
-   provider correlation evidence in durable readback.
-3. Isolate account-authority drift from headroom drift and kill the authority
-   mutant.
-4. Record and push one exact candidate in `HIGH-CHANGE-RECORD.md` before
-   requesting verification.
-5. Bring the integrated candidate's generated OpenAPI/client artifacts and
-   formatting green, or land an upstream baseline that does so, then repeat the
-   exact-pushed checks.
-
-No gate was recorded and no workflow state was settled by this verification
-turn.
+1. Make V7 prove the exact native container identity from independent persisted
+   placement evidence; rerun the same mutant.
+2. Isolate V8 authority drift from immediate-headroom ambiguity; rerun the same
+   constant-authority mutant.
+3. Add the generic v1 correlation-evidence decoder and exact fence matrix while
+   retaining the byte-exact legacy ASMA-8118 adapter. Do not add or borrow an
+   ASMA-8188 envelope.
+4. Bind the ASMA-7869 supersession row to its command receipt and test lost-ack
+   repair of that binding.
+5. Repair or explicitly integrate the inherited all-target store compile break,
+   then rerun store and touched-crate clippy.

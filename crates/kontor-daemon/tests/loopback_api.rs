@@ -25370,6 +25370,360 @@ fn observe_post_turn_status(
         .expect("the runtime records the post-turn status")
 }
 
+/// The correlation validator accepts a generic approved envelope, not only the
+/// exact ASMA-8118 document it was written against.
+///
+/// The recovery surface was built for one historical gap and hard-coded its
+/// document: the task key, the report hashes, the epoch and the two positions
+/// were all literals. Any other approved evidence — including this task's own —
+/// had no route through it. The envelope below is the closed generic shape; the
+/// legacy document keeps its own byte-exact path, proved by the test above.
+///
+/// Every identity and evidence field is then drifted one at a time. Each must
+/// refuse on its own, because a validator that only checks the document as a
+/// whole cannot say which fact it verified (ASMA-8187 F-8187-V9).
+#[tokio::test]
+async fn a_generic_approved_correlation_envelope_fences_every_identity_independently() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, _epic, _account, seats) = seated_turns(&world, "generic-correlation").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("run id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("role slot").to_owned();
+    let project_id = ProjectId::parse(&project).expect("project id");
+    let agent_run_id = AgentRunId::parse(&agent_run).expect("agent run id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, agent_run_id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let binding = before.binding.clone().expect("the run is bound");
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(binding.id)
+        .expect("the binding is held");
+    world
+        .fake
+        .observe_uncorrelated_user_message(&held, "generic uncorrelated one", kontor_api::now())
+        .expect("the first uncorrelated position exists");
+    world
+        .fake
+        .observe_uncorrelated_user_message(&held, "generic uncorrelated two", kontor_api::now())
+        .expect("the second uncorrelated position exists");
+    let task_id = world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(project_id, before.team_run_id)
+            .expect("team reads")
+            .expect("team exists")
+            .task_id
+    });
+    let task = world.daemon.state().with_store(|store| {
+        store
+            .get_task(project_id, task_id)
+            .expect("task reads")
+            .expect("task exists")
+    });
+    let role_slot_id = RoleSlotId::parse(&role_slot).expect("role slot");
+    let topology_seat = world.daemon.state().with_store(|store| {
+        let node = store
+            .get_task_topology_node(project_id, task_id)
+            .expect("task topology reads")
+            .expect("task topology exists");
+        let mut matching = store
+            .list_seat_bindings(project_id, node.id)
+            .expect("task seats read")
+            .into_iter()
+            .filter(|seat| {
+                seat.lifecycle == TopologyLifecycle::Active
+                    && seat.task_id == Some(task_id)
+                    && seat.team_run_id == Some(before.team_run_id)
+                    && seat.role_slot_id == role_slot_id
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "the run has one exact topology seat");
+        matching.remove(0)
+    });
+    let report_checksum = ContentHash::of(b"ASMA-8187 generic correlation evidence report");
+
+    let envelope = serde_json::json!({
+        "schema_version": 1,
+        "purpose": "turn_correlation_challenge",
+        "project_id": project,
+        "task": {"id": task_id.to_string(), "revision": task.revision.get()},
+        "team_run_id": before.team_run_id.to_string(),
+        "agent_run": {
+            "id": before.id.to_string(),
+            "revision": before.revision.get(),
+            "role_slot_id": role_slot,
+        },
+        "topology_seat_binding_id": topology_seat.id.to_string(),
+        "runtime_binding": {
+            "id": binding.id.to_string(),
+            "runtime_kind": binding.identity.runtime_kind.as_str(),
+            "host": binding.identity.host.as_str(),
+            "generation": binding.identity.generation,
+            "native_id": binding.identity.native_id.as_str(),
+        },
+        "blocker": {"code": "runtime_proof_unavailable", "settlement_attempted": false},
+        "artifact": "high-scope-record",
+        "report_sha256": report_checksum.as_str(),
+        "canonical_timeline": {
+            "digest": "0bd0f2a3c4d5e6f708192a3b4c5d6e7f80912a3b4c5d6e7f8091a2b3c4d5e6f7",
+            "epoch": 1,
+            "end_sequence": 12,
+            "next": null,
+            "user_message_sequences": [3, 9],
+            "correlation_fields": {
+                "message_id": "null for every event",
+                "native_event_id": "null for every event",
+            },
+        },
+    });
+    let approve = |item: &str, body: &serde_json::Value| {
+        let canonical = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "type": "operational_gap",
+            "project_id": project,
+            "turn_correlation_challenge_evidence": body,
+        }))
+        .expect("the generic evidence canonicalizes");
+        world.daemon.state().with_store(|store| {
+            let provenance = kontor_store::memory::MemoryProvenance {
+                source: "operator".to_owned(),
+                source_id: None,
+                legacy_last_write_wins: false,
+                history_unavailable: false,
+            };
+            let (proposal, _) = store
+                .propose_memory_revision(
+                    project_id,
+                    item,
+                    0,
+                    &canonical,
+                    &provenance,
+                    "test-author",
+                )
+                .expect("the evidence is proposed");
+            store
+                .approve_memory_revision(
+                    project_id,
+                    item,
+                    &proposal.revision_id,
+                    1,
+                    "test-reviewer",
+                )
+                .expect("the evidence is approved");
+            proposal
+        })
+    };
+    let challenge_uri =
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turn-correlation:challenge-preview");
+
+    // The exact generic envelope is accepted.
+    let accepted = approve("generic-correlation-exact", &envelope);
+    let preview = Call::post(
+        challenge_uri.clone(),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task.revision.get(),
+            "expected_run_revision": before.revision.get(),
+            "artifact": "high-scope-record",
+            "evidence_revision_id": accepted.revision_id,
+            "evidence_content_hash": accepted.document.hash().as_str(),
+            "report_checksum": report_checksum.as_str()
+        }),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(
+        preview.status, 200,
+        "a valid generic envelope was refused: {}",
+        preview.body
+    );
+
+    // Each identity and evidence fact, drifted alone.
+    for (case, pointer, wrong) in [
+        ("purpose", "/purpose", serde_json::json!("something_else")),
+        ("schema-version", "/schema_version", serde_json::json!(2)),
+        (
+            "project",
+            "/project_id",
+            serde_json::json!(ProjectId::generate().to_string()),
+        ),
+        (
+            "task-id",
+            "/task/id",
+            serde_json::json!(TaskId::generate().to_string()),
+        ),
+        (
+            "task-revision",
+            "/task/revision",
+            serde_json::json!(task.revision.get() + 1),
+        ),
+        (
+            "team-run",
+            "/team_run_id",
+            serde_json::json!(TeamRunId::generate().to_string()),
+        ),
+        (
+            "agent-run-id",
+            "/agent_run/id",
+            serde_json::json!(AgentRunId::generate().to_string()),
+        ),
+        (
+            "agent-run-revision",
+            "/agent_run/revision",
+            serde_json::json!(before.revision.get() + 1),
+        ),
+        (
+            "role-slot",
+            "/agent_run/role_slot_id",
+            serde_json::json!("some-other-slot"),
+        ),
+        (
+            "topology-seat",
+            "/topology_seat_binding_id",
+            serde_json::json!(SeatBindingId::generate().to_string()),
+        ),
+        (
+            "runtime-binding-id",
+            "/runtime_binding/id",
+            serde_json::json!(topology_seat.id.to_string()),
+        ),
+        (
+            "runtime-kind",
+            "/runtime_binding/runtime_kind",
+            serde_json::json!("another.runtime"),
+        ),
+        (
+            "runtime-host",
+            "/runtime_binding/host",
+            serde_json::json!("another-host"),
+        ),
+        (
+            "runtime-generation",
+            "/runtime_binding/generation",
+            serde_json::json!(binding.identity.generation + 1),
+        ),
+        (
+            "native-id",
+            "/runtime_binding/native_id",
+            serde_json::json!("another-native"),
+        ),
+        (
+            "blocker-code",
+            "/blocker/code",
+            serde_json::json!("some_other_blocker"),
+        ),
+        (
+            "settlement-attempted",
+            "/blocker/settlement_attempted",
+            serde_json::json!(true),
+        ),
+        (
+            "artifact",
+            "/artifact",
+            serde_json::json!("high-verification-report"),
+        ),
+        (
+            "report-checksum",
+            "/report_sha256",
+            serde_json::json!(ContentHash::of(b"another report").as_str()),
+        ),
+        (
+            "timeline-digest",
+            "/canonical_timeline/digest",
+            serde_json::json!(""),
+        ),
+        (
+            "timeline-epoch",
+            "/canonical_timeline/epoch",
+            serde_json::json!(0),
+        ),
+        (
+            "timeline-next",
+            "/canonical_timeline/next",
+            serde_json::json!({"cursor": 13}),
+        ),
+        (
+            "timeline-one-position",
+            "/canonical_timeline/user_message_sequences",
+            serde_json::json!([3]),
+        ),
+        (
+            "timeline-end-before-position",
+            "/canonical_timeline/end_sequence",
+            serde_json::json!(2),
+        ),
+        (
+            "message-id-present",
+            "/canonical_timeline/correlation_fields/message_id",
+            serde_json::json!("null"),
+        ),
+        (
+            "native-event-id-present",
+            "/canonical_timeline/correlation_fields/native_event_id",
+            serde_json::json!("null"),
+        ),
+    ] {
+        let mut drifted = envelope.clone();
+        *drifted
+            .pointer_mut(pointer)
+            .unwrap_or_else(|| panic!("{case}: the envelope field {pointer} exists")) = wrong;
+        let proposal = approve(&format!("generic-correlation-{case}"), &drifted);
+        let refused = Call::post(
+            challenge_uri.clone(),
+            &serde_json::json!({
+                "role_slot": role_slot,
+                "expected_task_revision": task.revision.get(),
+                "expected_run_revision": before.revision.get(),
+                "artifact": "high-scope-record",
+                "evidence_revision_id": proposal.revision_id,
+                "evidence_content_hash": proposal.document.hash().as_str(),
+                "report_checksum": report_checksum.as_str()
+            }),
+        )
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+        assert_ne!(
+            refused.status, 200,
+            "{case}: drifted evidence was accepted: {}",
+            refused.body
+        );
+    }
+
+    // An unknown key means a different document, not an extended one.
+    let mut extended = envelope.clone();
+    extended["unexpected"] = serde_json::json!("field");
+    let proposal = approve("generic-correlation-unknown-field", &extended);
+    let refused = Call::post(
+        challenge_uri,
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task.revision.get(),
+            "expected_run_revision": before.revision.get(),
+            "artifact": "high-scope-record",
+            "evidence_revision_id": proposal.revision_id,
+            "evidence_content_hash": proposal.document.hash().as_str(),
+            "report_checksum": report_checksum.as_str()
+        }),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_ne!(
+        refused.status, 200,
+        "an envelope carrying an unknown field was accepted: {}",
+        refused.body
+    );
+}
+
 #[tokio::test]
 async fn an_ambiguous_history_only_settles_after_one_server_owned_challenge() {
     let world = World::open_empty_with_a_plane().await;
@@ -54669,6 +55023,30 @@ async fn enable_provider_account(world: &World, project: &str, provider: &str, l
     assert_eq!(account.status, 200, "{}", account.body);
 }
 
+/// Withdraw one governed account from selection, leaving its observations.
+///
+/// Used to *replace* the sole selectable account rather than add a second one:
+/// adding one makes `approved_route_account` ambiguous, and an apply that
+/// refuses on ambiguity proves nothing about the route digest.
+fn disable_provider_account(world: &World, project: &str, label: &str) {
+    // `…:ensure` is an ensure, not an update: it refuses a label whose profile
+    // differs from the one described. The enabled flag is nevertheless designed
+    // to move — the v2 triggers permit exactly it and the revision bump — so the
+    // withdrawal is staged directly, as this suite stages every other state no
+    // endpoint produces.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    let disabled = connection
+        .execute(
+            "UPDATE account_profiles
+                SET enabled = 0, revision = revision + 1, updated_at = '2026-09-19T00:00:00Z'
+              WHERE project_id = ?1 AND label = ?2",
+            rusqlite::params![project, label],
+        )
+        .expect("the account is withdrawable");
+    assert_eq!(disabled, 1, "the account to withdraw was not found");
+}
+
 async fn seed_provider_report(
     world: &World,
     project: &str,
@@ -55931,18 +56309,62 @@ async fn an_exact_replay_after_the_receipt_landed_answers_from_durable_evidence(
         placement["native_parent_project_id"], placement["project_id"],
         "the native parent must not be the Kontor project id"
     );
-    assert!(placement["container_native_id"].is_string());
-    assert!(placement["container_binding_id"].is_string());
-    assert!(placement["container_runtime_kind"].is_string());
-    assert!(placement["container_host"].is_string());
-    assert!(
-        placement["container_generation"].is_u64(),
-        "the container generation is missing: {placement}"
+
+    // Compared against the persisted container binding rather than merely
+    // type-checked. A field that is "a string" is satisfied just as well by the
+    // predecessor's own native id, which is exactly the placement leakage this
+    // has to catch (ASMA-8187 F-8187-V7).
+    let container = world.daemon.state().with_store(|store| {
+        let node = store
+            .get_seat_binding(project_id, binding_id)
+            .expect("the binding reads")
+            .expect("the binding exists")
+            .topology_node_id;
+        store
+            .get_topology_node_container(project_id, node)
+            .expect("the container reads")
+            .expect("the control plane has a persisted container")
+    });
+    assert_eq!(
+        placement["container_native_id"],
+        container.identity.native_id.as_str(),
+        "the placement names a native that is not the seat's container"
     );
-    assert!(placement["canonical_cwd"].is_string());
-    assert!(
-        placement["provider_correlation"].is_string(),
-        "the fenced provider conversation is missing: {placement}"
+    assert_ne!(
+        placement["container_native_id"], readback["predecessor"]["native_id"],
+        "the placement leaked the predecessor's own native id"
+    );
+    assert_ne!(
+        placement["container_native_id"], readback["successor"]["native_id"],
+        "the placement leaked the successor's own native id"
+    );
+    assert_eq!(
+        placement["container_binding_id"],
+        container.container_binding_id.as_str()
+    );
+    assert_eq!(
+        placement["container_runtime_kind"],
+        container.identity.runtime_kind.as_str()
+    );
+    assert_eq!(
+        placement["container_host"],
+        container.identity.host.as_str()
+    );
+    assert_eq!(
+        placement["container_generation"], container.identity.generation,
+        "the container generation is not the persisted one"
+    );
+    assert_eq!(
+        placement["canonical_cwd"],
+        container
+            .canonical_cwd
+            .as_ref()
+            .map(|cwd| cwd.as_str())
+            .expect("the container has a canonical directory")
+    );
+    assert_eq!(
+        placement["provider_correlation"], readback["predecessor"]["provider_session_id"],
+        "the fenced provider conversation is not the predecessor's"
     );
 
     let calls_before = world.fake.calls().len();
@@ -56427,6 +56849,39 @@ async fn a_launch_intent_supersession_is_exactly_once_under_replay_and_drift() {
             Some("xhigh".to_owned())
         );
     });
+
+    // The ledger row must name the command that produced it. A recorded receipt
+    // beside a NULL column is a supersession that cannot say which command it
+    // belongs to (ASMA-8187 F-8187-V10).
+    let key = IdempotencyKey::parse("asma-7869-once").expect("a canonical key");
+    let bound = world
+        .daemon
+        .state()
+        .with_store(|store| store.launch_intent_supersession_receipt(&key))
+        .expect("the supersession reads")
+        .expect("the supersession exists")
+        .expect("the receipt is bound");
+    assert_eq!(
+        serde_json::Value::String(bound.to_string()),
+        first.json()["receipt"]["receipt_id"],
+        "the stored receipt is not the one the command returned"
+    );
+
+    // One-time and exact. A binding whose intent hash names a different
+    // supersession refuses, and so does a second, different receipt.
+    world.daemon.state().with_store(|store| {
+        let foreign = ContentHash::of(b"a different supersession intent");
+        assert!(
+            store
+                .bind_launch_intent_supersession_receipt(
+                    &key,
+                    &foreign,
+                    CommandReceiptId::generate()
+                )
+                .is_err(),
+            "a receipt bound against a foreign intent hash was accepted"
+        );
+    });
 }
 
 /// The live ASMA-8098 shape: a closed predecessor the runtime calls stale.
@@ -56655,16 +57110,16 @@ async fn a_core_team_succession_refuses_an_approved_route_authority_that_moved()
         "the exposed intent must carry the authority the digest attests"
     );
 
-    // A second enabled account for the same alias, and *only* that: no new
-    // provider report, so the pinned headroom observation and the account it
-    // belongs to are untouched. What moves is which account the route resolves
-    // to, which is the authority alone.
-    enable_provider_account(world, project, "codex", "asma-8187-authority-second").await;
+    // The sole selectable account is *replaced*, not joined. Adding a second
+    // makes `approved_route_account` ambiguous, and apply then refuses on
+    // headroom attribution whatever the digest says — which is what let the
+    // constant-authority mutant survive. After this swap exactly one account is
+    // selectable and has its own valid pinned headroom, so every other apply
+    // fence stays satisfiable and only the authority has moved
+    // (ASMA-8187 F-8187-V8).
+    disable_provider_account(world, project, "asma-8187-authority-first");
+    provider_reported_headroom(world, project, "codex", "asma-8187-authority-second").await;
 
-    // Proved rather than assumed: a fresh preview now resolves a different
-    // authority. Without the account_authority field in the approved-route
-    // document this digest would be unchanged, which is what makes the
-    // authority-removal mutant die here rather than silently passing.
     let redone = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
         &serde_json::json!({
@@ -56680,13 +57135,22 @@ async fn a_core_team_succession_refuses_an_approved_route_authority_that_moved()
     .signed_as(world, "admin")
     .send(world)
     .await;
-    if redone.status == 200 {
-        assert_ne!(
-            redone.json()["approved_route_digest"],
-            first_digest,
-            "the approved-route authority did not move when its account resolution did"
-        );
-    }
+    // Unconditional: the resolution is unambiguous again, so a preview that
+    // cannot be taken is itself a failure rather than an excuse to skip the
+    // assertion below.
+    assert_eq!(
+        redone.status, 200,
+        "the replacement account left the route unresolvable: {}",
+        redone.body
+    );
+    assert_ne!(
+        redone.json()["approved_route_digest"],
+        first_digest,
+        "the approved-route authority did not move when its account resolution did"
+    );
+    // Apply carries the *new* pinned reading, so the headroom fences are all
+    // satisfiable and the stale preview hash is the only thing left to refuse.
+    body["headroom_observation_id"] = redone.json()["headroom_evidence"]["observation_id"].clone();
 
     let project_id = ProjectId::parse(project).expect("a canonical project id");
     let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
