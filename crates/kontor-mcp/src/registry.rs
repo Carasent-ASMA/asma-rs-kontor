@@ -6606,10 +6606,11 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "evidence",
                 Place::Body,
                 ArgType::Json,
-                "The typed operator receipt, for a phase that waits on an external \
-                 effect no connector reports here. Omit it for the ticket gate and \
-                 the Committee verdict, which are derived from durable state and \
-                 refuse a supplied one. Integration takes \
+                "Typed phase evidence or an exact durable-result selector. Omit it \
+                 for the ticket gate and for an unambiguous Committee verdict. If \
+                 duplicate exact Committee results make verdict intake ambiguous, \
+                 use `{\"phase\":\"verdict\",\"committee_run_id\":…}`; the named run \
+                 remains subject to every normal durable-result check. Integration takes \
                  `{\"phase\":\"integration\",\"repositories\":[{\"repository\":…,\
                  \"pull_request\":…,\"module_revision\":…,\"root_pointer_revision\":…}]}` \
                  with at least one entry. Closeout takes \
