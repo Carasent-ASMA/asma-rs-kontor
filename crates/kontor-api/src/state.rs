@@ -284,6 +284,9 @@ pub struct ApiParts {
     pub signals: StreamSignals,
     /// How old a confirmation may be and still count as fresh, in seconds.
     pub evidence_window_seconds: i64,
+    /// How long a derived runtime read may take in total, across every request
+    /// it makes. Bounds the operation, which bounding each request does not.
+    pub derived_read_deadline: std::time::Duration,
     /// The composed application services the public operations run through.
     pub applications: Applications,
 }
@@ -304,6 +307,7 @@ struct Inner {
     barrier: SchedulingBarrier,
     signals: StreamSignals,
     evidence_window_seconds: i64,
+    derived_read_deadline: std::time::Duration,
     applications: Applications,
 }
 
@@ -396,10 +400,37 @@ impl ApiState {
             idempotency_key: idempotency_key.to_owned(),
             provenance: provenance.to_owned(),
             issued_at: crate::now(),
+            // Recorded before the runtime is asked to accept the message, so
+            // there is no acknowledged position yet. It arrives, if it arrives,
+            // through `record_message_delivery`.
+            delivered_at: None,
         };
         self.with_store(|store| store.record_message_issuance(&issuance))
             .map(|_| ())
             .map_err(|error| crate::error::ApiError::from_repository(self.realm_id(), &error))
+    }
+
+    /// Record where the runtime acknowledged an issued message landing.
+    ///
+    /// Called after a delivery is acknowledged, and only then: the position is
+    /// the runtime's answer, not something Kontor can predict. It is what lets a
+    /// bounded observation ask whether the occurrence it found is *the* delivery
+    /// rather than whether it is the *only* occurrence — the second question
+    /// needs a scan of the whole transcript, which is what the bound removed.
+    ///
+    /// # Errors
+    /// A repository refusal when this id was already delivered at a different
+    /// position, which is the runtime saying the message landed twice.
+    pub fn record_message_delivery(
+        &self,
+        message_id: kontor_runtime::request::MessageId,
+        position: kontor_runtime::timeline::TimelinePosition,
+    ) -> Result<(), crate::error::ApiError> {
+        let key = message_id.to_string();
+        self.with_store(|store| {
+            store.record_message_delivery(&key, position.epoch, position.sequence)
+        })
+        .map_err(|error| crate::error::ApiError::from_repository(self.realm_id(), &error))
     }
 
     /// The issuance this realm recorded for one client message id.
@@ -451,6 +482,18 @@ impl ApiState {
         identity: &kontor_core::state::NativeRuntimeIdentity,
         request: &kontor_runtime::request::HistoryRequest,
     ) -> Result<kontor_runtime::timeline::HistoryPage, crate::error::ApiError> {
+        self.within_derived_read_deadline(
+            self.history_recovering_epoch_once_unbounded(adapter, identity, request),
+        )
+        .await
+    }
+
+    async fn history_recovering_epoch_once_unbounded(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        request: &kontor_runtime::request::HistoryRequest,
+    ) -> Result<kontor_runtime::timeline::HistoryPage, crate::error::ApiError> {
         match self
             .history_with_durable_epochs(adapter, identity, request)
             .await
@@ -477,6 +520,48 @@ impl ApiState {
     /// could not be made durable, or `timeline_refetch_required` when one
     /// recovery did not resolve it.
     pub async fn tail_window_recovering_epoch_once(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        binding: &kontor_runtime::capability::RuntimeBindingSnapshot,
+        page_size: u32,
+        max_pages: usize,
+    ) -> Result<kontor_runtime::timeline::HistoryPage, crate::error::ApiError> {
+        self.within_derived_read_deadline(self.tail_window_recovering_epoch_once_unbounded(
+            adapter, identity, binding, page_size, max_pages,
+        ))
+        .await
+    }
+
+    /// Hold a derived read to one deadline for the whole operation.
+    ///
+    /// The runtime client bounds each *request* it makes, and that is a
+    /// different guarantee from bounding the read. A derived read issues a page
+    /// at a time under a page budget, and against a session the runtime will not
+    /// answer for, every page costs the client's full per-request deadline —
+    /// so a settlement proof bounded at 64 window pages plus 64 trailing pages
+    /// is bounded in requests and unbounded in the only unit a caller feels.
+    /// That is the shape a live realm showed: individual requests timing out
+    /// correctly, and callers hanging for minutes on top of them.
+    ///
+    /// Elapsing is reported as the runtime being unreachable, which is what it
+    /// means, and nothing is written on the way out. The caller's own mapping
+    /// then gives it the right name: a settlement calls it an incomplete proof
+    /// scan and tells the operator to settle the same turn again later.
+    pub(crate) async fn within_derived_read_deadline<T>(
+        &self,
+        work: impl Future<Output = Result<T, crate::error::ApiError>>,
+    ) -> Result<T, crate::error::ApiError> {
+        match tokio::time::timeout(self.0.derived_read_deadline, work).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(self.refuse(
+                crate::error::ApiErrorCode::Unavailable,
+                "the runtime did not answer this session's canonical history within the read deadline",
+            )),
+        }
+    }
+
+    async fn tail_window_recovering_epoch_once_unbounded(
         &self,
         adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
         identity: &kontor_core::state::NativeRuntimeIdentity,
@@ -578,6 +663,7 @@ impl ApiState {
             barrier: parts.barrier,
             signals: parts.signals,
             evidence_window_seconds: parts.evidence_window_seconds,
+            derived_read_deadline: parts.derived_read_deadline,
             applications: parts.applications,
         }))
     }

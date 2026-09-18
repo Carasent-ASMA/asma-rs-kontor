@@ -4056,6 +4056,69 @@ impl SqliteStore {
         })
     }
 
+    /// Record where an issued message was acknowledged to have landed.
+    ///
+    /// First write wins, and a contradictory one refuses. A retry of a delivery
+    /// whose acknowledgement was lost presents the same position and is a no-op;
+    /// a *different* position for an id already delivered is the runtime saying
+    /// the message landed twice, which is exactly the divergence the position
+    /// exists to catch, so it is refused here rather than resolved by
+    /// overwriting.
+    ///
+    /// # Errors
+    /// Backend failures, a conflict when this id was already delivered
+    /// elsewhere, and a conflict when no issuance was recorded at all — a
+    /// delivery for an id this realm never issued is not a row to repair.
+    pub fn record_message_delivery(
+        &self,
+        message_id: &str,
+        epoch: u64,
+        sequence: u64,
+    ) -> RepositoryResult<()> {
+        let epoch = i64::try_from(epoch).unwrap_or(i64::MAX);
+        let sequence = i64::try_from(sequence).unwrap_or(i64::MAX);
+        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
+        let held: Option<(Option<i64>, Option<i64>)> = transaction
+            .query_row(
+                "SELECT delivered_epoch, delivered_sequence
+                   FROM runtime_message_issuances WHERE message_id = ?1",
+                params![message_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(held) = held else {
+            return Err(RepositoryError::Conflict {
+                subject: "runtime_message_issuances.message_id",
+                rule: "no issuance was recorded for the message this delivery names",
+            });
+        };
+        match held {
+            (Some(at_epoch), Some(at_sequence)) => {
+                transaction.commit().map_err(backend)?;
+                if at_epoch == epoch && at_sequence == sequence {
+                    return Ok(());
+                }
+                return Err(RepositoryError::Conflict {
+                    subject: "runtime_message_issuances.delivered_sequence",
+                    rule: "this client message id was already delivered at a different position",
+                });
+            }
+            _ => {
+                transaction
+                    .execute(
+                        "UPDATE runtime_message_issuances
+                            SET delivered_epoch = ?2, delivered_sequence = ?3
+                          WHERE message_id = ?1",
+                        params![message_id, epoch, sequence],
+                    )
+                    .map_err(backend)?;
+            }
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
+
     /// The issuance recorded for one client message id, if Kontor issued it.
     ///
     /// Absence is meaningful and is not an error: it means this realm never
@@ -4064,7 +4127,7 @@ impl SqliteStore {
     /// # Errors
     /// Backend failures only.
     pub fn message_issuance(&self, message_id: &str) -> RepositoryResult<Option<MessageIssuance>> {
-        let row: Option<(
+        type IssuanceRow = (
             String,
             String,
             String,
@@ -4073,11 +4136,15 @@ impl SqliteStore {
             String,
             String,
             String,
-        )> = self
+            Option<i64>,
+            Option<i64>,
+        );
+        let row: Option<IssuanceRow> = self
             .connection
             .query_row(
                 "SELECT message_id, runtime_kind, host, runtime_binding_id,
-                        native_session_id, idempotency_key, provenance, issued_at
+                        native_session_id, idempotency_key, provenance, issued_at,
+                        delivered_epoch, delivered_sequence
                    FROM runtime_message_issuances WHERE message_id = ?1",
                 params![message_id],
                 |row| {
@@ -4090,6 +4157,8 @@ impl SqliteStore {
                         row.get(5)?,
                         row.get(6)?,
                         row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
                     ))
                 },
             )
@@ -4105,6 +4174,13 @@ impl SqliteStore {
                 idempotency_key: row.5,
                 provenance: row.6,
                 issued_at: read_timestamp(&row.7)?,
+                delivered_at: match (row.8, row.9) {
+                    (Some(epoch), Some(sequence)) => Some((
+                        u64::try_from(epoch).unwrap_or_default(),
+                        u64::try_from(sequence).unwrap_or_default(),
+                    )),
+                    _ => None,
+                },
             })
         })
         .transpose()
@@ -4255,6 +4331,13 @@ pub struct MessageIssuance {
     pub provenance: String,
     /// When it was recorded, before the runtime was asked to accept it.
     pub issued_at: Timestamp,
+    /// Where the runtime acknowledged it landing, once it did.
+    ///
+    /// `None` until a delivery is acknowledged, and permanently `None` for a
+    /// delivery whose acknowledgement was lost. A bounded observation treats
+    /// absence as "this realm cannot say which occurrence it meant" and refuses,
+    /// rather than assuming the newest one is the delivery.
+    pub delivered_at: Option<(u64, u64)>,
 }
 
 /// What recording an issuance did.

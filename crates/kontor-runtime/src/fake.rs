@@ -796,6 +796,8 @@ struct FakeState {
     repeat_next_tail_position: bool,
     /// Which event the next tail window should omit, counted from its newest.
     skip_next_tail_event: Option<usize>,
+    /// Whether every session read should simply never answer.
+    never_answer_session_reads: bool,
     /// Whether the next inspect should fail at the transport.
     ///
     /// Off the strict queue for the same reason as `lose_next_send_ack`, and a
@@ -1296,6 +1298,7 @@ impl ScriptedFakeRuntime {
                 refetch_until_epoch_refresh: false,
                 repeat_next_tail_position: false,
                 skip_next_tail_event: None,
+                never_answer_session_reads: false,
                 fail_next_inspect: false,
                 ignore_retitle_once: BTreeSet::new(),
                 task_title_scopes: BTreeMap::new(),
@@ -2101,6 +2104,34 @@ impl ScriptedFakeRuntime {
         self.lock().refetch_until_epoch_refresh = true;
     }
 
+    /// Never answer a session read, as an unreachable seat does.
+    ///
+    /// Not a refusal and not a dropped connection: the runtime is *there*, it
+    /// simply does not answer. That is the shape that made a live realm hang —
+    /// each request bounded correctly by the client's own deadline, and a read
+    /// that issues a page at a time paying that deadline per page until the
+    /// caller gave up. What must end the wait is the realm's own derived-read
+    /// deadline, and that is what a test asserts.
+    pub fn never_answer_session_reads(&self) {
+        self.lock().never_answer_session_reads = true;
+    }
+
+    /// Never answer, holding no lock while not answering.
+    ///
+    /// A pending future rather than a sleep, so this crate stays free of a
+    /// timer — and so the fake models the live shape exactly. The runtime is
+    /// reachable and simply never replies; what ends the wait is the caller's
+    /// own deadline, which is the thing under test. Reading the flag and
+    /// dropping the guard first is not incidental either: a lock held across
+    /// this await would serialize every caller behind the silent one, and the
+    /// property proven would be the fake's contention rather than the bound.
+    async fn stall(&self) {
+        let silent = self.lock().never_answer_session_reads;
+        if silent {
+            std::future::pending::<()>().await;
+        }
+    }
+
     /// Drop one event from the next tail window, leaving a forward gap.
     ///
     /// `from_end` counts back from the newest event, so a caller can put the
@@ -2397,6 +2428,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         page_size: u32,
         max_pages: usize,
     ) -> RuntimeResult<HistoryPage> {
+        self.stall().await;
         let mut state = self.lock();
         let declared = state.capabilities.clone();
         let generation = state.generation;
@@ -4335,6 +4367,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     }
 
     async fn history(&self, request: &HistoryRequest) -> RuntimeResult<HistoryPage> {
+        self.stall().await;
         let mut state = self.lock();
         let declared = state.capabilities.clone();
         let generation = state.generation;

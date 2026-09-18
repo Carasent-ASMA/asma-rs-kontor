@@ -87,6 +87,15 @@ pub const DEFAULT_PORT: u16 = 7717;
 /// How old a confirmation may be and still count as fresh, in seconds.
 pub const DEFAULT_EVIDENCE_WINDOW_SECONDS: i64 = 60;
 
+/// How long a derived runtime read may take in total, by default.
+///
+/// Smaller than the runtime client's own per-request deadline on purpose. A
+/// healthy read of a bounded window costs milliseconds; a session the runtime
+/// will not answer for costs the per-request deadline *per page*, and the page
+/// budget then multiplies it into minutes. Twenty seconds is far beyond any
+/// honest read and far below what the budgets can otherwise reach.
+pub const DEFAULT_DERIVED_READ_DEADLINE_SECONDS: u64 = 20;
+
 /// Maximum completion runs reconsidered in one resident scan.
 pub const COMPLETION_SCAN_PAGE: u32 = 64;
 
@@ -239,6 +248,22 @@ pub struct DaemonConfig {
     pub allowed_origins: Vec<String>,
     /// How old a confirmation may be and still count as fresh.
     pub evidence_window_seconds: i64,
+    /// How long a *derived* runtime read may take in total, across every
+    /// request it makes.
+    ///
+    /// The runtime client already bounds each individual request, and that is
+    /// not the same guarantee. A read that derives something — a settlement
+    /// proof, a current-turn observation — issues a page at a time under a page
+    /// budget, and against a session the runtime will not answer for, every one
+    /// of those pages costs the client's full per-request deadline. Multiplied
+    /// by the budget, a call that is bounded in requests is unbounded in the
+    /// only unit a caller experiences.
+    ///
+    /// So the operation carries its own deadline, and it is deliberately
+    /// smaller than one request's: a healthy multi-page read finishes in
+    /// milliseconds, so anything approaching this is a runtime that is not
+    /// answering, and waiting longer will not change that.
+    pub derived_read_deadline_seconds: u64,
     /// How many simultaneous runs this Realm admits, at every scope.
     ///
     /// Defaults to [`DEFAULT_CAPACITY`], which is what the composition root used
@@ -260,6 +285,7 @@ impl DaemonConfig {
             bind: SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT)),
             allowed_origins: kontor_api::auth::IngressPolicy::default().allowed_origins,
             evidence_window_seconds: DEFAULT_EVIDENCE_WINDOW_SECONDS,
+            derived_read_deadline_seconds: DEFAULT_DERIVED_READ_DEADLINE_SECONDS,
             capacity: DEFAULT_CAPACITY,
             jira_connectors: None,
         }
@@ -287,6 +313,18 @@ impl DaemonConfig {
     #[must_use]
     pub fn with_port(mut self, port: u16) -> Self {
         self.bind.set_port(port);
+        self
+    }
+
+    /// Bound every derived runtime read to `seconds` in total.
+    ///
+    /// Exists so a suite can prove the bound without waiting the production one
+    /// out: the property under test is that an unanswerable session is refused
+    /// *by the deadline* rather than by the caller giving up, and that is the
+    /// same property at one second as at twenty.
+    #[must_use]
+    pub const fn with_derived_read_deadline_seconds(mut self, seconds: u64) -> Self {
+        self.derived_read_deadline_seconds = seconds;
         self
     }
 
@@ -454,6 +492,9 @@ impl Daemon {
             barrier: SchedulingBarrier::new(),
             signals: StreamSignals::new(),
             evidence_window_seconds: config.evidence_window_seconds,
+            derived_read_deadline: std::time::Duration::from_secs(
+                config.derived_read_deadline_seconds.max(1),
+            ),
             applications: applications.clone(),
         });
         applications.attach(state.clone());

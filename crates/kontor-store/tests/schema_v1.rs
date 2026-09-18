@@ -340,6 +340,8 @@ fn issuance(message_id: &str, binding: &str, session: &str) -> kontor_store::Mes
         issued_at: "2026-09-17T00:00:00Z"
             .parse::<kontor_core::id::Timestamp>()
             .expect("a timestamp"),
+        // Recorded before the send, so there is no acknowledged position yet.
+        delivered_at: None,
     }
 }
 
@@ -400,6 +402,56 @@ fn a_message_issuance_is_unique_per_id_and_recognises_its_own_replay() {
             .message_issuance("01a0b000-0000-7000-8000-00000000dddd")
             .expect("the lookup runs")
             .is_none()
+    );
+
+    // A delivery position arrives later, from the acknowledgement, and once it
+    // is recorded it is the answer. Re-recording the same one is the retry of a
+    // delivery whose acknowledgement was lost and must be accepted; a different
+    // one is the runtime saying the message landed twice, which is the whole
+    // reason the position is kept and is refused rather than overwritten.
+    assert!(
+        store
+            .message_issuance(first)
+            .expect("reads")
+            .expect("there")
+            .delivered_at
+            .is_none(),
+        "an issuance carries no position until a delivery is acknowledged"
+    );
+    store
+        .record_message_delivery(first, 1, 42)
+        .expect("the acknowledged position records");
+    store
+        .record_message_delivery(first, 1, 42)
+        .expect("the same position again is the lost-acknowledgement retry");
+    assert_eq!(
+        store
+            .message_issuance(first)
+            .expect("reads")
+            .expect("there")
+            .delivered_at,
+        Some((1, 42))
+    );
+    let moved = store.record_message_delivery(first, 1, 99);
+    assert!(
+        moved.is_err(),
+        "an id already delivered may not claim a second position: {moved:?}"
+    );
+    assert_eq!(
+        store
+            .message_issuance(first)
+            .expect("reads")
+            .expect("there")
+            .delivered_at,
+        Some((1, 42)),
+        "and the refusal changed nothing"
+    );
+
+    // A delivery for an id this realm never issued is not a row to repair.
+    let unissued = store.record_message_delivery("01a0b000-0000-7000-8000-00000000dddd", 1, 7);
+    assert!(
+        unissued.is_err(),
+        "a delivery with no issuance is refused: {unissued:?}"
     );
 }
 
@@ -656,7 +708,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // against the exact binding it was issued to, so proving one unambiguous is
     // a key lookup instead of a walk of the session's whole canonical content —
     // which is what let observation become bounded (ASMA-8203).
-    assert_eq!(SCHEMA_VERSION, 104);
+    // v105 adds the position each issued message was acknowledged at, so a
+    // bounded observation can ask whether an occurrence is *the* delivery rather
+    // than whether it is the *only* one — the second needs a scan (ASMA-8203).
+    assert_eq!(SCHEMA_VERSION, 105);
 }
 
 #[test]

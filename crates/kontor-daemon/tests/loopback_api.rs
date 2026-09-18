@@ -24194,10 +24194,19 @@ fn issued_turn(
     kontor_runtime::timeline::TimelinePosition,
 ) {
     issue_message(world, snapshot, message_id);
-    world
+    let (message_at, response_at) = world
         .fake
         .observe_turn_completion(snapshot, message_id, kontor_api::now())
-        .expect("a completed turn")
+        .expect("a completed turn");
+    // A real send learns where the message landed from the acknowledgement and
+    // records it. A fixture that skipped this would be describing a delivery the
+    // realm never confirmed, which observation refuses on purpose.
+    world
+        .daemon
+        .state()
+        .record_message_delivery(message_id, message_at)
+        .expect("the delivery position records");
+    (message_at, response_at)
 }
 
 fn observe_current_turn(world: &World, project: &str, agent_run: &str) -> serde_json::Value {
@@ -25967,6 +25976,274 @@ async fn observing_refuses_a_current_turn_older_than_its_window() {
         refused.body.contains("rather than widening the read"),
         "the action names the bound instead of offering a longer scan: {}",
         refused.body
+    );
+}
+
+/// A duplicate whose first occurrence is outside the window is still caught.
+///
+/// The audit's P1 on the bounded observer. Uniqueness had two halves and each
+/// covered only what the other missed: the issuance ledger proved Kontor sent an
+/// id exactly once, and the window proved the id appeared once *inside* it.
+/// Neither proves what settlement needs — that the id appears once in canonical
+/// content — because a runtime that echoes a message produces two occurrences of
+/// a singly-issued id, and a window bounded to eight pages sees only the newer.
+/// The earlier one is excluded by not being looked at.
+///
+/// Counting the rest would be the scan the bound exists to remove, so the
+/// question is asked from the other side: the occurrence being reported must be
+/// the one the delivery was acknowledged at. Here the acknowledged delivery is
+/// pushed out of the window by later content and the id is echoed near the tail,
+/// so the window's occurrence is genuine-looking, singly-issued, singly-present
+/// in the window — and not where Kontor delivered it.
+#[tokio::test]
+async fn observing_refuses_a_duplicate_whose_delivery_is_outside_the_window() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+
+    // The real delivery, at the position the acknowledgement recorded.
+    let echoed = kontor_runtime::request::MessageId::generate();
+    let (delivered_at, _) = issued_turn(&world, &held, echoed);
+
+    // Enough later turns to push that delivery out of the bounded window.
+    for _ in 0..12 {
+        let _ = issued_turn(
+            &world,
+            &held,
+            kontor_runtime::request::MessageId::generate(),
+        );
+    }
+
+    // The runtime echoes the same id near the tail. Kontor issued it once, and
+    // inside the window it appears exactly once, so every check the auditor
+    // found insufficient passes.
+    let (echo_at, _) = world
+        .fake
+        .observe_turn_completion(&held, echoed, kontor_api::now())
+        .expect("the runtime echoes an already-delivered id");
+    assert!(
+        echo_at.sequence > delivered_at.sequence,
+        "the echo must be the newer occurrence for this to be the reported hole"
+    );
+
+    let refused = Call::get(format!("/v1/sessions/{run}/turns/current?limit=2"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        refused.status, 409,
+        "an occurrence that is not the acknowledged delivery must refuse: {}",
+        refused.body
+    );
+    assert_eq!(
+        refused.json()["rule"],
+        "the message naming the current turn is not at the position its delivery was acknowledged at",
+        "{}",
+        refused.body
+    );
+
+    // And nothing about the bound was given up to get there: the window is still
+    // eight pages, and the transcript in front of it was never read.
+    let reads = world
+        .fake
+        .calls()
+        .iter()
+        .filter(|call| {
+            matches!(
+                call,
+                kontor_runtime::fake::AdapterCall::TailWindow(_)
+                    | kontor_runtime::fake::AdapterCall::History(_)
+            )
+        })
+        .count();
+    assert!(
+        reads <= 4,
+        "the refusal stayed bounded rather than scanning for the duplicate: {reads} reads"
+    );
+}
+
+/// A derived read is bounded by the realm, not by the caller giving up.
+///
+/// The post-deployment gap. The runtime client bounds each request it makes,
+/// and that is a different guarantee from bounding the read: a derived read
+/// issues a page at a time under a page budget, and against a session the
+/// runtime will not answer for, every page costs the client's full per-request
+/// deadline. A settlement proof bounded at 64 window pages plus 64 trailing
+/// pages is bounded in requests and unbounded in wall clock — which is what a
+/// live realm showed, with settle retries hanging past a minute and timeline
+/// reads past thirty seconds while each individual request timed out correctly.
+///
+/// Both halves are asserted here, because a bound that refuses everything is
+/// not a fix: a live preserved session still reads, and only a session that
+/// never answers is refused — promptly, typed, and having written nothing.
+#[tokio::test]
+async fn a_derived_read_is_bounded_when_the_runtime_never_answers() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+    let newest = kontor_runtime::request::MessageId::generate();
+    let _ = issued_turn(&world, &held, newest);
+
+    // The live preserved session reads, and reads quickly.
+    let healthy = Call::get(format!("/v1/sessions/{run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        healthy.status, 200,
+        "a reachable session is still observable: {}",
+        healthy.body
+    );
+    assert_eq!(
+        healthy.json()["message_id"],
+        serde_json::json!(newest.to_string())
+    );
+
+    // Now the runtime stops answering. It is reachable and silent, which is the
+    // shape that hung: no refusal to map, no dropped connection, just no reply.
+    world.fake.never_answer_session_reads();
+
+    let started = std::time::Instant::now();
+    let refused = Call::get(format!("/v1/sessions/{run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let waited = started.elapsed();
+    assert_eq!(
+        refused.status, 503,
+        "a session that never answers is refused, not waited on: {}",
+        refused.body
+    );
+    assert_eq!(refused.code(), "unavailable", "{}", refused.body);
+    assert!(
+        refused.body.contains("within the read deadline"),
+        "the refusal says what actually happened: {}",
+        refused.body
+    );
+    // The realm's own deadline ended it. Without the bound this call does not
+    // return at all, so the assertion is on the bound rather than on a race.
+    assert!(
+        waited < std::time::Duration::from_secs(10),
+        "the read ended on the realm's deadline, not the caller's patience: {waited:?}"
+    );
+}
+
+/// Settlement inherits the same bound, and commits nothing when it fires.
+#[tokio::test]
+async fn a_settlement_against_a_silent_runtime_is_bounded_and_writes_nothing() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "silent-runtime-settle").await;
+    let seat = seats.as_array().expect("seats")[0].clone();
+    let agent_run = seat["agent_run_id"].as_str().expect("id").to_owned();
+    let role_slot = seat["role_slot"].as_str().expect("slot").to_owned();
+    let task = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]
+        .clone();
+    let revision = task["revision"].as_u64().expect("a revision");
+    let task_id = TaskId::parse(task["task_id"].as_str().expect("a task id")).expect("a task id");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let proof = observe_current_turn(&world, &project, &agent_run);
+
+    world.fake.never_answer_session_reads();
+
+    let started = std::time::Instant::now();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{agent_run}/turns:settle"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": revision,
+            "runtime_proof": proof,
+            "artifacts": ["change-set"]
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("silent-runtime-settle-key")
+    .send(&world)
+    .await;
+    let waited = started.elapsed();
+    assert!(
+        !refused.status.is_success(),
+        "a proof that cannot be read is not settled: {} {}",
+        refused.status,
+        refused.body
+    );
+    assert!(
+        waited < std::time::Duration::from_secs(10),
+        "settlement ended on the realm's deadline: {waited:?}"
+    );
+    let turns = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_settled_turns(project_id, task_id))
+        .expect("settled turns read");
+    assert!(turns.is_empty(), "the refusal wrote nothing: {turns:?}");
+}
+
+/// A session this process does not hold is refused without asking the runtime.
+///
+/// The startup report that came with the hang classified 315 bindings
+/// `needs_review`, and a binding whose snapshot was never restored has nothing
+/// to ask a runtime *about*. Refusing it costs one registry lookup, and must
+/// not cost a request — least of all one that then waits out a deadline.
+#[tokio::test]
+async fn an_unattested_session_is_refused_without_reaching_the_runtime() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+
+    // Exactly what a refused restore leaves behind: the run and its binding are
+    // durable, and this process holds no frozen snapshot for them.
+    world
+        .daemon
+        .state()
+        .sessions()
+        .forget(snapshot.binding_id());
+    world.fake.never_answer_session_reads();
+
+    let before = world.fake.calls().len();
+    let started = std::time::Instant::now();
+    let refused = Call::get(format!("/v1/sessions/{run}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let waited = started.elapsed();
+    assert!(
+        !refused.status.is_success(),
+        "an unattested session is refused: {} {}",
+        refused.status,
+        refused.body
+    );
+    assert_eq!(
+        refused.code(),
+        "stale_binding",
+        "and it is refused as what it is: {}",
+        refused.body
+    );
+    assert!(
+        waited < std::time::Duration::from_secs(1),
+        "the refusal is immediate, not deadline-shaped: {waited:?}"
+    );
+    assert_eq!(
+        world.fake.calls().len(),
+        before,
+        "and no request was made about a session this process does not hold"
     );
 }
 

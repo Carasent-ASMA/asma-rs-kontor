@@ -5010,7 +5010,12 @@ impl Services {
             &message_id.to_string(),
         )?;
         match adapter.send(&request).await {
-            Ok(_) => {
+            Ok(acknowledged) => {
+                // The same delivery position the operator path records, for the
+                // same reason: a follow-up is a Kontor-minted id in a session,
+                // and an observation of the turn it opens has to be able to tell
+                // the occurrence Kontor delivered from any other mention of it.
+                state.record_message_delivery(message_id, acknowledged.position)?;
                 state
                     .with_store(|store| {
                         store.mark_turn_dispatched(settled.id, &handoff.to_slot, target)

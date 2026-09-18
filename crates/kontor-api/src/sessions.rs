@@ -896,6 +896,35 @@ async fn observe_from_tail(
             "the message naming the current turn was issued to a different session",
         ));
     }
+    // One issuance is not one occurrence. The ledger proves Kontor sent this id
+    // exactly once; it says nothing about how many times the runtime's canonical
+    // content mentions it, and a window bounded to the tail sees only the newest
+    // of several. Counting the rest would be the scan the bound removed — so the
+    // question is turned around: the occurrence being reported must be the one
+    // the delivery was acknowledged at. An earlier duplicate then cannot be
+    // reported, because it is not at that position, and a later echo cannot
+    // either.
+    let Some((delivered_epoch, delivered_sequence)) = issuance.delivered_at else {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::NotFound,
+            "this realm holds no acknowledged delivery position for the message naming the current turn",
+        )
+        .advising(
+            "send this seat one new Kontor message and observe the turn it opens; a delivery whose acknowledgement was lost cannot say which occurrence it meant and is never assumed",
+        ));
+    };
+    if message_position.epoch != delivered_epoch || message_position.sequence != delivered_sequence
+    {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "the message naming the current turn is not at the position its delivery was acknowledged at",
+        )
+        .advising(
+            "this id appears in the session's canonical content somewhere other than where Kontor delivered it; settle nothing on it and send a new message",
+        ));
+    }
 
     let response_position = response.ok_or_else(|| {
         ApiError::new(
@@ -1043,6 +1072,14 @@ pub async fn send_message(
         })
         .await
         .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+    // Where it landed, recorded the moment the runtime says so. The issuance
+    // row already proves Kontor sent this id once; this is the other half a
+    // bounded observation needs, because one issuance does not mean one
+    // occurrence — a runtime that echoes a message produces two, and a window
+    // sees only the newer.
+    state
+        .record_message_delivery(message_id, acknowledged.position)
+        .map_err(after_delivery)?;
     // Acceptance says only that the message effect landed. The runtime's fresh
     // readback decides whether the same native seat is running, waiting or in
     // another state, and the shared reducer advances its AgentRun and TeamRun
@@ -1142,7 +1179,23 @@ pub async fn respond_permission(
 /// acknowledgement and a contradictory one is owed a typed conflict, and a check
 /// that refused everything already resolved would turn both of those into "no
 /// such request".
+///
+/// The scan is held to the realm's derived-read deadline for the same reason
+/// settlement and observation are: it pages until the runtime says there is no
+/// more, and against a session that never answers, every page costs the runtime
+/// client's full per-request deadline. Bounding the requests is not bounding the
+/// read.
 async fn ensure_raised_here(
+    state: &ApiState,
+    session: &Session,
+    permission_id: &ExternalId,
+) -> Result<(), ApiError> {
+    state
+        .within_derived_read_deadline(ensure_raised_here_unbounded(state, session, permission_id))
+        .await
+}
+
+async fn ensure_raised_here_unbounded(
     state: &ApiState,
     session: &Session,
     permission_id: &ExternalId,

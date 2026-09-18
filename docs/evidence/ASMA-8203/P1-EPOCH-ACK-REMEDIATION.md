@@ -166,22 +166,24 @@ epoch agreement verbatim. `next` is always `None`: the window ends at the tail.
 Observation reads it through the same one-refresh-one-retry recovery and the same
 persist-before-expose barrier as any other read, with `TAIL_WINDOW_PAGES = 8`.
 
-### Why this did not cost the exactly-once boundary
+### What the issuance ledger does and does not prove
 
-A bounded window can only prove a message id unique *within* the window, and the
-previous audit pinned global uniqueness with an explicit control. Rather than
-narrow that invariant, uniqueness moved to where it is actually known.
+**Corrected.** An earlier revision of this document claimed the ledger made a
+*stronger* statement than counting occurrences, and that a repeat of an id was
+still refused. Both were overstated, and a later audit was right to reject on it.
+The precise statements are:
 
-Every client message id this realm puts into a session is minted by this realm,
-so `runtime_message_issuances` records the issuance and "was this id issued
-exactly once, to exactly this binding?" becomes a primary-key lookup. That is a
-*stronger* statement than counting occurrences in content the realm does not
-control, and it costs one read instead of a walk.
+- `runtime_message_issuances` proves **one issuance**: this realm minted the id
+  once and issued it to exactly one binding. That is a primary-key lookup.
+- The bounded window proves **one occurrence inside the window**.
+- Neither proves **one canonical occurrence**. A runtime that echoes a message
+  produces two mentions of a singly-issued id, and a window bounded to the tail
+  sees only the newer — the earlier is excluded by not being looked at.
 
-The transcript is still consulted for what only it can answer: the occurrence of
-the message, its terminal response, and that nothing followed. A window-local
-repeat of the same id is still refused — a runtime echoing an id twice is
-divergence the ledger cannot see.
+Counting the rest is the scan the bound exists to remove, so the missing half is
+supplied in v105 by pinning the delivery position rather than by scanning; see
+*Occurrence pinning* below. Until that pin is checked, the ledger alone is not a
+uniqueness proof and must not be described as one.
 
 Nothing is backfilled. A message issued before the ledger existed has no row and
 never will, and observation refuses it with an action rather than guessing: send
@@ -298,6 +300,124 @@ The repeat and skip refusals are one fence now, so
 No schema change: migration `0104` and every schema-104 behaviour are untouched,
 as are the seams the verifier had already passed.
 
+## Post-deployment: the reads were bounded in requests, not in time
+
+Approved gap `operational-gap-kontor-proof-reader-hang-20260918` rev 3
+(approval `01a0b520-7e65-7ef2-a0ea-dd6fc0a4098b`). After `af0d1896` + schema 104
+deployed with identities preserved, settle retries for ASMA-8205 and ASMA-8202
+hung past a minute and committed nothing, timeline reads for the ASMA-8203 and
+ASMA-8193 verifier runs hung past thirty seconds, and startup logged stale-binding
+restore refusals with 315 bindings `needs_review`.
+
+### Root cause: missing bounded *operation* timeout
+
+Not pagination, not transport, not stale-binding handling.
+`PaseoTransport::request` already wraps every request in
+`tokio::time::timeout(timeout_seconds)`, defaulting to **30 seconds**, so each
+individual request behaved correctly. What had no bound was the **read**.
+
+A derived read issues a page at a time under a page budget, and against a session
+the runtime will not answer for, every page costs that full 30 seconds. A
+settlement proof is bounded at 64 window pages plus a refresh, a retry and 64
+trailing pages — bounded in requests, unbounded in the only unit a caller feels.
+The arithmetic matches the report exactly: a timeline read hanging past 30s is
+*one* request timing out; a settle hanging past 60s is a chain of them, ended by
+the caller rather than by the realm. The 315 `needs_review` bindings are the
+supply of unanswerable sessions, not the mechanism.
+
+### The correction
+
+`ApiState` carries a `derived_read_deadline`, plumbed through `DaemonConfig`
+exactly like `evidence_window_seconds`, defaulting to **20 seconds** —
+deliberately below one request's own deadline, because a healthy bounded read
+costs milliseconds and anything approaching this is a runtime that is not
+answering. It wraps every runtime-history seam:
+
+- `history_recovering_epoch_once`
+- `tail_window_recovering_epoch_once`
+- `ensure_raised_here`
+
+The third was not in the report and is the same defect: it paged in an unbounded
+`loop` with no page budget at all. Elapsing is reported as the runtime being
+unreachable and writes nothing; a settlement's own mapping then names it an
+incomplete proof scan and tells the operator to settle the same turn again later.
+
+A session this process holds no snapshot for is still refused by one registry
+lookup, before any request — which is what matters when 315 bindings did not
+restore.
+
+## Occurrence pinning: one issuance is not one occurrence
+
+Approved audit `artifact-asma-8203-high-audit-report-af0d1896` revision
+`01a0b533-07c5-75c2-93e8-e2c89ff9f278` rejected on the gap named above: the
+no-cursor observer checked occurrences only inside its eight-page window, so an
+earlier duplicate outside it could be excluded while the current one was
+accepted.
+
+Counting the rest would reinstate the scan, so the question is asked from the
+other side. `MessageAck` already reports the position a message landed at, which
+is a fact about *this delivery* rather than about the transcript. Migration
+**0105** adds nullable `delivered_epoch` / `delivered_sequence` to the v104
+ledger; both issuing paths — `send_message` and `deliver_follow_up` — record the
+acknowledged position after delivery; and the bounded observation requires the
+occurrence it reports to sit exactly there.
+
+"Is this the only occurrence?" needs a scan. "Is this the occurrence Kontor
+delivered?" is a lookup and a comparison. An earlier duplicate cannot be reported
+because it is not at the recorded position, and a later echo cannot either.
+
+The position is first-write-wins: re-recording the same one is the retry of a
+delivery whose acknowledgement was lost and is accepted; a *different* position
+for an id already delivered is the runtime saying the message landed twice, and
+is refused rather than overwritten. A row that never gains a position — a
+delivery whose acknowledgement was lost — is refused with the same action as a
+pre-ledger id, because the realm cannot say which occurrence was meant.
+
+Preserved: no origin walk, bounded latency, issuance uniqueness, forward-gap
+continuity, and every identity.
+
+### Schema and deployment expectation
+
+This head carries **104 → 105**. Schema 104 is already live, so 0105 is an
+ordinary forward migration, but the redeploy readback changes from "must reach
+104" to "must reach 105", and the pre-deploy backup is migration cover. The
+migration-slot collision with ASMA-8193 now covers **both** `0104` and `0105`:
+whichever lane lands second renumbers, and the `const` assert makes a duplicate
+slot a compile failure rather than a silent conflict.
+
+## Suite evidence — combined hotfix cut
+
+`/tmp/p1-occurrence-suites.log`, one `===ALL-DONE===` marker, `--no-fail-fast`
+throughout.
+
+| Phase | Result |
+|---|---|
+| `kontor-store`, `kontor-runtime`, `kontor-api`, `kontor-runtime-paseo`, `kontor-mcp` | 49 blocks (incl. 5 doc-test blocks), **1057 passed, 0 failures** |
+| `kontor-daemon --test loopback_api` | **369 passed, 8 failed, 1 ignored** |
+| `kontor-tests-contract` | 9 blocks, **all ok**, 0 failures |
+
+Counts reconcile: loopback 378 total = 374 at the continuity cut + the 4 new
+regressions in this one (`a_derived_read_is_bounded_when_the_runtime_never_answers`,
+`a_settlement_against_a_silent_runtime_is_bounded_and_writes_nothing`,
+`an_unattested_session_is_refused_without_reaching_the_runtime`,
+`observing_refuses_a_duplicate_whose_delivery_is_outside_the_window`). All five
+new or extended tests passed, including the store's
+`a_message_issuance_is_unique_per_id_and_recognises_its_own_replay`.
+
+The eight loopback failures are the unchanged known baseline set, verified
+identical at base `86ba6065`: six fail with code `unavailable` / "the configured
+native Jira connector could not answer"; `a_session_key_must_be_a_stable_client_message_id`
+fails on the `MessageId::derive` change from master `9d5a81b5` (#222); and
+`replaying_a_partial_admission_delivers_its_durable_follow_up` fails with
+`revision_conflict` from a hardcoded expected revision. None touch the derived-read
+deadline, the delivery-position pin, the bounded window, the continuity fence or
+the issuance ledger.
+
+`--no-fail-fast` is used deliberately: an earlier run without it let a
+contention flake in one store binary stop cargo scheduling, silently truncating
+four targets and every doc-test, and "37 blocks with one known flake" would have
+read as a clean phase.
+
 ## Suite evidence — continuity cut (`6ae38e6d`)
 
 `/tmp/p1-continuity-suites.log`, one `===ALL-DONE===` marker, plus
@@ -380,7 +500,7 @@ running concurrently in another worktree, taking 163–168s for a block that tak
 ~2s alone. It passes in isolation and passed in this final run. It is SQLite lock
 contention, not a logic fault.
 
-## Mutation — all eleven killed
+## Mutation — all fourteen killed
 
 Three separate defects are closed in this remediation, and each was proven by
 mutation on the exact seam it fixes.
@@ -398,6 +518,19 @@ mutation on the exact seam it fixes.
 | N4 | issuance ledger | observation drops the binding-match guard | killed — an id issued to another session was accepted 200 |
 | C1 | window continuity | adjacency reverted to ascending | killed — 200 with `message_sequence: 11, response_sequence: 14`, a tuple spanning the hole |
 | C2 | Paseo page merge | join reverted to backward progress only | killed — window contained `1,2,3,4,6,7` |
+| D1 | derived-read deadline | the operation timeout removed | **killed by hanging** — the same test returns in ~1s with the deadline and never returns without it; observed still running at 20s, 30s and 40s before being terminated |
+| E1 | occurrence pinning | the delivered-position comparison removed | killed — returned **200** with `message_sequence: 33`, accepting the tail echo as a settleable tuple while the real delivery sat outside the window: the audited defect reproduced |
+| E2 | delivery record | a contradictory delivery position accepted | killed — `an id already delivered may not claim a second position: Ok(())` |
+
+D1 is the one mutant whose kill is a hang rather than an assertion, and that is
+the honest shape of it: without an operation deadline there is no failure to
+report, only a call that does not come back. It was run in the background,
+observed not to return, and terminated.
+
+E1 is non-vacuous in the specific way the audit required: the echoed id has a
+recorded delivery position, so the test reaches the position comparison rather
+than the missing-position branch, and the assertion is on the exact rule text so
+it cannot pass by refusing for some other reason.
 
 M3 survived its first attempt: the durability assertion was vacuous because an
 earlier ordinary read in the same fixture had already persisted the mapping. The
