@@ -676,6 +676,20 @@ struct CoreTeamRoutePlan {
     completion_pin: Option<StoredEpicCompletion>,
     /// Digest of the exact resolved Core Team seats document.
     core_team_definition_hash: ContentHash,
+    /// The exact native project the ECP container hangs under.
+    ///
+    /// Paseo's own `prj_*` identity, not this realm's project UUID: a workspace
+    /// id is only that workspace inside one native project, so placement that
+    /// omits the parent is not placement evidence.
+    native_parent_project_id: Option<ExternalId>,
+    /// The exact canonical intent the preview hash is taken over.
+    ///
+    /// Carried rather than recomputed so preview returns the document and its
+    /// digest from one canonicalization. A caller re-deriving the hash from the
+    /// returned bytes must be checking the bytes the server hashed, and two
+    /// canonicalizations of "the same" value is exactly how that stops being
+    /// true.
+    preview_intent: CanonicalDocument,
     /// The exact immutable provider reading this plan committed to, for
     /// stale-native succession only.
     headroom: Option<ProviderUsageObservation>,
@@ -7231,13 +7245,17 @@ impl Services {
                 .await
             {
                 Ok(inspection) => inspection.state.is_live(),
-                // The runtime holds a native for this seat that is not the
-                // exact predecessor. That *is* the answer to "is the
-                // predecessor still live", not a failure to answer it: a launch
-                // whose acknowledgement was lost leaves precisely this state,
-                // and refusing here would wedge the seat on the very retry that
+                // The runtime proved this predecessor is gone rather than
+                // declining to answer: it holds a different native for the seat
+                // (a lost launch acknowledgement leaves exactly that), or the
+                // exact session no longer exists or is already terminal.
+                // Refusing here would wedge the seat on the very retry that
                 // exists to recover it.
-                Err(RuntimeError::CorrelationFailed) => false,
+                //
+                // Every other refusal — a working or permission-waiting
+                // session, a wrong runtime or generation, a disposition this
+                // build has not audited — still refuses.
+                Err(error) if error.proves_hosted_predecessor_absent() => false,
                 Err(error) => {
                     return Err(ApiError::from_runtime(state.realm_id(), &error));
                 }
@@ -7304,6 +7322,13 @@ impl Services {
                     "the Core Team control plane has no persisted native container",
                 )
             })?;
+        // Resolved here, before the preview document is built, because it is a
+        // fenced placement fact and not a decoration: an ECP workspace that is
+        // the same id under a different native project is a different place,
+        // and a value that never enters the canonical document is never
+        // compared at apply.
+        let native_parent_project_id =
+            self.persisted_native_project_ancestor(project_id, &node, &container)?;
         // Absent rather than invented: an epic that has frozen no completion
         // contract has no profile pin to fence, and saying so is not the same
         // as fencing on a profile nobody published.
@@ -7399,6 +7424,12 @@ impl Services {
                 "container_host": container.identity.host.as_str(),
                 "container_generation": container.identity.generation,
                 "container_native_id": container.identity.native_id.as_str(),
+                // Paseo's own `prj_*`. The workspace id above is only that
+                // workspace inside this project, so the parent is part of
+                // where the seat is, not context about it.
+                "native_parent_project": native_parent_project_id
+                    .as_ref()
+                    .map(ExternalId::as_str),
                 // Deliberately not the container or node revision: those are
                 // readback counters that ordinary reconciliation moves. Fencing
                 // them would expire a preview for a reason that has nothing to
@@ -7449,7 +7480,8 @@ impl Services {
         if stale_native_recovery {
             preview_document["stale_native_recovery"] = serde_json::Value::Bool(true);
         }
-        let preview_hash = self.preview_hash(&preview_document)?;
+        let preview_intent = self.intent(&preview_document)?;
+        let preview_hash = preview_intent.hash().clone();
         Ok(CoreTeamRoutePlan {
             epic,
             roster,
@@ -7465,6 +7497,8 @@ impl Services {
             team_definition,
             completion_pin,
             core_team_definition_hash: core_team_definition.hash().clone(),
+            native_parent_project_id,
+            preview_intent,
             headroom,
             preview_hash,
         })
@@ -7645,13 +7679,27 @@ impl Services {
             successor: occupant(successor, successor_occupancy_generation),
             placement: CoreTeamRoutePlacementDto {
                 topology_node_id: plan.node.id,
+                project_id: plan.container.project_id,
+                native_parent_project_id: plan.native_parent_project_id.clone(),
                 container_binding_id: plan.container.container_binding_id.clone(),
                 container_native_id: plan.container.identity.native_id.clone(),
+                container_runtime_kind: plan
+                    .container
+                    .identity
+                    .runtime_kind
+                    .as_str()
+                    .to_owned(),
+                container_host: plan.container.identity.host.as_str().to_owned(),
+                container_generation: plan.container.identity.generation,
                 canonical_cwd: plan
                     .container
                     .canonical_cwd
                     .as_ref()
                     .map(|cwd| cwd.as_str().to_owned()),
+                // The exact conversation the retirement fence was taken
+                // against, which is what proves the predecessor was retired
+                // from the home it was previewed in.
+                provider_correlation: plan.predecessor.provider_session_id.clone(),
             },
             approved_model_route: runtime_model_route_dto(&plan.desired),
             approved_route_digest: plan.approved_route.hash().clone(),
@@ -8941,6 +8989,53 @@ impl Services {
                 requested_at: kontor_api::now(),
             },
             adapter,
+        ))
+    }
+
+    /// The exact native project a node's container hangs under.
+    ///
+    /// The same walk the retitle, archive and recovery requests use: climb the
+    /// logical parents until a persisted binding reports itself as a native
+    /// project, and answer with that binding's native id. It is sourced from
+    /// the container bindings the adapter established and read back, not from a
+    /// Kontor identifier and not from a mutable runtime title.
+    ///
+    /// A native root has no parent project and answers `None`. A child with no
+    /// persisted project ancestor is a placement this realm cannot prove, and
+    /// refuses rather than guessing.
+    fn persisted_native_project_ancestor(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        binding: &NativeContainerBinding,
+    ) -> Result<Option<ExternalId>, ApiError> {
+        if binding.observed_kind == ObservedContainerKind::Project {
+            return Ok(None);
+        }
+        let state = self.state()?;
+        let mut parent_id = node.parent_id;
+        while let Some(candidate_id) = parent_id {
+            let candidate = state
+                .with_store(|store| store.get_topology_node(project_id, candidate_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the container's parent is not in this project's topology",
+                    )
+                })?;
+            if let Some(candidate_binding) = state
+                .with_store(|store| store.get_topology_node_container(project_id, candidate_id))
+                .map_err(|error| self.refuse(&error))?
+                && candidate_binding.observed_kind == ObservedContainerKind::Project
+            {
+                return Ok(Some(candidate_binding.identity.native_id));
+            }
+            parent_id = candidate.parent_id;
+        }
+        Err(self.deny(
+            ApiErrorCode::PlacementBlocked,
+            "the native child has no persisted native project ancestor",
         ))
     }
 
@@ -22541,6 +22636,15 @@ impl ApplicationOperations for Services {
                 .team_definition
                 .as_ref()
                 .map(|pinned| Self::pinned_team_definition_dto(&pinned.definition)),
+            // The exact bytes the digest below was taken over, parsed back from
+            // the canonical form rather than re-serialized from the value.
+            preview_intent: serde_json::from_str(plan.preview_intent.json()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the Core Team route preview intent could not be rendered",
+                )
+            })?,
+            preview_intent_schema_version: plan.preview_intent.schema_version().get(),
             headroom_evidence,
             preview_hash: plan.preview_hash,
             snapshot_cursor: self.cursor()?,
@@ -22630,6 +22734,41 @@ impl ApplicationOperations for Services {
                         "the recorded Core Team succession readback could not be decoded",
                     )
                 })?;
+            // Verified, not merely decoded. The stored bytes must still digest
+            // to the digest recorded beside them, and the identities they
+            // describe must be the ones the ledger's own columns record. The
+            // two are written by different layers — the readback by this
+            // service, the columns by the store from the seat rows it moved —
+            // so agreement between them is real evidence rather than a
+            // restatement, and a readback naming a native the transition never
+            // installed cannot be answered with.
+            let recomputed = self.intent(&serde_json::json!({
+                "schema_version": 1,
+                "readback": recorded.readback,
+            }))?;
+            if recomputed.hash() != &recorded.readback_hash
+                || readback.seat_binding_id != recorded.seat_binding_id
+                || readback.predecessor.native_id != recorded.predecessor_native_id
+                || readback.successor.native_id != recorded.successor_native_id
+                || readback.predecessor.generation != recorded.predecessor_generation
+                || readback.successor.generation != recorded.successor_generation
+                || readback.predecessor.occupancy_generation
+                    != recorded.predecessor_occupancy_generation
+                || readback.successor.occupancy_generation
+                    != recorded.successor_occupancy_generation
+                // Compared against the independent column, Option shape
+                // included: a readback that names another native project — or
+                // names one where none was recorded, or none where one was — is
+                // describing a placement this succession did not run in, and
+                // re-digesting it consistently does not make it true.
+                || readback.placement.native_parent_project_id
+                    != recorded.native_parent_project_id
+            {
+                return Err(self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the recorded Core Team succession readback does not match its own ledger row",
+                ));
+            }
             return Ok(CoreTeamRouteOutcomeDto {
                 core_team: self.epic_core_team_dto(project_id, epic_id, &roster)?,
                 seat_binding_id: recorded.seat_binding_id,
@@ -22811,11 +22950,21 @@ impl ApplicationOperations for Services {
                 .await
             {
                 Ok(inspection) => inspection.state.is_live().then_some(inspection),
-                // The seat's native is no longer this predecessor at all. A
-                // launch whose acknowledgement was lost leaves exactly that,
-                // and the retry it needs must not be refused as if the
-                // predecessor were still holding the seat.
-                Err(RuntimeError::CorrelationFailed) => None,
+                // The same closed classification the plan used, re-asked
+                // immediately before the archive because the answer may have
+                // changed since. A predecessor the runtime proves gone — a
+                // different native on the seat, a session that no longer
+                // exists, or one already terminal — has nothing left to
+                // archive. This is the shape the live ASMA-8098 TPM recovery
+                // hit: a closed predecessor answered `stale_binding` and the
+                // apply refused instead of converging.
+                //
+                // Nothing else is read as absence. A session that is working,
+                // waiting on a permission request, addressed on another runtime
+                // or generation, or in an unaudited disposition still refuses
+                // with no effect, and every CAS and identity fence above is
+                // unchanged.
+                Err(error) if error.proves_hosted_predecessor_absent() => None,
                 Err(error) => {
                     return Err(ApiError::from_runtime(state.realm_id(), &error));
                 }
@@ -23001,6 +23150,10 @@ impl ApplicationOperations for Services {
                 seat_binding_id: plan.binding.id,
                 predecessor_occupancy_generation: plan.occupancy_generation,
                 successor_occupancy_generation,
+                // Written as its own column, from the plan, so a replay has a
+                // source independent of the readback document to check the
+                // readback's parent against.
+                native_parent_project_id: plan.native_parent_project_id.clone(),
                 readback: readback_value,
                 readback_hash: readback_document.hash().clone(),
                 recorded_at: kontor_api::now(),

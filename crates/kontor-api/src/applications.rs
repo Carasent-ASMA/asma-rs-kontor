@@ -1021,15 +1021,46 @@ pub struct CoreTeamRoutePlacementDto {
     /// Control-plane node hosting the seat.
     #[schema(value_type = String)]
     pub topology_node_id: TopologyNodeId,
+    /// This realm's own project identifier for the binding.
+    ///
+    /// A Kontor UUID. Deliberately named for what it is: it is not the
+    /// runtime's project identity and cannot stand in for one.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The exact native project the container hangs under — Paseo's `prj_*`.
+    ///
+    /// A workspace id is only that workspace inside one native project, so a
+    /// placement that names the container without its parent is not placement
+    /// evidence. Sourced from the persisted container-binding ancestry the
+    /// adapter established and read back, never from the Kontor project id and
+    /// never from a mutable runtime title. Absent only for a native root, which
+    /// has no parent project.
+    #[schema(value_type = Option<String>)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_parent_project_id: Option<ExternalId>,
     /// Durable container binding.
     #[schema(value_type = String)]
     pub container_binding_id: ExternalId,
     /// Exact native workspace identity.
     #[schema(value_type = String)]
     pub container_native_id: ExternalId,
+    /// Runtime family the container belongs to.
+    pub container_runtime_kind: String,
+    /// Host the container was placed on.
+    pub container_host: String,
+    /// Runtime generation the container identity belongs to.
+    ///
+    /// Part of the identity rather than a readback counter: a native id means
+    /// nothing outside the generation that issued it, and a restart that
+    /// replaced the container keeps the id while moving the generation.
+    pub container_generation: u64,
     /// Canonical working directory, when one is persisted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub canonical_cwd: Option<String>,
+    /// The predecessor provider conversation the retirement was fenced on.
+    #[schema(value_type = Option<String>)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_correlation: Option<ExternalId>,
 }
 
 /// The complete durable evidence one Core Team succession produced.
@@ -1097,6 +1128,17 @@ pub struct CoreTeamRoutePreviewDto {
     /// The epic's pinned Team Definition, fenced by id, version and digest.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_definition: Option<PinnedTeamDefinitionDto>,
+    /// The complete canonical intent document `preview_hash` is taken over.
+    ///
+    /// Returned so the fence is auditable rather than opaque: a caller sees
+    /// every value the apply will compare and can re-derive `preview_hash` from
+    /// these exact bytes. It is the server's canonical form — keys ordered, no
+    /// insignificant whitespace — so the rendering is deterministic and two
+    /// previews of unchanged state are byte-identical.
+    #[schema(value_type = Object)]
+    pub preview_intent: serde_json::Value,
+    /// Schema version of that canonical document.
+    pub preview_intent_schema_version: u32,
     /// The provider reading this preview committed to.
     ///
     /// Present only for stale-native succession, which is the one branch that

@@ -571,6 +571,8 @@ pub struct NewCoreTeamRouteSuccession {
     pub predecessor_occupancy_generation: u64,
     /// Occupancy generation this command installed.
     pub successor_occupancy_generation: u64,
+    /// The exact native project the ECP container hung under.
+    pub native_parent_project_id: Option<ExternalId>,
     /// The complete final readback, persisted rather than recomputed.
     pub readback: serde_json::Value,
     /// Digest of that readback.
@@ -605,6 +607,8 @@ pub struct StoredCoreTeamRouteSuccession {
     pub predecessor_occupancy_generation: u64,
     /// Occupancy generation this command installed.
     pub successor_occupancy_generation: u64,
+    /// The exact native project the ECP container hung under.
+    pub native_parent_project_id: Option<ExternalId>,
     /// The complete final readback this command produced.
     pub readback: serde_json::Value,
     /// Digest of that readback.

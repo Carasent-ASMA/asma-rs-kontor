@@ -52,6 +52,16 @@ CREATE TABLE core_team_route_successions (
     -- Persisted rather than recomputed because recomputation answers with the
     -- seat's *current* state, which is precisely the wrong answer once the seat
     -- has moved on (F-8187-V3).
+    -- The exact native project the ECP container hung under when the
+    -- succession committed — Paseo's own `prj_*`, not this realm's project
+    -- UUID. Held as its own column so a replay can prove the persisted
+    -- readback names the parent the transition actually ran in, rather than
+    -- re-asserting whatever the readback happens to say. NULL only for a
+    -- native root, which has no parent project.
+    native_parent_project_id        TEXT NULL CHECK (
+        native_parent_project_id IS NULL
+        OR length(native_parent_project_id) BETWEEN 1 AND 256
+    ),
     readback                        TEXT NOT NULL CHECK (json_valid(readback)),
     readback_hash                   TEXT NOT NULL CHECK (
         length(readback_hash) = 64 AND readback_hash NOT GLOB '*[^0-9a-f]*'
@@ -105,6 +115,7 @@ WHEN OLD.idempotency_key IS NOT NEW.idempotency_key
   OR OLD.successor_generation IS NOT NEW.successor_generation
   OR OLD.predecessor_occupancy_generation IS NOT NEW.predecessor_occupancy_generation
   OR OLD.successor_occupancy_generation IS NOT NEW.successor_occupancy_generation
+  OR OLD.native_parent_project_id IS NOT NEW.native_parent_project_id
   OR OLD.readback IS NOT NEW.readback
   OR OLD.readback_hash IS NOT NEW.readback_hash
   OR OLD.recorded_at IS NOT NEW.recorded_at

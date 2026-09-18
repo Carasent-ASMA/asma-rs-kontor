@@ -718,6 +718,9 @@ struct FakeState {
     hosted_seat_permissions: BTreeMap<ExternalId, Vec<ExternalId>>,
     /// Seats whose next launch takes effect and then loses its acknowledgement.
     lose_hosted_launch_ack_once: BTreeSet<SeatBindingId>,
+    /// An exact `StaleBinding` rule the next hosted-seat inspection answers
+    /// with, standing in for a predecessor the live runtime refuses this way.
+    hosted_inspect_stale_rule: Option<&'static str>,
     /// Stable message ledger per exact hosted native. A logical seat may be
     /// replaced, so keying this by SeatBinding would incorrectly make a
     /// successor inherit its predecessor's deliveries.
@@ -1230,6 +1233,7 @@ impl ScriptedFakeRuntime {
                 busy_hosted_seats: BTreeSet::new(),
                 hosted_seat_permissions: BTreeMap::new(),
                 lose_hosted_launch_ack_once: BTreeSet::new(),
+                hosted_inspect_stale_rule: None,
                 hosted_messages: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
                 seat_titles: BTreeMap::new(),
@@ -1819,6 +1823,16 @@ impl ScriptedFakeRuntime {
         self.lock()
             .lose_hosted_launch_ack_once
             .insert(seat_binding_id);
+    }
+
+    /// Answer every hosted-seat inspection with one exact `StaleBinding` rule.
+    ///
+    /// The live runtime distinguishes a predecessor that is gone from one it
+    /// declines to speak for by the rule string alone, and both arrive as the
+    /// same variant. Staging the rule is the only way a test can put those two
+    /// cases side by side.
+    pub fn refuse_hosted_inspection(&self, rule: &'static str) {
+        self.lock().hosted_inspect_stale_rule = Some(rule);
     }
 
     /// Hold the next message send immediately before its native effect.
@@ -3034,6 +3048,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             return Err(RuntimeError::StaleBinding {
                 rule: "the hosted topology predecessor belongs to another runtime",
             });
+        }
+        // A staged refusal stands in for a live runtime that answers this exact
+        // way. It is deliberately not consumed: the succession inspects the
+        // predecessor twice — once when planning and once immediately before
+        // the archive — and a one-shot would let the second look see a state
+        // the first did not.
+        if let Some(rule) = state.hosted_inspect_stale_rule {
+            return Err(RuntimeError::StaleBinding { rule });
         }
         let disposition = match state.hosted_seats.get(&request.seat_binding_id) {
             Some(held) if held.identity == request.identity => HostedSeatNativeState::Live,

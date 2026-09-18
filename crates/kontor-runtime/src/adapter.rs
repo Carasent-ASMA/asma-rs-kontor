@@ -261,6 +261,50 @@ pub enum RuntimeError {
     Domain(#[from] DomainError),
 }
 
+/// The exact [`RuntimeError::StaleBinding`] rules that prove one hosted
+/// predecessor is *gone* rather than merely unavailable.
+///
+/// A stale binding is not one fact. Some of its rules say the addressed session
+/// no longer exists or has already reached a terminal state — that is an answer
+/// to "is this predecessor still holding the seat", and the answer is no. The
+/// rest say the caller addressed the wrong runtime, the wrong generation or a
+/// container this plane cannot resolve, and those are refusals to answer.
+/// Reading the second kind as absence would archive a seat on the strength of a
+/// lookup that never found it (ASMA-8187, observed on the live ASMA-8098 TPM
+/// recovery).
+///
+/// The list is closed and matched exactly. A rule this build has not audited is
+/// not absence, so a new refusal added upstream fails closed here rather than
+/// silently widening what may be retired.
+const TERMINAL_HOSTED_PREDECESSOR_RULES: &[&str] = &[
+    "the exact native agent no longer exists",
+    "the exact native agent is archived",
+    "this session has been retired and cannot be resumed",
+    "a retired session cannot be adopted",
+    "this runtime holds no session with that native identity in this generation",
+];
+
+impl RuntimeError {
+    /// Whether this refusal proves the exact hosted predecessor is absent.
+    ///
+    /// [`RuntimeError::CorrelationFailed`] is included and predates this: the
+    /// runtime holds a native for the seat that is not the predecessor, which a
+    /// lost launch acknowledgement produces exactly, and refusing it would wedge
+    /// the seat on the retry that recovers it.
+    ///
+    /// Everything else — a session that is working, waiting on a permission
+    /// request, addressed on the wrong runtime or generation, or in a
+    /// disposition this build has not audited — is not absence.
+    #[must_use]
+    pub fn proves_hosted_predecessor_absent(&self) -> bool {
+        match self {
+            Self::CorrelationFailed => true,
+            Self::StaleBinding { rule } => TERMINAL_HOSTED_PREDECESSOR_RULES.contains(rule),
+            _ => false,
+        }
+    }
+}
+
 /// Convenience alias for adapter operations.
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
 

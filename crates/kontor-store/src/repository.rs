@@ -4630,9 +4630,10 @@ impl SqliteStore {
                           seat_binding_id, predecessor_native_id, predecessor_generation,
                           successor_native_id, successor_generation,
                           predecessor_occupancy_generation, successor_occupancy_generation,
-                          readback, readback_hash, receipt_id, recorded_at, receipted_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                             NULL, ?14, NULL)",
+                          native_parent_project_id, readback, readback_hash, receipt_id,
+                          recorded_at, receipted_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                             NULL, ?15, NULL)",
                     params![
                         succession.idempotency_key.as_str(),
                         succession.intent_hash.as_str(),
@@ -4647,6 +4648,10 @@ impl SqliteStore {
                             .unwrap_or(i64::MAX),
                         i64::try_from(succession.successor_occupancy_generation)
                             .unwrap_or(i64::MAX),
+                        succession
+                            .native_parent_project_id
+                            .as_ref()
+                            .map(ExternalId::as_str),
                         readback,
                         succession.readback_hash.as_str(),
                         text(succession.recorded_at),
@@ -4690,7 +4695,8 @@ impl SqliteStore {
                         predecessor_native_id, predecessor_generation,
                         successor_native_id, successor_generation,
                         predecessor_occupancy_generation, successor_occupancy_generation,
-                        readback, readback_hash, receipt_id, recorded_at, receipted_at
+                        native_parent_project_id, readback, readback_hash, receipt_id,
+                        recorded_at, receipted_at
                    FROM core_team_route_successions
                   WHERE idempotency_key = ?1",
                 params![key.as_str()],
@@ -4706,11 +4712,12 @@ impl SqliteStore {
                         row.get::<_, i64>(7)?,
                         row.get::<_, i64>(8)?,
                         row.get::<_, i64>(9)?,
-                        row.get::<_, String>(10)?,
+                        row.get::<_, Option<String>>(10)?,
                         row.get::<_, String>(11)?,
-                        row.get::<_, Option<String>>(12)?,
-                        row.get::<_, String>(13)?,
-                        row.get::<_, Option<String>>(14)?,
+                        row.get::<_, String>(12)?,
+                        row.get::<_, Option<String>>(13)?,
+                        row.get::<_, String>(14)?,
+                        row.get::<_, Option<String>>(15)?,
                     ))
                 },
             )
@@ -4730,6 +4737,7 @@ impl SqliteStore {
             successor_generation,
             predecessor_occupancy_generation,
             successor_occupancy_generation,
+            native_parent_project_id,
             readback,
             readback_hash,
             receipt_id,
@@ -4750,6 +4758,10 @@ impl SqliteStore {
                 .unwrap_or_default(),
             successor_occupancy_generation: u64::try_from(successor_occupancy_generation)
                 .unwrap_or_default(),
+            native_parent_project_id: native_parent_project_id
+                .as_deref()
+                .map(ExternalId::parse)
+                .transpose()?,
             readback: serde_json::from_str(&readback).map_err(|error| {
                 RepositoryError::Backend {
                     detail: format!("a succession readback could not be decoded: {error}"),
