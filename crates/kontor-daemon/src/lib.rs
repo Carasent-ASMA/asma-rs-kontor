@@ -975,6 +975,21 @@ impl Daemon {
                 .iter()
                 .filter_map(|binding| persisted.get(&binding.binding.id).cloned())
                 .collect();
+            // Restore the newest durable seats first. A runtime family can hold
+            // a long tail of historical open claims, and re-attestation asks
+            // the native plane about each exact identity. If that plane becomes
+            // unavailable part-way through the bounded startup sweep, oldest-
+            // first ordering strands the active delivery seats behind stale
+            // history even though their native sessions are healthy. This only
+            // changes read order: every claim is still presented, attested and
+            // reconciled under the same immutable snapshot rules.
+            claimed.sort_by(|left, right| {
+                right
+                    .binding
+                    .bound_at
+                    .cmp(&left.binding.bound_at)
+                    .then_with(|| right.binding.id.cmp(&left.binding.id))
+            });
             let unfrozen: Vec<_> = family_bindings
                 .iter()
                 .filter(|binding| !persisted.contains_key(&binding.binding.id))
