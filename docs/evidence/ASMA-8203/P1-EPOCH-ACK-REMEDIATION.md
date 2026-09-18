@@ -238,7 +238,101 @@ actual migration cover.
 | N3 | the store's uniqueness comparison is dropped | **killed**: a foreign session's claim returned `Replayed` |
 | N4 | observation drops the binding-match guard | **killed**: an id issued to another session was accepted 200 |
 
-## Suite evidence — final cut
+## Rework: the bounded window admitted a forward gap
+
+High-verification-report `artifact-asma-8203-high-verification-report-12c804d0`
+revision 2 (`01a0b311-c3f3-7d03-b3f5-f992ad1ee430`) confirmed the epoch peek/ack,
+the issuance ledger, the 103→104 migration, the bounding, the refresh, the typed
+refusal and the no-origin-walk seams, and **rejected** on one finding: the new
+bounded tail path accepted a forward sequence gap `N → N+2`, reducing the
+continuity invariant `HistoryReader` had held.
+
+The finding is correct. `HistoryReader::accept_page` required each position to
+follow the last one *adjacently*, so a skipped sequence was a break. The tail
+window replaced that with `sequence <= last.sequence` — monotonic, which `N+2`
+satisfies. A window missing an event therefore read as one continuous stretch of
+session, and the missing event is precisely the kind this scan reasons about:
+another addressed message, which would mean the turn being described is not the
+newest one, or the response that decides terminality.
+
+### The correction, at both seams
+
+`observe_from_tail` now requires `sequence == last.sequence + 1` between adjacent
+events. The **first** sequence stays unconstrained deliberately: a tail window
+begins wherever the budget reached, so demanding it start at 1 would be demanding
+the origin walk back. Only the joins are constrained.
+
+`PaseoAdapter::tail_window` had the same hole one level down. Stepping backwards
+a page at a time, it proved only that each step made *progress* — that the older
+page ended before the cursor it was fetched behind. Progress is not a join: a
+runtime skipping a sequence between two pages satisfied it while handing back a
+window with a hole spliced into the middle. Pages are now merged only where
+`older_end + 1 == window_start`.
+
+The repeat and skip refusals are one fence now, so
+`the runtime's tail window does not advance` became
+`the runtime's tail window is not continuous`.
+
+### Regressions
+
+- `observing_refuses_a_forward_gap_anywhere_in_the_bounded_window` —
+  parameterised over `from_end ∈ {1, 3}` at `limit=3`, so one gap falls inside
+  the page the window starts from and the other exactly on the join behind it.
+- `observing_accepts_a_window_that_begins_mid_session` — the half that would make
+  the fence useless if it were wrong: twelve turns first, asserting the turn
+  under test does not start at sequence 1, and the window still observes cleanly.
+- `a_tail_window_refuses_pages_that_do_not_join` and
+  `a_tail_window_joins_contiguous_pages` (Paseo contract) — a journal missing
+  sequence 5 read two entries per page, and its contiguous control.
+- New fake hook `skip_next_tail_event(from_end)` places the hole at a chosen
+  offset; `observing_refuses_a_tail_window_that_does_not_advance` retargeted to
+  the merged rule.
+
+### Mutation
+
+| # | Seam | Mutation | Result |
+|---|---|---|---|
+| C1 | observation | adjacency reverted to ascending | **killed** — returned **200** with `message_sequence: 11, response_sequence: 14`: a settleable tuple spanning the hole, which is the rejected defect exactly |
+| C2 | Paseo merge | join reverted to backward progress only | **killed** — returned a window containing `1,2,3,4,6,7`, spliced straight through the missing 5 |
+
+No schema change: migration `0104` and every schema-104 behaviour are untouched,
+as are the seams the verifier had already passed.
+
+## Suite evidence — continuity cut (`6ae38e6d`)
+
+`/tmp/p1-continuity-suites.log`, one `===ALL-DONE===` marker, plus
+`/tmp/p1-continuity-phase1-rerun.log` for phase 1.
+
+| Phase | Result |
+|---|---|
+| `kontor-store`, `kontor-runtime`, `kontor-api`, `kontor-runtime-paseo` | 45 blocks (41 targets + 4 doc-tests), **985 passed, 0 failures** |
+| `kontor-daemon --test loopback_api` | **365 passed, 8 failed, 1 ignored** |
+| `kontor-tests-contract` | 9 blocks, **all ok**, 0 failures |
+
+Counts reconcile: loopback 374 = 372 + the 2 new gap regressions; phase 1 985 =
+983 + the 2 new Paseo contract tests. The eight loopback failures are the
+unchanged known baseline set.
+
+### Why phase 1 was run twice — and why the first run could not be accepted
+
+The first pass reported `a_concurrent_first_open_initializes_exactly_one_realm`
+failing with `DatabaseBusy` / "database is locked", while two unrelated lanes
+were running full workspace suites on the same machine. That test passes in
+isolation in ~1.9s against 173.8s in-suite, so the failure itself is lock
+contention rather than a logic fault.
+
+The important part is what the failure *did*. The run had no `--no-fail-fast`, so
+cargo stopped scheduling after that binary: 37 blocks instead of 45, no doc-tests
+at all, 928 passed instead of 983. Four targets never executed. A contention
+flake anywhere in the package set silently truncates everything after it, and
+reading "37 blocks, one known flake" as a clean phase would have been accepting
+coverage that was never run.
+
+Phase 1 was therefore re-run with `--no-fail-fast`, which reported the full 45
+blocks green. `--no-fail-fast` is the right default for this environment for the
+same reason.
+
+## Suite evidence — previous cut (`12c804d0`)
 
 `/tmp/p1-ledger-suites.log`, exit 0, one `===ALL-DONE===` marker, run on the
 committed tree.
@@ -286,7 +380,7 @@ running concurrently in another worktree, taking 163–168s for a block that tak
 ~2s alone. It passes in isolation and passed in this final run. It is SQLite lock
 contention, not a logic fault.
 
-## Mutation — all nine killed
+## Mutation — all eleven killed
 
 Three separate defects are closed in this remediation, and each was proven by
 mutation on the exact seam it fixes.
@@ -302,6 +396,8 @@ mutation on the exact seam it fixes.
 | N2 | issuance ledger | the issuing path omits the ledger write | killed — a real send no longer issues the id it delivers |
 | N3 | issuance ledger | the store's uniqueness comparison is dropped | killed — a foreign session's claim returned `Replayed` |
 | N4 | issuance ledger | observation drops the binding-match guard | killed — an id issued to another session was accepted 200 |
+| C1 | window continuity | adjacency reverted to ascending | killed — 200 with `message_sequence: 11, response_sequence: 14`, a tuple spanning the hole |
+| C2 | Paseo page merge | join reverted to backward progress only | killed — window contained `1,2,3,4,6,7` |
 
 M3 survived its first attempt: the durability assertion was vacuous because an
 earlier ordinary read in the same fixture had already persisted the mapping. The
