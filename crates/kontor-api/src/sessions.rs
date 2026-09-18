@@ -799,13 +799,26 @@ async fn observe_from_tail(
             )
             .advising("observe again; the session was renumbered while it was being read"));
         }
-        if previous.is_some_and(|last| event.position.sequence <= last.sequence) {
+        // Adjacent, not merely ascending. `HistoryReader` held this for the
+        // origin-seeded read and it is the invariant a bounded window is most
+        // tempting to drop: N then N+2 is monotonic, so an ascending check waves
+        // it through, and the event that went missing is exactly the kind this
+        // scan reasons about — another addressed message, or the response that
+        // decides terminality. A window with a hole in it cannot say which turn
+        // it is describing, so it is refused rather than interpreted.
+        //
+        // The *first* sequence is unconstrained on purpose. A tail window starts
+        // wherever the budget reached, not at the beginning of the session, so
+        // requiring it to be 1 would be requiring the origin walk back.
+        if previous.is_some_and(|last| event.position.sequence != last.sequence + 1) {
             return Err(ApiError::new(
                 realm_id,
                 ApiErrorCode::RevisionConflict,
-                "the runtime's tail window does not advance",
+                "the runtime's tail window is not continuous",
             )
-            .advising("observe again; a window whose positions repeat cannot name one turn"));
+            .advising(
+                "observe again; a window that repeats or skips a position cannot name one turn",
+            ));
         }
         previous = Some(event.position);
     }

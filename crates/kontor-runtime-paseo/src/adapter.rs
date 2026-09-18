@@ -5478,10 +5478,21 @@ impl RuntimeAdapter for PaseoAdapter {
                 .await?;
             self.resolve_epoch(&older.epoch, Some(epoch))?;
             let older_items = self.normalize_page(&older, epoch)?;
-            if older_items
-                .last()
-                .is_none_or(|event| event.position.sequence >= before.seq)
-            {
+            // Backward progress is necessary but not sufficient. A page whose
+            // newest item is older than the cursor proves the read is advancing;
+            // it does not prove the two pages *meet*. Splicing them when they do
+            // not would hand back a window with a hole in the middle that every
+            // later check reads as one continuous stretch of session.
+            let joins = match (older_items.last(), items.first()) {
+                (Some(older_end), Some(window_start)) => {
+                    older_end.position.sequence < before.seq
+                        && older_end.position.sequence + 1 == window_start.position.sequence
+                }
+                // Nothing older came back, or nothing to join it to: either way
+                // there is no merge to validate and no window to extend.
+                _ => false,
+            };
+            if !joins {
                 return Err(RuntimeError::TimelineRefetchRequired {
                     reason: TimelineBreak::SequenceGap,
                 });

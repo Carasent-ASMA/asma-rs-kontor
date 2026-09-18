@@ -4955,6 +4955,84 @@ async fn with_history() -> (Plane, RuntimeBindingSnapshot) {
     (plane, outcome.snapshot)
 }
 
+/// A tail window is spliced only where its pages actually meet.
+///
+/// The bounded window is assembled by stepping backwards a page at a time, and
+/// the original guard only proved each step made *progress* — that the older
+/// page ended before the cursor it was fetched behind. Progress is not a join. A
+/// runtime that skips a sequence between two pages satisfies it while handing
+/// back a window with a hole in the middle, and every check downstream reads
+/// that as one continuous stretch of session.
+///
+/// The journal here is missing sequence 5, so at two entries a page the newest
+/// page ends at 6 and the page behind it ends at 4. Backwards progress holds;
+/// the join does not.
+#[tokio::test]
+async fn a_tail_window_refuses_pages_that_do_not_join() {
+    let recorded = daemon().journaling(
+        AGENT_ID,
+        EPOCH_RAW,
+        vec![
+            user_entry(1, "msg_someone_else"),
+            assistant_entry(2),
+            tool_entry(3, "call_1"),
+            tool_entry(4, "call_1"),
+            // 5 is absent.
+            user_entry(6, "msg_current"),
+            assistant_entry(7),
+        ],
+    );
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let binding = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the seat launches")
+        .snapshot;
+
+    let refused = plane
+        .adapter
+        .tail_window(&binding, 2, 8)
+        .await
+        .expect_err("a window whose pages do not join must be refused");
+    assert!(
+        matches!(
+            refused,
+            RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::SequenceGap
+            }
+        ),
+        "the refusal names the gap rather than the read: {refused:?}"
+    );
+}
+
+/// The same walk over a contiguous journal assembles the window it should.
+///
+/// The control for the fence above: without it this test would be the only
+/// evidence the merge works at all, and with it the pair pins both directions.
+#[tokio::test]
+async fn a_tail_window_joins_contiguous_pages() {
+    let (plane, binding) = with_history().await;
+    let window = plane
+        .adapter
+        .tail_window(&binding, 2, 8)
+        .await
+        .expect("a contiguous journal assembles");
+    let sequences: Vec<u64> = window
+        .items
+        .iter()
+        .map(|event| event.position.sequence)
+        .collect();
+    assert_eq!(
+        sequences,
+        vec![1, 2, 3, 4],
+        "every page joins the one after it, in order"
+    );
+    assert!(
+        window.next.is_none(),
+        "a tail window ends at the tail; there is nothing after it"
+    );
+}
+
 #[tokio::test]
 async fn timeline_history_then_live_has_no_gap_and_no_overlap() {
     let (plane, binding) = with_history().await;

@@ -794,6 +794,8 @@ struct FakeState {
     refetch_until_epoch_refresh: bool,
     /// Whether the next tail window should repeat one of its own positions.
     repeat_next_tail_position: bool,
+    /// Which event the next tail window should omit, counted from its newest.
+    skip_next_tail_event: Option<usize>,
     /// Whether the next inspect should fail at the transport.
     ///
     /// Off the strict queue for the same reason as `lose_next_send_ack`, and a
@@ -1293,6 +1295,7 @@ impl ScriptedFakeRuntime {
                 undrained_epochs: Vec::new(),
                 refetch_until_epoch_refresh: false,
                 repeat_next_tail_position: false,
+                skip_next_tail_event: None,
                 fail_next_inspect: false,
                 ignore_retitle_once: BTreeSet::new(),
                 task_title_scopes: BTreeMap::new(),
@@ -2098,6 +2101,19 @@ impl ScriptedFakeRuntime {
         self.lock().refetch_until_epoch_refresh = true;
     }
 
+    /// Drop one event from the next tail window, leaving a forward gap.
+    ///
+    /// `from_end` counts back from the newest event, so a caller can put the
+    /// hole wherever it needs it: inside the page the window starts from, or on
+    /// the join between two of the pages the window was assembled out of. The
+    /// sequences on either side still ascend — that is the whole point, because
+    /// an ascending check cannot tell a gap from a continuous read, and the
+    /// event that went missing may be the message or the response the scan is
+    /// there to find.
+    pub fn skip_next_tail_event(&self, from_end: usize) {
+        self.lock().skip_next_tail_event = Some(from_end);
+    }
+
     /// Repeat one position inside the next tail window.
     ///
     /// A runtime that hands back a window whose positions do not advance. Not a
@@ -2423,6 +2439,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             && let Some(last) = items.last().cloned()
         {
             items.push(last);
+        }
+        if let Some(from_end) = std::mem::take(&mut state.skip_next_tail_event)
+            && from_end < items.len()
+        {
+            items.remove(items.len() - 1 - from_end);
         }
         let end = items
             .last()

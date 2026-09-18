@@ -25970,6 +25970,122 @@ async fn observing_refuses_a_current_turn_older_than_its_window() {
     );
 }
 
+/// A forward gap in the bounded window is refused, wherever it falls.
+///
+/// The audit's P1 on the tail path. The origin-seeded read validated continuity
+/// through `HistoryReader::accept_page`, which required each position to follow
+/// the last one *adjacently*. The bounded window replaced that with an ascending
+/// check, and ascending is strictly weaker: N followed by N+2 passes it, so a
+/// window missing an event reads as one continuous stretch of session.
+///
+/// That missing event is not hypothetical content. It is the kind this scan
+/// reasons about — another addressed message, which would mean the turn being
+/// described is not the newest one, or the response that decides terminality. A
+/// window with a hole cannot say which turn it names.
+///
+/// Both shapes are covered: a gap inside the page the window starts from, and a
+/// gap on the join between two of the pages it was assembled out of. Neither is
+/// interpreted.
+#[tokio::test]
+async fn observing_refuses_a_forward_gap_anywhere_in_the_bounded_window() {
+    for from_end in [1usize, 3usize] {
+        let world = World::open().await;
+        world.script(HISTORY_LIVE);
+        let (run, snapshot) = world.launch().await;
+        let held = world
+            .daemon
+            .state()
+            .sessions()
+            .get(snapshot.binding_id())
+            .expect("the process holds the binding");
+
+        // Several turns, so the window has interior to lose an event from and a
+        // page join to lose one across.
+        for _ in 0..4 {
+            let _ = issued_turn(
+                &world,
+                &held,
+                kontor_runtime::request::MessageId::generate(),
+            );
+        }
+
+        // `limit=3` makes the window three events per page, so `from_end = 1`
+        // is a hole inside the newest page and `from_end = 3` is a hole exactly
+        // on the join behind it.
+        world.fake.skip_next_tail_event(from_end);
+        let refused = Call::get(format!("/v1/sessions/{run}/turns/current?limit=3"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+        assert_eq!(
+            refused.status, 409,
+            "a window missing the event at offset {from_end} must refuse: {}",
+            refused.body
+        );
+        assert_eq!(
+            refused.json()["rule"],
+            "the runtime's tail window is not continuous",
+            "offset {from_end}: {}",
+            refused.body
+        );
+    }
+}
+
+/// A window that starts mid-session is continuous, not incomplete.
+///
+/// The other half of the fence, and the one that would make it useless if it
+/// were wrong. A bounded window begins wherever the budget reached, so its first
+/// sequence is almost never 1 — requiring that would be requiring the origin
+/// walk back. Only the joins between positions are constrained.
+#[tokio::test]
+async fn observing_accepts_a_window_that_begins_mid_session() {
+    let world = World::open().await;
+    world.script(HISTORY_LIVE);
+    let (run, snapshot) = world.launch().await;
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(snapshot.binding_id())
+        .expect("the process holds the binding");
+
+    for _ in 0..12 {
+        let _ = issued_turn(
+            &world,
+            &held,
+            kontor_runtime::request::MessageId::generate(),
+        );
+    }
+    let newest = kontor_runtime::request::MessageId::generate();
+    let (message_at, response_at) = issued_turn(&world, &held, newest);
+    assert!(
+        message_at.sequence > 1,
+        "the turn under test must not start at the session's first position"
+    );
+
+    let observed = Call::get(format!("/v1/sessions/{run}/turns/current?limit=2"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(
+        observed.status, 200,
+        "a continuous window starting mid-session is observable: {}",
+        observed.body
+    );
+    assert_eq!(
+        observed.json()["message_id"],
+        serde_json::json!(newest.to_string())
+    );
+    assert_eq!(
+        observed.json()["message_sequence"],
+        serde_json::json!(message_at.sequence)
+    );
+    assert_eq!(
+        observed.json()["response_sequence"],
+        serde_json::json!(response_at.sequence)
+    );
+}
+
 /// A window whose positions do not advance names no turn.
 #[tokio::test]
 async fn observing_refuses_a_tail_window_that_does_not_advance() {
@@ -25996,7 +26112,7 @@ async fn observing_refuses_a_tail_window_that_does_not_advance() {
     assert_eq!(refused.status, 409, "{}", refused.body);
     assert_eq!(
         refused.json()["rule"],
-        "the runtime's tail window does not advance",
+        "the runtime's tail window is not continuous",
         "{}",
         refused.body
     );
