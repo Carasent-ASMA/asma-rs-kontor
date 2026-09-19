@@ -1680,6 +1680,12 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("select_task_profile", "task", "witness", None),
     ("select_task_team", "task", "witness", None),
     ("select_task_account", "task", "witness", None),
+    // A placement repair changes the task's own worktree claim, so the task is
+    // the aggregate it names. It witnesses like every other task command: the
+    // exact compare-and-swap in its name is the old-claim and expected-revision
+    // check the daemon applies at apply time, not this revision rule --
+    // recording the intent advances no revision of its own.
+    ("correct_task_worktree", "task", "witness", None),
     ("reconcile_ticket", "task", "witness", None),
     ("settle_runtime", "agent_run", "witness", None),
     ("replace_seat", "team_run", "witness", None),
@@ -1824,6 +1830,50 @@ fn attesting_a_retired_evaluator_witnesses_only_its_task_and_moves_no_run() {
         assert!(
             kind.rule_for(*target_kind).is_none(),
             "an attestation about a task's gate must not target a {target_kind}"
+        );
+    }
+}
+
+/// ASMA-8120 regression guard. PR #241 legalized `CorrectTaskWorktree` against
+/// a task in the command matrix without declaring the pair in
+/// `LEGAL_COMMAND_TARGETS`, so the exhaustive table test refused the very pair
+/// the production code had just allowed. The table proves the pair exists; this
+/// proves *why* this pair and no other -- a repair of one task's pre-run
+/// placement names that task, witnesses it, and moves no run.
+#[test]
+fn correcting_a_task_worktree_witnesses_only_its_task_and_moves_no_run() {
+    let kind = CommandKind::CorrectTaskWorktree;
+    let task = reference_of(AggregateKind::Task);
+    let rule = kind
+        .rule_for(AggregateKind::Task)
+        .expect("the task whose placement is repaired is its subject");
+    assert_eq!(
+        rule.revision,
+        RevisionRule::Witness,
+        "the exact compare-and-swap this repair performs is the daemon's \
+         old-claim and expected-revision check; recording the intent changes no \
+         revision of its own and must not race one"
+    );
+    assert_eq!(
+        rule.desired,
+        DesiredStateRule::Forbidden,
+        "repairing a pre-run placement advances no run"
+    );
+    kind.ensure_compatible(&task, None)
+        .expect("witnessing its task, carrying no desired state, is the legal shape");
+    for desired in DesiredRunState::ALL {
+        assert!(
+            kind.ensure_compatible(&task, Some(*desired)).is_err(),
+            "a placement repair must refuse the desired state {desired}"
+        );
+    }
+    for target_kind in AggregateKind::ALL {
+        if *target_kind == AggregateKind::Task {
+            continue;
+        }
+        assert!(
+            kind.rule_for(*target_kind).is_none(),
+            "a repair of one task's placement must not target a {target_kind}"
         );
     }
 }
