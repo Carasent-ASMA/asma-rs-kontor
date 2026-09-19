@@ -11692,40 +11692,44 @@ async fn jira_link_apply_adopts_an_exact_confirmed_legacy_batch_and_backfills_is
     let project_id = ProjectId::generate();
     let epic_id = MiniProjectId::generate();
     let task_id = TaskId::generate();
-    for (key, issue_id, kind, hierarchy, parent, summary) in [
-        (
-            "ASMA-8049",
-            "908049",
-            "Epic",
-            1,
-            serde_json::Value::Null,
-            "Existing linked Jira epic",
-        ),
-        (
-            "ASMA-8050",
-            "908050",
-            "Task",
-            0,
-            serde_json::json!({"key": "ASMA-8049"}),
-            "Existing linked Jira task",
-        ),
+    let epic_readback = Arc::new(Mutex::new(serde_json::json!({
+        "key": "ASMA-8049",
+        "id": "908049",
+        "fields": {
+            "project": {"key": "ASMA"},
+            "issuetype": {"name": "Epic", "hierarchyLevel": 1},
+            "parent": null,
+            "summary": "Existing linked Jira epic",
+            "description": {"type":"doc","version":1,"content":[{
+                "type":"paragraph","content":[{"type":"text","text":"Existing Jira prose"}]
+            }]},
+            "labels": []
+        }
+    })));
+    let task_readback = Arc::new(Mutex::new(serde_json::json!({
+        "key": "ASMA-8050",
+        "id": "908050",
+        "fields": {
+            "project": {"key": "ASMA"},
+            "issuetype": {"name": "Task", "hierarchyLevel": 0},
+            "parent": {"key": "ASMA-8049"},
+            "summary": "Existing linked Jira task",
+            "description": {"type":"doc","version":1,"content":[{
+                "type":"paragraph","content":[{"type":"text","text":"Existing Jira prose"}]
+            }]},
+            "labels": []
+        }
+    })));
+    for (key, readback) in [
+        ("ASMA-8049", Arc::clone(&epic_readback)),
+        ("ASMA-8050", Arc::clone(&task_readback)),
     ] {
         Mock::given(method("GET"))
             .and(path(format!("/rest/api/3/issue/{key}")))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "key": key,
-                "id": issue_id,
-                "fields": {
-                    "project": {"key": "ASMA"},
-                    "issuetype": {"name": kind, "hierarchyLevel": hierarchy},
-                    "parent": parent,
-                    "summary": summary,
-                    "description": {"type":"doc","version":1,"content":[{
-                        "type":"paragraph","content":[{"type":"text","text":"Existing Jira prose"}]
-                    }]},
-                    "labels": []
-                }
-            })))
+            .respond_with(move |_: &wiremock::Request| {
+                ResponseTemplate::new(200)
+                    .set_body_json(readback.lock().expect("readback lock").clone())
+            })
             .expect(3)
             .mount(&server)
             .await;
@@ -11809,6 +11813,22 @@ async fn jira_link_apply_adopts_an_exact_confirmed_legacy_batch_and_backfills_is
 
     let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
     let connection = rusqlite::Connection::open(&database).expect("legacy fixture database");
+    let historical_hashes = {
+        let mut statement = connection
+            .prepare(
+                "SELECT readback_hash FROM jira_materialization_items
+                 WHERE project_id = ?1 AND batch_id = ?2 ORDER BY ordinal",
+            )
+            .expect("historical hashes statement");
+        statement
+            .query_map(
+                rusqlite::params![project_id.to_string(), historical_batch],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("historical hashes")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("historical hashes collect")
+    };
     connection
         .execute_batch(
             "DROP TRIGGER jira_epic_binding_issue_id_immutable;
@@ -11848,6 +11868,17 @@ async fn jira_link_apply_adopts_an_exact_confirmed_legacy_batch_and_backfills_is
         )
         .expect("unrelated open conflict is planted");
     drop(connection);
+
+    epic_readback.lock().expect("epic readback lock")["fields"]["summary"] =
+        serde_json::json!("Human-edited Jira epic summary");
+    epic_readback.lock().expect("epic readback lock")["fields"]["description"] = serde_json::json!({"type":"doc","version":1,"content":[{
+        "type":"paragraph","content":[{"type":"text","text":"Human-edited epic prose"}]
+    }]});
+    task_readback.lock().expect("task readback lock")["fields"]["summary"] =
+        serde_json::json!("Human-edited Jira task summary");
+    task_readback.lock().expect("task readback lock")["fields"]["description"] = serde_json::json!({"type":"doc","version":1,"content":[{
+        "type":"paragraph","content":[{"type":"text","text":"Human-edited task prose"}]
+    }]});
 
     let repaired = Call::post(
         format!("/v1/projects/{project_id}/epics/{epic_id}/jira:apply"),
@@ -11914,6 +11945,26 @@ async fn jira_link_apply_adopts_an_exact_confirmed_legacy_batch_and_backfills_is
     assert_eq!(readback.2, 1, "adoption creates no replacement batch");
     assert_eq!(readback.3, 2, "the exact adopted item set is ledgered once");
     assert_eq!(readback.4, 1, "an unrelated open conflict is untouched");
+    let current_hashes = {
+        let mut statement = connection
+            .prepare(
+                "SELECT readback_hash FROM jira_materialization_items
+                 WHERE project_id = ?1 AND batch_id = ?2 ORDER BY ordinal",
+            )
+            .expect("current hashes statement");
+        statement
+            .query_map(
+                rusqlite::params![project_id.to_string(), historical_batch],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("current hashes")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("current hashes collect")
+    };
+    assert_eq!(
+        current_hashes, historical_hashes,
+        "identity backfill preserves the historical readback evidence"
+    );
     assert!(
         server
             .received_requests()

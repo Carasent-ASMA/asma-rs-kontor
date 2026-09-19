@@ -85,6 +85,7 @@ impl fmt::Display for SelectionConflict {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaterializationConflict {
     AmbiguousMarker,
+    IssueKeyMismatch,
     ProjectMismatch,
     ParentMismatch,
     SummaryMismatch,
@@ -98,6 +99,7 @@ impl MaterializationConflict {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AmbiguousMarker => "ambiguous_marker",
+            Self::IssueKeyMismatch => "issue_key_mismatch",
             Self::ProjectMismatch => "project_mismatch",
             Self::ParentMismatch => "parent_mismatch",
             Self::SummaryMismatch => "summary_mismatch",

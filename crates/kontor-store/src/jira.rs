@@ -1307,16 +1307,19 @@ impl SqliteStore {
             .optional()
             .map_err(backend)?;
         match stored {
-            Some((status, stored_key, stored_hash)) if status == "confirmed" => {
-                if stored_key.as_deref() == Some(key.as_str())
-                    && stored_hash.as_deref() == Some(readback_hash.as_str())
-                {
-                    // An exact replay is not a no-op when the binding predates
-                    // immutable identity: this is the supported readback that
-                    // establishes the id and lifts the row out of fail-closed.
-                    // An id that is already present is never overwritten, and
-                    // one belonging to another issue is refused rather than
-                    // silently accepted because the key happened to match.
+            Some((status, stored_key, _stored_hash)) if status == "confirmed" => {
+                if stored_key.as_deref() == Some(key.as_str()) {
+                    // A confirmed link's readback hash includes Jira-authored
+                    // summary and description. Those fields may legitimately
+                    // change after confirmation and are not issue identity.
+                    // The connector has nevertheless re-proved the exact key,
+                    // project, issue kind and parent before reaching the store.
+                    //
+                    // This replay therefore establishes only a missing
+                    // immutable id; it does not rewrite the historical
+                    // readback evidence. An id already present is never
+                    // overwritten, and one belonging to another issue is
+                    // refused rather than accepted because the key matches.
                     establish_immutable_issue_id(&transaction, item, key, issue_id)?;
                     transaction.commit().map_err(backend)?;
                     return Ok(());

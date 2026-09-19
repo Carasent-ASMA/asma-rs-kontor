@@ -1265,7 +1265,7 @@ async fn materialization_identifies_each_mismatch_without_mutating_jira() {
         .respond_with(move |_: &Request| {
             ResponseTemplate::new(200).set_body_json(served.lock().expect("readback").clone())
         })
-        .expect(7)
+        .expect(8)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -1307,6 +1307,11 @@ async fn materialization_identifies_each_mismatch_without_mutating_jira() {
         parent_key: Some(ExternalId::parse("ASMA-8049").expect("parent")),
     };
     for (pointer, value, expected) in [
+        (
+            "/key",
+            serde_json::json!("ASMA-RENAMED"),
+            MaterializationConflict::IssueKeyMismatch,
+        ),
         (
             "/fields/project/key",
             serde_json::json!("FOREIGN"),
@@ -1374,7 +1379,7 @@ async fn materialization_identifies_each_mismatch_without_mutating_jira() {
         }
     ));
     let requests = server.received_requests().await.expect("requests");
-    assert_eq!(requests.len(), 8);
+    assert_eq!(requests.len(), 9);
     assert!(
         requests
             .iter()

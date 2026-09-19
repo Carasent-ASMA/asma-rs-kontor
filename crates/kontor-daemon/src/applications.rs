@@ -16280,6 +16280,9 @@ const fn jira_materialization_conflict_rule(
         MaterializationConflict::AmbiguousMarker => {
             "several Jira issues carry the pending creation marker"
         }
+        MaterializationConflict::IssueKeyMismatch => {
+            "the Jira readback key differs from the requested issue key"
+        }
         MaterializationConflict::ProjectMismatch => "the Jira issue belongs to another project",
         MaterializationConflict::ParentMismatch => {
             "the Jira issue parent differs from the confirmed epic binding"

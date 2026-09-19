@@ -841,9 +841,9 @@ impl JiraConnector {
             // the body must be exactly the one it wrote.
             observed_description != adf(&plan.description)
         };
-        let mismatch = if text_at(&value, &["fields", "project", "key"])?
-            != self.project_key.as_str()
-        {
+        let mismatch = if external_at(&value, &["key"])? != *key {
+            Some(MaterializationConflict::IssueKeyMismatch)
+        } else if text_at(&value, &["fields", "project", "key"])? != self.project_key.as_str() {
             Some(MaterializationConflict::ProjectMismatch)
         } else if optional_external_at(&value, &["fields", "parent", "key"])? != plan.parent_key {
             Some(MaterializationConflict::ParentMismatch)
