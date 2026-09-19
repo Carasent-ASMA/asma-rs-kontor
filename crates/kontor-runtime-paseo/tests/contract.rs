@@ -4535,6 +4535,43 @@ async fn continuity_a_live_seat_whose_workspace_owner_is_gone_restores_readback_
 }
 
 #[tokio::test]
+async fn continuity_an_observation_states_whether_the_seat_can_be_driven() {
+    // A placed seat and a readback-only one are both reachable. Only the
+    // placement tells a caller which of the two it is holding, so the
+    // observation carries it rather than leaving reachability to imply it.
+    let (plane, binding) = launched().await;
+    let placed = plane
+        .adapter
+        .inspect(&InspectRequest {
+            binding: binding.clone(),
+            requested_at: at("2026-08-10T09:32:00Z"),
+        })
+        .await
+        .expect("a placed seat inspects");
+    assert!(placed.drivable, "a placed seat is drivable");
+
+    let restarted = workspace_owner_retired_plane(AGENT).await;
+    restarted
+        .adapter
+        .restore_bindings(std::slice::from_ref(&binding))
+        .await
+        .expect("the readback-only restore succeeds");
+    let readback = restarted
+        .adapter
+        .inspect(&InspectRequest {
+            binding: binding.clone(),
+            requested_at: at("2026-08-10T09:32:00Z"),
+        })
+        .await
+        .expect("the readback-only seat inspects");
+    assert_eq!(readback.contact, RuntimeContact::Reachable);
+    assert!(
+        !readback.drivable,
+        "a seat restored without a placement is readable but not drivable"
+    );
+}
+
+#[tokio::test]
 async fn continuity_a_readback_only_seat_refuses_every_driving_operation() {
     let (_, binding) = launched().await;
     let restarted = workspace_owner_retired_plane(AGENT).await;

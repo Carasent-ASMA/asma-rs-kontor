@@ -2488,6 +2488,7 @@ impl PaseoAdapter {
             )
         })?;
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id,
             contact,
             state,
@@ -8122,7 +8123,10 @@ impl RuntimeAdapter for PaseoAdapter {
                 request.requested_at,
                 ObservationSource::Inspect,
             )?
-            .with_refusal(refusal))
+            .with_refusal(refusal)
+            // A seat restored without a placement is readback-only: every
+            // driving operation below refuses it for want of exactly this.
+            .with_drivability(self.placement(binding.binding_id()).is_some()))
     }
 
     async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome> {

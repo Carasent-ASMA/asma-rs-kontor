@@ -34599,7 +34599,14 @@ impl Services {
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
         } else {
-            if liveness.contact != RuntimeContact::ProcessMissing {
+            // Reachable is not the same as reusable. A predecessor restored
+            // for terminal readback answers an exact inspection and refuses
+            // every driving operation, so "reuse it" names a move no caller
+            // can make; that seat is the linked-successor case. It is not
+            // waved through: it still proves itself unusable on the resume
+            // probe below and still has to come back runtime-observed
+            // `Cancelled`, exactly as every other arm does.
+            if liveness.contact != RuntimeContact::ProcessMissing && liveness.drivable {
                 return Err(self.deny(
                     ApiErrorCode::UnsupportedCapability,
                     "the predecessor is still reachable and must be reused",

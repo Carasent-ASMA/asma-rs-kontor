@@ -23278,6 +23278,115 @@ async fn an_admin_replaces_one_runtime_cancelled_seat_inside_the_existing_team()
     );
 }
 
+/// A predecessor that answers but cannot be driven is not "reusable".
+///
+/// The live shape this reproduces: PUB-07 implement run
+/// 01a07637-5060-72e0-85f3-f162d3c47def on topology SeatBinding
+/// 01a07636-cf29-73a1-8c88-86e23ba90877, whose native is idle and exactly
+/// readable while its workspace wks_75e8da05dcad4c89 is archived. The seat
+/// restores for terminal readback and holds no placement, so it reports
+/// reachable and refuses every driving operation. Keying the reuse refusal on
+/// reachability alone left that run with no legal move: replacement refused it
+/// as reusable, and nothing could reuse it.
+///
+/// Nothing is waived. The seat still fails the resume probe, and the archive
+/// still has to come back runtime-observed `Cancelled` before any successor is
+/// linked.
+#[tokio::test]
+async fn a_reachable_seat_that_cannot_be_driven_takes_the_linked_successor_path() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "readback-only-replace").await;
+    let seat = seats.as_array().expect("the seated roster")[1].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let team_run = seat["team_run_id"].as_str().expect("the team run");
+
+    // Reachable, never cancelled, no quota row and no unavailable provider —
+    // so the generic arm decides it — but with its workspace gone.
+    world.fake.report_readback_only();
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("a canonical run id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let old_binding = before.binding.as_ref().expect("the predecessor was bound");
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_predecessor_revision": before.revision,
+            "expected_task_revision": task_revision,
+            "binding_generation": old_binding.identity.generation,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("readback-only-replace-successor")
+    .send(&world)
+    .await;
+    assert_eq!(
+        replaced.status, 200,
+        "a reachable seat with no placement must reach succession: {}",
+        replaced.body
+    );
+    assert_eq!(replaced.json()["applied"], "created");
+    assert_eq!(
+        replaced.json()["team_run_id"],
+        team_run,
+        "the pinned team run is preserved"
+    );
+
+    let successor_id = AgentRunId::parse(
+        replaced.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the successor id"),
+    )
+    .expect("a canonical successor id");
+    let successor = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, successor_id)
+            .expect("the successor reads")
+            .expect("the successor exists")
+    });
+    assert_eq!(
+        successor.parent_agent_run_id,
+        Some(predecessor_id),
+        "the predecessor is preserved as the successor's exact parent"
+    );
+    assert_eq!(
+        successor.role, before.role,
+        "the pinned role slot is carried, not re-chosen"
+    );
+    let successor_binding = successor.binding.expect("the successor is bound");
+    assert_ne!(
+        successor_binding.id, old_binding.id,
+        "succession is linked, never a reuse of the same binding"
+    );
+
+    let archived = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor re-reads")
+            .expect("the predecessor remains")
+    });
+    assert!(
+        archived.terminal.is_some(),
+        "the predecessor is retired on observed evidence, not merely abandoned"
+    );
+}
+
 #[tokio::test]
 async fn replacing_a_cancelled_seat_skips_an_operator_abandoned_unbound_successor() {
     let world = World::open_empty_with_a_plane().await;

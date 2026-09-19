@@ -740,6 +740,9 @@ struct FakeState {
     /// exist until that same call creates it, so a caller arming this failure
     /// cannot name it in advance.
     lose_hosted_launch_ack_once: bool,
+    /// The seat is restored for terminal readback only: no placement, so it
+    /// answers an inspection and refuses every driving operation.
+    readback_only: bool,
     pause_hosted_retire_once: Option<FakeNativePause>,
     pause_send_once: Option<FakeNativePause>,
     /// Consultation seats keyed by their durable SeatBinding identity.
@@ -1283,6 +1286,7 @@ impl ScriptedFakeRuntime {
                 lose_archive_ack_once: BTreeSet::new(),
                 lose_hosted_retire_ack_once: BTreeSet::new(),
                 lose_hosted_launch_ack_once: false,
+                readback_only: false,
                 pause_hosted_retire_once: None,
                 pause_send_once: None,
                 consultations: BTreeMap::new(),
@@ -1896,6 +1900,13 @@ impl ScriptedFakeRuntime {
         self.lock().lose_hosted_launch_ack_once = true;
     }
 
+    /// Report this runtime as reachable but not drivable, the shape a seat has
+    /// after its workspace was archived: an exact readback still answers while
+    /// every driving operation refuses for want of a placement.
+    pub fn report_readback_only(&self) {
+        self.lock().readback_only = true;
+    }
+
     /// Exact native currently filling one hosted seat, as the runtime holds it.
     #[must_use]
     pub fn hosted_seat_native_id(&self, seat_binding_id: SeatBindingId) -> Option<ExternalId> {
@@ -2300,6 +2311,7 @@ impl ScriptedFakeRuntime {
         at: Timestamp,
     ) -> RuntimeResult<ControlPlaneObservation> {
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id: snapshot.agent_run_id(),
             contact,
             state,
@@ -3762,6 +3774,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
 
     async fn resume(&self, request: &ResumeRequest) -> RuntimeResult<ControlPlaneObservation> {
         let mut state = self.lock();
+        if state.readback_only {
+            return Err(RuntimeError::WorkspaceBindingRequired);
+        }
         let declared = state.capabilities.clone();
         let generation = state.generation;
         preflight(
@@ -4275,7 +4290,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             0,
             request.requested_at,
         )?;
-        Ok(observation.with_refusal((!process_missing).then_some(refusal).flatten()))
+        let drivable = !state.readback_only;
+        Ok(observation
+            .with_refusal((!process_missing).then_some(refusal).flatten())
+            .with_drivability(drivable))
     }
 
     async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome> {
