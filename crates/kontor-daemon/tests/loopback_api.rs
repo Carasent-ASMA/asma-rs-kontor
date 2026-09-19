@@ -56912,3 +56912,131 @@ async fn a_launch_intent_supersession_is_exactly_once_under_replay_and_drift() {
         );
     });
 }
+
+/// The URL epic must *own* the seat, not merely share its project.
+///
+/// The store fences the swap on project and seat binding, and those two cannot
+/// tell one epic's Core Team from another's inside the same project. Without a
+/// daemon-side ownership proof a caller naming the wrong epic would record a
+/// receipt under that epic for a seat it does not own — a cross-epic mutation
+/// that every other Core Team correction already refuses.
+#[tokio::test]
+async fn a_launch_intent_supersession_refuses_a_seat_from_another_epic() {
+    let (composed, binding, revision) =
+        wedged_launch_intent_seat("/tmp/kontor-7869-wrong-epic", "asma-7869-wrong-epic-seats")
+            .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+    // A second epic in the same project: exactly the pair the store's fences
+    // cannot distinguish.
+    let category = first_category(world).await;
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            current_project_revision(world, project).await,
+            "Another epic entirely",
+            &category,
+            serde_json::json!([{"title": "Somewhere else"}]),
+        ),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-7869-wrong-epic-other")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let other_epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("a second epic id")
+        .to_owned();
+
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 1)
+            .expect("the intent reads")
+    });
+    let refused = supersede(
+        world,
+        project,
+        &other_epic,
+        &supersede_body(&binding, revision),
+        "asma-7869-wrong-epic",
+    )
+    .await;
+    assert_ne!(
+        refused.status, 200,
+        "a seat owned by another epic was superseded: {}",
+        refused.body
+    );
+    // Named exactly, so a refusal that happens to arrive from some other guard
+    // cannot stand in for the ownership proof this test exists for.
+    assert_eq!(
+        refused.json()["rule"],
+        "the SeatBinding is not hosted by this epic's control plane",
+        "refused, but not by the epic-ownership fence: {}",
+        refused.body
+    );
+
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 1)
+            .expect("the intent reads")
+    });
+    assert_eq!(
+        before, after,
+        "a wrong-epic refusal moved the launch intent"
+    );
+    // And nothing was recorded under the epic the caller named. A refusal that
+    // still minted a receipt would leave the wrong epic's audit claiming a
+    // correction it never owned.
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store
+                .get_receipt_by_key(&IdempotencyKey::parse("asma-7869-wrong-epic").expect("key"))
+                .expect("the receipt reads"))
+            .is_none(),
+        "a wrong-epic refusal recorded a receipt"
+    );
+}
+
+/// An exact replay says `unchanged`, because nothing was swapped a second time.
+///
+/// The store already answers this correctly; reporting a constant `updated`
+/// over the top of it tells a caller that a second supersession happened, which
+/// is the one thing an idempotent operation must never claim.
+#[tokio::test]
+async fn a_launch_intent_supersession_replay_reports_unchanged() {
+    let (composed, binding, revision) =
+        wedged_launch_intent_seat("/tmp/kontor-7869-applied", "asma-7869-applied-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let body = supersede_body(&binding, revision);
+
+    let first = supersede(world, project, epic, &body, "asma-7869-applied").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(
+        first.json()["receipt"]["applied"],
+        "updated",
+        "the first supersession did swap the intent: {}",
+        first.body
+    );
+
+    let replay = supersede(world, project, epic, &body, "asma-7869-applied").await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        replay.json()["receipt"]["applied"],
+        "unchanged",
+        "a replay reported a second swap: {}",
+        replay.body
+    );
+    assert_eq!(
+        replay.json()["receipt"]["receipt_id"],
+        first.json()["receipt"]["receipt_id"],
+        "a replay minted a second receipt"
+    );
+}

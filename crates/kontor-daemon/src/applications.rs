@@ -23196,6 +23196,48 @@ impl ApplicationOperations for Services {
                 )
                 .with_revision(Some(epic.revision)));
         }
+        // The URL epic is not evidence that this seat belongs to it. The store
+        // fences on project and seat, which cannot tell one epic's Core Team
+        // from another's inside the same project — so without this, a caller
+        // naming the wrong epic would record a receipt under that epic for a
+        // seat it does not own. Proved exactly as every other Core Team
+        // correction proves it: the seat's topology node is this epic's control
+        // plane, and the role it fills is in this epic's frozen roster.
+        let roster = self.frozen_roster(project_id, epic_id)?;
+        let binding = state
+            .with_store(|store| store.get_seat_binding(project_id, request.seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(SeatBinding::is_non_terminal)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the requested persistent Core Team SeatBinding is not active",
+                )
+            })?;
+        state
+            .with_store(|store| store.get_topology_node(project_id, binding.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|node| {
+                node.mini_project_id == Some(epic_id)
+                    && node.kind == self.domain.delivery.control_kind
+                    && node.task_id.is_none()
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the SeatBinding is not hosted by this epic's control plane",
+                )
+            })?;
+        if !roster.revision.seats.iter().any(|seat| {
+            seat.presence != EpicPresence::OnDemand
+                && seat.role_slot_id == binding.role_slot_id
+                && seat.role.role_code == binding.role.role_code
+        }) {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the SeatBinding is not one of this epic's frozen Core Team roles",
+            ));
+        }
         let superseded = parse_runtime_model_route(&request.expected_model_route)
             .map_err(|error| self.refuse_domain(&error))?;
         let replacement = parse_runtime_model_route(&request.desired_model_route)
@@ -23255,7 +23297,7 @@ impl ApplicationOperations for Services {
         // The whole compare-and-swap, and every absence it rests on, is proved
         // inside one transaction. Nothing is checked out here that the store
         // does not re-prove under the lock it writes with.
-        state
+        let applied = state
             .with_store(|store| {
                 store.supersede_hosted_seat_launch_intent(&HostedSeatLaunchIntentSupersession {
                     idempotency_key: key.clone(),
@@ -23289,7 +23331,10 @@ impl ApplicationOperations for Services {
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
                 receipt_id: receipt_id.to_string(),
-                applied: AppliedDto::Updated,
+                // The store's own answer, not a constant. An exact replay
+                // swaps nothing and says so; reporting `updated` for it would
+                // tell a caller that a second supersession happened.
+                applied: applied_dto(applied),
                 revision: epic.revision,
                 snapshot_cursor: self.cursor()?,
             },
