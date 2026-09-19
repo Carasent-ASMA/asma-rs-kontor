@@ -4560,6 +4560,61 @@ async fn continuity_a_readback_only_seat_refuses_every_driving_operation() {
 }
 
 #[tokio::test]
+async fn continuity_a_restore_reads_the_workspace_census_once_however_many_claims() {
+    let (_, binding) = launched().await;
+    let restarted = workspace_owner_retired_plane(AGENT).await;
+    // A realm that has been running for weeks hands back hundreds of open
+    // claims in one restore. The directory read must not scale with them: a
+    // per-claim census spends the bounded restart window before it reaches the
+    // oldest claims, which are exactly the ones this exception exists for.
+    let claims = vec![
+        binding.clone(),
+        binding.clone(),
+        binding.clone(),
+        binding.clone(),
+    ];
+    let projects_before = restarted.daemon.count("rpc project.list.request");
+    let workspaces_before = restarted.daemon.count("rpc fetch_workspaces_request");
+
+    let restored = restarted
+        .adapter
+        .restore_bindings(&claims)
+        .await
+        .expect("every claim is judged against one census");
+
+    assert_eq!(
+        restarted.daemon.count("rpc project.list.request") - projects_before,
+        1,
+        "the project directory is enumerated once per restore, not once per claim"
+    );
+    assert_eq!(
+        restarted.daemon.count("rpc fetch_workspaces_request") - workspaces_before,
+        1,
+        "the workspace directory is enumerated once per restore, not once per claim"
+    );
+    assert_eq!(
+        restored.len(),
+        claims.len(),
+        "the last claim in the sweep is judged as fully as the first"
+    );
+}
+
+#[tokio::test]
+async fn continuity_an_unreadable_census_fails_the_whole_restore() {
+    let (_, binding) = launched().await;
+    let restarted = workspace_owner_retired_plane(AGENT).await;
+    // An enumeration that did not answer must never read as "no project owns
+    // this workspace", which is the one shape that widens the exception.
+    restarted.daemon.lose_next_rpc("project.list.request");
+
+    restarted
+        .adapter
+        .restore_bindings(std::slice::from_ref(&binding))
+        .await
+        .expect_err("an unreadable census fails the restore instead of implying retirement");
+}
+
+#[tokio::test]
 async fn continuity_an_absent_census_alone_is_not_a_retired_owner() {
     // Two agents that would also fail project recovery against an empty census,
     // and neither is the retired-worktree shape: one never said which epic it

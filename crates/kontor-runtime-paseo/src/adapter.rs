@@ -1843,34 +1843,50 @@ impl PaseoAdapter {
             })
     }
 
-    /// Whether this agent's own declared workspace is absent from every
-    /// project's census — the retired-task-worktree shape.
+    /// Every workspace id this plane can currently see, across every project.
+    ///
+    /// Read exactly once per restore. Enumerating the directory per claim is an
+    /// N-by-directory sweep: a realm holding hundreds of open claims can spend
+    /// its bounded restart window before it reaches the oldest ones — which are
+    /// precisely the claims most likely to need the readback exception — and
+    /// two claims in one restore could otherwise be judged against two
+    /// different answers. One immutable read settles both.
+    ///
+    /// A census that cannot be read fails the whole restore rather than
+    /// answering for any claim. "No project owns this workspace" read off a
+    /// failed or partial enumeration is indistinguishable from a retirement,
+    /// and would silently widen the exception to every claim at once.
+    async fn active_workspace_census(&self) -> RuntimeResult<BTreeMap<String, PaseoWorkspace>> {
+        let mut seen = BTreeMap::new();
+        for project in self.fetch_projects().await? {
+            for workspace in self.fetch_workspaces(&project.id).await? {
+                seen.insert(workspace.id.clone(), workspace);
+            }
+        }
+        Ok(seen)
+    }
+
+    /// Whether this agent's own declared workspace is absent from the active
+    /// census — the retired-task-worktree shape.
     ///
     /// This is proved positively rather than inferred from a recovery failure,
     /// because [`Self::recover_project_for_agent`] answers `CorrelationFailed`
     /// both for a workspace no project owns *and* for an agent that never
     /// carried a project label. Only the first is recoverable, so the second
     /// must not be swept in by reading the error alone. A workspace that still
-    /// appears anywhere — including under a project this plane does not own —
-    /// is not this shape and stays refused.
-    async fn workspace_owner_retired(&self, agent: &PaseoAgent) -> RuntimeResult<bool> {
+    /// appears in the census — including under a project this plane does not
+    /// own — is not this shape and stays refused.
+    fn workspace_owner_retired(
+        agent: &PaseoAgent,
+        census: &BTreeMap<String, PaseoWorkspace>,
+    ) -> bool {
         let Some(workspace_id) = agent.workspace_id.as_deref() else {
-            return Ok(false);
+            return false;
         };
         if agent.label(label::PROJECT_ID).is_none() {
-            return Ok(false);
+            return false;
         }
-        for project in self.fetch_projects().await? {
-            if self
-                .fetch_workspaces(&project.id)
-                .await?
-                .iter()
-                .any(|workspace| workspace.id == workspace_id)
-            {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        !census.contains_key(workspace_id)
     }
 
     async fn recover_project_for_agent(
@@ -5638,6 +5654,8 @@ impl RuntimeAdapter for PaseoAdapter {
         // settings; exact reads let each surviving seat re-establish its own
         // epic project from the immutable PROJECT_ID label and workspace owner.
         let generation = self.generation();
+        // Once, before any claim is judged — never once per claim.
+        let census = self.active_workspace_census().await?;
         let mut live = Vec::new();
         let mut readback_only = Vec::new();
         for snapshot in snapshots {
@@ -5663,7 +5681,7 @@ impl RuntimeAdapter for PaseoAdapter {
             // either way. Anything else — an unlabelled agent, an ambiguous
             // owner, a workspace that still exists somewhere, or a census this
             // adapter could not read — is not the shape and stays refused.
-            let retired_owner = matches!(self.workspace_owner_retired(&agent).await, Ok(true));
+            let retired_owner = Self::workspace_owner_retired(&agent, &census);
             if self.recover_project_for_agent(&agent).await.is_err()
                 && !agent.is_archived()
                 && !retired_owner
@@ -5693,7 +5711,7 @@ impl RuntimeAdapter for PaseoAdapter {
         // fabricated here. Only the placement is recovered, which is the part
         // every driving operation actually reads and the part the runtime can
         // still answer for.
-        let placements = self.reprove_placements(snapshots, &live).await?;
+        let placements = self.reprove_placements(snapshots, &live, &census).await?;
         let mut restored = Vec::new();
         let mut state = self.lock();
         for snapshot in snapshots {
@@ -9148,6 +9166,7 @@ impl PaseoAdapter {
         &self,
         snapshots: &[RuntimeBindingSnapshot],
         live: &[NativeSession],
+        census: &BTreeMap<String, PaseoWorkspace>,
     ) -> RuntimeResult<BTreeMap<RuntimeBindingId, ExternalId>> {
         let mut placements = BTreeMap::new();
         for snapshot in snapshots {
@@ -9180,11 +9199,13 @@ impl PaseoAdapter {
             {
                 continue;
             }
-            let Ok(workspace) = self.fetch_workspace_in(&project, &workspace_id).await else {
+            // Read from the one census this restore already took, so a
+            // directory enumeration is not repeated for every claim.
+            let Some(workspace) = census.get(&workspace_id) else {
                 continue;
             };
             if self
-                .verify_workspace_placement(&workspace, &project, &root)
+                .verify_workspace_placement(workspace, &project, &root)
                 .is_err()
             {
                 continue;
