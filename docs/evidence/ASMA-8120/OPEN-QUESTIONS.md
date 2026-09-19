@@ -28,9 +28,13 @@ pick one of the listed options.
   remaining idempotent-replay defect requiring one root-cause fix and exact
   regression test; (c) deployment convergence failed, so rollout stops and the
   retained binary/definition rollback route is used.
-- **Disposition:** **OPEN.** Implementation must obtain exact runtime history
-  or another authoritative ordered receipt and close this entry before it
-  claims deployment convergence or publishes/selects successor definitions.
+- **Disposition:** **RESOLVED 2026-09-20** by approved revision
+  `01a0bbc7-8d72-7910-b4dc-accf4e0538a9` / receipt
+  `01a0bbc8-0227-7160-bd18-10155b3ea87a`, admitted to the implement turn:
+  the later exact-binding challenged settlement is authoritative and the
+  earlier `20:56:38Z` refusal remains history. This is option (a). The
+  publication fence this entry held is lifted; publication proceeded on
+  that authority.
 
 ## OQ-8120-02 — active epics without confirmed migration inputs
 
@@ -53,7 +57,45 @@ pick one of the listed options.
   and define this rollout complete over the thirteen currently eligible
   confirmed/pinned epics; (c) classify individual entries as historical and
   explicitly remove them from “current” scope.
-- **Disposition:** **OPEN.** Do not infer keys, create replacement topology, or
-  migrate these four epics. The implementation handoff may proceed only for
-  read-only preview work until an authoritative owner resolves whether
-  ASMA-8120 completion waits for option (a), (b), or (c).
+- **Disposition:** **RESOLVED 2026-09-20** by approved revision
+  `01a0bbc7-afc9-7561-9551-33d1eeb9345a` / receipt
+  `01a0bbc8-75d2-7c01-9ff2-227255a6f171`, admitted to the implement turn:
+  option (b). Implement only the thirteen eligible confirmed/pinned epics;
+  the four legacy epics stay mutation-ineligible pending their own supported
+  repair or classification. No key is inferred and no replacement topology is
+  created for them.
+
+## OQ-8120-03 — the canary epic contains the seat migrating it
+
+- **Subject:** how ASMA-8049 is migrated when the supported upgrade route
+  refuses while that same epic holds live native topology work.
+- **Attaches to:** the high-scope record's ordered rollout steps 4-6, canary
+  epic ASMA-8049 (`01a0539a-51c9-7301-9bd7-26c09167b23e`), implement AgentRun
+  `01a0bb74-ee78-7aa3-b6bc-bd9c43733496` (native
+  `6426ec59-57d0-4001-922c-86fc0f2de258`), and TeamRun
+  `01a0bb61-b8e0-7bf0-a14f-b44713ca10d7`.
+- **Why the state is ambiguous:** `team_definition_upgrade_apply` for ASMA-8049
+  against Operational v6 refused `409 placement_blocked`, rule "native topology
+  work is in progress; retirement or migration must wait". The preview itself
+  succeeds and is deterministic (hash
+  `aa2c7dd13bd09671078e5906f3caa2890a9d8fec020941c6860001b0f04b9413`, eleven
+  targets, seven changing), and the refusal left no partial effect: the pin is
+  still Operational v3 and all seven renameable targets still read `KBI-`. The
+  live work the rule names includes this implement AgentRun itself, which is
+  `lifecycle: running`, `observed: running` and attached to native
+  `6426ec59-...`, a seat inside the very topology being migrated. The record
+  pins ASMA-8049 as the canary and fences the whole fleet behind it, so the
+  rollout cannot route around this from inside the run it blocks on.
+- **Options seen:** (a) the refusal counts this turn's own live seat, so the
+  canary is applied by an authorized caller after this turn settles, reusing
+  the same preview and idempotency key; (b) some other in-flight native
+  operation is responsible and clears on its own — nothing in the inspected
+  ASMA-8049 topology showed a transitional node or seat, so this is
+  unevidenced; (c) ASMA-8049 must be migrated from outside itself or ordered
+  last, which changes the record's pinned canary choice and needs the scope
+  owner.
+- **Disposition:** **OPEN.** The canary is fenced and the fleet stays blocked:
+  the twelve remaining eligible epics were not previewed or applied. This seat
+  did not cancel, park or retire its own run or any seat to clear the rule, did
+  not choose a different canary, and did not retry past the refusal. Publication
+  and default selection are already durable and are not undone by this fence.
