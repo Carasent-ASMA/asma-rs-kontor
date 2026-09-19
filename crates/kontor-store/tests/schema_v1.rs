@@ -199,6 +199,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "task_persona_snapshots",
     "task_workflows",
     "task_short_codes",
+    "task_worktree_corrections",
     "task_worktrees",
     "tasks",
     "team_command_replays",
@@ -718,7 +719,61 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v107 adds the retired-evaluator proof ledger and the command kind that
     // records one, so a gate whose evaluator seat was retired has a supported
     // evidence path that is not the live-seat challenge (ASMA-8119).
-    assert_eq!(SCHEMA_VERSION, 107);
+    // v108 adds exact-old/revision-fenced worktree-claim repair and immutable
+    // before/after evidence without changing the task aggregate (ASMA-8120).
+    assert_eq!(SCHEMA_VERSION, 108);
+}
+
+#[test]
+fn v108_worktree_correction_evidence_is_append_only() {
+    let directory = temp();
+    let store = open(&directory);
+    assert_eq!(store.schema_version().expect("the version reads"), 108);
+    drop(store);
+    let connection =
+        Connection::open(directory.path().join("kontor.db")).expect("the migrated database opens");
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("the isolated trigger fixture disables foreign keys");
+    connection
+        .execute(
+            "INSERT INTO task_worktree_corrections
+                 (project_id, receipt_id, task_id, task_revision, old_worktree,
+                  new_worktree, module_key, branch_name, preview_hash, corrected_at)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                "project-1",
+                "receipt-1",
+                "task-1",
+                "/old/worktree",
+                "/new/worktree",
+                "_tools/asma-rs-kontor",
+                "feat/ASMA-8120-deploy-jira-key-runtime-and-migrate-current-native-containers",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "2026-09-19T19:23:28Z",
+            ],
+        )
+        .expect("one historical correction can be recorded");
+    assert!(
+        connection
+            .execute(
+                "UPDATE task_worktree_corrections
+                 SET new_worktree = '/somewhere/else'
+                 WHERE receipt_id = 'receipt-1'",
+                [],
+            )
+            .is_err(),
+        "an audit row cannot be rewritten"
+    );
+    assert!(
+        connection
+            .execute(
+                "DELETE FROM task_worktree_corrections WHERE receipt_id = 'receipt-1'",
+                [],
+            )
+            .is_err(),
+        "an audit row cannot be deleted"
+    );
 }
 
 #[test]

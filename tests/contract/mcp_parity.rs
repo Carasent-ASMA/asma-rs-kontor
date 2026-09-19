@@ -542,7 +542,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        182,
+        184,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
@@ -550,7 +550,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         REGISTRY.len() - CLI_ONLY.len(),
-        181,
+        183,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -558,13 +558,13 @@ fn the_snapshot_canary_holds_at_this_base() {
         2,
         "the allowlist changed; an omission must be reviewed, not added"
     );
-    // 182 against a registry of 181: the regenerated contract also documents
+    // 185 against a registry of 184: the regenerated contract also documents
     // master's `fill_team_run_seat` (#225), which was served but never written
     // into the document and has no MCP tool of its own. The gap is master's to
     // close, and it is named here rather than hidden by a matching count.
     assert_eq!(
         documented().len(),
-        183,
+        185,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -865,6 +865,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_publication_attest", CallerTier::Operator),
         ("kontor_publication_get", CallerTier::Observer),
         ("kontor_publication_merge", CallerTier::Operator),
+        // Placement repair remains operator work because every target fact is
+        // server-derived and revision/old-value/preview fenced.
+        ("kontor_task_worktree_claim_preview", CallerTier::Operator),
+        ("kontor_task_worktree_claim_apply", CallerTier::Operator),
         // Publishing an issue body is operator work of the same shape as
         // reconciling its status: the caller supplies the text and the daemon
         // proves the write by reading it back. Replacing a body Kontor never

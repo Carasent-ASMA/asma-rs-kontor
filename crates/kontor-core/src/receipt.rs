@@ -116,6 +116,12 @@ closed_enum! {
         SelectTaskTeam => "select_task_team",
         /// Correct the provider account a task will run under.
         SelectTaskAccount => "select_task_account",
+        /// Correct one task's pre-run worktree claim under exact compare-and-swap.
+        ///
+        /// Distinct from [`CommandKind::ApplyEpicGraph`]: graph application may
+        /// create many subjects, while this repair is allowed to change exactly
+        /// one already-declared placement and nothing else on the task.
+        CorrectTaskWorktree => "correct_task_worktree",
         /// Converge a task's external tickets towards its own milestone.
         ReconcileTicket => "reconcile_ticket",
         /// Materialize or verify one epic's complete Jira binding set.
@@ -541,6 +547,7 @@ impl CommandKind {
             | Self::SelectTaskProfile
             | Self::SelectTaskTeam
             | Self::SelectTaskAccount
+            | Self::CorrectTaskWorktree
             | Self::ReconcileTicket
             | Self::PublishTicketDescription
             // Pulling comments and claiming ownership both cover *every* link a

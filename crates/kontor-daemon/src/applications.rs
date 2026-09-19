@@ -133,6 +133,8 @@ use kontor_api::applications::{
     ResolveContextRequest, ResolvedContextDto, RuntimeSettlementDto, SelectionDto,
     SelectionRequest, SessionVerdictCitationDto, TicketContentConflictDto, TicketFieldDiffDto,
     TicketReconcileAppliedDto, TicketReconcileApplyRequest, TicketReconcilePlanDto,
+    WorktreeClaimCorrectionAppliedDto, WorktreeClaimCorrectionApplyRequest,
+    WorktreeClaimCorrectionPreviewDto, WorktreeClaimCorrectionRequest,
 };
 use kontor_api::applications::{
     FillTeamRunSeatRequest, FilledTeamRunSeatDto, TeamRunSeatDispatchDto,
@@ -293,7 +295,7 @@ use kontor_store::{
     NewJiraMaterializationItem, NewRoleTurn, ProfileSelection, ProjectEnsure, RegisteredPack,
     RoleTurnReplay, RoleTurnRuntimeProof, SettledTurn, SqliteStore, StoredConflict,
     StoredConsultationPermissionResponse, StoredTeamDraft, StoredTeamsProjection,
-    TeamTemplateSource, TurnDispatch, UnconfirmedAdmission,
+    TaskWorktreeCorrection, TeamTemplateSource, TurnDispatch, UnconfirmedAdmission,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 use kontor_teams::{
@@ -460,6 +462,16 @@ struct PreparedDescription {
     field_spec: CompiledFieldSpec,
     workflow_spec: CompiledWorkflowSpec,
     preview_hash: String,
+}
+
+/// Every stored and derived fact one worktree-claim correction is bound to.
+struct PreparedWorktreeClaimCorrection {
+    task_revision: AggregateRevision,
+    old_worktree: ExternalName,
+    new_worktree: ExternalName,
+    module: ModuleKey,
+    branch: ExternalName,
+    preview_hash: ContentHash,
 }
 
 /// The complete, externally observed plan one reconcile response names.
@@ -5199,6 +5211,179 @@ impl Services {
                     "no such task exists in this project",
                 )
             })
+    }
+
+    /// Derive and validate the sole supported replacement for one task claim.
+    ///
+    /// The target is not accepted as an arbitrary path. It must be exactly the
+    /// ASMA catalog-module layout derived from the stored project root, the
+    /// task's confirmed Jira key and the basename of its stored module key.
+    fn prepare_worktree_claim_correction(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        expected_revision: AggregateRevision,
+        old_worktree: &ExternalName,
+        new_worktree: &ExternalName,
+    ) -> Result<PreparedWorktreeClaimCorrection, ApiError> {
+        let state = self.state()?;
+        let task = self.task_row(project_id, task_id)?;
+        self.ensure_pre_run(project_id, task_id)?;
+        if task.revision != expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the task moved since the worktree claim was inspected",
+                )
+                .with_revision(Some(task.revision)));
+        }
+        if old_worktree == new_worktree {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "worktree_target_invalid: a correction must name a different deterministic target",
+            ));
+        }
+        WorkspaceRoot::parse(old_worktree.as_str()).map_err(|error| self.refuse_domain(&error))?;
+        let new_root = WorkspaceRoot::parse(new_worktree.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
+
+        let current = state
+            .with_store(|store| store.task_worktree(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?;
+        if current.as_ref() != Some(old_worktree) {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the stored worktree no longer matches the exact old claim",
+                )
+                .with_revision(Some(task.revision)));
+        }
+
+        let project = self.project_row(project_id)?;
+        let project_root = WorkspaceRoot::parse(project.root_path.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
+        let module = task.module.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the task has no catalog module from which a deterministic worktree can be derived",
+            )
+        })?;
+        let module_directory = module
+            .as_str()
+            .rsplit('/')
+            .next()
+            .filter(|segment| !segment.is_empty())
+            .expect("ModuleKey validation leaves one non-empty final segment");
+        let jira = state
+            .with_store(|store| store.confirmed_jira_task_key(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the task has no unambiguous confirmed Jira binding",
+                )
+            })?;
+        let tracker = TrackerKey::from_external(&jira)
+            .map_err(|refusal| self.deny(ApiErrorCode::PlacementBlocked, refusal.rule()))?;
+        let expected_slug = tracker.as_str().to_ascii_lowercase();
+        let expected_target = ExternalName::parse(&format!(
+            "{}/{MANAGED_WORKTREES_DIR}/{}/{}",
+            project_root.as_str().trim_end_matches('/'),
+            expected_slug,
+            module_directory,
+        ))
+        .map_err(|error| self.refuse_domain(&error))?;
+        if new_root.as_str() != expected_target.as_str() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "worktree_target_invalid: the replacement is not the task's deterministic ASMA catalog-module path",
+            ));
+        }
+        let expected_parts =
+            managed_catalog_worktree_parts(project_root.as_str(), expected_target.as_str());
+        if expected_parts != Some((expected_slug.as_str(), module_directory)) {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "worktree_target_invalid: the replacement does not encode one task slug and one catalog module",
+            ));
+        }
+        if state
+            .with_store(|store| store.task_worktree_owner(project_id, &expected_target))
+            .map_err(|error| self.refuse(&error))?
+            .is_some_and(|owner| owner != task_id)
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the deterministic worktree target is already registered to another task",
+            ));
+        }
+
+        let branch = ExternalName::parse(
+            BranchName::derive(BranchType::Feat, &tracker, task.title.as_str()).as_str(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
+        let preview_hash = self
+            .intent(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "correct_task_worktree",
+                "project_id": project_id.to_string(),
+                "task_id": task_id.to_string(),
+                "task_revision": task.revision.get(),
+                "old_worktree": old_worktree.as_str(),
+                "new_worktree": expected_target.as_str(),
+                "jira_key": tracker.as_str(),
+                "module": module.as_str(),
+                "branch": branch.as_str(),
+            }))?
+            .hash()
+            .clone();
+        Ok(PreparedWorktreeClaimCorrection {
+            task_revision: task.revision,
+            old_worktree: old_worktree.clone(),
+            new_worktree: expected_target,
+            module,
+            branch,
+            preview_hash,
+        })
+    }
+
+    fn worktree_claim_correction_intent(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &WorktreeClaimCorrectionApplyRequest,
+    ) -> Result<CanonicalDocument, ApiError> {
+        self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "correct_task_worktree",
+            "project_id": project_id.to_string(),
+            "task_id": task_id.to_string(),
+            "expected_revision": request.expected_revision.get(),
+            "old_worktree": request.old_worktree.as_str(),
+            "new_worktree": request.new_worktree.as_str(),
+            "preview_hash": request.preview_hash,
+        }))
+    }
+
+    fn worktree_claim_correction_applied(
+        &self,
+        correction: kontor_store::StoredTaskWorktreeCorrection,
+        applied: Applied,
+    ) -> Result<WorktreeClaimCorrectionAppliedDto, ApiError> {
+        Ok(WorktreeClaimCorrectionAppliedDto {
+            realm_id: self.state()?.realm_id(),
+            project_id: correction.project_id,
+            task_id: correction.task_id,
+            task_revision: correction.task_revision,
+            old_worktree: correction.old_worktree,
+            new_worktree: correction.new_worktree,
+            module: correction.module.as_str().to_owned(),
+            branch: correction.branch.as_str().to_owned(),
+            applied: applied_dto(applied),
+            receipt_id: correction.receipt_id.to_string(),
+            preview_hash: correction.preview_hash.as_str().to_owned(),
+            corrected_at: correction.corrected_at,
+        })
     }
 
     /// The agent run currently filling this task's seat, if there is one.
@@ -29491,6 +29676,107 @@ impl ApplicationOperations for Services {
             },
             receipt_id: receipt.to_string(),
         })
+    }
+
+    async fn preview_worktree_claim_correction(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &WorktreeClaimCorrectionRequest,
+    ) -> Result<WorktreeClaimCorrectionPreviewDto, ApiError> {
+        let prepared = self.prepare_worktree_claim_correction(
+            project_id,
+            task_id,
+            request.expected_revision,
+            &request.old_worktree,
+            &request.new_worktree,
+        )?;
+        Ok(WorktreeClaimCorrectionPreviewDto {
+            realm_id: self.state()?.realm_id(),
+            project_id,
+            task_id,
+            task_revision: prepared.task_revision,
+            old_worktree: prepared.old_worktree,
+            new_worktree: prepared.new_worktree,
+            module: prepared.module.as_str().to_owned(),
+            branch: prepared.branch.as_str().to_owned(),
+            writes: true,
+            preview_hash: prepared.preview_hash.as_str().to_owned(),
+        })
+    }
+
+    async fn apply_worktree_claim_correction(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &WorktreeClaimCorrectionApplyRequest,
+    ) -> Result<WorktreeClaimCorrectionAppliedDto, ApiError> {
+        let state = self.state()?;
+        let intent = self.worktree_claim_correction_intent(project_id, task_id, request)?;
+        let target = AggregateRef::Task { task_id };
+        if let Some(existing) = self.replayed(key, &intent, Some(&target))? {
+            if existing.kind != CommandKind::CorrectTaskWorktree {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key was already used for a different operation",
+                ));
+            }
+            let correction = state
+                .with_store(|store| store.get_task_worktree_correction(project_id, existing.id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the durable receipt has no immutable worktree-correction result",
+                    )
+                })?;
+            return self.worktree_claim_correction_applied(correction, Applied::Unchanged);
+        }
+
+        let prepared = self.prepare_worktree_claim_correction(
+            project_id,
+            task_id,
+            request.expected_revision,
+            &request.old_worktree,
+            &request.new_worktree,
+        )?;
+        let requested_hash = ContentHash::parse(&request.preview_hash)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if requested_hash != prepared.preview_hash {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the worktree claim or its deterministic source identity changed since preview",
+                )
+                .with_revision(Some(prepared.task_revision)));
+        }
+
+        let now = kontor_api::now();
+        let command = NewLocalCommand {
+            project_id,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: key.clone(),
+            kind: CommandKind::CorrectTaskWorktree,
+            target,
+            target_revision: prepared.task_revision,
+            intent,
+            created_at: now,
+        };
+        let correction = TaskWorktreeCorrection {
+            command: &command,
+            task_id,
+            expected_old: &prepared.old_worktree,
+            replacement: &prepared.new_worktree,
+            module: &prepared.module,
+            branch: &prepared.branch,
+            preview_hash: &prepared.preview_hash,
+        };
+        let (stored, applied) = state
+            .with_store(|store| store.apply_task_worktree_correction(&correction))
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        self.worktree_claim_correction_applied(stored, applied)
     }
 
     async fn preview_task_description(

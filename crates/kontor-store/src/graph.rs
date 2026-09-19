@@ -60,8 +60,8 @@ use crate::authority::{
 use crate::query::column_text;
 use crate::repository::{
     TASK_COLUMNS, backend, canonical_jira_connector, conflict, from_json, is_jira_connector,
-    read_project, read_scope, read_task, read_timestamp, read_version, revision_of, text, to_json,
-    version_column,
+    read_project, read_scope, read_task, read_timestamp, read_version, revision_column,
+    revision_of, text, to_json, version_column,
 };
 
 // ---------------------------------------------------------------------------
@@ -228,6 +228,54 @@ pub struct ProfileSelection<'a> {
     pub team: Option<&'a TeamTemplateRevision>,
     /// Authority behind the presented team revision.
     pub team_source: TeamTemplateSource,
+}
+
+/// One exact pre-run correction of a task's declared worktree.
+///
+/// The local command, task revision and expected old value are consumed in the
+/// same transaction as the replacement and its immutable audit row. This is a
+/// compare-and-swap repair, not a second declarative graph-apply surface.
+#[derive(Debug)]
+pub struct TaskWorktreeCorrection<'a> {
+    /// Durable local command identity and task-revision fence.
+    pub command: &'a NewLocalCommand,
+    /// Task whose placement is corrected.
+    pub task_id: TaskId,
+    /// Exact claim the caller read and is authorized to replace.
+    pub expected_old: &'a ExternalName,
+    /// Deterministic replacement derived by the application service.
+    pub replacement: &'a ExternalName,
+    /// Catalog module whose repository the replacement names.
+    pub module: &'a ModuleKey,
+    /// Publication branch the supported materializer must create there.
+    pub branch: &'a ExternalName,
+    /// Digest of the exact preview this command applies.
+    pub preview_hash: &'a ContentHash,
+}
+
+/// Immutable before/after evidence for one worktree-claim correction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredTaskWorktreeCorrection {
+    /// Receipt that authorized the correction.
+    pub receipt_id: CommandReceiptId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Preserved task identity.
+    pub task_id: TaskId,
+    /// Task revision compared inside the correction transaction.
+    pub task_revision: AggregateRevision,
+    /// Exact replaced claim.
+    pub old_worktree: ExternalName,
+    /// Exact replacement claim.
+    pub new_worktree: ExternalName,
+    /// Catalog module the target was derived from.
+    pub module: ModuleKey,
+    /// Deterministic Jira-key publication branch.
+    pub branch: ExternalName,
+    /// Preview digest binding every input and derived identity.
+    pub preview_hash: ContentHash,
+    /// Mutation instant.
+    pub corrected_at: Timestamp,
 }
 
 /// One complete legacy backlog export resolved into the existing graph model.
@@ -3749,7 +3797,230 @@ fn read_pack(row: &rusqlite::Row<'_>) -> RepositoryResult<RegisteredPack> {
 // Task worktrees
 // ---------------------------------------------------------------------------
 
+type TaskWorktreeCorrectionRow = (String, i64, String, String, String, String, String, String);
+
+fn read_task_worktree_correction(
+    connection: &Connection,
+    project_id: ProjectId,
+    receipt_id: CommandReceiptId,
+) -> RepositoryResult<Option<StoredTaskWorktreeCorrection>> {
+    let row: Option<TaskWorktreeCorrectionRow> = connection
+        .query_row(
+            "SELECT task_id, task_revision, old_worktree, new_worktree,
+                    module_key, branch_name, preview_hash, corrected_at
+             FROM task_worktree_corrections
+             WHERE project_id = ?1 AND receipt_id = ?2",
+            params![project_id.to_string(), receipt_id.to_string()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?;
+    let Some((task_id, revision, old, new, module, branch, preview_hash, corrected_at)) = row
+    else {
+        return Ok(None);
+    };
+    Ok(Some(StoredTaskWorktreeCorrection {
+        receipt_id,
+        project_id,
+        task_id: TaskId::parse(&task_id)?,
+        task_revision: revision_of(revision)?,
+        old_worktree: ExternalName::parse(&old)?,
+        new_worktree: ExternalName::parse(&new)?,
+        module: ModuleKey::parse(&module)?,
+        branch: ExternalName::parse(&branch)?,
+        preview_hash: ContentHash::parse(&preview_hash)?,
+        corrected_at: read_timestamp(&corrected_at)?,
+    }))
+}
+
 impl SqliteStore {
+    /// Apply one exact worktree-claim correction and its audit receipt atomically.
+    ///
+    /// The task aggregate itself is deliberately not updated: its identity,
+    /// lifecycle revision, Jira binding, workflow, gates and dependencies are
+    /// not part of a placement correction. The task revision is only a CAS
+    /// fence proving the caller repaired the version it inspected.
+    ///
+    /// # Errors
+    /// Refuses a cross-project command, a stale task revision, a changed old
+    /// claim, a target already registered to another task, or an idempotency
+    /// replay whose immutable result cannot be read.
+    pub fn apply_task_worktree_correction(
+        &self,
+        request: &TaskWorktreeCorrection<'_>,
+    ) -> RepositoryResult<(StoredTaskWorktreeCorrection, Applied)> {
+        let project_id = request.command.project_id;
+        if request.command.kind != CommandKind::CorrectTaskWorktree
+            || request.command.target
+                != (AggregateRef::Task {
+                    task_id: request.task_id,
+                })
+            || request.expected_old == request.replacement
+        {
+            return Err(RepositoryError::CrossProject {
+                subject: "task worktree correction",
+            });
+        }
+
+        let transaction = self.begin()?;
+        if let Some(existing) =
+            crate::commands::intent::insert_local_command(&transaction, request.command)?
+        {
+            let correction = read_task_worktree_correction(&transaction, project_id, existing.id)?
+                .ok_or(RepositoryError::Conflict {
+                    subject: "task worktree correction",
+                    rule: "the durable receipt has no immutable correction result",
+                })?;
+            return Ok((correction, Applied::Unchanged));
+        }
+
+        let known: Option<i64> = transaction
+            .query_row(
+                "SELECT revision FROM tasks WHERE project_id = ?1 AND id = ?2",
+                params![project_id.to_string(), request.task_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(revision) = known else {
+            return Err(RepositoryError::NotFound { subject: "task" });
+        };
+        revision_of(revision)?.expect("task", request.command.target_revision)?;
+
+        let current: Option<String> = transaction
+            .query_row(
+                "SELECT worktree FROM task_worktrees
+                 WHERE project_id = ?1 AND task_id = ?2",
+                params![project_id.to_string(), request.task_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if current.as_deref() != Some(request.expected_old.as_str()) {
+            return Err(conflict(
+                "task worktree correction",
+                "the stored worktree no longer matches the exact old claim",
+            ));
+        }
+
+        let conflicting_task: Option<String> = transaction
+            .query_row(
+                "SELECT task_id FROM task_worktrees
+                 WHERE project_id = ?1 AND worktree = ?2 AND task_id <> ?3
+                 LIMIT 1",
+                params![
+                    project_id.to_string(),
+                    request.replacement.as_str(),
+                    request.task_id.to_string()
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if conflicting_task.is_some() {
+            return Err(conflict(
+                "task worktree correction",
+                "the deterministic target is already registered to another task",
+            ));
+        }
+
+        let changed = transaction
+            .execute(
+                "UPDATE task_worktrees
+                 SET worktree = ?4, declared_at = ?5
+                 WHERE project_id = ?1 AND task_id = ?2 AND worktree = ?3",
+                params![
+                    project_id.to_string(),
+                    request.task_id.to_string(),
+                    request.expected_old.as_str(),
+                    request.replacement.as_str(),
+                    text(request.command.created_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "task worktree correction",
+                "the exact old claim was not replaced",
+            ));
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO task_worktree_corrections
+                     (project_id, receipt_id, task_id, task_revision, old_worktree,
+                      new_worktree, module_key, branch_name, preview_hash, corrected_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    project_id.to_string(),
+                    request.command.receipt_id.to_string(),
+                    request.task_id.to_string(),
+                    revision_column(request.command.target_revision)?,
+                    request.expected_old.as_str(),
+                    request.replacement.as_str(),
+                    request.module.as_str(),
+                    request.branch.as_str(),
+                    request.preview_hash.as_str(),
+                    text(request.command.created_at),
+                ],
+            )
+            .map_err(backend)?;
+
+        let correction = StoredTaskWorktreeCorrection {
+            receipt_id: request.command.receipt_id,
+            project_id,
+            task_id: request.task_id,
+            task_revision: request.command.target_revision,
+            old_worktree: request.expected_old.clone(),
+            new_worktree: request.replacement.clone(),
+            module: request.module.clone(),
+            branch: request.branch.clone(),
+            preview_hash: request.preview_hash.clone(),
+            corrected_at: request.command.created_at,
+        };
+        transaction.commit().map_err(backend)?;
+        Ok((correction, Applied::Created))
+    }
+
+    /// Read the immutable result of one worktree-correction receipt.
+    pub fn get_task_worktree_correction(
+        &self,
+        project_id: ProjectId,
+        receipt_id: CommandReceiptId,
+    ) -> RepositoryResult<Option<StoredTaskWorktreeCorrection>> {
+        read_task_worktree_correction(&self.connection, project_id, receipt_id)
+    }
+
+    /// Task already registered at one exact path, when any.
+    pub fn task_worktree_owner(
+        &self,
+        project_id: ProjectId,
+        worktree: &ExternalName,
+    ) -> RepositoryResult<Option<TaskId>> {
+        let found: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT task_id FROM task_worktrees
+                 WHERE project_id = ?1 AND worktree = ?2 LIMIT 1",
+                params![project_id.to_string(), worktree.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        Ok(found.as_deref().map(TaskId::parse).transpose()?)
+    }
+
     /// Declare, or re-declare, where a task's work happens.
     ///
     /// Replaceable until a run has snapshotted it, exactly like the account

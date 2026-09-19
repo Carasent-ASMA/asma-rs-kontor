@@ -2604,6 +2604,94 @@ pub static REGISTRY: &[ToolSpec] = &[
         ],
         about: "Apply the plan a reconcile-plan produced.",
     },
+    // ---- Exact task worktree-claim correction (ASMA-8120) ------------
+    ToolSpec {
+        name: "kontor_task_worktree_claim_preview",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task, by UUID or exact confirmed Jira key.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The exact task revision inspected by the caller.",
+            ),
+            req(
+                "old_worktree",
+                Place::Body,
+                ArgType::ExternalName,
+                "The exact currently stored worktree claim.",
+            ),
+            req(
+                "new_worktree",
+                Place::Body,
+                ArgType::ExternalName,
+                "The deterministic ASMA catalog-module target.",
+            ),
+        ],
+        about: "Validate an exact task-scoped worktree-claim correction. Writes nothing.",
+    },
+    ToolSpec {
+        name: "kontor_task_worktree_claim_apply",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:apply",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task, by UUID or exact confirmed Jira key.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The exact task revision named by the preview.",
+            ),
+            req(
+                "old_worktree",
+                Place::Body,
+                ArgType::ExternalName,
+                "The exact claim the preview authorized replacing.",
+            ),
+            req(
+                "new_worktree",
+                Place::Body,
+                ArgType::ExternalName,
+                "The exact deterministic replacement.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The digest returned by the matching preview.",
+            ),
+        ],
+        about: "Replace one exact task worktree claim under revision and old-value CAS.",
+    },
     // ---- Jira description read and update projection (ASMA-8123) ----
     //
     // Reconciliation converges a status; these converge a body. They are
