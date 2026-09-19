@@ -86,10 +86,10 @@ function operationalClient(overrides: Record<string, unknown> = {}) {
   }
 }
 
-async function open(client = operationalClient()) {
+async function open(client = operationalClient(), epicSelector = 'epic-1') {
   render(<ProjectView client={client as never} />)
   fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'project-1' } })
-  fireEvent.change(screen.getByLabelText('Epic'), { target: { value: 'epic-1' } })
+  fireEvent.change(screen.getByLabelText('Epic'), { target: { value: epicSelector } })
   fireEvent.click(screen.getByRole('button', { name: 'Read' }))
   await screen.findByRole('heading', { name: 'Project Session Topology' })
   await screen.findByText(/eighth run refused/)
@@ -97,6 +97,59 @@ async function open(client = operationalClient()) {
 }
 
 describe('<ProjectView>', () => {
+  it('shows the confirmed Jira key as epic identity, with the uuid and backlog code beside it', async () => {
+    await open(
+      operationalClient({
+        epic: vi.fn(async () => ({
+          realm_id: 'realm-1', project_id: 'project-1', epic_id: 'epic-1', name: 'Operational MVP',
+          revision: 7, scheduling_open: true, snapshot_cursor: 20, authorizations: [],
+          epic_backlog_code: 'KBI',
+          jira_binding: { state: 'confirmed', jira_key: 'ASMA-8049' },
+        })),
+      }),
+    )
+    const identity = screen.getByRole('heading', { name: 'Epic identity' }).parentElement as HTMLElement
+    expect(within(identity).getByText('ASMA-8049')).toBeInTheDocument()
+    expect(within(identity).getByText('epic-1')).toBeInTheDocument()
+    expect(within(identity).getByText('KBI')).toBeInTheDocument()
+    // The legacy namespace is labelled as compatibility, never as identity.
+    expect(within(identity).getByText(/legacy compatibility namespace/)).toBeInTheDocument()
+  })
+
+  it('says an unbound epic awaits its binding rather than showing a derived code', async () => {
+    await open(
+      operationalClient({
+        epic: vi.fn(async () => ({
+          realm_id: 'realm-1', project_id: 'project-1', epic_id: 'epic-1', name: 'Operational MVP',
+          revision: 7, scheduling_open: true, snapshot_cursor: 20, authorizations: [],
+          epic_backlog_code: 'KBI',
+          jira_binding: { state: 'awaiting_jira_binding' },
+        })),
+      }),
+    )
+    const identity = screen.getByRole('heading', { name: 'Epic identity' }).parentElement as HTMLElement
+    expect(within(identity).getByText('Awaiting Jira binding')).toBeInTheDocument()
+    // KBI is still shown, but it never becomes the identity.
+    expect(within(identity).queryByText('ASMA-8049')).toBeNull()
+  })
+
+  it('narrows topology by the resolved uuid when the epic is addressed by Jira key', async () => {
+    // The topology subgraph is narrowed by a query parameter the contract keeps
+    // UUID-only, so handing it the reader's raw key would refuse the read.
+    const client = operationalClient({
+      epic: vi.fn(async () => ({
+        realm_id: 'realm-1', project_id: 'project-1', epic_id: 'epic-1', name: 'Operational MVP',
+        revision: 7, scheduling_open: true, snapshot_cursor: 20, authorizations: [],
+        jira_binding: { state: 'confirmed', jira_key: 'ASMA-8049' },
+      })),
+    })
+    await open(client, 'ASMA-8049')
+    // The epic read takes the key, exactly as typed.
+    expect(client.epic).toHaveBeenCalledWith('project-1', 'ASMA-8049')
+    // The UUID-only topology read takes the resolved identity instead.
+    expect(client.topology).toHaveBeenCalledWith('project-1', 'epic-1')
+  })
+
   it('renders server capacity, logical/native topology and code help without local derivation', async () => {
     await open()
     expect(screen.getByText('4')).toBeInTheDocument()

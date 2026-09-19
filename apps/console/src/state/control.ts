@@ -282,7 +282,31 @@ export function cachedRun(state: ControlState, agentRunId: string): CachedRun | 
   return state.runs.get(entityKey(state.realmId, agentRunId))
 }
 
-/** Read one cached task, in this realm only. */
+/**
+ * Read one cached task, in this realm only, by either spelling of its identity.
+ *
+ * The cache is keyed by UUID, because that is the identity the realm returns and
+ * the one thing about a task that never changes. A reader, though, may have
+ * addressed the task by its confirmed Jira key — the routes accept both — and the
+ * snapshot that comes back is filed under the UUID the server resolved it to. A
+ * plain lookup by what the reader typed would therefore miss its own fetch, and
+ * the task would never render.
+ *
+ * So a key falls back to the binding the realm reported. This resolves *to* the
+ * UUID-keyed cache rather than adding a second key for the same task: there is
+ * still exactly one cache entry per task, and no client-side key-to-UUID lookup
+ * is invented — only the binding the server already sent is consulted.
+ */
 export function cachedTask(state: ControlState, taskId: string): CachedTask | undefined {
-  return state.tasks.get(entityKey(state.realmId, taskId))
+  const direct = state.tasks.get(entityKey(state.realmId, taskId))
+  if (direct) {
+    return direct
+  }
+  for (const cached of state.tasks.values()) {
+    const binding = cached.value.jira_binding
+    if (binding?.state === 'confirmed' && binding.jira_key === taskId) {
+      return cached
+    }
+  }
+  return undefined
 }

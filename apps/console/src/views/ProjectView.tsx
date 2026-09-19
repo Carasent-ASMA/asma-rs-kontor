@@ -109,6 +109,47 @@ function useIntentKey(): { keyFor: (intent: unknown) => string; release: () => v
   }
 }
 
+/**
+ * The epic's reader-facing identity, and the codes that are not it.
+ *
+ * The confirmed Jira key is the identity; the UUID stays as the internal fact
+ * every route still accepts. A Kontor backlog code is shown because operators
+ * read it, but explicitly as a namespace rather than as identity — an old code
+ * is a compatibility lookup, never the thing the epic *is*, and never reverse
+ * derived into a key.
+ *
+ * Everything here comes from the epic projection the realm already served. The
+ * console derives no key and performs no lookup of its own.
+ */
+function EpicIdentityFacts({ epic }: { epic: EpicProjection }) {
+  const binding = epic.jira_binding
+  const confirmed = binding?.state === 'confirmed' && binding.jira_key ? binding.jira_key : null
+  const scope = epic.execution_scope ?? null
+  const legacy = epic.epic_backlog_code ?? scope?.kontor_backlog_code ?? null
+  return (
+    <Facts>
+      <Fact
+        label="epic"
+        value={
+          confirmed ? <code className="identity-primary">{confirmed}</code> : 'Awaiting Jira binding'
+        }
+        hint={confirmed ? 'confirmed Jira key' : 'no confirmed Jira binding yet'}
+      />
+      <Fact
+        label="epic uuid"
+        value={<code className="identity-internal">{epic.epic_id}</code>}
+        hint="internal identity; still accepted wherever an epic is addressed"
+      />
+      <Fact label="name" value={epic.name} />
+      <Fact
+        label="backlog code"
+        value={legacy ? <code>{legacy}</code> : null}
+        hint="legacy compatibility namespace; never a write selector"
+      />
+    </Facts>
+  )
+}
+
 /** Read one project and epic entirely through `/v1`. */
 export function ProjectView({ client }: { client: OperationalClient }) {
   const [projectId, setProjectId] = useState('')
@@ -121,10 +162,18 @@ export function ProjectView({ client }: { client: OperationalClient }) {
     const epic = epicId.trim()
     if (!project || !epic) return
     setBusy(true)
-    const [epicRead, topology, coreTeam, roles, capacity, quota, seatQuota, help, advisors, committees, profiles, completion] =
+    // The epic may be addressed by UUID or by its confirmed Jira key, and the
+    // epic read accepts either and answers with the canonical UUID. That read
+    // therefore goes first, because not every route takes a selector: the
+    // topology subgraph is narrowed by a *query* parameter the contract
+    // deliberately left UUID-only, so handing it the text a reader typed would
+    // refuse a key-addressed epic and leave the panel empty. Everything else is
+    // still issued together.
+    const epicRead = await settled(client.epic(project, epic))
+    const resolvedEpicId = epicRead.value?.epic_id ?? epic
+    const [topology, coreTeam, roles, capacity, quota, seatQuota, help, advisors, committees, profiles, completion] =
       await Promise.all([
-        settled(client.epic(project, epic)),
-        settled(client.topology(project, epic)),
+        settled(client.topology(project, resolvedEpicId)),
         settled(client.coreTeam(project)),
         settled(client.quickRoles(project)),
         settled(client.projectCapacity(project)),
@@ -138,7 +187,8 @@ export function ProjectView({ client }: { client: OperationalClient }) {
       ])
     setData({
       projectId: project,
-      epicId: epic,
+      // The canonical id, so no panel below ever re-issues the reader's raw text.
+      epicId: resolvedEpicId,
       epic: epicRead,
       topology,
       coreTeam,
@@ -218,6 +268,13 @@ export function ProjectView({ client }: { client: OperationalClient }) {
                 help={help}
               />
             ) : <Unavailable read={data.seatQuota} />}
+          </section>
+
+          <section aria-labelledby="epic-identity">
+            <h3 id="epic-identity">Epic identity</h3>
+            {data.epic.value ? (
+              <EpicIdentityFacts epic={data.epic.value} />
+            ) : <Unavailable read={data.epic} />}
           </section>
 
           <section aria-labelledby="project-topology">

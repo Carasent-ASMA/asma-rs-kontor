@@ -48794,3 +48794,164 @@ async fn a_confirmed_jira_key_addresses_the_same_subject_as_its_uuid() {
         malformed.body
     );
 }
+
+/// ASMA-8119 acceptance: a confirmed key addresses *writes* under exactly the
+/// fences a UUID does, and every other way of naming a subject is refused.
+///
+/// The read path is covered separately. This exists because a selector that
+/// widened only reads would leave every write UUID-only — and because the
+/// dangerous direction is the opposite one: a selector that quietly accepted a
+/// legacy code, an unbound key or a stale revision would move real work.
+///
+/// Every refusal below is sent with a schema-valid body, so a refusal can only
+/// be about the subject. A malformed body would return the same status for an
+/// entirely different reason and prove nothing.
+#[tokio::test]
+async fn a_confirmed_key_addresses_writes_with_the_same_fences_as_a_uuid() {
+    let server = MockServer::start().await;
+    let project_id = ProjectId::generate();
+    let epic_id = MiniProjectId::generate();
+    let (world, _config) = world_with_jira(&server, project_id).await;
+    seed_confirmed_epic_binding(&world, project_id, epic_id).await;
+
+    let account = Call::post(
+        format!("/v1/projects/{project_id}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Selector acceptance",
+            "harness": "fake.runtime",
+            "credential_alias": "selector-acceptance",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("selector-acceptance-account")
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let granted_by = account.json()["account_profile_id"].clone();
+
+    // Reading by key already proves resolution; it also gives the revision the
+    // writes below must present.
+    let read = Call::get(format!("/v1/projects/{project_id}/epics/ASMA-1"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    assert_eq!(
+        read.json()["epic_id"].as_str(),
+        Some(epic_id.to_string().as_str()),
+        "the confirmed key resolved to the seeded epic"
+    );
+    let revision = read.json()["revision"]
+        .as_u64()
+        .expect("the epic reports a revision");
+
+    let arm = |selector: String, expected: u64, key: &'static str| {
+        let world = &world;
+        let granted_by = granted_by.clone();
+        async move {
+            Call::post(
+                format!("/v1/projects/{project_id}/epics/{selector}/execution:arm"),
+                &serde_json::json!({
+                    "expected_revision": expected,
+                    "tasks": [],
+                    "allowed_start": "2020-01-01T00:00:00Z",
+                    "allowed_end": "2099-01-01T00:00:00Z",
+                    "max_concurrency": 1,
+                    "budget": {
+                        "max_tokens": 1000,
+                        "max_commands": 10,
+                        "max_duration_seconds": 600,
+                        "max_cost_minor_units": 100,
+                        "cost_currency": "NOK"
+                    },
+                    "granted_by": granted_by,
+                    "reason": "ASMA-8119 selector acceptance"
+                }),
+            )
+            .signed_as(world, "admin")
+            .with_key(key)
+            .send(world)
+            .await
+        }
+    };
+
+    /// A refusal that is about the subject, not about the request's shape.
+    fn refused_on_subject(response: &Answer, what: &str) {
+        assert!(
+            response.status.is_client_error(),
+            "{what} must be refused: {} {}",
+            response.status,
+            response.body
+        );
+        assert_ne!(
+            response.json()["rule"].as_str(),
+            Some("the request body is valid JSON but does not match this route's schema"),
+            "{what} was refused for its body, which proves nothing about the subject: {}",
+            response.body
+        );
+    }
+
+    // A legacy backlog code is a read-only compatibility lookup. It is never a
+    // write selector, and is never reverse-derived into a key.
+    refused_on_subject(
+        &arm("KBI".to_owned(), revision, "arm-legacy-code").await,
+        "a legacy backlog code",
+    );
+
+    // A well-formed key with no confirmed binding in this project is refused —
+    // which is also exactly what a foreign-project key looks like from here.
+    refused_on_subject(
+        &arm("OTHER-4242".to_owned(), revision, "arm-foreign-key").await,
+        "an unbound or foreign-project key",
+    );
+
+    // Case is never repaired, so a non-canonical spelling stays a refusal.
+    refused_on_subject(
+        &arm("asma-1".to_owned(), revision, "arm-lowercase-key").await,
+        "a non-canonical key",
+    );
+
+    // Resolution does not soften the revision fence: the fence is applied to the
+    // resolved subject, after the key resolves.
+    refused_on_subject(
+        &arm("ASMA-1".to_owned(), revision + 7, "arm-stale-revision").await,
+        "a stale revision behind a valid key",
+    );
+
+    // The key-addressed write lands, exactly as a UUID-addressed one would.
+    let armed = arm("ASMA-1".to_owned(), revision, "arm-by-confirmed-key").await;
+    assert_eq!(armed.status, 200, "{}", armed.body);
+
+    // Replaying the same idempotency key returns the original receipt rather
+    // than arming a second time.
+    let replay = arm("ASMA-1".to_owned(), revision, "arm-by-confirmed-key").await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        replay.json(),
+        armed.json(),
+        "the replay returned the original receipt rather than a second effect"
+    );
+
+    // Continuity: after the write, the key, the subject it names and the
+    // confirmed binding are all still intact in the store an export reads.
+    world.daemon.state().with_store(|store| {
+        let binding = store
+            .resolve_confirmed_jira_key(project_id, "ASMA-1")
+            .expect("the confirmed key still resolves after the write");
+        assert_eq!(
+            binding.subject,
+            kontor_store::JiraBindingSubject::Epic(epic_id),
+            "the key still names the same epic"
+        );
+        assert!(
+            matches!(
+                store
+                    .jira_epic_binding_state(project_id, epic_id)
+                    .expect("the binding state reads"),
+                kontor_store::JiraBindingState::Confirmed(_)
+            ),
+            "the binding is still confirmed after the write"
+        );
+    });
+}
