@@ -732,7 +732,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
 fn v108_worktree_correction_evidence_is_append_only() {
     let directory = temp();
     let store = open(&directory);
-    assert_eq!(store.schema_version().expect("the version reads"), 108);
+    // The current version, not the one this feature landed at: the table under
+    // test is unchanged by later migrations, and pinning 108 here would make
+    // every subsequent migration fail a test about worktree corrections.
+    assert_eq!(store.schema_version().expect("the version reads"), 109);
     drop(store);
     let connection =
         Connection::open(directory.path().join("kontor.db")).expect("the migrated database opens");
