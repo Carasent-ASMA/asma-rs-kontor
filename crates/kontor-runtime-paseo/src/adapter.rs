@@ -54,7 +54,9 @@ use kontor_core::id::{
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef, SeatAutonomy};
-use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
+use kontor_core::state::{
+    NativeRuntimeIdentity, ObservedContainerKind, ObservedRunState, RuntimeContact,
+};
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
@@ -79,9 +81,10 @@ use kontor_runtime::capability::{
     RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade, preflight,
 };
 use kontor_runtime::container::{
-    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerOutcome,
-    ContainerProjection, ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRequest,
-    RetitleContainerOutcome, RetitleContainerRequest,
+    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence,
+    ContainerInspectRequest, ContainerInspection, ContainerOutcome, ContainerProjection,
+    ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRequest, RetitleContainerOutcome,
+    RetitleContainerRequest,
 };
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -604,6 +607,13 @@ pub enum PaseoDelivery {
 struct EpochRegistry {
     by_raw: BTreeMap<String, u64>,
     next: u64,
+    /// Mappings allocated since the last drain, awaiting durable persistence.
+    ///
+    /// Held separately from `by_raw` because "known" and "durable" are different
+    /// facts. A number is usable in this process the instant it is allocated,
+    /// but nothing addressed by it may be exposed until the control plane has
+    /// taken this list and committed it.
+    undrained: Vec<(String, u64)>,
 }
 
 impl EpochRegistry {
@@ -632,7 +642,12 @@ impl EpochRegistry {
             }
         }
         let next = seen.iter().next_back().copied().unwrap_or(0);
-        Ok(Self { by_raw, next })
+        // Restored from a checkpoint, so nothing here is awaiting persistence.
+        Ok(Self {
+            by_raw,
+            next,
+            undrained: Vec::new(),
+        })
     }
 
     /// The Kontor epoch for `raw`, allocating one only for an epoch never seen.
@@ -642,7 +657,60 @@ impl EpochRegistry {
         }
         self.next = self.next.saturating_add(1);
         self.by_raw.insert(raw.to_owned(), self.next);
+        self.undrained.push((raw.to_owned(), self.next));
         self.next
+    }
+
+    /// What has not been persisted yet, without forgetting it.
+    ///
+    /// Reading the list must not discharge the obligation it represents. A take
+    /// here would mean a caller whose commit failed had already lost the only
+    /// record that these numbers are undurable — and `resolve` would go on
+    /// serving them from `by_raw`, so they would never be offered again.
+    fn pending(&self) -> Vec<(String, u64)> {
+        self.undrained.clone()
+    }
+
+    /// Drop exactly the pairs a caller has made durable.
+    ///
+    /// Exactly, and no more: an allocation that happened while the caller was
+    /// committing is still pending and keeps its place in the queue, so the
+    /// order the numbers were issued in is the order they are offered in.
+    /// `by_raw` is untouched — acknowledging is about durability, not about
+    /// forgetting a mapping this process is still using.
+    fn ack(&mut self, persisted: &[(String, u64)]) {
+        self.undrained
+            .retain(|pending| !persisted.contains(pending));
+    }
+
+    /// Adopt durable mappings. Known raws keep their number; the allocator
+    /// continues above the highest number in use so it can never re-issue one.
+    ///
+    /// Restored pairs are *not* marked undrained: they came from the store, so
+    /// persisting them again would be a write with nothing to record.
+    fn adopt(&mut self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
+        for (raw, epoch) in pairs {
+            if *epoch == 0 {
+                return Err(RuntimeError::Domain(DomainError::invalid(
+                    "runtime_timeline_epochs.kontor_epoch",
+                    "a timeline epoch is one-based",
+                )));
+            }
+            match self.by_raw.get(raw.as_str()) {
+                Some(known) if known != epoch => {
+                    return Err(RuntimeError::Domain(DomainError::invalid(
+                        "runtime_timeline_epochs.raw_epoch",
+                        "the durable mapping contradicts one this process already issued",
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    self.by_raw.insert(raw.clone(), *epoch);
+                }
+            }
+            self.next = self.next.max(*epoch);
+        }
+        Ok(())
     }
 
     /// Restore one exact mapping retained by a server-owned recovery record.
@@ -1665,7 +1733,7 @@ impl PaseoAdapter {
             return Err(RuntimeError::CorrelationFailed);
         }
         if !agent.is_archived() {
-            Self::verify_agent_route(&agent, &request.model_rung, SeatAutonomy::Supervised)?;
+            Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
         }
         Ok(Some(agent))
     }
@@ -1773,6 +1841,52 @@ impl PaseoAdapter {
             .ok_or(RuntimeError::WorkspaceMismatch {
                 rule: "the native project is not bound to an epic on this adapter",
             })
+    }
+
+    /// Every workspace id this plane can currently see, across every project.
+    ///
+    /// Read exactly once per restore. Enumerating the directory per claim is an
+    /// N-by-directory sweep: a realm holding hundreds of open claims can spend
+    /// its bounded restart window before it reaches the oldest ones — which are
+    /// precisely the claims most likely to need the readback exception — and
+    /// two claims in one restore could otherwise be judged against two
+    /// different answers. One immutable read settles both.
+    ///
+    /// A census that cannot be read fails the whole restore rather than
+    /// answering for any claim. "No project owns this workspace" read off a
+    /// failed or partial enumeration is indistinguishable from a retirement,
+    /// and would silently widen the exception to every claim at once.
+    async fn active_workspace_census(&self) -> RuntimeResult<BTreeMap<String, PaseoWorkspace>> {
+        let mut seen = BTreeMap::new();
+        for project in self.fetch_projects().await? {
+            for workspace in self.fetch_workspaces(&project.id).await? {
+                seen.insert(workspace.id.clone(), workspace);
+            }
+        }
+        Ok(seen)
+    }
+
+    /// Whether this agent's own declared workspace is absent from the active
+    /// census — the retired-task-worktree shape.
+    ///
+    /// This is proved positively rather than inferred from a recovery failure,
+    /// because [`Self::recover_project_for_agent`] answers `CorrelationFailed`
+    /// both for a workspace no project owns *and* for an agent that never
+    /// carried a project label. Only the first is recoverable, so the second
+    /// must not be swept in by reading the error alone. A workspace that still
+    /// appears in the census — including under a project this plane does not
+    /// own — is not this shape and stays refused.
+    fn workspace_owner_retired(
+        agent: &PaseoAgent,
+        census: &BTreeMap<String, PaseoWorkspace>,
+    ) -> bool {
+        let Some(workspace_id) = agent.workspace_id.as_deref() else {
+            return false;
+        };
+        if agent.label(label::PROJECT_ID).is_none() {
+            return false;
+        }
+        !census.contains_key(workspace_id)
     }
 
     async fn recover_project_for_agent(
@@ -2374,6 +2488,7 @@ impl PaseoAdapter {
             )
         })?;
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id,
             contact,
             state,
@@ -5198,6 +5313,7 @@ impl PaseoAdapter {
                     &labels,
                     request.prompt.as_str(),
                     request.credential.expose_secret(),
+                    request.autonomy,
                 )?;
                 let frame = self.transport.request(&creation).await?;
                 let status: serde_json::Value =
@@ -5222,9 +5338,39 @@ impl PaseoAdapter {
                 (native_id, true)
             }
         };
-        let agent = self.fetch_agent(&native_id).await?;
+        let mut agent = self.fetch_agent(&native_id).await?;
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
-        Self::verify_agent_route(&agent, &request.model_rung, SeatAutonomy::Supervised)?;
+        // The readback asserts the autonomy the launch asked for, which is what
+        // makes the pair evidence: a seat that came back in another mode fails
+        // correlation instead of quietly running under it.
+        Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
+        // A lost create acknowledgement can leave the exact SeatBinding agent
+        // attached while its provider thread never initialized. Re-enter that
+        // same native identity and reload only the failed pre-thread state;
+        // never resend the topology message and never create a replacement.
+        if agent.provider_session_id().is_none()
+            && matches!(
+                agent.status,
+                PaseoAgentStatus::Error | PaseoAgentStatus::Closed
+            )
+        {
+            let output = self
+                .transport
+                .run(&PaseoCommand::agent_reload(&native_id))
+                .await?;
+            let reloaded: PaseoCliAgentReloaded = output.parse("PaseoCliAgentReloaded")?;
+            if reloaded.agent_id != native_id {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+            agent = self.fetch_agent(&native_id).await?;
+            self.verify_agent_placement(&agent, &workspace_id, &labels)?;
+            Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
+        }
+        if agent.provider_session_id().is_none() {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "the exact hosted seat is attached but its provider thread is not initialized; retry this SeatBinding or use the supported seat claim",
+            });
+        }
         Ok(ConsultationLaunchOutcome {
             identity: self.identity(ExternalId::parse(&agent.id)?, generation),
             provider_session_id: agent
@@ -5322,6 +5468,176 @@ impl RuntimeAdapter for PaseoAdapter {
     /// still exist here?*. Rebuilding capabilities from a fresh
     /// `discover_capabilities` would re-grade a binding whose session never
     /// changed, which is precisely what the freeze rule exists to stop.
+    fn pending_timeline_epochs(&self) -> Vec<(String, u64)> {
+        self.lock().epochs.pending()
+    }
+
+    fn ack_timeline_epochs(&self, persisted: &[(String, u64)]) {
+        self.lock().epochs.ack(persisted);
+    }
+
+    fn restore_timeline_epochs(&self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
+        self.lock().epochs.adopt(pairs)
+    }
+
+    /// At most `max_pages` pages of the newest content, never a walk to origin.
+    ///
+    /// The same backwards stepping the cursor-free [`RuntimeAdapter::history`]
+    /// path does, stopped at a budget instead of at the beginning of the
+    /// session. That is the whole difference, and it is what makes observing a
+    /// three-event turn cost three events rather than the transcript in front of
+    /// it.
+    ///
+    /// The non-advancing guard is kept verbatim: a page whose newest item is not
+    /// older than the cursor it was fetched before is a runtime that is not
+    /// making progress, and continuing would loop. Epoch agreement is enforced
+    /// on every step, so a window never splices two numberings together.
+    async fn tail_window(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        page_size: u32,
+        max_pages: usize,
+    ) -> RuntimeResult<HistoryPage> {
+        let binding = self.attested(binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::History,
+        )
+        .await?;
+        let declared = self.declared().await?;
+        let generation = self.generation();
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(page_size)),
+                context_policy: None,
+            },
+        )?;
+        let native_id = binding.identity().native_id.as_str().to_owned();
+        let mut page = self
+            .fetch_canonical(
+                &native_id,
+                PaseoDirection::Tail,
+                None,
+                page_size,
+                PaseoProjection::Canonical,
+            )
+            .await?;
+        let epoch = self.resolve_epoch(&page.epoch, None)?;
+        let mut items = self.normalize_page(&page, epoch)?;
+        let mut read = 1usize;
+        while page.has_older && read < max_pages.max(1) {
+            let before =
+                page.start_cursor
+                    .clone()
+                    .ok_or(RuntimeError::TimelineRefetchRequired {
+                        reason: TimelineBreak::SequenceGap,
+                    })?;
+            if before.epoch != page.epoch {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::EpochChanged,
+                });
+            }
+            let older = self
+                .fetch_canonical(
+                    &native_id,
+                    PaseoDirection::Before,
+                    Some(&before),
+                    page_size,
+                    PaseoProjection::Canonical,
+                )
+                .await?;
+            self.resolve_epoch(&older.epoch, Some(epoch))?;
+            let older_items = self.normalize_page(&older, epoch)?;
+            // Backward progress is necessary but not sufficient. A page whose
+            // newest item is older than the cursor proves the read is advancing;
+            // it does not prove the two pages *meet*. Splicing them when they do
+            // not would hand back a window with a hole in the middle that every
+            // later check reads as one continuous stretch of session.
+            let joins = match (older_items.last(), items.first()) {
+                (Some(older_end), Some(window_start)) => {
+                    older_end.position.sequence < before.seq
+                        && older_end.position.sequence + 1 == window_start.position.sequence
+                }
+                // Nothing older came back, or nothing to join it to: either way
+                // there is no merge to validate and no window to extend.
+                _ => false,
+            };
+            if !joins {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::SequenceGap,
+                });
+            }
+            let mut merged = older_items;
+            merged.append(&mut items);
+            items = merged;
+            page = older;
+            read += 1;
+        }
+        let end = items
+            .last()
+            .map_or(TimelinePosition::start_of(epoch), |event| event.position);
+        Ok(HistoryPage {
+            epoch,
+            items,
+            // The window ends at the tail; there is nothing after it.
+            next: None,
+            end,
+        })
+    }
+
+    /// One tail entry, read only for the epoch it is stamped with.
+    ///
+    /// Deliberately *not* [`RuntimeAdapter::history`] with no cursor. That path
+    /// walks `start_cursor` backwards until Paseo says nothing older remains,
+    /// because a caller asking for content from the origin must be given the
+    /// origin; this caller wants no content at all. Asking for one entry at the
+    /// tail costs a single request on a session of any length, and
+    /// [`PaseoAdapter::resolve_epoch`] with no expectation is exactly the step
+    /// that maps the session's current raw epoch — allocating a number if it is
+    /// new, returning the known one if it is not.
+    async fn refresh_timeline_epoch(&self, binding: &RuntimeBindingSnapshot) -> RuntimeResult<()> {
+        let binding = self.attested(binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::History,
+        )
+        .await?;
+        let declared = self.declared().await?;
+        let generation = self.generation();
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(1)),
+                context_policy: None,
+            },
+        )?;
+        let native_id = binding.identity().native_id.as_str().to_owned();
+        let page = self
+            .fetch_canonical(
+                &native_id,
+                PaseoDirection::Tail,
+                None,
+                1,
+                PaseoProjection::Canonical,
+            )
+            .await?;
+        self.resolve_epoch(&page.epoch, None)?;
+        Ok(())
+    }
+
     async fn restore_bindings(
         &self,
         snapshots: &[RuntimeBindingSnapshot],
@@ -5339,7 +5655,10 @@ impl RuntimeAdapter for PaseoAdapter {
         // settings; exact reads let each surviving seat re-establish its own
         // epic project from the immutable PROJECT_ID label and workspace owner.
         let generation = self.generation();
+        // Once, before any claim is judged — never once per claim.
+        let census = self.active_workspace_census().await?;
         let mut live = Vec::new();
+        let mut readback_only = Vec::new();
         for snapshot in snapshots {
             let Ok(agent) = self
                 .fetch_agent(snapshot.identity().native_id.as_str())
@@ -5354,12 +5673,29 @@ impl RuntimeAdapter for PaseoAdapter {
             // longer be present in Paseo's active workspace census. Refusing
             // that readback strands the open Kontor run after restart even
             // though Paseo still attests the archive stamp by exact agent id.
-            if self.recover_project_for_agent(&agent).await.is_err() && !agent.is_archived() {
+            // A seat whose workspace owner is provably absent from every census
+            // is the same terminal shape as an archived one: the native still
+            // exists and answers by exact id, so its open run can be settled,
+            // but there is no placement and therefore nothing may drive it.
+            // This is judged on its own, not inferred from whether the project
+            // happened to survive, because the retired worktree strands the run
+            // either way. Anything else — an unlabelled agent, an ambiguous
+            // owner, a workspace that still exists somewhere, or a census this
+            // adapter could not read — is not the shape and stays refused.
+            let retired_owner = Self::workspace_owner_retired(&agent, &census);
+            if self.recover_project_for_agent(&agent).await.is_err()
+                && !agent.is_archived()
+                && !retired_owner
+            {
                 continue;
             }
             let (state, _) = Self::normalize_agent(&agent);
+            let identity = self.identity(ExternalId::parse(&agent.id)?, generation);
+            if retired_owner {
+                readback_only.push(identity.clone());
+            }
             live.push(NativeSession {
-                identity: self.identity(ExternalId::parse(&agent.id)?, generation),
+                identity,
                 correlation: agent
                     .label(label::AGENT_RUN)
                     .and_then(|value| CorrelationLabel::parse(value).ok()),
@@ -5376,7 +5712,7 @@ impl RuntimeAdapter for PaseoAdapter {
         // fabricated here. Only the placement is recovered, which is the part
         // every driving operation actually reads and the part the runtime can
         // still answer for.
-        let placements = self.reprove_placements(snapshots, &live).await?;
+        let placements = self.reprove_placements(snapshots, &live, &census).await?;
         let mut restored = Vec::new();
         let mut state = self.lock();
         for snapshot in snapshots {
@@ -5393,7 +5729,10 @@ impl RuntimeAdapter for PaseoAdapter {
                         &session.identity == snapshot.identity()
                             && session.state == ObservedRunState::Cancelled
                     });
-                    if workspace_id.is_none() && !archived {
+                    let readback = readback_only
+                        .iter()
+                        .any(|identity| identity == snapshot.identity());
+                    if workspace_id.is_none() && !archived && !readback {
                         tracing::warn!(
                             binding = %snapshot.binding_id(),
                             agent_run = %snapshot.agent_run_id(),
@@ -5790,6 +6129,7 @@ impl RuntimeAdapter for PaseoAdapter {
             seat_binding_id: request.seat_binding_id,
             identity: request.identity.clone(),
             model_rung: request.model_rung.clone(),
+            autonomy: request.autonomy,
             requested_at: request.requested_at,
         };
         let Some(before) = self.hosted_seat_agent(&inspect).await? else {
@@ -6401,6 +6741,115 @@ impl RuntimeAdapter for PaseoAdapter {
             snapshot: plan.snapshot,
             desired_title: plan.desired,
             changed: plan.changed,
+        })
+    }
+
+    async fn inspect_container(
+        &self,
+        request: &ContainerInspectRequest,
+    ) -> RuntimeResult<ContainerInspection> {
+        request.validate()?;
+        let declared = self.declared().await?;
+        if !declared.supports(RuntimeCapability::Inspect) {
+            return Err(self.refuse(RuntimeCapability::Inspect, &declared));
+        }
+        let generation = self.generation();
+        let expected = &request.binding.identity;
+        if expected.runtime_kind != self.config.runtime_kind
+            || expected.host != self.config.host_key
+            || expected.generation != generation
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the container binding belongs to another runtime host or generation",
+            });
+        }
+
+        let (identity, observed_kind, visible_title, canonical_cwd, native_parent) = match request
+            .binding
+            .projection
+        {
+            ContainerProjection::LogicalOnly => unreachable!("validated above"),
+            ContainerProjection::NativeRoot => {
+                let project = self.read_project_by_id(expected.native_id.as_str()).await?;
+                let identity = self.identity(ExternalId::parse(&project.id)?, generation);
+                let cwd = WorkspaceRoot::parse(&project.root_path)?;
+                if request.epic_container {
+                    let epic_id = Self::external_epic_id(&request.scope)?;
+                    self.lock().projects.insert(
+                        epic_id.clone(),
+                        PaseoProjectBinding {
+                            mini_project_id: epic_id,
+                            host_key: self.config.host_key.clone(),
+                            project_id: identity.native_id.clone(),
+                            observed_name: project.display_name.clone(),
+                        },
+                    );
+                }
+                (
+                    identity,
+                    ObservedContainerKind::Project,
+                    project.display_name,
+                    Some(cwd),
+                    None,
+                )
+            }
+            ContainerProjection::NativeChild => {
+                let parent = request
+                    .native_parent
+                    .as_ref()
+                    .expect("validated native child parent");
+                if parent.runtime_kind != self.config.runtime_kind
+                    || parent.host != self.config.host_key
+                    || parent.generation != generation
+                {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: "the container parent belongs to another runtime host or generation",
+                    });
+                }
+                let project = self.read_project_by_id(parent.native_id.as_str()).await?;
+                let project_binding = PaseoProjectBinding {
+                    mini_project_id: Self::external_epic_id(&request.scope)?,
+                    host_key: self.config.host_key.clone(),
+                    project_id: ExternalId::parse(&project.id)?,
+                    observed_name: project.display_name,
+                };
+                let workspace = self
+                    .fetch_workspace_in(&project_binding, expected.native_id.as_str())
+                    .await?;
+                if workspace.project_id != parent.native_id.as_str() {
+                    return Err(RuntimeError::WorkspaceMismatch {
+                        rule: "the inspected container is outside its exact persisted parent",
+                    });
+                }
+                let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
+                let cwd = WorkspaceRoot::parse(&workspace.workspace_directory)?;
+                (
+                    identity,
+                    ObservedContainerKind::Workspace,
+                    workspace.visible_title().to_owned(),
+                    Some(cwd),
+                    Some(parent.clone()),
+                )
+            }
+        };
+        if &identity != expected {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the exact container readback returned another native identity",
+            });
+        }
+        let correlation = ContainerCorrelationEvidence::by_exact_id(
+            request.binding.topology_node_id,
+            identity,
+            request.requested_at,
+        );
+        Ok(ContainerInspection {
+            binding: request.binding.clone(),
+            observed_kind,
+            visible_title,
+            canonical_cwd,
+            native_parent,
+            correlation,
+            observed_at: request.requested_at,
         })
     }
 
@@ -7183,12 +7632,26 @@ impl RuntimeAdapter for PaseoAdapter {
         let suffix = self
             .challenge_suffix(&binding, request.after, &request.native_epoch)
             .await?;
+        // Paseo streams one assistant answer as many adjacent entries sharing
+        // the provider's own messageId, so only their concatenation is the
+        // reply. A group is closed by *any* entry that is not the next chunk of
+        // the same message, which is what makes interleaved or non-contiguous
+        // chunks two partial groups rather than one whole one. An absent
+        // messageId never joins anything: without the provider's own id there is
+        // no evidence that two entries are one message.
+        struct ResponseGroup {
+            id: Option<String>,
+            end: TimelinePosition,
+            text: String,
+        }
         let mut message_matches = 0usize;
         let mut challenge_body_positions = Vec::new();
-        let mut response_positions = Vec::new();
+        let mut response_groups: Vec<ResponseGroup> = Vec::new();
+        let mut open: Option<ResponseGroup> = None;
         let mut last_content = None;
         let wanted_id = request.message_id.to_string();
-        for (entry, position) in suffix {
+        for (entry, position) in &suffix {
+            let position = *position;
             let kind = crate::wire::classify_item(&entry.item.item_type);
             if entry.item.item_type == "user_message"
                 && entry.item.text.as_deref() == Some(request.body.as_str())
@@ -7206,31 +7669,70 @@ impl RuntimeAdapter for PaseoAdapter {
             {
                 message_matches += 1;
             }
-            if position.sequence > request.message_position.sequence
-                && entry.item.item_type == "assistant_message"
-                && entry.item.text.as_deref() == Some(request.expected_response.as_str())
-            {
-                response_positions.push(position);
+            let chunk = (position.sequence > request.message_position.sequence
+                && entry.item.item_type == "assistant_message")
+                .then(|| {
+                    (
+                        entry.item.message_id.as_deref(),
+                        entry.item.text.as_deref().unwrap_or_default(),
+                    )
+                });
+            match chunk {
+                Some((Some(id), text))
+                    if open
+                        .as_ref()
+                        .is_some_and(|group| group.id.as_deref() == Some(id)) =>
+                {
+                    let group = open.as_mut().expect("the guard proved one is open");
+                    group.text.push_str(text);
+                    group.end = position;
+                }
+                Some((id, text)) => {
+                    response_groups.extend(open.take());
+                    open = Some(ResponseGroup {
+                        id: id.map(str::to_owned),
+                        end: position,
+                        text: text.to_owned(),
+                    });
+                }
+                None => response_groups.extend(open.take()),
             }
             if !matches!(kind, SessionEventKind::StateChange | SessionEventKind::Log) {
                 last_content = Some(position);
             }
         }
+        response_groups.extend(open);
         if challenge_body_positions.len() > 1 {
             return Err(RuntimeError::DuplicateMessage {
                 rule: "the exact server correlation challenge body appears more than once after its boundary",
             });
         }
+        // Only a whole answer counts. A partial group, an extra byte, or a
+        // chunk carried under another id all fail this equality rather than
+        // being repaired into a match.
+        let mut whole = response_groups
+            .iter()
+            .filter(|group| group.text == request.expected_response.as_str());
+        let response = whole.next();
+        if whole.next().is_some() {
+            return Err(RuntimeError::DuplicateMessage {
+                rule: "the exact server correlation challenge answer appears more than once after its boundary",
+            });
+        }
+        let Some(response) = response else {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the exact server correlation challenge has no unique terminal confirmation",
+            });
+        };
         if message_matches != 1
             || challenge_body_positions.first().copied() != Some(request.message_position)
-            || response_positions.len() != 1
-            || last_content != response_positions.first().copied()
+            || last_content != Some(response.end)
         {
             return Err(RuntimeError::ReplacementNotEvidenced {
                 rule: "the exact server correlation challenge has no unique terminal confirmation",
             });
         }
-        Ok(response_positions[0])
+        Ok(response.end)
     }
 
     async fn cancel(&self, request: &CancelRequest) -> RuntimeResult<ControlPlaneObservation> {
@@ -7621,7 +8123,10 @@ impl RuntimeAdapter for PaseoAdapter {
                 request.requested_at,
                 ObservationSource::Inspect,
             )?
-            .with_refusal(refusal))
+            .with_refusal(refusal)
+            // A seat restored without a placement is readback-only: every
+            // driving operation below refuses it for want of exactly this.
+            .with_drivability(self.placement(binding.binding_id()).is_some()))
     }
 
     async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome> {
@@ -8665,6 +9170,7 @@ impl PaseoAdapter {
         &self,
         snapshots: &[RuntimeBindingSnapshot],
         live: &[NativeSession],
+        census: &BTreeMap<String, PaseoWorkspace>,
     ) -> RuntimeResult<BTreeMap<RuntimeBindingId, ExternalId>> {
         let mut placements = BTreeMap::new();
         for snapshot in snapshots {
@@ -8697,11 +9203,13 @@ impl PaseoAdapter {
             {
                 continue;
             }
-            let Ok(workspace) = self.fetch_workspace_in(&project, &workspace_id).await else {
+            // Read from the one census this restore already took, so a
+            // directory enumeration is not repeated for every claim.
+            let Some(workspace) = census.get(&workspace_id) else {
                 continue;
             };
             if self
-                .verify_workspace_placement(&workspace, &project, &root)
+                .verify_workspace_placement(workspace, &project, &root)
                 .is_err()
             {
                 continue;
@@ -8711,6 +9219,91 @@ impl PaseoAdapter {
             }
         }
         Ok(placements)
+    }
+}
+
+#[cfg(test)]
+mod epoch_registry_tests {
+    use super::EpochRegistry;
+
+    fn fresh() -> EpochRegistry {
+        EpochRegistry::restore(&[]).expect("an empty registry restores")
+    }
+
+    /// Reading the pending list is not the same event as persisting it.
+    ///
+    /// The audit's P1 in miniature. A take here meant a caller whose commit
+    /// failed had already lost the only record that these numbers are not
+    /// durable — and `resolve` would keep serving them out of `by_raw`, so they
+    /// would never be offered again.
+    #[test]
+    fn pending_does_not_discharge_the_obligation_it_reports() {
+        let mut registry = fresh();
+        assert_eq!(registry.resolve("raw-a"), 1);
+
+        assert_eq!(registry.pending(), vec![("raw-a".to_owned(), 1)]);
+        assert_eq!(
+            registry.pending(),
+            vec![("raw-a".to_owned(), 1)],
+            "reading twice reports the same outstanding work"
+        );
+
+        registry.ack(&[("raw-a".to_owned(), 1)]);
+        assert!(
+            registry.pending().is_empty(),
+            "only an acknowledgement clears it"
+        );
+        assert_eq!(
+            registry.resolve("raw-a"),
+            1,
+            "and acknowledging durability does not forget the mapping itself"
+        );
+    }
+
+    /// An acknowledgement drops exactly what it names, in place.
+    ///
+    /// A caller commits the list it read; anything allocated while that commit
+    /// was in flight is still undurable and must keep both its place and its
+    /// turn. Clearing wholesale would silently drop it.
+    #[test]
+    fn ack_keeps_what_it_was_not_told_about_in_allocation_order() {
+        let mut registry = fresh();
+        assert_eq!(registry.resolve("raw-a"), 1);
+        let committing = registry.pending();
+
+        // Allocated after the caller read the list, before it acknowledged.
+        assert_eq!(registry.resolve("raw-b"), 2);
+        assert_eq!(registry.resolve("raw-c"), 3);
+
+        registry.ack(&committing);
+        assert_eq!(
+            registry.pending(),
+            vec![("raw-b".to_owned(), 2), ("raw-c".to_owned(), 3)],
+            "the later allocations survive, in the order they were issued"
+        );
+
+        // Idempotent on both sides: a retry after an ambiguous failure must not
+        // be punished, and a pair this registry never held is not an error.
+        registry.ack(&committing);
+        registry.ack(&[("raw-never-seen".to_owned(), 99)]);
+        assert_eq!(
+            registry.pending(),
+            vec![("raw-b".to_owned(), 2), ("raw-c".to_owned(), 3)],
+            "a repeated or unknown acknowledgement changes nothing"
+        );
+    }
+
+    /// Re-resolving a raw epoch already pending does not queue it twice.
+    #[test]
+    fn a_known_raw_epoch_is_never_queued_a_second_time() {
+        let mut registry = fresh();
+        assert_eq!(registry.resolve("raw-a"), 1);
+        assert_eq!(registry.resolve("raw-a"), 1);
+        assert_eq!(
+            registry.pending(),
+            vec![("raw-a".to_owned(), 1)],
+            "one allocation is one pending entry"
+        );
     }
 }
 

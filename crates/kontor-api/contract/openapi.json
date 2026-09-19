@@ -8536,6 +8536,66 @@
         }
       }
     },
+    "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Catch a stalled workflow up to the phase its own durable evidence proves.",
+        "description": "The advance is normally computed as a side effect of recording a gate or\nsettling a turn. When that moment is missed — ASMA-8205 passed its\n`high-verification-gate` at sequence 2 and the stored phase never moved —\nnothing re-derives it afterwards, and the workflow stalls with complete and\nunambiguous evidence sitting in front of it.\n\nThis is that missing surface and nothing more. It records no verdict,\nappends no evaluation, replays no turn and chooses no phase: it runs the\nsame deterministic projection the ordinary paths run, over evidence that is\nalready durable. A workflow already at its evidence phase is left exactly\nas it is, which is what makes running it twice a no-op rather than a second\nadvance.",
+        "operationId": "recover_workflow_phase",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "The task",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowPhaseRecoveryDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": "The task has no active workflow"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/team-definition-selection:apply": {
       "post": {
         "tags": [
@@ -12048,6 +12108,13 @@
             "type": "string",
             "description": "The account profile that granted it."
           },
+          "lift_condition": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What would end this hold, beside the prose that says why it exists.\n\n`None` on a live grant, which has no terms left to meet, and on the\nnarrow arm and disarm answers that do not consult the ledger. A hold\nread back from its epic always states it, because \"why work is held\" and\n\"what would release it\" are different questions and only the second one\ncan be acted on."
+          },
           "max_concurrency": {
             "type": "integer",
             "format": "int32",
@@ -14253,6 +14320,64 @@
           "compliant",
           "non_compliant"
         ]
+      },
+      "ContainerReadbackDto": {
+        "type": "object",
+        "description": "Complete exact-id readback of one native topology container.",
+        "required": [
+          "host",
+          "generation",
+          "projection",
+          "native_kind",
+          "visible_title",
+          "topology_correlation"
+        ],
+        "properties": {
+          "canonical_cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact canonical working directory."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Runtime generation in which the native id is meaningful.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "Runtime host that owns the native generation."
+          },
+          "native_kind": {
+            "type": "string",
+            "description": "Runtime-reported kind."
+          },
+          "native_parent": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NativeContainerParentDto",
+                "description": "Exact native parent for a child; absent for a root."
+              }
+            ]
+          },
+          "projection": {
+            "type": "string",
+            "description": "Native projection read back for the container."
+          },
+          "topology_correlation": {
+            "type": "string",
+            "description": "Exact topology correlation reported for this native id."
+          },
+          "visible_title": {
+            "type": "string",
+            "description": "Exact runtime-visible title."
+          }
+        }
       },
       "ContainerRecoveryApplyRequest": {
         "type": "object",
@@ -16805,12 +16930,17 @@
           "scope",
           "state",
           "held_by",
-          "reason"
+          "reason",
+          "lift_condition"
         ],
         "properties": {
           "held_by": {
             "type": "string",
-            "description": "The account profile that will record the hold."
+            "description": "The account profile that will record the hold. Its owner."
+          },
+          "lift_condition": {
+            "type": "string",
+            "description": "The machine-checkable condition apply will record, resolved — so a\ncaller that named none sees `manual` here rather than an absence it has\nto interpret."
           },
           "reason": {
             "type": "string",
@@ -16836,7 +16966,14 @@
         "properties": {
           "held_by": {
             "type": "string",
-            "description": "The account profile recording the kickoff hold."
+            "description": "The account profile recording the kickoff hold. Its owner."
+          },
+          "lift_condition": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What would end the hold, as something Kontor can evaluate.\n\n`reason` is prose: it reads well and decides nothing, so before this\nfield the only thing that ever lifted a hold was a human calling\n`execution-arm`, and an epic whose stated condition had been true for\ndays sat idle because nobody was asked to look.\n\nAbsent means [`HoldLiftCondition::Manual`], which is what every hold\nrecorded before this field existed actually meant. A caller that says\nnothing gets exactly the behaviour it already had."
           },
           "reason": {
             "type": "string",
@@ -17223,6 +17360,13 @@
           "mode"
         ],
         "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact Jira description body. On create it replaces the generated body;\non link it explicitly authorizes an in-place description-only update."
+          },
           "issue_key": {
             "type": [
               "string",
@@ -17245,12 +17389,26 @@
           "mode"
         ],
         "properties": {
+          "confirmed_description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact description read back after apply."
+          },
           "confirmed_key": {
             "type": [
               "string",
               "null"
             ],
             "description": "The confirmed Jira key after apply."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Description the preview will create or explicitly update."
           },
           "item_kind": {
             "type": "string",
@@ -17641,6 +17799,36 @@
           }
         }
       },
+      "NativeContainerParentDto": {
+        "type": "object",
+        "description": "Complete native parent identity reported for a child container.",
+        "required": [
+          "runtime_kind",
+          "host",
+          "generation",
+          "native_id"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Runtime generation.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "Runtime host."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "Native parent id."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "Runtime family."
+          }
+        }
+      },
       "NativeNameSubjectKindDto": {
         "type": "string",
         "description": "One subject in an epic-wide native-name plan.",
@@ -17885,6 +18073,17 @@
           "observed_at"
         ],
         "properties": {
+          "container_readback": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ContainerReadbackDto",
+                "description": "Complete container-only readback. `None` for sessions and legacy rows."
+              }
+            ]
+          },
           "cwd": {
             "type": [
               "string",
@@ -21377,7 +21576,7 @@
       },
       "SchedulerPlanDto": {
         "type": "object",
-        "description": "What the planner decided, and what it decided against.\n\nA plan is a dry run in the strongest sense available: it reads rows, it calls\nno runtime, and it writes nothing. `plan_hash` is what `scheduler:start`\napplies, so a caller starts the plan it was shown rather than whatever the\nworld looks like by the time it decides.",
+        "description": "What the planner decided, and what it decided against.\n\nA plan is a dry run in the strongest sense available: it reads rows, performs\nread-only exact runtime inspection, and writes nothing. `plan_hash` is what `scheduler:start`\napplies, so a caller starts the plan it was shown rather than whatever the\nworld looks like by the time it decides.",
         "required": [
           "realm_id",
           "plan_hash",
@@ -24817,6 +25016,46 @@
               "type": "string"
             },
             "description": "The phases it may terminate at."
+          }
+        }
+      },
+      "WorkflowPhaseRecoveryDto": {
+        "type": "object",
+        "description": "What re-deriving a stalled workflow's phase from durable evidence did.\n\nReports the phase before and after, so a caller can see whether anything\nmoved. `advanced: false` is the ordinary answer for a workflow already where\nits evidence puts it — which is exactly what makes this safe to run twice.",
+        "required": [
+          "realm_id",
+          "task_id",
+          "previous_phase",
+          "current_phase",
+          "revision",
+          "advanced"
+        ],
+        "properties": {
+          "advanced": {
+            "type": "boolean",
+            "description": "Whether the stored phase actually moved."
+          },
+          "current_phase": {
+            "type": "string",
+            "description": "The phase its durable evidence puts it at."
+          },
+          "previous_phase": {
+            "type": "string",
+            "description": "The phase the workflow stood at before."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm the task belongs to."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The workflow revision after the projection caught up.",
+            "minimum": 0
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task whose workflow was re-derived."
           }
         }
       }

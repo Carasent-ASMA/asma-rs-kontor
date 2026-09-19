@@ -655,6 +655,17 @@ fn an_export_carries_no_credential_reference_no_comment_body_and_no_secret() {
             .excluded_tables
             .contains_key("resource_leases")
     );
+    // ASMA-8193: a hosted-seat row now carries the authority its occupancy
+    // generation runs under, not just where it runs. Exporting it would forward
+    // that authority into another Realm, where the native it describes does not
+    // exist. Starting to export this table must stay a deliberate edit here.
+    assert!(
+        export
+            .redaction_summary
+            .excluded_tables
+            .contains_key("hosted_topology_seats"),
+        "leadership-seat authority must not be forwarded to another Realm"
+    );
     assert!(
         !export
             .redaction_summary

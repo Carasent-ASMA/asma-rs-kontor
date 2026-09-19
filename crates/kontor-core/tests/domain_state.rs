@@ -1628,6 +1628,13 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     // replayed as the authority that routed it, and this row is what keeps the
     // two from quietly converging on one rule.
     ("recover_gate_rejection", "task", "witness", None),
+    // An attestation proves a verdict *existed*; it is not the verdict, and it
+    // advances nothing. It names the same aggregate for the same reason the two
+    // rows above do -- a workflow is not an aggregate a command may name, and
+    // the task is the one it has -- but it witnesses rather than
+    // compare-and-swaps, because a proof of already-durable evidence must not
+    // race a revision it does not change.
+    ("attest_retired_evaluator_evidence", "task", "witness", None),
     // A proposal is decided before the work it proposes exists, so the project
     // is the only aggregate there is to name at that moment; approving an
     // already-created graph still names that graph.
@@ -1774,6 +1781,50 @@ fn reference_of(kind: AggregateKind) -> AggregateRef {
         AggregateKind::WorkCalendar => AggregateRef::WorkCalendar {
             work_calendar_id: WorkCalendarId::generate(),
         },
+    }
+}
+
+/// The attestation's subject, revision rule and desired-state fence, pinned by
+/// name rather than only by the table walk above.
+///
+/// The table proves the pairs it lists; this proves *why* this pair and no
+/// other. A proof about one task's gate has no business naming a run, a team
+/// run, a project or a ticket link, and it must never carry a desired run
+/// state, because recording one advances no workflow.
+#[test]
+fn attesting_a_retired_evaluator_witnesses_only_its_task_and_moves_no_run() {
+    let kind = CommandKind::AttestRetiredEvaluatorEvidence;
+    let task = reference_of(AggregateKind::Task);
+    let rule = kind
+        .rule_for(AggregateKind::Task)
+        .expect("the task whose gate is proved is its subject");
+    assert_eq!(
+        rule.revision,
+        RevisionRule::Witness,
+        "a proof of already-durable evidence witnesses the task; it changes no \
+         revision and must not race one"
+    );
+    assert_eq!(
+        rule.desired,
+        DesiredStateRule::Forbidden,
+        "an attestation advances no run"
+    );
+    kind.ensure_compatible(&task, None)
+        .expect("witnessing its task, carrying no desired state, is the legal shape");
+    for desired in DesiredRunState::ALL {
+        assert!(
+            kind.ensure_compatible(&task, Some(*desired)).is_err(),
+            "an attestation must refuse the desired state {desired}"
+        );
+    }
+    for target_kind in AggregateKind::ALL {
+        if *target_kind == AggregateKind::Task {
+            continue;
+        }
+        assert!(
+            kind.rule_for(*target_kind).is_none(),
+            "an attestation about a task's gate must not target a {target_kind}"
+        );
     }
 }
 

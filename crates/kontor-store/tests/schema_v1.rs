@@ -82,6 +82,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "execution_authorization_revocations",
     "execution_authorization_tasks",
     "execution_authorizations",
+    "execution_hold_conditions",
     "external_comments",
     "external_ticket_observations",
     "external_workflow_specs",
@@ -92,6 +93,9 @@ const EXPECTED_TABLES: &[&str] = &[
     // topology seats.
     "hosted_topology_seats",
     "hosted_topology_seat_history",
+    // Schema v100 (ASMA-8193): the authority one hosted launch resolved,
+    // written before the native call and consumed when the occupancy binds.
+    "hosted_topology_seat_launch_intents",
     // Schema v7 (KON-MVP-21): which importer produced a holiday source revision,
     // what the request asked for, and the chain that makes one import current.
     "holiday_import_batches",
@@ -161,6 +165,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "resource_leases",
     "role_slot_waivers",
     "role_catalog_revisions",
+    "retired_evaluator_attestations",
     "role_turns",
     "run_context_policies",
     "run_park_closures",
@@ -172,7 +177,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "runtime_reconciliation_epochs",
     "runtime_reconciliation_members",
     "runtime_reconciliation_results",
+    "runtime_message_issuances",
     "runtime_replay_consumers",
+    "runtime_timeline_epochs",
     "schedule_overrides",
     "scheduler_admission_events",
     "source_events",
@@ -320,6 +327,133 @@ VALUES ('0193f000-0000-7000-8000-000000000040', '0193f000-0000-7000-8000-0000000
 
 fn temp() -> TempDir {
     TempDir::new().expect("a temporary directory")
+}
+
+fn issuance(message_id: &str, binding: &str, session: &str) -> kontor_store::MessageIssuance {
+    kontor_store::MessageIssuance {
+        message_id: message_id.to_owned(),
+        runtime_kind: "fake.agent".to_owned(),
+        host: "fixture-host".to_owned(),
+        runtime_binding_id: binding.to_owned(),
+        native_session_id: session.to_owned(),
+        idempotency_key: message_id.to_owned(),
+        provenance: "session_message_send".to_owned(),
+        issued_at: "2026-09-17T00:00:00Z"
+            .parse::<kontor_core::id::Timestamp>()
+            .expect("a timestamp"),
+        // Recorded before the send, so there is no acknowledged position yet.
+        delivered_at: None,
+    }
+}
+
+/// The ledger that makes a bounded observation safe: one id, one issuance, one
+/// binding — enforced by the key rather than checked after the fact.
+///
+/// A replay has to be recognised, because the retry of a send whose
+/// acknowledgement was lost presents the same id again and must not be refused.
+/// A *different* session presenting an already-issued id is the thing that must
+/// never be true, and it is refused inside the transaction.
+#[test]
+fn a_message_issuance_is_unique_per_id_and_recognises_its_own_replay() {
+    let directory = temp();
+    let store = open(&directory);
+    let first = "01a0b000-0000-7000-8000-00000000aaaa";
+    let binding = "01a0b000-0000-7000-8000-00000000bbbb";
+    let session = "native-session-one";
+
+    assert_eq!(
+        store
+            .record_message_issuance(&issuance(first, binding, session))
+            .expect("a first issuance records"),
+        kontor_store::MessageIssuanceOutcome::Recorded
+    );
+    // The same id, binding, session and key: a retry, not a second issuance.
+    assert_eq!(
+        store
+            .record_message_issuance(&issuance(first, binding, session))
+            .expect("a replay is recognised"),
+        kontor_store::MessageIssuanceOutcome::Replayed
+    );
+
+    // The same id claimed by a different session. This is what the bounded
+    // observation trusts the ledger about, so it is refused, not recorded.
+    let elsewhere = store.record_message_issuance(&issuance(
+        first,
+        "01a0b000-0000-7000-8000-00000000cccc",
+        "native-session-two",
+    ));
+    assert!(
+        elsewhere.is_err(),
+        "an issued id may not be claimed by another session: {elsewhere:?}"
+    );
+
+    let held = store
+        .message_issuance(first)
+        .expect("the issuance reads")
+        .expect("it is there");
+    assert_eq!(
+        held.runtime_binding_id, binding,
+        "the first issuance stands"
+    );
+    assert_eq!(held.native_session_id, session);
+
+    // And an id this realm never issued is absent rather than invented.
+    assert!(
+        store
+            .message_issuance("01a0b000-0000-7000-8000-00000000dddd")
+            .expect("the lookup runs")
+            .is_none()
+    );
+
+    // A delivery position arrives later, from the acknowledgement, and once it
+    // is recorded it is the answer. Re-recording the same one is the retry of a
+    // delivery whose acknowledgement was lost and must be accepted; a different
+    // one is the runtime saying the message landed twice, which is the whole
+    // reason the position is kept and is refused rather than overwritten.
+    assert!(
+        store
+            .message_issuance(first)
+            .expect("reads")
+            .expect("there")
+            .delivered_at
+            .is_none(),
+        "an issuance carries no position until a delivery is acknowledged"
+    );
+    store
+        .record_message_delivery(first, 1, 42)
+        .expect("the acknowledged position records");
+    store
+        .record_message_delivery(first, 1, 42)
+        .expect("the same position again is the lost-acknowledgement retry");
+    assert_eq!(
+        store
+            .message_issuance(first)
+            .expect("reads")
+            .expect("there")
+            .delivered_at,
+        Some((1, 42))
+    );
+    let moved = store.record_message_delivery(first, 1, 99);
+    assert!(
+        moved.is_err(),
+        "an id already delivered may not claim a second position: {moved:?}"
+    );
+    assert_eq!(
+        store
+            .message_issuance(first)
+            .expect("reads")
+            .expect("there")
+            .delivered_at,
+        Some((1, 42)),
+        "and the refusal changed nothing"
+    );
+
+    // A delivery for an id this realm never issued is not a row to repair.
+    let unissued = store.record_message_delivery("01a0b000-0000-7000-8000-00000000dddd", 1, 7);
+    assert!(
+        unissued.is_err(),
+        "a delivery with no issuance is refused: {unissued:?}"
+    );
 }
 
 fn open(directory: &TempDir) -> SqliteStore {
@@ -557,7 +691,102 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // accepted only when one receipt maps to one mutation. v99 adds the
     // immutable future-turn correlation challenge; no historical runtime
     // position can enter that ledger.
-    assert_eq!(SCHEMA_VERSION, 99);
+    //
+    // The ASMA-8190 integration then lands four lane migrations in one head, so
+    // their numbers are assigned here rather than in the lanes that wrote them.
+    // v100 makes Kontor's timeline-epoch numbering durable, so the same raw
+    // runtime epoch resolves to the same number across a restart (ASMA-8203).
+    // v101 records what would end a kickoff hold beside the revocation that is
+    // the hold, so a hold can state its own terms instead of only its prose
+    // reason, and an absent row still means `manual` (ASMA-8194).
+    // v102 freezes a hosted leadership seat's autonomy beside its occupancy
+    // generation, in both the active and the historical row, and backfills every
+    // pre-feature row to the only launch mode any of them can have had. v103
+    // records that authority *before* the native call and consumes it when the
+    // occupancy binds, so a created native whose acknowledgement was lost is
+    // never left with no durable statement of what it was launched under
+    // (both ASMA-8193). v104 records every client message id Kontor issues
+    // against the exact binding it was issued to, so proving one unambiguous is
+    // a key lookup instead of a walk of the session's whole canonical content —
+    // which is what let observation become bounded (ASMA-8203).
+    // v105 adds the position each issued message was acknowledged at, so a
+    // bounded observation can ask whether an occurrence is *the* delivery rather
+    // than whether it is the *only* one — the second needs a scan (ASMA-8203).
+    // v106 persists the complete exact-id native container readback and
+    // leaves every pre-v106 row's shape, title, ancestry and correlation
+    // unknown rather than reconstructed (ASMA-8115).
+    // v107 adds the retired-evaluator proof ledger and the command kind that
+    // records one, so a gate whose evaluator seat was retired has a supported
+    // evidence path that is not the live-seat challenge (ASMA-8119).
+    assert_eq!(SCHEMA_VERSION, 107);
+}
+
+#[test]
+fn v106_preserves_legacy_container_identity_and_leaves_new_readback_unknown() {
+    let connection = Connection::open_in_memory().expect("the v105 fixture opens");
+    connection
+        .execute_batch(
+            "CREATE TABLE topology_node_containers (
+                 topology_node_id TEXT PRIMARY KEY NOT NULL,
+                 project_id TEXT NOT NULL,
+                 container_binding_id TEXT NOT NULL,
+                 runtime_kind TEXT NOT NULL,
+                 host TEXT NOT NULL,
+                 generation INTEGER NOT NULL,
+                 native_id TEXT NOT NULL,
+                 observed_kind TEXT NOT NULL,
+                 canonical_cwd TEXT,
+                 bound_at TEXT NOT NULL,
+                 last_readback_at TEXT NOT NULL,
+                 revision INTEGER NOT NULL
+             ) STRICT;
+             INSERT INTO topology_node_containers VALUES (
+                 'node-1', 'project-1', 'binding-1', 'paseo.agent', 'host-1', 7,
+                 'prj_01890000-0000-7000-8000-0000000000ff', 'project', '/work',
+                 '2026-09-06T12:00:00Z', '2026-09-06T12:00:00Z', 4
+             );
+             PRAGMA user_version = 105;",
+        )
+        .expect("the legacy row is seeded");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0106_container_native_readback.sql"
+        ))
+        .expect("v106 migrates the row");
+
+    let preserved: (String, String, i64, String) = connection
+        .query_row(
+            "SELECT container_binding_id, host, generation, native_id
+               FROM topology_node_containers WHERE topology_node_id = 'node-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("the legacy identity reads");
+    assert_eq!(
+        preserved,
+        (
+            "binding-1".to_owned(),
+            "host-1".to_owned(),
+            7,
+            "prj_01890000-0000-7000-8000-0000000000ff".to_owned(),
+        )
+    );
+    let unknown: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM topology_node_containers
+              WHERE observed_projection IS NULL AND visible_title IS NULL
+                AND parent_runtime_kind IS NULL AND parent_host IS NULL
+                AND parent_generation IS NULL AND parent_native_id IS NULL
+                AND topology_correlation IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the nullable readback columns are readable");
+    assert_eq!(unknown, 1, "legacy readback is unknown, never fabricated");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the schema version reads");
+    assert_eq!(version, 106);
 }
 
 #[test]
@@ -2756,6 +2985,81 @@ fn the_schema_contains_exactly_the_expected_tables_and_they_are_all_strict() {
         .map(|name| name.expect("a name"))
         .collect();
     assert!(lax.is_empty(), "every table must be STRICT, found {lax:?}");
+}
+
+/// A recorded hold condition is evidence: it cannot be edited, and it cannot be
+/// withdrawn.
+///
+/// Both halves matter, and the delete half is the quiet one. The read path
+/// treats an absent row as `manual`, so removing the row leaves no gap to
+/// notice — it converts a hold that would have lifted itself into one that
+/// waits for a human forever, and nothing in the projection says so. The closed
+/// vocabulary is checked here too, because a value the domain cannot parse is a
+/// hold that never lifts and never explains why (ASMA-8194).
+#[test]
+fn v99_records_a_hold_lift_condition_that_can_neither_be_edited_nor_withdrawn() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    // The condition's only foreign key is to the revocation that makes an
+    // authorization a hold. This test is about the table's own rules, so the
+    // surrounding graph is deliberately not built.
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("foreign keys can be disabled");
+
+    let hold = "0193f000-0000-7000-8000-000000000099";
+    connection
+        .execute(
+            "INSERT INTO execution_hold_conditions
+                 (project_id, authorization_id, condition, recorded_at)
+             VALUES ('0193f000-0000-7000-8000-000000000001', ?1, 'kickoff_ready',
+                     '2026-09-17T09:00:00Z')",
+            [hold],
+        )
+        .expect("a hold may record what would end it");
+
+    assert!(
+        connection
+            .execute(
+                "UPDATE execution_hold_conditions SET condition = 'manual'
+                 WHERE authorization_id = ?1",
+                [hold],
+            )
+            .is_err(),
+        "the terms of a hold must not move while it holds"
+    );
+    assert!(
+        connection
+            .execute(
+                "DELETE FROM execution_hold_conditions WHERE authorization_id = ?1",
+                [hold],
+            )
+            .is_err(),
+        "deleting the row would silently demote a self-lifting hold to manual"
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO execution_hold_conditions
+                     (project_id, authorization_id, condition, recorded_at)
+                 VALUES ('0193f000-0000-7000-8000-000000000001',
+                         '0193f000-0000-7000-8000-000000000098', 'whenever',
+                         '2026-09-17T09:00:00Z')",
+                [],
+            )
+            .is_err(),
+        "a condition outside the closed vocabulary is a hold nothing can evaluate"
+    );
+
+    let stored: String = connection
+        .query_row(
+            "SELECT condition FROM execution_hold_conditions WHERE authorization_id = ?1",
+            [hold],
+            |row| row.get(0),
+        )
+        .expect("the original condition is still readable");
+    assert_eq!(stored, "kickoff_ready");
 }
 
 #[test]

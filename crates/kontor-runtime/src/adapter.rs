@@ -22,7 +22,7 @@ use kontor_core::id::{
     SeatBindingId, Timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
-use kontor_core::spec::{ContextPolicySnapshot, ModelRung};
+use kontor_core::spec::{ContextPolicySnapshot, ModelRung, SeatAutonomy};
 use kontor_core::state::NativeRuntimeIdentity;
 
 use crate::admission::AdmissionRequest;
@@ -30,7 +30,8 @@ use crate::capability::{
     IssuedBinding, RuntimeBindingSnapshot, RuntimeCapabilities, RuntimeCapability, TrustGrade,
 };
 use crate::container::{
-    ContainerBindingSnapshot, ContainerRecoveryOutcome, ContainerRecoveryRequest,
+    ContainerBindingSnapshot, ContainerInspectRequest, ContainerInspection,
+    ContainerRecoveryOutcome, ContainerRecoveryRequest,
 };
 use crate::observation::{ControlPlaneObservation, NativeSession, ReconciliationReport};
 use crate::request::{
@@ -495,6 +496,16 @@ pub struct HostedSeatLaunchRequest {
     pub fenced_predecessor_native_ids: Vec<ExternalId>,
     /// Exact provider/model/effort route authorized for this seat.
     pub model_rung: ModelRung,
+    /// How much this leadership seat may do before it has to ask a human,
+    /// frozen at launch exactly as a delivery seat's is.
+    ///
+    /// Carried on the request rather than decided by the runtime because the
+    /// resolution reads Kontor's configuration, which the runtime cannot see.
+    /// It was a hardcoded [`SeatAutonomy::Supervised`] inside the Paseo adapter
+    /// until ASMA-8193: an LSA or TPM seat launched supervised whatever
+    /// `runtimes.json` declared, so the one seat an epic has for acting without
+    /// the operator was the one seat that always had to ask them.
+    pub autonomy: SeatAutonomy,
     /// Immutable context policy.
     pub context_policy: ContextPolicySnapshot,
     /// Invocation instant.
@@ -556,6 +567,13 @@ pub struct HostedSeatInspectRequest {
     pub identity: NativeRuntimeIdentity,
     /// Persisted route that a live native must still report.
     pub model_rung: ModelRung,
+    /// Autonomy the live native must still report, resolved exactly as the
+    /// launch resolved it.
+    ///
+    /// Carried rather than assumed for the same reason [`ModelRung`] is: the
+    /// readback compares what the seat was launched under, and a constant here
+    /// would make every seat that is *not* supervised fail its own inspection.
+    pub autonomy: SeatAutonomy,
     /// Inspection instant.
     pub requested_at: Timestamp,
 }
@@ -581,6 +599,8 @@ pub struct HostedSeatRetireRequest {
     pub identity: NativeRuntimeIdentity,
     /// Exact route that predecessor must still report.
     pub model_rung: ModelRung,
+    /// Exact autonomy that predecessor must still report.
+    pub autonomy: SeatAutonomy,
     /// Audited retirement instant.
     pub requested_at: Timestamp,
     /// Additional persisted placement required for explicit topology cleanup.
@@ -1142,6 +1162,122 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// The timeline-epoch mappings this adapter has allocated and not yet been
+    /// told are durable.
+    ///
+    /// The runtime boundary for epoch continuity. An adapter allocates a Kontor
+    /// epoch number the first time it sees a raw native epoch, and that number
+    /// is only meaningful if it survives a restart — but an adapter must not
+    /// reach a store to make it survive. So it surfaces the pairs here and the
+    /// control plane persists them.
+    ///
+    /// A **peek**, deliberately, and this is the whole of the contract. Handing
+    /// the pairs over is not the same event as their becoming durable: a caller
+    /// that took them and then failed to commit would leave numbers that are
+    /// live in this process and absent from the store, and the next read of the
+    /// same raw epoch would be served from cache and never offered again. So
+    /// nothing is forgotten here. The caller persists what it reads and then
+    /// says so through [`RuntimeAdapter::ack_timeline_epochs`]; until it does,
+    /// these stay pending and every later call sees them again. An adapter with
+    /// nothing outstanding returns empty, which is the common case.
+    fn pending_timeline_epochs(&self) -> Vec<(String, u64)> {
+        Vec::new()
+    }
+
+    /// Forget that `persisted` are pending, because they are now durable.
+    ///
+    /// The acknowledgement half of [`RuntimeAdapter::pending_timeline_epochs`],
+    /// and the only thing that may clear a pending mapping. Exactly the pairs
+    /// named are dropped: anything allocated while the caller was committing is
+    /// still outstanding and must survive, in the order it was allocated, so the
+    /// next acknowledgement can take it.
+    ///
+    /// Acknowledging a pair twice, or one this adapter never held, is not an
+    /// error. Persistence is idempotent on both sides — the store writes the
+    /// mapping once and a repeated commit is a no-op — so a caller that retries
+    /// after an ambiguous failure must not be punished for it.
+    fn ack_timeline_epochs(&self, persisted: &[(String, u64)]) {
+        let _ = persisted;
+    }
+
+    /// The newest content of a session, bounded, without walking to its origin.
+    ///
+    /// A cursor-free [`RuntimeAdapter::history`] read is an *origin* page: the
+    /// caller is promised everything before it was seen, so an adapter whose
+    /// native read is a tail window has to walk backwards until nothing older
+    /// remains. That walk costs a request per page of transcript, which is
+    /// exactly what makes observing a current turn on a long-lived seat
+    /// impossible — the turn is three events at the tail and the read is the
+    /// whole session.
+    ///
+    /// This asks the other question. It returns at most `max_pages` pages of the
+    /// *newest* content, in ascending order, all within one epoch, and promises
+    /// nothing about what precedes them. `next` is always `None`: the window
+    /// ends at the tail, so there is nothing after it to continue to. A caller
+    /// that cannot find what it needs inside the window must fail closed rather
+    /// than widen it, because widening without bound is the behaviour being
+    /// removed.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when the session cannot be reached, the binding
+    /// no longer attests, or the runtime's own pages do not advance.
+    async fn tail_window(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        page_size: u32,
+        max_pages: usize,
+    ) -> RuntimeResult<HistoryPage> {
+        // An adapter whose cursor-free read is already bounded — one that holds
+        // its transcript rather than paging a remote one — answers this with the
+        // read it already has.
+        let _ = max_pages;
+        self.history(&HistoryRequest {
+            binding: binding.clone(),
+            cursor: None,
+            page_size,
+        })
+        .await
+    }
+
+    /// Learn which epoch this session is in *now*, in one bounded call.
+    ///
+    /// The recovery half of [`RuntimeAdapter::pending_timeline_epochs`]. A
+    /// caller holding a cursor can be told
+    /// [`RuntimeError::TimelineRefetchRequired`] for two different reasons: the
+    /// runtime declared the page a break, or this process cannot spell the
+    /// cursor's epoch at all. Both say the same thing — *the numbering you are
+    /// addressing is not the one I am in* — and both are answered by asking the
+    /// runtime what its numbering is, not by reading the session again.
+    ///
+    /// That distinction is the point. Re-reading the session canonically means
+    /// walking to its origin, which on a long-lived seat is the unbounded read a
+    /// settlement proof must never take; this asks for the epoch alone, so it
+    /// costs one call whatever the session's length. Newly learned mappings
+    /// surface through the drain like any other, so the caller still owes them
+    /// durability before anything addressed by them is exposed.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when the session cannot be reached or the
+    /// binding no longer attests.
+    async fn refresh_timeline_epoch(&self, binding: &RuntimeBindingSnapshot) -> RuntimeResult<()> {
+        let _ = binding;
+        Ok(())
+    }
+
+    /// Seed the epoch registry from durable state before any read happens.
+    ///
+    /// Restores the exact numbers previously allocated, so a raw epoch resolves
+    /// to the same u64 it did in the last process. Pairs already known are left
+    /// alone rather than renumbered: a mapping is a bijection, and the durable
+    /// side is authoritative.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when the supplied pairs are not a bijection.
+    fn restore_timeline_epochs(&self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
+        let _ = pairs;
+        Ok(())
+    }
+
     /// Take back into this runtime's own registry the bindings a previous
     /// process issued, so a restart does not orphan a live session.
     ///
@@ -1258,6 +1394,24 @@ pub trait RuntimeAdapter: Send + Sync {
         let _ = request;
         Err(RuntimeError::UnsupportedCapability {
             capability: RuntimeCapability::PrepareProject,
+        })
+    }
+
+    /// Inspect one already-bound native container without changing it.
+    ///
+    /// Implementations address only the complete persisted identity in
+    /// `request.binding`. A child is looked up inside `request.native_parent`;
+    /// neither a visible title nor a working directory is an address. The
+    /// operation must never create, rename, move or adopt a container. The sole
+    /// permitted in-process effect is rehydrating the exact ESW project binding
+    /// after a successful exact-id readback.
+    async fn inspect_container(
+        &self,
+        request: &ContainerInspectRequest,
+    ) -> RuntimeResult<ContainerInspection> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::Inspect,
         })
     }
 

@@ -483,6 +483,12 @@ const INITIAL_EXECUTION_HOLD: &[FieldSpec] = &[
         ArgType::ExternalName,
         "Why work must remain ineligible after kickoff.",
     ),
+    optional_field(
+        "lift_condition",
+        ArgType::Text,
+        "What would end the hold, so it can state its own terms rather than only \
+         its prose reason. Absent still means `manual`.",
+    ),
 ];
 
 /// One explicit provider/model route for an authorized recovery operation.
@@ -1267,7 +1273,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "repository",
                 Place::Body,
                 ArgType::ExternalName,
-                "The forge repository, as owner/name.",
+                "The forge repository, as owner/name. Only a repository the bound project and task are authorized to publish to is accepted.",
             ),
             req(
                 "base_branch",
@@ -1297,7 +1303,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "title",
                 Place::Body,
                 ArgType::ExternalName,
-                "The pull-request title, when one exists or is about to be created.",
+                "The pull-request title. Required whenever pull_request is given; a push carrying no pull request has none.",
             ),
         ],
         about: "Judge one branch, commit and pull request against the confirmed Kontor/Jira binding; records nothing.",
@@ -1320,7 +1326,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "repository",
                 Place::Body,
                 ArgType::ExternalName,
-                "The forge repository, as owner/name.",
+                "The forge repository, as owner/name. Only a repository the bound project and task are authorized to publish to is accepted.",
             ),
             req(
                 "base_branch",
@@ -1350,7 +1356,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "title",
                 Place::Body,
                 ArgType::ExternalName,
-                "The pull-request title, when one exists or is about to be created.",
+                "The pull-request title. Required whenever pull_request is given; a push carrying no pull request has none.",
             ),
         ],
         about: "Judge one publication and durably record the decision under the caller's idempotency key; a refusal is recorded too.",
@@ -2049,6 +2055,29 @@ pub static REGISTRY: &[ToolSpec] = &[
             ),
         ],
         about: "Record one gate verdict. A waiver requires admin authority.",
+    },
+    ToolSpec {
+        name: "kontor_workflow_phase_recover",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "The task whose workflow stalled.",
+            ),
+            IDEMPOTENCY,
+        ],
+        about: "Catch a stalled workflow up to the phase its own recorded evidence proves.",
     },
     ToolSpec {
         name: "kontor_gate_rejection_recover",

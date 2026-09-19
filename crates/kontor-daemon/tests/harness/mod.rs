@@ -105,6 +105,18 @@ pub(crate) fn every_capability() -> RuntimeCapabilities {
     }
 }
 
+/// The same declaration with a narrower history page.
+///
+/// A settlement proves terminality by reading to the end of the session, so its
+/// cost is the distance from the claimed message to the tail divided by the
+/// page size. Shrinking the page is how a test reaches the scan's page budget
+/// without building a session of thousands of events.
+pub(crate) fn capabilities_with_history_page(page: u32) -> RuntimeCapabilities {
+    let mut declared = every_capability();
+    declared.limits.max_history_page = page;
+    declared
+}
+
 /// The same declaration, minus the named capabilities.
 pub(crate) fn capabilities_without(missing: &[RuntimeCapability]) -> RuntimeCapabilities {
     let mut declared = every_capability();
@@ -418,7 +430,12 @@ impl World {
         };
         let mut config = DaemonConfig::at(directory.path())
             .with_port(0)
-            .with_capacity(capacity);
+            .with_capacity(capacity)
+            // The production deadline is twenty seconds, which is the right
+            // number for a realm and the wrong one for a suite: a test that
+            // proves an unanswerable session is refused *by the deadline* has
+            // to wait it out, and the property is identical at one second.
+            .with_derived_read_deadline_seconds(1);
         if let Some(connectors) = composition.jira_connectors {
             config = config.with_jira_connectors(connectors);
         }

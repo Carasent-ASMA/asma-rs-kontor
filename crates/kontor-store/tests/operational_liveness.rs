@@ -17,11 +17,12 @@ use kontor_core::repository::{
     StoredHostedTopologySeat, TopologyRepository,
 };
 use kontor_core::spec::{
-    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, Shareability, ShareabilityTier,
+    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, SeatAutonomy, Shareability, ShareabilityTier,
     TopologySnapshot,
 };
 use kontor_core::state::{
-    NativeRuntimeIdentity, ObservedContainerKind, ObservedRunState, SeatAttachment,
+    NativeContainerReadback, NativeRuntimeIdentity, ObservedContainerKind,
+    ObservedContainerProjection, ObservedRunState, SeatAttachment,
 };
 use kontor_profiles::bundled_operational_domain;
 use kontor_store::SqliteStore;
@@ -248,6 +249,13 @@ fn a_native_container_binding_survives_restart_and_export() {
             identity: identity("prj_da432f9269aa936f", 7),
             observed_kind: ObservedContainerKind::Project,
             canonical_cwd: Some(name("/Users/igor/carasent/asma-modules")),
+            readback: Some(NativeContainerReadback {
+                projection: ObservedContainerProjection::NativeRoot,
+                visible_title: name("01890000-0000-7000-8000-0000000000ff"),
+                native_parent: None,
+                topology_correlation: name(&format!("kontor-node-{}", fixture.epic_id)),
+            }),
+            bound_at,
             observed_at: bound_at,
         })
         .expect("the epic node is bound to its native project");
@@ -266,6 +274,16 @@ fn a_native_container_binding_survives_restart_and_export() {
     // a restart has already replaced.
     assert_eq!(after.identity, identity("prj_da432f9269aa936f", 7));
     assert_eq!(after.observed_kind, ObservedContainerKind::Project);
+    let readback = after
+        .readback
+        .as_ref()
+        .expect("the complete readback survives");
+    assert_eq!(
+        readback.visible_title.as_str(),
+        "01890000-0000-7000-8000-0000000000ff"
+    );
+    assert_eq!(readback.projection, ObservedContainerProjection::NativeRoot);
+    assert_eq!(readback.native_parent, None);
     assert_eq!(
         after.canonical_cwd.as_ref().map(ExternalName::as_str),
         Some("/Users/igor/carasent/asma-modules")
@@ -284,6 +302,12 @@ fn a_native_container_binding_survives_restart_and_export() {
     assert_eq!(row.native_id, "prj_da432f9269aa936f");
     assert_eq!(row.generation, 7);
     assert_eq!(row.observed_kind, "project");
+    assert_eq!(row.observed_projection.as_deref(), Some("native_root"));
+    assert_eq!(
+        row.visible_title.as_deref(),
+        Some("01890000-0000-7000-8000-0000000000ff")
+    );
+    assert!(row.parent_native_id.is_none());
     assert_eq!(
         row.canonical_cwd.as_deref(),
         Some("/Users/igor/carasent/asma-modules")
@@ -300,6 +324,8 @@ fn re_confirming_a_binding_advances_the_readback_without_rebinding() {
         identity: identity("prj_da432f9269aa936f", 7),
         observed_kind: ObservedContainerKind::Project,
         canonical_cwd: None,
+        readback: None,
+        bound_at: observed_at,
         observed_at,
     };
     let first = fixture
@@ -331,6 +357,8 @@ fn a_disagreeing_identity_is_reported_rather_than_silently_repaired() {
             identity: identity("prj_da432f9269aa936f", 7),
             observed_kind: ObservedContainerKind::Project,
             canonical_cwd: None,
+            readback: None,
+            bound_at: at("2026-08-16T02:00:00Z"),
             observed_at: at("2026-08-16T02:00:00Z"),
         })
         .expect("the node is bound");
@@ -346,6 +374,8 @@ fn a_disagreeing_identity_is_reported_rather_than_silently_repaired() {
             identity: identity("prj_0000000000000000", 7),
             observed_kind: ObservedContainerKind::Project,
             canonical_cwd: None,
+            readback: None,
+            bound_at: at("2026-08-16T04:00:00Z"),
             observed_at: at("2026-08-16T04:00:00Z"),
         })
         .expect_err("a disagreement is not a rebinding");
@@ -373,6 +403,8 @@ fn one_native_container_cannot_be_claimed_by_two_nodes() {
         identity: identity("prj_da432f9269aa936f", 7),
         observed_kind: ObservedContainerKind::Project,
         canonical_cwd: None,
+        readback: None,
+        bound_at: at("2026-08-16T02:00:00Z"),
         observed_at: at("2026-08-16T02:00:00Z"),
     };
     fixture
@@ -793,6 +825,7 @@ fn newest_completion_wake_is_stable_per_hosted_tpm_occupancy() {
         seat_binding_id: tpm,
         model_rung: rung.clone(),
         native_identity: identity("tpm-predecessor", 7),
+        autonomy: SeatAutonomy::Supervised,
         provider_session_id: Some(
             ExternalId::parse("thread-predecessor").expect("a provider session id"),
         ),

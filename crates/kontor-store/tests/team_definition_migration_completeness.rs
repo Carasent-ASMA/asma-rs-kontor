@@ -28,7 +28,7 @@ use kontor_core::repository::{
     TopologyRepository,
 };
 use kontor_core::spec::{
-    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, Shareability, ShareabilityTier,
+    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, SeatAutonomy, Shareability, ShareabilityTier,
     TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot, TeamTemplateRevision,
     TopologySnapshot,
 };
@@ -178,6 +178,8 @@ fn world() -> World {
                 identity: identity(native),
                 observed_kind: kind,
                 canonical_cwd: Some(name("/tmp/kontor")),
+                readback: None,
+                bound_at: created_at,
                 observed_at: created_at,
             })
             .expect("the native container is bound");
@@ -216,6 +218,8 @@ fn world() -> World {
             identity: identity("wks_tsw"),
             observed_kind: ObservedContainerKind::Workspace,
             canonical_cwd: Some(name("/tmp/kontor")),
+            readback: None,
+            bound_at: created_at,
             observed_at: created_at,
         })
         .expect("the task workspace takes a native container");
@@ -970,6 +974,7 @@ fn an_exact_rename_pending_seat_can_be_retired_before_migration_confirmation() {
                 effort: None,
             },
             native_identity: identity("agent_hosted_architect"),
+            autonomy: SeatAutonomy::Supervised,
             provider_session_id: None,
             observed_at: at("2026-09-02T09:46:00Z"),
         })
@@ -1331,6 +1336,8 @@ fn confirmation_re_proves_parity_against_the_live_census() {
             identity: identity("wks_asw"),
             observed_kind: ObservedContainerKind::Workspace,
             canonical_cwd: Some(name("/tmp/kontor")),
+            readback: None,
+            bound_at: at("2026-09-02T10:31:00Z"),
             observed_at: at("2026-09-02T10:31:00Z"),
         })
         .expect("it takes a native container");

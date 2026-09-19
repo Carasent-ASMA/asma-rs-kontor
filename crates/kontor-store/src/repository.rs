@@ -49,33 +49,34 @@ use kontor_core::receipt::{
 };
 use kontor_core::repository::OpenQuestionRepository;
 use kontor_core::repository::{
-    AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, AvailabilityOverride,
-    CalendarRepository, CapacityObservation, CapacityRepository, CommandRepository,
-    CompletionWrite, ConnectorSpecSelector, CredentialReference, CredentialReferenceKind,
-    GateEvaluation, GateRejectionRecovery, GateRejectionRoute, GateRouteOrigin, HistoryGapKind,
-    HistoryGapMarker, IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome, IntakeRepository,
-    MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt, NewAccountProfile,
-    NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride, NewCapacityObservation,
-    NewCommandIntent, NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt,
-    NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation,
-    NewLocalCommand, NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject,
-    NewProviderQuotaState, NewProviderUsageObservation, NewRuntimeEvent, NewSeatBinding,
-    NewSessionTopologyNode, NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow,
-    NewTeamRun, NewTicketLink, PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault,
-    ProviderQuotaState, ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage,
-    RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
-    RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
-    SeatLivenessObservation, SessionVerdictEvidence, SourceDisposition, SourceEventIngest,
-    SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
+    AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, AttestationWrite,
+    AvailabilityOverride, CalendarRepository, CapacityObservation, CapacityRepository,
+    CommandRepository, CompletionWrite, ConnectorSpecSelector, CredentialReference,
+    CredentialReferenceKind, GateEvaluation, GateRejectionRecovery, GateRejectionRoute,
+    GateRouteOrigin, HistoryGapKind, HistoryGapMarker, HostedSeatLaunchIntentState,
+    IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome, IntakeRepository, MiniProject,
+    MiniProjectTopologySnapshot, NewAbandonReceipt, NewAccountProfile, NewAdaptiveAdmissionState,
+    NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
+    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt, NewGateEvaluation,
+    NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation, NewLocalCommand,
+    NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState,
+    NewProviderUsageObservation, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
+    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
+    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, ProviderQuotaState,
+    ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage, RealmRepository,
+    ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure,
+    RunInspection, RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation,
+    SessionVerdictEvidence, SourceDisposition, SourceEventIngest, SpecRepository,
+    StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
     StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
     StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
     StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedTopologySeat,
-    StoredLegacyEpicBacklogCodeCorrection, StoredPromotion, StoredQuickSession,
-    StoredRemediationProposal, StoredTopologyContainerRecovery, SuccessionRepository, Task,
-    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
-    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
-    validate_dependency_graph,
+    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedSeatLaunchIntent,
+    StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection, StoredPromotion,
+    StoredQuickSession, StoredRemediationProposal, StoredRetiredEvaluatorAttestation,
+    StoredTopologyContainerRecovery, SuccessionRepository, Task, TaskInspection,
+    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
+    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::repository::{
     LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection, LiveNativeSubject,
@@ -88,20 +89,20 @@ use kontor_core::repository::{
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, ModelRung, NodeProjectionCapability,
     PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec, ProviderQuotaKind,
-    ProviderQuotaSource, ResolvedWorkProfileSnapshot, RoleCatalogRevision, Shareability,
-    ShareabilityClass, ShareabilityClassifier, ShareabilityProvenance, ShareabilityTier,
-    SourceIdentity, TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot,
+    ProviderQuotaSource, ResolvedWorkProfileSnapshot, RoleCatalogRevision, SeatAutonomy,
+    Shareability, ShareabilityClass, ShareabilityClassifier, ShareabilityProvenance,
+    ShareabilityTier, SourceIdentity, TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot,
     TeamTemplateRevision, TopologySnapshot, TriggerSpec, WorkProfileSpec,
 };
 use kontor_core::state::{
     AbandonReceiptFacts, AdaptiveAdmissionState, DerivedRunState, DesiredRunState, GateState,
-    GateVerdict, ImportedTaskState, NativeContainerBinding, NativeRuntimeIdentity,
-    ObservedContainerKind, ObservedRunState, PlacementState, RunLifecycle, RunProjection,
-    SeatAttachment, SeatAttachmentObservation, SeatBinding, SessionTopologyNode,
-    TaskProgressEvidence, TaskReopenAuthority, TaskState, TaskTeamClosure, TaskTransition,
-    TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence,
-    TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle, certify_task_progress,
-    evaluate_seat_attachment, plan_team_advance, plan_team_closure,
+    GateVerdict, ImportedTaskState, NativeContainerBinding, NativeContainerReadback,
+    NativeRuntimeIdentity, ObservedContainerKind, ObservedContainerProjection, ObservedRunState,
+    PlacementState, RunLifecycle, RunProjection, SeatAttachment, SeatAttachmentObservation,
+    SeatBinding, SessionTopologyNode, TaskProgressEvidence, TaskReopenAuthority, TaskState,
+    TaskTeamClosure, TaskTransition, TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence,
+    TerminalEvidence, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+    certify_task_progress, evaluate_seat_attachment, plan_team_advance, plan_team_closure,
 };
 use kontor_core::succession::{
     NewSuccessionAttempt, SuccessionAttempt, SuccessionAttemptAdvance, SuccessionAttemptState,
@@ -889,6 +890,24 @@ pub(crate) fn read_timestamp(value: &str) -> RepositoryResult<Timestamp> {
     Ok(parse_utc_timestamp(value)?)
 }
 
+/// Decode one stored [`SeatAutonomy`] from its durable spelling.
+///
+/// The column's CHECK admits only these three, so an unrecognized value means
+/// the row was written by something other than this schema. That is refused
+/// rather than defaulted: silently reading an unknown authority as `Supervised`
+/// would hide the corruption, and reading it as anything else would invent
+/// authority no evidence supports.
+pub(crate) fn read_seat_autonomy(value: &str) -> RepositoryResult<SeatAutonomy> {
+    match value {
+        "supervised" => Ok(SeatAutonomy::Supervised),
+        "bounded" => Ok(SeatAutonomy::Bounded),
+        "advisory" => Ok(SeatAutonomy::Advisory),
+        other => Err(RepositoryError::Backend {
+            detail: format!("a stored seat autonomy is not a known authority: {other}"),
+        }),
+    }
+}
+
 pub(crate) fn to_json<T: Serialize>(value: &T) -> RepositoryResult<String> {
     serde_json::to_string(value).map_err(|_| RepositoryError::Backend {
         detail: "value could not be serialized as JSON".to_owned(),
@@ -1597,7 +1616,8 @@ const SEAT_BINDING_COLUMNS: &str = "id, project_id, topology_node_id, role_slot_
     revision, created_at, updated_at";
 const NATIVE_CONTAINER_COLUMNS: &str = "topology_node_id, project_id, container_binding_id, \
     runtime_kind, host, generation, native_id, observed_kind, canonical_cwd, bound_at, \
-    last_readback_at, revision";
+    last_readback_at, revision, observed_projection, visible_title, parent_runtime_kind, \
+    parent_host, parent_generation, parent_native_id, topology_correlation";
 const ADAPTIVE_ADMISSION_COLUMNS: &str = "project_id, mini_project_id, current_window, \
     clean_observation_streak, last_observation_id, revision, updated_at";
 
@@ -1697,6 +1717,76 @@ fn read_optional_timestamp(row: &Row<'_>, index: usize) -> RepositoryResult<Opti
 fn read_native_container_binding(row: &Row<'_>) -> RepositoryResult<NativeContainerBinding> {
     let canonical_cwd: Option<String> = row.get(8).map_err(backend)?;
     let generation: i64 = row.get(5).map_err(backend)?;
+    let projection: Option<String> = row.get(12).map_err(backend)?;
+    let visible_title: Option<String> = row.get(13).map_err(backend)?;
+    let parent_runtime_kind: Option<String> = row.get(14).map_err(backend)?;
+    let parent_host: Option<String> = row.get(15).map_err(backend)?;
+    let parent_generation: Option<i64> = row.get(16).map_err(backend)?;
+    let parent_native_id: Option<String> = row.get(17).map_err(backend)?;
+    let topology_correlation: Option<String> = row.get(18).map_err(backend)?;
+    let readback = match (projection, visible_title, topology_correlation) {
+        (None, None, None)
+            if parent_runtime_kind.is_none()
+                && parent_host.is_none()
+                && parent_generation.is_none()
+                && parent_native_id.is_none() =>
+        {
+            None
+        }
+        (Some(projection), Some(visible_title), Some(topology_correlation)) => {
+            let projection = ObservedContainerProjection::parse(&projection)?;
+            let native_parent = match projection {
+                ObservedContainerProjection::NativeRoot
+                    if parent_runtime_kind.is_none()
+                        && parent_host.is_none()
+                        && parent_generation.is_none()
+                        && parent_native_id.is_none() =>
+                {
+                    None
+                }
+                ObservedContainerProjection::NativeChild => {
+                    let (Some(runtime_kind), Some(host), Some(generation), Some(native_id)) = (
+                        parent_runtime_kind,
+                        parent_host,
+                        parent_generation,
+                        parent_native_id,
+                    ) else {
+                        return Err(RepositoryError::Backend {
+                            detail: "a native child readback has an incomplete parent identity"
+                                .to_owned(),
+                        });
+                    };
+                    Some(NativeRuntimeIdentity {
+                        runtime_kind: RuntimeKindKey::parse(&runtime_kind)?,
+                        host: ExternalName::parse(&host)?,
+                        generation: u64::try_from(generation).map_err(|_| {
+                            DomainError::invalid(
+                                "native parent generation",
+                                "is outside the stored range",
+                            )
+                        })?,
+                        native_id: ExternalId::parse(&native_id)?,
+                    })
+                }
+                ObservedContainerProjection::NativeRoot => {
+                    return Err(RepositoryError::Backend {
+                        detail: "a native root readback cannot carry a parent identity".to_owned(),
+                    });
+                }
+            };
+            Some(NativeContainerReadback {
+                projection,
+                visible_title: ExternalName::parse(&visible_title)?,
+                native_parent,
+                topology_correlation: ExternalName::parse(&topology_correlation)?,
+            })
+        }
+        _ => {
+            return Err(RepositoryError::Backend {
+                detail: "a native container readback is only partially populated".to_owned(),
+            });
+        }
+    };
     Ok(NativeContainerBinding {
         topology_node_id: TopologyNodeId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
         project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
@@ -1714,6 +1804,7 @@ fn read_native_container_binding(row: &Row<'_>) -> RepositoryResult<NativeContai
             .as_deref()
             .map(ExternalName::parse)
             .transpose()?,
+        readback,
         bound_at: read_timestamp(&row.get::<_, String>(9).map_err(backend)?)?,
         last_readback_at: read_timestamp(&row.get::<_, String>(10).map_err(backend)?)?,
         revision: revision_of(row.get::<_, i64>(11).map_err(backend)?)?,
@@ -4078,7 +4169,7 @@ impl SqliteStore {
             .connection
             .query_row(
                 "SELECT model_rung, runtime_kind, host, generation, native_id,
-                        provider_session_id, observed_at
+                        provider_session_id, observed_at, autonomy
                  FROM hosted_topology_seats
                  WHERE project_id = ?1 AND seat_binding_id = ?2",
                 params![project_id.to_string(), seat_binding_id.to_string()],
@@ -4091,13 +4182,14 @@ impl SqliteStore {
                         row.get::<_, String>(4)?,
                         row.get::<_, Option<String>>(5)?,
                         row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
                     ))
                 },
             )
             .optional()
             .map_err(backend)?;
         row.map(
-            |(model, runtime, host, generation, native, provider, observed)| {
+            |(model, runtime, host, generation, native, provider, observed, autonomy)| {
                 Ok(StoredHostedTopologySeat {
                     project_id,
                     seat_binding_id,
@@ -4118,6 +4210,7 @@ impl SqliteStore {
                         })?,
                         native_id: ExternalId::parse(&native)?,
                     },
+                    autonomy: read_seat_autonomy(&autonomy)?,
                     provider_session_id: provider.as_deref().map(ExternalId::parse).transpose()?,
                     observed_at: read_timestamp(&observed)?,
                 })
@@ -4171,6 +4264,7 @@ impl SqliteStore {
         {
             if existing.model_rung == seat.model_rung
                 && existing.native_identity == seat.native_identity
+                && existing.autonomy == seat.autonomy
             {
                 self.connection
                     .execute(
@@ -4189,7 +4283,7 @@ impl SqliteStore {
             }
             return Err(RepositoryError::Conflict {
                 subject: "hosted topology seat",
-                rule: "a persistent seat cannot change its route or native identity",
+                rule: "a persistent seat cannot change its route, native identity or autonomy",
             });
         }
         let model =
@@ -4200,8 +4294,8 @@ impl SqliteStore {
             .execute(
                 "INSERT INTO hosted_topology_seats
                      (seat_binding_id, project_id, model_rung, runtime_kind, host,
-                      generation, native_id, provider_session_id, observed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                      generation, native_id, autonomy, provider_session_id, observed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     seat.seat_binding_id.to_string(),
                     seat.project_id.to_string(),
@@ -4210,12 +4304,196 @@ impl SqliteStore {
                     seat.native_identity.host.as_str(),
                     i64::try_from(seat.native_identity.generation).unwrap_or(i64::MAX),
                     seat.native_identity.native_id.as_str(),
+                    seat.autonomy.as_str(),
                     seat.provider_session_id.as_ref().map(ExternalId::as_str),
                     text(seat.observed_at),
                 ],
             )
             .map_err(backend)?;
         Ok(())
+    }
+
+    /// Record what one hosted-seat launch resolved, before the native call.
+    ///
+    /// Idempotent for the same decision and refusing for a different one. A
+    /// replay of the same launch finds its own row and proceeds; a caller that
+    /// resolved a *different* authority for the same occupancy generation is
+    /// refused rather than allowed to overwrite, because the native this intent
+    /// describes may already exist and cannot be re-created under a wider
+    /// authority than it was started with. Escalation is a new generation
+    /// through the audited retire/replace path, never an amended intent.
+    pub fn prepare_hosted_seat_launch_intent(
+        &self,
+        intent: &StoredHostedSeatLaunchIntent,
+    ) -> RepositoryResult<Applied> {
+        let generation =
+            i64::try_from(intent.occupancy_generation).map_err(|_| RepositoryError::Backend {
+                detail: "a hosted-seat launch intent generation is invalid".to_owned(),
+            })?;
+        let model = serde_json::to_string(&intent.model_rung).map_err(|error| {
+            RepositoryError::Backend {
+                detail: format!("a hosted-seat intent model rung could not be encoded: {error}"),
+            }
+        })?;
+        if let Some(existing) = self.get_hosted_seat_launch_intent(
+            intent.project_id,
+            intent.seat_binding_id,
+            intent.occupancy_generation,
+        )? {
+            if existing.autonomy != intent.autonomy {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted seat launch intent",
+                    rule: "one occupancy generation cannot be launched under a second autonomy",
+                });
+            }
+            if existing.model_rung != intent.model_rung {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted seat launch intent",
+                    rule: "one occupancy generation cannot be launched under a second route",
+                });
+            }
+            return Ok(Applied::Unchanged);
+        }
+        self.connection
+            .execute(
+                "INSERT INTO hosted_topology_seat_launch_intents
+                     (project_id, seat_binding_id, occupancy_generation, autonomy,
+                      model_rung, state, observed_native_id, prepared_at, installed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'prepared', NULL, ?6, NULL)",
+                params![
+                    intent.project_id.to_string(),
+                    intent.seat_binding_id.to_string(),
+                    generation,
+                    intent.autonomy.as_str(),
+                    model,
+                    text(intent.prepared_at),
+                ],
+            )
+            .map_err(backend)?;
+        Ok(Applied::Created)
+    }
+
+    /// Read the exact authority one occupancy generation's launch resolved.
+    pub fn get_hosted_seat_launch_intent(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+    ) -> RepositoryResult<Option<StoredHostedSeatLaunchIntent>> {
+        let generation =
+            i64::try_from(occupancy_generation).map_err(|_| RepositoryError::Backend {
+                detail: "a hosted-seat launch intent generation is invalid".to_owned(),
+            })?;
+        let row = self
+            .connection
+            .query_row(
+                "SELECT autonomy, model_rung, state, observed_native_id,
+                        prepared_at, installed_at
+                 FROM hosted_topology_seat_launch_intents
+                 WHERE project_id = ?1 AND seat_binding_id = ?2
+                   AND occupancy_generation = ?3",
+                params![
+                    project_id.to_string(),
+                    seat_binding_id.to_string(),
+                    generation,
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(
+            |(autonomy, model, state, observed, prepared_at, installed_at)| {
+                Ok(StoredHostedSeatLaunchIntent {
+                    project_id,
+                    seat_binding_id,
+                    occupancy_generation,
+                    autonomy: read_seat_autonomy(&autonomy)?,
+                    model_rung: serde_json::from_str(&model).map_err(|error| {
+                        RepositoryError::Backend {
+                            detail: format!(
+                                "a hosted-seat intent model rung could not be decoded: {error}"
+                            ),
+                        }
+                    })?,
+                    state: match state.as_str() {
+                        "prepared" => HostedSeatLaunchIntentState::Prepared,
+                        "installed" => HostedSeatLaunchIntentState::Installed,
+                        other => {
+                            return Err(RepositoryError::Backend {
+                                detail: format!(
+                                    "a hosted-seat launch intent state is unknown: {other}"
+                                ),
+                            });
+                        }
+                    },
+                    observed_native_id: observed.as_deref().map(ExternalId::parse).transpose()?,
+                    prepared_at: read_timestamp(&prepared_at)?,
+                    installed_at: installed_at.as_deref().map(read_timestamp).transpose()?,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    /// Reconcile one prepared intent against the native its launch produced.
+    ///
+    /// Repeating this after a crash with the same native is unchanged. Naming a
+    /// different native is a conflict: the intent describes one occupancy, and
+    /// an installed row that pointed at a second native would make the evidence
+    /// ambiguous exactly where it has to be exact.
+    pub fn install_hosted_seat_launch_intent(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+        observed_native_id: &ExternalId,
+        installed_at: Timestamp,
+    ) -> RepositoryResult<Applied> {
+        let Some(existing) =
+            self.get_hosted_seat_launch_intent(project_id, seat_binding_id, occupancy_generation)?
+        else {
+            return Err(RepositoryError::NotFound {
+                subject: "hosted seat launch intent",
+            });
+        };
+        if existing.state == HostedSeatLaunchIntentState::Installed {
+            if existing.observed_native_id.as_ref() == Some(observed_native_id) {
+                return Ok(Applied::Unchanged);
+            }
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent",
+                rule: "an installed intent already names another native",
+            });
+        }
+        let generation =
+            i64::try_from(occupancy_generation).map_err(|_| RepositoryError::Backend {
+                detail: "a hosted-seat launch intent generation is invalid".to_owned(),
+            })?;
+        self.connection
+            .execute(
+                "UPDATE hosted_topology_seat_launch_intents
+                    SET state = 'installed', observed_native_id = ?4, installed_at = ?5
+                  WHERE project_id = ?1 AND seat_binding_id = ?2
+                    AND occupancy_generation = ?3",
+                params![
+                    project_id.to_string(),
+                    seat_binding_id.to_string(),
+                    generation,
+                    observed_native_id.as_str(),
+                    text(installed_at),
+                ],
+            )
+            .map_err(backend)?;
+        Ok(Applied::Updated)
     }
 
     /// Move one exact hosted-seat predecessor into immutable route history.
@@ -4232,7 +4510,7 @@ impl SqliteStore {
         let active = transaction
             .query_row(
                 "SELECT model_rung, runtime_kind, host, generation, native_id,
-                        provider_session_id, observed_at
+                        provider_session_id, observed_at, autonomy
                  FROM hosted_topology_seats
                  WHERE project_id = ?1 AND seat_binding_id = ?2",
                 params![
@@ -4248,6 +4526,7 @@ impl SqliteStore {
                         row.get::<_, String>(4)?,
                         row.get::<_, Option<String>>(5)?,
                         row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
                     ))
                 },
             )
@@ -4258,8 +4537,11 @@ impl SqliteStore {
                 detail: format!("a hosted-seat model rung could not be encoded: {error}"),
             }
         })?;
-        if let Some((model, runtime, host, generation, native, provider, observed)) = active {
+        if let Some((model, runtime, host, generation, native, provider, observed, autonomy)) =
+            active
+        {
             if model != expected_model
+                || autonomy != predecessor.autonomy.as_str()
                 || runtime != predecessor.native_identity.runtime_kind.as_str()
                 || host != predecessor.native_identity.host.as_str()
                 || u64::try_from(generation).ok() != Some(predecessor.native_identity.generation)
@@ -4280,9 +4562,10 @@ impl SqliteStore {
                 .execute(
                     "INSERT INTO hosted_topology_seat_history
                          (seat_binding_id, project_id, generation, model_rung,
-                          runtime_kind, host, native_id, provider_session_id,
-                          observed_at, retired_at, retirement_reason)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                          runtime_kind, host, native_id, autonomy,
+                          provider_session_id, observed_at, retired_at,
+                          retirement_reason)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                     params![
                         predecessor.seat_binding_id.to_string(),
                         predecessor.project_id.to_string(),
@@ -4291,6 +4574,7 @@ impl SqliteStore {
                         predecessor.native_identity.runtime_kind.as_str(),
                         predecessor.native_identity.host.as_str(),
                         predecessor.native_identity.native_id.as_str(),
+                        predecessor.autonomy.as_str(),
                         predecessor
                             .provider_session_id
                             .as_ref()
@@ -4348,7 +4632,7 @@ impl SqliteStore {
             .connection
             .query_row(
                 "SELECT model_rung, runtime_kind, host, generation,
-                        provider_session_id, observed_at
+                        provider_session_id, observed_at, autonomy
                  FROM hosted_topology_seat_history
                  WHERE project_id = ?1 AND seat_binding_id = ?2 AND native_id = ?3",
                 params![
@@ -4364,36 +4648,40 @@ impl SqliteStore {
                         row.get::<_, i64>(3)?,
                         row.get::<_, Option<String>>(4)?,
                         row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
                     ))
                 },
             )
             .optional()
             .map_err(backend)?;
-        row.map(|(model, runtime, host, generation, provider, observed)| {
-            Ok(StoredHostedTopologySeat {
-                project_id,
-                seat_binding_id,
-                model_rung: serde_json::from_str(&model).map_err(|error| {
-                    RepositoryError::Backend {
-                        detail: format!(
-                            "a hosted-seat history model rung could not be decoded: {error}"
-                        ),
-                    }
-                })?,
-                native_identity: NativeRuntimeIdentity {
-                    runtime_kind: RuntimeKindKey::parse(&runtime)?,
-                    host: ExternalName::parse(&host)?,
-                    generation: u64::try_from(generation).map_err(|_| {
+        row.map(
+            |(model, runtime, host, generation, provider, observed, autonomy)| {
+                Ok(StoredHostedTopologySeat {
+                    project_id,
+                    seat_binding_id,
+                    model_rung: serde_json::from_str(&model).map_err(|error| {
                         RepositoryError::Backend {
-                            detail: "a hosted-seat history generation is negative".to_owned(),
+                            detail: format!(
+                                "a hosted-seat history model rung could not be decoded: {error}"
+                            ),
                         }
                     })?,
-                    native_id: native_id.clone(),
-                },
-                provider_session_id: provider.as_deref().map(ExternalId::parse).transpose()?,
-                observed_at: read_timestamp(&observed)?,
-            })
-        })
+                    native_identity: NativeRuntimeIdentity {
+                        runtime_kind: RuntimeKindKey::parse(&runtime)?,
+                        host: ExternalName::parse(&host)?,
+                        generation: u64::try_from(generation).map_err(|_| {
+                            RepositoryError::Backend {
+                                detail: "a hosted-seat history generation is negative".to_owned(),
+                            }
+                        })?,
+                        native_id: native_id.clone(),
+                    },
+                    autonomy: read_seat_autonomy(&autonomy)?,
+                    provider_session_id: provider.as_deref().map(ExternalId::parse).transpose()?,
+                    observed_at: read_timestamp(&observed)?,
+                })
+            },
+        )
         .transpose()
     }
 
@@ -4481,9 +4769,10 @@ impl SqliteStore {
             .execute(
                 "INSERT INTO hosted_topology_seat_history
                      (seat_binding_id, project_id, generation, model_rung,
-                      runtime_kind, host, native_id, provider_session_id,
-                      observed_at, retired_at, retirement_reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                      runtime_kind, host, native_id, autonomy,
+                      provider_session_id, observed_at, retired_at,
+                      retirement_reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     predecessor.seat_binding_id.to_string(),
                     predecessor.project_id.to_string(),
@@ -4492,6 +4781,7 @@ impl SqliteStore {
                     predecessor.native_identity.runtime_kind.as_str(),
                     predecessor.native_identity.host.as_str(),
                     predecessor.native_identity.native_id.as_str(),
+                    predecessor.autonomy.as_str(),
                     predecessor
                         .provider_session_id
                         .as_ref()
@@ -4521,8 +4811,9 @@ impl SqliteStore {
             .execute(
                 "INSERT INTO hosted_topology_seats
                      (seat_binding_id, project_id, model_rung, runtime_kind, host,
-                      generation, native_id, provider_session_id, observed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                      generation, native_id, autonomy, provider_session_id,
+                      observed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     successor.seat_binding_id.to_string(),
                     successor.project_id.to_string(),
@@ -4531,6 +4822,7 @@ impl SqliteStore {
                     successor.native_identity.host.as_str(),
                     i64::try_from(successor.native_identity.generation).unwrap_or(i64::MAX),
                     successor.native_identity.native_id.as_str(),
+                    successor.autonomy.as_str(),
                     successor
                         .provider_session_id
                         .as_ref()
@@ -5829,6 +6121,158 @@ impl SqliteStore {
                 subject: "epic completion",
             }
         })
+    }
+
+    /// Read one recorded retired-evaluator proof by its deterministic digest.
+    ///
+    /// # Errors
+    /// Backend failure, or a stored row this build can no longer parse.
+    pub fn retired_evaluator_attestation_by_digest(
+        &self,
+        project_id: ProjectId,
+        proof_digest: &ContentHash,
+    ) -> RepositoryResult<Option<StoredRetiredEvaluatorAttestation>> {
+        Self::read_attestation(&self.connection, project_id, proof_digest)
+    }
+
+    fn read_attestation(
+        connection: &rusqlite::Connection,
+        project_id: ProjectId,
+        proof_digest: &ContentHash,
+    ) -> RepositoryResult<Option<StoredRetiredEvaluatorAttestation>> {
+        let row = connection
+            .query_row(
+                "SELECT id, receipt_id, task_id, workflow_revision, gate_key, team_run_id,
+                        evaluator_role, role_slot_id, agent_run_id, seat_binding_id, seat_revision,
+                        runtime_binding_id, runtime_generation, native_id, artifact_key,
+                        artifact_checksum, evidence_digest, attested_at
+                   FROM retired_evaluator_attestations
+                  WHERE project_id = ?1 AND proof_digest = ?2",
+                params![project_id.to_string(), proof_digest.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, i64>(10)?,
+                        row.get::<_, String>(11)?,
+                        row.get::<_, i64>(12)?,
+                        row.get::<_, String>(13)?,
+                        row.get::<_, String>(14)?,
+                        row.get::<_, String>(15)?,
+                        row.get::<_, String>(16)?,
+                        row.get::<_, String>(17)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|c| {
+            Ok(StoredRetiredEvaluatorAttestation {
+                id: ExternalId::parse(&c.0)?,
+                project_id,
+                receipt_id: CommandReceiptId::parse(&c.1)?,
+                task_id: TaskId::parse(&c.2)?,
+                workflow_revision: AggregateRevision::parse(
+                    u64::try_from(c.3).unwrap_or_default(),
+                )?,
+                gate_key: GateKey::parse(&c.4)?,
+                team_run_id: TeamRunId::parse(&c.5)?,
+                evaluator_role: RoleKey::parse(&c.6)?,
+                role_slot_id: RoleSlotId::parse(&c.7)?,
+                agent_run_id: AgentRunId::parse(&c.8)?,
+                seat_binding_id: SeatBindingId::parse(&c.9)?,
+                seat_revision: AggregateRevision::parse(u64::try_from(c.10).unwrap_or_default())?,
+                runtime_binding_id: ExternalId::parse(&c.11)?,
+                runtime_generation: u64::try_from(c.12).unwrap_or_default(),
+                native_id: ExternalId::parse(&c.13)?,
+                artifact_key: ArtifactKey::parse(&c.14)?,
+                artifact_checksum: ContentHash::parse(&c.15)?,
+                evidence_digest: ContentHash::parse(&c.16)?,
+                proof_digest: proof_digest.clone(),
+                attested_at: read_timestamp(&c.17)?,
+            })
+        })
+        .transpose()
+    }
+
+    /// Record one retired-evaluator proof, idempotently on its digest.
+    ///
+    /// An identical claim replays onto the existing row rather than writing a
+    /// second proof, which is what makes a lost acknowledgement safe. A claim
+    /// that changed any fenced fact digests differently, so recording it under
+    /// a receipt that already attested something else is duplicate-intent
+    /// drift and is refused rather than overwriting the first proof.
+    ///
+    /// # Errors
+    /// [`RepositoryError::Conflict`] on that drift; backend failure otherwise.
+    pub fn record_retired_evaluator_attestation(
+        &self,
+        attestation: &StoredRetiredEvaluatorAttestation,
+    ) -> RepositoryResult<(StoredRetiredEvaluatorAttestation, AttestationWrite)> {
+        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
+        if let Some(existing) = Self::read_attestation(
+            &transaction,
+            attestation.project_id,
+            &attestation.proof_digest,
+        )? {
+            return Ok((existing, AttestationWrite::Replayed));
+        }
+        let receipt_taken: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM retired_evaluator_attestations WHERE receipt_id = ?1)",
+                params![attestation.receipt_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if receipt_taken {
+            return Err(RepositoryError::Conflict {
+                subject: "retired-evaluator attestation",
+                rule: "this receipt already attested a different claim",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO retired_evaluator_attestations
+                     (id, project_id, receipt_id, task_id, workflow_revision, gate_key,
+                      team_run_id, evaluator_role, role_slot_id, agent_run_id, seat_binding_id,
+                      seat_revision, runtime_binding_id, runtime_generation, native_id,
+                      artifact_key, artifact_checksum, evidence_digest, proof_digest, attested_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                         ?17, ?18, ?19, ?20)",
+                params![
+                    attestation.id.as_str(),
+                    attestation.project_id.to_string(),
+                    attestation.receipt_id.to_string(),
+                    attestation.task_id.to_string(),
+                    i64::try_from(attestation.workflow_revision.get()).unwrap_or(i64::MAX),
+                    attestation.gate_key.as_str(),
+                    attestation.team_run_id.to_string(),
+                    attestation.evaluator_role.as_str(),
+                    attestation.role_slot_id.as_str(),
+                    attestation.agent_run_id.to_string(),
+                    attestation.seat_binding_id.to_string(),
+                    i64::try_from(attestation.seat_revision.get()).unwrap_or(i64::MAX),
+                    attestation.runtime_binding_id.as_str(),
+                    i64::try_from(attestation.runtime_generation).unwrap_or(i64::MAX),
+                    attestation.native_id.as_str(),
+                    attestation.artifact_key.as_str(),
+                    attestation.artifact_checksum.as_str(),
+                    attestation.evidence_digest.as_str(),
+                    attestation.proof_digest.as_str(),
+                    text(attestation.attested_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok((attestation.clone(), AttestationWrite::Recorded))
     }
 
     /// Append one wake intent, returning `false` when it already stood.
@@ -8115,6 +8559,8 @@ impl TopologyRepository for SqliteStore {
         request: &NewNativeContainerBinding,
     ) -> RepositoryResult<NativeContainerBinding> {
         let transaction = self.begin()?;
+        let readback = request.readback.as_ref();
+        let parent = readback.and_then(|readback| readback.native_parent.as_ref());
         let owning_project: Option<String> = transaction
             .query_row(
                 "SELECT project_id FROM topology_nodes WHERE id = ?1",
@@ -8162,12 +8608,35 @@ impl TopologyRepository for SqliteStore {
             transaction
                 .execute(
                     "UPDATE topology_node_containers
-                     SET last_readback_at = ?2, observed_kind = ?3, revision = revision + 1
+                     SET last_readback_at = ?2, observed_kind = ?3, canonical_cwd = ?4,
+                         observed_projection = CASE WHEN ?5 THEN ?6 ELSE observed_projection END,
+                         visible_title = CASE WHEN ?5 THEN ?7 ELSE visible_title END,
+                         parent_runtime_kind = CASE WHEN ?5 THEN ?8 ELSE parent_runtime_kind END,
+                         parent_host = CASE WHEN ?5 THEN ?9 ELSE parent_host END,
+                         parent_generation = CASE WHEN ?5 THEN ?10 ELSE parent_generation END,
+                         parent_native_id = CASE WHEN ?5 THEN ?11 ELSE parent_native_id END,
+                         topology_correlation = CASE WHEN ?5 THEN ?12 ELSE topology_correlation END,
+                         revision = revision + 1
                      WHERE topology_node_id = ?1",
                     params![
                         request.topology_node_id.to_string(),
                         text(request.observed_at),
                         request.observed_kind.as_str(),
+                        request.canonical_cwd.as_ref().map(ExternalName::as_str),
+                        readback.is_some(),
+                        readback.map(|readback| readback.projection.as_str()),
+                        readback.map(|readback| readback.visible_title.as_str()),
+                        parent.map(|parent| parent.runtime_kind.as_str()),
+                        parent.map(|parent| parent.host.as_str()),
+                        parent
+                            .map(|parent| i64::try_from(parent.generation))
+                            .transpose()
+                            .map_err(|_| DomainError::invalid(
+                                "native parent generation",
+                                "is outside the storable range",
+                            ))?,
+                        parent.map(|parent| parent.native_id.as_str()),
+                        readback.map(|readback| readback.topology_correlation.as_str()),
                     ],
                 )
                 .map_err(backend)?;
@@ -8180,8 +8649,11 @@ impl TopologyRepository for SqliteStore {
                     "INSERT INTO topology_node_containers
                          (topology_node_id, project_id, container_binding_id, runtime_kind,
                           host, generation, native_id, observed_kind, canonical_cwd,
-                          bound_at, last_readback_at, revision)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, 1)",
+                          bound_at, last_readback_at, revision, observed_projection,
+                          visible_title, parent_runtime_kind, parent_host, parent_generation,
+                          parent_native_id, topology_correlation)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1,
+                             ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                     params![
                         request.topology_node_id.to_string(),
                         request.project_id.to_string(),
@@ -8197,7 +8669,21 @@ impl TopologyRepository for SqliteStore {
                         request.identity.native_id.as_str(),
                         request.observed_kind.as_str(),
                         request.canonical_cwd.as_ref().map(ExternalName::as_str),
+                        text(request.bound_at),
                         text(request.observed_at),
+                        readback.map(|readback| readback.projection.as_str()),
+                        readback.map(|readback| readback.visible_title.as_str()),
+                        parent.map(|parent| parent.runtime_kind.as_str()),
+                        parent.map(|parent| parent.host.as_str()),
+                        parent
+                            .map(|parent| i64::try_from(parent.generation))
+                            .transpose()
+                            .map_err(|_| DomainError::invalid(
+                                "native parent generation",
+                                "is outside the storable range",
+                            ))?,
+                        parent.map(|parent| parent.native_id.as_str()),
+                        readback.map(|readback| readback.topology_correlation.as_str()),
                     ],
                 )
                 .map_err(|error| match &error {
@@ -11717,16 +12203,31 @@ impl SqliteStore {
                 subject: "command receipt",
             },
         )?;
+        let readback = recovery.replacement.readback.as_ref().ok_or_else(|| {
+            DomainError::invalid(
+                "topology container recovery",
+                "the replacement must carry complete native readback",
+            )
+        })?;
+        let parent = readback.native_parent.as_ref().ok_or_else(|| {
+            DomainError::invalid(
+                "topology container recovery",
+                "the replacement child must carry its complete native parent",
+            )
+        })?;
         let changed = transaction
             .execute(
                 "UPDATE topology_node_containers
                  SET runtime_kind = ?1, host = ?2, generation = ?3, native_id = ?4,
                      observed_kind = ?5, canonical_cwd = ?6, bound_at = ?7,
-                     last_readback_at = ?7, revision = revision + 1
-                 WHERE project_id = ?8 AND topology_node_id = ?9
-                   AND container_binding_id = ?10
-                   AND runtime_kind = ?11 AND host = ?12 AND generation = ?13
-                   AND native_id = ?14 AND revision = ?15",
+                     last_readback_at = ?8, observed_projection = ?9, visible_title = ?10,
+                     parent_runtime_kind = ?11, parent_host = ?12,
+                     parent_generation = ?13, parent_native_id = ?14,
+                     topology_correlation = ?15, revision = revision + 1
+                 WHERE project_id = ?16 AND topology_node_id = ?17
+                   AND container_binding_id = ?18
+                   AND runtime_kind = ?19 AND host = ?20 AND generation = ?21
+                   AND native_id = ?22 AND revision = ?23",
                 params![
                     recovery.replacement.identity.runtime_kind.as_str(),
                     recovery.replacement.identity.host.as_str(),
@@ -11743,7 +12244,18 @@ impl SqliteStore {
                         .canonical_cwd
                         .as_ref()
                         .map(ExternalName::as_str),
+                    text(recovery.replacement.bound_at),
                     text(recovery.replacement.observed_at),
+                    readback.projection.as_str(),
+                    readback.visible_title.as_str(),
+                    parent.runtime_kind.as_str(),
+                    parent.host.as_str(),
+                    i64::try_from(parent.generation).map_err(|_| DomainError::invalid(
+                        "native parent generation",
+                        "is outside the storable range",
+                    ))?,
+                    parent.native_id.as_str(),
+                    readback.topology_correlation.as_str(),
                     recovery.expected.project_id.to_string(),
                     recovery.expected.topology_node_id.to_string(),
                     recovery.expected.container_binding_id.as_str(),

@@ -25,8 +25,10 @@ use kontor_core::id::{
     Timestamp, TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
-use kontor_core::spec::ModelRung;
-use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
+use kontor_core::spec::{ModelRung, SeatAutonomy};
+use kontor_core::state::{
+    NativeRuntimeIdentity, ObservedContainerKind, ObservedRunState, RuntimeContact,
+};
 use serde::Deserialize;
 
 use crate::adapter::{
@@ -49,8 +51,9 @@ use crate::capability::{
     RuntimeCapability, RuntimeLimits, preflight,
 };
 use crate::container::{
-    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerOutcome,
-    ContainerProjection, ContainerRequest, RetitleContainerOutcome, RetitleContainerRequest,
+    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence,
+    ContainerInspectRequest, ContainerInspection, ContainerOutcome, ContainerProjection,
+    ContainerRequest, RetitleContainerOutcome, RetitleContainerRequest,
 };
 use crate::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -282,6 +285,28 @@ pub struct RuntimeScript {
     pub steps: Vec<ScriptStep>,
 }
 
+/// Which hosted-seat control operation an autonomy observation came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedSeatOperation {
+    /// A new occupancy generation is being created.
+    Launch,
+    /// A live native is being read back.
+    Inspect,
+    /// A generation is being ended.
+    Retire,
+}
+
+/// One hosted-seat control operation and the authority it named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostedAutonomyObservation {
+    /// Which control operation.
+    pub operation: HostedSeatOperation,
+    /// The logical seat it addressed.
+    pub seat_binding_id: SeatBindingId,
+    /// The authority the caller actually supplied.
+    pub autonomy: SeatAutonomy,
+}
+
 /// What the fake was asked to do, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdapterCall {
@@ -291,6 +316,8 @@ pub enum AdapterCall {
     PrepareWorkspace(TeamRunId),
     /// A topology node's native container was prepared.
     PrepareContainer(TopologyNodeId),
+    /// A topology node's exact native container was inspected.
+    InspectContainer(TopologyNodeId),
     /// A retired native child was archived.
     ArchiveContainer(TopologyNodeId),
     /// A container's visible title was corrected.
@@ -345,6 +372,10 @@ pub enum AdapterCall {
     DiscoverSessions,
     /// A history page was read.
     History(RuntimeBindingId),
+    /// The session's current timeline epoch was re-read, without its content.
+    RefreshTimelineEpoch(RuntimeBindingId),
+    /// A bounded window of the session's newest content was read.
+    TailWindow(RuntimeBindingId),
     /// A live subscription was opened.
     SubscribeLive(RuntimeBindingId),
     /// A permission request was answered.
@@ -701,6 +732,17 @@ struct FakeState {
     archived_containers: BTreeSet<TopologyNodeId>,
     lose_archive_ack_once: BTreeSet<TopologyNodeId>,
     lose_hosted_retire_ack_once: BTreeSet<SeatBindingId>,
+    /// Whether the next hosted *launch* lands natively and then loses its
+    /// answer. The window this reproduces is the one where a native exists and
+    /// nothing durable yet says what authority it was created under.
+    ///
+    /// Unkeyed on purpose: the seat binding a materialization launches does not
+    /// exist until that same call creates it, so a caller arming this failure
+    /// cannot name it in advance.
+    lose_hosted_launch_ack_once: bool,
+    /// The seat is restored for terminal readback only: no placement, so it
+    /// answers an inspection and refuses every driving operation.
+    readback_only: bool,
     pause_hosted_retire_once: Option<FakeNativePause>,
     pause_send_once: Option<FakeNativePause>,
     /// Consultation seats keyed by their durable SeatBinding identity.
@@ -709,6 +751,16 @@ struct FakeState {
     consultation_permissions: BTreeMap<SeatBindingId, BTreeSet<ExternalId>>,
     consultation_permission_acks: BTreeMap<(SeatBindingId, ExternalId), ConsultationPermissionAck>,
     hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
+    /// Every authority a hosted-seat control operation was actually asked for.
+    ///
+    /// ASMA-8193: the defect this exists to observe is not a wrong *stored*
+    /// value, it is a control operation that recomputes one. Nothing else in
+    /// the fake records the autonomy a call carried, so re-resolving the plane
+    /// default at inspect or retire was invisible to every test.
+    hosted_autonomy: Vec<HostedAutonomyObservation>,
+    /// Plane-wide default this runtime declares, as an operator may change it
+    /// between one control operation and the next.
+    declared_autonomy: Option<SeatAutonomy>,
     /// Terminal hosted natives retained so retirement and recovery are replayable.
     archived_hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// Stable message ledger per exact hosted native. A logical seat may be
@@ -734,6 +786,27 @@ struct FakeState {
     /// Separate from the strict script queue so read-only proof calls may
     /// legitimately precede that send.
     lose_next_send_ack: bool,
+    /// Raw->Kontor timeline epoch mappings this fake has allocated, and the
+    /// ones not yet handed to the control plane for persistence. The fake
+    /// models the same boundary a native adapter does, so the persist-before-
+    /// expose barrier can be exercised without a live runtime.
+    epoch_mappings: BTreeMap<String, u64>,
+    undrained_epochs: Vec<(String, u64)>,
+    /// Whether an anchored read must declare a refetch until the epoch is
+    /// re-read.
+    ///
+    /// The transient half of the refetch signal: the cursor names an epoch this
+    /// runtime still holds, but the page it addresses cannot be served until the
+    /// reader has re-established which epoch the session is in. Cleared by
+    /// [`RuntimeAdapter::refresh_timeline_epoch`] and by nothing else, so a test
+    /// that never refreshes never gets past it.
+    refetch_until_epoch_refresh: bool,
+    /// Whether the next tail window should repeat one of its own positions.
+    repeat_next_tail_position: bool,
+    /// Which event the next tail window should omit, counted from its newest.
+    skip_next_tail_event: Option<usize>,
+    /// Whether every session read should simply never answer.
+    never_answer_session_reads: bool,
     /// Whether the next inspect should fail at the transport.
     ///
     /// Off the strict queue for the same reason as `lose_next_send_ack`, and a
@@ -1212,6 +1285,8 @@ impl ScriptedFakeRuntime {
                 archived_containers: BTreeSet::new(),
                 lose_archive_ack_once: BTreeSet::new(),
                 lose_hosted_retire_ack_once: BTreeSet::new(),
+                lose_hosted_launch_ack_once: false,
+                readback_only: false,
                 pause_hosted_retire_once: None,
                 pause_send_once: None,
                 consultations: BTreeMap::new(),
@@ -1219,6 +1294,8 @@ impl ScriptedFakeRuntime {
                 consultation_permissions: BTreeMap::new(),
                 consultation_permission_acks: BTreeMap::new(),
                 hosted_seats: BTreeMap::new(),
+                hosted_autonomy: Vec::new(),
+                declared_autonomy: None,
                 archived_hosted_seats: BTreeMap::new(),
                 hosted_messages: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
@@ -1227,6 +1304,12 @@ impl ScriptedFakeRuntime {
                 container_titles: BTreeMap::new(),
                 lose_retitle_ack_once: BTreeSet::new(),
                 lose_next_send_ack: false,
+                epoch_mappings: BTreeMap::new(),
+                undrained_epochs: Vec::new(),
+                refetch_until_epoch_refresh: false,
+                repeat_next_tail_position: false,
+                skip_next_tail_event: None,
+                never_answer_session_reads: false,
                 fail_next_inspect: false,
                 ignore_retitle_once: BTreeSet::new(),
                 task_title_scopes: BTreeMap::new(),
@@ -1259,7 +1342,14 @@ impl ScriptedFakeRuntime {
     /// The default fake accepts anything, which is exactly why a control plane
     /// could synthesize a placeholder path and no in-process test noticed.
     pub fn verifying_placement_at(&self, root: WorkspaceRoot) {
-        self.lock().canonical_root = Some(root);
+        let canonical = std::fs::canonicalize(root.as_str())
+            .ok()
+            .and_then(|path| {
+                path.to_str()
+                    .and_then(|path| WorkspaceRoot::parse(path).ok())
+            })
+            .unwrap_or(root);
+        self.lock().canonical_root = Some(canonical);
     }
 
     /// Refuse to launch one declared role slot, as a real runtime with no
@@ -1799,6 +1889,44 @@ impl ScriptedFakeRuntime {
         pause
     }
 
+    /// Lose one acknowledgement after the hosted native has already been
+    /// created.
+    ///
+    /// The seat exists in the runtime afterwards; only the answer is gone. That
+    /// is the shape of the real failure — a created agent whose caller never
+    /// learned its identity — and it is the one a durable pre-effect launch
+    /// intent exists to survive.
+    pub fn lose_next_hosted_launch_ack(&self) {
+        self.lock().lose_hosted_launch_ack_once = true;
+    }
+
+    /// Report this runtime as reachable but not drivable, the shape a seat has
+    /// after its workspace was archived: an exact readback still answers while
+    /// every driving operation refuses for want of a placement.
+    pub fn report_readback_only(&self) {
+        self.lock().readback_only = true;
+    }
+
+    /// Exact native currently filling one hosted seat, as the runtime holds it.
+    #[must_use]
+    pub fn hosted_seat_native_id(&self, seat_binding_id: SeatBindingId) -> Option<ExternalId> {
+        self.lock()
+            .hosted_seats
+            .get(&seat_binding_id)
+            .map(|held| held.identity.native_id.clone())
+    }
+
+    /// How many natives this runtime has minted, of every kind.
+    ///
+    /// A replay that created a second agent instead of returning the first one
+    /// is invisible in any per-seat read, because the newer native simply
+    /// replaces the older one under the same key. The count is what makes a
+    /// duplicate observable.
+    #[must_use]
+    pub fn minted_natives(&self) -> u64 {
+        self.lock().minted
+    }
+
     /// Hold the next message send immediately before its native effect.
     ///
     /// A follow-up handed to a seat whose session is gone is the shape a realm
@@ -1903,6 +2031,35 @@ impl ScriptedFakeRuntime {
         self.lock().calls.clone()
     }
 
+    /// Every authority a hosted-seat control operation was asked for, in order.
+    #[must_use]
+    pub fn hosted_autonomy_calls(&self) -> Vec<HostedAutonomyObservation> {
+        self.lock().hosted_autonomy.clone()
+    }
+
+    /// The authority named by the last control operation of one kind on a seat.
+    #[must_use]
+    pub fn last_hosted_autonomy(
+        &self,
+        operation: HostedSeatOperation,
+        seat_binding_id: SeatBindingId,
+    ) -> Option<SeatAutonomy> {
+        self.lock()
+            .hosted_autonomy
+            .iter()
+            .rev()
+            .find(|observed| {
+                observed.operation == operation && observed.seat_binding_id == seat_binding_id
+            })
+            .map(|observed| observed.autonomy)
+    }
+
+    /// Move the plane-wide default, as an operator editing `runtimes.json`
+    /// between two control operations would.
+    pub fn declare_autonomy(&self, autonomy: Option<SeatAutonomy>) {
+        self.lock().declared_autonomy = autonomy;
+    }
+
     /// Exact route supplied for one launched delivery run.
     #[must_use]
     pub fn launched_model(&self, run: AgentRunId) -> Option<ModelRung> {
@@ -1972,6 +2129,94 @@ impl ScriptedFakeRuntime {
     /// send lands, and the observation that should follow it never answers.
     pub fn fail_next_inspect(&self) {
         self.lock().fail_next_inspect = true;
+    }
+
+    /// Declare a refetch on every anchored read until the epoch is re-read.
+    ///
+    /// The recoverable shape of that signal, and the one a settlement has to
+    /// survive: the session is entirely readable, and a reader that answers the
+    /// runtime's question — *which epoch are you addressing?* — may carry on
+    /// from the same cursor. A reader that only retries stays stuck here, which
+    /// is what makes this hook worth having.
+    pub fn require_timeline_refetch_until_epoch_refresh(&self) {
+        self.lock().refetch_until_epoch_refresh = true;
+    }
+
+    /// Never answer a session read, as an unreachable seat does.
+    ///
+    /// Not a refusal and not a dropped connection: the runtime is *there*, it
+    /// simply does not answer. That is the shape that made a live realm hang —
+    /// each request bounded correctly by the client's own deadline, and a read
+    /// that issues a page at a time paying that deadline per page until the
+    /// caller gave up. What must end the wait is the realm's own derived-read
+    /// deadline, and that is what a test asserts.
+    pub fn never_answer_session_reads(&self) {
+        self.lock().never_answer_session_reads = true;
+    }
+
+    /// Never answer, holding no lock while not answering.
+    ///
+    /// A pending future rather than a sleep, so this crate stays free of a
+    /// timer — and so the fake models the live shape exactly. The runtime is
+    /// reachable and simply never replies; what ends the wait is the caller's
+    /// own deadline, which is the thing under test. Reading the flag and
+    /// dropping the guard first is not incidental either: a lock held across
+    /// this await would serialize every caller behind the silent one, and the
+    /// property proven would be the fake's contention rather than the bound.
+    async fn stall(&self) {
+        let silent = self.lock().never_answer_session_reads;
+        if silent {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    /// Drop one event from the next tail window, leaving a forward gap.
+    ///
+    /// `from_end` counts back from the newest event, so a caller can put the
+    /// hole wherever it needs it: inside the page the window starts from, or on
+    /// the join between two of the pages the window was assembled out of. The
+    /// sequences on either side still ascend — that is the whole point, because
+    /// an ascending check cannot tell a gap from a continuous read, and the
+    /// event that went missing may be the message or the response the scan is
+    /// there to find.
+    pub fn skip_next_tail_event(&self, from_end: usize) {
+        self.lock().skip_next_tail_event = Some(from_end);
+    }
+
+    /// Repeat one position inside the next tail window.
+    ///
+    /// A runtime that hands back a window whose positions do not advance. Not a
+    /// transport fault and not an empty read: the content is there, and two of
+    /// its entries claim the same place in the session. A reader that picked a
+    /// turn out of that would be picking arbitrarily, so the only safe answer is
+    /// to refuse — and this is how that is provoked.
+    pub fn repeat_next_tail_position(&self) {
+        self.lock().repeat_next_tail_position = true;
+    }
+
+    /// Forget every epoch mapping, as a process that restarted with nothing
+    /// durable behind it does.
+    ///
+    /// Not a transport fault and not a runtime change: the sessions and their
+    /// native epochs are untouched, and only this side's memory of what number
+    /// each was given is gone. That is the state a restart leaves when the
+    /// durable table is empty, and it is the one that makes a cursor issued by
+    /// the previous process unspellable.
+    pub fn forget_timeline_epochs(&self) {
+        let mut state = self.lock();
+        state.epoch_mappings.clear();
+        state.undrained_epochs.clear();
+    }
+
+    /// The mappings allocated but not yet handed over for persistence.
+    ///
+    /// The same list [`RuntimeAdapter::pending_timeline_epochs`] serves, read
+    /// from the test side. Neither one consumes: only
+    /// [`RuntimeAdapter::ack_timeline_epochs`] may clear an entry, and it is the
+    /// control plane's to call once its commit has returned.
+    #[must_use]
+    pub fn undrained_epochs(&self) -> Vec<(String, u64)> {
+        self.lock().undrained_epochs.clone()
     }
 
     /// Every recorded event of the session behind `binding`.
@@ -2066,6 +2311,7 @@ impl ScriptedFakeRuntime {
         at: Timestamp,
     ) -> RuntimeResult<ControlPlaneObservation> {
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id: snapshot.agent_run_id(),
             contact,
             state,
@@ -2162,6 +2408,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         !self.lock().unavailable_providers.contains(provider)
     }
 
+    fn declared_autonomy(&self) -> Option<SeatAutonomy> {
+        self.lock().declared_autonomy
+    }
+
     fn fallback_model_rung(&self, requested: &ModelRung) -> Option<ModelRung> {
         let state = self.lock();
         state
@@ -2206,6 +2456,136 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     /// *does this session still exist here?*, and everything else comes out of
     /// the persisted snapshot. A fake that rebuilt capabilities here would let a
     /// re-grading bug pass its own restart test.
+    /// The newest `page_size * max_pages` events, and nothing older.
+    ///
+    /// Bounded by construction, like the native one it stands for: the cost is
+    /// the window, never the transcript in front of it. A test can therefore
+    /// grow the session arbitrarily and still assert what observing it costs.
+    async fn tail_window(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        page_size: u32,
+        max_pages: usize,
+    ) -> RuntimeResult<HistoryPage> {
+        self.stall().await;
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(page_size)),
+                context_policy: None,
+            },
+        )?;
+        state
+            .calls
+            .push(AdapterCall::TailWindow(binding.binding_id()));
+        // The same break a cursor is refused with, on the same condition: a
+        // reader that has not established which epoch this session is in cannot
+        // be handed content addressed by one.
+        if state.refetch_until_epoch_refresh {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            });
+        }
+        let epoch = state.session(binding)?.epoch;
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
+        let session = state.session(binding)?;
+        let recorded = &session.content[..session.history_len];
+        let window = (page_size as usize).saturating_mul(max_pages.max(1));
+        let from = recorded.len().saturating_sub(window);
+        let mut items: Vec<SessionEvent> = recorded[from..].to_vec();
+        if std::mem::take(&mut state.repeat_next_tail_position)
+            && let Some(last) = items.last().cloned()
+        {
+            items.push(last);
+        }
+        if let Some(from_end) = std::mem::take(&mut state.skip_next_tail_event)
+            && from_end < items.len()
+        {
+            items.remove(items.len() - 1 - from_end);
+        }
+        let end = items
+            .last()
+            .map_or(TimelinePosition::start_of(epoch), |event| event.position);
+        Ok(HistoryPage {
+            epoch,
+            items,
+            next: None,
+            end,
+        })
+    }
+
+    fn pending_timeline_epochs(&self) -> Vec<(String, u64)> {
+        self.lock().undrained_epochs.clone()
+    }
+
+    fn ack_timeline_epochs(&self, persisted: &[(String, u64)]) {
+        self.lock()
+            .undrained_epochs
+            .retain(|pending| !persisted.contains(pending));
+    }
+
+    fn restore_timeline_epochs(&self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        for (raw, epoch) in pairs {
+            state.epoch_mappings.insert(raw.clone(), *epoch);
+        }
+        Ok(())
+    }
+
+    /// Map the session's current epoch and answer the refetch signal, without
+    /// touching its content.
+    ///
+    /// Reads `session.epoch` and allocates through the same boundary
+    /// [`FakeAdapter::history`] uses, so the mapping this produces is
+    /// indistinguishable from one a read produced — and, like that one, is
+    /// undrained until the control plane takes it.
+    ///
+    /// Off the strict script queue, for the same reason as `fail_next_inspect`:
+    /// this call is reached *through* a read that was refused, so a queued step
+    /// naming it could never be scheduled in the right place.
+    async fn refresh_timeline_epoch(&self, binding: &RuntimeBindingSnapshot) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(1)),
+                context_policy: None,
+            },
+        )?;
+        state
+            .calls
+            .push(AdapterCall::RefreshTimelineEpoch(binding.binding_id()));
+        let epoch = state.session(binding)?.epoch;
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
+        state.refetch_until_epoch_refresh = false;
+        Ok(())
+    }
+
     async fn restore_bindings(
         &self,
         snapshots: &[RuntimeBindingSnapshot],
@@ -2526,6 +2906,58 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(ContainerOutcome {
             snapshot,
             created: true,
+        })
+    }
+
+    async fn inspect_container(
+        &self,
+        request: &ContainerInspectRequest,
+    ) -> RuntimeResult<ContainerInspection> {
+        request.validate()?;
+        let mut state = self.lock();
+        state.require_plane()?;
+        let snapshot = state
+            .containers
+            .get(&request.binding.topology_node_id)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the exact native container is not present",
+            })?;
+        if snapshot.binding != request.binding {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persisted container binding no longer matches the runtime",
+            });
+        }
+        let native_parent = state
+            .container_parents
+            .get(&request.binding.topology_node_id)
+            .cloned()
+            .map(|native_id| state.identity(native_id));
+        if native_parent != request.native_parent {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the inspected container does not have its exact persisted parent",
+            });
+        }
+        let visible_title = state
+            .container_titles
+            .get(&request.binding.topology_node_id)
+            .cloned()
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        state.calls.push(AdapterCall::InspectContainer(
+            request.binding.topology_node_id,
+        ));
+        Ok(ContainerInspection {
+            binding: request.binding.clone(),
+            observed_kind: match request.binding.projection {
+                ContainerProjection::NativeRoot => ObservedContainerKind::Project,
+                ContainerProjection::NativeChild => ObservedContainerKind::Workspace,
+                ContainerProjection::LogicalOnly => unreachable!("validated above"),
+            },
+            visible_title,
+            canonical_cwd: snapshot.binding.root,
+            native_parent,
+            correlation: snapshot.correlation,
+            observed_at: request.requested_at,
         })
     }
 
@@ -2938,6 +3370,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .calls
             .push(AdapterCall::LaunchHostedSeat(request.seat_binding_id));
+        state.hosted_autonomy.push(HostedAutonomyObservation {
+            operation: HostedSeatOperation::Launch,
+            seat_binding_id: request.seat_binding_id,
+            autonomy: request.autonomy,
+        });
         if let Some(existing) = state.hosted_seats.get(&request.seat_binding_id) {
             return Ok(existing.clone());
         }
@@ -2969,6 +3406,13 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 request.display_name.as_str().to_owned(),
             ),
         );
+        // The native is now real and the caller is about to learn nothing about
+        // it. Everything above this line has already been committed.
+        if std::mem::take(&mut state.lose_hosted_launch_ack_once) {
+            return Err(RuntimeError::Transport {
+                rule: "the native launch acknowledgement was lost",
+            });
+        }
         Ok(outcome)
     }
 
@@ -2976,11 +3420,16 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         &self,
         request: &HostedSeatInspectRequest,
     ) -> RuntimeResult<HostedSeatInspection> {
-        let state = self.lock();
+        let mut state = self.lock();
         preflight(
             &state.capabilities,
             &OperationContext::new(RuntimeCapability::Inspect),
         )?;
+        state.hosted_autonomy.push(HostedAutonomyObservation {
+            operation: HostedSeatOperation::Inspect,
+            seat_binding_id: request.seat_binding_id,
+            autonomy: request.autonomy,
+        });
         if request.identity.runtime_kind != state.runtime_kind
             || request.identity.host != state.host
             || request.identity.generation > state.generation
@@ -3283,6 +3732,13 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             pause.pause().await;
         }
         let mut state = self.lock();
+        // Recorded before the disposition branch: a retire that is replay-safe
+        // still named an authority, and that is the value under test.
+        state.hosted_autonomy.push(HostedAutonomyObservation {
+            operation: HostedSeatOperation::Retire,
+            seat_binding_id: request.seat_binding_id,
+            autonomy: request.autonomy,
+        });
         if let Some(held) = state.hosted_seats.get(&request.seat_binding_id) {
             if held.identity != request.identity {
                 return Err(RuntimeError::CorrelationFailed);
@@ -3318,6 +3774,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
 
     async fn resume(&self, request: &ResumeRequest) -> RuntimeResult<ControlPlaneObservation> {
         let mut state = self.lock();
+        if state.readback_only {
+            return Err(RuntimeError::WorkspaceBindingRequired);
+        }
         let declared = state.capabilities.clone();
         let generation = state.generation;
         preflight(
@@ -3831,7 +4290,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             0,
             request.requested_at,
         )?;
-        Ok(observation.with_refusal((!process_missing).then_some(refusal).flatten()))
+        let drivable = !state.readback_only;
+        Ok(observation
+            .with_refusal((!process_missing).then_some(refusal).flatten())
+            .with_drivability(drivable))
     }
 
     async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome> {
@@ -4006,6 +4468,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     }
 
     async fn history(&self, request: &HistoryRequest) -> RuntimeResult<HistoryPage> {
+        self.stall().await;
         let mut state = self.lock();
         let declared = state.capabilities.clone();
         let generation = state.generation;
@@ -4042,6 +4505,23 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 reason: TimelineBreak::EpochChanged,
             });
         }
+        // Anchored reads only. A cursor-free read names no epoch, so it has
+        // none to be wrong about — which is why it stays available as the way
+        // back even while every cursor is being refused.
+        if request.cursor.is_some() && state.refetch_until_epoch_refresh {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            });
+        }
+        // First sight of this raw epoch allocates a Kontor number, the same
+        // shape a native adapter has. It is surfaced through the runtime
+        // boundary rather than persisted here: adapters stay store-free.
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
+        let session = state.session(&request.binding)?;
         let recorded = &session.content[..session.history_len];
         let items: Vec<SessionEvent> = recorded
             .iter()
@@ -4475,6 +4955,7 @@ mod retitle_seat_generation_tests {
                 model: ModelRef("fake-model".to_owned()),
                 effort: None,
             },
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: "2026-08-20T12:01:00Z"
                 .parse::<Timestamp>()
                 .expect("timestamp"),
@@ -4504,6 +4985,7 @@ mod retitle_seat_generation_tests {
                 seat_binding_id: request.seat_binding_id,
                 identity: request.identity.clone(),
                 model_rung: request.model_rung.clone(),
+                autonomy: request.autonomy,
                 requested_at: request.requested_at,
             })
             .await
@@ -4527,6 +5009,7 @@ mod retitle_seat_generation_tests {
                 seat_binding_id: request.seat_binding_id,
                 identity: request.identity.clone(),
                 model_rung: request.model_rung.clone(),
+                autonomy: request.autonomy,
                 requested_at: request.requested_at,
             })
             .await

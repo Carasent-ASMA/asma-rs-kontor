@@ -46,7 +46,20 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 9;
+pub const EXPORT_SCHEMA_VERSION: u32 = 10;
+
+/// The database generation that introduced the retired-evaluator proof ledger.
+const RETIRED_EVALUATOR_ATTESTATION_SCHEMA_VERSION: i64 = 107;
+
+/// The export generation that first carried it.
+///
+/// Named for the same reason as the constants below: adding this generation
+/// must not silently reclassify an older document as unable to prove what it
+/// does in fact carry.
+const RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION: u32 = 10;
+
+/// The record array introduced in generation 10.
+const RETIRED_EVALUATOR_ATTESTATION_RECORD_FIELDS: [&str; 1] = ["retired_evaluator_attestations"];
 
 /// The oldest export generation this build can read without inventing state.
 const MIN_SUPPORTED_EXPORT_SCHEMA_VERSION: u32 = 2;
@@ -432,6 +445,24 @@ impl KontorExportV1 {
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation cannot prove succession completeness",
+            });
+        }
+        // The same rule again: a document written before generation 10 has no
+        // field for a retired-evaluator proof, so against a database old enough
+        // to hold one it cannot tell "there were none" from "this generation
+        // could not see them".
+        if self.schema_version < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION
+            && self.database_schema_version >= RETIRED_EVALUATOR_ATTESTATION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove retired-evaluator attestation completeness",
+            });
+        }
+        if self.schema_version < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION
+            && !self.records.retired_evaluator_attestations.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries retired-evaluator attestations it did not define",
             });
         }
         if self.schema_version < SUCCESSION_EXPORT_VERSION
@@ -889,6 +920,19 @@ impl KontorExportV1 {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
             }
         }
+        if found < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in RETIRED_EVALUATOR_ATTESTATION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
         let export: Self =
             serde_json::from_value(value).map_err(|_| BackupError::Verification {
                 detail: "the export is not a document of this generation",
@@ -1107,7 +1151,7 @@ fn redaction_summary() -> RedactionSummary {
         ),
         (
             "hosted_topology_seats",
-            "native leadership-session identity is runtime-local placement authority; a verified same-Realm snapshot preserves it byte-for-byte",
+            "native leadership-session identity and the autonomy its occupancy generation runs under are runtime-local placement authority; a verified same-Realm snapshot preserves them byte-for-byte",
         ),
         (
             "turn_correlation_challenges",
@@ -1519,6 +1563,13 @@ exported_tables! {
         bound_at: String,
         last_readback_at: String,
         revision: i64,
+        observed_projection: Option<String>,
+        visible_title: Option<String>,
+        parent_runtime_kind: Option<String>,
+        parent_host: Option<String>,
+        parent_generation: Option<i64>,
+        parent_native_id: Option<String>,
+        topology_correlation: Option<String>,
     }
     topology_container_recoveries: TopologyContainerRecoveriesRow from "topology_container_recoveries" key(receipt_id) {
         receipt_id: String,
@@ -1653,6 +1704,28 @@ exported_tables! {
         agent_run_id: Option<String>,
         reviewer_principal: Option<String>,
         policy_evaluation_id: Option<String>,
+    }
+    retired_evaluator_attestations: RetiredEvaluatorAttestationsRow from "retired_evaluator_attestations" key(id) {
+        id: String,
+        project_id: String,
+        receipt_id: String,
+        task_id: String,
+        workflow_revision: i64,
+        gate_key: String,
+        team_run_id: String,
+        evaluator_role: String,
+        role_slot_id: String,
+        agent_run_id: String,
+        seat_binding_id: String,
+        seat_revision: i64,
+        runtime_binding_id: String,
+        runtime_generation: i64,
+        native_id: String,
+        artifact_key: String,
+        artifact_checksum: String,
+        evidence_digest: String,
+        proof_digest: String,
+        attested_at: String,
     }
     artifact_evidence: ArtifactEvidenceRow from "artifact_evidence" key(id) {
         id: String,

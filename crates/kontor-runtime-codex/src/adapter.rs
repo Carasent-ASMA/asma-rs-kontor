@@ -1105,6 +1105,7 @@ impl<'a> CodexAdapter<'a> {
         observed_at: Timestamp,
     ) -> RuntimeResult<ControlPlaneObservation> {
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id,
             contact: RuntimeContact::ProcessMissing,
             state: ObservedRunState::Unknown,
@@ -1260,6 +1261,7 @@ impl<'a> CodexAdapter<'a> {
                 ending: None,
             };
             let observation = ControlPlaneObservation {
+                drivable: true,
                 agent_run_id: request.agent_run_id(),
                 contact: RuntimeContact::Reachable,
                 // A process that acknowledged its launch is running. That is an
@@ -1590,6 +1592,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
             stored.clone()
         };
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id: binding.agent_run_id(),
             contact: RuntimeContact::ProcessMissing,
             // Not `Cancelled`. A kill that was accepted is not a run that ended
@@ -1641,6 +1644,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
         }
         let Some(ending) = liveness.ending else {
             return Ok(ControlPlaneObservation {
+                drivable: true,
                 agent_run_id: binding.agent_run_id(),
                 contact: RuntimeContact::Reachable,
                 state: ObservedRunState::Running,

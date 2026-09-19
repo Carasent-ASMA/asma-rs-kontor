@@ -324,6 +324,7 @@ impl Harness {
             runtime_kind: runtime_kind(),
             runtime_generation: 7,
             intake_receipt_id: None,
+            placement_attestation_digest: None,
         }
     }
 }

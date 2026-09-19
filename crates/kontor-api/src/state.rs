@@ -284,6 +284,9 @@ pub struct ApiParts {
     pub signals: StreamSignals,
     /// How old a confirmation may be and still count as fresh, in seconds.
     pub evidence_window_seconds: i64,
+    /// How long a derived runtime read may take in total, across every request
+    /// it makes. Bounds the operation, which bounding each request does not.
+    pub derived_read_deadline: std::time::Duration,
     /// The composed application services the public operations run through.
     pub applications: Applications,
 }
@@ -304,6 +307,7 @@ struct Inner {
     barrier: SchedulingBarrier,
     signals: StreamSignals,
     evidence_window_seconds: i64,
+    derived_read_deadline: std::time::Duration,
     applications: Applications,
 }
 
@@ -324,6 +328,327 @@ impl std::fmt::Debug for ApiState {
 }
 
 impl ApiState {
+    /// Read canonical history and make any epoch it allocated durable *first*.
+    ///
+    /// The single seam every history read goes through — the API timeline and
+    /// current-turn reads, and settlement's own validation scan. Centralized
+    /// because the barrier is only a barrier if nothing bypasses it.
+    ///
+    /// A Kontor epoch number is allocated by the adapter the first time it sees
+    /// a raw native epoch. Until this function returns, no caller has been given
+    /// a position addressed by that number and no validation has consumed one.
+    /// So the order here is the whole guarantee:
+    ///
+    /// * crash *before* the commit — the mapping is absent, and nothing was ever
+    ///   exposed under it, so the next process is free to allocate afresh;
+    /// * crash *after* the commit — the next process restores the same number,
+    ///   and a tuple minted under it still resolves to the same content.
+    ///
+    /// Persisting is therefore not best-effort: a failure to record the mapping
+    /// fails the read, because returning the page would hand out a number that
+    /// might not survive.
+    ///
+    /// # Errors
+    /// The runtime's own refusal, or a repository failure while recording the
+    /// mapping.
+    pub async fn history_with_durable_epochs(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        request: &kontor_runtime::request::HistoryRequest,
+    ) -> Result<kontor_runtime::timeline::HistoryPage, crate::error::ApiError> {
+        let realm_id = self.realm_id();
+        let page = adapter
+            .history(request)
+            .await
+            .map_err(|error| crate::error::ApiError::from_runtime(realm_id, &error))?;
+        self.persist_pending_epochs(adapter, identity)?;
+        Ok(page)
+    }
+
+    /// Record that this realm issued one client message id to one exact binding.
+    ///
+    /// Called **before** the runtime is asked to accept the message, on every
+    /// path that puts a Kontor-minted id into a session. That ordering is the
+    /// whole value: observation later treats the presence of a row as proof the
+    /// id is unambiguous, and it may only do that if an id the runtime might
+    /// have seen is already recorded. Writing it afterwards would omit exactly
+    /// the ids whose acknowledgement was lost.
+    ///
+    /// A replay under the same key, binding and session writes nothing and
+    /// succeeds — the retry of an effect the runtime may already have committed
+    /// must not be refused. The same id against a different session is refused
+    /// by the store's own key, inside the transaction.
+    ///
+    /// # Errors
+    /// A repository refusal, mapped to the caller's conflict, when this id was
+    /// already issued somewhere else or the write failed.
+    pub fn record_message_issuance(
+        &self,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        binding_id: RuntimeBindingId,
+        message_id: kontor_runtime::request::MessageId,
+        provenance: &str,
+        idempotency_key: &str,
+    ) -> Result<(), crate::error::ApiError> {
+        let issuance = kontor_store::MessageIssuance {
+            message_id: message_id.to_string(),
+            runtime_kind: identity.runtime_kind.as_str().to_owned(),
+            host: identity.host.as_str().to_owned(),
+            runtime_binding_id: binding_id.to_string(),
+            native_session_id: identity.native_id.as_str().to_owned(),
+            idempotency_key: idempotency_key.to_owned(),
+            provenance: provenance.to_owned(),
+            issued_at: crate::now(),
+            // Recorded before the runtime is asked to accept the message, so
+            // there is no acknowledged position yet. It arrives, if it arrives,
+            // through `record_message_delivery`.
+            delivered_at: None,
+        };
+        self.with_store(|store| store.record_message_issuance(&issuance))
+            .map(|_| ())
+            .map_err(|error| crate::error::ApiError::from_repository(self.realm_id(), &error))
+    }
+
+    /// Record where the runtime acknowledged an issued message landing.
+    ///
+    /// Called after a delivery is acknowledged, and only then: the position is
+    /// the runtime's answer, not something Kontor can predict. It is what lets a
+    /// bounded observation ask whether the occurrence it found is *the* delivery
+    /// rather than whether it is the *only* occurrence — the second question
+    /// needs a scan of the whole transcript, which is what the bound removed.
+    ///
+    /// # Errors
+    /// A repository refusal when this id was already delivered at a different
+    /// position, which is the runtime saying the message landed twice.
+    pub fn record_message_delivery(
+        &self,
+        message_id: kontor_runtime::request::MessageId,
+        position: kontor_runtime::timeline::TimelinePosition,
+    ) -> Result<(), crate::error::ApiError> {
+        let key = message_id.to_string();
+        self.with_store(|store| {
+            store.record_message_delivery(&key, position.epoch, position.sequence)
+        })
+        .map_err(|error| crate::error::ApiError::from_repository(self.realm_id(), &error))
+    }
+
+    /// The issuance this realm recorded for one client message id.
+    ///
+    /// `None` means this realm never minted that id, or minted it before the
+    /// ledger existed. Both are refusals for a caller that needs the id proven
+    /// unambiguous, and they are deliberately not distinguished here: the
+    /// difference is an operator's question, not a rule's.
+    ///
+    /// # Errors
+    /// Backend failures only.
+    pub fn message_issuance(
+        &self,
+        message_id: kontor_runtime::request::MessageId,
+    ) -> Result<Option<kontor_store::MessageIssuance>, crate::error::ApiError> {
+        let key = message_id.to_string();
+        self.with_store(|store| store.message_issuance(&key))
+            .map_err(|error| crate::error::ApiError::from_repository(self.realm_id(), &error))
+    }
+
+    /// One canonical history read, with a single bounded epoch recovery.
+    ///
+    /// `timeline_refetch_required` is not "the read failed". It is the runtime
+    /// saying the cursor addresses a numbering it is not in — because it
+    /// declared the page a break, or because this process has no raw epoch for
+    /// the number the cursor names at all, which is what a restart with no
+    /// durable mappings leaves behind. Callers that must *derive* something from
+    /// the session — settlement proving a turn, observation reporting one —
+    /// cannot pass that signal on as a failure, and must not answer it by
+    /// re-reading the session from its origin: that walk costs a page per page
+    /// of transcript, which is the unbounded read this lane exists to remove.
+    ///
+    /// So it is answered once, at the tail, for the epoch alone, and the same
+    /// anchored question is asked again. A second refusal is structural — the
+    /// positions name a numbering this runtime no longer has — and is returned
+    /// as the caller's own typed conflict. Exactly one recovery, whatever the
+    /// session's length.
+    ///
+    /// `/timeline` deliberately does **not** use this: a streaming consumer is
+    /// owed the refetch signal so it can restart its own read.
+    ///
+    /// # Errors
+    /// Returns the runtime's refusal, the repository's refusal when a mapping
+    /// could not be made durable, or `timeline_refetch_required` when the
+    /// recovery did not resolve it.
+    pub async fn history_recovering_epoch_once(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        request: &kontor_runtime::request::HistoryRequest,
+    ) -> Result<kontor_runtime::timeline::HistoryPage, crate::error::ApiError> {
+        self.within_derived_read_deadline(
+            self.history_recovering_epoch_once_unbounded(adapter, identity, request),
+        )
+        .await
+    }
+
+    async fn history_recovering_epoch_once_unbounded(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        request: &kontor_runtime::request::HistoryRequest,
+    ) -> Result<kontor_runtime::timeline::HistoryPage, crate::error::ApiError> {
+        match self
+            .history_with_durable_epochs(adapter, identity, request)
+            .await
+        {
+            Ok(page) => return Ok(page),
+            Err(error) if error.code == crate::error::ApiErrorCode::TimelineRefetchRequired => {}
+            Err(error) => return Err(error),
+        }
+        self.refresh_timeline_epoch_durably(adapter, identity, &request.binding)
+            .await?;
+        self.history_with_durable_epochs(adapter, identity, request)
+            .await
+    }
+
+    /// A bounded window of a session's newest content, with the same single
+    /// epoch recovery and the same durability barrier as an anchored read.
+    ///
+    /// The seed an observation starts from when it has no resume cursor. It
+    /// costs the window, not the transcript, so a three-event turn at the tail
+    /// of a long-lived seat is readable at last.
+    ///
+    /// # Errors
+    /// Returns the runtime's refusal, the repository's refusal when a mapping
+    /// could not be made durable, or `timeline_refetch_required` when one
+    /// recovery did not resolve it.
+    pub async fn tail_window_recovering_epoch_once(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        binding: &kontor_runtime::capability::RuntimeBindingSnapshot,
+        page_size: u32,
+        max_pages: usize,
+    ) -> Result<kontor_runtime::timeline::HistoryPage, crate::error::ApiError> {
+        self.within_derived_read_deadline(self.tail_window_recovering_epoch_once_unbounded(
+            adapter, identity, binding, page_size, max_pages,
+        ))
+        .await
+    }
+
+    /// Hold a derived read to one deadline for the whole operation.
+    ///
+    /// The runtime client bounds each *request* it makes, and that is a
+    /// different guarantee from bounding the read. A derived read issues a page
+    /// at a time under a page budget, and against a session the runtime will not
+    /// answer for, every page costs the client's full per-request deadline —
+    /// so a settlement proof bounded at 64 window pages plus 64 trailing pages
+    /// is bounded in requests and unbounded in the only unit a caller feels.
+    /// That is the shape a live realm showed: individual requests timing out
+    /// correctly, and callers hanging for minutes on top of them.
+    ///
+    /// Elapsing is reported as the runtime being unreachable, which is what it
+    /// means, and nothing is written on the way out. The caller's own mapping
+    /// then gives it the right name: a settlement calls it an incomplete proof
+    /// scan and tells the operator to settle the same turn again later.
+    pub(crate) async fn within_derived_read_deadline<T>(
+        &self,
+        work: impl Future<Output = Result<T, crate::error::ApiError>>,
+    ) -> Result<T, crate::error::ApiError> {
+        match tokio::time::timeout(self.0.derived_read_deadline, work).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(self.refuse(
+                crate::error::ApiErrorCode::Unavailable,
+                "the runtime did not answer this session's canonical history within the read deadline",
+            )),
+        }
+    }
+
+    async fn tail_window_recovering_epoch_once_unbounded(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        binding: &kontor_runtime::capability::RuntimeBindingSnapshot,
+        page_size: u32,
+        max_pages: usize,
+    ) -> Result<kontor_runtime::timeline::HistoryPage, crate::error::ApiError> {
+        let realm_id = self.realm_id();
+        match adapter.tail_window(binding, page_size, max_pages).await {
+            Ok(page) => {
+                self.persist_pending_epochs(adapter, identity)?;
+                return Ok(page);
+            }
+            Err(error) => {
+                let mapped = crate::error::ApiError::from_runtime(realm_id, &error);
+                if mapped.code != crate::error::ApiErrorCode::TimelineRefetchRequired {
+                    return Err(mapped);
+                }
+            }
+        }
+        self.refresh_timeline_epoch_durably(adapter, identity, binding)
+            .await?;
+        let page = adapter
+            .tail_window(binding, page_size, max_pages)
+            .await
+            .map_err(|error| crate::error::ApiError::from_runtime(realm_id, &error))?;
+        self.persist_pending_epochs(adapter, identity)?;
+        Ok(page)
+    }
+
+    /// Re-read which epoch a session is in, through the same durability
+    /// barrier.
+    ///
+    /// The answer to a runtime that refuses a cursor. It is bounded by
+    /// construction — the adapter reads no content — so it stays available to
+    /// callers, like a settlement proof scan, that must never take an unbounded
+    /// read. What it can allocate, it persists before returning, for exactly the
+    /// reason [`ApiState::history_with_durable_epochs`] does: the caller is
+    /// about to address positions by these numbers.
+    ///
+    /// # Errors
+    /// Returns the runtime's own refusal, or a repository refusal when the
+    /// mapping it learned could not be made durable.
+    pub async fn refresh_timeline_epoch_durably(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        binding: &kontor_runtime::capability::RuntimeBindingSnapshot,
+    ) -> Result<(), crate::error::ApiError> {
+        let realm_id = self.realm_id();
+        adapter
+            .refresh_timeline_epoch(binding)
+            .await
+            .map_err(|error| crate::error::ApiError::from_runtime(realm_id, &error))?;
+        self.persist_pending_epochs(adapter, identity)
+    }
+
+    /// Commit whatever epoch mappings an adapter has allocated but not yet had
+    /// confirmed durable. The barrier itself, in one place, so no caller can
+    /// read the pending list without owing the write.
+    ///
+    /// Read, commit, *then* acknowledge — in that order, and the order is the
+    /// point. Clearing the adapter's pending list before the commit returned
+    /// would make a failed write silent: the number stays live in the adapter's
+    /// `by_raw`, so the next read of that raw epoch is served from cache and
+    /// never offered for persistence again, and the realm goes on addressing
+    /// positions by a number the next process will hand to something else. A
+    /// failure here leaves the pairs exactly where they were, so the next read
+    /// through this seam retries them.
+    fn persist_pending_epochs(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+    ) -> Result<(), crate::error::ApiError> {
+        let pending = adapter.pending_timeline_epochs();
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let kind = identity.runtime_kind.as_str().to_owned();
+        let host = identity.host.as_str().to_owned();
+        let at = crate::now();
+        self.with_store(|store| store.persist_timeline_epochs(&kind, &host, &pending, at))
+            .map_err(|error| crate::error::ApiError::from_repository(self.realm_id(), &error))?;
+        adapter.ack_timeline_epochs(&pending);
+        Ok(())
+    }
+
     /// Assemble the handler state from what the composition root opened.
     #[must_use]
     pub fn new(parts: ApiParts) -> Self {
@@ -338,6 +663,7 @@ impl ApiState {
             barrier: parts.barrier,
             signals: parts.signals,
             evidence_window_seconds: parts.evidence_window_seconds,
+            derived_read_deadline: parts.derived_read_deadline,
             applications: parts.applications,
         }))
     }

@@ -49,7 +49,7 @@ use crate::receipt::{
 use crate::spec::{
     CanonicalSourceEvent, CatalogRoleRef, ExecutionCapability, IntakeReceipt,
     PersonaScenarioSnapshot, PersonaScenarioSpec, ProjectSessionTopologySpec,
-    ResolvedWorkProfileSnapshot, RoleCatalogRevision, Shareability, SourceIdentity,
+    ResolvedWorkProfileSnapshot, RoleCatalogRevision, SeatAutonomy, Shareability, SourceIdentity,
     TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot, TeamTemplateRevision,
     TopologySnapshot, TriggerSpec, WorkProfileSpec,
 };
@@ -71,6 +71,68 @@ use crate::ticket::{
     TicketFieldSpec, TicketSyncProjection,
 };
 use crate::{DomainError, DomainResult};
+
+/// One recorded proof that an exact retired evaluator already rendered its
+/// verdict.
+///
+/// Append-only. The row is the whole fenced claim, not just its digest, so a
+/// later reader can see what was proved without re-deriving it and a mismatch
+/// can name the field that disagreed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredRetiredEvaluatorAttestation {
+    /// This attestation's own id.
+    pub id: ExternalId,
+    /// The owning project.
+    pub project_id: ProjectId,
+    /// The command receipt that recorded it.
+    pub receipt_id: CommandReceiptId,
+    /// The task whose gate is proved.
+    pub task_id: TaskId,
+    /// The workflow revision the proof was judged against.
+    pub workflow_revision: AggregateRevision,
+    /// The gate proved.
+    pub gate_key: GateKey,
+    /// The TeamRun the evaluator sat on.
+    pub team_run_id: TeamRunId,
+    /// The catalog role the gate declares.
+    pub evaluator_role: RoleKey,
+    /// The slot that holds that role.
+    pub role_slot_id: RoleSlotId,
+    /// The evaluator's closed run.
+    pub agent_run_id: AgentRunId,
+    /// The retired topology seat.
+    pub seat_binding_id: SeatBindingId,
+    /// That seat's revision when judged.
+    pub seat_revision: AggregateRevision,
+    /// The runtime binding the run held.
+    pub runtime_binding_id: ExternalId,
+    /// That binding's generation.
+    pub runtime_generation: u64,
+    /// The native it named.
+    pub native_id: ExternalId,
+    /// The artifact the settled turn produced.
+    pub artifact_key: ArtifactKey,
+    /// That artifact's checksum.
+    pub artifact_checksum: ContentHash,
+    /// The digest of the settled turn's immutable evidence.
+    pub evidence_digest: ContentHash,
+    /// The deterministic digest of every fenced fact.
+    pub proof_digest: ContentHash,
+    /// When the proof was recorded.
+    pub attested_at: Timestamp,
+}
+
+/// Whether a proof was newly recorded or replayed onto the existing one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttestationWrite {
+    /// The proof is new.
+    Recorded,
+    /// An identical claim already had this proof; nothing was written.
+    ///
+    /// This is what makes a lost acknowledgement safe: the caller retries the
+    /// same claim and receives the same row rather than a second proof.
+    Replayed,
+}
 
 /// Everything a repository can refuse.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -542,10 +604,69 @@ pub struct StoredHostedTopologySeat {
     pub model_rung: crate::spec::ModelRung,
     /// Exact native runtime identity.
     pub native_identity: NativeRuntimeIdentity,
+    /// Authority this occupancy generation was launched under, frozen.
+    ///
+    /// Resolved once, when the generation is created, and then read back rather
+    /// than recomputed. The plane default is mutable configuration; a seat's
+    /// authority is not. Recomputing it on a later inspect or retire compares a
+    /// live default against a native that was launched under the old one, which
+    /// is what wedged the governed replacement path: the mismatch refuses the
+    /// retire *before* archival, so the very command that would install a
+    /// correctly-routed successor is the one the mismatch blocks.
+    ///
+    /// A configuration change therefore reaches a seat only through the audited
+    /// retire/replace path, as a new generation.
+    pub autonomy: SeatAutonomy,
     /// Provider conversation id, when exposed.
     pub provider_session_id: Option<ExternalId>,
     /// Runtime readback instant.
     pub observed_at: Timestamp,
+}
+
+/// Whether a hosted-seat launch intent has been reconciled with its native.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedSeatLaunchIntentState {
+    /// Written before the native call, not yet reconciled.
+    Prepared,
+    /// Reconciled against the native the launch actually produced.
+    Installed,
+}
+
+/// The authority one hosted-seat launch resolved, recorded *before* the launch.
+///
+/// Persisting the occupancy after the native answer leaves a window: the native
+/// is created, the acknowledgement is lost or the process exits, and nothing
+/// durable says what authority that native was asked for. A replay then resolves
+/// the plane default afresh, finds the native already there in the old mode, and
+/// refuses on the readback mismatch — which does not merely fail safe, it
+/// strands the seat, because the mismatch blocks the very path that could
+/// retire and replace it.
+///
+/// This row closes that window. It is written before the effect, carries the
+/// exact resolved autonomy, and is consumed when the occupancy binds. A replay
+/// inside the window reads it instead of the live default, so the launch intent
+/// survives a lost acknowledgement and a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredHostedSeatLaunchIntent {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Logical seat the intent is for.
+    pub seat_binding_id: SeatBindingId,
+    /// Occupancy generation this launch creates.
+    pub occupancy_generation: u64,
+    /// Exact authority resolved before the native call. Immutable once written.
+    pub autonomy: SeatAutonomy,
+    /// Frozen route the same launch asked for.
+    pub model_rung: crate::spec::ModelRung,
+    /// Whether the native has been reconciled against this intent.
+    pub state: HostedSeatLaunchIntentState,
+    /// The native the launch produced, once observed.
+    pub observed_native_id: Option<ExternalId>,
+    /// When the intent was recorded, before the effect.
+    pub prepared_at: Timestamp,
+    /// When the occupancy consumed it.
+    pub installed_at: Option<Timestamp>,
 }
 
 /// One immutable Committee finding or Judge aggregate.
@@ -942,7 +1063,11 @@ pub struct NewNativeContainerBinding {
     pub observed_kind: ObservedContainerKind,
     /// The container's canonical working directory, where it has one.
     pub canonical_cwd: Option<ExternalName>,
-    /// When the binding was established or last confirmed.
+    /// Complete exact native readback; absent only for legacy/imported rows.
+    pub readback: Option<crate::state::NativeContainerReadback>,
+    /// When the runtime established this exact binding.
+    pub bound_at: Timestamp,
+    /// When the runtime last confirmed this exact binding.
     pub observed_at: Timestamp,
 }
 

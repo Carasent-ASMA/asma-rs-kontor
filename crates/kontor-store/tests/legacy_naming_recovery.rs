@@ -14,7 +14,10 @@ use kontor_core::repository::{
     RealmRepository, TopologyContainerRecovery, TopologyRepository,
 };
 use kontor_core::spec::{Shareability, ShareabilityTier, TopologySnapshot};
-use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind};
+use kontor_core::state::{
+    NativeContainerReadback, NativeRuntimeIdentity, ObservedContainerKind,
+    ObservedContainerProjection,
+};
 use kontor_profiles::bundled_operational_domain;
 use kontor_store::SqliteStore;
 use rusqlite::{Connection, params};
@@ -341,6 +344,8 @@ fn a_stale_container_recovery_cas_preserves_logical_identity_and_history() {
             identity: identity("wks_stale"),
             observed_kind: ObservedContainerKind::Workspace,
             canonical_cwd: Some(name("/tmp/container-recovery-project/epic")),
+            readback: None,
+            bound_at: created_at,
             observed_at: created_at,
         })
         .expect("the stale identity is initially bound");
@@ -351,6 +356,13 @@ fn a_stale_container_recovery_cas_preserves_logical_identity_and_history() {
         identity: identity("wks_live"),
         observed_kind: ObservedContainerKind::Workspace,
         canonical_cwd: original.canonical_cwd.clone(),
+        readback: Some(NativeContainerReadback {
+            projection: ObservedContainerProjection::NativeChild,
+            visible_title: name("ECP • KOP-8001"),
+            native_parent: Some(identity("prj_epic")),
+            topology_correlation: name(&format!("kontor-node-{node_id}")),
+        }),
+        bound_at: at("2026-09-04T09:00:00Z"),
         observed_at: at("2026-09-04T09:00:00Z"),
     };
     let recovery = TopologyContainerRecovery {

@@ -25,7 +25,7 @@ use std::fmt;
 
 use kontor_core::id::{ExternalId, ExternalName, TaskId, TeamRunId, Timestamp, TopologyNodeId};
 use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
-use kontor_core::state::NativeRuntimeIdentity;
+use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind};
 use kontor_core::{DomainError, DomainResult};
 use uuid::Uuid;
 
@@ -404,6 +404,80 @@ pub struct ContainerBinding {
     pub root: Option<WorkspaceRoot>,
     /// When it was bound.
     pub bound_at: Timestamp,
+}
+
+/// Read one already-bound native container by its exact persisted identity.
+///
+/// No display title or working directory is accepted as an address. A native
+/// child additionally names its exact persisted native parent, which prevents
+/// an adapter rebuilt after restart from searching every project for a matching
+/// title or path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerInspectRequest {
+    /// Complete durable binding to inspect.
+    pub binding: ContainerBinding,
+    /// Complete exact native parent; required only for a native child.
+    pub native_parent: Option<NativeRuntimeIdentity>,
+    /// Durable execution scope, used only to rehydrate an exact ESW binding.
+    pub scope: ExecutionScope,
+    /// Whether this root is the epic's ESW project.
+    pub epic_container: bool,
+    /// Observation instant supplied by the control plane.
+    pub requested_at: Timestamp,
+}
+
+impl ContainerInspectRequest {
+    /// Prove the exact-address request is internally coherent.
+    ///
+    /// # Errors
+    /// Refuses logical nodes, a child without one exact native parent, a root
+    /// with a parent, or an epic container that is not a native root.
+    pub fn validate(&self) -> RuntimeResult<()> {
+        match self.binding.projection {
+            ContainerProjection::LogicalOnly => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "a logical_only node has no native container to inspect",
+                });
+            }
+            ContainerProjection::NativeRoot if self.native_parent.is_some() => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "a native_root inspection cannot carry a native parent",
+                });
+            }
+            ContainerProjection::NativeRoot => {}
+            ContainerProjection::NativeChild if self.native_parent.is_none() => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "a native_child inspection requires its exact native parent",
+                });
+            }
+            ContainerProjection::NativeChild => {}
+        }
+        if self.epic_container && self.binding.projection != ContainerProjection::NativeRoot {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "an epic container inspection must address a native_root",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Complete read-only native container readback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerInspection {
+    /// The exact durable identity and projection that were addressed.
+    pub binding: ContainerBinding,
+    /// What the runtime reported this native object as.
+    pub observed_kind: ObservedContainerKind,
+    /// Exact title visible in the runtime.
+    pub visible_title: String,
+    /// Canonical runtime-reported working directory.
+    pub canonical_cwd: Option<WorkspaceRoot>,
+    /// Complete exact native parent reported for a child.
+    pub native_parent: Option<NativeRuntimeIdentity>,
+    /// Topology-node correlation established from this exact readback.
+    pub correlation: ContainerCorrelationEvidence,
+    /// When the runtime observation was made.
+    pub observed_at: Timestamp,
 }
 
 /// Change one already-bound container's visible title.
