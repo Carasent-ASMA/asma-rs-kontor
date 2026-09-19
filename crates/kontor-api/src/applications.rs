@@ -5577,6 +5577,105 @@ pub struct DescriptionPublishedDto {
     pub receipt_id: String,
 }
 
+/// What a caller asks one task-scoped worktree-claim preview to repair.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreeClaimCorrectionRequest {
+    /// Exact task revision the caller inspected.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Exact currently stored claim; a mismatch refuses rather than overwrites.
+    #[schema(value_type = String)]
+    pub old_worktree: ExternalName,
+    /// Exact deterministic ASMA catalog-module target.
+    #[schema(value_type = String)]
+    pub new_worktree: ExternalName,
+}
+
+/// One no-write, identity-bound worktree-claim correction decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct WorktreeClaimCorrectionPreviewDto {
+    /// Realm in which the preview was decided.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Preserved task identity.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// Task revision fenced by apply.
+    #[schema(value_type = u64)]
+    pub task_revision: AggregateRevision,
+    /// Exact claim apply may replace.
+    #[schema(value_type = String)]
+    pub old_worktree: ExternalName,
+    /// Exact derived replacement.
+    #[schema(value_type = String)]
+    pub new_worktree: ExternalName,
+    /// Catalog module whose repository the target names.
+    pub module: String,
+    /// Jira-key publication branch the supported materializer must create.
+    pub branch: String,
+    /// A valid correction always writes exactly one claim.
+    pub writes: bool,
+    /// Digest binding the full preview and required by apply.
+    pub preview_hash: String,
+}
+
+/// Apply one exact worktree-claim preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreeClaimCorrectionApplyRequest {
+    /// Exact task revision the preview inspected.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Exact currently stored claim.
+    #[schema(value_type = String)]
+    pub old_worktree: ExternalName,
+    /// Exact deterministic replacement.
+    #[schema(value_type = String)]
+    pub new_worktree: ExternalName,
+    /// Digest returned by the matching preview.
+    pub preview_hash: String,
+}
+
+/// Durable result of one task-scoped worktree-claim correction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct WorktreeClaimCorrectionAppliedDto {
+    /// Realm in which the correction committed.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// Preserved task identity.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// Preserved task revision used as the CAS fence.
+    #[schema(value_type = u64)]
+    pub task_revision: AggregateRevision,
+    /// Exact replaced claim.
+    #[schema(value_type = String)]
+    pub old_worktree: ExternalName,
+    /// Exact replacement claim read from immutable evidence.
+    #[schema(value_type = String)]
+    pub new_worktree: ExternalName,
+    /// Catalog module whose repository the target names.
+    pub module: String,
+    /// Jira-key publication branch the supported materializer must create.
+    pub branch: String,
+    /// Whether this invocation committed or replayed the correction.
+    pub applied: AppliedDto,
+    /// Immutable local command receipt.
+    pub receipt_id: String,
+    /// Digest of the preview that authorized the correction.
+    pub preview_hash: String,
+    /// Commit instant recorded in the immutable audit row.
+    #[schema(value_type = String, format = DateTime)]
+    pub corrected_at: Timestamp,
+}
+
 /// What `ticket:reconcile-apply` is asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 pub struct TicketReconcileApplyRequest {
@@ -7588,6 +7687,23 @@ pub trait ApplicationOperations: Send + Sync {
         task_id: TaskId,
     ) -> Result<WorkflowPhaseRecoveryDto, ApiError>;
 
+    /// Validate one exact, task-scoped worktree-claim correction without writing.
+    async fn preview_worktree_claim_correction(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &WorktreeClaimCorrectionRequest,
+    ) -> Result<WorktreeClaimCorrectionPreviewDto, ApiError>;
+
+    /// Apply one exact worktree-claim preview under revision and old-value CAS.
+    async fn apply_worktree_claim_correction(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &WorktreeClaimCorrectionApplyRequest,
+    ) -> Result<WorktreeClaimCorrectionAppliedDto, ApiError>;
+
     /// Decide what publishing one task ticket's description would do.
     async fn preview_task_description(
         &self,
@@ -8842,6 +8958,63 @@ pub async fn preview_jira_materialization(
     Ok(Json(state.applications().preview_jira_materialization(
         project_id, epic_id, &request,
     )?))
+}
+
+/// Validate one exact task worktree-claim correction without writing.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:preview", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task whose claim is repaired")
+    ),
+    request_body = WorktreeClaimCorrectionRequest,
+    responses((status = 200, body = WorktreeClaimCorrectionPreviewDto), (status = 400), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn preview_worktree_claim_correction(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    Json(request): Json<WorktreeClaimCorrectionRequest>,
+) -> Result<Json<WorktreeClaimCorrectionPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let task_id = resolve_task_selector(&state, project_id, &task_id)?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_worktree_claim_correction(project_id, task_id, &request)
+            .await?,
+    ))
+}
+
+/// Apply one exact task worktree-claim correction under CAS.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:apply", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("task_id" = String, Path, description = "The task whose claim is repaired"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = WorktreeClaimCorrectionApplyRequest,
+    responses((status = 200, body = WorktreeClaimCorrectionAppliedDto), (status = 400), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn apply_worktree_claim_correction(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, task_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<WorktreeClaimCorrectionApplyRequest>,
+) -> Result<Json<WorktreeClaimCorrectionAppliedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let task_id = resolve_task_selector(&state, project_id, &task_id)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_worktree_claim_correction(&key, project_id, task_id, &request)
+            .await?,
+    ))
 }
 
 /// Decide what publishing one task ticket's description would do.

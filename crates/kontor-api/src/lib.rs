@@ -864,6 +864,14 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::ticket_reconcile_plan),
             )
             .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:preview",
+                post(applications::preview_worktree_claim_correction),
+            )
+            .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:apply",
+                post(applications::apply_worktree_claim_correction),
+            )
+            .route(
                 "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:preview",
                 post(applications::preview_task_description),
             )

@@ -8596,6 +8596,147 @@
         }
       }
     },
+    "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply one exact task worktree-claim correction under CAS.",
+        "operationId": "apply_worktree_claim_correction",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "The task whose claim is repaired",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorktreeClaimCorrectionApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorktreeClaimCorrectionAppliedDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Validate one exact task worktree-claim correction without writing.",
+        "operationId": "preview_worktree_claim_correction",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "The task whose claim is repaired",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorktreeClaimCorrectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorktreeClaimCorrectionPreviewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/team-definition-selection:apply": {
       "post": {
         "tags": [
@@ -25058,6 +25199,194 @@
             "description": "The task whose workflow was re-derived."
           }
         }
+      },
+      "WorktreeClaimCorrectionAppliedDto": {
+        "type": "object",
+        "description": "Durable result of one task-scoped worktree-claim correction.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "task_id",
+          "task_revision",
+          "old_worktree",
+          "new_worktree",
+          "module",
+          "branch",
+          "applied",
+          "receipt_id",
+          "preview_hash",
+          "corrected_at"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this invocation committed or replayed the correction."
+          },
+          "branch": {
+            "type": "string",
+            "description": "Jira-key publication branch the supported materializer must create."
+          },
+          "corrected_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Commit instant recorded in the immutable audit row."
+          },
+          "module": {
+            "type": "string",
+            "description": "Catalog module whose repository the target names."
+          },
+          "new_worktree": {
+            "type": "string",
+            "description": "Exact replacement claim read from immutable evidence."
+          },
+          "old_worktree": {
+            "type": "string",
+            "description": "Exact replaced claim."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Digest of the preview that authorized the correction."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm in which the correction committed."
+          },
+          "receipt_id": {
+            "type": "string",
+            "description": "Immutable local command receipt."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Preserved task identity."
+          },
+          "task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Preserved task revision used as the CAS fence.",
+            "minimum": 0
+          }
+        }
+      },
+      "WorktreeClaimCorrectionApplyRequest": {
+        "type": "object",
+        "description": "Apply one exact worktree-claim preview.",
+        "required": [
+          "expected_revision",
+          "old_worktree",
+          "new_worktree",
+          "preview_hash"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact task revision the preview inspected.",
+            "minimum": 0
+          },
+          "new_worktree": {
+            "type": "string",
+            "description": "Exact deterministic replacement."
+          },
+          "old_worktree": {
+            "type": "string",
+            "description": "Exact currently stored claim."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Digest returned by the matching preview."
+          }
+        },
+        "additionalProperties": false
+      },
+      "WorktreeClaimCorrectionPreviewDto": {
+        "type": "object",
+        "description": "One no-write, identity-bound worktree-claim correction decision.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "task_id",
+          "task_revision",
+          "old_worktree",
+          "new_worktree",
+          "module",
+          "branch",
+          "writes",
+          "preview_hash"
+        ],
+        "properties": {
+          "branch": {
+            "type": "string",
+            "description": "Jira-key publication branch the supported materializer must create."
+          },
+          "module": {
+            "type": "string",
+            "description": "Catalog module whose repository the target names."
+          },
+          "new_worktree": {
+            "type": "string",
+            "description": "Exact derived replacement."
+          },
+          "old_worktree": {
+            "type": "string",
+            "description": "Exact claim apply may replace."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Digest binding the full preview and required by apply."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm in which the preview was decided."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Preserved task identity."
+          },
+          "task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Task revision fenced by apply.",
+            "minimum": 0
+          },
+          "writes": {
+            "type": "boolean",
+            "description": "A valid correction always writes exactly one claim."
+          }
+        }
+      },
+      "WorktreeClaimCorrectionRequest": {
+        "type": "object",
+        "description": "What a caller asks one task-scoped worktree-claim preview to repair.",
+        "required": [
+          "expected_revision",
+          "old_worktree",
+          "new_worktree"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact task revision the caller inspected.",
+            "minimum": 0
+          },
+          "new_worktree": {
+            "type": "string",
+            "description": "Exact deterministic ASMA catalog-module target."
+          },
+          "old_worktree": {
+            "type": "string",
+            "description": "Exact currently stored claim; a mismatch refuses rather than overwrites."
+          }
+        },
+        "additionalProperties": false
       }
     },
     "securitySchemes": {

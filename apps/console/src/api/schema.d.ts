@@ -2527,6 +2527,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Catch a stalled workflow up to the phase its own durable evidence proves.
+         * @description The advance is normally computed as a side effect of recording a gate or
+         *     settling a turn. When that moment is missed — ASMA-8205 passed its
+         *     `high-verification-gate` at sequence 2 and the stored phase never moved —
+         *     nothing re-derives it afterwards, and the workflow stalls with complete and
+         *     unambiguous evidence sitting in front of it.
+         *
+         *     This is that missing surface and nothing more. It records no verdict,
+         *     appends no evaluation, replays no turn and chooses no phase: it runs the
+         *     same deterministic projection the ordinary paths run, over evidence that is
+         *     already durable. A workflow already at its evidence phase is left exactly
+         *     as it is, which is what makes running it twice a no-op rather than a second
+         *     advance.
+         */
+        post: operations["recover_workflow_phase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply one exact task worktree-claim correction under CAS. */
+        post: operations["apply_worktree_claim_correction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate one exact task worktree-claim correction without writing. */
+        post: operations["preview_worktree_claim_correction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/team-definition-selection:apply": {
         parameters: {
             query?: never;
@@ -3847,6 +3912,16 @@ export interface components {
             capability_receipt_id: string;
             /** @description The account profile that granted it. */
             created_by: string;
+            /**
+             * @description What would end this hold, beside the prose that says why it exists.
+             *
+             *     `None` on a live grant, which has no terms left to meet, and on the
+             *     narrow arm and disarm answers that do not consult the ledger. A hold
+             *     read back from its epic always states it, because "why work is held" and
+             *     "what would release it" are different questions and only the second one
+             *     can be acted on.
+             */
+            lift_condition?: string | null;
             /**
              * Format: int32
              * @description Maximum concurrent runs it authorizes.
@@ -6164,8 +6239,14 @@ export interface components {
         };
         /** @description The no-write projection of a requested covering kickoff hold. */
         InitialExecutionHoldPreviewDto: {
-            /** @description The account profile that will record the hold. */
+            /** @description The account profile that will record the hold. Its owner. */
             held_by: string;
+            /**
+             * @description The machine-checkable condition apply will record, resolved — so a
+             *     caller that named none sees `manual` here rather than an absence it has
+             *     to interpret.
+             */
+            lift_condition: string;
             /** @description The durable reason apply will record. */
             reason: string;
             /** @description The hold always covers the whole epic. */
@@ -6178,8 +6259,21 @@ export interface components {
          *     governable by the scheduler.
          */
         InitialExecutionHoldRequest: {
-            /** @description The account profile recording the kickoff hold. */
+            /** @description The account profile recording the kickoff hold. Its owner. */
             held_by: string;
+            /**
+             * @description What would end the hold, as something Kontor can evaluate.
+             *
+             *     `reason` is prose: it reads well and decides nothing, so before this
+             *     field the only thing that ever lifted a hold was a human calling
+             *     `execution-arm`, and an epic whose stated condition had been true for
+             *     days sat idle because nobody was asked to look.
+             *
+             *     Absent means [`HoldLiftCondition::Manual`], which is what every hold
+             *     recorded before this field existed actually meant. A caller that says
+             *     nothing gets exactly the behaviour it already had.
+             */
+            lift_condition?: string | null;
             /** @description Why work must remain ineligible after the graph is created. */
             reason: string;
         };
@@ -10040,6 +10134,115 @@ export interface components {
             team?: null | components["schemas"]["RevisionRefDto"];
             /** @description The phases it may terminate at. */
             terminal_phases: string[];
+        };
+        /**
+         * @description What re-deriving a stalled workflow's phase from durable evidence did.
+         *
+         *     Reports the phase before and after, so a caller can see whether anything
+         *     moved. `advanced: false` is the ordinary answer for a workflow already where
+         *     its evidence puts it — which is exactly what makes this safe to run twice.
+         */
+        WorkflowPhaseRecoveryDto: {
+            /** @description Whether the stored phase actually moved. */
+            advanced: boolean;
+            /** @description The phase its durable evidence puts it at. */
+            current_phase: string;
+            /** @description The phase the workflow stood at before. */
+            previous_phase: string;
+            /** @description The Realm the task belongs to. */
+            realm_id: string;
+            /**
+             * Format: int64
+             * @description The workflow revision after the projection caught up.
+             */
+            revision: number;
+            /** @description The task whose workflow was re-derived. */
+            task_id: string;
+        };
+        /** @description Durable result of one task-scoped worktree-claim correction. */
+        WorktreeClaimCorrectionAppliedDto: {
+            /** @description Whether this invocation committed or replayed the correction. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description Jira-key publication branch the supported materializer must create. */
+            branch: string;
+            /**
+             * Format: date-time
+             * @description Commit instant recorded in the immutable audit row.
+             */
+            corrected_at: string;
+            /** @description Catalog module whose repository the target names. */
+            module: string;
+            /** @description Exact replacement claim read from immutable evidence. */
+            new_worktree: string;
+            /** @description Exact replaced claim. */
+            old_worktree: string;
+            /** @description Digest of the preview that authorized the correction. */
+            preview_hash: string;
+            /** @description Owning project. */
+            project_id: string;
+            /** @description Realm in which the correction committed. */
+            realm_id: string;
+            /** @description Immutable local command receipt. */
+            receipt_id: string;
+            /** @description Preserved task identity. */
+            task_id: string;
+            /**
+             * Format: int64
+             * @description Preserved task revision used as the CAS fence.
+             */
+            task_revision: number;
+        };
+        /** @description Apply one exact worktree-claim preview. */
+        WorktreeClaimCorrectionApplyRequest: {
+            /**
+             * Format: int64
+             * @description Exact task revision the preview inspected.
+             */
+            expected_revision: number;
+            /** @description Exact deterministic replacement. */
+            new_worktree: string;
+            /** @description Exact currently stored claim. */
+            old_worktree: string;
+            /** @description Digest returned by the matching preview. */
+            preview_hash: string;
+        };
+        /** @description One no-write, identity-bound worktree-claim correction decision. */
+        WorktreeClaimCorrectionPreviewDto: {
+            /** @description Jira-key publication branch the supported materializer must create. */
+            branch: string;
+            /** @description Catalog module whose repository the target names. */
+            module: string;
+            /** @description Exact derived replacement. */
+            new_worktree: string;
+            /** @description Exact claim apply may replace. */
+            old_worktree: string;
+            /** @description Digest binding the full preview and required by apply. */
+            preview_hash: string;
+            /** @description Owning project. */
+            project_id: string;
+            /** @description Realm in which the preview was decided. */
+            realm_id: string;
+            /** @description Preserved task identity. */
+            task_id: string;
+            /**
+             * Format: int64
+             * @description Task revision fenced by apply.
+             */
+            task_revision: number;
+            /** @description A valid correction always writes exactly one claim. */
+            writes: boolean;
+        };
+        /** @description What a caller asks one task-scoped worktree-claim preview to repair. */
+        WorktreeClaimCorrectionRequest: {
+            /**
+             * Format: int64
+             * @description Exact task revision the caller inspected.
+             */
+            expected_revision: number;
+            /** @description Exact deterministic ASMA catalog-module target. */
+            new_worktree: string;
+            /** @description Exact currently stored claim; a mismatch refuses rather than overwrites. */
+            old_worktree: string;
         };
     };
     responses: never;
@@ -17218,6 +17421,171 @@ export interface operations {
                 content?: never;
             };
             /** @description The conflict is already resolved, or the key was reused */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recover_workflow_phase: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The task */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowPhaseRecoveryDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The task has no active workflow */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_worktree_claim_correction: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The task whose claim is repaired */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorktreeClaimCorrectionApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorktreeClaimCorrectionAppliedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_worktree_claim_correction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The task whose claim is repaired */
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorktreeClaimCorrectionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorktreeClaimCorrectionPreviewDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             409: {
                 headers: {
                     [name: string]: unknown;

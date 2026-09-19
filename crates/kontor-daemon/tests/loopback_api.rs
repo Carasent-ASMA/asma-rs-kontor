@@ -8324,6 +8324,19 @@ fn well_formed_body(uri: &str) -> serde_json::Value {
                 "agent_run_id": kontor_core::id::AgentRunId::generate().to_string(),
             }],
         })
+    } else if uri.ends_with("worktree-claim:preview") {
+        serde_json::json!({
+            "expected_revision": 1,
+            "old_worktree": "/tmp/old-worktree",
+            "new_worktree": "/tmp/new-worktree",
+        })
+    } else if uri.ends_with("worktree-claim:apply") {
+        serde_json::json!({
+            "expected_revision": 1,
+            "old_worktree": "/tmp/old-worktree",
+            "new_worktree": "/tmp/new-worktree",
+            "preview_hash": "0".repeat(64),
+        })
     } else if uri.ends_with("/seat") {
         serde_json::json!({"expected_task_revision": 1, "reason": "Complete a handoff"})
     } else if uri.ends_with("lifecycle") {
@@ -8361,6 +8374,8 @@ async fn every_application_operation_refuses_an_unauthenticated_or_under_privile
         format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
         format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
         format!("/v1/projects/{project}/epics/{epic}/scheduler:resume"),
+        format!("/v1/projects/{project}/tasks/{epic}/worktree-claim:preview"),
+        format!("/v1/projects/{project}/tasks/{epic}/worktree-claim:apply"),
         format!(
             "/v1/projects/{project}/team-runs/{}/role-slots/audit/seat",
             TeamRunId::generate()
@@ -8437,6 +8452,8 @@ async fn the_contract_document_lists_every_application_route_and_no_unsafe_surfa
         "/v1/projects/{project_id}/tasks/{task_id}/account-selection",
         "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan",
         "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-apply",
+        "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:preview",
+        "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:apply",
         "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:settle",
         "/v1/catalog/work-profiles/{category}",
         "/v1/catalog/work-profiles/{category}/validate",
@@ -51615,6 +51632,365 @@ async fn duplicate_rendered_slots_in_one_team_are_refused_before_runtime_or_admi
 // ---------------------------------------------------------------------------
 // ASMA-8101 — deterministic task branches at epic apply
 // ---------------------------------------------------------------------------
+
+const LEGACY_ASMA_8120_WORKTREE: &str =
+    "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8049-jira-key-rollout";
+const CORRECTED_ASMA_8120_WORKTREE: &str =
+    "/Users/igor/carasent/asma-modules/.worktrees/asma-8120/asma-rs-kontor";
+const ASMA_8120_BRANCH: &str =
+    "feat/ASMA-8120-deploy-jira-key-runtime-and-migrate-current-native-containers";
+
+struct WorktreeCorrectionFixture {
+    project: String,
+    epic: String,
+    task: String,
+    unrelated_task: String,
+    task_revision: u64,
+}
+
+async fn worktree_correction_fixture(world: &World, key: &str) -> WorktreeCorrectionFixture {
+    let created = ensure_project(
+        world,
+        key,
+        "ASMA modules",
+        "/Users/igor/carasent/asma-modules",
+    )
+    .await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let category = first_category(world).await;
+    let mut body = epic_body(
+        created.json()["revision"]
+            .as_u64()
+            .expect("a project revision"),
+        "Publication identity enforcement",
+        &category,
+        serde_json::json!([
+            {
+                "title": "Deploy Jira key runtime and migrate current native containers",
+                "module": "_tools/asma-rs-kontor",
+                "worktree": LEGACY_ASMA_8120_WORKTREE,
+                "ticket_links": [{
+                    "connector": "connector.jira",
+                    "external_issue_key": "ASMA-8120"
+                }]
+            },
+            {
+                "title": "Unrelated task",
+                "module": "_tools/asma-rs-kontor",
+                "worktree": "/tmp/asma-8120-unrelated",
+                "ticket_links": [{
+                    "connector": "connector.jira",
+                    "external_issue_key": "ASMA-8121"
+                }]
+            }
+        ]),
+    );
+    body["execution_scope"]["external_epic_key"] = serde_json::json!("ASMA-8049");
+    let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
+        .signed_as(world, "admin")
+        .with_key(format!("{key}-epic"))
+        .send(world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    confirm_test_epic_identity(world, &project, &epic);
+    WorktreeCorrectionFixture {
+        project,
+        epic,
+        task: applied.json()["tasks"][0]["task_id"]
+            .as_str()
+            .expect("a task id")
+            .to_owned(),
+        unrelated_task: applied.json()["tasks"][1]["task_id"]
+            .as_str()
+            .expect("an unrelated task id")
+            .to_owned(),
+        task_revision: applied.json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("a task revision"),
+    }
+}
+
+fn worktree_correction_body(fixture: &WorktreeCorrectionFixture) -> serde_json::Value {
+    serde_json::json!({
+        "expected_revision": fixture.task_revision,
+        "old_worktree": LEGACY_ASMA_8120_WORKTREE,
+        "new_worktree": CORRECTED_ASMA_8120_WORKTREE,
+    })
+}
+
+#[tokio::test]
+async fn a_task_worktree_claim_correction_is_exact_audited_and_idempotent() {
+    let world = World::open_empty().await;
+    let fixture = worktree_correction_fixture(&world, "worktree-correction").await;
+    let uri = format!(
+        "/v1/projects/{}/tasks/{}/worktree-claim",
+        fixture.project, fixture.task
+    );
+    let before = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        fixture.project, fixture.epic
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(before.status, 200, "{}", before.body);
+
+    let preview = Call::post(
+        format!("{uri}:preview"),
+        &worktree_correction_body(&fixture),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["project_id"], fixture.project);
+    assert_eq!(preview.json()["task_id"], fixture.task);
+    assert_eq!(preview.json()["task_revision"], fixture.task_revision);
+    assert_eq!(preview.json()["old_worktree"], LEGACY_ASMA_8120_WORKTREE);
+    assert_eq!(preview.json()["new_worktree"], CORRECTED_ASMA_8120_WORKTREE);
+    assert_eq!(preview.json()["module"], "_tools/asma-rs-kontor");
+    assert_eq!(preview.json()["branch"], ASMA_8120_BRANCH);
+    assert_eq!(preview.json()["writes"], true);
+
+    let mut apply_body = worktree_correction_body(&fixture);
+    apply_body["preview_hash"] = preview.json()["preview_hash"].clone();
+    let applied = Call::post(format!("{uri}:apply"), &apply_body)
+        .signed_as(&world, "operator")
+        .with_key("correct-asma-8120-worktree")
+        .send(&world)
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["applied"], "created");
+    assert_eq!(applied.json()["task_revision"], fixture.task_revision);
+    assert_eq!(applied.json()["branch"], ASMA_8120_BRANCH);
+    assert_eq!(
+        applied.json()["preview_hash"],
+        preview.json()["preview_hash"]
+    );
+    let receipt = applied.json()["receipt_id"]
+        .as_str()
+        .expect("an immutable receipt")
+        .to_owned();
+
+    let replayed = Call::post(format!("{uri}:apply"), &apply_body)
+        .signed_as(&world, "operator")
+        .with_key("correct-asma-8120-worktree")
+        .send(&world)
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["applied"], "unchanged");
+    assert_eq!(replayed.json()["receipt_id"], receipt);
+
+    let after = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        fixture.project, fixture.epic
+    ))
+    .signed_as(&world, "observer")
+    .send(&world)
+    .await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    let mut expected = before.json().clone();
+    expected["tasks"][0]["worktree"] = serde_json::json!(CORRECTED_ASMA_8120_WORKTREE);
+    assert_eq!(
+        after.json()["snapshot_cursor"].as_u64(),
+        before.json()["snapshot_cursor"]
+            .as_u64()
+            .map(|cursor| cursor + 1),
+        "the one durable correction appends one event"
+    );
+    expected["snapshot_cursor"] = after.json()["snapshot_cursor"].clone();
+    assert_eq!(
+        after.json(),
+        expected,
+        "only the task claim changes; Jira, lifecycle, gates, verdicts and dependencies remain byte-for-byte projected"
+    );
+
+    let correction = world.daemon.state().with_store(|store| {
+        store
+            .get_task_worktree_correction(
+                ProjectId::parse(&fixture.project).expect("a project id"),
+                CommandReceiptId::parse(&receipt).expect("a receipt id"),
+            )
+            .expect("the correction audit reads")
+            .expect("the correction audit exists")
+    });
+    assert_eq!(correction.task_id.to_string(), fixture.task);
+    assert_eq!(correction.task_revision.get(), fixture.task_revision);
+    assert_eq!(correction.old_worktree.as_str(), LEGACY_ASMA_8120_WORKTREE);
+    assert_eq!(
+        correction.new_worktree.as_str(),
+        CORRECTED_ASMA_8120_WORKTREE
+    );
+    assert_eq!(correction.branch.as_str(), ASMA_8120_BRANCH);
+}
+
+#[tokio::test]
+async fn a_task_worktree_claim_correction_refuses_every_unbound_input() {
+    let world = World::open_empty().await;
+    let fixture = worktree_correction_fixture(&world, "worktree-correction-refusals").await;
+    let preview_uri = format!(
+        "/v1/projects/{}/tasks/{}/worktree-claim:preview",
+        fixture.project, fixture.task
+    );
+
+    for (label, body, code, rule) in [
+        (
+            "wrong-revision",
+            serde_json::json!({
+                "expected_revision": fixture.task_revision + 1,
+                "old_worktree": LEGACY_ASMA_8120_WORKTREE,
+                "new_worktree": CORRECTED_ASMA_8120_WORKTREE,
+            }),
+            "revision_conflict",
+            "task moved",
+        ),
+        (
+            "wrong-old",
+            serde_json::json!({
+                "expected_revision": fixture.task_revision,
+                "old_worktree": "/tmp/not-the-stored-claim",
+                "new_worktree": CORRECTED_ASMA_8120_WORKTREE,
+            }),
+            "revision_conflict",
+            "exact old claim",
+        ),
+        (
+            "raw-path",
+            serde_json::json!({
+                "expected_revision": fixture.task_revision,
+                "old_worktree": LEGACY_ASMA_8120_WORKTREE,
+                "new_worktree": "/tmp/arbitrary",
+            }),
+            "invalid_request",
+            "worktree_target_invalid",
+        ),
+        (
+            "foreign-branch-key",
+            serde_json::json!({
+                "expected_revision": fixture.task_revision,
+                "old_worktree": LEGACY_ASMA_8120_WORKTREE,
+                "new_worktree": "/Users/igor/carasent/asma-modules/.worktrees/asma-9999/asma-rs-kontor",
+            }),
+            "invalid_request",
+            "worktree_target_invalid",
+        ),
+    ] {
+        let refused = Call::post(&preview_uri, &body)
+            .signed_as(&world, "operator")
+            .send(&world)
+            .await;
+        assert_eq!(refused.code(), code, "{label}: {}", refused.body);
+        assert!(refused.body.contains(rule), "{label}: {}", refused.body);
+    }
+
+    let unknown = Call::post(
+        &preview_uri,
+        &serde_json::json!({
+            "expected_revision": fixture.task_revision,
+            "old_worktree": LEGACY_ASMA_8120_WORKTREE,
+            "new_worktree": CORRECTED_ASMA_8120_WORKTREE,
+            "force": true,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(unknown.status, 400, "{}", unknown.body);
+    assert_eq!(unknown.code(), "invalid_request");
+
+    let preview = Call::post(&preview_uri, &worktree_correction_body(&fixture))
+        .signed_as(&world, "operator")
+        .send(&world)
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let refused = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/worktree-claim:apply",
+            fixture.project, fixture.task
+        ),
+        &serde_json::json!({
+            "expected_revision": fixture.task_revision,
+            "old_worktree": LEGACY_ASMA_8120_WORKTREE,
+            "new_worktree": CORRECTED_ASMA_8120_WORKTREE,
+            "preview_hash": ContentHash::of(b"another preview").as_str(),
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("refuse-unbound-worktree-preview")
+    .send(&world)
+    .await;
+    assert_eq!(refused.code(), "revision_conflict", "{}", refused.body);
+    assert!(
+        refused.body.contains("changed since preview"),
+        "{}",
+        refused.body
+    );
+    let project_id = ProjectId::parse(&fixture.project).expect("a project id");
+    let task_id = TaskId::parse(&fixture.task).expect("a task id");
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.task_worktree(project_id, task_id))
+            .expect("the worktree reads")
+            .expect("the worktree remains")
+            .as_str(),
+        LEGACY_ASMA_8120_WORKTREE
+    );
+}
+
+#[tokio::test]
+async fn a_task_worktree_claim_correction_refuses_a_target_registered_to_another_task() {
+    let world = World::open_empty().await;
+    let fixture = worktree_correction_fixture(&world, "worktree-correction-duplicate").await;
+    let project_id = ProjectId::parse(&fixture.project).expect("a project id");
+    let unrelated_task = TaskId::parse(&fixture.unrelated_task).expect("an unrelated task id");
+    world.daemon.state().with_store(|store| {
+        store
+            .set_task_worktree(
+                project_id,
+                unrelated_task,
+                &ExternalName::parse(CORRECTED_ASMA_8120_WORKTREE).expect("a target"),
+            )
+            .expect("the conflict fixture is registered");
+    });
+
+    let refused = Call::post(
+        format!(
+            "/v1/projects/{}/tasks/{}/worktree-claim:preview",
+            fixture.project, fixture.task
+        ),
+        &worktree_correction_body(&fixture),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_eq!(refused.code(), "revision_conflict", "{}", refused.body);
+    assert!(
+        refused.body.contains("already registered to another task"),
+        "{}",
+        refused.body
+    );
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store.task_worktree(project_id, TaskId::parse(&fixture.task).expect("a task id"))
+            })
+            .expect("the task claim reads")
+            .expect("the original task claim remains")
+            .as_str(),
+        LEGACY_ASMA_8120_WORKTREE
+    );
+}
 
 /// Apply one single-task epic whose task states `worktree` verbatim (`null`
 /// keeps the field absent) under an epic keyed `ASMA-8101`, at a project rooted

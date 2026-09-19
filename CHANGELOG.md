@@ -22,6 +22,12 @@ and releases use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Added an operator-only task worktree-claim preview/apply repair. It binds an
+  exact task revision and old claim to the sole project/Jira/module-derived ASMA
+  catalog target and branch, records an immutable schema-v108 before/after
+  receipt, and leaves the task aggregate, Jira binding, workflow, gates and
+  dependency graph unchanged (ASMA-8120).
+
 - Added the shared publication-branch grammar (`kontor_core::branch`) ported
   from the ASMA CLI — `<type>/<PROJECT>-<number>-<slug>` with stable refusal
   codes — and used it to derive a task's canonical `.worktrees/` placement from
