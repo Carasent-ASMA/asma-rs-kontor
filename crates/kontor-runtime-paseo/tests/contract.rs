@@ -134,6 +134,8 @@ const AGENT_ADOPTED_PROVIDER_ROTATED: &str =
 const AGENT_OTHER_WORKSPACE: &str = fixture!("protocol/agent-other-workspace.json");
 const AGENT_OTHER_CWD: &str = fixture!("protocol/agent-other-cwd.json");
 const AGENT_FOREIGN: &str = fixture!("protocol/agent-foreign.json");
+const AGENT_NO_PROJECT_LABEL: &str = fixture!("protocol/agent-no-project-label.json");
+const AGENT_NO_WORKSPACE: &str = fixture!("protocol/agent-no-workspace.json");
 const AGENT_ADOPTED: &str = fixture!("protocol/agent-adopted.json");
 const AGENT_LIST_EMPTY: &str = fixture!("protocol/agent-list-empty.json");
 const AGENT_LIST_IMPLEMENT: &str = fixture!("protocol/agent-list-implement.json");
@@ -4466,15 +4468,16 @@ async fn continuity_an_archived_binding_restores_after_its_workspace_is_retired(
 }
 
 #[tokio::test]
-async fn continuity_a_live_binding_without_placement_remains_unrestorable() {
+async fn continuity_a_live_binding_whose_workspace_still_exists_needs_its_placement() {
     let (_, binding) = launched().await;
     let recorded = daemon();
     recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
-    recorded.set_answer_rpc("fetch_agent_request", v(AGENT));
+    // The seat moved out of its canonical worktree while its workspace stayed
+    // in the census. The placement cannot be re-proved and the owner is not
+    // retired, which is exactly the case the readback exception must not cover:
+    // a seat that wandered is not a seat whose worktree was retired under it.
+    recorded.set_answer_rpc("fetch_agent_request", v(AGENT_OTHER_CWD));
     let (restarted, _) = Plane::prepared(recorded).await;
-    restarted
-        .daemon
-        .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
 
     assert!(
         restarted
@@ -4483,7 +4486,124 @@ async fn continuity_a_live_binding_without_placement_remains_unrestorable() {
             .await
             .expect("the missing placement is an attestation result")
             .is_empty(),
-        "only an explicitly archived exact identity may restore without placement"
+        "a workspace this plane can still see is not a retired owner"
+    );
+}
+
+/// The restart shape a retired task worktree leaves behind: nothing is
+/// prepared, so the epic project cannot be recovered from the adapter's own
+/// map, and the workspace the agent still names is in no project's census.
+async fn workspace_owner_retired_plane(answer: &str) -> Plane {
+    let recorded = daemon();
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
+    recorded.set_answer_rpc("fetch_agent_request", v(answer));
+    let (restarted, _) = Plane::prepared(recorded).await;
+    restarted
+        .daemon
+        .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
+    restarted
+}
+
+#[tokio::test]
+async fn continuity_a_live_seat_whose_workspace_owner_is_gone_restores_readback_only() {
+    let (_, binding) = launched().await;
+    let restarted = workspace_owner_retired_plane(AGENT).await;
+
+    assert_eq!(
+        restarted
+            .adapter
+            .restore_bindings(std::slice::from_ref(&binding))
+            .await
+            .expect("an exactly readable native outlives its retired workspace"),
+        vec![binding.clone()],
+        "the open run must stay settleable after its task worktree is retired"
+    );
+    let observed = restarted
+        .adapter
+        .inspect(&InspectRequest {
+            binding: binding.clone(),
+            requested_at: at("2026-08-10T09:32:00Z"),
+        })
+        .await
+        .expect("the restored seat is readable by exact identity");
+    assert_eq!(
+        observed.identity,
+        *binding.identity(),
+        "the whole native identity is preserved, not re-minted"
+    );
+    assert_eq!(observed.agent_run_id, binding.agent_run_id());
+}
+
+#[tokio::test]
+async fn continuity_a_readback_only_seat_refuses_every_driving_operation() {
+    let (_, binding) = launched().await;
+    let restarted = workspace_owner_retired_plane(AGENT).await;
+    restarted
+        .adapter
+        .restore_bindings(std::slice::from_ref(&binding))
+        .await
+        .expect("the readback-only restore succeeds");
+
+    let refused = restarted
+        .adapter
+        .send(&message(&binding, "drive the seat"))
+        .await
+        .expect_err("a seat with no placement is readable, never drivable");
+    assert_eq!(refused, RuntimeError::WorkspaceBindingRequired);
+
+    let refused = restarted
+        .adapter
+        .correlation_challenge_boundary(&binding)
+        .await
+        .expect_err("no placement means no challenge may be prepared either");
+    assert_eq!(refused, RuntimeError::WorkspaceBindingRequired);
+}
+
+#[tokio::test]
+async fn continuity_an_absent_census_alone_is_not_a_retired_owner() {
+    // Two agents that would also fail project recovery against an empty census,
+    // and neither is the retired-worktree shape: one never said which epic it
+    // belonged to, the other never claimed a workspace at all. Reading "not
+    // found" as "retired" would restore both.
+    for (answer, why) in [
+        (
+            AGENT_NO_PROJECT_LABEL,
+            "an agent that names no epic project",
+        ),
+        (
+            AGENT_NO_WORKSPACE,
+            "an agent that never claimed a workspace",
+        ),
+    ] {
+        let (_, binding) = launched().await;
+        let restarted = workspace_owner_retired_plane(answer).await;
+        assert!(
+            restarted
+                .adapter
+                .restore_bindings(std::slice::from_ref(&binding))
+                .await
+                .expect("the refusal is an attestation result")
+                .is_empty(),
+            "{why} has no retired workspace owner to recover"
+        );
+    }
+}
+
+#[tokio::test]
+async fn continuity_a_retired_workspace_never_restores_another_identity() {
+    let (_, binding) = launched().await;
+    // Exactly the recoverable census shape, answered by a different native that
+    // carries none of this run's labels.
+    let restarted = workspace_owner_retired_plane(AGENT_FOREIGN).await;
+
+    assert!(
+        restarted
+            .adapter
+            .restore_bindings(std::slice::from_ref(&binding))
+            .await
+            .expect("the mismatch is an attestation result, not a transport error")
+            .is_empty(),
+        "a retired workspace never widens which identity may be restored"
     );
 }
 

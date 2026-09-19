@@ -1843,6 +1843,36 @@ impl PaseoAdapter {
             })
     }
 
+    /// Whether this agent's own declared workspace is absent from every
+    /// project's census — the retired-task-worktree shape.
+    ///
+    /// This is proved positively rather than inferred from a recovery failure,
+    /// because [`Self::recover_project_for_agent`] answers `CorrelationFailed`
+    /// both for a workspace no project owns *and* for an agent that never
+    /// carried a project label. Only the first is recoverable, so the second
+    /// must not be swept in by reading the error alone. A workspace that still
+    /// appears anywhere — including under a project this plane does not own —
+    /// is not this shape and stays refused.
+    async fn workspace_owner_retired(&self, agent: &PaseoAgent) -> RuntimeResult<bool> {
+        let Some(workspace_id) = agent.workspace_id.as_deref() else {
+            return Ok(false);
+        };
+        if agent.label(label::PROJECT_ID).is_none() {
+            return Ok(false);
+        }
+        for project in self.fetch_projects().await? {
+            if self
+                .fetch_workspaces(&project.id)
+                .await?
+                .iter()
+                .any(|workspace| workspace.id == workspace_id)
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     async fn recover_project_for_agent(
         &self,
         agent: &PaseoAgent,
@@ -5609,6 +5639,7 @@ impl RuntimeAdapter for PaseoAdapter {
         // epic project from the immutable PROJECT_ID label and workspace owner.
         let generation = self.generation();
         let mut live = Vec::new();
+        let mut readback_only = Vec::new();
         for snapshot in snapshots {
             let Ok(agent) = self
                 .fetch_agent(snapshot.identity().native_id.as_str())
@@ -5623,12 +5654,29 @@ impl RuntimeAdapter for PaseoAdapter {
             // longer be present in Paseo's active workspace census. Refusing
             // that readback strands the open Kontor run after restart even
             // though Paseo still attests the archive stamp by exact agent id.
-            if self.recover_project_for_agent(&agent).await.is_err() && !agent.is_archived() {
+            // A seat whose workspace owner is provably absent from every census
+            // is the same terminal shape as an archived one: the native still
+            // exists and answers by exact id, so its open run can be settled,
+            // but there is no placement and therefore nothing may drive it.
+            // This is judged on its own, not inferred from whether the project
+            // happened to survive, because the retired worktree strands the run
+            // either way. Anything else — an unlabelled agent, an ambiguous
+            // owner, a workspace that still exists somewhere, or a census this
+            // adapter could not read — is not the shape and stays refused.
+            let retired_owner = matches!(self.workspace_owner_retired(&agent).await, Ok(true));
+            if self.recover_project_for_agent(&agent).await.is_err()
+                && !agent.is_archived()
+                && !retired_owner
+            {
                 continue;
             }
             let (state, _) = Self::normalize_agent(&agent);
+            let identity = self.identity(ExternalId::parse(&agent.id)?, generation);
+            if retired_owner {
+                readback_only.push(identity.clone());
+            }
             live.push(NativeSession {
-                identity: self.identity(ExternalId::parse(&agent.id)?, generation),
+                identity,
                 correlation: agent
                     .label(label::AGENT_RUN)
                     .and_then(|value| CorrelationLabel::parse(value).ok()),
@@ -5662,7 +5710,10 @@ impl RuntimeAdapter for PaseoAdapter {
                         &session.identity == snapshot.identity()
                             && session.state == ObservedRunState::Cancelled
                     });
-                    if workspace_id.is_none() && !archived {
+                    let readback = readback_only
+                        .iter()
+                        .any(|identity| identity == snapshot.identity());
+                    if workspace_id.is_none() && !archived && !readback {
                         tracing::warn!(
                             binding = %snapshot.binding_id(),
                             agent_run = %snapshot.agent_run_id(),
