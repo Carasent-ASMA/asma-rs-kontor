@@ -31,7 +31,7 @@ import type {
   TopologySeat,
 } from '../api/types'
 import { CodeHelp } from '../components/CodeHelp'
-import { Fact, Facts, StateBadge } from '../components/primitives'
+import { Fact, Facts, PendingProjection, StateBadge } from '../components/primitives'
 
 type OperationalClient = Pick<
   KontorClient,
@@ -146,7 +146,61 @@ function EpicIdentityFacts({ epic }: { epic: EpicProjection }) {
         value={legacy ? <code>{legacy}</code> : null}
         hint="legacy compatibility namespace; never a write selector"
       />
+      <Fact
+        label="team definition"
+        value={epic.team_template ? <code>{revisionRef(epic.team_template)}</code> : null}
+        hint="pinned revision, as the server reports it"
+      />
+      <Fact
+        label="work profile"
+        value={epic.work_profile ? <code>{revisionRef(epic.work_profile)}</code> : null}
+        hint="pinned revision, as the server reports it"
+      />
     </Facts>
+  )
+}
+
+/** One pinned specification revision, exactly as the server reports it. */
+function revisionRef(ref: RevisionRef): string {
+  return `${ref.id}@${ref.version}`
+}
+
+/**
+ * The epic's tasks, each by the identity a reader uses.
+ *
+ * The same rule as everywhere else: the confirmed Jira key is the identity, the
+ * UUID is the internal fact beside it, and an old short code is labelled as
+ * compatibility rather than shown as though it were current identity.
+ */
+function EpicTaskIdentities({ tasks }: { tasks: EpicProjection['tasks'] }) {
+  if (tasks.length === 0) {
+    return <p className="empty">This epic carries no tasks.</p>
+  }
+  return (
+    <ul className="epic-tasks">
+      {tasks.map((task) => {
+        const binding = task.jira_binding
+        const confirmed =
+          binding?.state === 'confirmed' && binding.jira_key ? binding.jira_key : null
+        return (
+          <li key={task.task_id}>
+            {confirmed ? (
+              <code className="identity-primary">{confirmed}</code>
+            ) : (
+              <span className="identity-awaiting">Awaiting Jira binding</span>
+            )}{' '}
+            <span className="task-title">{task.title}</span>{' '}
+            <code className="identity-internal">{task.task_id}</code>
+            {task.short_code ? (
+              <>
+                {' '}
+                <small className="identity-legacy">legacy {task.short_code}</small>
+              </>
+            ) : null}
+          </li>
+        )
+      })}
+    </ul>
   )
 }
 
@@ -273,7 +327,14 @@ export function ProjectView({ client }: { client: OperationalClient }) {
           <section aria-labelledby="epic-identity">
             <h3 id="epic-identity">Epic identity</h3>
             {data.epic.value ? (
-              <EpicIdentityFacts epic={data.epic.value} />
+              <>
+                <EpicIdentityFacts epic={data.epic.value} />
+                <EpicTaskIdentities tasks={data.epic.value.tasks ?? []} />
+                <PendingProjection
+                  subject="Native title drift for this epic"
+                  needs="a read projection of each native target's observed and desired title; the server reports them only through the operator-tier native-names and team-definition upgrade previews, which a read view must not issue (ASMA-8119)"
+                />
+              </>
             ) : <Unavailable read={data.epic} />}
           </section>
 

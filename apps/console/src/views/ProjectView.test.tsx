@@ -133,6 +133,59 @@ describe('<ProjectView>', () => {
     expect(within(identity).queryByText('ASMA-8049')).toBeNull()
   })
 
+  it('renders the pinned team definition and work profile revisions from the server', async () => {
+    await open(
+      operationalClient({
+        epic: vi.fn(async () => ({
+          realm_id: 'realm-1', project_id: 'project-1', epic_id: 'epic-1', name: 'Operational MVP',
+          revision: 7, scheduling_open: true, snapshot_cursor: 20, authorizations: [], tasks: [],
+          jira_binding: { state: 'confirmed', jira_key: 'ASMA-8049' },
+          team_template: { id: 'standard-roles', version: 3 },
+          work_profile: { id: 'asma-high-stakes', version: 1 },
+        })),
+      }),
+    )
+    const identity = screen.getByRole('heading', { name: 'Epic identity' }).parentElement as HTMLElement
+    expect(within(identity).getByText('standard-roles@3')).toBeInTheDocument()
+    expect(within(identity).getByText('asma-high-stakes@1')).toBeInTheDocument()
+  })
+
+  it('lists each task by its confirmed key, with the uuid and any legacy code beside it', async () => {
+    await open(
+      operationalClient({
+        epic: vi.fn(async () => ({
+          realm_id: 'realm-1', project_id: 'project-1', epic_id: 'epic-1', name: 'Operational MVP',
+          revision: 7, scheduling_open: true, snapshot_cursor: 20, authorizations: [],
+          jira_binding: { state: 'confirmed', jira_key: 'ASMA-8049' },
+          tasks: [
+            { task_id: 'task-bound', title: 'Bound task', state: 'in_progress', revision: 1,
+              jira_binding: { state: 'confirmed', jira_key: 'ASMA-8119' }, short_code: 'KBI-3',
+              depends_on: [], gates: [], links: [], modules: [], required_artifacts: [], team_runs: [] },
+            { task_id: 'task-draft', title: 'Draft task', state: 'ready', revision: 1,
+              jira_binding: { state: 'awaiting_jira_binding' },
+              depends_on: [], gates: [], links: [], modules: [], required_artifacts: [], team_runs: [] },
+          ],
+        })),
+      }),
+    )
+    const tasks = document.querySelector('.epic-tasks') as HTMLElement
+    expect(within(tasks).getByText('ASMA-8119')).toBeInTheDocument()
+    expect(within(tasks).getByText('task-bound')).toBeInTheDocument()
+    // The old short code is present but marked as legacy, never as identity.
+    expect(within(tasks).getByText(/legacy KBI-3/)).toBeInTheDocument()
+    // An unbound task says so rather than borrowing the epic's key.
+    expect(within(tasks).getByText('Awaiting Jira binding')).toBeInTheDocument()
+  })
+
+  it('says native title drift is unserved rather than inventing it', async () => {
+    await open()
+    const pending = screen.getByRole('heading', { name: 'Native title drift for this epic' })
+      .parentElement as HTMLElement
+    expect(within(pending).getByText(/observed and desired title/)).toBeInTheDocument()
+    // The reason is named: the only source is an operator-tier preview.
+    expect(within(pending).getByText(/operator-tier/)).toBeInTheDocument()
+  })
+
   it('narrows topology by the resolved uuid when the epic is addressed by Jira key', async () => {
     // The topology subgraph is narrowed by a query parameter the contract keeps
     // UUID-only, so handing it the reader's raw key would refuse the read.
