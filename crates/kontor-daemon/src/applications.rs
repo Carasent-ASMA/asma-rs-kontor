@@ -5344,7 +5344,31 @@ impl Services {
                 "the cited session record is not this task's evaluator seat",
             ));
         }
-        if run.role != *evaluator_role {
+        // A gate declares the *catalog role* that may evaluate it
+        // (`fleet-spec-auditor`), while a run persists the *slot* it was
+        // admitted on (`audit`). Those are two different keys for the same
+        // seat, so comparing them directly refuses every evaluator in any
+        // profile whose slot ids are not also role names. Resolve the role
+        // through the TeamRun's own frozen definition first, exactly as
+        // `live_evaluator_seat` already does for the non-recovery path. This
+        // narrows nothing: the cited run must still hold an evaluator slot of
+        // this gate, on the TeamRun already proved to serve this task.
+        let team_run = state
+            .with_store(|store| store.get_team_run(project_id, run.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the cited session record names no team run in this project",
+                )
+            })?;
+        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team_run.snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if !template
+            .slots_of(evaluator_role)
+            .iter()
+            .any(|slot| slot.id.as_role_key() == &run.role)
+        {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
                 "the cited session record does not hold the role recording the verdict",

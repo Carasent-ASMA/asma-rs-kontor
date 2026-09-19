@@ -10897,6 +10897,100 @@ async fn gate_recovery_records_a_closed_evaluators_verdict_with_session_evidence
 
 /// The recovery path cannot invent a pass: the pinned profile's evidence
 /// requirements still bind, and a citation does not relax them.
+/// A gate names the catalog role that may evaluate it (`fleet-reviewer`); a run
+/// persists the slot it was admitted on (`review`). Every profile seeded
+/// elsewhere in this file happens to use one word for both (`inspector`), which
+/// is why comparing them directly went unnoticed — and why closed-evaluator
+/// recovery was unreachable for every profile that does not, including the
+/// high-stakes one whose `audit` slot holds `fleet-spec-auditor`.
+async fn cite_closed_fleet_evaluator(
+    world: &World,
+    slug: &'static str,
+    slot: &str,
+    evaluator_role: &str,
+) -> Answer {
+    let fleet = fleet_at_verification(world, slug).await;
+    let FleetWorld { seed, runs } = &fleet;
+    let cited = run_with_role(world, runs, slot).await;
+    close_seat(world, seed, &cited, &format!("{slug}-settle")).await;
+
+    let (uri, revision, gate) = gate_record_target(world, seed).await;
+    assert_eq!(gate, "fleet-verification-gate");
+    Call::post(
+        &uri,
+        &serde_json::json!({
+            "expected_revision": revision,
+            "verdict": "rejected",
+            "evaluator_role": evaluator_role,
+            "evaluator_account": seed.account,
+            "evidence": [],
+            "recovery_agent_run_id": cited,
+            "recovery_session_digest": ContentHash::of(b"REQUEST CHANGES: rendered in session")
+                .as_str(),
+            "reviewer_principal": "tpm-lead",
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(format!("{slug}-record"))
+    .send(world)
+    .await
+}
+
+const ROLE_SLOT_REFUSAL: &str = "does not hold the role recording the verdict";
+
+#[tokio::test]
+async fn gate_recovery_resolves_a_slot_through_its_catalog_role() {
+    let world = World::open_empty_with_a_plane().await;
+    let answer =
+        cite_closed_fleet_evaluator(&world, "rec-role-slot", "review", "fleet-reviewer").await;
+    assert_eq!(
+        answer.status, 200,
+        "slot `review` holds `fleet-reviewer` and must resolve to it: {}",
+        answer.body
+    );
+    assert_eq!(answer.json()["verdict"], "rejected");
+    assert!(
+        !answer.json()["session_evidence"]["agent_run_id"].is_null(),
+        "the verdict is attributed to the cited closed seat: {}",
+        answer.body
+    );
+}
+
+#[tokio::test]
+async fn gate_recovery_matches_the_role_a_slot_holds_not_the_slots_name() {
+    let world = World::open_empty_with_a_plane().await;
+    // This template carries a slot literally *named* `fleet-implementer` whose
+    // role is `fleet-reviewer`. Resolving by name would admit it for the wrong
+    // reason; resolving by role admits it for the right one.
+    let answer = cite_closed_fleet_evaluator(
+        &world,
+        "rec-role-name",
+        "fleet-implementer",
+        "fleet-reviewer",
+    )
+    .await;
+    assert!(
+        !answer.body.contains(ROLE_SLOT_REFUSAL),
+        "the slot's role, not its name, decides: {}",
+        answer.body
+    );
+}
+
+#[tokio::test]
+async fn gate_recovery_still_refuses_a_slot_that_does_not_hold_the_evaluator_role() {
+    let world = World::open_empty_with_a_plane().await;
+    // Resolving through the definition is a translation, never a relaxation:
+    // slot `scope` holds `fleet-scoper`, which evaluates no gate.
+    let answer =
+        cite_closed_fleet_evaluator(&world, "rec-wrong-role", "scope", "fleet-reviewer").await;
+    assert_eq!(answer.status, 400, "{}", answer.body);
+    assert!(
+        answer.body.contains(ROLE_SLOT_REFUSAL),
+        "a slot holding no evaluator role must still be refused: {}",
+        answer.body
+    );
+}
+
 #[tokio::test]
 async fn gate_recovery_cannot_fabricate_a_pass() {
     let world = World::open_empty().await;
