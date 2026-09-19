@@ -129,6 +129,12 @@ export type RoleCatalogEntry = Schemas['RoleCatalogEntryDto']
 export type RoleSelection = Schemas['RoleSelectionDto']
 /** One immutable server-owned revision reference. */
 export type RevisionRef = Schemas['RevisionRefDto']
+/** One project, for the revision its previews must present. */
+export type Project = Schemas['ProjectDto']
+/** The server's native-name targets: what it observed, and what it wants. */
+export type NativeNamesPreview = Schemas['NativeNamesPreviewDto']
+/** One native object's observed-versus-desired title and capability. */
+export type NativeNameTarget = Schemas['NativeNameTargetDto']
 /** One provider/account quota projection. */
 export type ProviderQuotaState = Schemas['ProviderQuotaStateDto']
 /** One live delivery seat joined to its exact account and provider quota projections. */

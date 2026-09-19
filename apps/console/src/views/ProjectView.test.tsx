@@ -25,6 +25,8 @@ const PROFILE = { id: 'independent-review', version: 1, name: 'Independent Revie
 function operationalClient(overrides: Record<string, unknown> = {}) {
   return {
     epic: vi.fn(async () => ({ realm_id: 'realm-1', project_id: 'project-1', epic_id: 'epic-1', name: 'Operational MVP', revision: 7, scheduling_open: true, snapshot_cursor: 20, authorizations: [] })),
+    project: vi.fn(async () => ({ realm_id: 'realm-1', project_id: 'project-1', name: 'Operational', root_path: '/tmp/op', revision: 11, created_at: '2026-09-01T00:00:00Z', applied: {}, backlog: {}, memory: {} })),
+    nativeNames: vi.fn(async () => ({ realm_id: 'realm-1', project_id: 'project-1', epic_id: 'epic-1', snapshot_cursor: 20, preview_hash: 'preview-hash', targets: [] })),
     topology: vi.fn(async () => ({
       realm_id: 'realm-1', project_id: 'project-1', snapshot_cursor: 20,
       pinned_spec: { id: 'operational-topology', version: 1, canonical_hash: 'topology-hash' },
@@ -177,13 +179,75 @@ describe('<ProjectView>', () => {
     expect(within(tasks).getByText('Awaiting Jira binding')).toBeInTheDocument()
   })
 
-  it('says native title drift is unserved rather than inventing it', async () => {
-    await open()
-    const pending = screen.getByRole('heading', { name: 'Native title drift for this epic' })
-      .parentElement as HTMLElement
-    expect(within(pending).getByText(/observed and desired title/)).toBeInTheDocument()
-    // The reason is named: the only source is an operator-tier preview.
-    expect(within(pending).getByText(/operator-tier/)).toBeInTheDocument()
+  it('renders the server\'s observed and desired native titles, and its own drift verdict', async () => {
+    const client = operationalClient({
+      nativeNames: vi.fn(async () => ({
+        realm_id: 'realm-1', project_id: 'project-1', epic_id: 'epic-1', snapshot_cursor: 20,
+        preview_hash: 'preview-hash',
+        targets: [
+          { subject_kind: 'container', topology_node_id: 'node-1', native_id: 'native-drifted',
+            runtime_kind: 'paseo.agent', host: 'paseo-local', generation: 1, native_kind: 'workspace_container',
+            observed_title: 'KBI-9 old name', desired_title: 'ASMA-8049 Backlog identities',
+            would_change: true, capability: 'rename_pending' },
+          { subject_kind: 'seat', topology_node_id: 'node-2', native_id: 'native-settled',
+            runtime_kind: 'paseo.agent', host: 'paseo-local', generation: 1, native_kind: 'seat',
+            observed_title: 'ASMA-8049 implement', desired_title: 'ASMA-8049 implement',
+            would_change: false, capability: 'unchanged' },
+          // Titles match, yet the server still says applying would change this
+          // subject. The verdict is the server's, so the row must follow it —
+          // a console that compared the two strings would call this converged.
+          { subject_kind: 'seat', topology_node_id: 'node-3', native_id: 'native-equal-but-pending',
+            runtime_kind: 'paseo.agent', host: 'paseo-local', generation: 1, native_kind: 'seat',
+            observed_title: 'ASMA-8049 audit', desired_title: 'ASMA-8049 audit',
+            would_change: true, capability: 'rename_pending' },
+        ],
+      })),
+    })
+    await open(client)
+    // The preview is asked for against the project revision the client read.
+    expect(client.nativeNames).toHaveBeenCalledWith('project-1', 'epic-1', 11)
+    const table = document.querySelector('.native-title-drift') as HTMLElement
+    expect(within(table).getByText('KBI-9 old name')).toBeInTheDocument()
+    expect(within(table).getByText('ASMA-8049 Backlog identities')).toBeInTheDocument()
+    // The verdict is the server's, shown as it was reported.
+    expect(within(table).getAllByText('rename_pending')).toHaveLength(2)
+    expect(within(table).getAllByText('rename pending')).toHaveLength(2)
+    expect(within(table).getByText('no rename pending')).toBeInTheDocument()
+    // Two subjects the server says would change, one it says would not.
+    expect(table.querySelectorAll('tr.drifted')).toHaveLength(2)
+    expect(table.querySelectorAll('tr.converged')).toHaveLength(1)
+  })
+
+  it('does not report agreement when a title was not observed', async () => {
+    const client = operationalClient({
+      nativeNames: vi.fn(async () => ({
+        realm_id: 'realm-1', project_id: 'project-1', epic_id: 'epic-1', snapshot_cursor: 20,
+        preview_hash: 'preview-hash',
+        targets: [
+          { subject_kind: 'seat', topology_node_id: 'node-3', native_id: 'native-unseen',
+            runtime_kind: 'paseo.agent', host: 'paseo-local', generation: 1, native_kind: 'seat',
+            observed_title: null, desired_title: 'ASMA-8049 implement',
+            would_change: true, capability: 'rename_pending' },
+        ],
+      })),
+    })
+    await open(client)
+    const table = document.querySelector('.native-title-drift') as HTMLElement
+    expect(within(table).getByText('not observed in this pass')).toBeInTheDocument()
+    // An unobserved title stays in the census as pending, never as converged.
+    expect(table.querySelectorAll('tr.converged')).toHaveLength(0)
+  })
+
+  it('asks for the drift census by the resolved uuid, not the typed key', async () => {
+    const client = operationalClient({
+      epic: vi.fn(async () => ({
+        realm_id: 'realm-1', project_id: 'project-1', epic_id: 'epic-1', name: 'Operational MVP',
+        revision: 7, scheduling_open: true, snapshot_cursor: 20, authorizations: [],
+        jira_binding: { state: 'confirmed', jira_key: 'ASMA-8049' },
+      })),
+    })
+    await open(client, 'ASMA-8049')
+    expect(client.nativeNames).toHaveBeenCalledWith('project-1', 'epic-1', 11)
   })
 
   it('narrows topology by the resolved uuid when the epic is addressed by Jira key', async () => {

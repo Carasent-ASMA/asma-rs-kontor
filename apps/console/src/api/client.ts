@@ -34,8 +34,10 @@ import type {
   InvokeConsultationRequest,
   MessageAck,
   ModelCatalogProjection,
+  NativeNamesPreview,
   PermissionAck,
   ProfileCatalog,
+  Project,
   ProjectCapacity,
   PromotedSession,
   PromotionApplyRequest,
@@ -312,6 +314,31 @@ export class KontorClient {
     const query = epicId ? `?epic_id=${encodeURIComponent(epicId)}` : ''
     return this.#json<TopologyProjection>(
       `/v1/projects/${encodeURIComponent(projectId)}/topology:inspect${query}`,
+    )
+  }
+
+  /** One project, read for the revision its previews must present. */
+  async project(projectId: string): Promise<Project> {
+    return this.#json<Project>(`/v1/projects/${encodeURIComponent(projectId)}`)
+  }
+
+  /**
+   * The server's native-name targets for one epic.
+   *
+   * Declared a read by the contract — it persists nothing and dispatches no
+   * rename — but it is a POST because it presents the project revision it was
+   * computed against. It is the only surface that reports what the runtime was
+   * observed to be called beside what the daemon would call it, so a client that
+   * wants to show drift reads it rather than deriving a desired title locally.
+   */
+  async nativeNames(
+    projectId: string,
+    epicId: string,
+    expectedRevision: number,
+  ): Promise<NativeNamesPreview> {
+    return this.#post<NativeNamesPreview>(
+      `/v1/projects/${encodeURIComponent(projectId)}/epics/${encodeURIComponent(epicId)}/native-names:preview`,
+      { expected_revision: expectedRevision },
     )
   }
 

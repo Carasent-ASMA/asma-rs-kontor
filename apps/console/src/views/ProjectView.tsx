@@ -21,6 +21,8 @@ import type {
   PromotionPreview,
   QuickRoles,
   QuickSession,
+  NativeNamesPreview,
+  NativeNameTarget,
   RevisionRef,
   RoleCatalogEntry,
   RemediationAction,
@@ -36,6 +38,8 @@ import { Fact, Facts, PendingProjection, StateBadge } from '../components/primit
 type OperationalClient = Pick<
   KontorClient,
   | 'epic'
+  | 'project'
+  | 'nativeNames'
   | 'topology'
   | 'coreTeam'
   | 'previewCoreTeam'
@@ -79,6 +83,7 @@ interface ProjectData {
   committees: Read<ProfileCatalog>
   completionProfiles: Read<ProfileCatalog>
   completion: Read<CompletionState>
+  nativeNames: Read<NativeNamesPreview>
 }
 
 /**
@@ -204,6 +209,65 @@ function EpicTaskIdentities({ tasks }: { tasks: EpicProjection['tasks'] }) {
   )
 }
 
+/**
+ * What each native object is called, and what the daemon would call it.
+ *
+ * Both titles come from the server's own target census, and so does the verdict:
+ * `would_change` is the daemon's statement that applying would rename this
+ * subject, and `capability` is its typed result. The console compares nothing and
+ * derives no desired name — a client that decided drift for itself would be a
+ * second opinion about identity, which is exactly what the identity decision
+ * forbids.
+ *
+ * An absent observed title is not "no drift". It means the exact persisted
+ * session could not be read just now, so the row says so and stays in the census
+ * rather than quietly reporting agreement.
+ */
+function NativeTitleDrift({ targets }: { targets: NativeNameTarget[] }) {
+  if (targets.length === 0) {
+    return <p className="empty">The server reports no native-name targets for this epic.</p>
+  }
+  return (
+    <table className="native-title-drift">
+      <caption>Native title, observed against desired</caption>
+      <thead>
+        <tr>
+          <th scope="col">subject</th>
+          <th scope="col">observed</th>
+          <th scope="col">desired</th>
+          <th scope="col">state</th>
+        </tr>
+      </thead>
+      <tbody>
+        {targets.map((target) => (
+          <tr
+            key={`${target.native_id}:${target.topology_node_id}`}
+            className={target.would_change ? 'drifted' : 'converged'}
+          >
+            <th scope="row">
+              <code>{target.native_kind}</code> <code>{target.native_id}</code>
+            </th>
+            <td>
+              {target.observed_title ?? (
+                <span className="unobserved">not observed in this pass</span>
+              )}
+            </td>
+            <td>{target.desired_title}</td>
+            <td>
+              <span className="capability">{target.capability}</span>{' '}
+              {target.would_change ? (
+                <strong className="drift">rename pending</strong>
+              ) : (
+                <span className="no-drift">no rename pending</span>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
 /** Read one project and epic entirely through `/v1`. */
 export function ProjectView({ client }: { client: OperationalClient }) {
   const [projectId, setProjectId] = useState('')
@@ -223,9 +287,15 @@ export function ProjectView({ client }: { client: OperationalClient }) {
     // deliberately left UUID-only, so handing it the text a reader typed would
     // refuse a key-addressed epic and leave the panel empty. Everything else is
     // still issued together.
-    const epicRead = await settled(client.epic(project, epic))
+    // The project read rides with the epic read because the native-name targets
+    // are computed against a project revision the caller must present.
+    const [epicRead, projectRead] = await Promise.all([
+      settled(client.epic(project, epic)),
+      settled(client.project(project)),
+    ])
     const resolvedEpicId = epicRead.value?.epic_id ?? epic
-    const [topology, coreTeam, roles, capacity, quota, seatQuota, help, advisors, committees, profiles, completion] =
+    const projectRevision = projectRead.value?.revision ?? null
+    const [topology, coreTeam, roles, capacity, quota, seatQuota, help, advisors, committees, profiles, completion, nativeNames] =
       await Promise.all([
         settled(client.topology(project, resolvedEpicId)),
         settled(client.coreTeam(project)),
@@ -238,6 +308,12 @@ export function ProjectView({ client }: { client: OperationalClient }) {
         settled(client.committeeTemplates(project)),
         settled(client.completionProfiles(project)),
         settled(client.completion(project, epic)),
+        projectRevision === null
+          ? Promise.resolve({
+              value: null,
+              error: 'The project revision this preview must present is unavailable.',
+            })
+          : settled(client.nativeNames(project, resolvedEpicId, projectRevision)),
       ])
     setData({
       projectId: project,
@@ -255,6 +331,7 @@ export function ProjectView({ client }: { client: OperationalClient }) {
       committees,
       completionProfiles: profiles,
       completion,
+      nativeNames,
     })
     setBusy(false)
   }
@@ -330,10 +407,9 @@ export function ProjectView({ client }: { client: OperationalClient }) {
               <>
                 <EpicIdentityFacts epic={data.epic.value} />
                 <EpicTaskIdentities tasks={data.epic.value.tasks ?? []} />
-                <PendingProjection
-                  subject="Native title drift for this epic"
-                  needs="a read projection of each native target's observed and desired title; the server reports them only through the operator-tier native-names and team-definition upgrade previews, which a read view must not issue (ASMA-8119)"
-                />
+                {data.nativeNames.value ? (
+                  <NativeTitleDrift targets={data.nativeNames.value.targets} />
+                ) : <Unavailable read={data.nativeNames} />}
               </>
             ) : <Unavailable read={data.epic} />}
           </section>
