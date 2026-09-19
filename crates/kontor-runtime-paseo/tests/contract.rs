@@ -8615,6 +8615,7 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
             cwd: root(),
             scope: epic_execution_scope(),
             prompt: text("continue epic leadership through Kontor"),
+            role_prompt: Some(text("You are the Lead Software Architect.")),
             credential: kontor_runtime::adapter::ScopedSeatCredential::new(
                 "kontor-seat-v2.test.1.redacted".to_owned(),
             ),
@@ -8629,6 +8630,18 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
     assert!(outcome.created);
     assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
     assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
+    let sent = plane.daemon.sent_messages("create_agent_request");
+    let [create] = sent.as_slice() else {
+        panic!("exactly one create was sent: {sent:?}")
+    };
+    assert_eq!(
+        create["config"]["systemPrompt"], "You are the Lead Software Architect.",
+        "the persona did not reach the session config: {create}"
+    );
+    assert_eq!(
+        create["initialPrompt"],
+        "continue epic leadership through Kontor"
+    );
 }
 
 #[tokio::test]
@@ -8745,6 +8758,7 @@ async fn a_fenced_historical_hosted_native_does_not_block_its_successor() {
         cwd: root(),
         scope: epic_execution_scope(),
         prompt: text("continue epic leadership through Kontor"),
+        role_prompt: None,
         credential: kontor_runtime::adapter::ScopedSeatCredential::new(
             "kontor-seat-v2.test.2.redacted".to_owned(),
         ),

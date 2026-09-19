@@ -39188,6 +39188,31 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
     let tpm_binding_id = SeatBindingId::parse(&tpm_binding).expect("TPM binding id");
     let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
 
+    let lsa_binding_id = SeatBindingId::parse(&lsa_binding).expect("LSA binding id");
+    let lsa_persona = world
+        .fake
+        .hosted_role_prompt(lsa_binding_id)
+        .expect("the LSA seat launch reached the runtime")
+        .expect("the LSA seat was launched under a persona");
+    assert!(
+        lsa_persona.as_str().contains("Lead Software Architect"),
+        "the seat was not opened under its own role's persona: {}",
+        lsa_persona.as_str()
+    );
+    assert!(
+        !lsa_persona
+            .as_str()
+            .contains("Persistent LSA seat for epic"),
+        "the bounded handoff was supplied as the persona: {}",
+        lsa_persona.as_str()
+    );
+    assert_eq!(
+        world.fake.hosted_role_prompt(tpm_binding_id),
+        Some(None),
+        "TPM has no seeded persona, so its seat must be opened under none \
+         rather than under the architecture lead's"
+    );
+
     // Reproduce the operational gap: several logical wakes predate a stale TPM
     // replacement and none received a hosted-native acknowledgement. The
     // current completion projection is revision nine, so revision eight stays

@@ -486,6 +486,8 @@ pub struct HostedSeatLaunchRequest {
     pub scope: ExecutionScope,
     /// Initial leadership handoff.
     pub prompt: BoundedText,
+    /// Durable role persona, separate from the one-turn handoff in `prompt`.
+    pub role_prompt: Option<BoundedText>,
     /// Generation-fenced credential for seat-authored authority routes.
     pub credential: ScopedSeatCredential,
     /// Older native occupants already frozen in Kontor's append-only route

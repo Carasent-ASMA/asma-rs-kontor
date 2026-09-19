@@ -6085,6 +6085,11 @@ impl Services {
             })
     }
 
+    /// The configured launch-time persona for one role.
+    fn role_persona(&self, role_code: &RoleCode) -> Option<BoundedText> {
+        self.domain.role_prompt(role_code).cloned()
+    }
+
     /// The catalog revision this build publishes.
     fn published_catalog(&self) -> Result<RoleCatalogRevision, ApiError> {
         let catalog = self.domain.role_catalogs.first().ok_or_else(|| {
@@ -22056,6 +22061,7 @@ impl ApplicationOperations for Services {
                         cwd: cwd.clone(),
                         scope: scope.clone(),
                         prompt,
+                        role_prompt: self.role_persona(&seat.role.role_code),
                         credential: ConsultationCredential::new(
                             state
                                 .credentials()
@@ -22276,6 +22282,7 @@ impl ApplicationOperations for Services {
                     cwd,
                     scope,
                     prompt,
+                    role_prompt: self.role_persona(&plan.binding.role.role_code),
                     credential: ConsultationCredential::new(
                         state.credentials().seat_credential_for_generation(
                             plan.binding.id,

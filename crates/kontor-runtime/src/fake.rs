@@ -709,6 +709,7 @@ struct FakeState {
     consultation_permissions: BTreeMap<SeatBindingId, BTreeSet<ExternalId>>,
     consultation_permission_acks: BTreeMap<(SeatBindingId, ExternalId), ConsultationPermissionAck>,
     hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
+    hosted_role_prompts: BTreeMap<SeatBindingId, Option<BoundedText>>,
     /// Terminal hosted natives retained so retirement and recovery are replayable.
     archived_hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// Stable message ledger per exact hosted native. A logical seat may be
@@ -1219,6 +1220,7 @@ impl ScriptedFakeRuntime {
                 consultation_permissions: BTreeMap::new(),
                 consultation_permission_acks: BTreeMap::new(),
                 hosted_seats: BTreeMap::new(),
+                hosted_role_prompts: BTreeMap::new(),
                 archived_hosted_seats: BTreeMap::new(),
                 hosted_messages: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
@@ -1919,6 +1921,12 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn launched_prompt(&self, run: AgentRunId) -> Option<BoundedText> {
         self.lock().launched_prompts.get(&run).cloned()
+    }
+
+    /// The persona supplied to the last launch, including an explicit absence.
+    #[must_use]
+    pub fn hosted_role_prompt(&self, seat: SeatBindingId) -> Option<Option<BoundedText>> {
+        self.lock().hosted_role_prompts.get(&seat).cloned()
     }
 
     /// The route a consultation seat was launched on.
@@ -2938,6 +2946,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .calls
             .push(AdapterCall::LaunchHostedSeat(request.seat_binding_id));
+        state
+            .hosted_role_prompts
+            .insert(request.seat_binding_id, request.role_prompt.clone());
         if let Some(existing) = state.hosted_seats.get(&request.seat_binding_id) {
             return Ok(existing.clone());
         }
