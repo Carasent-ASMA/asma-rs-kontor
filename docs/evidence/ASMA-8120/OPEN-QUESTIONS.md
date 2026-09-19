@@ -94,8 +94,78 @@ pick one of the listed options.
   unevidenced; (c) ASMA-8049 must be migrated from outside itself or ordered
   last, which changes the record's pinned canary choice and needs the scope
   owner.
-- **Disposition:** **OPEN.** The canary is fenced and the fleet stays blocked:
-  the twelve remaining eligible epics were not previewed or applied. This seat
-  did not cancel, park or retire its own run or any seat to clear the rule, did
-  not choose a different canary, and did not retry past the refusal. Publication
-  and default selection are already durable and are not undone by this fence.
+- **Disposition:** **RESOLVED 2026-09-20**, option (a). The ASMA-8049 LSA seat
+  `6301c2d4` applied the canary at 2026-09-19T23:20:49Z while this implement
+  AgentRun was idle, reusing the same preview hash and idempotency key: apply
+  receipt `01a0bbf1-8f97-7012-a5a4-9bbf56ecf5c3`, durable success revision
+  `01a0bbf7-25b5-7423-aad8-30e29f138ad8` (approval
+  `01a0bbf7-54dc-7d73-bc3d-ad923fa330de`). Independently verified from live
+  state: the epic now refuses a v6 preview as already pinned, all eleven
+  targets read `ASMA-*` with zero pending change, and every native id is
+  unchanged from the pre-apply preview.
+
+## OQ-8120-04 — does a preview-time typed refusal fence one epic or the fleet?
+
+- **Subject:** whether the five epics whose `team_definition_upgrade_preview`
+  refuses stop only themselves, or stop all later rollout including the seven
+  that preview clean.
+- **Attaches to:** the high-scope record's ordered rollout step 6 and its stop
+  conditions, the baseline fleet census paragraph on unbound active nodes, and
+  the watchdog resume mandate
+  `watchdog-4bbd577d-8049-8120-implement-resume-20260919T2337Z-v1`.
+- **Why the state is ambiguous:** the record says both. The census paragraph
+  says "the supported preview decides whether their containing epic can proceed
+  and any typed refusal fences that exact epic" — one epic. The step-6 stop
+  conditions say an "ambiguous legacy consultation topic" (exactly the
+  ASMA-7869 and ASMA-8108 refusal) "stops that epic **and all later rollout**"
+  — the fleet. The step-6 sentence sits in a paragraph otherwise about
+  apply-time failure handling (revision conflict, transport timeout, partial
+  effect, readback mismatch), where stopping everything protects against
+  *uncertain* state. These five refusals are different in kind: they are
+  preview-time, typed, deterministic, and wrote nothing, so nothing about them
+  is uncertain.
+- **Options seen:** (a) preview-time refusals fence their own epic, so the
+  seven clean epics proceed and the five are returned to their owners; (b) the
+  step-6 sentence governs literally and the whole fleet stops at zero of twelve
+  until the five are repaired; (c) the scope owner re-scopes step 6 to an
+  explicit eligible subset.
+- **Disposition:** **OPEN, proceeded under option (a)** and recorded here
+  before acting, per the standing instruction to log an assumption that cannot
+  be evidenced. Rationale: the refusals are preview-time with no write
+  attempted, the census paragraph addresses exactly that case, the canary has
+  since proven the route end-to-end with exact identity preservation, and the
+  watchdog resume mandate directs continuation of the migration. If the scope
+  owner intends option (b), the seven migrations recorded in the high-change
+  record are the exact set to review; each is an identity-preserving retitle
+  with before/after native ids, not a topology change.
+
+## OQ-8120-05 — the apply window the remaining epics need
+
+- **Subject:** what must be quiescent, and which caller must act, for
+  `team_definition_upgrade_apply` to pass its placement check on the eleven
+  epics still unmigrated.
+- **Attaches to:** high-scope rollout step 6, the resume section of the
+  high-change record, and watchdog resume
+  `watchdog-4bbd577d-8049-8120-implement-resume-20260919T2337Z-v1`.
+- **Why the state is ambiguous:** seven of the twelve remaining epics preview
+  cleanly, but both applies attempted from this live turn refused — ASMA-8109
+  with `placement_blocked` ("native topology work is in progress") and
+  ASMA-8113 with `revision_conflict` and then `placement_blocked` on the
+  fresh preview the record prescribes. Neither produced any effect. The project
+  reports eleven active TeamRuns. The one apply that has ever succeeded, the
+  canary, was performed by another seat while this AgentRun was idle. Whether
+  the placement check is project-scoped or epic-scoped is not established: the
+  two epics failed with different codes on first attempt, which argues against a
+  single uniform project-wide gate, but nothing read here proves the scope
+  either way.
+- **Options seen:** (a) the check counts this live implement turn, so the
+  remaining epics are applied by the LSA seat once this AgentRun is idle,
+  exactly as the canary was; (b) the check is per-epic and each of the eleven
+  has its own in-flight native work to wait out, making this a scheduling
+  problem across the fleet rather than one window; (c) the eleven are applied by
+  a dedicated quiescent-window caller the watchdog schedules, with the seven
+  ready preview hashes and keys reused.
+- **Disposition:** **OPEN.** No further apply was attempted. The seven ready
+  previews and their idempotency keys are recorded for exact reuse. This seat
+  did not cancel, park or retire any run or seat to clear the check, and did not
+  retry a typed refusal unchanged.

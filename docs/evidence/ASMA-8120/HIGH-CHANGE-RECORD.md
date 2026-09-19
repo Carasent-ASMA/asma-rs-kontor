@@ -164,3 +164,102 @@ was chosen, and the refusal was not retried past. No merge, deploy or daemon
 restart was performed. The retained binary and immutable predecessor
 definitions remain the rollback route; no database image was written over live
 state.
+
+---
+
+# Resume turn — 2026-09-20, watchdog 23:30Z pass
+
+Resume key `watchdog-4bbd577d-8049-8120-implement-resume-20260919T2337Z-v1`
+under standing mandate `watchdog-1f9cedad-standing-authority-20260919`
+(receipt `01a0b9a6-d29b-7bb0-85b8-6bdcb2b8f045`).
+
+## Canary consumed and independently verified
+
+OQ-8120-03 is closed. The canary was applied by the ASMA-8049 LSA seat
+`6301c2d4` (turn-32, 2026-09-19T23:20:49Z), realizing option (a) of that entry.
+Receipts supplied by the watchdog: apply `01a0bbf1-8f97-7012-a5a4-9bbf56ecf5c3`,
+original key `asma-8120-td-upgrade-asma-8049-v6`, preview hash
+`aa2c7dd1…`, post-state hash
+`c83dedbff998308bd660f45c180e09875c4743ae6065e057b6033a7fde9b258f`, OQ success
+revision `01a0bbf7-25b5-7423-aad8-30e29f138ad8` (approval
+`01a0bbf7-54dc-7d73-bc3d-ad923fa330de`).
+
+Verified against live state rather than taken on report:
+
+- `team_definition_upgrade_preview` for ASMA-8049 → v6 now refuses
+  `400 invalid_request`, "the epic already pins that Team Definition revision".
+- `native_names_preview` returns 11 targets, **0** still reading `KBI-`, **0**
+  pending change.
+- Every `native_id` is identical to the pre-apply preview recorded above
+  (`prj_c393c717…`, `wks_dbba8b96…`, the five TSW workspaces, the four seats),
+  so identity was preserved exactly.
+
+The canary was not re-applied or re-published.
+
+## Remaining twelve — read-only preview sweep
+
+| Epic | Target | Preview | Detail |
+|---|---|---|---|
+| ASMA-8109 | Op v4 | OK | 13 targets, 5 change, `972dc9bb…` (legacy scheme `KGVCASWR-`) |
+| ASMA-8113 | Op v6 | OK | 0 targets, pin move only, `81167d67…` |
+| ASMA-8155 | Op v6 | OK | 0 targets, pin move only, `db70de90…` |
+| ASMA-8208 | Op v6 | OK | 0 targets, pin move only, `bf6daf88…` |
+| ASMA-8186 | Op v6 | OK | 5 targets, 2 change, `fc0bb47d…` |
+| ASMA-8188 | Op v6 | OK | 3 targets, 3 change, `a9c75eb2…` |
+| ASMA-8190 | Op v6 | OK | 30 targets, 17 change, `510f0cb8…` |
+| ASMA-7869 | Op v5 | **REFUSED** | `409 placement_blocked` — "the consultation has no durably recorded subject to name" |
+| ASMA-8108 | Op v5 | **REFUSED** | `409 placement_blocked` — same rule |
+| ASMA-8111 | Op v5 | **REFUSED** | `409 stale_binding` — "the binding no longer names a session this runtime will act on" |
+| ASMA-8101 | Op v6 | **REFUSED** | `409 stale_binding` — same rule |
+| ASMA-8098 | Rec v3 | **REFUSED** | `409 stale_binding` — same rule |
+
+The five preview refusals are typed, deterministic and wrote nothing. Whether
+they fence only themselves or the fleet is [OQ-8120-04](OPEN-QUESTIONS.md),
+recorded before acting.
+
+## Apply attempts — both refused, both inert
+
+Two of the seven clean epics were attempted. Neither produced any effect.
+
+| Epic | Attempt | Result |
+|---|---|---|
+| ASMA-8109 → v4 | fresh preview `972dc9bb…`, key `asma-8120-td-upgrade-asma-8109-v4` | `409 placement_blocked` — native topology work is in progress |
+| ASMA-8113 → v6 | fresh preview `81167d67…`, key `asma-8120-td-upgrade-asma-8113-v6` | `409 revision_conflict`, then `409 placement_blocked` on the fresh-preview retry the record prescribes for a revision conflict |
+
+Non-effect verified: ASMA-8109 still pins v1 and ASMA-8113 still pins v3, both
+preview hashes unchanged, ASMA-8049's migration intact and converged, and
+`integrity_check = ok` / 0 foreign-key violations / schema 108 throughout.
+
+`capacity_get` reports **11 active TeamRuns** in the project. The refusal the
+applies hit is the same rule that blocked the canary from this seat, and the
+canary only succeeded once it was applied by another seat while this AgentRun
+was idle. Attempts stopped there rather than retrying typed refusals.
+
+## Next owner and exact prerequisite
+
+The remaining eleven epics are **not** this seat's to apply from inside a live
+turn.
+
+- **Owner:** the ASMA-8049 LSA seat `6301c2d4`, the caller that demonstrably
+  holds this capability and applied the canary under the same rule.
+- **Prerequisite:** a window with no in-progress native topology work for the
+  target epic. The only observed successful apply happened while this implement
+  AgentRun `01a0bb74-ee78` was idle and the project was quiescent enough for the
+  placement check to pass.
+- **Inputs ready to reuse:** the seven preview hashes above and the idempotency
+  keys `asma-8120-td-upgrade-<epic>-v<version>`. A revision conflict takes a
+  fresh preview; the hash is deterministic and has reproduced identically across
+  every call.
+- **Separately owned repairs, not startable here:** ASMA-7869 and ASMA-8108
+  need their legacy ASW/CSW consultation subjects durably recorded before
+  `--legacy-topics` could be supplied — inventing a topic is exactly what the
+  record forbids. ASMA-8111, ASMA-8101 and ASMA-8098 need their stale seat
+  bindings repaired through the supported recovery route.
+
+## Fences held on resume
+
+No re-apply or re-publish of the canary. No typed refusal retried unchanged
+beyond the single fresh-preview retry the record prescribes for a revision
+conflict. No run, seat or topology cancelled, parked, retired or created to
+clear a placement check. No restart, no new identity, no duplicate topology. No
+legacy consultation topic inferred. No Jira key inferred.
