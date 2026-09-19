@@ -96,6 +96,7 @@ pub mod branch;
 pub mod calendar;
 pub mod compaction;
 pub mod consultation;
+pub mod epic_seat;
 pub mod id;
 pub mod naming;
 pub mod open_question;

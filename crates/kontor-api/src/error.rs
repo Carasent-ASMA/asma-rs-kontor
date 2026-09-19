@@ -826,6 +826,27 @@ impl ApiError {
                 "the runtime does not agree the cited predecessor is finished",
             )
             .advising(rule),
+            // The same lesson as the arm above, found the same way. A claimant the
+            // runtime already admitted elsewhere is a *conflict* the caller can
+            // act on: release or reuse the seat it already holds. Answering an
+            // unclassified 503 told an operator to upgrade the daemon for a
+            // refusal that is working exactly as designed, and left an
+            // epic-level claim preview looking like a server defect.
+            RuntimeError::SlotAlreadyAdmitted { rule } => Self::new(
+                realm_id,
+                ApiErrorCode::RevisionConflict,
+                "the runtime has already admitted this role slot",
+            )
+            .advising(rule),
+            // A launch the runtime will not admit because it cannot prove a
+            // required capability is not unavailability either: retrying will
+            // not help until the capability is provable.
+            RuntimeError::LaunchNotAdmitted { rule } => Self::new(
+                realm_id,
+                ApiErrorCode::UnsupportedCapability,
+                "the runtime would not admit this launch",
+            )
+            .advising(rule),
             RuntimeError::Domain(domain) => Self::from_domain(realm_id, domain),
             // Whatever is left is genuinely unclassified, and it says so in the
             // log rather than only in the answer: an operator who sees this
@@ -873,6 +894,44 @@ mod tests {
     use kontor_core::id::AggregateRevision;
 
     use super::*;
+
+    /// The 2026-08-22 lesson, applied to the two refusals that were still
+    /// falling through: a conflict and a capability refusal are actionable
+    /// answers, and telling an operator to upgrade the daemon for either one
+    /// hides a working fence behind a server defect.
+    #[test]
+    fn an_already_admitted_slot_is_a_conflict_not_an_unclassified_outage() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_runtime(
+            realm,
+            &RuntimeError::SlotAlreadyAdmitted {
+                rule: "the claimant already belongs to another Kontor or native seat",
+            },
+        );
+        assert_eq!(refusal.code, ApiErrorCode::RevisionConflict);
+        assert_ne!(
+            refusal.code,
+            ApiErrorCode::Unavailable,
+            "an already-admitted claimant is not an outage"
+        );
+        assert!(
+            refusal.action.contains("already belongs"),
+            "the runtime's own rule is carried as the action: {refusal:?}"
+        );
+    }
+
+    #[test]
+    fn an_unadmitted_launch_is_an_unsupported_capability_not_an_outage() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_runtime(
+            realm,
+            &RuntimeError::LaunchNotAdmitted {
+                rule: "this Paseo does not advertise providerOptionsApplied",
+            },
+        );
+        assert_eq!(refusal.code, ApiErrorCode::UnsupportedCapability);
+        assert_ne!(refusal.code, ApiErrorCode::Unavailable);
+    }
 
     #[test]
     fn a_realm_mismatch_is_reported_as_such_and_echoes_no_payload() {
