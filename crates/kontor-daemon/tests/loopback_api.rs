@@ -46764,6 +46764,91 @@ async fn the_model_catalog_advertises_every_route_used_by_operational_seats() {
     );
 }
 
+/// ASMA-8237: advertise the exact verified provider-native routes. In particular,
+/// "highest reasoning" must not become an invented Nemotron `max` option.
+#[tokio::test]
+async fn the_model_catalog_preserves_watchdog_route_and_effort_boundaries() {
+    let world = World::open().await;
+    let catalog = Call::get("/v1/catalog")
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(catalog.status, 200, "{}", catalog.body);
+    let body = catalog.json();
+    let providers = body["providers"].as_array().expect("providers");
+    let models = body["models"].as_array().expect("models");
+    for (provider, id, efforts) in [
+        (
+            "codex",
+            "gpt-5.6-luna",
+            vec!["low", "medium", "high", "xhigh", "max"],
+        ),
+        (
+            "codex-work",
+            "gpt-5.6-luna",
+            vec!["low", "medium", "high", "xhigh", "max"],
+        ),
+        (
+            "codex-personal",
+            "gpt-5.6-luna",
+            vec!["low", "medium", "high", "xhigh", "max"],
+        ),
+        (
+            "opencode",
+            "openrouter/z-ai/glm-5.3-flash",
+            vec!["low", "high", "max"],
+        ),
+        (
+            "cursor",
+            "auto-smart",
+            vec!["low", "medium", "high", "xhigh"],
+        ),
+        (
+            "opencode",
+            "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+            vec!["medium", "high"],
+        ),
+    ] {
+        assert_eq!(providers.iter().filter(|p| p["id"] == provider).count(), 1);
+        let matches: Vec<_> = models
+            .iter()
+            .filter(|m| m["provider"] == provider && m["id"] == id)
+            .collect();
+        assert_eq!(matches.len(), 1, "one exact {provider}/{id} route");
+        assert_eq!(matches[0]["efforts"]["value"], serde_json::json!(efforts));
+        assert_eq!(
+            matches[0]["efforts"]["provenance"]["reviewRef"],
+            "ASMA-8237"
+        );
+        assert!(
+            matches[0]["contextWindow"]["value"].is_null(),
+            "no invented context limit"
+        );
+    }
+    for guessed in ["glm-5.3-flash", "nemotron-3-ultra:free", "cursor-auto"] {
+        assert!(
+            !models.iter().any(|m| m["id"] == guessed),
+            "no guessed alias {guessed}"
+        );
+    }
+    for provider in [
+        "codex",
+        "codex-work",
+        "codex-personal",
+        "opencode",
+        "cursor",
+    ] {
+        assert_eq!(
+            models
+                .iter()
+                .filter(|m| m["provider"] == provider && m["isDefault"] == true)
+                .count(),
+            1,
+            "additions preserve one default for {provider}"
+        );
+    }
+}
+
 /// The incident's recovery path: a seat launched before any alias was declared
 /// dies on its provider, the deployment declares the two account aliases, and
 /// the replacement walks onto the clear account — claimed, on its own alias.

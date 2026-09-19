@@ -17385,6 +17385,15 @@ impl ApplicationOperations for Services {
 
     fn model_catalog(&self) -> Result<ModelCatalogDto, ApiError> {
         let state = self.state()?;
+        // ASMA-8237: exact provider-native routes and thinking options read from
+        // Paseo on 2026-09-19. Catalog presence does not attest account headroom
+        // or authorize a route for a role; those remain separate admission checks.
+        let watchdog_provenance = serde_json::json!({
+            "state": "live",
+            "reviewRef": "ASMA-8237",
+            "citation": "Paseo list_models: codex, cursor and opencode",
+            "observedAt": "2026-09-19"
+        });
         let provenance = serde_json::json!({
             "state": "live",
             "reviewRef": "KON-MVP-25-GATE-2026-08-14-02",
@@ -17441,6 +17450,11 @@ impl ApplicationOperations for Services {
                 "basis": { "value": "provider_account", "provenance": provenance },
                 "reachedVia": null, "pooledUsage": false
             }),
+            serde_json::json!({
+                "id": "cursor", "label": "Cursor",
+                "basis": { "value": "plan_allowance", "provenance": unverified },
+                "reachedVia": null, "pooledUsage": true
+            }),
         ];
         let mut models = vec![
             serde_json::json!({
@@ -17479,7 +17493,44 @@ impl ApplicationOperations for Services {
                 "pricing": [], "degradedLane": false
             }),
         ];
-        // Each Codex account alias serves the same two routes as the family
+        for provider in ["codex", "codex-work", "codex-personal"] {
+            models.push(serde_json::json!({
+                "id": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "provider": provider,
+                "isDefault": false,
+                "contextWindow": { "value": null, "provenance": unverified },
+                "efforts": { "value": ["low", "medium", "high", "xhigh", "max"], "provenance": watchdog_provenance },
+                "pricing": [], "degradedLane": false
+            }));
+        }
+        for (provider, id, label, efforts) in [
+            (
+                "cursor",
+                "auto-smart",
+                "Cursor Auto",
+                vec!["low", "medium", "high", "xhigh"],
+            ),
+            (
+                "opencode",
+                "openrouter/z-ai/glm-5.3-flash",
+                "GLM 5.3 Flash",
+                vec!["low", "high", "max"],
+            ),
+            (
+                "opencode",
+                "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+                "Nemotron 3 Ultra Free",
+                vec!["medium", "high"],
+            ),
+        ] {
+            models.push(serde_json::json!({
+                "id": id, "label": label, "provider": provider,
+                "isDefault": provider == "cursor",
+                "contextWindow": { "value": null, "provenance": unverified },
+                "efforts": { "value": efforts, "provenance": watchdog_provenance },
+                "pricing": [], "degradedLane": false
+            }));
+        }
+        // Each Codex account alias serves the same routes as the family
         // provider: the alias changes the credential home, never the model.
         for alias in ["codex-work", "codex-personal"] {
             for (id, label, default) in [
