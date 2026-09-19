@@ -77,8 +77,8 @@ use kontor_core::id::{ContentHash, TopologyNodeId};
 use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_runtime::container::{
-    ContainerBinding, ContainerBindingId, ContainerInspectRequest, ContainerProjection,
-    ContainerRecoveryRequest, ContainerRequest, RetitleContainerRequest,
+    ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerInspectRequest,
+    ContainerProjection, ContainerRecoveryRequest, ContainerRequest, RetitleContainerRequest,
 };
 use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoAdoptionIntent, PaseoCheckpoint, PaseoCompaction, PaseoConfig,
@@ -8691,6 +8691,92 @@ async fn exact_container_inspection_preserves_raw_uuid_titles_and_native_identit
         plane.daemon.mutations().is_empty(),
         "inspection never creates or renames"
     );
+}
+
+/// A daemon restart clears the adapter's node ledger, while Kontor keeps the
+/// exact container binding in its store. The scheduler reads that binding back
+/// immediately before launch. That exact-id inspection must rehydrate the
+/// ephemeral ledger; otherwise the already-admitted run is stranded with
+/// `WorkspaceBindingRequired` despite the native workspace being present.
+#[tokio::test]
+async fn exact_container_inspection_rehydrates_launch_placement_after_restart() {
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+    let parent = bound_root(node(NODE_B));
+    let binding = ContainerBinding {
+        id: ContainerBindingId::generate(),
+        topology_node_id: node(NODE_A),
+        projection: ContainerProjection::NativeChild,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(WORKSPACE_ID),
+        },
+        root: Some(root()),
+        bound_at: at("2026-08-16T09:05:00Z"),
+    };
+    let inspected = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding,
+            native_parent: Some(parent.identity),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-09-19T20:35:38Z"),
+        })
+        .await
+        .expect("the exact persisted workspace is re-attested after restart");
+    let container = ContainerBindingSnapshot {
+        binding: inspected.binding,
+        capabilities: plane
+            .adapter
+            .discover_capabilities()
+            .await
+            .expect("the same runtime capability set is current"),
+        correlation: inspected.correlation,
+    };
+    let binding_id = RuntimeBindingId::generate();
+    let authority = plane
+        .adapter
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(team_run(), slot("implement-a")),
+            agent_run_id: run(RUN_IMPLEMENT),
+            binding_id,
+            replaces: None,
+            requested_at: at("2026-09-19T20:35:39Z"),
+        })
+        .await
+        .expect("the existing slot is admitted")
+        .into_authority()
+        .expect("new launch authority");
+
+    let launched = plane
+        .adapter
+        .launch(&authority.into_request(LaunchParts {
+            scope: execution_scope(),
+            display_name: name("Implement • KON-19"),
+            agent_run_id: run(RUN_IMPLEMENT),
+            team_run_id: team_run(),
+            role_slot_id: slot("implement-a"),
+            task_id: task(),
+            binding_id,
+            placement: Some(LaunchPlacement::Container(container)),
+            cwd: root(),
+            account_profile_id: None,
+            prompt: text("bootstrap the role"),
+            model_rung: model_rung(),
+            context_policy: standard_context_policy(),
+            autonomy: SeatAutonomy::standard(),
+            requested_at: at("2026-09-19T20:35:39Z"),
+        }))
+        .await
+        .expect("fresh exact-id inspection restores launch placement");
+
+    assert_eq!(launched.snapshot.agent_run_id(), run(RUN_IMPLEMENT));
+    assert_eq!(plane.daemon.count("workspace create"), 0);
 }
 
 #[tokio::test]
