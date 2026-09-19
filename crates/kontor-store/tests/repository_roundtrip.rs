@@ -9934,3 +9934,170 @@ fn orphaned_remediation_effects_without_claims_cannot_be_adopted() {
         "the rejected recovery cannot leave a wake"
     );
 }
+
+/// One attested retired evaluator, ready to record.
+fn attestation(
+    fixture: &Fixture,
+    receipt: CommandReceiptId,
+    proof: &str,
+) -> kontor_core::repository::StoredRetiredEvaluatorAttestation {
+    kontor_core::repository::StoredRetiredEvaluatorAttestation {
+        id: ExternalId::parse("01a0b619-6aea-78d1-9018-ef1f8b166eda").expect("an id"),
+        project_id: fixture.project,
+        receipt_id: receipt,
+        task_id: fixture.task,
+        workflow_revision: AggregateRevision::parse(4).expect("a revision"),
+        gate_key: GateKey::parse("high-audit-gate").expect("a gate"),
+        team_run_id: TeamRunId::parse("01a09f49-0bbd-7402-a0c8-4882dbdfedc3").expect("a team run"),
+        evaluator_role: RoleKey::parse("fleet-spec-auditor").expect("a role"),
+        role_slot_id: kontor_core::id::RoleSlotId::parse("audit").expect("a slot"),
+        agent_run_id: AgentRunId::parse("01a0b619-6aea-78d1-9018-ef1f8b166eda").expect("a run"),
+        seat_binding_id: SeatBindingId::parse("01a09f49-595e-7e50-962a-a2ee14ae76ad")
+            .expect("a seat"),
+        seat_revision: AggregateRevision::parse(7).expect("a revision"),
+        runtime_binding_id: ExternalId::parse("01a09f49-595e-7e50-962a-a2ee14ae76ae")
+            .expect("a binding"),
+        runtime_generation: 1,
+        native_id: ExternalId::parse("150d6ff3-1474-4200-9600-c39796efc1f7").expect("a native"),
+        artifact_key: ArtifactKey::parse("high-audit-report").expect("an artifact"),
+        artifact_checksum: ContentHash::of(b"the audit report"),
+        evidence_digest: ContentHash::parse(
+            "227f487700996eea037fcfa25d137e3a9c7bb81bc80254378dda983a0d907af3",
+        )
+        .expect("the authentic digest"),
+        proof_digest: ContentHash::of(proof.as_bytes()),
+        attested_at: now(),
+    }
+}
+
+fn attestation_receipt(fixture: &Fixture, key: &str) -> CommandReceiptId {
+    let receipt_id = CommandReceiptId::generate();
+    let task = fixture
+        .store
+        .get_task(fixture.project, fixture.task)
+        .expect("the task reads")
+        .expect("the task exists");
+    fixture
+        .store
+        .record_local_command(&NewLocalCommand {
+            project_id: fixture.project,
+            receipt_id,
+            idempotency_key: IdempotencyKey::parse(key).expect("a key"),
+            kind: CommandKind::AttestRetiredEvaluatorEvidence,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: task.revision,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "attest_retired_evaluator_evidence",
+            }))
+            .expect("a canonical intent"),
+            created_at: now(),
+        })
+        .expect("the attestation command records");
+    receipt_id
+}
+
+#[test]
+fn a_retired_evaluator_proof_replays_onto_exactly_one_row() {
+    let fixture = fixture();
+    let receipt = attestation_receipt(&fixture, "attest-retired-evaluator-1");
+    let proof = attestation(&fixture, receipt, "one exact claim");
+
+    let (recorded, first) = fixture
+        .store
+        .record_retired_evaluator_attestation(&proof)
+        .expect("the proof records");
+    assert_eq!(first, kontor_core::repository::AttestationWrite::Recorded);
+
+    // The lost acknowledgement: the caller never saw the answer and retries the
+    // identical claim. It must find its own proof, not mint a second.
+    let (replayed, second) = fixture
+        .store
+        .record_retired_evaluator_attestation(&proof)
+        .expect("the identical claim replays");
+    assert_eq!(second, kontor_core::repository::AttestationWrite::Replayed);
+    assert_eq!(
+        recorded, replayed,
+        "a replay returns the row already written"
+    );
+
+    let stored = fixture
+        .store
+        .retired_evaluator_attestation_by_digest(fixture.project, &proof.proof_digest)
+        .expect("the proof reads")
+        .expect("the proof exists");
+    assert_eq!(
+        stored, proof,
+        "every fenced fact round-trips, not just the digest"
+    );
+}
+
+#[test]
+fn a_changed_claim_under_the_same_receipt_is_refused() {
+    let fixture = fixture();
+    let receipt = attestation_receipt(&fixture, "attest-retired-evaluator-2");
+    let first = attestation(&fixture, receipt, "one exact claim");
+    fixture
+        .store
+        .record_retired_evaluator_attestation(&first)
+        .expect("the first proof records");
+
+    // Same receipt, different facts. Overwriting the first proof would be the
+    // one way this ledger could launder a verdict's provenance.
+    let drifted = attestation(&fixture, receipt, "a different claim entirely");
+    let refused = fixture
+        .store
+        .record_retired_evaluator_attestation(&drifted)
+        .expect_err("duplicate intent drift is refused");
+    // Named by the domain refusal, not by the storage constraint behind it.
+    // The UNIQUE(receipt_id) index would also refuse this, but as an anonymous
+    // `storage` conflict; asserting the subject is what proves the intended
+    // fence ran rather than the backstop catching it.
+    assert!(
+        matches!(
+            &refused,
+            RepositoryError::Conflict { subject, .. } if *subject == "retired-evaluator attestation"
+        ),
+        "expected the domain refusal, got {refused:?}"
+    );
+
+    assert!(
+        fixture
+            .store
+            .retired_evaluator_attestation_by_digest(fixture.project, &drifted.proof_digest)
+            .expect("the read succeeds")
+            .is_none(),
+        "a refused claim writes nothing"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .retired_evaluator_attestation_by_digest(fixture.project, &first.proof_digest)
+            .expect("the read succeeds")
+            .expect("the first proof survives"),
+        first,
+        "the first proof is untouched by the refusal"
+    );
+}
+
+#[test]
+fn a_recorded_proof_is_append_only() {
+    let fixture = fixture();
+    let receipt = attestation_receipt(&fixture, "attest-retired-evaluator-3");
+    let proof = attestation(&fixture, receipt, "one exact claim");
+    fixture
+        .store
+        .record_retired_evaluator_attestation(&proof)
+        .expect("the proof records");
+
+    let connection = rusqlite::Connection::open(&fixture.path).expect("the database opens");
+    let edited = connection.execute(
+        "UPDATE retired_evaluator_attestations SET evidence_digest = ?1",
+        rusqlite::params![ContentHash::of(b"a rewritten verdict").as_str()],
+    );
+    assert!(edited.is_err(), "a proof may not be edited");
+    let deleted = connection.execute("DELETE FROM retired_evaluator_attestations", []);
+    assert!(deleted.is_err(), "a proof may not be deleted");
+}

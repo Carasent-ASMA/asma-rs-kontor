@@ -72,6 +72,68 @@ use crate::ticket::{
 };
 use crate::{DomainError, DomainResult};
 
+/// One recorded proof that an exact retired evaluator already rendered its
+/// verdict.
+///
+/// Append-only. The row is the whole fenced claim, not just its digest, so a
+/// later reader can see what was proved without re-deriving it and a mismatch
+/// can name the field that disagreed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredRetiredEvaluatorAttestation {
+    /// This attestation's own id.
+    pub id: ExternalId,
+    /// The owning project.
+    pub project_id: ProjectId,
+    /// The command receipt that recorded it.
+    pub receipt_id: CommandReceiptId,
+    /// The task whose gate is proved.
+    pub task_id: TaskId,
+    /// The workflow revision the proof was judged against.
+    pub workflow_revision: AggregateRevision,
+    /// The gate proved.
+    pub gate_key: GateKey,
+    /// The TeamRun the evaluator sat on.
+    pub team_run_id: TeamRunId,
+    /// The catalog role the gate declares.
+    pub evaluator_role: RoleKey,
+    /// The slot that holds that role.
+    pub role_slot_id: RoleSlotId,
+    /// The evaluator's closed run.
+    pub agent_run_id: AgentRunId,
+    /// The retired topology seat.
+    pub seat_binding_id: SeatBindingId,
+    /// That seat's revision when judged.
+    pub seat_revision: AggregateRevision,
+    /// The runtime binding the run held.
+    pub runtime_binding_id: ExternalId,
+    /// That binding's generation.
+    pub runtime_generation: u64,
+    /// The native it named.
+    pub native_id: ExternalId,
+    /// The artifact the settled turn produced.
+    pub artifact_key: ArtifactKey,
+    /// That artifact's checksum.
+    pub artifact_checksum: ContentHash,
+    /// The digest of the settled turn's immutable evidence.
+    pub evidence_digest: ContentHash,
+    /// The deterministic digest of every fenced fact.
+    pub proof_digest: ContentHash,
+    /// When the proof was recorded.
+    pub attested_at: Timestamp,
+}
+
+/// Whether a proof was newly recorded or replayed onto the existing one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttestationWrite {
+    /// The proof is new.
+    Recorded,
+    /// An identical claim already had this proof; nothing was written.
+    ///
+    /// This is what makes a lost acknowledgement safe: the caller retries the
+    /// same claim and receives the same row rather than a second proof.
+    Replayed,
+}
+
 /// Everything a repository can refuse.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]

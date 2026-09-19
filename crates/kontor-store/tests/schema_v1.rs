@@ -165,6 +165,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "resource_leases",
     "role_slot_waivers",
     "role_catalog_revisions",
+    "retired_evaluator_attestations",
     "role_turns",
     "run_context_policies",
     "run_park_closures",
@@ -714,7 +715,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v106 persists the complete exact-id native container readback and
     // leaves every pre-v106 row's shape, title, ancestry and correlation
     // unknown rather than reconstructed (ASMA-8115).
-    assert_eq!(SCHEMA_VERSION, 106);
+    // v107 adds the retired-evaluator proof ledger and the command kind that
+    // records one, so a gate whose evaluator seat was retired has a supported
+    // evidence path that is not the live-seat challenge (ASMA-8119).
+    assert_eq!(SCHEMA_VERSION, 107);
 }
 
 #[test]

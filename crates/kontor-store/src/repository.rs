@@ -49,30 +49,31 @@ use kontor_core::receipt::{
 };
 use kontor_core::repository::OpenQuestionRepository;
 use kontor_core::repository::{
-    AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, AvailabilityOverride,
-    CalendarRepository, CapacityObservation, CapacityRepository, CommandRepository,
-    CompletionWrite, ConnectorSpecSelector, CredentialReference, CredentialReferenceKind,
-    GateEvaluation, GateRejectionRecovery, GateRejectionRoute, GateRouteOrigin, HistoryGapKind,
-    HistoryGapMarker, HostedSeatLaunchIntentState, IntakeCreatedWork, IntakeDecisionRecord,
-    IntakeOutcome, IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
-    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
-    NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
-    NewConsultationRecoveryAttempt, NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord,
-    NewIntakeReevaluation, NewLocalCommand, NewMiniProject, NewNativeContainerBinding,
-    NewObservation, NewProject, NewProviderQuotaState, NewProviderUsageObservation,
-    NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
-    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
-    ProjectRepository, ProjectTopologyDefault, ProviderQuotaState, ProviderUsageObservation,
-    QuotaObservationProvenance, RealmEventPage, RealmRepository, ReceiptAdvance,
-    ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunInspection,
-    RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence,
-    SourceDisposition, SourceEventIngest, SpecRepository, StoredAdvisorAdvice,
-    StoredCapacityConfiguration, StoredCommitteeFinding, StoredCompletionProfile,
-    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationMaterializationReroute,
-    StoredConsultationProfileRevision, StoredConsultationRecoveryAttempt, StoredConsultationRun,
-    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, AttestationWrite,
+    AvailabilityOverride, CalendarRepository, CapacityObservation, CapacityRepository,
+    CommandRepository, CompletionWrite, ConnectorSpecSelector, CredentialReference,
+    CredentialReferenceKind, GateEvaluation, GateRejectionRecovery, GateRejectionRoute,
+    GateRouteOrigin, HistoryGapKind, HistoryGapMarker, HostedSeatLaunchIntentState,
+    IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome, IntakeRepository, MiniProject,
+    MiniProjectTopologySnapshot, NewAbandonReceipt, NewAccountProfile, NewAdaptiveAdmissionState,
+    NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
+    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt, NewGateEvaluation,
+    NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation, NewLocalCommand,
+    NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState,
+    NewProviderUsageObservation, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
+    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
+    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, ProviderQuotaState,
+    ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage, RealmRepository,
+    ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure,
+    RunInspection, RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation,
+    SessionVerdictEvidence, SourceDisposition, SourceEventIngest, SpecRepository,
+    StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
+    StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
+    StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
+    StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
+    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedSeatLaunchIntent,
+    StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection, StoredPromotion,
+    StoredQuickSession, StoredRemediationProposal, StoredRetiredEvaluatorAttestation,
     StoredTopologyContainerRecovery, SuccessionRepository, Task, TaskInspection,
     TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
     TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
@@ -6120,6 +6121,158 @@ impl SqliteStore {
                 subject: "epic completion",
             }
         })
+    }
+
+    /// Read one recorded retired-evaluator proof by its deterministic digest.
+    ///
+    /// # Errors
+    /// Backend failure, or a stored row this build can no longer parse.
+    pub fn retired_evaluator_attestation_by_digest(
+        &self,
+        project_id: ProjectId,
+        proof_digest: &ContentHash,
+    ) -> RepositoryResult<Option<StoredRetiredEvaluatorAttestation>> {
+        Self::read_attestation(&self.connection, project_id, proof_digest)
+    }
+
+    fn read_attestation(
+        connection: &rusqlite::Connection,
+        project_id: ProjectId,
+        proof_digest: &ContentHash,
+    ) -> RepositoryResult<Option<StoredRetiredEvaluatorAttestation>> {
+        let row = connection
+            .query_row(
+                "SELECT id, receipt_id, task_id, workflow_revision, gate_key, team_run_id,
+                        evaluator_role, role_slot_id, agent_run_id, seat_binding_id, seat_revision,
+                        runtime_binding_id, runtime_generation, native_id, artifact_key,
+                        artifact_checksum, evidence_digest, attested_at
+                   FROM retired_evaluator_attestations
+                  WHERE project_id = ?1 AND proof_digest = ?2",
+                params![project_id.to_string(), proof_digest.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, i64>(10)?,
+                        row.get::<_, String>(11)?,
+                        row.get::<_, i64>(12)?,
+                        row.get::<_, String>(13)?,
+                        row.get::<_, String>(14)?,
+                        row.get::<_, String>(15)?,
+                        row.get::<_, String>(16)?,
+                        row.get::<_, String>(17)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|c| {
+            Ok(StoredRetiredEvaluatorAttestation {
+                id: ExternalId::parse(&c.0)?,
+                project_id,
+                receipt_id: CommandReceiptId::parse(&c.1)?,
+                task_id: TaskId::parse(&c.2)?,
+                workflow_revision: AggregateRevision::parse(
+                    u64::try_from(c.3).unwrap_or_default(),
+                )?,
+                gate_key: GateKey::parse(&c.4)?,
+                team_run_id: TeamRunId::parse(&c.5)?,
+                evaluator_role: RoleKey::parse(&c.6)?,
+                role_slot_id: RoleSlotId::parse(&c.7)?,
+                agent_run_id: AgentRunId::parse(&c.8)?,
+                seat_binding_id: SeatBindingId::parse(&c.9)?,
+                seat_revision: AggregateRevision::parse(u64::try_from(c.10).unwrap_or_default())?,
+                runtime_binding_id: ExternalId::parse(&c.11)?,
+                runtime_generation: u64::try_from(c.12).unwrap_or_default(),
+                native_id: ExternalId::parse(&c.13)?,
+                artifact_key: ArtifactKey::parse(&c.14)?,
+                artifact_checksum: ContentHash::parse(&c.15)?,
+                evidence_digest: ContentHash::parse(&c.16)?,
+                proof_digest: proof_digest.clone(),
+                attested_at: read_timestamp(&c.17)?,
+            })
+        })
+        .transpose()
+    }
+
+    /// Record one retired-evaluator proof, idempotently on its digest.
+    ///
+    /// An identical claim replays onto the existing row rather than writing a
+    /// second proof, which is what makes a lost acknowledgement safe. A claim
+    /// that changed any fenced fact digests differently, so recording it under
+    /// a receipt that already attested something else is duplicate-intent
+    /// drift and is refused rather than overwriting the first proof.
+    ///
+    /// # Errors
+    /// [`RepositoryError::Conflict`] on that drift; backend failure otherwise.
+    pub fn record_retired_evaluator_attestation(
+        &self,
+        attestation: &StoredRetiredEvaluatorAttestation,
+    ) -> RepositoryResult<(StoredRetiredEvaluatorAttestation, AttestationWrite)> {
+        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
+        if let Some(existing) = Self::read_attestation(
+            &transaction,
+            attestation.project_id,
+            &attestation.proof_digest,
+        )? {
+            return Ok((existing, AttestationWrite::Replayed));
+        }
+        let receipt_taken: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM retired_evaluator_attestations WHERE receipt_id = ?1)",
+                params![attestation.receipt_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if receipt_taken {
+            return Err(RepositoryError::Conflict {
+                subject: "retired-evaluator attestation",
+                rule: "this receipt already attested a different claim",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO retired_evaluator_attestations
+                     (id, project_id, receipt_id, task_id, workflow_revision, gate_key,
+                      team_run_id, evaluator_role, role_slot_id, agent_run_id, seat_binding_id,
+                      seat_revision, runtime_binding_id, runtime_generation, native_id,
+                      artifact_key, artifact_checksum, evidence_digest, proof_digest, attested_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                         ?17, ?18, ?19, ?20)",
+                params![
+                    attestation.id.as_str(),
+                    attestation.project_id.to_string(),
+                    attestation.receipt_id.to_string(),
+                    attestation.task_id.to_string(),
+                    i64::try_from(attestation.workflow_revision.get()).unwrap_or(i64::MAX),
+                    attestation.gate_key.as_str(),
+                    attestation.team_run_id.to_string(),
+                    attestation.evaluator_role.as_str(),
+                    attestation.role_slot_id.as_str(),
+                    attestation.agent_run_id.to_string(),
+                    attestation.seat_binding_id.to_string(),
+                    i64::try_from(attestation.seat_revision.get()).unwrap_or(i64::MAX),
+                    attestation.runtime_binding_id.as_str(),
+                    i64::try_from(attestation.runtime_generation).unwrap_or(i64::MAX),
+                    attestation.native_id.as_str(),
+                    attestation.artifact_key.as_str(),
+                    attestation.artifact_checksum.as_str(),
+                    attestation.evidence_digest.as_str(),
+                    attestation.proof_digest.as_str(),
+                    text(attestation.attested_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok((attestation.clone(), AttestationWrite::Recorded))
     }
 
     /// Append one wake intent, returning `false` when it already stood.
