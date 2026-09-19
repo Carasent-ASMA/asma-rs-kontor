@@ -6120,6 +6120,235 @@ async fn a_null_id_timeline_correlates_only_one_new_server_challenge() {
     assert!(matches!(duplicate, RuntimeError::DuplicateMessage { .. }));
 }
 
+/// The exact live ASMA-8234 shape: Paseo streamed one assistant answer as 17
+/// adjacent entries under one provider messageId. Only their concatenation is
+/// the reply, and no single entry equals it.
+const ANSWER_CHUNKS: [&str; 17] = [
+    "Con", "fir", "med", ": ", "the", " fro", "zen", " art", "ifa", "ct ", "and", " che", "cks",
+    "um ", "are", " unch", "anged.",
+];
+const ANSWER_MESSAGE_ID: &str = "msg_0e447b";
+
+/// One challenge, sent and acknowledged, with nothing answering it yet.
+async fn answered_challenge() -> (Plane, CorrelationChallengeCompletionRequest) {
+    let recorded = daemon().without_journal_client_message_ids();
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let binding = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the exact seat launches")
+        .snapshot;
+    plane.daemon.append_journal_item(
+        AGENT_ID,
+        serde_json::json!({
+            "type": "user_message",
+            "text": "an older uncorrelated request",
+            "clientMessageId": null,
+        }),
+    );
+    plane.daemon.append_journal_item(
+        AGENT_ID,
+        serde_json::json!({
+            "type": "user_message",
+            "text": "another older uncorrelated request",
+            "clientMessageId": null,
+        }),
+    );
+    let CorrelationChallengeBoundary {
+        position: after,
+        native_epoch,
+    } = plane
+        .adapter
+        .correlation_challenge_boundary(&binding)
+        .await
+        .expect("the canonical tail is an exact post-history boundary");
+    let body = text("Kontor correlation challenge nonce-8234: verify the frozen artifact.");
+    let expected_response = text(&ANSWER_CHUNKS.concat());
+    let request = CorrelationChallengeRequest {
+        binding: binding.clone(),
+        message_id: MessageId::parse(MESSAGE).expect("pinned"),
+        body: body.clone(),
+        after,
+        native_epoch: native_epoch.clone(),
+        may_dispatch: true,
+        sent_at: at("2026-09-19T00:40:00Z"),
+    };
+    let acknowledgement = plane
+        .adapter
+        .send_correlation_challenge(&request)
+        .await
+        .expect("the challenge is dispatched once");
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_request", v(AGENT_IDLE_FINISHED));
+    let completion = CorrelationChallengeCompletionRequest {
+        binding,
+        message_id: request.message_id,
+        message_position: acknowledgement.message.position,
+        after,
+        native_epoch,
+        body,
+        expected_response,
+    };
+    (plane, completion)
+}
+
+/// Append one assistant chunk, optionally under a named provider message id.
+fn append_chunk(plane: &Plane, text: &str, message_id: Option<&str>) {
+    plane.daemon.append_journal_item(
+        AGENT_ID,
+        serde_json::json!({
+            "type": "assistant_message",
+            "text": text,
+            "messageId": message_id,
+        }),
+    );
+}
+
+fn append_whole_answer(plane: &Plane, message_id: &str) {
+    for chunk in ANSWER_CHUNKS {
+        append_chunk(plane, chunk, Some(message_id));
+    }
+}
+
+#[tokio::test]
+async fn a_chunked_assistant_answer_coalesces_into_one_terminal_confirmation() {
+    let (plane, completion) = answered_challenge().await;
+    assert_eq!(
+        ANSWER_CHUNKS.concat(),
+        completion.expected_response.as_str(),
+        "the fixture's chunks are exactly the expected answer"
+    );
+    assert!(
+        !ANSWER_CHUNKS
+            .iter()
+            .any(|chunk| *chunk == completion.expected_response.as_str()),
+        "no single chunk is the answer, which is the whole defect"
+    );
+    append_whole_answer(&plane, ANSWER_MESSAGE_ID);
+
+    let terminal = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect("17 adjacent chunks under one provider id are one terminal answer");
+    assert_eq!(
+        terminal.sequence, 20,
+        "the proved position is the group's last chunk, not its first"
+    );
+}
+
+#[tokio::test]
+async fn a_chunk_carried_under_another_message_id_is_not_one_answer() {
+    let (plane, completion) = answered_challenge().await;
+    for (index, chunk) in ANSWER_CHUNKS.iter().enumerate() {
+        let id = if index == 9 {
+            "msg_someone_else"
+        } else {
+            ANSWER_MESSAGE_ID
+        };
+        append_chunk(&plane, chunk, Some(id));
+    }
+    let refused = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect_err("chunks under two provider ids are two partial answers");
+    assert!(matches!(
+        refused,
+        RuntimeError::ReplacementNotEvidenced { .. }
+    ));
+}
+
+#[tokio::test]
+async fn chunks_interrupted_by_other_content_are_not_one_answer() {
+    let (plane, completion) = answered_challenge().await;
+    for (index, chunk) in ANSWER_CHUNKS.iter().enumerate() {
+        if index == 9 {
+            plane.daemon.append_journal_item(
+                AGENT_ID,
+                serde_json::json!({
+                    "type": "user_message",
+                    "text": "an interleaved turn",
+                    "clientMessageId": null,
+                }),
+            );
+        }
+        append_chunk(&plane, chunk, Some(ANSWER_MESSAGE_ID));
+    }
+    let refused = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect_err("non-contiguous chunks never coalesce across the interruption");
+    assert!(matches!(
+        refused,
+        RuntimeError::ReplacementNotEvidenced { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_partial_chunked_answer_is_refused() {
+    let (plane, completion) = answered_challenge().await;
+    for chunk in ANSWER_CHUNKS.iter().take(ANSWER_CHUNKS.len() - 1) {
+        append_chunk(&plane, chunk, Some(ANSWER_MESSAGE_ID));
+    }
+    let refused = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect_err("a prefix of the answer is not the answer");
+    assert!(matches!(
+        refused,
+        RuntimeError::ReplacementNotEvidenced { .. }
+    ));
+}
+
+#[tokio::test]
+async fn extra_bytes_inside_the_group_are_refused() {
+    let (plane, completion) = answered_challenge().await;
+    append_whole_answer(&plane, ANSWER_MESSAGE_ID);
+    append_chunk(&plane, " And one more thing.", Some(ANSWER_MESSAGE_ID));
+    let refused = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect_err("the concatenation must equal the answer, not merely start with it");
+    assert!(matches!(
+        refused,
+        RuntimeError::ReplacementNotEvidenced { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_whole_answer_that_is_not_terminal_is_refused() {
+    let (plane, completion) = answered_challenge().await;
+    append_whole_answer(&plane, ANSWER_MESSAGE_ID);
+    append_chunk(&plane, "an unrelated later remark", Some("msg_later"));
+    let refused = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect_err("content after the answer means the group is not the session's last word");
+    assert!(matches!(
+        refused,
+        RuntimeError::ReplacementNotEvidenced { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_repeated_whole_answer_is_refused() {
+    let (plane, completion) = answered_challenge().await;
+    append_whole_answer(&plane, ANSWER_MESSAGE_ID);
+    append_whole_answer(&plane, "msg_second_copy");
+    let refused = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect_err("two whole answers are never one unique confirmation");
+    assert!(matches!(refused, RuntimeError::DuplicateMessage { .. }));
+}
+
 #[tokio::test]
 async fn message_a_changed_body_under_one_id_is_rejected() {
     let (plane, binding) = launched().await;

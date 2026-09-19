@@ -7562,12 +7562,26 @@ impl RuntimeAdapter for PaseoAdapter {
         let suffix = self
             .challenge_suffix(&binding, request.after, &request.native_epoch)
             .await?;
+        // Paseo streams one assistant answer as many adjacent entries sharing
+        // the provider's own messageId, so only their concatenation is the
+        // reply. A group is closed by *any* entry that is not the next chunk of
+        // the same message, which is what makes interleaved or non-contiguous
+        // chunks two partial groups rather than one whole one. An absent
+        // messageId never joins anything: without the provider's own id there is
+        // no evidence that two entries are one message.
+        struct ResponseGroup {
+            id: Option<String>,
+            end: TimelinePosition,
+            text: String,
+        }
         let mut message_matches = 0usize;
         let mut challenge_body_positions = Vec::new();
-        let mut response_positions = Vec::new();
+        let mut response_groups: Vec<ResponseGroup> = Vec::new();
+        let mut open: Option<ResponseGroup> = None;
         let mut last_content = None;
         let wanted_id = request.message_id.to_string();
-        for (entry, position) in suffix {
+        for (entry, position) in &suffix {
+            let position = *position;
             let kind = crate::wire::classify_item(&entry.item.item_type);
             if entry.item.item_type == "user_message"
                 && entry.item.text.as_deref() == Some(request.body.as_str())
@@ -7585,31 +7599,70 @@ impl RuntimeAdapter for PaseoAdapter {
             {
                 message_matches += 1;
             }
-            if position.sequence > request.message_position.sequence
-                && entry.item.item_type == "assistant_message"
-                && entry.item.text.as_deref() == Some(request.expected_response.as_str())
-            {
-                response_positions.push(position);
+            let chunk = (position.sequence > request.message_position.sequence
+                && entry.item.item_type == "assistant_message")
+                .then(|| {
+                    (
+                        entry.item.message_id.as_deref(),
+                        entry.item.text.as_deref().unwrap_or_default(),
+                    )
+                });
+            match chunk {
+                Some((Some(id), text))
+                    if open
+                        .as_ref()
+                        .is_some_and(|group| group.id.as_deref() == Some(id)) =>
+                {
+                    let group = open.as_mut().expect("the guard proved one is open");
+                    group.text.push_str(text);
+                    group.end = position;
+                }
+                Some((id, text)) => {
+                    response_groups.extend(open.take());
+                    open = Some(ResponseGroup {
+                        id: id.map(str::to_owned),
+                        end: position,
+                        text: text.to_owned(),
+                    });
+                }
+                None => response_groups.extend(open.take()),
             }
             if !matches!(kind, SessionEventKind::StateChange | SessionEventKind::Log) {
                 last_content = Some(position);
             }
         }
+        response_groups.extend(open);
         if challenge_body_positions.len() > 1 {
             return Err(RuntimeError::DuplicateMessage {
                 rule: "the exact server correlation challenge body appears more than once after its boundary",
             });
         }
+        // Only a whole answer counts. A partial group, an extra byte, or a
+        // chunk carried under another id all fail this equality rather than
+        // being repaired into a match.
+        let mut whole = response_groups
+            .iter()
+            .filter(|group| group.text == request.expected_response.as_str());
+        let response = whole.next();
+        if whole.next().is_some() {
+            return Err(RuntimeError::DuplicateMessage {
+                rule: "the exact server correlation challenge answer appears more than once after its boundary",
+            });
+        }
+        let Some(response) = response else {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the exact server correlation challenge has no unique terminal confirmation",
+            });
+        };
         if message_matches != 1
             || challenge_body_positions.first().copied() != Some(request.message_position)
-            || response_positions.len() != 1
-            || last_content != response_positions.first().copied()
+            || last_content != Some(response.end)
         {
             return Err(RuntimeError::ReplacementNotEvidenced {
                 rule: "the exact server correlation challenge has no unique terminal confirmation",
             });
         }
-        Ok(response_positions[0])
+        Ok(response.end)
     }
 
     async fn cancel(&self, request: &CancelRequest) -> RuntimeResult<ControlPlaneObservation> {
