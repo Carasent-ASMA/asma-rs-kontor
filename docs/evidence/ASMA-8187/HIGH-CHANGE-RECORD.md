@@ -157,6 +157,66 @@ registered; `PinnedTeamDefinitionDto` gained `Deserialize` so a stored readback
 rehydrates. Regenerated with the same two commands as before; both artefacts
 reproduce with no drift.
 
+### Sequence-5 remediation — V11 and V12
+
+Both findings were durable-regression gaps, not production defects: the verifier
+confirmed the implementation already refuses a retired binding and already
+repairs a lost binding on replay, but neither behaviour had a committed test, so
+a mutant removing it stayed green. This correction adds the missing coverage and
+touches **no production daemon logic** — `crates/kontor-daemon/src/applications.rs`
+is byte-identical across it.
+
+Remediation package: approved Kontor memory
+`asma-8187-remediation-v11-v12-20260919`, revision id
+`01a0b738-4467-7852-9283-cb7707b475f9`; evidence commit
+`bb3ccfd29f88aef5ce3fb4818070e95fda7f5f3d`; verifier report SHA-256
+`7e51f38db7ee35a459663599c186383d248479e5242a4aabf04250dfbe6bcb10`, verified
+byte-identical before work began.
+
+**F-8187-V11 — the retired seat is now exercised.** The generic-v1 regression
+drifted every identity field but never retired the binding those fields name, so
+dropping `TopologyLifecycle::Active` from SeatBinding resolution left it green.
+The test now retires the exact topology SeatBinding with the approved evidence
+left untouched — every field still matches authoritative state, and only the
+lifecycle has moved — and asserts the challenge is refused. Removing the
+active-lifecycle predicate is **killed**.
+
+**F-8187-V12 — the lost-binding interval is now entered.** A new deterministic
+seam, `lose_next_supersession_receipt_binding`, fails the binder *after* the
+command receipt is durable and before the ledger row names it. That interval is
+only reachable by being put there. The test proves the receipt exists while the
+row is NULL, then that same-key replay binds and answers with **the receipt the
+first attempt recorded**, and that a third replay answers the same. Binding only
+when the swap reports `Applied::Updated` — which an exact replay never does — is
+**killed**.
+
+The seam sits beside the existing succession seam under the same
+`fault-injection` feature: off by default, enabled only on `kontor-daemon`'s
+dev-dependency edge, so a release build carries neither field nor branch.
+
+### Sequence-5 validation
+
+```text
+core_team 18/18 · succession 11/11 · stale 13/13 · replay 30/30 · drift 8/8
+launch_intent 4/4 · correlation 1/1 · ambiguous 2/2
+cargo fmt --all -- --check              exit 0
+KONTOR_UPDATE_CONTRACT=1 openapi_contract  3 passed
+pnpm --filter kontor-console generate:api  regenerated, no diff
+migrations 0100–0106                       unchanged, SCHEMA_VERSION 106
+```
+
+| Mutant | Result |
+| --- | --- |
+| active-lifecycle predicate removed (V11, the reported survivor) | **killed** |
+| bind only on `Applied::Updated` (V12, the reported survivor) | **killed** |
+| `container_native_id` ← predecessor native (V7, re-checked) | **still killed** |
+| unique account id ← constant (V8, re-checked) | **still killed** |
+
+Each seeded alone and restored; the daemon source compared byte-identical
+afterwards and zero `MUTANT` markers remain. One mutation attempt initially
+reported a survivor because its anchor text no longer matched after formatting
+and the edit never applied; it was re-run against the real text and killed.
+
 ### Sequence-4 remediation — V7, V8, V9, V10
 
 Verification sequence 4 failed candidate `8c3a60c1` on four blockers. V6 was

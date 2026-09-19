@@ -191,6 +191,9 @@ pub struct SqliteStore {
 pub(crate) struct StoreFaults {
     /// Fail the next Core Team succession *after* its transaction commits.
     pub(crate) lose_next_core_team_succession_ack: std::cell::Cell<bool>,
+    /// Fail the next supersession receipt binding, after the command receipt
+    /// has already been recorded.
+    pub(crate) lose_next_supersession_receipt_binding: std::cell::Cell<bool>,
 }
 
 impl SqliteStore {
@@ -225,6 +228,17 @@ impl SqliteStore {
     #[cfg(feature = "fault-injection")]
     pub fn lose_next_core_team_succession_ack(&self) {
         self.faults.lose_next_core_team_succession_ack.set(true);
+    }
+
+    /// Arm a single deterministic loss of the next supersession receipt binding.
+    ///
+    /// Stands in the one interval the binder exists to survive: the command
+    /// receipt is already durable and the ledger row that names it is not. Only
+    /// a process lost exactly there produces that state, so a test can only
+    /// reach it by being put there.
+    #[cfg(feature = "fault-injection")]
+    pub fn lose_next_supersession_receipt_binding(&self) {
+        self.faults.lose_next_supersession_receipt_binding.set(true);
     }
 
     /// This database's immutable Realm identity.

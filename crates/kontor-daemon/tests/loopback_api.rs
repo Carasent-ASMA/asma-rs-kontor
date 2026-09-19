@@ -25703,7 +25703,7 @@ async fn a_generic_approved_correlation_envelope_fences_every_identity_independe
     extended["unexpected"] = serde_json::json!("field");
     let proposal = approve("generic-correlation-unknown-field", &extended);
     let refused = Call::post(
-        challenge_uri,
+        challenge_uri.clone(),
         &serde_json::json!({
             "role_slot": role_slot,
             "expected_task_revision": task.revision.get(),
@@ -25720,6 +25720,48 @@ async fn a_generic_approved_correlation_envelope_fences_every_identity_independe
     assert_ne!(
         refused.status, 200,
         "an envelope carrying an unknown field was accepted: {}",
+        refused.body
+    );
+
+    // The seat itself is retired, with the evidence left exactly as approved.
+    //
+    // Every field above still matches authoritative state; what has changed is
+    // that the binding the evidence names is no longer active. The resolver's
+    // lifecycle predicate is the only thing standing between a retired seat and
+    // a settlement it must never receive, and until this case existed removing
+    // that predicate left the whole generic suite green (ASMA-8187 F-8187-V11).
+    {
+        let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+        let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+        let retired = connection
+            .execute(
+                "UPDATE seat_bindings
+                    SET lifecycle = 'retired', released_at = '2026-09-19T12:00:00Z',
+                        revision = revision + 1, updated_at = '2026-09-19T12:00:00Z'
+                  WHERE project_id = ?1 AND id = ?2",
+                rusqlite::params![project, topology_seat.id.to_string()],
+            )
+            .expect("the topology seat is retirable for staging");
+        assert_eq!(retired, 1, "the seat to retire was not found");
+    }
+    let refused = Call::post(
+        challenge_uri.clone(),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_task_revision": task.revision.get(),
+            "expected_run_revision": before.revision.get(),
+            "artifact": "high-scope-record",
+            "evidence_revision_id": accepted.revision_id,
+            "evidence_content_hash": accepted.document.hash().as_str(),
+            "report_checksum": report_checksum.as_str()
+        }),
+    )
+    .signed_as(&world, "operator")
+    .send(&world)
+    .await;
+    assert_ne!(
+        refused.status, 200,
+        "a retired topology SeatBinding still accepted its correlation evidence: {}",
         refused.body
     );
 }
@@ -56882,6 +56924,90 @@ async fn a_launch_intent_supersession_is_exactly_once_under_replay_and_drift() {
             "a receipt bound against a foreign intent hash was accepted"
         );
     });
+}
+
+/// The binding is lost after its command receipt is already durable.
+///
+/// `supersede_core_team_launch_intent` records the receipt and then binds it to
+/// the ledger row. A process lost between those two leaves a recorded command
+/// whose evidence row says nothing about it — recoverable only if the replay
+/// binds as well as the first attempt. Binding only when the swap itself
+/// reports `Applied::Updated` looks correct and is not: an exact replay reports
+/// `Applied::Unchanged`, so the repair never runs and the row stays NULL
+/// forever (ASMA-8187 F-8187-V12).
+#[tokio::test]
+async fn a_supersession_receipt_binding_lost_after_its_receipt_is_repaired_by_replay() {
+    const KEY: &str = "asma-7869-lost-binding";
+    let (composed, binding, revision) = wedged_launch_intent_seat(
+        "/tmp/kontor-7869-lost-binding",
+        "asma-7869-lost-binding-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let body = supersede_body(&binding, revision);
+    let key = IdempotencyKey::parse(KEY).expect("a canonical key");
+
+    world
+        .daemon
+        .state()
+        .with_store(kontor_store::SqliteStore::lose_next_supersession_receipt_binding);
+    let lost = supersede(world, project, epic, &body, KEY).await;
+    assert_ne!(
+        lost.status, 200,
+        "the injected loss returned success: {}",
+        lost.body
+    );
+
+    // The interval this exists for: the command receipt is durable, the row
+    // that should name it is not.
+    let recorded = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_receipt_by_key(&key))
+        .expect("the receipt reads")
+        .expect("the command receipt was already recorded");
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.launch_intent_supersession_receipt(&key))
+            .expect("the supersession reads")
+            .expect("the supersession exists")
+            .is_none(),
+        "the lost binding still bound a receipt"
+    );
+
+    // The replay repairs it and answers with the receipt the first attempt
+    // recorded — not a second one.
+    let repaired = supersede(world, project, epic, &body, KEY).await;
+    assert_eq!(repaired.status, 200, "{}", repaired.body);
+    assert_eq!(
+        repaired.json()["receipt"]["receipt_id"],
+        serde_json::Value::String(recorded.id.to_string()),
+        "the replay answered with a different receipt than the one recorded"
+    );
+    let bound = world
+        .daemon
+        .state()
+        .with_store(|store| store.launch_intent_supersession_receipt(&key))
+        .expect("the supersession reads")
+        .expect("the supersession exists")
+        .expect("the replay bound the receipt");
+    assert_eq!(
+        bound.to_string(),
+        recorded.id.to_string(),
+        "the replay bound a receipt other than the recorded one"
+    );
+
+    // A third attempt is still the same command with the same evidence.
+    let again = supersede(world, project, epic, &body, KEY).await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(
+        again.json()["receipt"]["receipt_id"],
+        serde_json::Value::String(recorded.id.to_string())
+    );
 }
 
 /// The live ASMA-8098 shape: a closed predecessor the runtime calls stale.

@@ -4559,6 +4559,19 @@ impl SqliteStore {
         intent_hash: &ContentHash,
         receipt_id: CommandReceiptId,
     ) -> RepositoryResult<Applied> {
+        // Armed before anything is read, so the binding is lost exactly where a
+        // process death would lose it: after the command receipt is durable and
+        // before the row that names it has moved.
+        #[cfg(feature = "fault-injection")]
+        if self
+            .faults
+            .lose_next_supersession_receipt_binding
+            .replace(false)
+        {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault before the supersession receipt binding".to_owned(),
+            });
+        }
         let transaction = self.begin()?;
         let row: Option<(String, Option<String>)> = transaction
             .query_row(
