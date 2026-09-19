@@ -6821,6 +6821,13 @@ impl RuntimeAdapter for PaseoAdapter {
                         rule: "the inspected container is outside its exact persisted parent",
                     });
                 }
+                // The exact parent was read by id on the same path that proved
+                // the child. A restarted adapter needs that ephemeral project
+                // binding as well as the child binding before it can compose a
+                // launch in the inspected workspace.
+                self.lock()
+                    .projects
+                    .insert(project_binding.mini_project_id.clone(), project_binding);
                 let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
                 let cwd = WorkspaceRoot::parse(&workspace.workspace_directory)?;
                 (
@@ -6841,6 +6848,24 @@ impl RuntimeAdapter for PaseoAdapter {
             request.binding.topology_node_id,
             identity,
             request.requested_at,
+        );
+        // Inspection is the restart-safe proof that this process was missing.
+        // The durable binding names the exact native id and parent, and every
+        // one of those facts has just been read back above. Rehydrate the
+        // ephemeral node ledger from that proof so the immediately following
+        // launch compares against this inspection rather than an older
+        // preparation timestamp (or no in-process preparation at all).
+        //
+        // This is deliberately after every identity, generation, parent and
+        // placement check. A failed or merely name-matching inspection never
+        // enters the ledger and therefore can never authorize a launch.
+        self.lock().containers.insert(
+            request.binding.topology_node_id,
+            ContainerBindingSnapshot {
+                binding: request.binding.clone(),
+                capabilities: declared,
+                correlation: correlation.clone(),
+            },
         );
         Ok(ContainerInspection {
             binding: request.binding.clone(),
