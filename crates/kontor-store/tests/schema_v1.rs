@@ -96,6 +96,7 @@ const EXPECTED_TABLES: &[&str] = &[
     // Schema v100 (ASMA-8193): the authority one hosted launch resolved,
     // written before the native call and consumed when the occupancy binds.
     "hosted_topology_seat_launch_intents",
+    "hosted_seat_launch_intent_supersessions",
     // Schema v7 (KON-MVP-21): which importer produced a holiday source revision,
     // what the request asked for, and the chain that makes one import current.
     "holiday_import_batches",
@@ -721,7 +722,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // evidence path that is not the live-seat challenge (ASMA-8119).
     // v108 adds exact-old/revision-fenced worktree-claim repair and immutable
     // before/after evidence without changing the task aggregate (ASMA-8120).
-    assert_eq!(SCHEMA_VERSION, 108);
+    // v109 lets an inert launch intent -- prepared before a launch that never
+    // happened -- have its route and prepared instant superseded exactly once,
+    // on recorded evidence, without the intent losing its identity (ASMA-7869).
+    assert_eq!(SCHEMA_VERSION, 109);
 }
 
 #[test]
