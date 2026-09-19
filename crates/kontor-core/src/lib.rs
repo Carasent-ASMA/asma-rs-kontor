@@ -111,6 +111,7 @@ pub mod spec;
 pub mod state;
 pub mod succession;
 pub mod ticket;
+pub mod tpm_lineage;
 
 /// Every domain rejection in this crate.
 ///
