@@ -5939,6 +5939,37 @@ impl RuntimeAdapter for PaseoAdapter {
         self.lock().epochs.adopt(pairs)
     }
 
+    /// Restore this one message's ledger entry as confirmation-unknown.
+    ///
+    /// `PaseoCheckpoint::fresh` is what production builds, so a restart leaves
+    /// this ledger empty and a retry of an unconfirmed delivery would be admitted
+    /// as a first attempt. The control plane's durable issuance record is the
+    /// memory this process lacks, and this is how it is handed back — one
+    /// message at a time, at the moment it matters, rather than by trusting a
+    /// checkpoint that was never persisted.
+    ///
+    /// An entry already here is left alone. An acknowledged delivery must not be
+    /// downgraded to unknown, and `admit` still refuses a reused id whose body
+    /// changed, so the contradiction check survives the restore.
+    fn note_unconfirmed_delivery(
+        &self,
+        message_id: MessageId,
+        body_hash: &ContentHash,
+    ) -> RuntimeResult<()> {
+        let state = &mut *self.lock();
+        if matches!(
+            state.messages.admit(&message_id, body_hash)?,
+            Admission::New
+        ) {
+            state.messages.record(
+                message_id,
+                body_hash.clone(),
+                PaseoDelivery::ConfirmationUnknown,
+            );
+        }
+        Ok(())
+    }
+
     /// At most `max_pages` pages of the newest content, never a walk to origin.
     ///
     /// The same backwards stepping the cursor-free [`RuntimeAdapter::history`]

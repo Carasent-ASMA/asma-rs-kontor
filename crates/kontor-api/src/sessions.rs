@@ -1055,21 +1055,31 @@ pub async fn send_message(
     // seen is already in it. Recording after a successful send would leave the
     // ids whose acknowledgement was lost — exactly the ones an operator has to
     // reason about — absent from the record that decides they are settleable.
-    state.record_message_issuance(
+    let issuance = state.record_message_issuance(
         session.snapshot.identity(),
         session.snapshot.binding_id(),
         message_id,
         "session_message_send",
         idempotency_key(&state, &headers)?.as_str(),
     )?;
+    // A replay arriving at an adapter that was rebuilt since the first attempt
+    // has to reconcile before it sends, and only this side still remembers that
+    // there *was* a first attempt.
+    let request = SendMessageRequest {
+        binding: session.snapshot.clone(),
+        message_id,
+        body,
+        sent_at: now(),
+    };
+    state.note_replayed_issuance(
+        session.adapter.as_ref(),
+        issuance,
+        message_id,
+        &request.body_hash(),
+    )?;
     let acknowledged = session
         .adapter
-        .send(&SendMessageRequest {
-            binding: session.snapshot.clone(),
-            message_id,
-            body,
-            sent_at: now(),
-        })
+        .send(&request)
         .await
         .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
     // Where it landed, recorded the moment the runtime says so. The issuance
