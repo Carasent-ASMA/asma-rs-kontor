@@ -973,6 +973,24 @@ impl Services {
         })
     }
 
+    /// A migration waits for already-started native operations to drain.
+    /// Queueing the writer prevents recurring background reads from starving it.
+    async fn native_migration_change(
+        &self,
+    ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ApiError> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.native_lifecycle_guard.write(),
+        )
+        .await
+        .map_err(|_| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "native topology work is in progress; migration wait timed out before any write",
+            )
+        })
+    }
+
     /// Build the runtime-neutral scope for one epic or task from durable state.
     ///
     /// A legacy adapter may supply its exact configured scope only while the
@@ -22093,7 +22111,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &TeamDefinitionUpgradeApplyRequest,
     ) -> Result<AppliedTeamDefinitionUpgradeDto, ApiError> {
-        let _native_lifecycle = self.native_lifecycle_change()?;
+        let _native_lifecycle = self.native_migration_change().await?;
         let state = self.state()?;
         let project = self.project_at(project_id, request.upgrade.expected_revision)?;
         let aggregate = AggregateRef::MiniProject {
@@ -40709,6 +40727,50 @@ impl Services {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn a_native_migration_waits_for_inflight_work_without_admitting_new_readers() {
+        let directory = tempfile::tempdir().expect("isolated state");
+        let services = Services::new(
+            RealmId::generate(),
+            crate::DEFAULT_CAPACITY,
+            kontor_jira::JiraConnectors::read(directory.path()).expect("no connectors"),
+            directory.path().join("runtime-roots"),
+            crate::usage::UsagePoller::discover(directory.path()),
+            Vec::new(),
+            None,
+        )
+        .expect("services");
+        let existing = services.native_activity().expect("existing work started");
+        let migration = services.native_migration_change();
+        tokio::pin!(migration);
+        std::future::poll_fn(|context| {
+            assert!(
+                std::future::Future::poll(migration.as_mut(), context).is_pending(),
+                "a migration must queue behind in-flight work, not refuse immediately"
+            );
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert!(
+            services.native_activity().is_err(),
+            "new readers cannot starve the queued migration"
+        );
+        drop(existing);
+        let exclusive = tokio::time::timeout(std::time::Duration::from_secs(1), migration)
+            .await
+            .expect("migration resumes when existing work drains")
+            .expect("exclusive migration authority");
+        assert!(
+            services.native_activity().is_err(),
+            "native work stays fenced during migration"
+        );
+        drop(exclusive);
+        assert!(
+            services.native_activity().is_ok(),
+            "native work resumes after migration"
+        );
+    }
 
     /// After a valid same-external-ID rename, every write addresses the key
     /// Jira reports now — and the superseded key cannot be reached.
