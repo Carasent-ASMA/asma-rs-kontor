@@ -29,6 +29,8 @@
 //! * a secret, a runtime endpoint or a transcript reaching the database, the
 //!   contract document, a response or a stored event row.
 
+// This binary uses part of the shared harness; the rest is not dead code.
+#[allow(dead_code)]
 mod harness;
 
 #[tokio::test]
