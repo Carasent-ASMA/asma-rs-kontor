@@ -14220,7 +14220,10 @@ impl QuotaOutlook<'_> {
     /// default route while keeping its declared effort.
     fn effective_rungs(&self, rungs: &[ModelRung]) -> kontor_core::DomainResult<Vec<ModelRung>> {
         let Some(pin) = self.account else {
-            return Ok(rungs.to_vec());
+            // Unpinned delivery routes need the same declared account aliases
+            // as consultations. Preserve explicit aliases and model/effort;
+            // the shared headroom walk still requires exact fresh evidence.
+            return Ok(consultation_account_rungs(rungs, self.accounts));
         };
         let Some(account) = self
             .accounts
@@ -41509,6 +41512,115 @@ mod tests {
         assert_eq!(frozen[0].provider.0, "claude-work");
         assert_eq!(frozen[0].model.0, "claude-opus-5");
         assert_eq!(frozen[0].effort, Some(EffortLevel::Xhigh));
+    }
+
+    #[test]
+    fn unpinned_generic_routes_use_exact_declared_alias_evidence_without_changing_models() {
+        use kontor_core::repository::ProviderQuotaState;
+        use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
+        use kontor_scheduler::headroom::{Placement, SeatClass};
+        let selected = AccountProfileId::generate();
+        let other = AccountProfileId::generate();
+        let accounts = [
+            EligibleAccount {
+                account_profile_id: selected,
+                selectable_providers: BTreeSet::from(["codex-personal".to_owned()]),
+            },
+            EligibleAccount {
+                account_profile_id: other,
+                selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+            },
+        ];
+        let now = Timestamp::from_second(1000).unwrap();
+        let route = ModelRung {
+            provider: ProviderRef("codex".to_owned()),
+            model: ModelRef("gpt-5.6-sol".to_owned()),
+            effort: Some(EffortLevel::High),
+        };
+        let current = ProviderQuotaState {
+            project_id: kontor_core::id::ProjectId::generate(),
+            account_profile_id: selected,
+            provider: "codex-personal".to_owned(),
+            state: ProviderQuotaKind::Available,
+            resets_at: None,
+            windows: Vec::new(),
+            credit: None,
+            evidence_hash: ContentHash::of(b"actual exact-alias quota report"),
+            source: ProviderQuotaSource::ProviderReport,
+            observed_at: now,
+            provenance_id: None,
+            revision: kontor_core::id::AggregateRevision::INITIAL,
+            updated_at: now,
+        };
+        let resolve = |states: &[ProviderQuotaState], declared: &[ModelRung]| {
+            let outlook = QuotaOutlook {
+                states,
+                account: None,
+                accounts: &accounts,
+                headroom: HeadroomConfig::state_only(),
+                freshness: jiff::SignedDuration::from_secs(60),
+                now,
+            };
+            let effective = outlook.effective_rungs(declared).unwrap();
+            kontor_scheduler::headroom::resolve(
+                &effective,
+                &outlook.candidates(&effective),
+                states,
+                &outlook.headroom,
+                SeatClass::Delivery,
+                now,
+                outlook.freshness,
+                |_| true,
+            )
+            .unwrap()
+        };
+        assert!(
+            matches!(resolve(std::slice::from_ref(&current), std::slice::from_ref(&route)),
+            Placement::Admit { account, rung } if account == selected
+                && rung.provider.0 == "codex-personal" && rung.model == route.model
+                && rung.effort == route.effort),
+            "a generic frozen route must reach its fresh exact governed account alias"
+        );
+        for invalid in 0..5 {
+            let mut evidence = current.clone();
+            match invalid {
+                0 => evidence.provider = "codex".to_owned(),
+                1 => evidence.account_profile_id = other,
+                2 => evidence.observed_at = Timestamp::from_second(1).unwrap(),
+                3 => evidence.observed_at = Timestamp::from_second(1001).unwrap(),
+                _ => {
+                    evidence.state = ProviderQuotaKind::Exhausted;
+                    evidence.resets_at = Some(Timestamp::from_second(2000).unwrap());
+                }
+            }
+            assert!(
+                !matches!(
+                    resolve(&[evidence], std::slice::from_ref(&route)),
+                    Placement::Admit { .. }
+                ),
+                "alias expansion cannot weaken exact-account evidence, freshness, or exhaustion: case {invalid}"
+            );
+        }
+        assert!(!matches!(
+            resolve(&[], std::slice::from_ref(&route)),
+            Placement::Admit { .. }
+        ));
+        let mut explicit = route.clone();
+        explicit.provider = ProviderRef("codex-work".to_owned());
+        assert!(
+            !matches!(
+                resolve(std::slice::from_ref(&current), &[explicit]),
+                Placement::Admit { .. }
+            ),
+            "an explicit unavailable alias cannot silently choose another account"
+        );
+        let mut foreign = current;
+        foreign.account_profile_id = other;
+        foreign.provider = "claude-work".to_owned();
+        assert!(
+            !matches!(resolve(&[foreign], &[route]), Placement::Admit { .. }),
+            "an unpinned generic route never gains a cross-provider fallback"
+        );
     }
 
     #[test]
