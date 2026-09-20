@@ -14345,6 +14345,19 @@ pub(crate) fn model_route_is_catalogued(rung: &ModelRung) -> bool {
         ("opencode", "deepseek/deepseek-v4-flash" | "deepseek/deepseek-flash") => {
             effort_is(&["low", "high", "max"])
         }
+        // ASMA-8237: the approved watchdog fallback routes, at the exact
+        // provider-native ids and effort ceilings the catalog advertises.
+        // Recognition only: whether a route is *reachable* still depends on
+        // account headroom, role eligibility, provider availability and
+        // template authority, which remain the separate gates they already are.
+        ("codex" | "codex-work" | "codex-personal", "gpt-5.6-luna") => {
+            effort_is(&["low", "medium", "high", "xhigh", "max"])
+        }
+        ("cursor", "auto-smart") => effort_is(&["low", "medium", "high", "xhigh"]),
+        ("opencode", "openrouter/z-ai/glm-5.3-flash") => effort_is(&["low", "high", "max"]),
+        ("opencode", "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free") => {
+            effort_is(&["medium", "high"])
+        }
         _ => false,
     }
 }
@@ -41342,6 +41355,73 @@ mod tests {
             }),
             "a listed route is still admitted"
         );
+    }
+
+    /// ASMA-8237 / OQ-002: the routes the catalog advertises are the routes a
+    /// request may actually name, at exactly the advertised effort ceilings.
+    ///
+    /// `9f61c74a` advertised these six routes in `model_catalog` but left
+    /// `model_route_is_catalogued` — the predicate every write path consults —
+    /// unable to recognize any of them, so each was refused indistinguishably
+    /// from an invented alias. This pins both directions: the approved routes
+    /// and their chain efforts are admitted, and an effort above the advertised
+    /// ceiling is still refused, so recognition cannot be widened into a
+    /// blanket accept. Recognition only — headroom, eligibility, availability
+    /// and template authority are asserted nowhere here and remain separate.
+    #[test]
+    fn the_advertised_watchdog_fallback_routes_are_recognized_at_their_exact_ceilings() {
+        let route = |provider: &str, model: &str, effort: &str| RuntimeModelRouteRequest {
+            provider: provider.to_owned(),
+            model: model.to_owned(),
+            effort: Some(effort.to_owned()),
+        };
+        // The approved chain efforts, primary first. Order is the published
+        // policy's; this asserts only that each rung is nameable.
+        for (provider, model, effort) in [
+            ("opencode", "deepseek/deepseek-flash", "max"),
+            ("codex", "gpt-5.6-luna", "xhigh"),
+            ("opencode", "openrouter/z-ai/glm-5.3-flash", "high"),
+            ("cursor", "auto-smart", "high"),
+            (
+                "opencode",
+                "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+                "high",
+            ),
+        ] {
+            assert!(
+                parse_runtime_model_route(&route(provider, model, effort)).is_ok(),
+                "approved chain route {provider}/{model}@{effort} is nameable"
+            );
+        }
+        // Each Codex account alias reaches Luna: the alias changes the
+        // credential home, never the model.
+        for provider in ["codex", "codex-work", "codex-personal"] {
+            assert!(
+                parse_runtime_model_route(&route(provider, "gpt-5.6-luna", "max")).is_ok(),
+                "{provider} reaches Luna at its ceiling"
+            );
+        }
+        // Efforts above the advertised ceiling stay refused. Nemotron `max` is
+        // the invented option the catalog regression was written to exclude.
+        for (provider, model, effort) in [
+            (
+                "opencode",
+                "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+                "max",
+            ),
+            ("cursor", "auto-smart", "max"),
+            ("codex", "gpt-5.6-luna", "ultra"),
+            ("opencode", "openrouter/z-ai/glm-5.3-flash", "medium"),
+        ] {
+            assert_eq!(
+                parse_runtime_model_route(&route(provider, model, effort)),
+                Err(kontor_core::DomainError::invalid(
+                    "RuntimeModelRouteRequest",
+                    "the model route is not in the governed catalog",
+                )),
+                "{provider}/{model} refuses the off-ceiling effort {effort}"
+            );
+        }
     }
     #[test]
     fn a_native_launch_refusal_keeps_its_exact_actionable_reason_in_scheduler_evidence() {
