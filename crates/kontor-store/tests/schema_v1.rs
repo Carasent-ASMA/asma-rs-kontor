@@ -40,6 +40,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "capacity_observations",
     "child_calendar_windows",
     "command_outbox",
+    "local_command_results",
+    "legacy_dispatch_local_confirmation_provenance",
     "command_receipt_transitions",
     "command_receipts",
     "command_targets",
@@ -736,7 +738,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // (ASMA-8234).
     // v112 makes question history and its retry receipt one atomic effect.
     // v114 preserves the authorized container-recovery disposition on replay.
-    assert_eq!(SCHEMA_VERSION, 114);
+    // v115 confirms atomic local effects and preserves their exact results.
+    assert_eq!(SCHEMA_VERSION, 115);
 }
 
 #[test]
@@ -5036,6 +5039,18 @@ fn all_logical_relationships_are_project_scoped_and_fk_backed() {
         ),
         (
             "legacy_local_command_confirmation_provenance",
+            &["project_id", "receipt_id"],
+            "command_receipts",
+            &["project_id", "id"],
+        ),
+        (
+            "local_command_results",
+            &["project_id", "receipt_id"],
+            "command_receipts",
+            &["project_id", "id"],
+        ),
+        (
+            "legacy_dispatch_local_confirmation_provenance",
             &["project_id", "receipt_id"],
             "command_receipts",
             &["project_id", "id"],

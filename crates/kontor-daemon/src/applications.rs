@@ -30207,7 +30207,7 @@ impl ApplicationOperations for Services {
         let now = kontor_api::now();
         let command = ReceiptEnvelope::new(
             state.realm_id(),
-            NewCommandIntent {
+            NewLocalCommand {
                 project_id,
                 receipt_id: CommandReceiptId::generate(),
                 idempotency_key: key.clone(),
@@ -30215,9 +30215,6 @@ impl ApplicationOperations for Services {
                 target,
                 target_revision: task.revision,
                 intent: intent.clone(),
-                payload: intent,
-                desired: None,
-                not_before: now,
                 created_at: now,
             },
         );
@@ -40195,7 +40192,7 @@ impl Services {
         };
         let command = ReceiptEnvelope::new(
             state.realm_id(),
-            NewCommandIntent {
+            NewLocalCommand {
                 project_id,
                 receipt_id,
                 idempotency_key: key.clone(),
@@ -40203,9 +40200,6 @@ impl Services {
                 target,
                 target_revision: task.revision,
                 intent: intent.clone(),
-                payload: intent.clone(),
-                desired: None,
-                not_before: now,
                 created_at: now,
             },
         );

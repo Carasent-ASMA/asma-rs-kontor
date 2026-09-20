@@ -9656,6 +9656,38 @@ async fn lifecycle_transitions_are_legal_revisioned_and_gated() {
     .await;
     assert_eq!(blocked.status, 200, "{}", blocked.body);
     assert_eq!(blocked.json()["state"], "blocked");
+    let local_receipt = world.daemon.state().with_store(|store| {
+        let receipt = store
+            .get_receipt_by_key(&kontor_core::id::IdempotencyKey::parse("life-block").expect("key"))
+            .expect("lookup")
+            .expect("local receipt");
+        let history = store
+            .receipt_history(receipt.project_id, receipt.id)
+            .expect("receipt history");
+        assert_eq!(
+            history.last().expect("confirmed history").state,
+            kontor_core::receipt::CommandReceiptState::Confirmed
+        );
+        assert_eq!(
+            history.last().expect("confirmed history").evidence_ref,
+            receipt.result_ref
+        );
+        receipt
+    });
+    assert_eq!(
+        local_receipt.state,
+        kontor_core::receipt::CommandReceiptState::Confirmed
+    );
+    assert!(local_receipt.native_identity.is_none());
+    let connection =
+        rusqlite::Connection::open(world.directory.path().join(kontor_daemon::DATABASE_FILE))
+            .expect("database");
+    let (mode, outbox_count): (String, i64) = connection.query_row(
+        "SELECT execution_mode, (SELECT count(*) FROM command_outbox WHERE receipt_id = r.id) FROM command_receipts r WHERE id = ?1",
+        [local_receipt.id.to_string()], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).expect("local command mode");
+    assert_eq!(mode, "local");
+    assert_eq!(outbox_count, 0);
     let held_revision = blocked.json()["revision"].as_u64().expect("revision");
 
     // Resume returns the task to ordinary scheduler eligibility. Nothing about it
@@ -15445,7 +15477,7 @@ enum Corruption {
 
 /// Break one gate-recording receipt's stored exact result binding.
 ///
-/// An outbox payload is immutable by trigger, which is exactly why an invalid
+/// An local result payload is immutable by trigger, which is exactly why an invalid
 /// binding is a storage-damage scenario rather than something a caller can
 /// produce. The fixture lifts that guard to manufacture the damage and restores
 /// it from the trigger's own stored definition, so no test can leave the
@@ -15456,18 +15488,18 @@ fn corrupt_gate_record_binding(world: &World, receipt: &str, corruption: Corrupt
     let guard: String = connection
         .query_row(
             "SELECT sql FROM sqlite_master
-             WHERE type = 'trigger' AND name = 'command_outbox_payload_immutable'",
+             WHERE type = 'trigger' AND name = 'local_command_results_no_update'",
             [],
             |row| row.get(0),
         )
-        .expect("the outbox immutability trigger exists");
+        .expect("the local result immutability trigger exists");
     connection
-        .execute("DROP TRIGGER command_outbox_payload_immutable", [])
+        .execute("DROP TRIGGER local_command_results_no_update", [])
         .expect("the fixture may lift its own guard");
     corrupt_binding_unguarded(&connection, receipt, corruption);
     connection
         .execute(&guard, [])
-        .expect("the outbox immutability trigger is restored");
+        .expect("the local result immutability trigger is restored");
 }
 
 /// The corruption itself, with the immutability guard already lifted.
@@ -15478,7 +15510,7 @@ fn corrupt_binding_unguarded(
 ) {
     let (payload, hash): (String, String) = connection
         .query_row(
-            "SELECT payload, payload_hash FROM command_outbox WHERE receipt_id = ?1",
+            "SELECT payload, payload_hash FROM local_command_results WHERE receipt_id = ?1",
             rusqlite::params![receipt],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -15490,7 +15522,7 @@ fn corrupt_binding_unguarded(
             // Same bytes, a digest that no longer vouches for them.
             connection
                 .execute(
-                    "UPDATE command_outbox SET payload_hash = ?1 WHERE receipt_id = ?2",
+                    "UPDATE local_command_results SET payload_hash = ?1 WHERE receipt_id = ?2",
                     rusqlite::params!["0".repeat(64), receipt],
                 )
                 .expect("the stored digest is replaced");
@@ -15526,7 +15558,7 @@ fn corrupt_binding_unguarded(
     );
     connection
         .execute(
-            "UPDATE command_outbox SET payload = ?1, payload_hash = ?2 WHERE receipt_id = ?3",
+            "UPDATE local_command_results SET payload = ?1, payload_hash = ?2 WHERE receipt_id = ?3",
             rusqlite::params![rewritten.json(), rewritten.hash().as_str(), receipt],
         )
         .expect("the stored payload is replaced");
