@@ -1040,7 +1040,7 @@ fn profile_durability(bundle: &mut Bundle) {
                 key: key.clone(),
                 locator: document(&format!("locator-{key}")),
                 producer_role: role(REVIEWER_ROLE),
-                producer_account: fixture.subject.account,
+                producer_account: Some(fixture.subject.account),
                 recorded_at: at(DECIDED_AT),
             })
         {

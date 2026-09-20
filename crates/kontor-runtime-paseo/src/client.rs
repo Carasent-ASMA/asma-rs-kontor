@@ -956,6 +956,26 @@ impl PaseoRpc {
         )
     }
 
+    /// `project.remove.request`, addressed by exact durable project id.
+    ///
+    /// The id and nothing else. Paseo will remove a project selected by a
+    /// display name or a path just as willingly, and both are values several
+    /// projects on one host can share — which is precisely the mistake this
+    /// shape exists to make unrepresentable.
+    ///
+    /// Available only when the exact connection advertises
+    /// [`crate::wire::PaseoFeature::ProjectRemove`]; the caller checks, because
+    /// a command shape cannot refuse.
+    #[must_use]
+    pub fn project_remove(request_id: String, project_id: &str) -> Self {
+        Self::mutate(
+            "project.remove.request",
+            "project.remove.response",
+            request_id,
+            serde_json::json!({ "projectId": project_id }),
+        )
+    }
+
     /// `fetch_workspaces_request`, narrowed to one project and one bounded page.
     ///
     /// Paseo has no fetch-one-workspace request; the authoritative readback of a

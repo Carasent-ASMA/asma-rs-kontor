@@ -1,0 +1,92 @@
+{
+  "approved_inputs": {
+    "high_change_approved": true,
+    "high_change_current": true,
+    "high_change_item": "artifact-asma-8204-high-change-81367993",
+    "high_change_revision": 1,
+    "high_change_revision_id": "01a0b53f-c3c7-7a61-96b9-8b016040716f",
+    "high_scope_record": "docs/evidence/ASMA-8204/HIGH-SCOPE-RECORD.md",
+    "rejected_report_item": "artifact-asma-8204-high-verification-report-0e5a0bec",
+    "rejected_report_revision": 1
+  },
+  "artifact": "high-verification-report",
+  "baseline_reconciliation": "The ten stable failures were independently shown by the predecessor verifier to pass on origin/master e19ccd3df68ecb75dd9b4f99a432602f4394bb9f. This remediation changes only the Paseo containment predicate/tests and evidence docs, so their attribution is unchanged.",
+  "controls": {
+    "authoritative_checkout_clean": true,
+    "code_modified": false,
+    "deployment": false,
+    "disposable_mutation_worktree_removed": true,
+    "jira_changed": false,
+    "live_native_project_removed": false,
+    "topology_changed": false
+  },
+  "epic_id": "01a0abdd-b84e-7be2-a1f6-b9f34aae8c23",
+  "evaluator_account": "01a02d6a-ffa7-75c3-b39e-c62099f41ec7",
+  "evaluator_role": "fleet-verifier",
+  "findings": [],
+  "hv_001": {
+    "correction": "within() now compares std::path components. Filesystem root contains every absolute descendant while textual-prefix siblings remain outside; malformed cwd spellings fail closed into refusal.",
+    "independent_mutation": "Restoring the rejected prefix-with-separator predicate in an isolated detached worktree killed both seams: the unit test failed on /dangling-session under /, and the contract test reached the removal path and returned CorrelationFailed instead of the session refusal. The mutation was reverted and the temporary worktree was removed.",
+    "pristine_evidence": [
+      "containment unit coverage passed for exact, descendant, filesystem-root, textual-prefix sibling, ancestor, unrelated, trailing-separator, and malformed spellings",
+      "native_root_removal_refuses_a_live_session_under_the_filesystem_root passed and asserted both the session-gate refusal and zero mutations"
+    ],
+    "source_review": "The path predicate remains refusal-only and does not select any project for deletion.",
+    "verdict": "CLOSED"
+  },
+  "mutation_evidence": {
+    "cumulative_result": "9/9 killed independently across the predecessor verification and this remediation verification.",
+    "new_mutant": "MUT-8204-i independently killed at both helper and end-to-end effect seams with non-vacuous reachability.",
+    "prior_eight": "MUT-009a, MUT-009b and MUT-8204-c through MUT-8204-h were independently killed at 0e5a0bec; the remediation diff does not touch their seams, and their focused store/daemon/Paseo suites pass at 81367993."
+  },
+  "oq_002": {
+    "assessment": "The blocking filesystem-root false negative is closed. The remaining out-of-tree association limitation is accurately recorded and is bounded by the preceding zero-workspace proof; no unsupported project-scoped agent listing exists in Paseo 0.8.0.",
+    "disposition": "Resolved as documented."
+  },
+  "produced_by_agent_run_id": "01a0b318-4afd-7d72-84d1-fa83aed4d430",
+  "produced_by_role_slot": "verify",
+  "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+  "recommendation": "PASS",
+  "schema_version": 1,
+  "scope_verdicts": {
+    "adopted_and_project_wide_roots": "PASS — adopted roots remain preserved and the unscoped project root stays outside this lifecycle route.",
+    "child_before_parent": "PASS — store transactional guard still refuses a parent while any direct child is not archived.",
+    "closeout_order_and_dispatch": "PASS — NativeChild/NativeRoot shape dispatch remains exact; the daemon closeout regression passes.",
+    "completion_gate": "PASS — root retirement/archive remains restricted to CompletionPhase::Done; structural refusal precedence remains preserved.",
+    "identity_retention": "PASS — topology, binding, native identity, cwd and durable receipts remain stored after native absence.",
+    "physical_root_cleanup": "PASS — fresh exact identity and canonical-root proof, zero workspace proof, corrected zero-session proof, advertised projectRemove capability, and exact-id project.remove.request remain required before effect.",
+    "preserved_child_path": "PASS — child parent scan, quiet-workspace proof, exact archive and absence proof are unchanged.",
+    "removal_evidence_and_replay": "PASS — acknowledgement remains discarded; a fresh complete project listing proves exact-ID absence, and prior absence replays unchanged."
+  },
+  "source": {
+    "branch": "feat/ASMA-8204-archive-epic-roots-after-evidence-backed-closeout",
+    "checkout_clean": true,
+    "code_head": "158fc5a0c9995ff12ee4bd5dd3f73f893b2ed17c",
+    "diff_check_clean": true,
+    "head": "813679930fc770306285f48def40d92d388421de",
+    "parent": "158fc5a0c9995ff12ee4bd5dd3f73f893b2ed17c",
+    "rejected_predecessor": "0e5a0becc700759c04bd710d69f1df4426f2ad99",
+    "remote_exact": true
+  },
+  "status": "current",
+  "task_id": "01a0ac9d-a96e-7de1-abfe-3d340ec5fea4",
+  "tests": {
+    "focused": [
+      "cargo test -p kontor-runtime-paseo: 113 unit + 213 contract passed; 6 live-only ignored",
+      "daemon exact epic-root closeout regression: 1 passed",
+      "store exact retired-child parent-archive refusal: 1 passed",
+      "cargo clippy -p kontor-runtime-paseo --all-targets -- -D warnings: passed",
+      "changed Rust files rustfmt --edition 2024 --check: passed"
+    ],
+    "formatting": "Workspace fmt reports only the pre-existing untouched crates/kontor-teams/tests/team_contract.rs drift; both remediation Rust files are fmt-clean.",
+    "full": "cargo test --workspace --locked --no-fail-fast --exclude kontor-tests-e2e: 2492 passed, 11 failed. The failure set is the same ten stale-base failures previously reconciled against origin/master plus the known intermittent concurrent-first-open DatabaseBusy observation.",
+    "full_failures": {
+      "loopback_api": "8 previously reconciled stale-base failures; 336 passed, 8 failed, 1 ignored",
+      "mcp_journey": "1 previously reconciled stale-base failure",
+      "openapi_contract": "1 previously reconciled stale-base failure",
+      "schema_v1": "1 intermittent DatabaseBusy; exact retry passed 1/1"
+    }
+  },
+  "title": "ASMA-8204 high-verification at 81367993 — HV-001 remediated",
+  "type": "artifact"
+}

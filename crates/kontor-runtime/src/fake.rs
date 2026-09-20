@@ -3483,24 +3483,38 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     ) -> RuntimeResult<crate::container::ArchiveContainerOutcome> {
         let mut state = self.lock();
         state.require_plane()?;
+        // The shape decides what ancestry may be named at all, before anything
+        // is compared against what this plane holds.
+        let parent = request.parent_project()?;
         let bound =
             state
                 .containers
                 .get(&request.topology_node_id)
                 .ok_or(RuntimeError::StaleBinding {
-                    rule: "the child binding is unknown",
+                    rule: "the container binding is unknown",
                 })?;
-        if request.projection != ContainerProjection::NativeChild
-            || bound.binding.projection != ContainerProjection::NativeChild
+        if bound.binding.projection != request.projection
             || bound.binding.id != request.container_binding_id
             || bound.binding.identity != request.identity
             || bound.binding.root.as_ref() != Some(&request.canonical_cwd)
-            || state.container_parents.get(&request.topology_node_id)
-                != Some(&request.bound_project_native_id)
+            || state.container_parents.get(&request.topology_node_id) != parent
         {
             return Err(RuntimeError::WorkspaceMismatch {
-                rule: "the archive request contradicts the native child binding",
+                rule: "the archive request contradicts the native container binding",
             });
+        }
+        // Leaves before roots, repeated here because this is the last point
+        // before the destructive effect. A root whose children are still
+        // present natively is occupied, whatever the logical plane believes.
+        if request.projection == ContainerProjection::NativeRoot {
+            let native_id = &request.identity.native_id;
+            if state.container_parents.iter().any(|(node, project)| {
+                project == native_id && !state.archived_containers.contains(node)
+            }) {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the native root still holds an unarchived child",
+                });
+            }
         }
         let changed = state.archived_containers.insert(request.topology_node_id);
         if changed {
