@@ -57,10 +57,10 @@ existing `StartupError::Store`. Absence is not an error.
 The conversion is reused, not duplicated. `applications.rs:13165` exposes
 `pub(crate) fn stored_capacity`, which wraps the existing private
 `StoredCeilings` deserialization and the existing `capacity_config`
-wire-to-domain conversion and validates the result. The startup loader and the
-configuration read surface now go through the same function, so the realm cannot
-compose one policy and report another. The store was not taught any scheduler
-semantics.
+wire-to-domain conversion and validates the result. The startup loader uses this
+helper. The existing configuration read surface still deserializes
+`StoredCeilings` directly and performs its existing wire-to-domain conversion;
+it does not call `stored_capacity`. The store was not taught scheduler semantics.
 
 ### 3. Truthful `restart_required` on apply
 
@@ -222,3 +222,46 @@ the live target — revision 1 at `20/13/12/4/4/13`, adaptive `4/1/12/1`,
 belongs after the verify slot clears this candidate.
 
 Hand to the original `verify` slot with OQ-8200-01 unresolved and visible.
+
+## 2026-09-20 corrective implementation — HV-8200-001
+
+Independent verification rejected the original candidate because startup
+validated the seed before reading the durable policy. A valid stored policy
+could therefore be vetoed by an invalid seed that should never be used. The
+finding reproduced on integration base `0f649824` with a complete stored policy
+`9/7/5/3/2/6`, adaptive `2/1/5/1`, and a seed with global ceiling zero.
+
+The correction moves seed validation into `capacity_in_force`'s absent-row
+branch. A present row remains authoritative; unreadable or invalid stored
+capacity still returns `StartupError::StoredCapacity`, including when the seed
+is also invalid. An absent row with an invalid seed returns
+`StartupError::Capacity`. No policy values, effective ceilings or live state are
+changed by this source repair.
+
+Startup documentation now states the actual order: the loopback check precedes
+filesystem changes; the store must open before selecting the capacity policy;
+capacity validation precedes credentials and service composition. A failed
+capacity selection releases the state-root lock. The earlier assertion that
+every invalid seed leaves no state root is incompatible with durable precedence
+and has been replaced with the relevant refusal, no-credentials and corrected
+restart checks.
+
+The retained regression
+`a_present_stored_capacity_is_authoritative_over_an_invalid_seed` failed before
+the correction with the exact `Capacity` error reported by the verifier and
+passes after it. The absent-row regression proves typed refusal, no credential
+generation and a subsequent successful start with a valid seed. The stored
+failure regression now checks unreadable and zero-ceiling policies with both
+valid and invalid seeds.
+
+The evidence-integrity discrepancy above is corrected: startup uses
+`applications::stored_capacity`; the existing read surface still performs its
+own conversion. This remediation makes no claim that those call paths are
+shared.
+
+Qualification on the integration base: all 86 daemon library tests and all six
+capacity loopback tests passed, including restart/effective-policy/scheduler
+readback and configuration CAS/replay. In-scope formatting, whitespace checks and
+`cargo clippy --locked -p kontor-daemon --lib --tests -- -D warnings` passed.
+Independent re-verification remains separate from release and live
+restart; the recovery coordinator owns integration and deployment.

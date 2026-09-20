@@ -19,11 +19,12 @@
 //! validate config (loopback only)
 //!   → claim the state root (exclusive, no waiting)
 //!     → open + migrate the database  → the Realm's identity
-//!       → read or generate credentials
-//!         → build the adapter registry
-//!           → recover unfinished receipts, reconcile open bindings
-//!             → open the scheduling barrier
-//!               → serve
+//!       → select and validate stored capacity, or the seed when absent
+//!         → read or generate credentials
+//!           → build the adapter registry
+//!             → recover unfinished receipts, reconcile open bindings
+//!               → open the scheduling barrier
+//!                 → serve
 //! ```
 //!
 //! The barrier is last because everything above it answers a question a scheduler
@@ -154,13 +155,11 @@ pub enum StartupError {
         /// The address that was refused.
         address: SocketAddr,
     },
-    /// The configured admission ceilings are not a set the domain accepts.
+    /// The seed admission ceilings are invalid and no durable policy exists.
     ///
-    /// Judged before the state root is touched, for the same reason the bind
-    /// address is: a zero ceiling reads as "no work allowed" in one place and "no
-    /// limit" in another, and a Realm that starts on one would either admit
-    /// nothing or admit everything. Neither is a configuration an operator can
-    /// tell apart from a working one by watching it.
+    /// The store must be opened before this decision: a present durable policy
+    /// is authoritative even when the unused seed is invalid. With no stored
+    /// policy, the seed is validated before credentials or services are created.
     #[error("the configured admission capacity is not one a realm may admit work under: {source}")]
     Capacity {
         /// The domain's own refusal.
@@ -391,7 +390,8 @@ impl DaemonConfig {
 /// than promising a live reload.
 ///
 /// # Errors
-/// Returns [`StartupError::StoredCapacity`] when a *present* configuration
+/// Returns [`StartupError::Capacity`] when no configuration exists and the seed
+/// is invalid, [`StartupError::StoredCapacity`] when a *present* configuration
 /// cannot be read back or is not a set the domain accepts, and
 /// [`StartupError::Store`] when the row cannot be read at all. Refusing is the
 /// point: starting under the seed instead would enforce a policy nobody chose
@@ -407,8 +407,10 @@ fn capacity_in_force(
                 source: source.into(),
             })?
     else {
-        // Nothing durable to honour, so the seed stands. This is what a realm
-        // no operator has configured has always admitted under.
+        // Only an absent durable policy makes the seed authoritative. Validating
+        // it before reading the row would let an unused seed veto stored policy.
+        seed.validate()
+            .map_err(|source| StartupError::Capacity { source })?;
         return Ok(seed);
     };
     applications::stored_capacity(&stored.ceilings)
@@ -450,10 +452,12 @@ impl Daemon {
     /// that scheduling is blocked until it does.
     ///
     /// # Errors
-    /// Returns [`StartupError`] when the address is not loopback, the configured
-    /// capacity is not a set the domain accepts, the state root cannot be prepared
-    /// or claimed, the database cannot be opened, or the credentials cannot be
-    /// established. Every one of them leaves the state root exactly as it was.
+    /// Returns [`StartupError`] when the address is not loopback, the selected
+    /// capacity is not a set the domain accepts, the state root cannot
+    /// be prepared or claimed, the database cannot be opened, or credentials
+    /// cannot be established. The loopback check precedes filesystem changes;
+    /// selecting capacity requires opening the store but precedes credentials
+    /// and service composition. A failed start releases its state-root lock.
     pub fn start(config: DaemonConfig, runtimes: RuntimeRegistry) -> Result<Self, StartupError> {
         Self::start_with_supervision(config, runtimes, None, None)
     }
@@ -478,13 +482,9 @@ impl Daemon {
         supervision: Option<SupervisionPolicy>,
         usage_poller: Option<usage::UsagePoller>,
     ) -> Result<Self, StartupError> {
-        // The address and the ceilings are judged before anything is created, so a
-        // misconfigured daemon does not leave a lock file and a database behind.
+        // The address can be judged before touching the state root. Capacity
+        // selection must wait for the store: a durable policy supersedes the seed.
         config.ensure_loopback()?;
-        config
-            .capacity
-            .validate()
-            .map_err(|source| StartupError::Capacity { source })?;
         std::fs::create_dir_all(&config.state_root)
             .map_err(|source| StartupError::StateRoot { source })?;
         let lock = StateRootLock::acquire(&config.state_root)?;
@@ -1503,12 +1503,11 @@ mod tests {
         );
     }
 
-    /// A start under ceilings the domain refuses stops before the state root is
-    /// touched. The whole point of the check being in `start` and not in the
-    /// builder: the operator finds out at the moment they are watching, and the
-    /// directory is not left holding a lock and a database.
+    /// Without a stored policy the seed must be valid. Opening the store is
+    /// necessary to decide precedence, but refusal still precedes credentials
+    /// and service composition and must release the root for a corrected start.
     #[test]
-    fn a_capacity_the_domain_refuses_refuses_the_start_and_creates_nothing() {
+    fn an_invalid_seed_without_stored_capacity_refuses_start_and_releases_the_root() {
         let directory = tempfile::TempDir::new().expect("a temporary directory");
         let state_root = directory.path().join("realm");
         let refused = DEFAULT_CAPACITY;
@@ -1528,9 +1527,79 @@ mod tests {
             "the refusal names the capacity and not the pack: {error}"
         );
         assert!(
-            !state_root.exists(),
-            "a refused start leaves no state root behind"
+            !credentials::path_in(&state_root).exists(),
+            "capacity refusal must precede credential generation"
         );
+        let corrected = Daemon::start(
+            DaemonConfig::at(&state_root).with_port(0),
+            RuntimeRegistry::new(),
+        )
+        .expect("a corrected seed can claim the root after refusal");
+        assert_eq!(corrected.config().capacity, DEFAULT_CAPACITY);
+        corrected.shutdown();
+    }
+
+    #[test]
+    fn a_present_stored_capacity_is_authoritative_over_an_invalid_seed() {
+        let directory = tempfile::TempDir::new().expect("a temporary realm");
+        let stored = CapacityConfig {
+            global_max_in_flight: 9,
+            project_max_in_flight: 7,
+            mission_max_in_flight: 5,
+            account_max_in_flight: 3,
+            provider_max_in_flight: 2,
+            runtime_max_in_flight: 6,
+            adaptive: AdaptiveWindowConfig {
+                initial: 2,
+                floor: 1,
+                ceiling: 5,
+                growth_step: 1,
+            },
+            headroom: None,
+        };
+        let document = kontor_core::id::CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "ceilings": {
+                "global_max_in_flight": 9,
+                "project_max_in_flight": 7,
+                "mission_max_in_flight": 5,
+                "account_max_in_flight": 3,
+                "provider_max_in_flight": 2,
+                "runtime_max_in_flight": 6,
+                "adaptive": {"initial": 2, "floor": 1, "ceiling": 5, "growth_step": 1},
+            },
+        }))
+        .expect("the stored policy is canonical");
+        let realm_id = {
+            let store = SqliteStore::open(&directory.path().join(DATABASE_FILE))
+                .expect("the realm migrates");
+            store
+                .set_capacity_configuration(
+                    &document,
+                    &kontor_store::IdempotencyBinding {
+                        key: "authoritative-capacity-fixture".to_owned(),
+                        operation: "apply_capacity_configuration",
+                        fingerprint: document.hash().clone(),
+                        bound_at: kontor_api::now(),
+                    },
+                    kontor_core::id::AggregateRevision::INITIAL,
+                )
+                .expect("the valid durable policy is recorded");
+            store.realm_id()
+        };
+        let daemon = Daemon::start(
+            DaemonConfig::at(directory.path())
+                .with_port(0)
+                .with_capacity(CapacityConfig {
+                    global_max_in_flight: 0,
+                    ..DEFAULT_CAPACITY
+                }),
+            RuntimeRegistry::new(),
+        )
+        .expect("a valid stored policy is authoritative over an unused invalid seed");
+        assert_eq!(daemon.realm_id(), realm_id);
+        assert_eq!(daemon.config().capacity, stored);
+        daemon.shutdown();
     }
 
     /// A durable capacity configuration the composition root cannot honour
@@ -1545,7 +1614,7 @@ mod tests {
     /// would enforce a policy nobody chose while reporting no restart is owed.
     #[test]
     fn a_stored_capacity_the_composition_root_cannot_honour_refuses_the_start() {
-        fn refuse(ceilings: serde_json::Value) -> StartupError {
+        fn refuse(ceilings: serde_json::Value, seed: CapacityConfig) -> StartupError {
             let directory = tempfile::TempDir::new().expect("a temporary directory");
             let state_root = directory.path();
             let document = kontor_core::id::CanonicalDocument::from_value(&serde_json::json!({
@@ -1570,7 +1639,9 @@ mod tests {
                     .expect("the store records what it is given");
             }
             Daemon::start(
-                DaemonConfig::at(state_root).with_port(0),
+                DaemonConfig::at(state_root)
+                    .with_port(0)
+                    .with_capacity(seed),
                 RuntimeRegistry::new(),
             )
             .expect_err("a stored configuration this build cannot honour refuses the start")
@@ -1593,21 +1664,25 @@ mod tests {
             .as_object_mut()
             .expect("the fixture is an object")
             .remove("runtime_max_in_flight");
-        let error = refuse(truncated);
-        assert!(
-            matches!(error, StartupError::StoredCapacity { .. }),
-            "the refusal names the stored configuration and not the store: {error}"
-        );
-
         // Present, readable, and a set the domain refuses: a zero ceiling reads
         // as "no work allowed" in one place and "no limit" in another.
         let mut zeroed = complete;
         zeroed["account_max_in_flight"] = serde_json::json!(0);
-        let error = refuse(zeroed);
-        assert!(
-            matches!(error, StartupError::StoredCapacity { .. }),
-            "a stored zero ceiling is refused exactly as a composed one is: {error}"
-        );
+        for seed in [
+            DEFAULT_CAPACITY,
+            CapacityConfig {
+                global_max_in_flight: 0,
+                ..DEFAULT_CAPACITY
+            },
+        ] {
+            for unusable in [truncated.clone(), zeroed.clone()] {
+                let error = refuse(unusable, seed);
+                assert!(
+                    matches!(error, StartupError::StoredCapacity { .. }),
+                    "a present unusable policy is refused regardless of the seed: {error}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
