@@ -9189,6 +9189,7 @@ fn stale_container_recovery(stale_native_id: &str) -> ContainerRecoveryRequest {
         },
         bound_project_native_id: external(PROJECT_ID),
         canonical_cwd: root(),
+        task_container: true,
         expected_title: name(CANONICAL_NODE_TITLE),
         requested_at: at("2026-09-04T08:00:00Z"),
     }
@@ -9202,6 +9203,7 @@ fn stale_container_recreation(stale_native_id: &str) -> ContainerRecreationReque
         absent_identity: recovery.stale_identity,
         bound_project_native_id: recovery.bound_project_native_id,
         canonical_cwd: recovery.canonical_cwd,
+        task_container: recovery.task_container,
         expected_title: recovery.expected_title,
         requested_at: recovery.requested_at,
     }
@@ -9211,6 +9213,94 @@ fn stale_container_recreation(stale_native_id: &str) -> ContainerRecreationReque
 /// record's evidence items are stated in terms of.
 fn creates(plane: &Plane) -> Vec<String> {
     plane.daemon.mutations()
+}
+
+#[tokio::test]
+async fn container_recreation_refuses_non_worktree_ticket_readback() {
+    for kind in ["local_checkout", "directory", "checkout", "unknown"] {
+        let mut wrong_kind = v(WORKSPACE_LIST_NODE);
+        wrong_kind["entries"][0]["workspaceKind"] = serde_json::json!(kind);
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", wrong_kind);
+        let plane = Plane::fresh(recorded);
+
+        let error = plane
+            .adapter
+            .recreate_container(&stale_container_recreation("wks_stale"))
+            .await
+            .expect_err(
+                "matching path and title cannot turn a local checkout into a ticket worktree",
+            );
+        assert!(
+            matches!(error, RuntimeError::StaleBinding { .. }),
+            "{kind}: {error:?}"
+        );
+        assert_eq!(
+            creates(&plane).len(),
+            1,
+            "a refused readback must not create again"
+        );
+    }
+}
+
+#[tokio::test]
+async fn container_recovery_and_lost_creation_adoption_validate_subject_kind() {
+    for (task_container, kind, accepted) in [
+        (true, "worktree", true),
+        (true, "local_checkout", false),
+        (true, "directory", false),
+        (true, "checkout", false),
+        (true, "unknown", false),
+        (false, "worktree", true),
+        (false, "local_checkout", true),
+        (false, "directory", true),
+        (false, "checkout", false),
+        (false, "unknown", false),
+    ] {
+        let mut listing = v(WORKSPACE_LIST_NODE);
+        listing["entries"][0]["workspaceKind"] = serde_json::json!(kind);
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", listing);
+        let plane = Plane::fresh(recorded);
+        let mut recovery = stale_container_recovery("wks_stale");
+        recovery.task_container = task_container;
+        let mut recreation = stale_container_recreation("wks_stale");
+        recreation.task_container = task_container;
+
+        let recovery_result = plane.adapter.preview_container_recovery(&recovery).await;
+        let preview_result = plane
+            .adapter
+            .preview_container_recreation(&recreation)
+            .await;
+        let apply_result = plane.adapter.recreate_container(&recreation).await;
+        assert_eq!(
+            recovery_result.is_ok(),
+            accepted,
+            "recovery task={task_container} kind={kind}: {recovery_result:?}"
+        );
+        assert_eq!(
+            preview_result.is_ok(),
+            accepted,
+            "preview task={task_container} kind={kind}: {preview_result:?}"
+        );
+        assert_eq!(
+            apply_result.is_ok(),
+            accepted,
+            "apply task={task_container} kind={kind}: {apply_result:?}"
+        );
+        for result in [preview_result, apply_result].into_iter().flatten() {
+            assert!(!result.created, "adoption cannot create another workspace");
+        }
+        assert!(creates(&plane).is_empty());
+    }
 }
 
 /// Evidence item 1 (runtime half): exact native absent plus zero candidates

@@ -724,6 +724,8 @@ pub struct ContainerRecoveryRequest {
     pub bound_project_native_id: ExternalId,
     /// The canonical working directory stored with the stale binding.
     pub canonical_cwd: WorkspaceRoot,
+    /// Whether the owning topology node is task-scoped and requires a Git worktree.
+    pub task_container: bool,
     /// The current title rendered from the epic's existing naming authority.
     pub expected_title: ExternalName,
     /// When the recovery census was requested.
@@ -787,6 +789,8 @@ pub struct ContainerRecreationRequest {
     pub bound_project_native_id: ExternalId,
     /// The canonical working directory the replacement must occupy.
     pub canonical_cwd: WorkspaceRoot,
+    /// Whether the owning topology node is task-scoped and requires a Git worktree.
+    pub task_container: bool,
     /// The title rendered from the epic's existing naming authority.
     ///
     /// Applied as exact bytes. The adapter owns no naming template here for the

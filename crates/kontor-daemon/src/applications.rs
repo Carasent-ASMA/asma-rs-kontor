@@ -9695,12 +9695,22 @@ impl Services {
                 "the stale child has no persisted native project ancestor",
             )
         })?;
+        let recovery_node = state
+            .with_store(|store| store.get_topology_node(project_id, topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such topology node exists in this project",
+                )
+            })?;
         let recovery_request = ContainerRecoveryRequest {
             topology_node_id,
             container_binding_id: retitle.container_binding_id,
             stale_identity: expected.identity.clone(),
             bound_project_native_id: parent_native_id.clone(),
             canonical_cwd: canonical_root,
+            task_container: recovery_node.task_id.is_some(),
             expected_title: retitle.desired_title,
             requested_at: kontor_api::now(),
         };
@@ -9717,6 +9727,7 @@ impl Services {
                     absent_identity: recovery_request.stale_identity.clone(),
                     bound_project_native_id: recovery_request.bound_project_native_id.clone(),
                     canonical_cwd: recovery_request.canonical_cwd.clone(),
+                    task_container: recovery_request.task_container,
                     expected_title: recovery_request.expected_title.clone(),
                     requested_at: recovery_request.requested_at,
                 };

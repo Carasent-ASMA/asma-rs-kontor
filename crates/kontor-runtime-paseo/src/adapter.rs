@@ -1951,6 +1951,13 @@ impl PaseoAdapter {
                 rule: "the recreated container does not carry the exact rendered title",
             });
         }
+        if !container_workspace_kind(workspace.workspace_kind)
+            .is_applicable_to(request.task_container)
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: ContainerWorkspaceKind::refusal(request.task_container),
+            });
+        }
         if workspace.id == request.absent_identity.native_id.as_str() {
             return Err(RuntimeError::StaleBinding {
                 rule: "the runtime reported the absent native id as the replacement",
@@ -7527,6 +7534,13 @@ impl RuntimeAdapter for PaseoAdapter {
         if candidate.visible_title() != request.expected_title.as_str() {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the sole parent/path candidate does not carry the current configuration-rendered title",
+            });
+        }
+        if !container_workspace_kind(candidate.workspace_kind)
+            .is_applicable_to(request.task_container)
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: ContainerWorkspaceKind::refusal(request.task_container),
             });
         }
 
