@@ -1,5 +1,35 @@
 use super::*;
 
+/// This test reviews evidence, but every native admission still needs a real
+/// fixture account and a fresh immutable observation through the production writer.
+async fn refresh_committee_fixture_quota(world: &World, project: &str) {
+    prepare_fake_provider_headroom(world, project).await;
+    let project_id = ProjectId::parse(project).unwrap();
+    let accounts = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_account_profiles(project_id).unwrap());
+    for account in accounts {
+        for provider in kontor_accounts::selectable_providers(&account).unwrap() {
+            let family = provider.split('-').next().unwrap();
+            kontor_daemon::usage::record_exact(
+                &world.daemon.state(),
+                &account,
+                &provider,
+                &UsageReading {
+                    provider: family.to_owned(),
+                    limit_reached: false,
+                    windows: Vec::new(),
+                    credits_exhausted: false,
+                },
+                None,
+                None,
+            )
+            .expect("a fresh scripted provider report and immutable heartbeat");
+        }
+    }
+}
+
 #[tokio::test]
 async fn scoped_committee_reads_actual_subject_evidence_and_verified_report_without_peer_leakage() {
     let (world, seed, tpm) = reopened_completion_fixture("committee-subject-evidence").await;
@@ -101,6 +131,7 @@ async fn scoped_committee_reads_actual_subject_evidence_and_verified_report_with
             "expected_revision":epic_read.json()["revision"],"task_id":task_id,
         })
     };
+    refresh_committee_fixture_quota(&world, &seed.project).await;
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &invoke(None, "Subject evidence"),
@@ -240,6 +271,7 @@ async fn scoped_committee_reads_actual_subject_evidence_and_verified_report_with
         evidence["body"]["completion"]["integrations"]
     );
 
+    refresh_committee_fixture_quota(&world, &seed.project).await;
     let task_review = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &invoke(Some(task), "Ticket subject evidence"),
