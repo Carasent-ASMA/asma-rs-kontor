@@ -1309,6 +1309,30 @@ pub trait RuntimeAdapter: Send + Sync {
         Ok(())
     }
 
+    /// Register the canonical tail this message was issued after.
+    ///
+    /// Distinct from [`RuntimeAdapter::note_unconfirmed_delivery`] on purpose,
+    /// and the difference matters: this says only *where the transcript ended
+    /// when the id was minted*. It makes no claim that anything was delivered,
+    /// records no ledger entry, and never causes a send to be skipped. It exists
+    /// so a first attempt can bound its own reconciliation, which is the case a
+    /// replay-only hook cannot reach — and the case that made long sessions
+    /// unable to acknowledge anything at all.
+    ///
+    /// The value is always the one the durable issuance recorded, so a floor is
+    /// never raised after the fact.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when the adapter cannot accept the boundary.
+    fn note_issuance_boundary(
+        &self,
+        message_id: MessageId,
+        issued_after: TimelinePosition,
+    ) -> RuntimeResult<()> {
+        let _ = (message_id, issued_after);
+        Ok(())
+    }
+
     /// Declare that this message may already have been delivered, so a send of
     /// it must reconcile canonical history before reaching the wire.
     ///
@@ -1346,8 +1370,9 @@ pub trait RuntimeAdapter: Send + Sync {
         &self,
         message_id: MessageId,
         body_hash: &ContentHash,
+        issued_after: Option<TimelinePosition>,
     ) -> RuntimeResult<()> {
-        let _ = (message_id, body_hash);
+        let _ = (message_id, body_hash, issued_after);
         Ok(())
     }
 

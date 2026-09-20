@@ -13275,3 +13275,80 @@ async fn native_root_removal_refuses_a_live_session_under_the_filesystem_root() 
         "no project may be removed while a session is live inside it"
     );
 }
+
+/// The acknowledgement ceiling: a long session could not confirm any send.
+///
+/// Reconciliation walks back from the tail under `RECONCILE_PAGE_BUDGET` pages
+/// of `MAX_HISTORY_PAGE`, and refuses unless it reached the beginning — because
+/// only a complete read can count occurrences across a whole transcript. The
+/// exact `clientMessageId` is found on the first page, near the tail, and then
+/// discarded. Past two thousand canonical entries every send is therefore
+/// refused as confirmation-unknown however healthy the runtime is, which is what
+/// stopped large seats acknowledging messages that had plainly landed.
+///
+/// Both halves are asserted from one fixture, so the second is not taking the
+/// first on trust: with no recorded boundary the scan still exhausts its budget
+/// and still refuses, and with the boundary this issuance was recorded against
+/// it proves itself from the suffix and acknowledges the delivery that is
+/// already there.
+#[tokio::test]
+async fn a_long_session_acknowledges_from_a_bounded_suffix() {
+    let mut entries: Vec<serde_json::Value> = (1..=2400)
+        .map(|seq| {
+            if seq == 2300 {
+                user_entry(seq, MESSAGE)
+            } else {
+                assistant_entry(seq)
+            }
+        })
+        .collect();
+    entries.push(assistant_entry(2401));
+    let recorded = daemon().journaling(AGENT_ID, EPOCH_RAW, entries);
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let binding = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the seat launches")
+        .snapshot;
+    let request = message(&binding, "reconcile this");
+    let wanted = MessageId::parse(MESSAGE).expect("pinned");
+
+    // Without a boundary: whole history is required, the budget runs out first,
+    // and the honest answer is that nothing is proven either way.
+    plane
+        .adapter
+        .note_unconfirmed_delivery(wanted, &request.body_hash(), None)
+        .expect("recorded as unconfirmed");
+    assert!(
+        matches!(
+            plane.adapter.send(&request).await,
+            Err(RuntimeError::DeliveryConfirmationUnknown { .. })
+        ),
+        "a transcript past the page budget cannot be proven whole, and must not resend"
+    );
+
+    // With the tail this message was issued after, the same scan reaches the
+    // floor inside the budget and acknowledges the delivery already present.
+    let floor = TimelinePosition {
+        epoch: 1,
+        sequence: 2299,
+    };
+    plane
+        .adapter
+        .note_unconfirmed_delivery(wanted, &request.body_hash(), Some(floor))
+        .expect("recorded with its issuance boundary");
+    let acknowledged = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("the suffix proves the delivery landed");
+    assert_eq!(acknowledged.message_id, wanted);
+    assert_eq!(
+        acknowledged.position,
+        TimelinePosition {
+            epoch: 1,
+            sequence: 2300
+        },
+        "it adopts the occurrence that is actually there, not a fresh send"
+    );
+}

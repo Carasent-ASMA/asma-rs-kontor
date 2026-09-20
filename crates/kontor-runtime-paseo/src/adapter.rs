@@ -915,6 +915,15 @@ struct PaseoState {
     /// correlation chain nobody recorded.
     placements: BTreeMap<RuntimeBindingId, ExternalId>,
     messages: MessageLedger<PaseoDelivery>,
+    /// The canonical tail each message was issued after, as the control plane
+    /// recorded it.
+    ///
+    /// Adapter-local and deliberately not in the checkpoint: it is not this
+    /// process's knowledge to keep. The durable copy lives with the issuance,
+    /// and a rebuilt adapter is handed the original back — never a tail
+    /// recaptured now, which would be a floor above the delivery it is supposed
+    /// to bound.
+    issuance_floors: BTreeMap<MessageId, TimelinePosition>,
     deliveries: Vec<(MessageId, ContentHash, PaseoDelivery)>,
     permissions: PermissionLedger,
     /// The session that raised each request still awaiting an answer.
@@ -1276,6 +1285,7 @@ impl PaseoAdapter {
             mcp: None,
             state: Mutex::new(PaseoState {
                 generation: checkpoint.generation,
+                issuance_floors: BTreeMap::new(),
                 server: None,
                 projects: checkpoint_projects
                     .into_iter()
@@ -3905,6 +3915,15 @@ impl PaseoAdapter {
             let items = self.normalize_page(&page, epoch)?;
             let oldest = items.first().map(|event| event.position.sequence);
             for event in &items {
+                // Strictly after the frozen tail. The page that reaches the
+                // floor necessarily overshoots it, and an occurrence at or below
+                // it was there before this message was issued — so it belongs to
+                // some earlier issuance and is not evidence that this send
+                // landed. Counting it would both adopt the wrong position and
+                // invent a duplicate.
+                if floor.is_some_and(|floor| event.position.sequence <= floor.sequence) {
+                    continue;
+                }
                 if matches(event) {
                     hits += 1;
                     found.get_or_insert(event.position);
@@ -5992,10 +6011,20 @@ impl RuntimeAdapter for PaseoAdapter {
     /// An entry already here is left alone. An acknowledged delivery must not be
     /// downgraded to unknown, and `admit` still refuses a reused id whose body
     /// changed, so the contradiction check survives the restore.
+    fn note_issuance_boundary(
+        &self,
+        message_id: MessageId,
+        issued_after: TimelinePosition,
+    ) -> RuntimeResult<()> {
+        self.lock().issuance_floors.insert(message_id, issued_after);
+        Ok(())
+    }
+
     fn note_unconfirmed_delivery(
         &self,
         message_id: MessageId,
         body_hash: &ContentHash,
+        issued_after: Option<TimelinePosition>,
     ) -> RuntimeResult<()> {
         let state = &mut *self.lock();
         if matches!(
@@ -6007,6 +6036,14 @@ impl RuntimeAdapter for PaseoAdapter {
                 body_hash.clone(),
                 PaseoDelivery::ConfirmationUnknown,
             );
+        }
+        // The floor is whatever the durable issuance recorded, including
+        // nothing. `insert` rather than a conditional update is deliberate: the
+        // caller reads it from the row every time, so the value handed here is
+        // always the original one, and there is no path that raises a floor
+        // after the fact.
+        if let Some(floor) = issued_after {
+            state.issuance_floors.insert(message_id, floor);
         }
         Ok(())
     }
@@ -9584,14 +9621,13 @@ impl PaseoAdapter {
         request: &SendMessageRequest,
     ) -> RuntimeResult<Option<MessageAck>> {
         let wanted = request.message_id;
-        // No boundary yet: the v117 column exists and `scan_canonical` honours a
-        // floor, but nothing reads the recorded tail back and hands it here, so
-        // every reconciliation still proves itself against whole history and
-        // still refuses honestly when it cannot read all of it. Wiring this to
-        // the issuance row is what lifts the ceiling; until then the behaviour
-        // is exactly what it was.
+        // The floor this exact issuance was recorded against, or nothing for a
+        // row written before boundaries were kept — which keeps the
+        // whole-history requirement it was created under rather than inventing
+        // a tail it never had.
+        let floor = self.lock().issuance_floors.get(&wanted).copied();
         let found = self
-            .scan_canonical(binding, None, |event| {
+            .scan_canonical(binding, floor, |event| {
                 event.subject == EventSubject::Message(wanted)
             })
             .await?;

@@ -857,6 +857,8 @@ struct FakeState {
     /// for: it survives nothing on its own and is handed back from durable
     /// state when a replay arrives.
     unconfirmed_deliveries: BTreeSet<MessageId>,
+    /// The canonical tail each message was registered as issued after.
+    issuance_floors: BTreeMap<MessageId, TimelinePosition>,
     /// Whether the modelled native runtime answers a resent client message id
     /// from its own ledger instead of appending a second entry.
     ///
@@ -1450,6 +1452,7 @@ impl ScriptedFakeRuntime {
                 lose_retitle_ack_once: BTreeSet::new(),
                 lose_next_send_ack: false,
                 unconfirmed_deliveries: BTreeSet::new(),
+                issuance_floors: BTreeMap::new(),
                 native_deduplicates_messages: true,
                 epoch_mappings: BTreeMap::new(),
                 undrained_epochs: Vec::new(),
@@ -2555,6 +2558,16 @@ impl ScriptedFakeRuntime {
         self.lock().undrained_epochs.clone()
     }
 
+    /// The boundary this message was registered as issued after, if any.
+    ///
+    /// The floor is what lets a reconciliation prove itself from a suffix, and
+    /// a first send that never registers one falls back to whole history — which
+    /// is the difference between acknowledging a long session and refusing it.
+    #[must_use]
+    pub fn issuance_floor(&self, message_id: MessageId) -> Option<TimelinePosition> {
+        self.lock().issuance_floors.get(&message_id).copied()
+    }
+
     /// Every recorded event of the session behind `binding`.
     #[must_use]
     pub fn content(&self, binding: &RuntimeBindingSnapshot) -> Vec<SessionEvent> {
@@ -2873,13 +2886,23 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .retain(|pending| !persisted.contains(pending));
     }
 
+    fn note_issuance_boundary(
+        &self,
+        message_id: MessageId,
+        issued_after: TimelinePosition,
+    ) -> RuntimeResult<()> {
+        self.lock().issuance_floors.insert(message_id, issued_after);
+        Ok(())
+    }
+
     /// Remember, at adapter level, that this message may already be out there.
     fn note_unconfirmed_delivery(
         &self,
         message_id: MessageId,
         body_hash: &ContentHash,
+        issued_after: Option<TimelinePosition>,
     ) -> RuntimeResult<()> {
-        let _ = body_hash;
+        let _ = (body_hash, issued_after);
         self.lock().unconfirmed_deliveries.insert(message_id);
         Ok(())
     }
