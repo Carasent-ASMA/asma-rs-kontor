@@ -78,8 +78,8 @@ use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerInspectRequest,
-    ContainerProjection, ContainerRecoveryRequest, ContainerRecreationRequest,
-    ContainerRequest, RetitleContainerRequest,
+    ContainerProjection, ContainerRecoveryRequest, ContainerRecreationRequest, ContainerRequest,
+    RetitleContainerRequest,
 };
 use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoAdoptionIntent, PaseoCheckpoint, PaseoCompaction, PaseoConfig,

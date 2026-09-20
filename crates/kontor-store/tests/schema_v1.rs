@@ -735,7 +735,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // no owed dispatch has a supported authority that is not a second run
     // (ASMA-8234).
     // v112 makes question history and its retry receipt one atomic effect.
-    assert_eq!(SCHEMA_VERSION, 113);
+    // v114 preserves the authorized container-recovery disposition on replay.
+    assert_eq!(SCHEMA_VERSION, 114);
 }
 
 #[test]

@@ -87,6 +87,7 @@ use kontor_core::repository::{
     TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTarget,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyContainerRecovery,
+    TopologyContainerRecoveryDisposition,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, ModelRung, NodeProjectionCapability,
@@ -12372,7 +12373,7 @@ fn topology_container_recovery_by_receipt(
                     prior_runtime_kind, prior_host, prior_generation, prior_native_id,
                     next_runtime_kind, next_host, next_generation, next_native_id,
                     parent_native_id, observed_kind, canonical_cwd, observed_title,
-                    recovered_at
+                    recovered_at, disposition
              FROM topology_container_recoveries
              WHERE project_id = ?1 AND receipt_id = ?2",
             params![project_id.to_string(), receipt_id.to_string()],
@@ -12397,6 +12398,7 @@ fn topology_container_recovery_by_receipt(
                     row.get::<_, Option<String>>(14)?,
                     row.get::<_, String>(15)?,
                     row.get::<_, String>(16)?,
+                    row.get::<_, String>(17)?,
                 ))
             },
         )
@@ -12424,8 +12426,10 @@ fn topology_container_recovery_by_receipt(
                 canonical_cwd,
                 observed_title,
                 recovered_at,
+                disposition,
             )| {
                 Ok(StoredTopologyContainerRecovery {
+                    disposition: TopologyContainerRecoveryDisposition::parse(&disposition)?,
                     receipt_id: CommandReceiptId::parse(&receipt_id)?,
                     project_id: ProjectId::parse(&project_id)?,
                     topology_node_id: TopologyNodeId::parse(&topology_node_id)?,
@@ -12973,9 +12977,9 @@ impl SqliteStore {
                       prior_runtime_kind, prior_host, prior_generation, prior_native_id,
                       next_runtime_kind, next_host, next_generation, next_native_id,
                       parent_native_id, observed_kind, canonical_cwd, observed_title,
-                      recovered_at)
+                      recovered_at, disposition)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                         ?13, ?14, ?15, ?16, ?17)",
+                         ?13, ?14, ?15, ?16, ?17, ?18)",
                 params![
                     receipt.id.to_string(),
                     recovery.expected.project_id.to_string(),
@@ -13008,6 +13012,7 @@ impl SqliteStore {
                         .map(ExternalName::as_str),
                     recovery.observed_title.as_str(),
                     text(recovery.replacement.observed_at),
+                    recovery.disposition.as_str(),
                 ],
             )
             .map_err(backend)?;

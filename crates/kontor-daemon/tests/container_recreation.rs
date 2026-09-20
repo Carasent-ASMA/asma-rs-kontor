@@ -183,6 +183,11 @@ async fn a_same_key_apply_replays_without_a_second_create() {
     );
 
     let (first, second) = (first.json(), second.json());
+    assert_eq!(first["recovery"]["disposition"], "recreate_absent");
+    assert_eq!(
+        second["recovery"]["disposition"], first["recovery"]["disposition"],
+        "a replay preserves the original authorized recovery disposition"
+    );
     assert_eq!(
         first["receipt"]["receipt_id"], second["receipt"]["receipt_id"],
         "a replay returns the original receipt"
@@ -683,6 +688,11 @@ async fn a_same_key_apply_replays_across_a_restart_without_a_second_create() {
     .await;
     assert_eq!(replayed.status, 200, "{}", replayed.body);
     let replayed = replayed.json();
+    assert_eq!(first["recovery"]["disposition"], "recreate_absent");
+    assert_eq!(
+        replayed["recovery"]["disposition"], first["recovery"]["disposition"],
+        "restart replay preserves whether recovery authorized creation"
+    );
     assert_eq!(
         replayed["receipt"]["receipt_id"], first["receipt"]["receipt_id"],
         "the durable receipt answers the replay after a restart"

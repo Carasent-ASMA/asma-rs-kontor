@@ -84,8 +84,8 @@ use kontor_runtime::container::{
     ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence,
     ContainerInspectRequest, ContainerInspection, ContainerOutcome, ContainerProjection,
     ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRecreationOutcome,
-    ContainerRecreationRequest, ContainerRequest, ContainerWorkspaceKind,
-    RetitleContainerOutcome, RetitleContainerRequest,
+    ContainerRecreationRequest, ContainerRequest, ContainerWorkspaceKind, RetitleContainerOutcome,
+    RetitleContainerRequest,
 };
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,

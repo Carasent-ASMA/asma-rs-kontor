@@ -203,8 +203,8 @@ use kontor_core::repository::{
     StoredQuickSession, StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest,
     TaskWorkflow, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
-    TicketLink, TicketRepository, TopologyContainerRecovery, TopologyRepository,
-    WorkflowRepository,
+    TicketLink, TicketRepository, TopologyContainerRecovery, TopologyContainerRecoveryDisposition,
+    TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::HoldLiftCondition;
 use kontor_core::spec::{
@@ -22099,6 +22099,8 @@ impl ApplicationOperations for Services {
         );
         let recovery = prepared.as_ref().map_or_else(
             || TopologyContainerRecovery {
+                // Ignored by durable replay, which returns the original row.
+                disposition: TopologyContainerRecoveryDisposition::AdoptExisting,
                 expected: current.clone(),
                 replacement: NewNativeContainerBinding {
                     topology_node_id,
@@ -22116,6 +22118,14 @@ impl ApplicationOperations for Services {
                     .expect("the replay marker is a valid external name"),
             },
             |prepared| TopologyContainerRecovery {
+                disposition: match prepared.preview.disposition {
+                    ContainerRecoveryDispositionDto::AdoptExisting => {
+                        TopologyContainerRecoveryDisposition::AdoptExisting
+                    }
+                    ContainerRecoveryDispositionDto::RecreateAbsent => {
+                        TopologyContainerRecoveryDisposition::RecreateAbsent
+                    }
+                },
                 expected: prepared.expected.clone(),
                 // Always populated by this point: the adopt disposition carries
                 // its candidate from preview, and the recreate disposition has
@@ -22150,11 +22160,14 @@ impl ApplicationOperations for Services {
                 // An applied result always names the disposition its prepared
                 // preview carried, and a replay reports the disposition the
                 // original apply committed under.
-                disposition: prepared
-                    .as_ref()
-                    .map_or(ContainerRecoveryDispositionDto::AdoptExisting, |prepared| {
-                        prepared.preview.disposition
-                    }),
+                disposition: match evidence.disposition {
+                    TopologyContainerRecoveryDisposition::AdoptExisting => {
+                        ContainerRecoveryDispositionDto::AdoptExisting
+                    }
+                    TopologyContainerRecoveryDisposition::RecreateAbsent => {
+                        ContainerRecoveryDispositionDto::RecreateAbsent
+                    }
+                },
                 stale_native_id: evidence.prior_identity.native_id,
                 // Never absent on an applied result: the store returns the
                 // identity it bound.

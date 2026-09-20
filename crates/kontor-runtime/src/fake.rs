@@ -54,8 +54,8 @@ use crate::container::{
     ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerCorrelationEvidence,
     ContainerInspectRequest, ContainerInspection, ContainerOutcome, ContainerProjection,
     ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRecreationOutcome,
-    ContainerRecreationRequest, ContainerRequest, ContainerWorkspaceKind,
-    RetitleContainerOutcome, RetitleContainerRequest,
+    ContainerRecreationRequest, ContainerRequest, ContainerWorkspaceKind, RetitleContainerOutcome,
+    RetitleContainerRequest,
 };
 use crate::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
