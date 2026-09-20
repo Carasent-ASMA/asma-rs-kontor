@@ -868,13 +868,20 @@ impl Services {
     /// is durable before dispatch; unavailable or ambiguous effects remain
     /// pending and are inspected again on the next pass or after restart.
     pub async fn release_completed_consultations(&self, limit: u32) -> Result<usize, ApiError> {
-        let _activity = self.native_activity()?;
         let state = self.state()?;
-        let releases = state
-            .with_store(|store| store.plan_consultation_releases(limit, kontor_api::now()))
-            .map_err(|error| self.refuse(&error))?;
+        let releases = {
+            let _activity = self.native_activity()?;
+            state
+                .with_store(|store| store.plan_consultation_releases(limit, kontor_api::now()))
+                .map_err(|error| self.refuse(&error))?
+        };
         let mut confirmed = 0;
         for release in releases {
+            // Finish one existing native operation before yielding to a queued
+            // lifecycle writer. The remaining durable intents retry next pass.
+            let Ok(_activity) = self.native_activity() else {
+                break;
+            };
             let Some(adapter) = state.runtimes().get(&release.identity.runtime_kind) else {
                 continue;
             };
@@ -982,21 +989,12 @@ impl Services {
         })
     }
 
-    fn native_lifecycle_change(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ApiError> {
-        self.native_lifecycle_guard.try_write().map_err(|_| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "native topology work is in progress; retirement or migration must wait",
-            )
-        })
-    }
-
-    /// A migration waits for already-started native operations to drain.
+    /// Retirement, cleanup and migration wait for native operations to drain.
     /// Queueing the writer prevents recurring background reads from starving it.
     /// Allow an in-flight transport request and its confirming readback to
     /// finish; each normally has a thirty-second deadline. A stuck operation
     /// still refuses the migration before any state or native write.
-    async fn native_migration_change(
+    async fn native_lifecycle_change(
         &self,
     ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ApiError> {
         tokio::time::timeout(
@@ -1007,9 +1005,15 @@ impl Services {
         .map_err(|_| {
             self.deny(
                 ApiErrorCode::PlacementBlocked,
-                "native topology work is in progress; migration wait timed out before any write",
+                "native topology work is in progress; lifecycle wait timed out before any write",
             )
         })
+    }
+
+    async fn native_migration_change(
+        &self,
+    ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ApiError> {
+        self.native_lifecycle_change().await
     }
 
     /// Build the runtime-neutral scope for one epic or task from durable state.
@@ -10663,7 +10667,7 @@ impl Services {
         request: &TopologyNodeRequest,
         lifecycle: TopologyLifecycle,
     ) -> Result<TopologyMutationDto, ApiError> {
-        let _native_lifecycle = self.native_lifecycle_change()?;
+        let _native_lifecycle = self.native_lifecycle_change().await?;
         let state = self.state()?;
         let now = kontor_api::now();
         let project = state
@@ -11106,7 +11110,7 @@ impl Services {
         act: SeatAct,
     ) -> Result<SeatBindingOutcomeDto, ApiError> {
         let _native_lifecycle = if act == SeatAct::Retire {
-            Some(self.native_lifecycle_change()?)
+            Some(self.native_lifecycle_change().await?)
         } else {
             None
         };
@@ -41154,7 +41158,7 @@ mod tests {
         );
         drop(existing);
         assert!(
-            services.native_lifecycle_change().is_ok(),
+            services.native_lifecycle_change().await.is_ok(),
             "timeout must not leak an exclusive guard"
         );
     }
