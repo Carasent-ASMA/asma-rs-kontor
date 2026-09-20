@@ -2314,6 +2314,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify and durably record one settled-turn artifact augmentation. */
+        post: operations["record_artifact"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/tasks/{task_id}/context:resolve": {
         parameters: {
             query?: never;
@@ -3915,6 +3932,52 @@ export interface components {
             reason: string;
             /** @description The tasks to arm. Empty arms the whole epic. */
             tasks?: string[];
+        };
+        /** @description Immutable augmentation receipt. Attribution identifies the old claim, not byte authorship. */
+        ArtifactSubmissionDto: {
+            /** @description Source persistent agent run. */
+            agent_run_id: string;
+            /** @description Declared artifact key. */
+            artifact_key: string;
+            /** @description Exact commit locator. */
+            commit: string;
+            /** @description Artifact registry identity. */
+            evidence_id: string;
+            /** @description Persistent common Git directory, independent of a disposable worktree. */
+            git_dir: string;
+            /** @description Canonical locator digest. */
+            locator_hash: string;
+            /** @description Exact blob path. */
+            path: string;
+            /** @description Provider account derived from the source run; not the calling operator's identity. */
+            producer_account: string;
+            /** @description Pinned producing phase. */
+            producer_phase: string;
+            /** @description Source role slot, derived from the settled turn. */
+            producer_role: string;
+            /** @description Always `operator_recovered_git_blob`, never inferred agent authorship. */
+            provenance: string;
+            /** @description Owning Realm. */
+            realm_id: string;
+            /** @description Verification/recording instant. */
+            recorded_at: string;
+            /** @description Credential tier that authorized the augmentation. */
+            recorded_by: string;
+            /** @description Source settled-turn receipt. */
+            role_turn_id: string;
+            /**
+             * Format: int32
+             * @description Envelope schema version.
+             */
+            schema_version: number;
+            /** @description Verified content digest. */
+            sha256: string;
+            /** @description Exact task and workflow. */
+            task_id: string;
+            /** @description Native-proof versus historical/attested source turn. */
+            turn_proof_class: string;
+            /** @description Pinned workflow whose declared artifact this satisfies. */
+            workflow_id: string;
         };
         Attest: {
             /** Format: int64 */
@@ -7985,6 +8048,26 @@ export interface components {
              */
             updated_at: string;
         };
+        /** @description Attaches verified Git bytes to an existing claim; does not assert agent authorship. */
+        RecordArtifactRequest: {
+            /** @description Declared artifact key already claimed by that turn. */
+            artifact_key: string;
+            /** @description Full immutable Git commit object id (40 or 64 lower-case hexadecimal digits). */
+            commit: string;
+            /**
+             * Format: int64
+             * @description Current task revision.
+             */
+            expected_task_revision: number;
+            /** @description Repository-relative blob path, without parent traversal. */
+            path: string;
+            /** @description Registered repository root: `task` worktree or `project` checkout. */
+            repository: string;
+            /** @description Exact existing settled-turn receipt. */
+            role_turn_id: string;
+            /** @description Expected SHA-256 of the blob contents, verified by the daemon. */
+            sha256: string;
+        };
         /** @description Record one round of Committee findings. */
         RecordFindingsRequest: {
             /** @description Whether every evidence reference required by the finding is present. */
@@ -9090,7 +9173,10 @@ export interface components {
          *     newer work after a resume or daemon restart.
          */
         SettleTurnRequest: {
-            /** @description The artifacts the turn produced. */
+            /**
+             * @description Declared artifact claims. Gate/phase evidence requires an addressable
+             *     record through `artifacts:record`; a label alone is not evidence.
+             */
             artifacts?: string[];
             /**
              * @description A server-generated challenge MessageId, mutually exclusive with
@@ -17020,6 +17106,58 @@ export interface operations {
             };
             /** @description The runtime cannot prove a per-run account environment */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_artifact: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordArtifactRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactSubmissionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
