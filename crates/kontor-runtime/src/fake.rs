@@ -847,6 +847,19 @@ struct FakeState {
     /// Separate from the strict script queue so read-only proof calls may
     /// legitimately precede that send.
     lose_next_send_ack: bool,
+    /// Messages the control plane has declared may already have been delivered.
+    ///
+    /// Adapter-level, not session-level, exactly like the ledger it stands in
+    /// for: it survives nothing on its own and is handed back from durable
+    /// state when a replay arrives.
+    unconfirmed_deliveries: BTreeSet<MessageId>,
+    /// Whether the modelled native runtime answers a resent client message id
+    /// from its own ledger instead of appending a second entry.
+    ///
+    /// True by default, which is the forgiving case. A test proving the
+    /// *adapter* prevents duplicates must turn it off, or the fake prevents
+    /// them first and the test proves nothing.
+    native_deduplicates_messages: bool,
     /// Raw->Kontor timeline epoch mappings this fake has allocated, and the
     /// ones not yet handed to the control plane for persistence. The fake
     /// models the same boundary a native adapter does, so the persist-before-
@@ -1431,6 +1444,8 @@ impl ScriptedFakeRuntime {
                 container_kinds: BTreeMap::new(),
                 lose_retitle_ack_once: BTreeSet::new(),
                 lose_next_send_ack: false,
+                unconfirmed_deliveries: BTreeSet::new(),
+                native_deduplicates_messages: true,
                 epoch_mappings: BTreeMap::new(),
                 undrained_epochs: Vec::new(),
                 refetch_until_epoch_refresh: false,
@@ -1776,6 +1791,23 @@ impl ScriptedFakeRuntime {
     /// this leaves those ledgers populated in-process, and a test then proves
     /// only that the daemon's half recovered. That is precisely how a
     /// reads-recover-but-writes-do-not split survived a green suite.
+    /// Model a native runtime that does not deduplicate by client message id.
+    ///
+    /// This fake answers a resent id from the session's own ledger, which makes
+    /// it a *kinder* runtime than the one Kontor actually talks to. Paseo
+    /// records the caller's `messageId` on the resulting user message — enough
+    /// to ask "did it land?" afterwards — but that is detection, not prevention,
+    /// and preventing the duplicate is the adapter's job: its delivery ledger,
+    /// and the canonical reconciliation it forces before resending anything it
+    /// is unsure about.
+    ///
+    /// So a test that wants to prove the adapter prevents a duplicate has to
+    /// stop the fake from silently preventing it first, or it proves the fake.
+    pub fn accept_duplicate_native_message_ids(&self) {
+        self.lock().native_deduplicates_messages = false;
+    }
+
+    /// Rebuild process-local adapter state while retaining the native sessions.
     pub fn rebuild_adapter_state(&self) {
         let mut state = self.lock();
         state.bindings.clear();
@@ -2829,6 +2861,17 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         self.lock()
             .undrained_epochs
             .retain(|pending| !persisted.contains(pending));
+    }
+
+    /// Remember, at adapter level, that this message may already be out there.
+    fn note_unconfirmed_delivery(
+        &self,
+        message_id: MessageId,
+        body_hash: &ContentHash,
+    ) -> RuntimeResult<()> {
+        let _ = body_hash;
+        self.lock().unconfirmed_deliveries.insert(message_id);
+        Ok(())
     }
 
     fn restore_timeline_epochs(&self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
@@ -4393,11 +4436,44 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
 
         let binding_id = request.binding.binding_id();
         let body_hash = request.body_hash();
+        let unconfirmed = state.unconfirmed_deliveries.contains(&request.message_id);
+        let deduplicates = state.native_deduplicates_messages;
         let session = state.session(&request.binding)?;
-        if let Admission::Replay(original) =
-            session.messages.admit(&request.message_id, &body_hash)?
-        {
-            return Ok(original);
+        // The ledger is consulted first, always, because it is what refuses a
+        // reused id carrying different content. Reconciling before that check
+        // would let a contradictory retry be answered from the original
+        // delivery instead of refused.
+        let admission = session.messages.admit(&request.message_id, &body_hash)?;
+        // Declared possibly-delivered by the control plane, so canonical content
+        // decides before anything is appended — the same order the real
+        // adapter's confirmation-unknown path takes. An occurrence already there
+        // is adopted; its absence means the effect never landed and the send
+        // proceeds.
+        if unconfirmed {
+            let landed = session.content[..session.history_len]
+                .iter()
+                .find(|event| event.subject == EventSubject::Message(request.message_id))
+                .map(|event| event.position);
+            if let Some(position) = landed {
+                state.unconfirmed_deliveries.remove(&request.message_id);
+                return Ok(MessageAck {
+                    message_id: request.message_id,
+                    binding_id,
+                    position,
+                    accepted_at: request.sent_at,
+                });
+            }
+        }
+        let session = state.session(&request.binding)?;
+        match admission {
+            // The forgiving native runtime: a resent id is answered from the
+            // session's own ledger and lands once.
+            Admission::Replay(original) if deduplicates => return Ok(original),
+            // The runtime Kontor actually talks to. It recorded the id the first
+            // time — which is what makes "did it land?" answerable — and it will
+            // still happily append a second entry if asked again. Preventing
+            // that is the adapter's job, not this one's.
+            Admission::Replay(_) | Admission::New => {}
         }
         let position = session.append(
             SessionEventKind::Message,

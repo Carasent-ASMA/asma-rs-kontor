@@ -93,6 +93,6 @@ kontor-mcp = { path = "../kontor-mcp", version = "=0.2.1" }
 futures = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
 wiremock = { workspace = true }

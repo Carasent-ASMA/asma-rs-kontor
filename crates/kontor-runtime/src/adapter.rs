@@ -1309,6 +1309,48 @@ pub trait RuntimeAdapter: Send + Sync {
         Ok(())
     }
 
+    /// Declare that this message may already have been delivered, so a send of
+    /// it must reconcile canonical history before reaching the wire.
+    ///
+    /// An adapter keeps a delivery ledger so a retry answers from recorded
+    /// evidence instead of becoming a second instruction. That ledger lives in
+    /// the adapter, and production builds adapters fresh — so the one case the
+    /// ledger exists for, a retry of a delivery whose outcome was never
+    /// confirmed, is exactly the case a restart erases. The effect landed, the
+    /// durability failed, the caller was told to replay the original id, and the
+    /// replay met an adapter with no memory of it.
+    ///
+    /// The control plane does remember, durably and independently of any
+    /// adapter process: it records every client message id it issues *before*
+    /// asking a runtime to accept it, and leaves that record unpinned until a
+    /// delivery position is acknowledged. An unpinned record is precisely "this
+    /// may already be out there". Replaying it through here restores the
+    /// adapter's ledger entry for this one message from that durable fact, so
+    /// the send that follows takes the confirmation-unknown path: read the
+    /// session's canonical content first, adopt the delivery if it is already
+    /// there, and only send if it is not.
+    ///
+    /// This is a statement about *uncertainty*, not about delivery. It never
+    /// claims the message landed, never invents a position, and never lets a
+    /// send be skipped on the strength of a record alone — canonical history
+    /// decides, and if it cannot be read the send fails closed rather than
+    /// guessing either way.
+    ///
+    /// `body_hash` is the digest the ledger compares retries against, so a
+    /// replay that changes the body under a reused id is still refused.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when this id is already recorded with a
+    /// different body.
+    fn note_unconfirmed_delivery(
+        &self,
+        message_id: MessageId,
+        body_hash: &ContentHash,
+    ) -> RuntimeResult<()> {
+        let _ = (message_id, body_hash);
+        Ok(())
+    }
+
     /// Seed the epoch registry from durable state before any read happens.
     ///
     /// Restores the exact numbers previously allocated, so a raw epoch resolves

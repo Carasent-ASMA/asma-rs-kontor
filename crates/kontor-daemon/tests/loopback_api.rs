@@ -888,6 +888,7 @@ async fn committee_verdict_boundary(root: &str, slug: &str) -> VerdictBoundary {
         .send(world)
         .await;
     assert_eq!(epic_read.status, 200, "{}", epic_read.body);
+    prepare_fake_provider_headroom(world, &project.to_string()).await;
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &serde_json::json!({
@@ -4872,7 +4873,140 @@ fn confirm_test_epic_binding_only(world: &World, project: &str, epic: &str, epic
     });
 }
 
+/// Explicit launch preconditions for tests whose subject is not quota collection.
+/// The scripted fake has no vendor quota endpoint, so its declared accounts use
+/// the supported CannotReport classification. Preserve every quota state a test
+/// already recorded, including refusals. Empty-Realm constructors remain empty.
+async fn prepare_fake_provider_headroom(world: &World, project: &str) {
+    prepare_fake_provider_headroom_for(world, project, false).await;
+}
+
+async fn prepare_fake_provider_headroom_for(
+    world: &World,
+    project: &str,
+    test_provider_only: bool,
+) {
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let accounts = world.daemon.state().with_store(|store| {
+        store
+            .list_account_profiles(project_id)
+            .expect("fixture accounts")
+    });
+    let declared: std::collections::BTreeSet<String> = accounts
+        .iter()
+        .flat_map(|account| kontor_accounts::selectable_providers(account).expect("fixture routes"))
+        .collect();
+    let missing: Vec<&str> = [
+        ("claude", &["claude", "claude-work", "claude-personal"][..]),
+        ("codex", &["codex", "codex-work", "codex-personal"][..]),
+        ("opencode", &["opencode"][..]),
+        ("test", &["test"][..]),
+    ]
+    .into_iter()
+    .filter(|(family, _)| {
+        (!test_provider_only || *family == "test")
+            && !declared
+                .iter()
+                .any(|provider| provider == family || provider.starts_with(&format!("{family}-")))
+    })
+    .flat_map(|(_, aliases)| aliases.iter().copied())
+    .collect();
+    for provider in missing {
+        let ensured = Call::post(
+            format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+            &serde_json::json!({
+                "label": format!("Scripted fake {provider} account"), "harness": "fake.runtime",
+                "credential_alias": format!("fixture-scripted-{provider}"), "selectable_providers": [provider],
+                "enabled": true
+            }),
+        )
+        .signed_as(world, "admin")
+        .with_key(format!("fixture-provider-account-{project}-{provider}"))
+        .send(world)
+        .await;
+        assert_eq!(ensured.status, 200, "{}", ensured.body);
+    }
+    world.daemon.state().with_store(|store| {
+        let states = store
+            .list_provider_quota_states(project_id)
+            .expect("fixture quota states");
+        for account in store
+            .list_account_profiles(project_id)
+            .expect("fixture accounts")
+        {
+            let mut providers =
+                kontor_accounts::selectable_providers(&account).expect("fixture routes");
+            if providers.is_empty() {
+                providers.extend(
+                    [
+                        "claude",
+                        "claude-work",
+                        "claude-personal",
+                        "codex",
+                        "codex-work",
+                        "codex-personal",
+                        "opencode",
+                        "test",
+                    ]
+                    .map(str::to_owned),
+                );
+            }
+            for provider in providers {
+                if states.iter().any(|state| {
+                    state.account_profile_id == account.id && state.provider == provider
+                }) {
+                    continue;
+                }
+                let now = kontor_api::now();
+                store
+                    .set_provider_quota_state(&NewProviderQuotaState {
+                        project_id,
+                        account_profile_id: account.id,
+                        provider,
+                        state: ProviderQuotaKind::CannotReport,
+                        resets_at: None,
+                        windows: Vec::new(),
+                        credit: None,
+                        evidence_hash: ContentHash::of(
+                            b"scripted fake runtime has no provider quota endpoint",
+                        ),
+                        provenance: None,
+                        source: kontor_core::spec::ProviderQuotaSource::Operator,
+                        observed_at: now,
+                        expected_revision: AggregateRevision::INITIAL,
+                        updated_at: now,
+                    })
+                    .expect("explicit fake-provider classification");
+            }
+        }
+    });
+}
+
 async fn materialize_execution_topology(
+    world: &World,
+    project: &str,
+    project_revision: u64,
+    epic: &str,
+    task: &str,
+    prefix: &str,
+) {
+    prepare_fake_provider_headroom(world, project).await;
+    materialize_execution_topology_only(world, project, project_revision, epic, task, prefix).await;
+}
+
+async fn materialize_test_provider_topology(
+    world: &World,
+    project: &str,
+    project_revision: u64,
+    epic: &str,
+    task: &str,
+    prefix: &str,
+) {
+    prepare_fake_provider_headroom_for(world, project, true).await;
+    materialize_execution_topology_only(world, project, project_revision, epic, task, prefix).await;
+}
+
+async fn materialize_execution_topology_only(
     world: &World,
     project: &str,
     project_revision: u64,
@@ -6785,6 +6919,7 @@ async fn scheduler_planning_only_inspects_exact_materialized_topology_and_preser
     assert_eq!(armed.status, 200, "{}", armed.body);
 
     let calls_before_plan = world.fake.calls().len();
+    prepare_fake_provider_headroom(&world, &project.to_string()).await;
     let plan = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
         &serde_json::json!({}),
@@ -9180,8 +9315,8 @@ async fn exact_resume_recovers_one_durable_admission_without_the_scheduler_key()
             .launched_model(run)
             .expect("the selected model route is observable");
         assert_eq!(
-            model.provider.0, "codex",
-            "{role} woke Claude during outage"
+            model.provider.0, "codex-work",
+            "{role} must retain the declared Codex fallback alias during the Claude outage"
         );
         assert_eq!(model.model.0, "gpt-5.6-sol");
     }
@@ -9521,6 +9656,38 @@ async fn lifecycle_transitions_are_legal_revisioned_and_gated() {
     .await;
     assert_eq!(blocked.status, 200, "{}", blocked.body);
     assert_eq!(blocked.json()["state"], "blocked");
+    let local_receipt = world.daemon.state().with_store(|store| {
+        let receipt = store
+            .get_receipt_by_key(&kontor_core::id::IdempotencyKey::parse("life-block").expect("key"))
+            .expect("lookup")
+            .expect("local receipt");
+        let history = store
+            .receipt_history(receipt.project_id, receipt.id)
+            .expect("receipt history");
+        assert_eq!(
+            history.last().expect("confirmed history").state,
+            kontor_core::receipt::CommandReceiptState::Confirmed
+        );
+        assert_eq!(
+            history.last().expect("confirmed history").evidence_ref,
+            receipt.result_ref
+        );
+        receipt
+    });
+    assert_eq!(
+        local_receipt.state,
+        kontor_core::receipt::CommandReceiptState::Confirmed
+    );
+    assert!(local_receipt.native_identity.is_none());
+    let connection =
+        rusqlite::Connection::open(world.directory.path().join(kontor_daemon::DATABASE_FILE))
+            .expect("database");
+    let (mode, outbox_count): (String, i64) = connection.query_row(
+        "SELECT execution_mode, (SELECT count(*) FROM command_outbox WHERE receipt_id = r.id) FROM command_receipts r WHERE id = ?1",
+        [local_receipt.id.to_string()], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).expect("local command mode");
+    assert_eq!(mode, "local");
+    assert_eq!(outbox_count, 0);
     let held_revision = blocked.json()["revision"].as_u64().expect("revision");
 
     // Resume returns the task to ordinary scheduler eligibility. Nothing about it
@@ -15310,7 +15477,7 @@ enum Corruption {
 
 /// Break one gate-recording receipt's stored exact result binding.
 ///
-/// An outbox payload is immutable by trigger, which is exactly why an invalid
+/// An local result payload is immutable by trigger, which is exactly why an invalid
 /// binding is a storage-damage scenario rather than something a caller can
 /// produce. The fixture lifts that guard to manufacture the damage and restores
 /// it from the trigger's own stored definition, so no test can leave the
@@ -15321,18 +15488,18 @@ fn corrupt_gate_record_binding(world: &World, receipt: &str, corruption: Corrupt
     let guard: String = connection
         .query_row(
             "SELECT sql FROM sqlite_master
-             WHERE type = 'trigger' AND name = 'command_outbox_payload_immutable'",
+             WHERE type = 'trigger' AND name = 'local_command_results_no_update'",
             [],
             |row| row.get(0),
         )
-        .expect("the outbox immutability trigger exists");
+        .expect("the local result immutability trigger exists");
     connection
-        .execute("DROP TRIGGER command_outbox_payload_immutable", [])
+        .execute("DROP TRIGGER local_command_results_no_update", [])
         .expect("the fixture may lift its own guard");
     corrupt_binding_unguarded(&connection, receipt, corruption);
     connection
         .execute(&guard, [])
-        .expect("the outbox immutability trigger is restored");
+        .expect("the local result immutability trigger is restored");
 }
 
 /// The corruption itself, with the immutability guard already lifted.
@@ -15343,7 +15510,7 @@ fn corrupt_binding_unguarded(
 ) {
     let (payload, hash): (String, String) = connection
         .query_row(
-            "SELECT payload, payload_hash FROM command_outbox WHERE receipt_id = ?1",
+            "SELECT payload, payload_hash FROM local_command_results WHERE receipt_id = ?1",
             rusqlite::params![receipt],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -15355,7 +15522,7 @@ fn corrupt_binding_unguarded(
             // Same bytes, a digest that no longer vouches for them.
             connection
                 .execute(
-                    "UPDATE command_outbox SET payload_hash = ?1 WHERE receipt_id = ?2",
+                    "UPDATE local_command_results SET payload_hash = ?1 WHERE receipt_id = ?2",
                     rusqlite::params!["0".repeat(64), receipt],
                 )
                 .expect("the stored digest is replaced");
@@ -15391,7 +15558,7 @@ fn corrupt_binding_unguarded(
     );
     connection
         .execute(
-            "UPDATE command_outbox SET payload = ?1, payload_hash = ?2 WHERE receipt_id = ?3",
+            "UPDATE local_command_results SET payload = ?1, payload_hash = ?2 WHERE receipt_id = ?3",
             rusqlite::params![rewritten.json(), rewritten.hash().as_str(), receipt],
         )
         .expect("the stored payload is replaced");
@@ -16391,7 +16558,7 @@ async fn fleet_at_verification(world: &World, slug: &'static str) -> FleetWorld 
     // Admission proves the exact ESW/ECP/TSW readback before it commits a
     // TeamRun, so this fleet has to be placed before it can be seated
     // (ASMA-8115).
-    materialize_execution_topology(
+    materialize_test_provider_topology(
         world,
         &project,
         revision,
@@ -20468,6 +20635,7 @@ async fn an_applied_task_materializes_and_replays_without_a_startup_task_scope()
     .await;
     assert_eq!(armed.status, 200, "{}", armed.body);
 
+    prepare_fake_provider_headroom(&world, &project.to_string()).await;
     let plan = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
         &serde_json::json!({}),
@@ -26595,7 +26763,7 @@ async fn an_admin_retires_an_exact_never_dispatched_provider_blocked_seat() {
             .expect("the successor route")
             .provider
             .0,
-        "codex"
+        "claude-personal"
     );
     assert!(
         world
@@ -28540,6 +28708,230 @@ async fn check_delivery_epoch_barrier(derived: bool, fail_commit: bool) {
     .send(&world)
     .await;
     assert_eq!(finished.status, 200, "{}", finished.body);
+}
+
+/// P1-POSTDELIVERY-FAILURE-RESTART-DUPLICATES.
+///
+/// The correction made the post-effect failure path truthful: the native send
+/// lands, the epoch commit fails, the delivery is not pinned, the adapter keeps
+/// the debt, and the API tells the operator to replay the original id rather
+/// than send a new one. Every one of those is right, and all of it lives in one
+/// process.
+///
+/// Production composes each Paseo adapter from `PaseoCheckpoint::fresh`, and
+/// startup restores bindings and committed epoch mappings but never the
+/// adapter-local delivery ledger. So a restart between the failure and the
+/// mandated replay erases the only record that this id may already have landed;
+/// the replay is admitted as a first attempt and puts the instruction in the
+/// session a second time. The advice the API gives is what triggers it.
+///
+/// The fake is told to stop deduplicating first. It normally answers a resent id
+/// from the session's own ledger, which would prevent the duplicate for the
+/// wrong reason and prove nothing about the adapter.
+async fn check_replay_after_restart_sends_once(derived: bool) {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    world.fake.accept_duplicate_native_message_ids();
+    let (project, epic, _account, seats) = seated_turns(&world, "postdelivery-restart").await;
+    let seats = seats.as_array().expect("seats");
+    let source = seats[0]["agent_run_id"]
+        .as_str()
+        .expect("source")
+        .to_owned();
+    let role = seats[0]["role_slot"].as_str().expect("role").to_owned();
+    let target = seats[1]["agent_run_id"]
+        .as_str()
+        .expect("target")
+        .to_owned();
+    let project_id = ProjectId::parse(&project).expect("project");
+    let target_run = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_agent_run(project_id, AgentRunId::parse(&target).expect("run"))
+        })
+        .expect("run reads")
+        .expect("target exists");
+    let target_binding = world
+        .daemon
+        .state()
+        .sessions()
+        .get(target_run.binding.expect("bound").id)
+        .expect("held binding");
+    // A native epoch this realm has never mapped, so the delivery must allocate
+    // one and commit it — which is the write the injected failure refuses. With
+    // an already-committed mapping there is no insert to fail and the whole
+    // post-effect path is never entered.
+    world
+        .fake
+        .set_unread_timeline_epoch(&target_binding, 73)
+        .expect("fresh native epoch");
+    let proof = observe_current_turn(&world, &project, &source);
+    let history = Call::get(format!("/v1/sessions/{source}/timeline?limit=64"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(history.status, 200, "{}", history.body);
+    let revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("revision");
+    let key = kontor_runtime::request::MessageId::generate();
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+
+    // The post-effect failure: the native send lands, the epoch commit does not.
+    rusqlite::Connection::open(&database)
+        .expect("test database")
+        .execute_batch("CREATE TRIGGER refuse_delivery_epoch BEFORE INSERT ON runtime_timeline_epochs BEGIN SELECT RAISE(FAIL, 'injected epoch commit failure'); END;")
+        .expect("failure installed");
+    let request = |world: &World, revision: u64| {
+        if derived {
+            Call::post(
+                format!("/v1/projects/{project}/agent-runs/{source}/turns:settle"),
+                &serde_json::json!({"role_slot":role,"expected_task_revision":revision,
+                    "runtime_proof":proof,"artifacts":["change-set"]}),
+            )
+        } else {
+            Call::post(
+                format!("/v1/sessions/{target}/messages"),
+                &serde_json::json!({"body":"persist this delivery before acknowledging it"}),
+            )
+        }
+        .signed_as(world, "operator")
+        .with_key(key.to_string())
+    };
+    let first = request(&world, revision).send(&world).await;
+    assert!(
+        !first.status.is_success(),
+        "the commit failure is reported: {}",
+        first.body
+    );
+    let message_id = if derived {
+        kontor_runtime::request::MessageId::parse(
+            &world
+                .daemon
+                .state()
+                .with_store(|store| store.list_turn_dispatches(project_id))
+                .expect("dispatches")[0]
+                .message_id,
+        )
+        .expect("message")
+    } else {
+        key
+    };
+    let occurrences = |fake: &kontor_runtime::fake::ScriptedFakeRuntime| {
+        fake.content(&target_binding)
+            .into_iter()
+            .filter(|event| {
+                event.subject == kontor_runtime::timeline::EventSubject::Message(message_id)
+            })
+            .count()
+    };
+    assert_eq!(
+        occurrences(&world.fake),
+        1,
+        "the native effect landed exactly once before the restart"
+    );
+
+    // The process boundary. Bindings and committed epochs come back; the
+    // adapter-local delivery ledger does not, because nothing persists it.
+    let World {
+        directory,
+        daemon,
+        router,
+        fake,
+        project: world_project,
+        task,
+        team_run,
+    } = world;
+    daemon.state().signals().stop();
+    drop(router);
+    drop(daemon);
+    fake.rebuild_adapter_state();
+    let daemon = Daemon::start(
+        DaemonConfig::at(directory.path()).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same realm restarts");
+    assert_eq!(daemon.reconcile().await, BarrierState::Open);
+    let router = daemon.router();
+    let world = World {
+        directory,
+        daemon,
+        router,
+        fake,
+        project: world_project,
+        task,
+        team_run,
+    };
+
+    // The replay the API itself instructed, under the original key.
+    rusqlite::Connection::open(&database)
+        .expect("test database")
+        .execute_batch("DROP TRIGGER refuse_delivery_epoch;")
+        .expect("failure removed");
+    if derived {
+        assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    } else {
+        let revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await
+            .json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("revision");
+        let retry = request(&world, revision).send(&world).await;
+        assert_eq!(retry.status, 200, "{}", retry.body);
+    }
+
+    // The whole finding, in one number.
+    assert_eq!(
+        occurrences(&world.fake),
+        1,
+        "the replay reconciled the existing delivery instead of instructing the seat twice"
+    );
+
+    // And the replay is not merely quiet: it finished the job the first attempt
+    // could not, so the delivery is pinned and its epoch mapping is durable.
+    let delivery = world
+        .daemon
+        .state()
+        .message_issuance(message_id)
+        .expect("issuance reads")
+        .expect("issued before sending");
+    let position = delivery
+        .delivered_at
+        .expect("the replay pinned the delivery");
+    let mappings = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(&delivery.runtime_kind, &delivery.host))
+        .expect("epochs");
+    assert!(
+        mappings.iter().any(|(_, epoch)| *epoch == position.0),
+        "a delivery cannot outlive its epoch mapping: {mappings:?}, {position:?}"
+    );
+    assert!(
+        world.fake.undrained_epochs().is_empty(),
+        "no debt survives a completed replay"
+    );
+}
+
+#[tokio::test]
+async fn direct_delivery_epoch_commit_failure_then_restart_does_not_resend() {
+    check_replay_after_restart_sends_once(false).await;
+}
+
+#[tokio::test]
+async fn derived_delivery_epoch_commit_failure_then_restart_does_not_resend() {
+    check_replay_after_restart_sends_once(true).await;
 }
 
 #[tokio::test]
@@ -31042,7 +31434,8 @@ async fn an_unaccounted_slot_or_an_undischarged_gate_withholds_closure() {
     let world = World::open_empty_with_a_plane().await;
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
-    let (project, epic, account, seats) = seated_turns(&world, "close-partial").await;
+    let (project, epic, account, seats) =
+        seated_turns_with_attribution(&world, "close-partial", true).await;
 
     let seat_list = seats.as_array().expect("seats").clone();
     let projected = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
@@ -32707,7 +33100,7 @@ async fn seat_fill_world_with_tasks(owed: bool, task_count: usize) -> SeatFillWo
         .iter()
         .enumerate()
     {
-        materialize_execution_topology(
+        materialize_test_provider_topology(
             &world,
             &project.to_string(),
             created.json()["revision"].as_u64().expect("revision"),
@@ -33214,7 +33607,7 @@ async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str)
         .expect("a task id")
         .to_owned();
     confirm_test_epic_identity(&world, &project, &epic);
-    materialize_execution_topology(&world, &project, revision, &epic, &task, slug).await;
+    materialize_test_provider_topology(&world, &project, revision, &epic, &task, slug).await;
 
     let armed = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
@@ -33305,11 +33698,26 @@ async fn omega_with_one_unbound_slot(slug: &'static str, category: &'static str)
         "the slots the runtime did take are bound: {rows:?}"
     );
     let team_run = team_run_id.to_string();
+    let routed_account = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(
+                project_id,
+                rows.iter()
+                    .find(|row| row.native_id.is_some())
+                    .expect("bound seat")
+                    .agent_run_id,
+            )
+            .expect("run")
+            .expect("run")
+            .account_profile_id
+            .expect("exact routed account")
+            .to_string()
+    });
     UnboundWorld {
         world,
         project,
         epic,
-        account: account_id,
+        account: routed_account,
         team_run,
         seats,
         plan_hash,
@@ -33929,6 +34337,39 @@ async fn an_admin_reroutes_one_dispatched_never_bound_delivery_seat() {
             "effort": "xhigh"
         }
     });
+    let native_before = world.fake.calls().len();
+    let rows_before = world.daemon.state().with_store(|store| {
+        store
+            .list_agent_runs_for_team_run(project_id, team_run_id)
+            .expect("runs")
+    });
+    let missing_headroom = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/successors:replace",
+            predecessor.id
+        ),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("reroute-unbound-seat")
+    .send(world)
+    .await;
+    assert_eq!(missing_headroom.status, 409, "{}", missing_headroom.body);
+    assert_eq!(missing_headroom.code(), "placement_blocked");
+    assert_eq!(
+        world.fake.calls().len(),
+        native_before,
+        "an explicit alias is not quota authority"
+    );
+    assert_eq!(
+        world.daemon.state().with_store(|store| store
+            .list_agent_runs_for_team_run(project_id, team_run_id)
+            .expect("runs")),
+        rows_before,
+        "missing evidence must not persist another unbound successor"
+    );
+    assert!(receipt_for(world, "reroute-unbound-seat").is_none());
+    prepare_fake_provider_headroom(world, project).await;
     let replaced = Call::post(
         format!(
             "/v1/projects/{project}/agent-runs/{}/successors:replace",
@@ -34312,6 +34753,7 @@ async fn an_admin_reroutes_a_never_bound_seat_whose_handoff_recorded_no_target()
         .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
     let task_revision = alpha_revision(world, project, epic).await;
     let body = reroute_request(abandoned_revision, task_revision);
+    prepare_fake_provider_headroom(world, project).await;
     let replaced = Call::post(
         format!("/v1/projects/{project}/agent-runs/{predecessor_id}/successors:replace"),
         &body,
@@ -34470,6 +34912,7 @@ async fn replacing_one_slot_preserves_an_abandoned_parent_in_another_slot() {
         .fake
         .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
     let task_revision = alpha_revision(world, project, epic).await;
+    prepare_fake_provider_headroom(world, project).await;
     let recovered = Call::post(
         format!("/v1/projects/{project}/agent-runs/{abandoned_id}/successors:replace"),
         &reroute_request(abandoned_revision, task_revision),
@@ -34612,6 +35055,7 @@ async fn succeeding_one_slot_preserves_an_abandoned_parent_in_another_slot() {
         .fake
         .allowing_launch_of(&RoleSlotId::parse("omega-k3").expect("a role slot"));
     let task_revision = alpha_revision(world, project, epic).await;
+    prepare_fake_provider_headroom(world, project).await;
     let recovered = Call::post(
         format!("/v1/projects/{project}/agent-runs/{abandoned_id}/successors:replace"),
         &reroute_request(abandoned_revision, task_revision),
@@ -38275,6 +38719,7 @@ async fn a_legacy_jira_import_materializes_semantic_epic_control_and_ticket_titl
     .send(&world)
     .await;
     assert_eq!(armed.status, 200, "{}", armed.body);
+    prepare_fake_provider_headroom(&world, &project.to_string()).await;
     let plan = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
         &serde_json::json!({}),
@@ -39102,20 +39547,36 @@ async fn native_child_archive_requires_retirement_and_recovers_a_lost_acknowledg
                 });
                 let migration = Call::post(format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
                     &serde_json::json!({"upgrade": {"target_definition": {"id": pin.definition.definition_id, "version": pin.definition.version}, "legacy_topics": {}, "expected_revision": composed.project_revision}, "preview_hash": "0".repeat(64)}))
-                    .signed_as(world, "admin").with_key("cleanup-concurrent-migration").send(world).await;
+                    .signed_as(world, "admin").with_key("cleanup-concurrent-migration").send(world);
+                tokio::pin!(migration);
+                let calls_while_retiring = world.fake.calls();
+                std::future::poll_fn(|context| {
+                    assert!(
+                        std::future::Future::poll(migration.as_mut(), context).is_pending(),
+                        "migration queues until the existing retirement finishes"
+                    );
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                assert_eq!(
+                    world.fake.calls(),
+                    calls_while_retiring,
+                    "a queued migration has no native effects during retirement"
+                );
                 pause.release();
+                let migration = migration.await;
                 assert_eq!(message.status, 409, "{}", message.body);
                 assert!(
                     message.body.contains("native topology cleanup"),
                     "{}",
                     message.body
                 );
-                assert_eq!(migration.status, 409, "{}", migration.body);
+                assert_eq!(migration.status, 400, "{}", migration.body);
                 assert!(
                     migration
                         .body
-                        .contains("native topology work is in progress"),
-                    "{}",
+                        .contains("already pins that Team Definition revision"),
+                    "after retirement drains, migration must validate its unchanged intent: {}",
                     migration.body
                 );
                 assert!(!world.fake.calls().iter().any(
@@ -42091,6 +42552,7 @@ async fn an_archived_rename_pending_advisor_can_retire_and_complete_the_same_mig
         .signed_as(world, "observer")
         .send(world)
         .await;
+    prepare_fake_provider_headroom(world, &project.to_string()).await;
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
         &serde_json::json!({
@@ -46968,6 +47430,7 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
         assert_eq!(exhausted.status, 200, "{}", exhausted.body);
     }
 
+    prepare_fake_provider_headroom(world, project).await;
     let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(world, "observer")
         .send(world)
@@ -47955,6 +48418,7 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
     .send(world)
     .await;
     assert_eq!(advisor_applied.status, 200, "{}", advisor_applied.body);
+    prepare_fake_provider_headroom(world, &project.to_string()).await;
     let advisor_invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
         &serde_json::json!({
@@ -49056,6 +49520,7 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .and_then(|seat| seat["observed_binding"]["native_id"].as_str())
         .expect("the launched Judge predecessor")
         .to_owned();
+    world.fake.provider_outage("claude-personal", None);
     let recovered_judge = Call::post(
         format!("/v1/projects/{project}/committee-runs/{run}/seats/{judge_id}/recover"),
         &serde_json::json!({
@@ -51534,20 +51999,90 @@ async fn a_consultation_freezes_the_alias_rung_with_headroom_not_the_first_rung(
         .send(world)
         .await;
     assert_eq!(epic_read.status, 200, "{}", epic_read.body);
-    let invoked = Call::post(
-        format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
-        &serde_json::json!({
-            "profile": {"id": "01991c00-0000-7000-8000-0000000000b7", "version": 1},
-            "topic": "Provider account selection",
-            "question": "Which account should new work land on?",
-            "caller_seat_binding_id": caller,
-            "expected_revision": epic_read.json()["revision"],
-        }),
-    )
-    .signed_as(world, "operator")
-    .with_key("advisor-alias-invoke")
-    .send(world)
-    .await;
+    let invoke_body = serde_json::json!({
+        "profile": {"id": "01991c00-0000-7000-8000-0000000000b7", "version": 1},
+        "topic": "Provider account selection", "question": "Which account should new work land on?",
+        "caller_seat_binding_id": caller, "expected_revision": epic_read.json()["revision"],
+    });
+    let invoke_uri = format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke");
+    let project_id = ProjectId::parse(project).expect("project");
+    let personal = AccountProfileId::parse(&accounts[1]).expect("personal account");
+    let old =
+        Timestamp::from_second(kontor_api::now().as_second() - 3600).expect("stale timestamp");
+    let digest = ContentHash::of(b"exact unchanged provider report");
+    for phase in ["missing", "stale"] {
+        if phase == "stale" {
+            world.daemon.state().with_store(|store| {
+                store
+                    .set_provider_quota_state(&NewProviderQuotaState {
+                        project_id,
+                        account_profile_id: personal,
+                        provider: "codex-personal".to_owned(),
+                        state: ProviderQuotaKind::Available,
+                        resets_at: None,
+                        windows: Vec::new(),
+                        credit: None,
+                        evidence_hash: digest.clone(),
+                        provenance: None,
+                        source: ProviderQuotaSource::ProviderReport,
+                        observed_at: old,
+                        expected_revision: AggregateRevision::INITIAL,
+                        updated_at: old,
+                    })
+                    .expect("a stale positive fixture");
+            });
+        }
+        let before = world.fake.calls().len();
+        let refused = Call::post(&invoke_uri, &invoke_body)
+            .signed_as(world, "operator")
+            .with_key("advisor-alias-invoke")
+            .send(world)
+            .await;
+        assert_eq!(refused.status, 409, "{phase}: {}", refused.body);
+        assert_eq!(refused.code(), "placement_blocked");
+        assert_eq!(
+            world.fake.calls().len(),
+            before,
+            "{phase} quota proof cannot cause a native effect"
+        );
+    }
+    // The provider repeats the same answer. Its projection stays historical;
+    // only this exact immutable heartbeat makes the evidence current again.
+    world.daemon.state().with_store(|store| {
+        store
+            .record_provider_usage_observation(&NewProviderUsageObservation {
+                observation: ProviderUsageObservation {
+                    id: ProviderUsageObservationId::generate(),
+                    project_id,
+                    account_profile_id: personal,
+                    provider: "codex-personal".to_owned(),
+                    evidence_hash: digest,
+                    state: ProviderQuotaKind::Available,
+                    resets_at: None,
+                    windows: Vec::new(),
+                    observed_at: kontor_api::now(),
+                },
+                quota_state: None,
+                idempotency_key: None,
+                intent_hash: None,
+            })
+            .expect("an exact provider heartbeat");
+        assert_eq!(
+            store
+                .list_provider_quota_states(project_id)
+                .expect("quota rows")
+                .iter()
+                .find(|row| row.account_profile_id == personal)
+                .expect("personal projection")
+                .observed_at,
+            old
+        );
+    });
+    let invoked = Call::post(&invoke_uri, &invoke_body)
+        .signed_as(world, "operator")
+        .with_key("advisor-alias-invoke")
+        .send(world)
+        .await;
     assert_eq!(invoked.status, 200, "{}", invoked.body);
     let seat = invoked.json()["seats"][0]["seat_binding_id"]
         .as_str()
@@ -51826,22 +52361,20 @@ async fn the_model_catalog_preserves_watchdog_route_and_effort_boundaries() {
     }
 }
 
-/// The incident's recovery path: a seat launched before any alias was declared
-/// dies on its provider, the deployment declares the two account aliases, and
-/// the replacement walks onto the clear account — claimed, on its own alias.
+/// A seat launched on an evidenced account loses its provider, and its
+/// replacement walks onto the other declared account with its own quota proof.
 /// This is what "seat replace after a quota hit" is for.
 #[tokio::test]
-async fn a_replacement_seat_walks_onto_the_other_account_once_aliases_are_declared() {
+async fn a_replacement_seat_walks_onto_the_other_evidenced_account() {
     let world = World::open_empty().await;
     world.daemon.reconcile().await;
     let CodexAliasEpic {
         project,
         epic,
         seats,
-        ..
-    } = codex_alias_epic(&world, false, false).await;
-    // Undeclared realm: the walk admitted nothing, the launch fell back to the
-    // frozen primary and claimed no account — the pre-declaration behaviour.
+        work,
+        personal,
+    } = codex_alias_epic(&world, false, true).await;
     let seat = seats[0].clone();
     let predecessor = seat["agent_run_id"].as_str().expect("the run id");
     let role_slot = seat["role_slot"].as_str().expect("the role slot");
@@ -51854,38 +52387,13 @@ async fn a_replacement_seat_walks_onto_the_other_account_once_aliases_are_declar
             .provider
             .0,
         "codex-work",
-        "an undeclared realm freezes the primary rung"
+        "the first evidenced account freezes its declared alias"
     );
     assert_eq!(
         world.fake.launched_account(predecessor_id),
-        None,
-        "an undeclared realm claims no account"
+        Some(AccountProfileId::parse(&work).expect("work account")),
+        "new admission must claim the exact account"
     );
-
-    let mut personal = String::new();
-    for (label, alias) in [
-        ("Codex Work (routed)", "codex-work"),
-        ("Codex Personal (routed)", "codex-personal"),
-    ] {
-        let account = Call::post(
-            format!("/v1/projects/{project}/provider-account-profiles:ensure"),
-            &serde_json::json!({
-                "label": label, "harness": "fake.runtime",
-                "credential_alias": format!("{alias}-routed"),
-                "selectable_providers": [alias],
-                "enabled": true
-            }),
-        )
-        .signed_as(&world, "admin")
-        .with_key(format!("replace-routed-{alias}"))
-        .send(&world)
-        .await;
-        assert_eq!(account.status, 200, "{}", account.body);
-        personal = account.json()["account_profile_id"]
-            .as_str()
-            .expect("id")
-            .to_owned();
-    }
 
     let project_id = ProjectId::parse(&project).expect("a project id");
     let run = world.daemon.state().with_store(|store| {
@@ -56885,6 +57393,7 @@ async fn committee_containers_follow_their_recorded_subject_not_their_caller() {
             if let Some(task) = task {
                 body["task_id"] = serde_json::json!(task);
             }
+            prepare_fake_provider_headroom(world, &project.to_string()).await;
             let invoked = Call::post(
                 format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
                 &body,
@@ -56955,6 +57464,7 @@ async fn consultation_containers_follow_their_recorded_subject_not_their_caller(
             if let Some(task) = task {
                 body["task_id"] = serde_json::json!(task);
             }
+            prepare_fake_provider_headroom(world, &project.to_string()).await;
             let invoked = Call::post(
                 format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
                 &body,
@@ -57166,6 +57676,7 @@ async fn a_consultation_with_no_recorded_subject_refuses_to_be_named() {
         .signed_as(world, "observer")
         .send(world)
         .await;
+    prepare_fake_provider_headroom(world, &project.to_string()).await;
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
         &serde_json::json!({
@@ -60229,6 +60740,16 @@ async fn artifact_recovery_preserves_unknown_accounts_only_with_exact_native_pro
         let seed = bootstrap(&world, "unknown-artifact-account").await;
         let runs = seat_existing_with_attribution(&world, &seed, "unknown-artifact", false).await;
         let builder = run_with_role(&world, &runs, "builder").await;
+        // Model pre-attribution historical storage. Current admission now always
+        // pins an exact account, so an old NULL must be an explicit legacy fixture.
+        let db = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+        rusqlite::Connection::open(&db)
+            .expect("legacy fixture database")
+            .execute(
+                "UPDATE agent_runs SET account_profile_id=NULL WHERE id=?1",
+                [&builder],
+            )
+            .expect("historical account attribution was not recorded");
         let source = world
             .daemon
             .state()

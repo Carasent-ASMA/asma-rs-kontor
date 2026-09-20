@@ -390,7 +390,7 @@ impl ApiState {
         message_id: kontor_runtime::request::MessageId,
         provenance: &str,
         idempotency_key: &str,
-    ) -> Result<(), crate::error::ApiError> {
+    ) -> Result<kontor_store::MessageIssuanceOutcome, crate::error::ApiError> {
         let issuance = kontor_store::MessageIssuance {
             message_id: message_id.to_string(),
             runtime_kind: identity.runtime_kind.as_str().to_owned(),
@@ -406,8 +406,38 @@ impl ApiState {
             delivered_at: None,
         };
         self.with_store(|store| store.record_message_issuance(&issuance))
-            .map(|_| ())
             .map_err(|error| crate::error::ApiError::from_repository(self.realm_id(), &error))
+    }
+
+    /// Hand an adapter back the durable knowledge a fresh process lost, when
+    /// this send is a replay rather than a first attempt.
+    ///
+    /// `Replayed` is the whole signal, and it is already exact: the issuance row
+    /// is written before the runtime is asked to accept anything, so a second
+    /// arrival under the same key means an earlier attempt reached at least that
+    /// far — and may have reached the session. An adapter rebuilt since then has
+    /// no way to know that on its own.
+    ///
+    /// A first attempt is left alone deliberately. Declaring it unconfirmed
+    /// would make every message pay for a canonical read to discover what cannot
+    /// be there yet.
+    ///
+    /// # Errors
+    /// Returns the adapter's refusal when the id is already recorded against a
+    /// different body.
+    pub fn note_replayed_issuance(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        outcome: kontor_store::MessageIssuanceOutcome,
+        message_id: kontor_runtime::request::MessageId,
+        body_hash: &kontor_core::id::ContentHash,
+    ) -> Result<(), crate::error::ApiError> {
+        if outcome != kontor_store::MessageIssuanceOutcome::Replayed {
+            return Ok(());
+        }
+        adapter
+            .note_unconfirmed_delivery(message_id, body_hash)
+            .map_err(|error| crate::error::ApiError::from_runtime(self.realm_id(), &error))
     }
 
     /// Make an acknowledged delivery durable before its position is exposed.

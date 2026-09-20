@@ -7732,7 +7732,7 @@ impl SqliteStore {
     ///
     /// The task revision and sub-second command/transition timestamp bind the
     /// legacy local receipt to the transition it produced. Current local
-    /// receipts also carry their result in the outbox payload, but early native
+    /// receipts retain an immutable result separately from the outbox; early native
     /// closures predate that result envelope. Imported historical completions,
     /// direct store seeding, waivers, stale passes and reopened revisions all
     /// fail one of the joins and contribute nothing.
@@ -7779,6 +7779,18 @@ impl SqliteStore {
                     )
                     AND (
                         closure_receipt.result_ref = closure_receipt.intent_hash
+                        OR EXISTS (
+                            SELECT 1 FROM local_command_results AS local_result
+                            WHERE local_result.project_id = closure_receipt.project_id
+                              AND local_result.receipt_id = closure_receipt.id
+                              AND local_result.payload_hash = closure_receipt.result_ref
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM legacy_dispatch_local_confirmation_provenance AS repaired
+                            WHERE repaired.project_id = closure_receipt.project_id
+                              AND repaired.receipt_id = closure_receipt.id
+                              AND repaired.certificate_ref = closure_receipt.result_ref
+                        )
                         OR EXISTS (
                             SELECT 1
                               FROM legacy_local_command_confirmation_provenance AS closure_provenance
@@ -7850,6 +7862,18 @@ impl SqliteStore {
                            )
                            AND (
                                gate_receipt.result_ref = gate_receipt.intent_hash
+                               OR EXISTS (
+                                   SELECT 1 FROM local_command_results AS local_result
+                                   WHERE local_result.project_id = gate_receipt.project_id
+                                     AND local_result.receipt_id = gate_receipt.id
+                                     AND local_result.payload_hash = gate_receipt.result_ref
+                               )
+                               OR EXISTS (
+                                   SELECT 1 FROM legacy_dispatch_local_confirmation_provenance AS repaired
+                                   WHERE repaired.project_id = gate_receipt.project_id
+                                     AND repaired.receipt_id = gate_receipt.id
+                                     AND repaired.certificate_ref = gate_receipt.result_ref
+                               )
                                OR EXISTS (
                                    SELECT 1
                                      FROM legacy_local_command_confirmation_provenance AS gate_provenance
@@ -11283,15 +11307,7 @@ fn task_transition_result_in_transaction(
     transaction: &Transaction<'_>,
     receipt: &CommandReceipt,
 ) -> RepositoryResult<TaskTransitionResult> {
-    let stored: Option<(String, String)> = transaction
-        .query_row(
-            "SELECT payload, payload_hash FROM command_outbox
-             WHERE project_id = ?1 AND receipt_id = ?2",
-            params![receipt.project_id.to_string(), receipt.id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(backend)?;
+    let stored = local_or_legacy_command_result(transaction, receipt)?;
     let (json, hash) = stored.ok_or(RepositoryError::NotFound {
         subject: "task lifecycle result",
     })?;
@@ -11410,16 +11426,7 @@ impl SqliteStore {
         &self,
         receipt: &CommandReceipt,
     ) -> RepositoryResult<TaskTransitionResult> {
-        let stored: Option<(String, String)> = self
-            .connection
-            .query_row(
-                "SELECT payload, payload_hash FROM command_outbox
-                 WHERE project_id = ?1 AND receipt_id = ?2",
-                params![receipt.project_id.to_string(), receipt.id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(backend)?;
+        let stored = local_or_legacy_command_result(&self.connection, receipt)?;
         let (json, hash) = stored.ok_or(RepositoryError::NotFound {
             subject: "task lifecycle result",
         })?;
@@ -12361,6 +12368,110 @@ fn ensure_atomic_replay(
         .into());
     }
     Ok(())
+}
+
+fn ensure_atomic_local_replay(
+    existing: &CommandReceipt,
+    request: &NewLocalCommand,
+) -> RepositoryResult<()> {
+    if existing.project_id != request.project_id {
+        return Err(RepositoryError::CrossProject {
+            subject: "command receipt",
+        });
+    }
+    existing.ensure_replay(&request.target, &request.intent)?;
+    if existing.kind != request.kind || existing.target_revision != request.target_revision {
+        return Err(DomainError::invalid(
+            "CommandReceipt",
+            "idempotency key reused for a different command or target revision",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn ensure_atomic_local_intent_matches(
+    request: &NewLocalCommand,
+    project_id: ProjectId,
+    kind: CommandKind,
+    target: &AggregateRef,
+    target_revision: AggregateRevision,
+) -> RepositoryResult<()> {
+    if request.project_id != project_id
+        || request.kind != kind
+        || &request.target != target
+        || request.target_revision != target_revision
+    {
+        return Err(DomainError::invalid(
+            "CommandReceipt",
+            "the atomic command authority does not match the operation it accompanies",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The caller owns the effect transaction. No receipt, result or confirmation
+/// can survive its rollback, and no native dispatch is inferred or enqueued.
+fn record_atomic_local_result(
+    transaction: &Transaction<'_>,
+    request: &NewLocalCommand,
+    payload: &CanonicalDocument,
+) -> RepositoryResult<CommandReceipt> {
+    if crate::commands::intent::insert_local_command(transaction, request)?.is_some() {
+        return Err(conflict(
+            "command receipt",
+            "the idempotency key appeared during one atomic local change",
+        ));
+    }
+    transaction.execute(
+        "INSERT INTO local_command_results (project_id, receipt_id, payload, payload_hash, recorded_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![request.project_id.to_string(), request.receipt_id.to_string(),
+            payload.json(), payload.hash().as_str(), text(request.created_at)],
+    ).map_err(backend)?;
+    let evidence = ExternalId::parse(payload.hash().as_str())?;
+    crate::commands::receipts::append_transition(
+        transaction,
+        request.project_id,
+        request.receipt_id,
+        2,
+        kontor_core::receipt::CommandReceiptState::Confirmed,
+        None,
+        None,
+        Some(&evidence),
+        request.created_at,
+    )?;
+    transaction.execute(
+        "UPDATE command_receipts SET state = 'confirmed', result_ref = ?3, updated_at = ?4
+         WHERE project_id = ?1 AND id = ?2 AND execution_mode = 'local' AND state = 'intent_persisted'",
+        params![request.project_id.to_string(), request.receipt_id.to_string(),
+            evidence.as_str(), text(request.created_at)],
+    ).map_err(backend)?;
+    command_receipt_by_key(transaction, &request.idempotency_key)?.ok_or(
+        RepositoryError::NotFound {
+            subject: "command receipt",
+        },
+    )
+}
+
+/// Existing atomic results remain readable from their historical outbox. A
+/// present local result always wins, including when its hash is corrupt: the
+/// parser must refuse that corruption rather than fall back to older bytes.
+fn local_or_legacy_command_result(
+    connection: &Connection,
+    receipt: &CommandReceipt,
+) -> RepositoryResult<Option<(String, String)>> {
+    connection.query_row(
+        "SELECT payload, payload_hash FROM local_command_results
+         WHERE project_id = ?1 AND receipt_id = ?2
+         UNION ALL SELECT payload, payload_hash FROM command_outbox
+         WHERE project_id = ?1 AND receipt_id = ?2
+           AND NOT EXISTS (SELECT 1 FROM local_command_results WHERE project_id = ?1 AND receipt_id = ?2)
+         LIMIT 1",
+        params![receipt.project_id.to_string(), receipt.id.to_string()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(backend)
 }
 
 fn ensure_atomic_intent_matches(
@@ -13462,15 +13573,7 @@ fn bound_gate_record_result(
     transaction: &Transaction<'_>,
     receipt: &CommandReceipt,
 ) -> RepositoryResult<Option<(TaskWorkflowId, u32)>> {
-    let stored: Option<(String, String)> = transaction
-        .query_row(
-            "SELECT payload, payload_hash FROM command_outbox
-             WHERE project_id = ?1 AND receipt_id = ?2",
-            params![receipt.project_id.to_string(), receipt.id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(backend)?;
+    let stored = local_or_legacy_command_result(transaction, receipt)?;
     // No stored payload: nothing claims a binding.
     let Some((json, hash)) = stored else {
         return Ok(None);
@@ -13827,15 +13930,7 @@ fn gate_record_result_in_transaction(
     transaction: &Transaction<'_>,
     receipt: &CommandReceipt,
 ) -> RepositoryResult<(TaskWorkflowId, u32)> {
-    let stored: Option<(String, String)> = transaction
-        .query_row(
-            "SELECT payload, payload_hash FROM command_outbox
-         WHERE project_id = ?1 AND receipt_id = ?2",
-            params![receipt.project_id.to_string(), receipt.id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(backend)?;
+    let stored = local_or_legacy_command_result(transaction, receipt)?;
     let (json, hash) = stored.ok_or(RepositoryError::NotFound {
         subject: "gate verdict result",
     })?;
@@ -13848,12 +13943,12 @@ impl SqliteStore {
         &self,
         request: &NewGateEvaluation,
         expected_workflow_revision: AggregateRevision,
-        envelope: &ReceiptEnvelope<NewCommandIntent>,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
     ) -> RepositoryResult<(u32, CommandReceipt)> {
         let intent = envelope.peek(self.realm_id())?;
         let transaction = self.begin()?;
         let (workflow, _) = load_workflow(&transaction, request.project_id, request.workflow_id)?;
-        ensure_atomic_intent_matches(
+        ensure_atomic_local_intent_matches(
             intent,
             request.project_id,
             CommandKind::RecordGateVerdict,
@@ -13863,7 +13958,7 @@ impl SqliteStore {
             intent.target_revision,
         )?;
         if let Some(existing) = command_receipt_by_key(&transaction, &intent.idempotency_key)? {
-            ensure_atomic_replay(&existing, intent)?;
+            ensure_atomic_local_replay(&existing, intent)?;
             let (recorded_workflow, sequence) =
                 gate_record_result_in_transaction(&transaction, &existing)?;
             if recorded_workflow != request.workflow_id {
@@ -13904,19 +13999,8 @@ impl SqliteStore {
                     "gate_sequence": sequence,
                 }),
             );
-        let mut recorded = intent.clone();
-        recorded.payload = CanonicalDocument::from_value(&payload)?;
-        if crate::commands::intent::insert_intent(&transaction, &recorded)?.is_some() {
-            return Err(conflict(
-                "command receipt",
-                "the idempotency key appeared during one atomic gate recording",
-            ));
-        }
-        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
-            RepositoryError::NotFound {
-                subject: "command receipt",
-            },
-        )?;
+        let payload = CanonicalDocument::from_value(&payload)?;
+        let receipt = record_atomic_local_result(&transaction, intent, &payload)?;
         // The route belongs to the same transaction as the verdict and the
         // receipt: all three commit together or none of them does, so there is
         // no window in which a workflow is routed and the reason it moved is
@@ -14711,13 +14795,13 @@ impl SqliteStore {
     pub fn transition_task_with_intent(
         &self,
         request: &TaskTransitionRequest,
-        envelope: &ReceiptEnvelope<NewCommandIntent>,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
     ) -> RepositoryResult<(TaskTransitionResult, CommandReceipt, crate::graph::Applied)> {
         let intent = envelope.peek(self.realm_id())?;
         let target = AggregateRef::Task {
             task_id: request.task_id,
         };
-        ensure_atomic_intent_matches(
+        ensure_atomic_local_intent_matches(
             intent,
             request.project_id,
             if request.to == TaskState::Withdrawn {
@@ -14732,26 +14816,14 @@ impl SqliteStore {
         )?;
         let transaction = self.begin()?;
         if let Some(existing) = command_receipt_by_key(&transaction, &intent.idempotency_key)? {
-            ensure_atomic_replay(&existing, intent)?;
+            ensure_atomic_local_replay(&existing, intent)?;
             let result = task_transition_result_in_transaction(&transaction, &existing)?;
             return Ok((result, existing, crate::graph::Applied::Unchanged));
         }
 
         let moved = transition_task_in_transaction(&transaction, request)?;
-        let mut recorded = intent.clone();
-        recorded.payload = task_transition_result_payload(&intent.intent, &moved)?;
-        let replayed = crate::commands::intent::insert_intent(&transaction, &recorded)?;
-        if replayed.is_some() {
-            return Err(conflict(
-                "command receipt",
-                "the idempotency key appeared during one atomic task transition",
-            ));
-        }
-        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
-            RepositoryError::NotFound {
-                subject: "command receipt",
-            },
-        )?;
+        let payload = task_transition_result_payload(&intent.intent, &moved)?;
+        let receipt = record_atomic_local_result(&transaction, intent, &payload)?;
         transaction.commit().map_err(backend)?;
         Ok((
             TaskTransitionResult {
