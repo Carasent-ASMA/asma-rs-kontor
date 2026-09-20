@@ -39547,20 +39547,36 @@ async fn native_child_archive_requires_retirement_and_recovers_a_lost_acknowledg
                 });
                 let migration = Call::post(format!("/v1/projects/{project}/epics/{epic}/team-definition:upgrade-apply"),
                     &serde_json::json!({"upgrade": {"target_definition": {"id": pin.definition.definition_id, "version": pin.definition.version}, "legacy_topics": {}, "expected_revision": composed.project_revision}, "preview_hash": "0".repeat(64)}))
-                    .signed_as(world, "admin").with_key("cleanup-concurrent-migration").send(world).await;
+                    .signed_as(world, "admin").with_key("cleanup-concurrent-migration").send(world);
+                tokio::pin!(migration);
+                let calls_while_retiring = world.fake.calls();
+                std::future::poll_fn(|context| {
+                    assert!(
+                        std::future::Future::poll(migration.as_mut(), context).is_pending(),
+                        "migration queues until the existing retirement finishes"
+                    );
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                assert_eq!(
+                    world.fake.calls(),
+                    calls_while_retiring,
+                    "a queued migration has no native effects during retirement"
+                );
                 pause.release();
+                let migration = migration.await;
                 assert_eq!(message.status, 409, "{}", message.body);
                 assert!(
                     message.body.contains("native topology cleanup"),
                     "{}",
                     message.body
                 );
-                assert_eq!(migration.status, 409, "{}", migration.body);
+                assert_eq!(migration.status, 400, "{}", migration.body);
                 assert!(
                     migration
                         .body
-                        .contains("native topology work is in progress"),
-                    "{}",
+                        .contains("already pins that Team Definition revision"),
+                    "after retirement drains, migration must validate its unchanged intent: {}",
                     migration.body
                 );
                 assert!(!world.fake.calls().iter().any(

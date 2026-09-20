@@ -1807,6 +1807,7 @@ impl ScriptedFakeRuntime {
         self.lock().native_deduplicates_messages = false;
     }
 
+    /// Rebuild process-local adapter state while retaining the native sessions.
     pub fn rebuild_adapter_state(&self) {
         let mut state = self.lock();
         state.bindings.clear();
