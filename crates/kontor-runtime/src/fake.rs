@@ -1515,6 +1515,37 @@ impl ScriptedFakeRuntime {
         Ok((message_position, response_position))
     }
 
+    /// Finish a turn opened by `send`, without appending a second user message.
+    ///
+    /// # Errors
+    /// Refuses an unknown binding or a message absent from its native content.
+    pub fn observe_sent_turn_completion(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        message_id: MessageId,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<(TimelinePosition, TimelinePosition)> {
+        let mut state = self.lock();
+        let session = state.session(binding)?;
+        let message_position = session
+            .content
+            .iter()
+            .find(|event| event.subject == EventSubject::Message(message_id))
+            .map(|event| event.position)
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the sent message is absent from this session",
+            })?;
+        let response_position = session.append(
+            SessionEventKind::Message,
+            EventSubject::None,
+            "current turn response",
+            observed_at,
+        )?;
+        session.state = ObservedRunState::WaitingInput;
+        session.refusal = None;
+        Ok((message_position, response_position))
+    }
+
     /// Append one tool call after a completed turn.
     ///
     /// The shape a terminality check exists for: turn content that is *not* a
@@ -2338,6 +2369,25 @@ impl ScriptedFakeRuntime {
         let mut state = self.lock();
         state.epoch_mappings.clear();
         state.undrained_epochs.clear();
+    }
+
+    /// Give a newly seated fixture a distinct native timeline before sending.
+    ///
+    /// # Errors
+    /// Refuses a binding this fake does not own. Callers must use this before
+    /// any delivery whose acknowledgement would refer to the previous epoch.
+    pub fn set_unread_timeline_epoch(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        epoch: u64,
+    ) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        let session = state.session(binding)?;
+        session.epoch = epoch;
+        for event in &mut session.content {
+            event.position.epoch = epoch;
+        }
+        Ok(())
     }
 
     /// The mappings allocated but not yet handed over for persistence.
@@ -4100,6 +4150,16 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             request.binding.binding_id(),
             request.message_id,
         ));
+
+        // Paseo's send reconciliation learns the native epoch before it can
+        // acknowledge a canonical position. Model that same persistence debt
+        // here, including an acknowledgement replay after a failed store write.
+        let epoch = state.session(&request.binding)?.epoch;
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
 
         let binding_id = request.binding.binding_id();
         let body_hash = request.body_hash();

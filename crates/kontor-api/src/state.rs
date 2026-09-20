@@ -410,8 +410,39 @@ impl ApiState {
             .map_err(|error| crate::error::ApiError::from_repository(self.realm_id(), &error))
     }
 
+    /// Make an acknowledged delivery durable before its position is exposed.
+    ///
+    /// Sending can allocate an epoch just as reading history can. Commit and
+    /// acknowledge those mappings before pinning the delivery; a later restart
+    /// must interpret its position under the same numbering. A failed commit
+    /// leaves the adapter's mappings pending and does not pin the delivery.
+    ///
+    /// # Errors
+    /// A repository refusal after native acceptance, with explicit advice to
+    /// reconcile the original effect rather than send a second instruction.
+    pub fn record_message_delivery_durably(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        message_id: kontor_runtime::request::MessageId,
+        position: kontor_runtime::timeline::TimelinePosition,
+    ) -> Result<(), crate::error::ApiError> {
+        self.persist_pending_epochs(adapter, identity)
+            .and_then(|()| self.record_message_delivery(message_id, position))
+            .map_err(|error| {
+                ApiError::new(
+                    error.realm_id,
+                    error.code,
+                    "the message was delivered and acknowledged, but its canonical delivery position could not be made durable",
+                )
+                .advising("reconcile the existing delivery with its original message id or replay the same idempotency key; never resend under a new key")
+            })
+    }
+
     /// Record where the runtime acknowledged an issued message landing.
     ///
+    /// Low-level ledger write; runtime send paths use
+    /// [`Self::record_message_delivery_durably`] to commit the epoch first.
     /// Called after a delivery is acknowledged, and only then: the position is
     /// the runtime's answer, not something Kontor can predict. It is what lets a
     /// bounded observation ask whether the occurrence it found is *the* delivery

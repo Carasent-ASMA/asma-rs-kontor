@@ -5182,7 +5182,12 @@ impl Services {
                 // same reason: a follow-up is a Kontor-minted id in a session,
                 // and an observation of the turn it opens has to be able to tell
                 // the occurrence Kontor delivered from any other mention of it.
-                state.record_message_delivery(message_id, acknowledged.position)?;
+                state.record_message_delivery_durably(
+                    adapter.as_ref(),
+                    request.binding.identity(),
+                    message_id,
+                    acknowledged.position,
+                )?;
                 state
                     .with_store(|store| {
                         store.mark_turn_dispatched(settled.id, &handoff.to_slot, target)

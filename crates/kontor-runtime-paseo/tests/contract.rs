@@ -7036,6 +7036,70 @@ async fn message_restart_replays_the_original_ack_without_a_second_send() {
     assert_eq!(journal, 1);
 }
 
+/// A send can be the first operation to learn an epoch. Its durability debt
+/// must survive the handoff to storage and retain the same position when a
+/// fresh adapter encounters another native epoch before revisiting this one.
+#[tokio::test]
+async fn message_delivery_epoch_survives_restart_and_interleaved_allocation() {
+    let (plane, binding) = launched().await;
+    assert!(plane.adapter.pending_timeline_epochs().is_empty());
+    let ack = plane
+        .adapter
+        .send(&message(&binding, "the next turn"))
+        .await
+        .expect("delivered under an initially unknown epoch");
+    let durable = plane.adapter.pending_timeline_epochs();
+    assert!(
+        durable
+            .iter()
+            .any(|(raw, epoch)| raw == EPOCH_RAW && *epoch == ack.position.epoch)
+    );
+    plane.adapter.ack_timeline_epochs(&durable);
+    let mut carried = plane.adapter.checkpoint();
+    carried.epochs.clear();
+    carried.cursors.clear();
+    carried.deliveries.clear();
+    drop(plane);
+    let other_raw = "11111111-2222-4333-8444-555555555555";
+    let restarted = Plane::build(
+        daemon().journaling(AGENT_ID, other_raw, vec![user_entry(1, "unrelated")]),
+        carried,
+    );
+    restarted
+        .adapter
+        .restore_timeline_epochs(&durable)
+        .expect("load the committed mappings");
+    let other = restarted
+        .adapter
+        .history(&HistoryRequest {
+            binding: binding.clone(),
+            cursor: None,
+            page_size: 10,
+        })
+        .await
+        .expect("a different epoch is encountered first");
+    assert_ne!(other.epoch, ack.position.epoch);
+    restarted
+        .daemon
+        .set_answer_rpc("fetch_agent_timeline_request", v(TIMELINE_MESSAGE_LANDED));
+    let page = restarted
+        .adapter
+        .history(&HistoryRequest {
+            binding,
+            cursor: None,
+            page_size: 10,
+        })
+        .await
+        .expect("the original native transcript remains addressable");
+    assert_eq!(page.epoch, ack.position.epoch);
+    assert!(
+        page.items
+            .iter()
+            .any(|event| event.position == ack.position)
+    );
+    assert_eq!(restarted.daemon.count("rpc send_agent_message_request"), 0);
+}
+
 // ---------------------------------------------------------------------------
 // permission_
 // ---------------------------------------------------------------------------

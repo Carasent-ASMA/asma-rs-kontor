@@ -28282,6 +28282,274 @@ async fn a_history_read_persists_its_epoch_mapping_before_returning() {
     );
 }
 
+/// A first delivery must commit the epoch before pinning its position. Both
+/// issuing routes owe this, and a failed commit must remain retryable without
+/// claiming the native message was never sent.
+async fn check_delivery_epoch_barrier(derived: bool, fail_commit: bool) {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "delivery-epoch").await;
+    let seats = seats.as_array().expect("seats");
+    let source = seats[0]["agent_run_id"].as_str().expect("source");
+    let role = seats[0]["role_slot"].as_str().expect("role");
+    let target = seats[1]["agent_run_id"].as_str().expect("target");
+    let project_id = ProjectId::parse(&project).expect("project");
+    let target_run = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_agent_run(project_id, AgentRunId::parse(target).expect("run"))
+        })
+        .expect("run reads")
+        .expect("target exists");
+    let target_binding = world
+        .daemon
+        .state()
+        .sessions()
+        .get(target_run.binding.expect("bound").id)
+        .expect("held binding");
+    world
+        .fake
+        .set_unread_timeline_epoch(&target_binding, 73)
+        .expect("fresh native epoch");
+    let proof = observe_current_turn(&world, &project, source);
+    // Flush the source proof's epoch first, so a later injected write failure
+    // concerns the newly acknowledged target message, never settlement proof.
+    let history = Call::get(format!("/v1/sessions/{source}/timeline?limit=64"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(history.status, 200, "{}", history.body);
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let revision = projection.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("revision");
+    let key = kontor_runtime::request::MessageId::generate();
+    let request = || {
+        if derived {
+            Call::post(
+                format!("/v1/projects/{project}/agent-runs/{source}/turns:settle"),
+                &serde_json::json!({"role_slot":role,"expected_task_revision":revision,
+                    "runtime_proof":proof,"artifacts":["change-set"]}),
+            )
+        } else {
+            Call::post(
+                format!("/v1/sessions/{target}/messages"),
+                &serde_json::json!({"body":"persist this delivery before acknowledging it"}),
+            )
+        }
+        .signed_as(&world, "operator")
+        .with_key(key.to_string())
+    };
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    if fail_commit {
+        rusqlite::Connection::open(&database).expect("test database")
+            .execute_batch("CREATE TRIGGER refuse_delivery_epoch BEFORE INSERT ON runtime_timeline_epochs BEGIN SELECT RAISE(FAIL, 'injected epoch commit failure'); END;")
+            .expect("failure installed");
+    }
+    let first = request().send(&world).await;
+    let dispatch = || {
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_turn_dispatches(project_id))
+            .expect("dispatches")
+    };
+    let message_id = if derived {
+        kontor_runtime::request::MessageId::parse(&dispatch()[0].message_id).expect("message")
+    } else {
+        key
+    };
+    let issued = || {
+        world
+            .daemon
+            .state()
+            .message_issuance(message_id)
+            .expect("issuance reads")
+            .expect("issued before sending")
+    };
+    if fail_commit {
+        assert!(
+            !first.status.is_success(),
+            "no durable acknowledgement: {}",
+            first.body
+        );
+        assert!(
+            first.body.contains("delivered"),
+            "truthful after-delivery error: {}",
+            first.body
+        );
+        assert!(
+            !first.body.contains("nothing was changed"),
+            "{}",
+            first.body
+        );
+        assert!(
+            issued().delivered_at.is_none(),
+            "an undurable epoch must not be pinned"
+        );
+        assert!(
+            !world.fake.undrained_epochs().is_empty(),
+            "commit failure keeps the retry debt"
+        );
+        if derived {
+            assert!(!dispatch()[0].dispatched);
+        }
+        rusqlite::Connection::open(&database)
+            .expect("test database")
+            .execute_batch("DROP TRIGGER refuse_delivery_epoch;")
+            .expect("failure removed");
+        if derived {
+            assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+        } else {
+            let retry = request().send(&world).await;
+            assert_eq!(retry.status, 200, "{}", retry.body);
+        }
+    } else {
+        assert_eq!(first.status, 200, "{}", first.body);
+    }
+    let delivery = issued();
+    let position = delivery.delivered_at.expect("delivery pinned");
+    let mappings = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(&delivery.runtime_kind, &delivery.host))
+        .expect("epochs");
+    assert!(
+        mappings.iter().any(|(_, epoch)| *epoch == position.0),
+        "a delivery cannot outlive its epoch mapping: {mappings:?}, {position:?}"
+    );
+    assert!(world.fake.undrained_epochs().is_empty());
+    if derived {
+        assert!(dispatch()[0].dispatched);
+    }
+    // Reopen the actual realm immediately, with no intervening history read
+    // that could conceal a missing send barrier by persisting its mapping.
+    let World {
+        directory,
+        daemon,
+        router,
+        fake,
+        project: world_project,
+        task,
+        team_run,
+    } = world;
+    daemon.state().signals().stop();
+    drop(router);
+    drop(daemon);
+    fake.rebuild_adapter_state();
+    fake.forget_timeline_epochs();
+    let daemon = Daemon::start(
+        DaemonConfig::at(directory.path()).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same realm restarts");
+    assert_eq!(daemon.reconcile().await, BarrierState::Open);
+    let router = daemon.router();
+    let world = World {
+        directory,
+        daemon,
+        router,
+        fake,
+        project: world_project,
+        task,
+        team_run,
+    };
+    let restored = world
+        .daemon
+        .state()
+        .message_issuance(message_id)
+        .expect("restart reads issuance")
+        .expect("issuance survives");
+    assert_eq!(restored.delivered_at, Some(position));
+    assert_eq!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.list_timeline_epochs(&delivery.runtime_kind, &delivery.host))
+            .expect("restored epochs"),
+        mappings
+    );
+    // This read happens only after inspecting durability; it must not be the
+    // operation that accidentally repairs a missing send-side commit.
+    let timeline = Call::get(format!("/v1/sessions/{target}/timeline?limit=64"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(timeline.status, 200, "{}", timeline.body);
+    assert_eq!(
+        timeline.json()["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .filter(|event| event["message_id"] == message_id.to_string())
+            .count(),
+        1,
+        "retry preserves one native effect"
+    );
+    // The saved position is usable by the sole observation/settlement path
+    // after restart, not merely present as an inert database row.
+    let held = world
+        .daemon
+        .state()
+        .sessions()
+        .get(target_binding.binding_id())
+        .expect("same binding restored");
+    let (message_at, response_at) = world
+        .fake
+        .observe_sent_turn_completion(&held, message_id, kontor_api::now())
+        .expect("the native turn finishes");
+    assert_eq!((message_at.epoch, message_at.sequence), position);
+    let observed = Call::get(format!("/v1/sessions/{target}/turns/current"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(observed.status, 200, "{}", observed.body);
+    assert_eq!(observed.json()["message_id"], message_id.to_string());
+    assert_eq!(observed.json()["timeline_epoch"], position.0);
+    assert_eq!(observed.json()["message_sequence"], position.1);
+    let finished = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{target}/turns:settle"),
+        &serde_json::json!({"role_slot":seats[1]["role_slot"],"expected_task_revision":revision,
+            "runtime_proof":{"message_id":message_id.to_string(),
+                "message_position":{"epoch":message_at.epoch,"sequence":message_at.sequence},
+                "response_position":{"epoch":response_at.epoch,"sequence":response_at.sequence}},
+            "artifacts":[]}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("delivery-epoch-finished")
+    .send(&world)
+    .await;
+    assert_eq!(finished.status, 200, "{}", finished.body);
+}
+
+#[tokio::test]
+async fn direct_delivery_epoch_is_durable_before_acknowledgement() {
+    check_delivery_epoch_barrier(false, false).await;
+}
+
+#[tokio::test]
+async fn derived_delivery_epoch_is_durable_before_dispatch_completion() {
+    check_delivery_epoch_barrier(true, false).await;
+}
+
+#[tokio::test]
+async fn direct_delivery_epoch_commit_failure_is_truthful_and_retryable() {
+    check_delivery_epoch_barrier(false, true).await;
+}
+
+#[tokio::test]
+async fn derived_delivery_epoch_commit_failure_is_truthful_and_retryable() {
+    check_delivery_epoch_barrier(true, true).await;
+}
+
 /// The live shape: a tiny current turn at the tail of a long, never-read session.
 ///
 /// ASMA-8200 and ASMA-8196 were newly launched scope seats that had completed
