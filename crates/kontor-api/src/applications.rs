@@ -3307,6 +3307,23 @@ pub struct ContainerRecoveryApplyRequest {
     pub preview_hash: ContentHash,
 }
 
+/// Which of the two dispositions one recovery census authorizes.
+///
+/// The operation has always had one answer — adopt the sole live candidate.
+/// This names that answer so a second one can exist beside it without either
+/// being inferred from the shape of the payload. An operator reading a preview
+/// should not have to deduce "it is going to build one" from a missing field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerRecoveryDispositionDto {
+    /// Exactly one candidate carries the exact parent, canonical path and
+    /// rendered title. Apply adopts it and creates nothing.
+    AdoptExisting,
+    /// The persisted native is absent and nothing occupies the canonical path.
+    /// Apply creates exactly one replacement below the exact persisted parent.
+    RecreateAbsent,
+}
+
 /// Exact before/after identity proved by a read-only recovery census.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct ContainerRecoveryPreviewDto {
@@ -3319,12 +3336,20 @@ pub struct ContainerRecoveryPreviewDto {
     /// Topology node whose logical binding is preserved.
     #[schema(value_type = String)]
     pub topology_node_id: TopologyNodeId,
+    /// Which answer this census reached.
+    pub disposition: ContainerRecoveryDispositionDto,
     /// Native identity currently persisted and proved absent.
     #[schema(value_type = String)]
     pub stale_native_id: ExternalId,
     /// Sole live parent/path/title candidate.
-    #[schema(value_type = String)]
-    pub replacement_native_id: ExternalId,
+    ///
+    /// Absent exactly when the disposition is
+    /// [`ContainerRecoveryDispositionDto::RecreateAbsent`] and this is a
+    /// preview: there is no candidate yet, and naming one before apply has run
+    /// would be predicting an identity the runtime has not minted. Always
+    /// present on an applied result.
+    #[schema(value_type = Option<String>)]
+    pub replacement_native_id: Option<ExternalId>,
     /// Exact native parent in which the census ran.
     #[schema(value_type = String)]
     pub parent_native_id: ExternalId,
@@ -3332,6 +3357,10 @@ pub struct ContainerRecoveryPreviewDto {
     #[schema(value_type = String)]
     pub canonical_cwd: ExternalName,
     /// Runtime-reported candidate title.
+    ///
+    /// On a `recreate_absent` preview there is no candidate to report one from,
+    /// so this carries the exact title apply will write — the same bytes the
+    /// naming authority already rendered, never a title the caller chose.
     pub observed_title: String,
     /// Hash binding the complete preview.
     #[schema(value_type = String)]

@@ -341,6 +341,7 @@ impl Modify for RealmBearer {
         crate::applications::AppliedContainerRetitleDto,
         crate::applications::ContainerRecoveryPreviewRequest,
         crate::applications::ContainerRecoveryApplyRequest,
+        crate::applications::ContainerRecoveryDispositionDto,
         crate::applications::ContainerRecoveryPreviewDto,
         crate::applications::AppliedContainerRecoveryDto,
         crate::applications::EpicBacklogCodeCorrectionPreviewRequest,

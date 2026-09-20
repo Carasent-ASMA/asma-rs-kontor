@@ -14930,6 +14930,14 @@
         },
         "additionalProperties": false
       },
+      "ContainerRecoveryDispositionDto": {
+        "type": "string",
+        "description": "Which of the two dispositions one recovery census authorizes.\n\nThe operation has always had one answer — adopt the sole live candidate.\nThis names that answer so a second one can exist beside it without either\nbeing inferred from the shape of the payload. An operator reading a preview\nshould not have to deduce \"it is going to build one\" from a missing field.",
+        "enum": [
+          "adopt_existing",
+          "recreate_absent"
+        ]
+      },
       "ContainerRecoveryPreviewDto": {
         "type": "object",
         "description": "Exact before/after identity proved by a read-only recovery census.",
@@ -14937,8 +14945,8 @@
           "realm_id",
           "project_id",
           "topology_node_id",
+          "disposition",
           "stale_native_id",
-          "replacement_native_id",
           "parent_native_id",
           "canonical_cwd",
           "observed_title",
@@ -14950,9 +14958,13 @@
             "type": "string",
             "description": "Preserved canonical working directory."
           },
+          "disposition": {
+            "$ref": "#/components/schemas/ContainerRecoveryDispositionDto",
+            "description": "Which answer this census reached."
+          },
           "observed_title": {
             "type": "string",
-            "description": "Runtime-reported candidate title."
+            "description": "Runtime-reported candidate title.\n\nOn a `recreate_absent` preview there is no candidate to report one from,\nso this carries the exact title apply will write — the same bytes the\nnaming authority already rendered, never a title the caller chose."
           },
           "parent_native_id": {
             "type": "string",
@@ -14971,8 +14983,11 @@
             "description": "Realm that performed the census."
           },
           "replacement_native_id": {
-            "type": "string",
-            "description": "Sole live parent/path/title candidate."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sole live parent/path/title candidate.\n\nAbsent exactly when the disposition is\n[`ContainerRecoveryDispositionDto::RecreateAbsent`] and this is a\npreview: there is no candidate yet, and naming one before apply has run\nwould be predicting an identity the runtime has not minted. Always\npresent on an applied result."
           },
           "snapshot_cursor": {
             "type": "integer",

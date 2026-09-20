@@ -5082,11 +5082,29 @@ export interface components {
             /** @description Hash returned by the recovery preview. */
             preview_hash: string;
         };
+        /**
+         * @description Which of the two dispositions one recovery census authorizes.
+         *
+         *     The operation has always had one answer — adopt the sole live candidate.
+         *     This names that answer so a second one can exist beside it without either
+         *     being inferred from the shape of the payload. An operator reading a preview
+         *     should not have to deduce "it is going to build one" from a missing field.
+         * @enum {string}
+         */
+        ContainerRecoveryDispositionDto: "adopt_existing" | "recreate_absent";
         /** @description Exact before/after identity proved by a read-only recovery census. */
         ContainerRecoveryPreviewDto: {
             /** @description Preserved canonical working directory. */
             canonical_cwd: string;
-            /** @description Runtime-reported candidate title. */
+            /** @description Which answer this census reached. */
+            disposition: components["schemas"]["ContainerRecoveryDispositionDto"];
+            /**
+             * @description Runtime-reported candidate title.
+             *
+             *     On a `recreate_absent` preview there is no candidate to report one from,
+             *     so this carries the exact title apply will write — the same bytes the
+             *     naming authority already rendered, never a title the caller chose.
+             */
             observed_title: string;
             /** @description Exact native parent in which the census ran. */
             parent_native_id: string;
@@ -5096,8 +5114,16 @@ export interface components {
             project_id: string;
             /** @description Realm that performed the census. */
             realm_id: string;
-            /** @description Sole live parent/path/title candidate. */
-            replacement_native_id: string;
+            /**
+             * @description Sole live parent/path/title candidate.
+             *
+             *     Absent exactly when the disposition is
+             *     [`ContainerRecoveryDispositionDto::RecreateAbsent`] and this is a
+             *     preview: there is no candidate yet, and naming one before apply has run
+             *     would be predicting an identity the runtime has not minted. Always
+             *     present on an applied result.
+             */
+            replacement_native_id?: string | null;
             /**
              * Format: int64
              * @description Snapshot position.

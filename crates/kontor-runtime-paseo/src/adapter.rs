@@ -83,7 +83,8 @@ use kontor_runtime::capability::{
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence,
     ContainerInspectRequest, ContainerInspection, ContainerOutcome, ContainerProjection,
-    ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRequest, ContainerWorkspaceKind,
+    ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRecreationOutcome,
+    ContainerRecreationRequest, ContainerRequest, ContainerWorkspaceKind,
     RetitleContainerOutcome, RetitleContainerRequest,
 };
 use kontor_runtime::observation::{
@@ -176,6 +177,23 @@ const RECONCILE_PAGE_BUDGET: usize = 4;
 /// from the invalidated attempt. The bound prevents a runtime that keeps
 /// renumbering from turning one read into an unbounded request.
 const CURSOR_FREE_REFETCH_ATTEMPTS: usize = 3;
+
+/// What a container-recreation census found at the node's canonical place.
+///
+/// Two outcomes, because the operation has exactly two correct moves. Every
+/// other shape the runtime can be in — the persisted native still alive, two
+/// containers at one path, a title that has drifted — is a refusal raised
+/// inside the census rather than a variant here, so a caller cannot reach a
+/// native effect while holding an ambiguous answer.
+#[derive(Debug, Clone)]
+enum RecreationCensus {
+    /// Nothing occupies the canonical path below the exact parent. Create.
+    Vacant,
+    /// Exactly one container already stands where the recreation would build,
+    /// carrying the exact expected title: a previous attempt created it and
+    /// lost its answer. Adopt it.
+    AlreadyCreated(Box<PaseoWorkspace>),
+}
 
 // ---------------------------------------------------------------------------
 // Configuration and scope
@@ -1565,6 +1583,178 @@ impl PaseoAdapter {
             .into_iter()
             .find(|workspace| workspace.id == workspace_id)
             .ok_or(RuntimeError::CorrelationFailed)
+    }
+
+    /// One workspace read back from an exact parent project by exact id.
+    ///
+    /// Scoped to the parent deliberately: it is what proves a freshly created
+    /// native landed in the persisted ancestor rather than wherever the daemon
+    /// last pointed. The create answer omits `projectId`, so this readback is
+    /// the only evidence of placement there is.
+    async fn fetch_workspace_by_id(
+        &self,
+        parent_native_id: &str,
+        workspace_id: &str,
+    ) -> RuntimeResult<PaseoWorkspace> {
+        self.fetch_workspaces(parent_native_id)
+            .await?
+            .into_iter()
+            .find(|workspace| {
+                workspace.id == workspace_id && workspace.project_id == parent_native_id
+            })
+            .ok_or(RuntimeError::CorrelationFailed)
+    }
+
+    /// Prove what stands at one node's canonical place, and refuse every shape
+    /// that is not one of the two the operation may act on.
+    ///
+    /// Ordered so the cheapest disqualification comes first and no native
+    /// effect is reachable past an ambiguous read.
+    async fn recreation_census(
+        &self,
+        request: &ContainerRecreationRequest,
+    ) -> RuntimeResult<RecreationCensus> {
+        let declared = self.declared().await?;
+        if !declared.supports(RuntimeCapability::PrepareWorkspace) {
+            return Err(self.refuse(RuntimeCapability::PrepareWorkspace, &declared));
+        }
+        if request.absent_identity.runtime_kind != self.config.runtime_kind
+            || request.absent_identity.host != self.config.host_key
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the lost container binding belongs to another runtime host",
+            });
+        }
+
+        let workspaces = self
+            .fetch_workspaces(request.bound_project_native_id.as_str())
+            .await?;
+        // The persisted native being alive is the one state recreation must
+        // never act on: building beside it would duplicate a container the node
+        // still owns. This is checked before the path census so a live native
+        // at a *different* path is still refused.
+        if workspaces
+            .iter()
+            .any(|workspace| workspace.id == request.absent_identity.native_id.as_str())
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persisted native container still exists and cannot be recreated",
+            });
+        }
+
+        let candidates = workspaces
+            .iter()
+            .filter(|workspace| {
+                workspace.project_id == request.bound_project_native_id.as_str()
+                    && WorkspaceRoot::parse(&workspace.workspace_directory)
+                        .is_ok_and(|root| root == request.canonical_cwd)
+            })
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [] => Ok(RecreationCensus::Vacant),
+            [candidate] => {
+                // A single candidate is only ever this operation's own lost
+                // creation. Anything else standing at the node's canonical path
+                // under its exact parent is a container Kontor did not make,
+                // and adopting it on a title match alone would be how a foreign
+                // workspace becomes a node's binding.
+                if candidate.visible_title() != request.expected_title.as_str() {
+                    return Err(RuntimeError::WorkspaceMismatch {
+                        rule: "a differently titled container already occupies the canonical path",
+                    });
+                }
+                Ok(RecreationCensus::AlreadyCreated(Box::new(
+                    (*candidate).clone(),
+                )))
+            }
+            [_, _, ..] => Err(RuntimeError::WorkspaceMismatch {
+                rule: "several live containers occupy the canonical path below the exact parent",
+            }),
+        }
+    }
+
+    /// The binding snapshot a recreation reports, preserving every identity.
+    fn recreation_snapshot(
+        &self,
+        request: &ContainerRecreationRequest,
+        identity: NativeRuntimeIdentity,
+        declared: RuntimeCapabilities,
+    ) -> ContainerBindingSnapshot {
+        ContainerBindingSnapshot {
+            binding: ContainerBinding {
+                id: request.container_binding_id,
+                topology_node_id: request.topology_node_id,
+                projection: ContainerProjection::NativeChild,
+                identity: identity.clone(),
+                root: Some(request.canonical_cwd.clone()),
+                bound_at: request.requested_at,
+            },
+            capabilities: declared,
+            correlation: ContainerCorrelationEvidence::by_exact_id(
+                request.topology_node_id,
+                identity,
+                request.requested_at,
+            ),
+        }
+    }
+
+    /// Read back a container this call created and prove it is the right one.
+    async fn recreation_created(
+        &self,
+        request: &ContainerRecreationRequest,
+        workspace: &PaseoWorkspace,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        self.recreation_readback(request, workspace, true).await
+    }
+
+    /// Adopt the container a lost attempt already created.
+    async fn recreation_adoption(
+        &self,
+        request: &ContainerRecreationRequest,
+        workspace: &PaseoWorkspace,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        self.recreation_readback(request, workspace, false).await
+    }
+
+    /// The readback both recreation paths must pass before anything is bound.
+    ///
+    /// Placement, path and title are all re-proved from the runtime's own
+    /// answer rather than from what was requested. An adapter that returned the
+    /// requested values would make a create that silently landed elsewhere
+    /// indistinguishable from one that landed correctly.
+    async fn recreation_readback(
+        &self,
+        request: &ContainerRecreationRequest,
+        workspace: &PaseoWorkspace,
+        created: bool,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        if workspace.project_id != request.bound_project_native_id.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the recreated container did not land in the exact persisted native parent",
+            });
+        }
+        let root = WorkspaceRoot::parse(&workspace.workspace_directory)?;
+        if root != request.canonical_cwd {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the recreated container is not rooted at the preserved canonical path",
+            });
+        }
+        if workspace.visible_title() != request.expected_title.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the recreated container does not carry the exact rendered title",
+            });
+        }
+        if workspace.id == request.absent_identity.native_id.as_str() {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the runtime reported the absent native id as the replacement",
+            });
+        }
+        let identity = self.identity(ExternalId::parse(&workspace.id)?, self.generation());
+        Ok(ContainerRecreationOutcome {
+            snapshot: self.recreation_snapshot(request, identity, self.declared().await?),
+            observed_title: workspace.visible_title().to_owned(),
+            created,
+        })
     }
 
     async fn fetch_workspace(&self, workspace_id: &str) -> RuntimeResult<PaseoWorkspace> {
@@ -7178,6 +7368,62 @@ impl RuntimeAdapter for PaseoAdapter {
             snapshot,
             observed_title: candidate.visible_title().to_owned(),
         })
+    }
+
+    async fn preview_container_recreation(
+        &self,
+        request: &ContainerRecreationRequest,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        match self.recreation_census(request).await? {
+            RecreationCensus::Vacant => {
+                // Nothing exists yet, so there is nothing to read a title back
+                // from. The preview reports the title the apply will write, and
+                // says plainly that it would create.
+                let identity = self.identity(request.absent_identity.native_id.clone(), 0);
+                Ok(ContainerRecreationOutcome {
+                    snapshot: self.recreation_snapshot(request, identity, self.declared().await?),
+                    observed_title: request.expected_title.as_str().to_owned(),
+                    created: true,
+                })
+            }
+            RecreationCensus::AlreadyCreated(workspace) => {
+                self.recreation_adoption(request, &workspace).await
+            }
+        }
+    }
+
+    async fn recreate_container(
+        &self,
+        request: &ContainerRecreationRequest,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        let workspace = match self.recreation_census(request).await? {
+            // The whole point of the operation: the node's native is gone and
+            // nothing stands at its canonical path.
+            RecreationCensus::Vacant => {
+                let command = PaseoCommand::workspace_create(
+                    request.canonical_cwd.as_str(),
+                    request.bound_project_native_id.as_str(),
+                    request.expected_title.as_str(),
+                );
+                let output = self.transport.run(&command).await?;
+                let created: PaseoCliWorkspaceCreated = output.parse("PaseoCliWorkspaceCreated")?;
+                // The create answer omits `projectId`, so it cannot be believed
+                // about placement. The readback below is what proves the native
+                // landed in the exact persisted parent.
+                let workspace = self
+                    .fetch_workspace_by_id(
+                        request.bound_project_native_id.as_str(),
+                        &created.workspace_id,
+                    )
+                    .await?;
+                return self.recreation_created(request, &workspace).await;
+            }
+            // A previous attempt created it and lost its answer. Adopting is
+            // the only correct move: creating again would leave two natives at
+            // one canonical path and no way to say which one the node owns.
+            RecreationCensus::AlreadyCreated(workspace) => workspace,
+        };
+        self.recreation_adoption(request, &workspace).await
     }
 
     async fn prepare_workspace(
