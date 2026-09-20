@@ -65,7 +65,8 @@ use kontor_api::applications::{
     CompletionPhaseDto, CompletionRoundDto, CompletionStateDto, CompletionWakeDto,
     ConsultationPermissionAckDto, ConsultationPermissionInspectionDto, ConsultationSeatDto,
     ConsultationSeatRecoveryDto, ConsultationSeatRecoveryReasonDto, ConsultationVerdictDto,
-    CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
+    CoreTeamApplyRequest, CoreTeamDto, CoreTeamLaunchIntentSupersedeRequest,
+    CoreTeamLaunchIntentSupersessionDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
     CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
     CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest,
     CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto, CoreTeamSeatClaimPreviewDto,
@@ -179,23 +180,23 @@ use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
     CommandRepository, CompletionWrite, CredentialReference, CredentialReferenceKind,
-    HostedSeatLaunchIntentState, IntakeOutcome, IntakeRepository,
-    LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection, MigrationObjectKind,
-    MiniProject, MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
-    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
-    NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
-    NewConsultationRecoveryAttempt, NewGateEvaluation, NewLocalCommand, NewMiniProject,
-    NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, NewTeamRun,
-    OpenQuestionRepository, ProjectRepository, ProjectTeamDefinitionDefault,
-    ProjectTopologyDefault, ProviderUsageObservation, RealmRepository, RepositoryError,
-    RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition, SpecRepository,
-    StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
-    StoredCompletionWakeDelivery, StoredConsultationProfileRevision, StoredConsultationRun,
-    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
-    StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest, TaskWorkflow,
-    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    HostedSeatLaunchIntentState, HostedSeatLaunchIntentSupersession, IntakeOutcome,
+    IntakeRepository, LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection,
+    MigrationObjectKind, MiniProject, MiniProjectTeamDefinitionSnapshot,
+    MiniProjectTopologySnapshot, NativePlacement, NewAccountProfile, NewAdaptiveAdmissionState,
+    NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
+    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt, NewGateEvaluation,
+    NewLocalCommand, NewMiniProject, NewNativeContainerBinding, NewProviderQuotaState,
+    NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTeamDefinitionMigration,
+    NewTeamDefinitionMigrationTarget, NewTeamRun, OpenQuestionRepository, ProjectRepository,
+    ProjectTeamDefinitionDefault, ProjectTopologyDefault, ProviderUsageObservation,
+    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
+    SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationProfileRevision,
+    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
+    StoredEpicRoster, StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredPromotion,
+    StoredQuickSession, StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest,
+    TaskWorkflow, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
     TicketLink, TicketRepository, TopologyContainerRecovery, TopologyRepository,
     WorkflowRepository,
@@ -5726,6 +5727,37 @@ impl Services {
             .with_store(|store| store.list_account_profiles(project_id))
             .map_err(|error| self.refuse(&error))?;
         kontor_accounts::eligible_accounts(&profiles).map_err(|error| self.refuse_domain(&error))
+    }
+
+    /// The single enabled account that may be selected for one governed route.
+    ///
+    /// Ambiguity refuses rather than picks. A launch freezes a provider alias,
+    /// not an account id, so two enabled profiles able to select the same alias
+    /// leave a provider report unattributable to the account whose capacity is
+    /// actually being spent. Resolving this at preview is deliberate: the
+    /// alternative is handing back a hash that could never be applied.
+    fn approved_route_account(
+        &self,
+        project_id: ProjectId,
+        rung: &ModelRung,
+    ) -> Result<kontor_scheduler::headroom::EligibleAccount, ApiError> {
+        let accounts = self.eligible_accounts(project_id)?;
+        let mut selectable = accounts
+            .into_iter()
+            .filter(|account| account.selectable_providers.contains(&rung.provider.0));
+        let account = selectable.next().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "no enabled account profile can select the approved route's provider",
+            )
+        })?;
+        if selectable.next().is_some() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "more than one enabled account profile can select the approved route's provider",
+            ));
+        }
+        Ok(account)
     }
 
     /// The headroom policy in force, or the state-only fallback.
@@ -23143,6 +23175,169 @@ impl ApplicationOperations for Services {
             would_replace_native: plan.needs_native_replacement(),
             preview_hash: plan.preview_hash,
             snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    /// Supersede one never-bound prepared launch intent (ASMA-7869).
+    async fn supersede_core_team_launch_intent(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamLaunchIntentSupersedeRequest,
+    ) -> Result<CoreTeamLaunchIntentSupersessionDto, ApiError> {
+        let state = self.state()?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        if epic.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the epic moved since the caller read it",
+                )
+                .with_revision(Some(epic.revision)));
+        }
+        // The URL epic is not evidence that this seat belongs to it. The store
+        // fences on project and seat, which cannot tell one epic's Core Team
+        // from another's inside the same project — so without this, a caller
+        // naming the wrong epic would record a receipt under that epic for a
+        // seat it does not own. Proved exactly as every other Core Team
+        // correction proves it: the seat's topology node is this epic's control
+        // plane, and the role it fills is in this epic's frozen roster.
+        let roster = self.frozen_roster(project_id, epic_id)?;
+        let binding = state
+            .with_store(|store| store.get_seat_binding(project_id, request.seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(SeatBinding::is_non_terminal)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the requested persistent Core Team SeatBinding is not active",
+                )
+            })?;
+        state
+            .with_store(|store| store.get_topology_node(project_id, binding.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|node| {
+                node.mini_project_id == Some(epic_id)
+                    && node.kind == self.domain.delivery.control_kind
+                    && node.task_id.is_none()
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the SeatBinding is not hosted by this epic's control plane",
+                )
+            })?;
+        if !roster.revision.seats.iter().any(|seat| {
+            seat.presence != EpicPresence::OnDemand
+                && seat.role_slot_id == binding.role_slot_id
+                && seat.role.role_code == binding.role.role_code
+        }) {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the SeatBinding is not one of this epic's frozen Core Team roles",
+            ));
+        }
+        let superseded = parse_runtime_model_route(&request.expected_model_route)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let replacement = parse_runtime_model_route(&request.desired_model_route)
+            .map_err(|error| self.refuse_domain(&error))?;
+        // Never attempted, by contract rather than by configuration. The wedge
+        // this repair exists for is an OpenCode route nothing can launch, and a
+        // replacement that reached for it again would recreate the wedge under
+        // a new prepared_at.
+        if replacement.provider.0.eq_ignore_ascii_case("opencode")
+            || superseded.provider.0 == replacement.provider.0
+                && superseded.model.0 == replacement.model.0
+                && superseded.effort == replacement.effort
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the replacement route must be a different, non-OpenCode approved route",
+            ));
+        }
+        // Catalog-approved, proved the same way every other governed launch
+        // proves it: the runtime offers the provider and exactly one enabled
+        // account may select it.
+        let runtime_kind = self.node_runtime_kind()?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the runtime selected for Core Team placement is not configured",
+            )
+        })?;
+        if !adapter.provider_available(replacement.provider.0.as_str()) {
+            return Err(ApiError::from_runtime(
+                state.realm_id(),
+                &RuntimeError::ProviderUnavailable {
+                    provider: replacement.provider.0.clone(),
+                },
+            ));
+        }
+        self.approved_route_account(project_id, &replacement)?;
+
+        let prepared_at = kontor_core::id::parse_utc_timestamp(&request.expected_prepared_at)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "supersede_core_team_launch_intent",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "seat_binding": request.seat_binding_id.to_string(),
+            "seat_binding_revision": request.expected_seat_binding_revision.get(),
+            "occupancy_generation": request.occupancy_generation,
+            "superseded": superseded,
+            "superseded_prepared_at": prepared_at.to_string(),
+            "replacement": replacement,
+        }))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+
+        // The whole compare-and-swap, and every absence it rests on, is proved
+        // inside one transaction. Nothing is checked out here that the store
+        // does not re-prove under the lock it writes with.
+        let applied = state
+            .with_store(|store| {
+                store.supersede_hosted_seat_launch_intent(&HostedSeatLaunchIntentSupersession {
+                    idempotency_key: key.clone(),
+                    intent_hash: intent.hash().clone(),
+                    project_id,
+                    seat_binding_id: request.seat_binding_id,
+                    expected_seat_binding_revision: request.expected_seat_binding_revision,
+                    occupancy_generation: request.occupancy_generation,
+                    expected_model_rung: superseded.clone(),
+                    expected_prepared_at: prepared_at,
+                    replacement_model_rung: replacement.clone(),
+                    recorded_at: kontor_api::now(),
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::CorrectCoreTeamRoute,
+            target,
+            epic.revision,
+            &intent,
+        )?;
+        Ok(CoreTeamLaunchIntentSupersessionDto {
+            realm_id: state.realm_id(),
+            seat_binding_id: request.seat_binding_id,
+            seat_binding_revision: request.expected_seat_binding_revision,
+            occupancy_generation: request.occupancy_generation,
+            superseded_model_route: runtime_model_route_dto(&superseded),
+            replacement_model_route: runtime_model_route_dto(&replacement),
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                // The store's own answer, not a constant. An exact replay
+                // swaps nothing and says so; reporting `updated` for it would
+                // tell a caller that a second supersession happened.
+                applied: applied_dto(applied),
+                revision: epic.revision,
+                snapshot_cursor: self.cursor()?,
+            },
         })
     }
 

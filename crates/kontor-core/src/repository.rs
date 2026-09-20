@@ -646,6 +646,39 @@ pub enum HostedSeatLaunchIntentState {
 /// This row closes that window. It is written before the effect, carries the
 /// exact resolved autonomy, and is consumed when the occupancy binds. A replay
 /// inside the window reads it instead of the live default, so the launch intent
+/// Replace one never-bound prepared launch intent with an approved route.
+///
+/// Every field is a fence, not a parameter. The operation exists for exactly
+/// one durable shape — an intent prepared before an effect that never happened —
+/// and anything that has since become a native, an occupancy, or a recorded
+/// effect is a different shape and must refuse. The values here are what the
+/// store re-proves inside the transaction that performs the replacement, so a
+/// concurrent launch cannot slip between the check and the write (ASMA-7869).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedSeatLaunchIntentSupersession {
+    /// The apply key this supersession is admitted under; unique, exactly once.
+    pub idempotency_key: IdempotencyKey,
+    /// Digest of the exact pre-effect intent.
+    pub intent_hash: ContentHash,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The logical seat, preserved exactly. Never released, never replaced.
+    pub seat_binding_id: SeatBindingId,
+    /// The binding revision the caller read and the store must still see.
+    pub expected_seat_binding_revision: AggregateRevision,
+    /// The occupancy generation whose inert intent is being replaced.
+    pub occupancy_generation: u64,
+    /// The exact inert route being superseded. Compared verbatim.
+    pub expected_model_rung: crate::spec::ModelRung,
+    /// The exact instant the inert intent was prepared. Compared verbatim, so a
+    /// re-prepared intent carrying the same route is still a different intent.
+    pub expected_prepared_at: Timestamp,
+    /// The catalog-approved route that replaces it.
+    pub replacement_model_rung: crate::spec::ModelRung,
+    /// Commit instant.
+    pub recorded_at: Timestamp,
+}
+
 /// survives a lost acknowledgement and a restart.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredHostedSeatLaunchIntent {

@@ -1031,6 +1031,55 @@ pub struct CoreTeamRouteOutcomeDto {
     pub receipt: MutationReceiptDto,
 }
 
+/// Supersede one never-bound prepared launch intent with an approved route.
+///
+/// Every field is a fence. The operation applies to exactly one durable shape —
+/// an intent prepared before a launch that never happened — and anything that
+/// has since become a native, an occupancy or a recorded effect refuses.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamLaunchIntentSupersedeRequest {
+    /// Epic revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// The logical seat, preserved exactly.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// The binding revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_seat_binding_revision: AggregateRevision,
+    /// The occupancy generation whose inert intent is replaced.
+    pub occupancy_generation: u64,
+    /// The exact inert route being superseded, compared verbatim.
+    pub expected_model_route: RuntimeModelRouteRequest,
+    /// The exact instant that inert intent was prepared, compared verbatim.
+    pub expected_prepared_at: String,
+    /// The catalog-approved replacement route.
+    pub desired_model_route: RuntimeModelRouteRequest,
+}
+
+/// What one launch-intent supersession replaced, and what now stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamLaunchIntentSupersessionDto {
+    /// Realm that recorded it.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The preserved logical seat. Never retired, never replaced.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Unchanged binding revision the swap was fenced on.
+    #[schema(value_type = u64)]
+    pub seat_binding_revision: AggregateRevision,
+    /// The occupancy generation whose intent was replaced; unchanged by this.
+    pub occupancy_generation: u64,
+    /// The inert route that was superseded, retained as evidence.
+    pub superseded_model_route: RuntimeModelRouteRequest,
+    /// The approved route that now stands.
+    pub replacement_model_route: RuntimeModelRouteRequest,
+    /// Audited mutation receipt.
+    pub receipt: MutationReceiptDto,
+}
+
 /// Read-only request to attach an already-running native session to a
 /// persistent Core Team seat.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
@@ -7299,6 +7348,14 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &CoreTeamRouteApplyRequest,
     ) -> Result<CoreTeamRouteOutcomeDto, ApiError>;
+    /// Supersede one never-bound prepared launch intent (ASMA-7869).
+    async fn supersede_core_team_launch_intent(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamLaunchIntentSupersedeRequest,
+    ) -> Result<CoreTeamLaunchIntentSupersessionDto, ApiError>;
     /// Preview attachment of an already-running session to a persistent seat.
     async fn preview_core_team_seat_claim(
         &self,
@@ -9986,6 +10043,40 @@ pub async fn apply_core_team_route(
         state
             .applications()
             .apply_core_team_route(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Supersede one never-bound prepared Core Team launch intent.
+#[utoipa::path(
+    post, path = "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = CoreTeamLaunchIntentSupersedeRequest,
+    responses(
+        (status = 200, body = CoreTeamLaunchIntentSupersessionDto),
+        (status = 400), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422),
+        (status = 503, description = "The runtime could not be reached")
+    )
+)]
+pub async fn supersede_core_team_launch_intent(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<CoreTeamLaunchIntentSupersedeRequest>,
+) -> Result<Json<CoreTeamLaunchIntentSupersessionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .supersede_core_team_launch_intent(&key, project_id, epic_id, &request)
             .await?,
     ))
 }
