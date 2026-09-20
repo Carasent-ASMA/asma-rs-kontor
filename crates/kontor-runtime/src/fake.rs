@@ -3619,6 +3619,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         self.lock().admit(request)
     }
 
+    async fn release_unclaimed_admission(
+        &self,
+        slot: &crate::admission::RoleSlotKey,
+        agent_run_id: kontor_core::id::AgentRunId,
+    ) -> RuntimeResult<bool> {
+        Ok(self.lock().admissions.release_unclaimed(slot, agent_run_id))
+    }
+
     async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
         let mut state = self.lock();
 

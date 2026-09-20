@@ -5546,6 +5546,31 @@ impl Services {
         Ok(None)
     }
 
+    /// Return only unspent runtime reservations after the store certified this
+    /// exact run never bound a native. Replays finish an interrupted cleanup.
+    async fn release_abandoned_reservation(
+        &self,
+        run: &kontor_core::repository::AgentRun,
+    ) -> Result<(), ApiError> {
+        if !run.is_operator_abandoned_unbound() {
+            return Ok(());
+        }
+        let state = self.state()?;
+        let slot = RoleSlotKey::new(
+            run.team_run_id,
+            RoleSlotId::parse(run.role.as_str()).map_err(|error| self.refuse_domain(&error))?,
+        );
+        for family in state.runtimes().families() {
+            if let Some(adapter) = state.runtimes().get(family) {
+                adapter
+                    .release_unclaimed_admission(&slot, run.id)
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Refuse a correction to a selection a run has already frozen.
     ///
     /// This is the whole reason the selection routes are separate from
@@ -32352,6 +32377,7 @@ impl ApplicationOperations for Services {
         // run and role slot. Admin may move only that never-bound attempt, and
         // must name the temporary route explicitly; a root admission still
         // recovers through the scheduler's admission receipt.
+        let mut authorized_parent_id = None;
         if unbound_recovery {
             if request.unavailable_provider.is_some() || request.quota_exhausted.is_some() {
                 return Err(self.deny(
@@ -32405,7 +32431,40 @@ impl ApplicationOperations for Services {
                     run.parent_agent_run_id == Some(agent_run_id)
                         && !run.is_operator_abandoned_unbound()
                 });
-            if !pending_dispatch && !targetless_dispatch && !already_replaced {
+            // An authorized replacement can itself fail before native launch.
+            // Its recorded parent is authority independent of an old handoff
+            // that was already delivered to that parent. Require the exact
+            // sole child of a runtime-terminal bound holder in this same slot;
+            // a foreign, live or ambiguous lineage authorizes nothing.
+            let members = self.team_members(project_id, predecessor.team_run_id)?;
+            let recorded_parent = predecessor.parent_agent_run_id.and_then(|parent_id| {
+                members.iter().find(|parent| {
+                    parent.id == parent_id
+                        && parent.project_id == project_id
+                        && parent.team_run_id == predecessor.team_run_id
+                        && parent.role == predecessor.role
+                        && parent.binding.is_some()
+                        && parent.projection.lifecycle.is_terminal()
+                        && parent.terminal.as_ref().is_some_and(|terminal| {
+                            matches!(
+                                terminal.source,
+                                TerminalEvidenceSource::RuntimeObservation { .. }
+                            )
+                        })
+                })
+            });
+            let authorized_parent = recorded_parent.is_some_and(|parent| {
+                let children: Vec<_> = members
+                    .iter()
+                    .filter(|run| run.parent_agent_run_id == Some(parent.id))
+                    .collect();
+                matches!(children.as_slice(), [only] if only.id == agent_run_id)
+            });
+            authorized_parent_id = recorded_parent
+                .filter(|_| authorized_parent)
+                .map(|parent| parent.id);
+            if !pending_dispatch && !targetless_dispatch && !already_replaced && !authorized_parent
+            {
                 return Err(self.deny(
                     ApiErrorCode::RevisionConflict,
                     "no pending handoff dispatch or recorded successor authorizes this never-bound seat",
@@ -32678,7 +32737,20 @@ impl ApplicationOperations for Services {
         let mut slots = TeamRunSlots::hydrate(lease, &team.snapshot, &slot_members, &bindings)
             .map_err(|error| self.refuse_domain(&error))?;
         let successor_agent_run_id = recorded_successor_id.unwrap_or_else(AgentRunId::generate);
-        let permit = if unbound_recovery {
+        let permit = if let Some(parent_id) = authorized_parent_id {
+            let closed = slots
+                .latest_closed(&role_slot)
+                .map_err(|error| self.refuse_domain(&error))?;
+            if closed.agent_run_id() != parent_id {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the failed successor's parent is not the role slot's latest closed holder",
+                ));
+            }
+            slots
+                .reserve_after_unbound_successor(closed, &predecessor, successor_agent_run_id)
+                .map_err(|error| self.refuse_domain(&error))?
+        } else if unbound_recovery {
             slots
                 .reserve_after_unbound_abandonment(&role_slot, agent_run_id, successor_agent_run_id)
                 .map_err(|error| self.refuse_domain(&error))?
@@ -32918,6 +32990,7 @@ impl ApplicationOperations for Services {
             // ask again.
             if let Some(receipt_id) = receipt_id {
                 self.release_run_leases(project_id, agent_run_id, receipt_id, now)?;
+                self.release_abandoned_reservation(&run).await?;
             }
             let (mut team_run_closed, mut team_pending) =
                 self.team_closure_state(project_id, &run)?;
@@ -33031,6 +33104,7 @@ impl ApplicationOperations for Services {
                     "the run disappeared while it was being abandoned",
                 )
             })?;
+        self.release_abandoned_reservation(&closed).await?;
         let (mut team_run_closed, mut team_pending) = self.settle_team(project_id, &closed, now)?;
         // A team whose every run has ended, and which no certificate can close,
         // is abandoned under the same operator decision. That is the whole
@@ -36731,18 +36805,6 @@ impl Services {
                 applied: AppliedDto::Unchanged,
             }
         } else {
-            let authority = adapter
-                .admit_launch(&AdmissionRequest {
-                    slot: RoleSlotKey::new(team_run_id, slot.clone()),
-                    agent_run_id,
-                    binding_id,
-                    replaces: None,
-                    requested_at: now,
-                })
-                .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-                .into_authority()
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             let quota_states = self.admission_quota_states(project_id)?;
             let (model_rung, routed_account) = freeze_seat_model_rung(
                 adapter.as_ref(),
@@ -36777,34 +36839,46 @@ impl Services {
                     })
                     .map_err(|error| self.refuse(&error))?;
             }
-            let outcome = adapter
-                .launch(&authority.into_request(LaunchParts {
-                    scope: scope.clone(),
-                    display_name: self.delivery_seat_name(
-                        project_id,
-                        admitted.task_id,
-                        &scope,
-                        &team_snapshot,
-                        &slot,
-                    )?,
+            let parts = LaunchParts {
+                scope: scope.clone(),
+                display_name: self.delivery_seat_name(
+                    project_id,
+                    admitted.task_id,
+                    &scope,
+                    &team_snapshot,
+                    &slot,
+                )?,
+                agent_run_id,
+                team_run_id,
+                role_slot_id: slot.clone(),
+                task_id: admitted.task_id,
+                binding_id,
+                placement: Some(LaunchPlacement::Container(workspace.clone())),
+                cwd: task_root.clone(),
+                // The task's own pin outranks the walk: a pinned run's walk
+                // can only ever answer with that pin, so `.or` is the
+                // no-pin case — the account the walk actually selected.
+                account_profile_id: admitted.account_profile_id.or(routed_account),
+                prompt: slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
+                model_rung,
+                context_policy: context_policy.clone(),
+                autonomy,
+                requested_at: now,
+            };
+            let authority = adapter
+                .admit_launch(&AdmissionRequest {
+                    slot: RoleSlotKey::new(team_run_id, slot.clone()),
                     agent_run_id,
-                    team_run_id,
-                    role_slot_id: slot.clone(),
-                    task_id: admitted.task_id,
                     binding_id,
-                    placement: Some(LaunchPlacement::Container(workspace.clone())),
-                    cwd: task_root.clone(),
-                    // The task's own pin outranks the walk: a pinned run's walk
-                    // can only ever answer with that pin, so `.or` is the
-                    // no-pin case — the account the walk actually selected.
-                    account_profile_id: admitted.account_profile_id.or(routed_account),
-                    prompt:
-                        slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
-                    model_rung,
-                    context_policy: context_policy.clone(),
-                    autonomy,
+                    replaces: None,
                     requested_at: now,
-                }))
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+                .into_authority()
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let outcome = adapter
+                .launch(&authority.into_request(parts))
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
 
@@ -40024,18 +40098,6 @@ impl Services {
         // The caller supplies the runtime's prepared container snapshot. Initial
         // seating prepares it once for all slots; bounded seat fill re-attests
         // the existing native container before reaching this shared path.
-        let authority = adapter
-            .admit_launch(&AdmissionRequest {
-                slot: RoleSlotKey::new(team_run_id, slot.clone()),
-                agent_run_id,
-                binding_id,
-                replaces: None,
-                requested_at: now,
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(realm_id, &error))?
-            .into_authority()
-            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
         let quota_states = self.admission_quota_states(project_id)?;
         let (model_rung, routed_account) = freeze_seat_model_rung(
             adapter.as_ref(),
@@ -40087,6 +40149,18 @@ impl Services {
             autonomy,
             requested_at: now,
         };
+        let authority = adapter
+            .admit_launch(&AdmissionRequest {
+                slot: RoleSlotKey::new(team_run_id, slot.clone()),
+                agent_run_id,
+                binding_id,
+                replaces: None,
+                requested_at: now,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(realm_id, &error))?
+            .into_authority()
+            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
         let request = match partial_recovery {
             Some(recovery) => {
                 authority.into_recovery_request(parts, recovery.expected_native_id.clone())

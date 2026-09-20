@@ -24241,6 +24241,154 @@ async fn a_reachable_seat_that_cannot_be_driven_takes_the_linked_successor_path(
 }
 
 #[tokio::test]
+async fn a_never_bound_successor_keeps_its_original_terminal_parent_authority() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) =
+        seated_turns_with_attribution(&world, "replace-abandoned", true).await;
+    let seat_list = seats.as_array().expect("the seated roster").clone();
+    let seat = seat_list[1].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let team_run = seat["team_run_id"].as_str().expect("the team run");
+
+    finish_natively(&world, predecessor).await;
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("replace-abandoned-runtime-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["observed"], "cancelled");
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("a canonical run id");
+    let team_run_id = TeamRunId::parse(team_run).expect("a canonical team run id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let old_binding = before.binding.as_ref().expect("the predecessor was bound");
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+    let body = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_predecessor_revision": before.revision,
+        "expected_task_revision": task_revision,
+        "binding_generation": old_binding.identity.generation,
+    });
+
+    world.script(r#"{"steps":[{"step":"transport_failure","operation":"discovery"}]}"#);
+    let failed = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-abandoned-failed-launch")
+    .send(&world)
+    .await;
+    assert_eq!(failed.status, 503, "{}", failed.body);
+
+    let abandoned_run = world.daemon.state().with_store(|store| {
+        store
+            .list_agent_runs_for_team_run(project_id, team_run_id)
+            .expect("the team members read")
+            .into_iter()
+            .map(|seat| {
+                store
+                    .get_agent_run(project_id, seat.agent_run_id)
+                    .expect("the member reads")
+                    .expect("the member exists")
+            })
+            .find(|run| run.parent_agent_run_id == Some(predecessor_id))
+            .expect("the failed launch recorded one successor")
+    });
+    assert!(abandoned_run.binding.is_none());
+    assert!(abandoned_run.terminal.is_none());
+
+    let abandoned = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/runtime:abandon",
+            abandoned_run.id
+        ),
+        &serde_json::json!({
+            "expected_revision": abandoned_run.revision.get(),
+            "reason": "The replacement never bound a native session"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("replace-abandoned-abandon")
+    .send(&world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(abandoned.json()["outcome"], "abandoned");
+
+    world.script(HISTORY_LIVE);
+    prepare_fake_provider_headroom(&world, &project).await;
+    let body = serde_json::json!({
+        "role_slot":role_slot,
+        "expected_predecessor_revision":abandoned.json()["revision"],
+        "expected_task_revision":task_revision,
+        "binding_generation":0,
+        "model_route":{"provider":"codex-personal","model":"gpt-5.6-sol","effort":"high"}
+    });
+    let path = format!(
+        "/v1/projects/{project}/agent-runs/{}/successors:replace",
+        abandoned_run.id
+    );
+    let replaced = Call::post(&path, &body)
+        .signed_as(&world, "admin")
+        .with_key("parent-recovery-child")
+        .send(&world)
+        .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    let successor_id =
+        AgentRunId::parse(replaced.json()["successor_agent_run_id"].as_str().unwrap()).unwrap();
+    world.daemon.state().with_store(|store| {
+        let next = store
+            .get_agent_run(project_id, successor_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(next.parent_agent_run_id, Some(abandoned_run.id));
+        assert!(next.binding.is_some());
+        assert_eq!(
+            store
+                .get_agent_run(project_id, predecessor_id)
+                .unwrap()
+                .unwrap(),
+            before
+        );
+        let retained = store
+            .get_agent_run(project_id, abandoned_run.id)
+            .unwrap()
+            .unwrap();
+        assert!(retained.is_operator_abandoned_unbound());
+        assert_eq!(retained.parent_agent_run_id, Some(predecessor_id));
+    });
+    let replay = Call::post(&path, &body)
+        .signed_as(&world, "admin")
+        .with_key("parent-recovery-child")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        replay.json()["successor_agent_run_id"],
+        successor_id.to_string()
+    );
+}
+
+#[tokio::test]
 async fn replacing_a_cancelled_seat_skips_an_operator_abandoned_unbound_successor() {
     let world = World::open_empty_with_a_plane().await;
     world.script(HISTORY_LIVE);
@@ -33228,6 +33376,109 @@ async fn seat_fill_world_with_tasks(owed: bool, task_count: usize) -> SeatFillWo
 }
 
 #[tokio::test]
+async fn seat_fill_quota_refusal_leaves_no_reservation_and_same_key_retry_converges() {
+    let fixture = seat_fill_world(true).await;
+    let prior = fixture.world.daemon.state().with_store(|store| {
+        let prior = store.list_provider_quota_states(fixture.project).unwrap();
+        for state in &prior {
+            store
+                .set_provider_quota_state(&NewProviderQuotaState {
+                    project_id: fixture.project,
+                    account_profile_id: state.account_profile_id,
+                    provider: state.provider.clone(),
+                    state: ProviderQuotaKind::Drained,
+                    resets_at: None,
+                    windows: Vec::new(),
+                    credit: None,
+                    evidence_hash: ContentHash::of(b"scripted exhausted test quota"),
+                    provenance: None,
+                    source: kontor_core::spec::ProviderQuotaSource::Operator,
+                    observed_at: kontor_api::now(),
+                    expected_revision: state.revision,
+                    updated_at: kontor_api::now(),
+                })
+                .unwrap();
+        }
+        prior
+    });
+    let revision = fixture.task_revision();
+    let refused = fixture.fill("audit", revision, "quota-refused-fill").await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert!(refused.body.contains("headroom"), "{}", refused.body);
+    let probe = kontor_runtime::admission::AdmissionRequest {
+        slot: kontor_runtime::admission::RoleSlotKey::new(
+            fixture.team,
+            RoleSlotId::parse("audit").unwrap(),
+        ),
+        agent_run_id: AgentRunId::generate(),
+        binding_id: RuntimeBindingId::generate(),
+        replaces: None,
+        requested_at: kontor_api::now(),
+    };
+    fixture
+        .world
+        .fake
+        .admit_launch(&probe)
+        .await
+        .expect("quota refusal must leave the native slot unreserved");
+    assert!(
+        fixture
+            .world
+            .fake
+            .release_unclaimed_admission(&probe.slot, probe.agent_run_id)
+            .await
+            .unwrap()
+    );
+    fixture.world.daemon.state().with_store(|store| {
+        let current = store.list_provider_quota_states(fixture.project).unwrap();
+        for state in prior {
+            let version = current
+                .iter()
+                .find(|row| {
+                    row.account_profile_id == state.account_profile_id
+                        && row.provider == state.provider
+                })
+                .unwrap()
+                .revision;
+            store
+                .set_provider_quota_state(&NewProviderQuotaState {
+                    project_id: fixture.project,
+                    account_profile_id: state.account_profile_id,
+                    provider: state.provider,
+                    state: state.state,
+                    resets_at: state.resets_at,
+                    windows: state.windows,
+                    credit: state.credit,
+                    evidence_hash: state.evidence_hash,
+                    provenance: None,
+                    source: state.source,
+                    observed_at: kontor_api::now(),
+                    expected_revision: version,
+                    updated_at: kontor_api::now(),
+                })
+                .unwrap();
+        }
+    });
+    let retried = fixture.fill("audit", revision, "quota-refused-fill").await;
+    assert_eq!(retried.status, 200, "{}", retried.body);
+    assert_eq!(
+        fixture
+            .members()
+            .iter()
+            .filter(|run| run.role.as_str() == "audit")
+            .count(),
+        1
+    );
+    let replay = fixture.fill("audit", revision, "quota-refused-fill").await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        replay.json()["agent_run_id"],
+        retried.json()["agent_run_id"]
+    );
+    assert_eq!(replay.json()["native_id"], retried.json()["native_id"]);
+}
+
+#[tokio::test]
 async fn a_declared_slot_never_seated_is_filled_and_its_durable_handoff_is_delivered_once() {
     let fixture = seat_fill_world(true).await;
     let siblings = fixture.members();
@@ -34614,6 +34865,51 @@ async fn abandoned_before_its_handoff(slug: &'static str) -> (UnboundWorld, Agen
         .as_u64()
         .expect("the abandoned revision");
     (seeded, predecessor.id, revision)
+}
+
+#[tokio::test]
+async fn abandonment_replay_cleans_only_the_exact_unclaimed_runtime_reservation() {
+    let (seeded, run_id, revision) = abandoned_before_its_handoff("cleanup-reservation").await;
+    let slot = kontor_runtime::admission::RoleSlotKey::new(
+        TeamRunId::parse(&seeded.team_run).unwrap(),
+        RoleSlotId::parse("omega-k3").unwrap(),
+    );
+    let admission = kontor_runtime::admission::AdmissionRequest {
+        slot: slot.clone(),
+        agent_run_id: run_id,
+        binding_id: RuntimeBindingId::generate(),
+        replaces: None,
+        requested_at: kontor_api::now(),
+    };
+    // Reproduce a crash after durable abandonment but before cache cleanup.
+    seeded.world.fake.admit_launch(&admission).await.unwrap();
+    let replacement = kontor_runtime::admission::AdmissionRequest {
+        slot: slot.clone(),
+        agent_run_id: AgentRunId::generate(),
+        binding_id: RuntimeBindingId::generate(),
+        replaces: None,
+        requested_at: kontor_api::now(),
+    };
+    assert!(seeded.world.fake.admit_launch(&replacement).await.is_err());
+    let answer=Call::post(format!("/v1/projects/{}/agent-runs/{run_id}/runtime:abandon",seeded.project),&serde_json::json!({
+        "expected_revision":revision-1,"reason":"The downstream launch was refused before it bound a session"
+    })).signed_as(&seeded.world,"operator").with_key("cleanup-reservation-abandon").send(&seeded.world).await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(answer.json()["applied"], "unchanged");
+    seeded
+        .world
+        .fake
+        .admit_launch(&replacement)
+        .await
+        .expect("exact abandoned cache was released without a restart");
+    let replay=Call::post(format!("/v1/projects/{}/agent-runs/{run_id}/runtime:abandon",seeded.project),&serde_json::json!({
+        "expected_revision":revision-1,"reason":"The downstream launch was refused before it bound a session"
+    })).signed_as(&seeded.world,"operator").with_key("cleanup-reservation-abandon").send(&seeded.world).await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert!(
+        seeded.world.fake.admit_launch(&admission).await.is_err(),
+        "replay cannot release another run reservation"
+    );
 }
 
 /// Settle one bounded turn in the upstream `omega-k1` seat.

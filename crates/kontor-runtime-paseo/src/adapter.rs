@@ -6959,6 +6959,14 @@ impl RuntimeAdapter for PaseoAdapter {
         state.admissions.admit(request, &facts)
     }
 
+    async fn release_unclaimed_admission(
+        &self,
+        slot: &RoleSlotKey,
+        agent_run_id: AgentRunId,
+    ) -> RuntimeResult<bool> {
+        Ok(self.lock().admissions.release_unclaimed(slot, agent_run_id))
+    }
+
     /// Rename the bound workspace through the daemon's MCP facade, then read the
     /// title back.
     ///

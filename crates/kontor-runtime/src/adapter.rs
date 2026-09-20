@@ -1700,6 +1700,17 @@ pub trait RuntimeAdapter: Send + Sync {
         request: &AdmissionRequest,
     ) -> RuntimeResult<crate::admission::AdmissionOutcome>;
 
+    /// Release an exact abandoned run's reservation only before launch claimed it.
+    /// No native effect or in-flight/unknown launch may be released. Adapters
+    /// without this bookkeeping surface conservatively leave it untouched.
+    async fn release_unclaimed_admission(
+        &self,
+        _slot: &crate::admission::RoleSlotKey,
+        _agent_run_id: kontor_core::id::AgentRunId,
+    ) -> RuntimeResult<bool> {
+        Ok(false)
+    }
+
     /// Start a new native session for an agent run.
     ///
     /// **Consume the admission before the first native effect, and revalidate
