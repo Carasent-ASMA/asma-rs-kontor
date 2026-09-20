@@ -57937,3 +57937,234 @@ async fn a_first_pass_materialization_refuses_before_recording_a_receipt() {
         "a refused materialization launches nothing"
     );
 }
+
+/// An epic whose frozen Core Team roster has seats that genuinely do not exist
+/// yet, and whose ECP is bound.
+///
+/// The shape matters, and a weaker one would prove nothing. A *promoted* epic
+/// is no good: promotion materializes the frozen roster on its way through, so
+/// `core-team/seats:materialize` finds nothing missing and creates nothing —
+/// which makes every no-effect assertion true for the wrong reason.
+///
+/// An applied epic freezes its roster the same way but materializes no roster
+/// seats: `topology:materialize` opens the single control slot and stops. The
+/// roster's own seats are therefore absent, and the operation under test has
+/// real work to do.
+async fn epic_with_missing_roster_seats(slug: &str) -> (World, String, String, u64) {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let created = ensure_project_raw(&world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let project_revision = created.json()["revision"].as_u64().expect("a revision");
+    let category = first_category(&world).await;
+
+    // A roster wider than the mandatory pair. Every epic is born with `LSA` and
+    // `TPM` and those two are opened automatically, so a default roster leaves
+    // nothing missing; publishing an `SA` beside them is what gives the
+    // operation under test a seat it actually has to create.
+    adopt_session_base(&world, &project, project_revision).await;
+    publish_core_team(
+        &world,
+        &project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    // Both writes above move the project, so the revision the epic presents is
+    // re-read rather than assumed.
+    let read = Call::get(format!("/v1/projects/{project}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    let project_revision = read.json()["revision"].as_u64().expect("a revision");
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            project_revision,
+            "Core Team seat repair",
+            &category,
+            serde_json::json!([{"title": "Repair the missing roster seats"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key(format!("{slug}-epic"))
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    confirm_test_epic_identity(&world, &project, &epic);
+
+    // Binds the ECP and opens the control slot — and nothing from the roster.
+    let control = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": epic},
+            "expected_revision": project_revision,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key(format!("{slug}-control"))
+    .send(&world)
+    .await;
+    assert_eq!(control.status, 200, "{}", control.body);
+
+    // The legacy hole, made the way a realm actually makes one: a roster seat is
+    // retired through the supported route, so the frozen roster still declares
+    // it while no live binding holds it. That is the only state in which this
+    // operation has work to do *and* an ECP to prove — materializing the
+    // topology opens the whole roster, so an epic that has never been
+    // materialized has no bound container either.
+    let sa = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            let domain = kontor_profiles::bundled_operational_domain().expect("the domain");
+            let control = store
+                .list_topology_nodes(project_id_of(&project), Some(epic_id_of(&epic)))
+                .expect("the nodes read")
+                .into_iter()
+                .find(|node| node.kind == domain.delivery.control_kind)
+                .expect("a control plane");
+            store
+                .list_seat_bindings(project_id_of(&project), control.id)
+                .expect("the seats read")
+                .into_iter()
+                .find(|binding| binding.role.role_code.as_str() == "SA")
+                .expect("the published SA seat was materialized")
+        })
+        .id;
+    let retired = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{sa}/retire"),
+        &serde_json::json!({"expected_revision": 1, "reason": "legacy roster hole"}),
+    )
+    .signed_as(&world, "admin")
+    .with_key(format!("{slug}-retire-sa"))
+    .send(&world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+
+    (world, project, epic, project_revision)
+}
+
+fn project_id_of(project: &str) -> ProjectId {
+    ProjectId::parse(project).expect("a project id")
+}
+
+fn epic_id_of(epic: &str) -> MiniProjectId {
+    MiniProjectId::parse(epic).expect("an epic id")
+}
+
+/// Operation 1 (ASMA-7869): a Core Team materialization proves the epic's bound
+/// ECP before it writes a single logical SeatBinding.
+///
+/// Both halves are measured in one test on purpose. The positive control
+/// establishes that this subject genuinely creates missing seats; the negative
+/// establishes that the refusing one created none of them. Without the control
+/// the no-effect assertion would hold just as well against an operation that
+/// never had anything to write — which is exactly the trap a promoted epic sets.
+#[tokio::test]
+async fn core_team_materialization_proves_the_bound_ecp_before_writing_seats() {
+    // Positive control.
+    let (world, project, epic, _revision) =
+        epic_with_missing_roster_seats("asma-8234-op1-ok").await;
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let control_node = epic_control_node(&world, project_id, epic_id);
+    let before_ok = seats_on(&world, project_id, control_node.id);
+    let launches_ok_before = launches(&world);
+
+    // Deliberately no `routes`. The proof used to live inside the non-empty
+    // routes guard, so the logical-only request — this one — was the shape that
+    // wrote seats having proved nothing. It is therefore the shape the route
+    // guard has to be checked on.
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("asma-8234-op1-ok-materialize")
+    .send(&world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let after_ok = seats_on(&world, project_id, control_node.id);
+    assert!(
+        after_ok > before_ok,
+        "the subject must genuinely create missing roster seats, or the refusal \
+         below proves nothing (before {before_ok}, after {after_ok})"
+    );
+    assert_eq!(
+        launches(&world),
+        launches_ok_before,
+        "hoisting the proof must not invent hosted-seat work for a request that \
+         routed nothing"
+    );
+
+    // Negative: the same operation against an ECP the runtime no longer holds.
+    let (world, project, epic, _revision) =
+        epic_with_missing_roster_seats("asma-8234-op1-gone").await;
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let control_node = epic_control_node(&world, project_id, epic_id);
+    let before = seats_on(&world, project_id, control_node.id);
+    let key = "asma-8234-op1-gone-materialize";
+
+    world.fake.forget_container(control_node.id);
+    let launches_before = launches(&world);
+
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "admin")
+    .with_key(key)
+    .send(&world)
+    .await;
+
+    assert!(
+        !refused.status.is_success(),
+        "an ECP the runtime cannot show must refuse: {} {}",
+        refused.status,
+        refused.body
+    );
+    assert_eq!(
+        seats_on(&world, project_id, control_node.id),
+        before,
+        "a refused materialization leaves every missing seat missing"
+    );
+    assert!(
+        receipt_for(&world, key).is_none(),
+        "a refused materialization must not spend the caller's idempotency key"
+    );
+    assert_eq!(
+        launches(&world),
+        launches_before,
+        "a refused materialization launches nothing"
+    );
+}
+
+/// The epic's control-plane node, as the store holds it.
+fn epic_control_node(
+    world: &World,
+    project_id: ProjectId,
+    epic_id: MiniProjectId,
+) -> kontor_core::state::SessionTopologyNode {
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    world.daemon.state().with_store(|store| {
+        store
+            .list_topology_nodes(project_id, Some(epic_id))
+            .expect("the epic's nodes read")
+            .into_iter()
+            .find(|node| node.kind == domain.delivery.control_kind)
+            .expect("the epic has a control plane")
+    })
+}

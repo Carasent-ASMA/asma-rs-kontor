@@ -23339,6 +23339,27 @@ impl ApplicationOperations for Services {
                 &SemanticTopologyTargetDto::EpicControl { epic_id },
             )?,
         )?;
+        // The epic's ECP is proved before a single seat exists.
+        //
+        // The seats below are durable topology. Materializing them against a
+        // control container the runtime has moved, re-rooted or stopped holding
+        // writes logical bindings for a place that is no longer there, and the
+        // native half that follows then fails with the seats already recorded —
+        // a state an operator cannot undo by retrying.
+        //
+        // Deliberately outside the `routes` guard. Whether this materialization
+        // also routes native seats is a separate question from whether the
+        // container its seats hang off is still there, and the logical-only
+        // request is exactly the one that used to write seats having proved
+        // nothing at all.
+        //
+        // A control node with no binding yet answers `None`: there is nothing
+        // to prove, and a first materialization keeps working without a
+        // container it has not been given.
+        let proved_control = self
+            .prove_existing_bound_container(project_id, &control)
+            .await?;
+
         // Missing seats only. Every seat already there keeps its identity,
         // because a seat binding is what a running agent is attached to. This
         // also runs on replay so an old receipt whose process died between the
@@ -23357,6 +23378,18 @@ impl ApplicationOperations for Services {
             let container = self
                 .ensure_container(project_id, &control, &cwd, adapter.as_ref())
                 .await?;
+            // Preparation must not have moved the container the seats above
+            // were materialized against. On the supported path it cannot, which
+            // is why disagreement is a refusal rather than something to
+            // reconcile after the fact.
+            if let Some(proved) = proved_control.as_ref()
+                && proved.binding.identity != container.binding.identity
+            {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Core Team control container changed identity during materialization",
+                ));
+            }
             let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
             let capabilities = adapter
                 .discover_capabilities()
