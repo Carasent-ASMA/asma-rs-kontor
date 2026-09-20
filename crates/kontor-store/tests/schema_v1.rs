@@ -746,7 +746,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // opened under, so which persona a seat actually received survives restart
     // and replacement rather than being re-derived from current configuration
     // (ASMA-8196).
-    assert_eq!(SCHEMA_VERSION, 116);
+    // v117 records, per issuance, the canonical tail a message was sent after,
+    // so a delivery reconciliation can prove itself from a bounded suffix
+    // instead of requiring the whole transcript — which is what refused every
+    // send into a session past the scan's page budget (ASMA-8203).
+    assert_eq!(SCHEMA_VERSION, 117);
 }
 
 #[test]

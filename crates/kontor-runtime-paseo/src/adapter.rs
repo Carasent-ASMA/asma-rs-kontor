@@ -3828,9 +3828,30 @@ impl PaseoAdapter {
     /// "Read even once" includes this scan's own first page: a multi-page scan
     /// is one read, and its later pages have to continue the transcript its
     /// first page came from.
+    /// `floor` is the session's canonical tail at the moment this message was
+    /// issued, when the control plane recorded one. A send cannot have landed
+    /// before it was issued, so everything at or below that position belongs to
+    /// the transcript this delivery was appended *after* and cannot contain it.
+    /// Reaching the floor therefore completes the proof exactly as reaching the
+    /// beginning does, and the cost becomes how much the session grew since the
+    /// send rather than how long it has been alive — which is the difference
+    /// between a bounded read and a ceiling that refuses every large seat.
+    ///
+    /// It narrows the range, never the standard. Occurrences are still counted,
+    /// so a duplicate inside the suffix is still divergence; an occurrence below
+    /// the floor belongs to a different issuance, which the issuance key and its
+    /// recorded delivery position already tell apart. A floor from another
+    /// numbering is an epoch break and refuses. Running out of budget before
+    /// reaching it is still confirmation-unknown: a suffix that was not read to
+    /// its end proves nothing about absence, and absence is what authorizes a
+    /// resend.
+    ///
+    /// `None` keeps the whole-history requirement, which is what rows issued
+    /// before the boundary existed must fall back to.
     async fn scan_canonical<F>(
         &self,
         binding: &RuntimeBindingSnapshot,
+        floor: Option<TimelinePosition>,
         mut matches: F,
     ) -> RuntimeResult<Option<(TimelinePosition, usize)>>
     where
@@ -3871,11 +3892,31 @@ impl PaseoAdapter {
             // transcript is then reconciled as though it continued page one —
             // which is exactly the `no` that authorizes a resend.
             expected = Some(epoch);
-            for event in self.normalize_page(&page, epoch)? {
-                if matches(&event) {
+            // A floor issued under a different numbering cannot bound this
+            // transcript: the position it names is not a position here, and
+            // treating it as one would end the scan somewhere arbitrary.
+            if let Some(floor) = floor
+                && floor.epoch != epoch
+            {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::EpochChanged,
+                });
+            }
+            let items = self.normalize_page(&page, epoch)?;
+            let oldest = items.first().map(|event| event.position.sequence);
+            for event in &items {
+                if matches(event) {
                     hits += 1;
                     found.get_or_insert(event.position);
                 }
+            }
+            // Walked back to or past the issuance tail: the rest of the session
+            // predates this send and is not evidence about it.
+            if let Some(floor) = floor
+                && oldest.is_some_and(|oldest| oldest <= floor.sequence)
+            {
+                complete = true;
+                break;
             }
             // A reconciliation starts at the newest window because that is the
             // only cursor-free read Paseo exposes, then walks *backward*. A busy
@@ -9543,8 +9584,14 @@ impl PaseoAdapter {
         request: &SendMessageRequest,
     ) -> RuntimeResult<Option<MessageAck>> {
         let wanted = request.message_id;
+        // No boundary yet: the v117 column exists and `scan_canonical` honours a
+        // floor, but nothing reads the recorded tail back and hands it here, so
+        // every reconciliation still proves itself against whole history and
+        // still refuses honestly when it cannot read all of it. Wiring this to
+        // the issuance row is what lifts the ceiling; until then the behaviour
+        // is exactly what it was.
         let found = self
-            .scan_canonical(binding, |event| {
+            .scan_canonical(binding, None, |event| {
                 event.subject == EventSubject::Message(wanted)
             })
             .await?;
