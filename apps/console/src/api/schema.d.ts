@@ -5718,8 +5718,37 @@ export interface components {
             presence: string;
             /** @description The role, as the server resolved it. */
             role: components["schemas"]["ResolvedRoleRefDto"];
+            role_persona?: null | components["schemas"]["CoreTeamSeatPersonaDto"];
             /** @description The binding filling it, once one has been materialized. */
             seat_binding_id?: string | null;
+        };
+        /**
+         * @description The persona one launched occupancy was opened under, as Kontor froze it.
+         *
+         *     Deliberately *not* a field of [`CoreTeamNativeSeatDto`], which reports what
+         *     the runtime read back. Paseo's `config.systemPrompt` is creation-only, so no
+         *     runtime here can attest the prompt a native is currently running under. This
+         *     is evidence that Kontor froze this persona and delivered it at launch, and
+         *     `delivery` says which of those two things it is in as many words, rather
+         *     than leaving a reader to assume the stronger one.
+         */
+        CoreTeamSeatPersonaDto: {
+            /** @description What the runtime's acceptance of this persona actually proves. */
+            delivery: string;
+            /**
+             * Format: date-time
+             * @description When it was frozen, which is before the native call.
+             */
+            frozen_at: string;
+            /**
+             * Format: int64
+             * @description The occupancy generation this persona was frozen for.
+             */
+            occupancy_generation: number;
+            /** @description Digest of the exact delivered text. */
+            prompt_hash: string;
+            /** @description The catalog role whose persona was delivered. */
+            role_code: string;
         };
         /** @description One authorized native route for a persistent Core Team role. */
         CoreTeamSeatRouteRequest: {
