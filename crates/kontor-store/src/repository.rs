@@ -54,29 +54,30 @@ use kontor_core::repository::{
     CommandRepository, CompletionWrite, ConnectorSpecSelector, CredentialReference,
     CredentialReferenceKind, GateEvaluation, GateRejectionRecovery, GateRejectionRoute,
     GateRouteOrigin, HistoryGapKind, HistoryGapMarker, HostedSeatLaunchIntentState,
-    IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome, IntakeRepository, MiniProject,
-    MiniProjectTopologySnapshot, NewAbandonReceipt, NewAccountProfile, NewAdaptiveAdmissionState,
-    NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
-    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt, NewGateEvaluation,
-    NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation, NewLocalCommand,
-    NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState,
-    NewProviderUsageObservation, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
-    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, ProviderQuotaState,
-    ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage, RealmRepository,
-    ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure,
-    RunInspection, RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation,
-    SessionVerdictEvidence, SourceDisposition, SourceEventIngest, SpecRepository,
-    StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
-    StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
-    StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
-    StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedSeatLaunchIntent,
-    StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection, StoredPromotion,
-    StoredQuickSession, StoredRemediationProposal, StoredRetiredEvaluatorAttestation,
-    StoredTopologyContainerRecovery, SuccessionRepository, Task, TaskInspection,
-    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
-    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
+    HostedSeatLaunchIntentSupersession, IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome,
+    IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
+    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
+    NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
+    NewConsultationRecoveryAttempt, NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord,
+    NewIntakeReevaluation, NewLocalCommand, NewMiniProject, NewNativeContainerBinding,
+    NewObservation, NewProject, NewProviderQuotaState, NewProviderUsageObservation,
+    NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
+    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
+    ProjectRepository, ProjectTopologyDefault, ProviderQuotaState, ProviderUsageObservation,
+    QuotaObservationProvenance, RealmEventPage, RealmRepository, ReceiptAdvance,
+    ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunInspection,
+    RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence,
+    SourceDisposition, SourceEventIngest, SpecRepository, StoredAdvisorAdvice,
+    StoredCapacityConfiguration, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationMaterializationReroute,
+    StoredConsultationProfileRevision, StoredConsultationRecoveryAttempt, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
+    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection,
+    StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    StoredRetiredEvaluatorAttestation, StoredTopologyContainerRecovery, SuccessionRepository, Task,
+    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
+    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
+    validate_dependency_graph,
 };
 use kontor_core::repository::{
     LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection, LiveNativeSubject,
@@ -4532,6 +4533,201 @@ impl SqliteStore {
     /// Repeating this after a crash with the same native is unchanged. Naming a
     /// different native is a conflict: the intent describes one occupancy, and
     /// an installed row that pointed at a second native would make the evidence
+    pub fn supersede_hosted_seat_launch_intent(
+        &self,
+        request: &HostedSeatLaunchIntentSupersession,
+    ) -> RepositoryResult<Applied> {
+        let project = request.project_id.to_string();
+        let binding = request.seat_binding_id.to_string();
+        let generation =
+            i64::try_from(request.occupancy_generation).map_err(|_| RepositoryError::Backend {
+                detail: "a hosted-seat launch intent generation is invalid".to_owned(),
+            })?;
+        let expected_rung =
+            serde_json::to_string(&request.expected_model_rung).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!(
+                        "a hosted-seat intent model rung could not be encoded: {error}"
+                    ),
+                }
+            })?;
+        let replacement_rung =
+            serde_json::to_string(&request.replacement_model_rung).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!(
+                        "a hosted-seat intent model rung could not be encoded: {error}"
+                    ),
+                }
+            })?;
+        let transaction = self.begin()?;
+
+        // Replay first: the unique key is what makes this exactly-once, and a
+        // second attempt under the same key must answer rather than re-swap.
+        let recorded: Option<String> = transaction
+            .query_row(
+                "SELECT intent_hash FROM hosted_seat_launch_intent_supersessions
+                  WHERE idempotency_key = ?1",
+                params![request.idempotency_key.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some(recorded) = recorded {
+            transaction.rollback().map_err(backend)?;
+            return if recorded == request.intent_hash.as_str() {
+                Ok(Applied::Unchanged)
+            } else {
+                Err(RepositoryError::Conflict {
+                    subject: "hosted seat launch intent supersession",
+                    rule: "the idempotency key already superseded a different intent",
+                })
+            };
+        }
+
+        // The logical seat, exactly as the caller read it and still active.
+        let binding_row: Option<(String, i64, Option<String>, Option<String>)> = transaction
+            .query_row(
+                "SELECT lifecycle, revision, released_at, replaced_by_seat_binding_id
+                   FROM seat_bindings WHERE project_id = ?1 AND id = ?2",
+                params![project, binding],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((lifecycle, revision, released_at, replaced_by)) = binding_row else {
+            return Err(RepositoryError::NotFound {
+                subject: "seat binding",
+            });
+        };
+        if lifecycle != "active" || released_at.is_some() || replaced_by.is_some() {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent supersession",
+                rule: "the logical seat is released, replaced or not active",
+            });
+        }
+        if u64::try_from(revision).ok() != Some(request.expected_seat_binding_revision.get()) {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent supersession",
+                rule: "the logical SeatBinding moved since the supersession was read",
+            });
+        }
+
+        // Absence of every effect. Any one of these means the intent was not
+        // inert and this repair does not apply.
+        for (table, subject) in [
+            (
+                "hosted_topology_seats",
+                "the seat already has a native occupant",
+            ),
+            (
+                "hosted_topology_seat_history",
+                "the seat already has retirement history",
+            ),
+        ] {
+            let present: i64 = transaction
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM {table}
+                          WHERE project_id = ?1 AND seat_binding_id = ?2"
+                    ),
+                    params![project, binding],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if present != 0 {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted seat launch intent supersession",
+                    rule: subject,
+                });
+            }
+        }
+
+        // No launch or effect receipt has ever named this seat. `observe_seat`
+        // is read-only and deliberately absent from the list; a consultation
+        // this seat *asked* names it as the caller, not as a target, so it is
+        // matched on the seat-binding field rather than on the whole document.
+        let effectful: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM command_receipts
+                  WHERE project_id = ?1
+                    AND kind IN ('materialize_core_team', 'correct_core_team_route',
+                                 'claim_core_team_seat', 'replace_seat', 'retire_seat',
+                                 'launch_run')
+                    AND (json_extract(intent, '$.seat_binding') = ?2
+                         OR json_extract(intent, '$.seat_binding_id') = ?2)",
+                params![project, binding],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if effectful != 0 {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent supersession",
+                rule: "a launch or effect receipt already names this seat",
+            });
+        }
+
+        // Recorded before the swap, not after: the v106 carve-out on the
+        // launch-intent immutability trigger only admits a route change that
+        // this exact evidence already accounts for, so the statement of what
+        // is being replaced has to exist first.
+        transaction
+            .execute(
+                "INSERT INTO hosted_seat_launch_intent_supersessions
+                     (idempotency_key, intent_hash, project_id, seat_binding_id,
+                      occupancy_generation, seat_binding_revision, superseded_model_rung,
+                      superseded_prepared_at, replacement_model_rung, receipt_id, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10)",
+                params![
+                    request.idempotency_key.as_str(),
+                    request.intent_hash.as_str(),
+                    project,
+                    binding,
+                    generation,
+                    i64::try_from(request.expected_seat_binding_revision.get()).unwrap_or(i64::MAX),
+                    expected_rung,
+                    text(request.expected_prepared_at),
+                    replacement_rung,
+                    text(request.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        // The swap itself. Every fence the intent carries is in the predicate,
+        // so a concurrent install or re-prepare makes this match zero rows
+        // rather than overwrite a decision someone else just made.
+        let swapped = transaction
+            .execute(
+                "UPDATE hosted_topology_seat_launch_intents
+                    SET model_rung = ?6, prepared_at = ?7
+                  WHERE project_id = ?1
+                    AND seat_binding_id = ?2
+                    AND occupancy_generation = ?3
+                    AND state = 'prepared'
+                    AND installed_at IS NULL
+                    AND observed_native_id IS NULL
+                    AND model_rung = ?4
+                    AND prepared_at = ?5",
+                params![
+                    project,
+                    binding,
+                    generation,
+                    expected_rung,
+                    text(request.expected_prepared_at),
+                    replacement_rung,
+                    text(request.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        if swapped != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent supersession",
+                rule: "the prepared launch intent is installed, re-routed or gone",
+            });
+        }
+
+        transaction.commit().map_err(backend)?;
+        Ok(Applied::Updated)
+    }
+
     /// ambiguous exactly where it has to be exact.
     pub fn install_hosted_seat_launch_intent(
         &self,

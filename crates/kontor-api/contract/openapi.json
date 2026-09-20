@@ -3875,6 +3875,87 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Supersede one never-bound prepared Core Team launch intent.",
+        "operationId": "supersede_core_team_launch_intent",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoreTeamLaunchIntentSupersedeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoreTeamLaunchIntentSupersessionDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "503": {
+            "description": "The runtime could not be reached"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply": {
       "post": {
         "tags": [
@@ -14931,6 +15012,103 @@
             "type": "integer",
             "format": "int64",
             "description": "The position this read is consistent with."
+          }
+        }
+      },
+      "CoreTeamLaunchIntentSupersedeRequest": {
+        "type": "object",
+        "description": "Supersede one never-bound prepared launch intent with an approved route.\n\nEvery field is a fence. The operation applies to exactly one durable shape —\nan intent prepared before a launch that never happened — and anything that\nhas since become a native, an occupancy or a recorded effect refuses.",
+        "required": [
+          "expected_revision",
+          "seat_binding_id",
+          "expected_seat_binding_revision",
+          "occupancy_generation",
+          "expected_model_route",
+          "expected_prepared_at",
+          "desired_model_route"
+        ],
+        "properties": {
+          "desired_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "The catalog-approved replacement route."
+          },
+          "expected_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "The exact inert route being superseded, compared verbatim."
+          },
+          "expected_prepared_at": {
+            "type": "string",
+            "description": "The exact instant that inert intent was prepared, compared verbatim."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epic revision the caller read.",
+            "minimum": 0
+          },
+          "expected_seat_binding_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The binding revision the caller read.",
+            "minimum": 0
+          },
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The occupancy generation whose inert intent is replaced.",
+            "minimum": 0
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The logical seat, preserved exactly."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CoreTeamLaunchIntentSupersessionDto": {
+        "type": "object",
+        "description": "What one launch-intent supersession replaced, and what now stands.",
+        "required": [
+          "realm_id",
+          "seat_binding_id",
+          "seat_binding_revision",
+          "occupancy_generation",
+          "superseded_model_route",
+          "replacement_model_route",
+          "receipt"
+        ],
+        "properties": {
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The occupancy generation whose intent was replaced; unchanged by this.",
+            "minimum": 0
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that recorded it."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Audited mutation receipt."
+          },
+          "replacement_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "The approved route that now stands."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The preserved logical seat. Never retired, never replaced."
+          },
+          "seat_binding_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unchanged binding revision the swap was fenced on.",
+            "minimum": 0
+          },
+          "superseded_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "The inert route that was superseded, retained as evidence."
           }
         }
       },
