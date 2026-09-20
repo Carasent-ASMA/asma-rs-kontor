@@ -993,11 +993,14 @@ impl Services {
 
     /// A migration waits for already-started native operations to drain.
     /// Queueing the writer prevents recurring background reads from starving it.
+    /// Allow an in-flight transport request and its confirming readback to
+    /// finish; each normally has a thirty-second deadline. A stuck operation
+    /// still refuses the migration before any state or native write.
     async fn native_migration_change(
         &self,
     ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ApiError> {
         tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(60),
             self.native_lifecycle_guard.write(),
         )
         .await
@@ -40987,7 +40990,7 @@ impl Services {
 #[cfg(test)]
 mod tests {
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_native_migration_waits_for_inflight_work_without_admitting_new_readers() {
         let directory = tempfile::tempdir().expect("isolated state");
         let services = Services::new(
@@ -41015,6 +41018,17 @@ mod tests {
             services.native_activity().is_err(),
             "new readers cannot starve the queued migration"
         );
+        // Real native operations can still be awaiting their 30-second
+        // transport deadline after the old five-second migration wait expired.
+        tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        std::future::poll_fn(|context| {
+            assert!(
+                std::future::Future::poll(migration.as_mut(), context).is_pending(),
+                "migration must retain its queue position while native work drains"
+            );
+            std::task::Poll::Ready(())
+        })
+        .await;
         drop(existing);
         let exclusive = tokio::time::timeout(std::time::Duration::from_secs(1), migration)
             .await
@@ -41028,6 +41042,44 @@ mod tests {
         assert!(
             services.native_activity().is_ok(),
             "native work resumes after migration"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stuck_native_operation_bounds_migration_wait_and_releases_the_queue() {
+        let directory = tempfile::tempdir().expect("isolated state");
+        let services = Services::new(
+            RealmId::generate(),
+            crate::DEFAULT_CAPACITY,
+            kontor_jira::JiraConnectors::read(directory.path()).expect("no connectors"),
+            directory.path().join("runtime-roots"),
+            crate::usage::UsagePoller::discover(directory.path()),
+            Vec::new(),
+            None,
+        )
+        .expect("services");
+        let existing = services.native_activity().expect("existing work started");
+        let migration = services.native_migration_change();
+        tokio::pin!(migration);
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(migration.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        tokio::time::advance(std::time::Duration::from_secs(61)).await;
+        let refusal = migration.await.expect_err("stuck work must time out");
+        assert_eq!(
+            refusal.code,
+            kontor_api::error::ApiErrorCode::PlacementBlocked
+        );
+        assert!(
+            services.native_activity().is_ok(),
+            "timed-out writer must not retain the queue"
+        );
+        drop(existing);
+        assert!(
+            services.native_lifecycle_change().is_ok(),
+            "timeout must not leak an exclusive guard"
         );
     }
 
