@@ -78,7 +78,8 @@ use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingId, ContainerInspectRequest, ContainerProjection,
-    ContainerRecoveryRequest, ContainerRequest, RetitleContainerRequest,
+    ContainerRecoveryRequest, ContainerRecreationRequest, ContainerRequest,
+    RetitleContainerRequest,
 };
 use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoAdoptionIntent, PaseoCheckpoint, PaseoCompaction, PaseoConfig,
@@ -9032,6 +9033,271 @@ fn stale_container_recovery(stale_native_id: &str) -> ContainerRecoveryRequest {
         canonical_cwd: root(),
         expected_title: name(CANONICAL_NODE_TITLE),
         requested_at: at("2026-09-04T08:00:00Z"),
+    }
+}
+
+fn stale_container_recreation(stale_native_id: &str) -> ContainerRecreationRequest {
+    let recovery = stale_container_recovery(stale_native_id);
+    ContainerRecreationRequest {
+        topology_node_id: recovery.topology_node_id,
+        container_binding_id: recovery.container_binding_id,
+        absent_identity: recovery.stale_identity,
+        bound_project_native_id: recovery.bound_project_native_id,
+        canonical_cwd: recovery.canonical_cwd,
+        expected_title: recovery.expected_title,
+        requested_at: recovery.requested_at,
+    }
+}
+
+/// Every mutating call the plane made, which is the create counter the frozen
+/// record's evidence items are stated in terms of.
+fn creates(plane: &Plane) -> Vec<String> {
+    plane.daemon.mutations()
+}
+
+/// Evidence item 1 (runtime half): exact native absent plus zero candidates
+/// creates exactly one native and preserves the whole placement tuple.
+#[tokio::test]
+async fn container_recreation_creates_exactly_one_native_when_the_path_is_vacant() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+    let request = stale_container_recreation("wks_stale");
+
+    let outcome = plane
+        .adapter
+        .recreate_container(&request)
+        .await
+        .expect("a vacant canonical path is recreated");
+
+    assert!(outcome.created, "a vacant path must report a real creation");
+    assert_eq!(
+        creates(&plane).len(),
+        1,
+        "exactly one native may be built: {:?}",
+        creates(&plane)
+    );
+
+    // The whole preserved tuple, field by field. A recreation that kept the
+    // node but moved the container would pass a looser assertion than this.
+    assert_eq!(
+        outcome.snapshot.topology_node_id(),
+        request.topology_node_id
+    );
+    assert_eq!(outcome.snapshot.binding.id, request.container_binding_id);
+    assert_eq!(
+        outcome.snapshot.binding.projection,
+        ContainerProjection::NativeChild
+    );
+    assert_eq!(outcome.snapshot.root(), Some(&request.canonical_cwd));
+    assert_eq!(outcome.observed_title, request.expected_title.as_str());
+    assert_ne!(
+        outcome.snapshot.binding.identity.native_id, request.absent_identity.native_id,
+        "the replacement must not carry the identity proved absent"
+    );
+    outcome
+        .snapshot
+        .ensure_correlated()
+        .expect("the created native carries this node's label");
+}
+
+/// Evidence item 3: a create whose acknowledgement was lost is adopted by the
+/// retry, never built a second time.
+#[tokio::test]
+async fn container_recreation_adopts_its_own_lost_creation_instead_of_building_twice() {
+    // The retry's census now finds the native the lost attempt created: one
+    // candidate, exact parent, exact canonical path, exact rendered title.
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+
+    let outcome = plane
+        .adapter
+        .recreate_container(&stale_container_recreation("wks_stale"))
+        .await
+        .expect("the lost creation is adopted");
+
+    assert!(
+        !outcome.created,
+        "adopting a prior creation is not a creation, and the difference is the evidence"
+    );
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID,
+        "the exact native the lost attempt created is the one bound"
+    );
+    assert!(
+        creates(&plane).is_empty(),
+        "a retry after a lost acknowledgement must issue no create: {:?}",
+        creates(&plane)
+    );
+}
+
+/// Evidence item 2 (runtime half): every refusal fails closed, before a create.
+#[tokio::test]
+async fn container_recreation_refuses_live_native_ambiguity_and_title_drift() {
+    let mut duplicates = v(WORKSPACE_LIST_NODE);
+    let mut second = duplicates["entries"][0].clone();
+    second["id"] = serde_json::json!("wks_duplicate");
+    duplicates["entries"]
+        .as_array_mut()
+        .expect("entries are an array")
+        .push(second);
+
+    for (answer, stale, expected) in [
+        // The persisted native is still alive: recreation must never run beside
+        // a container the node still owns.
+        (v(WORKSPACE_LIST_NODE), WORKSPACE_ID, "still-live native"),
+        (duplicates, "wks_stale", "several candidates"),
+        (
+            v(WORKSPACE_LIST_NODE_STALE_TITLE),
+            "wks_stale",
+            "title drift",
+        ),
+    ] {
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", answer);
+        let plane = Plane::fresh(recorded);
+
+        let error = plane
+            .adapter
+            .recreate_container(&stale_container_recreation(stale))
+            .await
+            .expect_err(expected);
+
+        assert!(
+            matches!(
+                error,
+                RuntimeError::StaleBinding { .. } | RuntimeError::WorkspaceMismatch { .. }
+            ),
+            "{expected} must fail closed: {error:?}"
+        );
+        assert!(
+            creates(&plane).is_empty(),
+            "{expected} must refuse before any native is built: {:?}",
+            creates(&plane)
+        );
+    }
+}
+
+/// The still-live check earns its place here, and nowhere else.
+///
+/// When the persisted native is alive but sitting at some *other* path, the
+/// canonical path is genuinely empty — so a census that only counted candidates
+/// would call it vacant and build a second native beside a container the node
+/// still owns. Nothing downstream can catch that: the new native would read
+/// back perfectly, at the right parent, path and title.
+///
+/// Found by mutation: deleting the still-live guard left every other recreation
+/// test green, because they all place the live native *on* the canonical path
+/// where the readback's absent-id check happens to catch it.
+#[tokio::test]
+async fn container_recreation_refuses_a_live_persisted_native_parked_at_another_path() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_OTHER_CWD));
+    let plane = Plane::fresh(recorded);
+
+    // `WORKSPACE_OTHER_CWD` holds the persisted native, alive, in the exact
+    // parent — but at `/w/epic/task-99` rather than the canonical path.
+    let error = plane
+        .adapter
+        .recreate_container(&stale_container_recreation(WORKSPACE_ID))
+        .await
+        .expect_err("a live persisted native is never recreated, wherever it is parked");
+
+    assert!(
+        matches!(error, RuntimeError::StaleBinding { .. }),
+        "a live persisted native must be reported as a stale binding: {error:?}"
+    );
+    assert!(
+        creates(&plane).is_empty(),
+        "no native may be built beside a live one: {:?}",
+        creates(&plane)
+    );
+}
+
+/// Evidence item 2, post-create ambiguity: when the readback cannot prove the
+/// native it just built landed in the exact persisted parent, the attempt
+/// refuses, binds nothing, and does not try again inside the same call.
+///
+/// This is the one refusal that can follow a real create, so the count matters
+/// more here than anywhere else: it must be exactly one, never two.
+#[tokio::test]
+async fn container_recreation_refuses_a_created_native_it_cannot_read_back_in_the_exact_parent() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        // Vacant, so one create is authorized; the readback then reports the
+        // native under another project.
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_NODE_OTHER_PROJECT));
+    let plane = Plane::fresh(recorded);
+
+    let error = plane
+        .adapter
+        .recreate_container(&stale_container_recreation("wks_stale"))
+        .await
+        .expect_err("a native that cannot be read back in the exact parent is refused");
+
+    assert!(
+        matches!(
+            error,
+            RuntimeError::CorrelationFailed
+                | RuntimeError::StaleBinding { .. }
+                | RuntimeError::WorkspaceMismatch { .. }
+        ),
+        "post-create ambiguity must fail closed: {error:?}"
+    );
+    assert_eq!(
+        creates(&plane).len(),
+        1,
+        "a failed readback must not provoke a second create: {:?}",
+        creates(&plane)
+    );
+}
+
+/// The preview half writes nothing, whichever answer it reaches.
+#[tokio::test]
+async fn container_recreation_preview_never_mutates() {
+    for answer in [v(WORKSPACE_LIST_EMPTY), v(WORKSPACE_LIST_NODE)] {
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", answer);
+        let plane = Plane::fresh(recorded);
+
+        plane
+            .adapter
+            .preview_container_recreation(&stale_container_recreation("wks_stale"))
+            .await
+            .expect("the preview reaches an answer");
+
+        assert!(
+            creates(&plane).is_empty(),
+            "a preview must be write-free: {:?}",
+            creates(&plane)
+        );
     }
 }
 
