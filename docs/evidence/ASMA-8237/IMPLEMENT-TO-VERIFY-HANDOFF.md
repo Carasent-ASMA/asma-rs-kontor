@@ -116,3 +116,20 @@ as having fixed or worsened them.
 3. The 9 failures above reproduce at clean HEAD, i.e. are genuinely inherited.
 4. That failover itself is **not** claimed here — only that the chain's rungs
    are nameable.
+
+## Current-master integration qualification (2026-09-20)
+
+The recovery coordinator integrated only the three unique producer commits onto
+`24290153c42c21743d606bcf5e1648681af4a69a` in isolated branch
+`fix/ASMA-8237-integrate-route-recognition`. The only cherry-pick conflict was
+the test import list; current hosted-seat autonomy and kickoff imports were
+preserved alongside the new request-parser import. Production recognition and
+both regression bodies are unchanged from the independently verified candidate.
+
+On that integration base, all **88 daemon library tests** and both catalog
+loopback tests passed. Daemon formatting, diff checks and
+`cargo clippy --locked -p kontor-daemon --lib --tests -- -D warnings` passed.
+The actual independent report from producer commit `cfae9767` is retained as
+`HIGH-VERIFICATION-REPORT.md`; its four killed mutants and historical baseline
+results refer to the exact source candidate recorded there. This integration
+record does not claim deployment, automatic failover or watchdog execution.
