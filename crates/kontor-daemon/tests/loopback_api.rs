@@ -57040,3 +57040,250 @@ async fn a_launch_intent_supersession_replay_reports_unchanged() {
         "a replay minted a second receipt"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ASMA-7869 — a project-wide workspace bound before directories and readbacks
+// were recorded.
+//
+// The live PSW node 01a00c26-2860-77f1-bd53-bdfd7ed45ed7 holds native project
+// prj_da432f9269aa936f with a null canonical_cwd and a null readback. Nothing
+// is wrong with the binding except that it is incomplete, and no supported
+// operation could complete it: container recovery is child-only and, even for
+// a child, requires the very directory that is missing.
+// ---------------------------------------------------------------------------
+
+/// Stage the legacy shape: a bound project root with no directory or readback.
+async fn incomplete_root_binding(root: &str, key: &str) -> (Composed, String, String) {
+    // Materializing a seat is what binds the epic's containers; the base alone
+    // declares topology without reaching the runtime for one.
+    let (composed, _binding, _native, _generation) = hosted_tpm_seat(root, key).await;
+    let database = composed
+        .world
+        .directory
+        .path()
+        .join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the realm database opens");
+    let (node, native): (String, String) = connection
+        .query_row(
+            "SELECT c.topology_node_id, c.native_id
+               FROM topology_node_containers c
+               JOIN topology_nodes n ON n.id = c.topology_node_id
+              WHERE c.project_id = ?1 AND c.observed_kind = 'project'
+              ORDER BY n.kind = 'PSW' DESC LIMIT 1",
+            rusqlite::params![composed.project],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or_else(|error| {
+            let mut census = String::new();
+            let mut statement = connection
+                .prepare(
+                    "SELECT n.kind, c.observed_kind, c.native_id, c.canonical_cwd
+                       FROM topology_node_containers c
+                       JOIN topology_nodes n ON n.id = c.topology_node_id",
+                )
+                .expect("the census prepares");
+            let mut rows = statement.query([]).expect("the census runs");
+            while let Some(row) = rows.next().expect("a census row") {
+                census.push_str(&format!(
+                    "{:?}/{:?} {:?} {:?}; ",
+                    row.get::<_, String>(0),
+                    row.get::<_, String>(1),
+                    row.get::<_, String>(2),
+                    row.get::<_, Option<String>>(3)
+                ));
+            }
+            panic!("{key}: a bound project root exists: {error}; census: [{census}]")
+        });
+    // Written as a pre-readback realm left it, not edited into that shape.
+    let staged = connection
+        .execute(
+            "UPDATE topology_node_containers
+                SET canonical_cwd = NULL, observed_projection = NULL, visible_title = NULL,
+                    topology_correlation = NULL
+              WHERE topology_node_id = ?1",
+            rusqlite::params![node],
+        )
+        .expect("the legacy shape is stageable");
+    assert_eq!(staged, 1, "staging matched no container");
+    drop(connection);
+    (composed, node, native)
+}
+
+fn root_binding(world: &World, project: &str, node: &str) -> serde_json::Value {
+    world.daemon.state().with_store(|store| {
+        let project_id = ProjectId::parse(project).expect("a canonical project id");
+        let node_id = TopologyNodeId::parse(node).expect("a canonical node id");
+        let binding = store
+            .get_topology_node_container(project_id, node_id)
+            .expect("the container reads")
+            .expect("the container exists");
+        serde_json::json!({
+            "native_id": binding.identity.native_id.as_str(),
+            "runtime_kind": binding.identity.runtime_kind.as_str(),
+            "host": binding.identity.host.as_str(),
+            "generation": binding.identity.generation,
+            "canonical_cwd": binding.canonical_cwd.as_ref().map(ExternalName::as_str),
+            "has_readback": binding.readback.is_some(),
+            "revision": binding.revision.get(),
+        })
+    })
+}
+
+/// The fill completes the row and changes nothing else about it.
+#[tokio::test]
+async fn an_incomplete_project_root_binding_is_filled_without_changing_its_native() {
+    let (composed, node, native) =
+        incomplete_root_binding("/tmp/kontor-7869-rootfill", "asma-7869-rootfill").await;
+    let world = &composed.world;
+    let project = &composed.project;
+
+    let before = root_binding(world, project, &node);
+    assert!(
+        before["canonical_cwd"].is_null(),
+        "staging left a directory"
+    );
+    assert_eq!(before["has_readback"], false);
+
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{node}/container:root-binding-preview"),
+        &serde_json::json!({"expected_revision": current_project_revision(world, project).await}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    assert_eq!(previewed.json()["native_id"], native);
+    assert_eq!(previewed.json()["fills_canonical_cwd"], true);
+    assert_eq!(previewed.json()["fills_readback"], true);
+    // A preview writes nothing: it is a readback, and the row it describes must
+    // be untouched until an apply presents its hash.
+    assert_eq!(
+        root_binding(world, project, &node),
+        before,
+        "a preview moved the binding"
+    );
+    let preview_hash = previewed.json()["preview_hash"].clone();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{node}/container:root-binding-apply"),
+        &serde_json::json!({
+            "expected_revision": current_project_revision(world, project).await,
+            "preview_hash": preview_hash,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-7869-rootfill-apply")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["receipt"]["applied"], "updated");
+
+    let after = root_binding(world, project, &node);
+    // Identity preserved in all four parts — this is the whole point.
+    for part in ["native_id", "runtime_kind", "host", "generation"] {
+        assert_eq!(
+            after[part], before[part],
+            "the fill moved the native's {part}"
+        );
+    }
+    assert!(
+        !after["canonical_cwd"].is_null(),
+        "the directory was not filled"
+    );
+    assert_eq!(after["has_readback"], true, "the readback was not filled");
+    assert_eq!(
+        after["canonical_cwd"],
+        previewed.json()["canonical_cwd"],
+        "the filled directory is not the one the preview proved"
+    );
+    assert_eq!(
+        after["revision"].as_u64().expect("a revision"),
+        before["revision"].as_u64().expect("a revision") + 1,
+        "the fill did not advance exactly one revision"
+    );
+}
+
+/// Exactly once, and nothing left to fill is a refusal rather than a no-op.
+#[tokio::test]
+async fn a_root_binding_fill_is_exactly_once_and_refuses_a_complete_binding() {
+    let (composed, node, _native) =
+        incomplete_root_binding("/tmp/kontor-7869-rootonce", "asma-7869-rootonce").await;
+    let world = &composed.world;
+    let project = &composed.project;
+
+    let revision = current_project_revision(world, project).await;
+    let previewed = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{node}/container:root-binding-preview"),
+        &serde_json::json!({"expected_revision": revision}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let body = serde_json::json!({
+        "expected_revision": current_project_revision(world, project).await,
+        "preview_hash": previewed.json()["preview_hash"].clone(),
+    });
+
+    let first = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{node}/container:root-binding-apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-7869-rootonce-apply")
+    .send(world)
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let filled = root_binding(world, project, &node);
+
+    // The lost acknowledgement: same key, same intent. It must answer with the
+    // original receipt and leave the binding exactly as the first call left it.
+    let replay = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{node}/container:root-binding-apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-7869-rootonce-apply")
+    .send(world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        replay.json()["receipt"]["receipt_id"],
+        first.json()["receipt"]["receipt_id"],
+        "a replay minted a second receipt"
+    );
+    // Saying `updated` for a replay would tell a caller a second fill
+    // happened, which is the one thing an idempotent operation must never
+    // claim.
+    assert_eq!(first.json()["receipt"]["applied"], "updated");
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        root_binding(world, project, &node),
+        filled,
+        "a replay moved the binding a second time"
+    );
+
+    // A fresh key against a row with nothing missing refuses. Reporting a fill
+    // that did not happen would put a receipt in the ledger for no effect.
+    let again = Call::post(
+        format!("/v1/projects/{project}/topology/nodes/{node}/container:root-binding-preview"),
+        &serde_json::json!({"expected_revision": current_project_revision(world, project).await}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_ne!(
+        again.status, 200,
+        "a complete binding previewed a fill: {}",
+        again.body
+    );
+    assert_eq!(
+        again.json()["rule"],
+        "this container root binding is already complete"
+    );
+    assert_eq!(
+        root_binding(world, project, &node),
+        filled,
+        "a refusal moved the binding"
+    );
+}

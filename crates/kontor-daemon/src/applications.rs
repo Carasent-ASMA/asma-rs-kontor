@@ -65,23 +65,24 @@ use kontor_api::applications::{
     CompletionPhaseDto, CompletionRoundDto, CompletionStateDto, CompletionWakeDto,
     ConsultationPermissionAckDto, ConsultationPermissionInspectionDto, ConsultationSeatDto,
     ConsultationSeatRecoveryDto, ConsultationSeatRecoveryReasonDto, ConsultationVerdictDto,
-    CoreTeamApplyRequest, CoreTeamDto, CoreTeamLaunchIntentSupersedeRequest,
-    CoreTeamLaunchIntentSupersessionDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
-    CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
-    CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest,
-    CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto, CoreTeamSeatClaimPreviewDto,
-    CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto, CoreTeamSeatRouteRequest,
-    CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto, DeliberationStepDto,
-    EnsureQuickSessionRequest, HostedSeatMessageDto, HostedSeatMessageRequestDto,
-    IntegrationRecordDto, InvokeAdvisorRequest, InvokeConsultationRequest, NeedsHumanDto,
-    PartialAdmissionSeatDto, ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto,
-    ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest,
-    PromotionPreviewDto, QuickRolesDto, QuickSessionDto, RecordFindingsRequest,
-    RecordedCloseoutDto, RecoverConsultationSeatRequest, RemediateCompletionRequest,
-    RemediationActionDto, RemediationAuthorityDto, RemediationAuthorizationDto,
-    RemediationRecordDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto,
-    RerouteUnmaterializedConsultationSeatRequest, RosterUpgradePreviewDto,
-    RosterUpgradePreviewRequest, SettleConsultationRequest,
+    ContainerRootBindingApplyRequest, ContainerRootBindingOutcomeDto,
+    ContainerRootBindingPreviewDto, ContainerRootBindingPreviewRequest, CoreTeamApplyRequest,
+    CoreTeamDto, CoreTeamLaunchIntentSupersedeRequest, CoreTeamLaunchIntentSupersessionDto,
+    CoreTeamMaterializeRequest, CoreTeamNativeSeatDto, CoreTeamOutcomeDto, CoreTeamPreviewDto,
+    CoreTeamPreviewRequest, CoreTeamRouteApplyRequest, CoreTeamRouteOutcomeDto,
+    CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest, CoreTeamSeatClaimApplyRequest,
+    CoreTeamSeatClaimOutcomeDto, CoreTeamSeatClaimPreviewDto, CoreTeamSeatClaimPreviewRequest,
+    CoreTeamSeatDto, CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto,
+    CoreTeamSeatTitleConflictDto, DeliberationStepDto, EnsureQuickSessionRequest,
+    HostedSeatMessageDto, HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeAdvisorRequest,
+    InvokeConsultationRequest, NeedsHumanDto, PartialAdmissionSeatDto, ProfileApplyRequest,
+    ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto,
+    PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
+    RecordFindingsRequest, RecordedCloseoutDto, RecoverConsultationSeatRequest,
+    RemediateCompletionRequest, RemediationActionDto, RemediationAuthorityDto,
+    RemediationAuthorizationDto, RemediationRecordDto, RepositoryOutcomeDto,
+    RepositoryOutcomeInputDto, RerouteUnmaterializedConsultationSeatRequest,
+    RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
     UnmaterializedConsultationSeatRerouteDto,
 };
 use kontor_api::applications::{
@@ -198,8 +199,8 @@ use kontor_core::repository::{
     StoredQuickSession, StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest,
     TaskWorkflow, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
-    TicketLink, TicketRepository, TopologyContainerRecovery, TopologyRepository,
-    WorkflowRepository,
+    TicketLink, TicketRepository, TopologyContainerRecovery, TopologyContainerRootFill,
+    TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::HoldLiftCondition;
 use kontor_core::spec::{
@@ -644,6 +645,12 @@ enum NativeNameAction {
 struct PreparedNativeNames {
     preview: NativeNamesPreviewDto,
     actions: Vec<NativeNameAction>,
+}
+
+/// One proved, identity-preserving fill of a native project root's binding.
+struct PreparedRootBinding {
+    fill: TopologyContainerRootFill,
+    preview: ContainerRootBindingPreviewDto,
 }
 
 struct PreparedContainerRecovery {
@@ -9232,6 +9239,214 @@ impl Services {
     }
 
     /// Build the complete read-only proof for replacing one stale child binding.
+    /// What a completed root binding says about itself.
+    ///
+    /// Used only to answer a replay, where the fill already happened: the facts
+    /// are read from the row rather than re-proved, because re-proving them
+    /// would mean re-planning a call whose precondition its own success
+    /// consumed.
+    fn filled_root_binding_readback(
+        &self,
+        binding: &NativeContainerBinding,
+    ) -> Result<ContainerRootBindingPreviewDto, ApiError> {
+        let state = self.state()?;
+        let readback = binding.readback.as_ref();
+        Ok(ContainerRootBindingPreviewDto {
+            realm_id: state.realm_id(),
+            project_id: binding.project_id,
+            topology_node_id: binding.topology_node_id,
+            native_id: binding.identity.native_id.clone(),
+            expected_binding_revision: binding.revision,
+            canonical_cwd: binding
+                .canonical_cwd
+                .as_ref()
+                .map(|cwd| cwd.as_str().to_owned())
+                .unwrap_or_default(),
+            observed_title: readback
+                .map(|readback| readback.visible_title.as_str().to_owned())
+                .unwrap_or_default(),
+            topology_correlation: readback
+                .map(|readback| readback.topology_correlation.as_str().to_owned())
+                .unwrap_or_default(),
+            fills_canonical_cwd: false,
+            fills_readback: false,
+            preview_hash: ContentHash::parse(&"0".repeat(64))
+                .map_err(|error| self.refuse_domain(&error))?,
+            snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    /// Prove what a native project root actually is, before filling its row.
+    ///
+    /// The binding this completes was written before canonical directories and
+    /// readbacks were recorded. Filling it from desired state would make the
+    /// row assert facts nobody re-read, so every value written here comes from
+    /// inspecting the exact persisted native — which is reachable without an
+    /// epic precisely because a project-wide root is addressed by its native id
+    /// alone.
+    ///
+    /// Fill-only. A directory already recorded must equal the one the runtime
+    /// reports; this never relocates a binding and never changes its native.
+    async fn prepare_root_binding(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        expected_revision: AggregateRevision,
+    ) -> Result<PreparedRootBinding, ApiError> {
+        let state = self.state()?;
+        let project = self.project_at(project_id, expected_revision)?;
+        let _ = project;
+        let expected = state
+            .with_store(|store| store.get_topology_node_container(project_id, topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this topology node holds no native container to complete",
+                )
+            })?;
+        if expected.observed_kind != ObservedContainerKind::Project {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "only a native project root may have its root binding completed",
+            ));
+        }
+        // Nothing to do is a refusal, not a silent success: an apply that
+        // reported a fill it never performed would put a receipt in the ledger
+        // for an effect that did not happen.
+        if expected.canonical_cwd.is_some() && expected.readback.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "this container root binding is already complete",
+            ));
+        }
+        let adapter = state
+            .runtimes()
+            .get(&expected.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the container's runtime is not configured in this daemon",
+                )
+            })?;
+        let durable = ContainerBinding {
+            id: ContainerBindingId::parse(expected.container_binding_id.as_str())
+                .map_err(|error| self.refuse_domain(&error))?,
+            topology_node_id,
+            projection: ContainerProjection::NativeRoot,
+            identity: expected.identity.clone(),
+            root: expected
+                .canonical_cwd
+                .as_ref()
+                .map(|cwd| WorkspaceRoot::parse(cwd.as_str()))
+                .transpose()
+                .map_err(|error| self.refuse_domain(&error))?,
+            bound_at: expected.bound_at,
+        };
+        let inspection = adapter
+            .inspect_container(&ContainerInspectRequest {
+                binding: durable,
+                native_parent: None,
+                // The one address with no epic to carry. A project-wide root is
+                // reached by its persisted native id, which is what lets this
+                // node — owned by no epic — be inspected at all.
+                scope: None,
+                epic_container: false,
+                requested_at: kontor_api::now(),
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if inspection.binding.identity != expected.identity {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the inspected native is not the one this node persists",
+            ));
+        }
+        if inspection.observed_kind != ObservedContainerKind::Project
+            || inspection.native_parent.is_some()
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the inspected native is not a parentless project root",
+            ));
+        }
+        let canonical_cwd = inspection.canonical_cwd.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the runtime reported no canonical directory for this project root",
+            )
+        })?;
+        let canonical_name = ExternalName::parse(canonical_cwd.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
+        if let Some(recorded) = expected.canonical_cwd.as_ref()
+            && recorded != &canonical_name
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "a canonical directory is already recorded and disagrees with the runtime",
+            ));
+        }
+        let observed_title = ExternalName::parse(&inspection.visible_title)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let topology_correlation = ExternalName::parse(&inspection.correlation.label.to_string())
+            .map_err(|error| self.refuse_domain(&error))?;
+        let fill = TopologyContainerRootFill {
+            expected: expected.clone(),
+            replacement: NewNativeContainerBinding {
+                topology_node_id,
+                project_id,
+                container_binding_id: expected.container_binding_id.clone(),
+                identity: expected.identity.clone(),
+                observed_kind: ObservedContainerKind::Project,
+                canonical_cwd: Some(canonical_name.clone()),
+                readback: Some(NativeContainerReadback {
+                    projection: ObservedContainerProjection::NativeRoot,
+                    visible_title: observed_title.clone(),
+                    native_parent: None,
+                    topology_correlation: topology_correlation.clone(),
+                }),
+                bound_at: expected.bound_at,
+                observed_at: inspection.observed_at,
+            },
+            expected_binding_revision: expected.revision,
+        };
+        let preview_hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "bind_topology_container_root",
+            "project_id": project_id.to_string(),
+            "project_revision": expected_revision.get(),
+            "topology_node_id": topology_node_id.to_string(),
+            "container_binding_id": expected.container_binding_id.as_str(),
+            "binding_revision": expected.revision.get(),
+            "native": {
+                "runtime_kind": expected.identity.runtime_kind.as_str(),
+                "host": expected.identity.host.as_str(),
+                "generation": expected.identity.generation,
+                "native_id": expected.identity.native_id.as_str(),
+            },
+            "canonical_cwd": canonical_name.as_str(),
+            "observed_title": observed_title.as_str(),
+            "topology_correlation": topology_correlation.as_str(),
+        }))?;
+        Ok(PreparedRootBinding {
+            preview: ContainerRootBindingPreviewDto {
+                realm_id: state.realm_id(),
+                project_id,
+                topology_node_id,
+                native_id: expected.identity.native_id.clone(),
+                expected_binding_revision: expected.revision,
+                canonical_cwd: canonical_name.as_str().to_owned(),
+                observed_title: observed_title.as_str().to_owned(),
+                topology_correlation: topology_correlation.as_str().to_owned(),
+                fills_canonical_cwd: expected.canonical_cwd.is_none(),
+                fills_readback: expected.readback.is_none(),
+                preview_hash,
+                snapshot_cursor: self.cursor()?,
+            },
+            fill,
+        })
+    }
+
     async fn prepare_container_recovery(
         &self,
         project_id: ProjectId,
@@ -21336,6 +21551,140 @@ impl ApplicationOperations for Services {
                 receipt_id: receipt.id.to_string(),
                 applied: applied_dto(applied),
                 revision: confirmed.resulting_project_revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
+    async fn preview_container_root_binding(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRootBindingPreviewRequest,
+    ) -> Result<ContainerRootBindingPreviewDto, ApiError> {
+        Ok(self
+            .prepare_root_binding(project_id, topology_node_id, request.expected_revision)
+            .await?
+            .preview)
+    }
+
+    async fn apply_container_root_binding(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRootBindingApplyRequest,
+    ) -> Result<ContainerRootBindingOutcomeDto, ApiError> {
+        let state = self.state()?;
+        let project = self.project_at(project_id, request.expected_revision)?;
+        let target = AggregateRef::Project { project_id };
+        // A replay is answered before anything is re-planned, because this
+        // operation consumes its own precondition: once the row is complete
+        // there is nothing left to fill, and re-planning a retry would refuse
+        // the very call that is supposed to be safe to repeat.
+        if let Some(receipt) = state
+            .with_store(|store| store.get_receipt_by_key(key))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|receipt| receipt.target == target)
+        {
+            let binding = state
+                .with_store(|store| store.get_topology_node_container(project_id, topology_node_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "this topology node holds no native container to complete",
+                    )
+                })?;
+            return Ok(ContainerRootBindingOutcomeDto {
+                binding: self.filled_root_binding_readback(&binding)?,
+                binding_revision: binding.revision,
+                receipt: MutationReceiptDto {
+                    realm_id: state.realm_id(),
+                    receipt_id: receipt.id.to_string(),
+                    applied: AppliedDto::Unchanged,
+                    revision: receipt.target_revision,
+                    snapshot_cursor: self.cursor()?,
+                },
+            });
+        }
+        // The before/after this operation is audited by. The recovery evidence
+        // ledger cannot hold it — its CHECK requires the native identity to
+        // change, and this preserves it — so the canonical intent carries the
+        // prior absence, the proved readback and the identity that stays.
+        let prepared = self
+            .prepare_root_binding(project_id, topology_node_id, request.expected_revision)
+            .await?;
+        if prepared.preview.preview_hash != request.preview_hash {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the container root binding changed since preview",
+            ));
+        }
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "bind_topology_container_root",
+            "project_id": project_id.to_string(),
+            "project_revision": request.expected_revision.get(),
+            "topology_node_id": topology_node_id.to_string(),
+            "container_binding_id": prepared.fill.expected.container_binding_id.as_str(),
+            "expected_binding_revision": prepared.fill.expected_binding_revision.get(),
+            "prior": {
+                "canonical_cwd": prepared
+                    .fill
+                    .expected
+                    .canonical_cwd
+                    .as_ref()
+                    .map(ExternalName::as_str),
+                "readback": prepared.fill.expected.readback.is_some(),
+            },
+            "native": {
+                "runtime_kind": prepared.fill.expected.identity.runtime_kind.as_str(),
+                "host": prepared.fill.expected.identity.host.as_str(),
+                "generation": prepared.fill.expected.identity.generation,
+                "native_id": prepared.fill.expected.identity.native_id.as_str(),
+            },
+            "proved": {
+                "observed_kind": "project",
+                "canonical_cwd": prepared.preview.canonical_cwd,
+                "observed_title": prepared.preview.observed_title,
+                "topology_correlation": prepared.preview.topology_correlation,
+                "observed_at": prepared.fill.replacement.observed_at.to_string(),
+            },
+            "preview_hash": request.preview_hash.as_str(),
+        }))?;
+        let now = kontor_api::now();
+        let envelope = ReceiptEnvelope::new(
+            state.realm_id(),
+            NewLocalCommand {
+                project_id,
+                receipt_id: CommandReceiptId::generate(),
+                idempotency_key: key.clone(),
+                kind: CommandKind::RecoverTopologyContainer,
+                target,
+                target_revision: project.revision,
+                intent,
+                created_at: now,
+            },
+        );
+        let (binding, receipt, applied) = state
+            .with_store(|store| {
+                store.fill_topology_container_root_with_intent(
+                    &prepared.fill,
+                    project.revision,
+                    &envelope,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        Ok(ContainerRootBindingOutcomeDto {
+            binding: prepared.preview,
+            binding_revision: binding.revision,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt.id.to_string(),
+                applied: applied_dto(applied),
+                revision: project.revision,
                 snapshot_cursor: self.cursor()?,
             },
         })

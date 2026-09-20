@@ -2923,7 +2923,18 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .ok_or(RuntimeError::StaleBinding {
                 rule: "the exact native container is not present",
             })?;
-        if snapshot.binding != request.binding {
+        // A persisted binding that records no root is not a runtime
+        // disagreement — it is a Kontor row written before directories were
+        // recorded, and it is exactly what a root-binding fill exists to
+        // complete. Everything that addresses the container is still compared;
+        // only the value being recovered is allowed to be absent.
+        let addressed_the_same_container = snapshot.binding.id == request.binding.id
+            && snapshot.binding.topology_node_id == request.binding.topology_node_id
+            && snapshot.binding.projection == request.binding.projection
+            && snapshot.binding.identity == request.binding.identity
+            && snapshot.binding.bound_at == request.binding.bound_at
+            && (request.binding.root.is_none() || snapshot.binding.root == request.binding.root);
+        if !addressed_the_same_container {
             return Err(RuntimeError::StaleBinding {
                 rule: "the persisted container binding no longer matches the runtime",
             });

@@ -474,6 +474,14 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::apply_container_recovery),
             )
             .route(
+                "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:root-binding-preview",
+                post(applications::preview_container_root_binding),
+            )
+            .route(
+                "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:root-binding-apply",
+                post(applications::apply_container_root_binding),
+            )
+            .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/backlog-code:correction-preview",
                 post(applications::preview_epic_backlog_code_correction),
             )

@@ -3292,6 +3292,79 @@ pub struct ContainerRecoveryPreviewRequest {
     pub expected_revision: AggregateRevision,
 }
 
+/// Read-only request to complete one native project root's missing binding.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerRootBindingPreviewRequest {
+    /// Project revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+}
+
+/// Apply request bound to an exact root-binding preview.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerRootBindingApplyRequest {
+    /// Project revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_revision: AggregateRevision,
+    /// Hash returned by the root-binding preview.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// What a fresh runtime readback proves about one native project root.
+///
+/// Every value here is server-derived. The caller names a node and a revision;
+/// the directory, kind, title and correlation come from inspecting the exact
+/// persisted native, never from the request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ContainerRootBindingPreviewDto {
+    /// Realm that performed the readback.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Owning project.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The topology node whose binding is completed. Never changed.
+    #[schema(value_type = String)]
+    pub topology_node_id: TopologyNodeId,
+    /// The native project root, preserved exactly.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+    /// The binding revision this fill is fenced on.
+    #[schema(value_type = u64)]
+    pub expected_binding_revision: AggregateRevision,
+    /// Canonical directory the runtime reported for that exact native.
+    pub canonical_cwd: String,
+    /// Runtime-visible title observed during the readback.
+    pub observed_title: String,
+    /// Exact topology correlation the adapter established.
+    pub topology_correlation: String,
+    /// Whether the stored binding is missing its canonical directory.
+    pub fills_canonical_cwd: bool,
+    /// Whether the stored binding is missing its complete readback.
+    pub fills_readback: bool,
+    /// Hash an apply must present unchanged.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+    /// Snapshot cursor of the reading realm.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
+/// The completed binding and the receipt that authorized it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ContainerRootBindingOutcomeDto {
+    /// What the readback proved and what was filled.
+    pub binding: ContainerRootBindingPreviewDto,
+    /// Binding revision after the fill.
+    #[schema(value_type = u64)]
+    pub binding_revision: AggregateRevision,
+    /// Audited mutation receipt.
+    pub receipt: MutationReceiptDto,
+}
+
 /// Apply request bound to an exact stale-container preview.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -7197,6 +7270,23 @@ pub trait ApplicationOperations: Send + Sync {
         request: &ContainerRecoveryApplyRequest,
     ) -> Result<AppliedContainerRecoveryDto, ApiError>;
 
+    /// Preview completing one native project root's missing binding facts.
+    async fn preview_container_root_binding(
+        &self,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRootBindingPreviewRequest,
+    ) -> Result<ContainerRootBindingPreviewDto, ApiError>;
+
+    /// Atomically fill that binding without changing the native it names.
+    async fn apply_container_root_binding(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        topology_node_id: TopologyNodeId,
+        request: &ContainerRootBindingApplyRequest,
+    ) -> Result<ContainerRootBindingOutcomeDto, ApiError>;
+
     /// Preview a complete epic container/seat name repair with no writes.
     async fn preview_native_names(
         &self,
@@ -9604,6 +9694,67 @@ pub async fn apply_container_recovery(
         state
             .applications()
             .apply_container_recovery(&key, project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// Preview completing one native project root's missing binding facts.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:root-binding-preview",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node whose root binding is incomplete")
+    ),
+    request_body = ContainerRootBindingPreviewRequest,
+    responses((status = 200, body = ContainerRootBindingPreviewDto), (status = 400), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422), (status = 501))
+)]
+pub async fn preview_container_root_binding(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    Json(request): Json<ContainerRootBindingPreviewRequest>,
+) -> Result<Json<ContainerRootBindingPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    Ok(Json(
+        state
+            .applications()
+            .preview_container_root_binding(project_id, topology_node_id, &request)
+            .await?,
+    ))
+}
+
+/// Apply the exact previewed root-binding fill, preserving the native.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:root-binding-apply",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("topology_node_id" = String, Path, description = "The node whose root binding is incomplete"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = ContainerRootBindingApplyRequest,
+    responses((status = 200, body = ContainerRootBindingOutcomeDto), (status = 400), (status = 401), (status = 403), (status = 404), (status = 409), (status = 422), (status = 501))
+)]
+pub async fn apply_container_root_binding(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, topology_node_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<ContainerRootBindingApplyRequest>,
+) -> Result<Json<ContainerRootBindingOutcomeDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let topology_node_id = parse_id(&state, TopologyNodeId::parse(&topology_node_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .apply_container_root_binding(&key, project_id, topology_node_id, &request)
             .await?,
     ))
 }

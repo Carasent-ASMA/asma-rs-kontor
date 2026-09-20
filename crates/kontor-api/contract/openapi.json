@@ -10026,6 +10026,159 @@
         }
       }
     },
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:root-binding-apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply the exact previewed root-binding fill, preserving the native.",
+        "operationId": "apply_container_root_binding",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "topology_node_id",
+            "in": "path",
+            "description": "The node whose root binding is incomplete",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContainerRootBindingApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContainerRootBindingOutcomeDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "501": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/container:root-binding-preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Preview completing one native project root's missing binding facts.",
+        "operationId": "preview_container_root_binding",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "topology_node_id",
+            "in": "path",
+            "description": "The node whose root binding is incomplete",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContainerRootBindingPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContainerRootBindingPreviewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "501": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/topology/nodes/{topology_node_id}/retire": {
       "post": {
         "tags": [
@@ -14752,6 +14905,139 @@
             "type": "integer",
             "format": "int64",
             "description": "The project revision the caller believes is current.\n\nThe project, not the node: a repair is authority over the project's own\nrendering, and the project's revision is the one a caller can read before\npresenting it.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ContainerRootBindingApplyRequest": {
+        "type": "object",
+        "description": "Apply request bound to an exact root-binding preview.",
+        "required": [
+          "expected_revision",
+          "preview_hash"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision the caller read.",
+            "minimum": 0
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash returned by the root-binding preview."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ContainerRootBindingOutcomeDto": {
+        "type": "object",
+        "description": "The completed binding and the receipt that authorized it.",
+        "required": [
+          "binding",
+          "binding_revision",
+          "receipt"
+        ],
+        "properties": {
+          "binding": {
+            "$ref": "#/components/schemas/ContainerRootBindingPreviewDto",
+            "description": "What the readback proved and what was filled."
+          },
+          "binding_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Binding revision after the fill.",
+            "minimum": 0
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Audited mutation receipt."
+          }
+        }
+      },
+      "ContainerRootBindingPreviewDto": {
+        "type": "object",
+        "description": "What a fresh runtime readback proves about one native project root.\n\nEvery value here is server-derived. The caller names a node and a revision;\nthe directory, kind, title and correlation come from inspecting the exact\npersisted native, never from the request.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "topology_node_id",
+          "native_id",
+          "expected_binding_revision",
+          "canonical_cwd",
+          "observed_title",
+          "topology_correlation",
+          "fills_canonical_cwd",
+          "fills_readback",
+          "preview_hash",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "canonical_cwd": {
+            "type": "string",
+            "description": "Canonical directory the runtime reported for that exact native."
+          },
+          "expected_binding_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The binding revision this fill is fenced on.",
+            "minimum": 0
+          },
+          "fills_canonical_cwd": {
+            "type": "boolean",
+            "description": "Whether the stored binding is missing its canonical directory."
+          },
+          "fills_readback": {
+            "type": "boolean",
+            "description": "Whether the stored binding is missing its complete readback."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The native project root, preserved exactly."
+          },
+          "observed_title": {
+            "type": "string",
+            "description": "Runtime-visible title observed during the readback."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Hash an apply must present unchanged."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that performed the readback."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Snapshot cursor of the reading realm."
+          },
+          "topology_correlation": {
+            "type": "string",
+            "description": "Exact topology correlation the adapter established."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "The topology node whose binding is completed. Never changed."
+          }
+        }
+      },
+      "ContainerRootBindingPreviewRequest": {
+        "type": "object",
+        "description": "Read-only request to complete one native project root's missing binding.",
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Project revision the caller read.",
             "minimum": 0
           }
         },

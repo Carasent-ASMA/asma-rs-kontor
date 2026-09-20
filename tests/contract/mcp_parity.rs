@@ -542,7 +542,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        184,
+        186,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
@@ -550,7 +550,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         REGISTRY.len() - CLI_ONLY.len(),
-        183,
+        185,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -558,13 +558,18 @@ fn the_snapshot_canary_holds_at_this_base() {
         2,
         "the allowlist changed; an omission must be reviewed, not added"
     );
-    // 185 against a registry of 184: the regenerated contract also documents
+    // 188 against a registry of 186: the contract documents master's
+    // `fill_team_run_seat` (#225) and the launch-intent supersession, neither of
+    // which this branch maps. The supersession's tool is PR #245's, and mapping
+    // it here as well would duplicate that commit and guarantee a conflict.
+    // Both gaps are named rather than hidden by a matching count.
+    // The original note follows: the regenerated contract also documents
     // master's `fill_team_run_seat` (#225), which was served but never written
     // into the document and has no MCP tool of its own. The gap is master's to
     // close, and it is named here rather than hidden by a matching count.
     assert_eq!(
         documented().len(),
-        185,
+        188,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -844,6 +849,12 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_committee_topic_correction_apply", CallerTier::Admin),
         ("kontor_container_recovery_preview", CallerTier::Admin),
         ("kontor_container_recovery_apply", CallerTier::Admin),
+        // Completing a legacy project-root binding is admin for the same
+        // reason recovering a stale child is: it decides which directory the
+        // realm will treat as a governed workspace. It changes no identity,
+        // which makes it safer to perform, not lower authority to authorize.
+        ("kontor_container_root_binding_preview", CallerTier::Admin),
+        ("kontor_container_root_binding_apply", CallerTier::Admin),
         // Runtime-owned correlation labels are immutable placement evidence.
         // Repair is exact-id/generation fenced and therefore Admin-only.
         ("kontor_session_labels_reconcile", CallerTier::Admin),
