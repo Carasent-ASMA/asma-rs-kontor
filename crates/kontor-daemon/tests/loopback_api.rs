@@ -58168,3 +58168,161 @@ fn epic_control_node(
             .expect("the epic has a control plane")
     })
 }
+
+/// A real empty LSA seat and visible claimant, with an independently bound
+/// ticket workspace available to model a claimant that moves after preview.
+async fn seat_claim_proof_fixture(
+    slug: &str,
+) -> (
+    World,
+    String,
+    String,
+    TopologyNodeId,
+    TopologyNodeId,
+    serde_json::Value,
+) {
+    let (world, project, epic, task, _) = materialized_ticket_topology(slug).await;
+    let project_id = project_id_of(&project);
+    let control = epic_control_node(&world, project_id, epic_id_of(&epic));
+    let (lsa, ticket) = world.daemon.state().with_store(|store| {
+        let lsa = store
+            .list_seat_bindings(project_id, control.id)
+            .expect("seats read")
+            .into_iter()
+            .find(|seat| seat.role.role_code.as_str() == "LSA" && seat.is_non_terminal())
+            .expect("the LSA logical seat");
+        assert!(
+            store
+                .get_hosted_topology_seat(project_id, lsa.id)
+                .expect("native filler reads")
+                .is_none()
+        );
+        let ticket = store
+            .get_task_topology_node(project_id, TaskId::parse(&task).expect("task id"))
+            .expect("ticket reads")
+            .expect("ticket exists")
+            .id;
+        (lsa, ticket)
+    });
+    seed_claim_proof_native(&world, control.id);
+    let request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": lsa.id,
+        "claimant_native_id": "native-claim-proof-lsa",
+        "expected_current_native_id": null,
+    });
+    (world, project, epic, control.id, ticket, request)
+}
+
+fn seed_claim_proof_native(world: &World, node: TopologyNodeId) {
+    world
+        .fake
+        .seed_hosted_seat_claimant(
+            node,
+            ExternalId::parse("native-claim-proof-lsa").expect("native id"),
+            Some(ExternalId::parse("provider-claim-proof-lsa").expect("provider id")),
+            ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: Some(EffortLevel::Xhigh),
+            },
+            "hand-started LSA",
+        )
+        .expect("claimant is present in the requested workspace");
+}
+
+fn claim_native_writes(world: &World) -> usize {
+    world
+        .fake
+        .calls()
+        .iter()
+        .filter(|call| {
+            !matches!(
+                call,
+                AdapterCall::InspectContainer(_)
+                    | AdapterCall::DiscoverCapabilities
+                    | AdapterCall::PreviewClaimHostedSeat(_)
+            )
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn seat_claim_preview_and_apply_keep_both_independent_placement_proofs() {
+    for fault in ["none", "container", "claimant"] {
+        let (world, project, epic, control, ticket, request) =
+            seat_claim_proof_fixture(&format!("claim-proof-{fault}")).await;
+        let route = format!("/v1/projects/{project}/epics/{epic}/core-team/seat-claims");
+        let writes_before = claim_native_writes(&world);
+        let preview = Call::post(format!("{route}:preview"), &request)
+            .signed_as(&world, "admin")
+            .send(&world)
+            .await;
+        assert_eq!(preview.status, 200, "{}", preview.body);
+        assert_eq!(
+            claim_native_writes(&world),
+            writes_before,
+            "preview is read-only"
+        );
+        let mut apply = request.clone();
+        apply["preview_hash"] = preview.json()["preview_hash"].clone();
+        match fault {
+            "container" => world.fake.forget_container(control),
+            "claimant" => seed_claim_proof_native(&world, ticket),
+            _ => {}
+        }
+        if fault != "none" {
+            let refused = Call::post(format!("{route}:preview"), &request)
+                .signed_as(&world, "admin")
+                .send(&world)
+                .await;
+            assert!(
+                !refused.status.is_success(),
+                "{fault} drift preview accepted: {}",
+                refused.body
+            );
+        }
+        let key = format!("claim-proof-{fault}-claim");
+        let applied = Call::post(format!("{route}:apply"), &apply)
+            .signed_as(&world, "admin")
+            .with_key(&key)
+            .send(&world)
+            .await;
+        if fault == "none" {
+            assert_eq!(applied.status, 200, "{}", applied.body);
+            assert!(
+                claim_native_writes(&world) > writes_before,
+                "positive control actually claims"
+            );
+            assert!(receipt_for(&world, &key).is_some());
+        } else {
+            assert!(
+                !applied.status.is_success(),
+                "{fault} drift apply accepted: {}",
+                applied.body
+            );
+            assert_eq!(
+                claim_native_writes(&world),
+                writes_before,
+                "{fault}: no native effect"
+            );
+            assert!(
+                receipt_for(&world, &key).is_none(),
+                "{fault}: key remains unspent"
+            );
+            let binding =
+                SeatBindingId::parse(request["seat_binding_id"].as_str().expect("seat id"))
+                    .expect("canonical seat id");
+            assert!(
+                world
+                    .daemon
+                    .state()
+                    .with_store(|store| store
+                        .get_hosted_topology_seat(project_id_of(&project), binding)
+                        .expect("native filler reads"))
+                    .is_none(),
+                "{fault}: no durable filler"
+            );
+        }
+    }
+}

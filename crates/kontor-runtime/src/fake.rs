@@ -3020,7 +3020,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         request.validate()?;
         let mut state = self.lock();
         state.require_plane()?;
-        let snapshot = state
+        let mut snapshot = state
             .containers
             .get(&request.binding.topology_node_id)
             .cloned()
@@ -3050,6 +3050,12 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state.calls.push(AdapterCall::InspectContainer(
             request.binding.topology_node_id,
         ));
+        // A fresh inspection replaces the runtime's proof, as the live adapter
+        // does. Callers must forward this proof instead of the preparation's.
+        snapshot.correlation.established_at = request.requested_at;
+        state
+            .containers
+            .insert(request.binding.topology_node_id, snapshot.clone());
         Ok(ContainerInspection {
             binding: request.binding.clone(),
             observed_kind: match request.binding.projection {
@@ -3456,6 +3462,15 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         let mut state = self.lock();
         state.require_plane()?;
+        if state
+            .containers
+            .get(&request.container.binding.topology_node_id)
+            != Some(&request.container)
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the hosted launch must use the latest inspected container proof",
+            });
+        }
         preflight(
             &state.capabilities,
             &OperationContext {

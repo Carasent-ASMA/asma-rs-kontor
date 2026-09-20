@@ -8400,6 +8400,12 @@ impl Services {
                     "the hosted-seat runtime is not configured in this daemon",
                 )
             })?;
+        // A claimant being in the named workspace does not prove that the
+        // workspace still satisfies its durable ECP binding. Preserve both
+        // independent read-only fences in preview and in apply's fresh plan.
+        let proved_container = self
+            .bound_container_snapshot(project_id, &node, adapter.as_ref())
+            .await?;
         let cwd = self.runtime_root(project_id, Some(epic_id))?;
         let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
         let display_name = self.seat_name(
@@ -8455,6 +8461,15 @@ impl Services {
             "epic": epic_id.to_string(),
             "epic_revision": epic.revision.get(),
             "seat_binding": binding.id.to_string(),
+            "container": {
+                "binding_id": proved_container.binding.id.to_string(),
+                "topology_node_id": proved_container.binding.topology_node_id.to_string(),
+                "runtime_kind": proved_container.binding.identity.runtime_kind.as_str(),
+                "host": proved_container.binding.identity.host.as_str(),
+                "generation": proved_container.binding.identity.generation,
+                "native_id": proved_container.binding.identity.native_id.as_str(),
+                "canonical_cwd": proved_container.binding.root.as_ref().map(WorkspaceRoot::as_str),
+            },
             "claimant": {
                 "runtime_kind": runtime_preview.identity.runtime_kind.as_str(),
                 "host": runtime_preview.identity.host.as_str(),
@@ -38412,8 +38427,15 @@ impl Services {
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             self.validate_container_inspection(&request, &outcome.snapshot, &inspection)?;
             self.bind_container(project_id, level.id, &inspection)?;
-            parent = Some(outcome.snapshot.binding.clone());
-            prepared = Some(outcome.snapshot);
+            parent = Some(inspection.binding.clone());
+            // Inspection refreshes the adapter's correlation ledger. The
+            // launch must carry that same proof, not the superseded prepare
+            // snapshot, even when the native container has not moved.
+            prepared = Some(ContainerBindingSnapshot {
+                binding: inspection.binding,
+                capabilities: outcome.snapshot.capabilities,
+                correlation: inspection.correlation,
+            });
         }
         prepared.ok_or_else(|| {
             self.deny(
