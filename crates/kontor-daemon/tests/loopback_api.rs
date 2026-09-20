@@ -22338,12 +22338,14 @@ async fn a_workspace_refusal_is_reported_as_a_placement_fact() {
     .await;
     assert_eq!(refused.status, 422, "{}", refused.body);
     assert_eq!(refused.code(), "unsupported_capability");
-    assert!(
-        refused.json()["rule"]
-            .as_str()
-            .expect("a rule")
-            .contains("workspace"),
-        "the refusal is about placement: {}",
+    // Named exactly rather than by substring. The refusal used to collapse every
+    // workspace condition into one sentence containing "workspace"; now it says
+    // which rule fired, and this pins that instead of re-accepting the generic
+    // wording (ASMA-8190).
+    assert_eq!(
+        refused.json()["rule"],
+        "the requested root is not the canonical task worktree of this plane",
+        "the refusal names the exact workspace rule: {}",
         refused.body
     );
 }

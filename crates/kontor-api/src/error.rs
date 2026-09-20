@@ -617,11 +617,15 @@ impl ApiError {
             // the transport's side that is always "you were working from a state
             // that has moved", which is what a revision conflict says.
             //
-            // Which rule, on which aggregate, is logged. The caller is told one
-            // thing for every uniqueness and immutability rule in the store —
-            // otherwise a client could enumerate them — but an operator holding
-            // only "a persistence rule refused the write" has nothing to act on,
-            // and both fields are `&'static str` written in this workspace.
+            // Which rule, on which aggregate, is now told to the caller as well
+            // as logged. The previous reading withheld both to stop a client
+            // enumerating the store's rules, and the cost of that was paid in
+            // ASMA-8190: an operator retried one Core Team route apply twice
+            // against `current_revision: null` and "a persistence rule refused
+            // the write", which names nothing to re-read and nothing to change.
+            // Both fields are `&'static str` authored in this workspace, so
+            // there is no caller data in either; what they expose is a design
+            // detail, and a refusal nobody can act on is the worse trade.
             RepositoryError::Conflict { subject, rule } => {
                 warn!(
                     realm_id = %realm_id,
@@ -629,11 +633,7 @@ impl ApiError {
                     rule = %rule,
                     "a persistence rule refused a write"
                 );
-                Self::new(
-                    realm_id,
-                    ApiErrorCode::RevisionConflict,
-                    "a persistence rule refused the write against the presented state",
-                )
+                Self::new(realm_id, ApiErrorCode::RevisionConflict, rule).about(subject)
             }
             // Which ceiling bound is a fact about this Realm's configuration and
             // its current load, so it is logged for the operator who runs the
@@ -809,17 +809,22 @@ impl ApiError {
                     "re-prove the seat's workspace placement, then resume the exact queued run",
                 )
             }
+            // The rule is told, not only logged, for the same reason a
+            // persistence conflict now names its subject: a dozen distinct
+            // workspace conditions collapse to this one variant, and
+            // "the runtime will not work in the workspace this realm asked
+            // for" says nothing about which. ASMA-8190 is what that costs — an
+            // apply refused a route its own preview had accepted, and the
+            // operator had no way to tell a busy terminal from a moved
+            // directory from an uncorrelated setup census. Every rule here is
+            // an `&'static str` written in this workspace.
             RuntimeError::WorkspaceMismatch { rule } => {
                 warn!(
                     realm_id = %realm_id,
                     rule = %rule,
                     "runtime refused the workspace this realm asked for"
                 );
-                Self::new(
-                    realm_id,
-                    ApiErrorCode::UnsupportedCapability,
-                    "the runtime will not work in the workspace this realm asked for",
-                )
+                Self::new(realm_id, ApiErrorCode::UnsupportedCapability, rule)
             }
             RuntimeError::WorkspacePreparationFailed { rule } => {
                 warn!(
@@ -926,6 +931,48 @@ mod tests {
     use kontor_core::id::AggregateRevision;
 
     use super::*;
+
+    /// A refusal an operator cannot act on is a defect, not discretion.
+    ///
+    /// ASMA-8190: one Core Team route apply was retried twice against
+    /// `current_revision: null` and "a persistence rule refused the write",
+    /// which names nothing to re-read. Both fields are `&'static str` written
+    /// in this workspace, so neither carries caller data.
+    #[test]
+    fn a_persistence_conflict_names_its_subject_and_rule() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_repository(
+            realm,
+            &kontor_core::repository::RepositoryError::Conflict {
+                subject: "native container binding",
+                rule: "this topology node is bound to another native container",
+            },
+        );
+        assert_eq!(refusal.code, ApiErrorCode::RevisionConflict);
+        assert_eq!(
+            refusal.rule,
+            "this topology node is bound to another native container"
+        );
+        assert_eq!(refusal.subject(), Some("native container binding"));
+    }
+
+    /// A dozen workspace conditions share one variant; the rule is what tells
+    /// a busy terminal from a moved directory from an uncorrelated census.
+    #[test]
+    fn a_workspace_refusal_names_the_rule_that_fired() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_runtime(
+            realm,
+            &RuntimeError::WorkspaceMismatch {
+                rule: "the workspace still reports terminals or another directory",
+            },
+        );
+        assert_eq!(refusal.code, ApiErrorCode::UnsupportedCapability);
+        assert_eq!(
+            refusal.rule,
+            "the workspace still reports terminals or another directory"
+        );
+    }
 
     /// The 2026-08-22 lesson, applied to the two refusals that were still
     /// falling through: a conflict and a capability refusal are actionable
