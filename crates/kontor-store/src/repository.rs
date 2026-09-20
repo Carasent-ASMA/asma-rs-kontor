@@ -21669,8 +21669,29 @@ impl TeamDefinitionRepository for SqliteStore {
                     AND seat.project_id = binding.project_id
                     AND seat.lifecycle = 'active'
                    JOIN topology_nodes AS node ON node.id = seat.topology_node_id
-                  WHERE binding.project_id = ?1 AND node.mini_project_id = ?2
+                 WHERE binding.project_id = ?1 AND node.mini_project_id = ?2
                     AND node.lifecycle = 'active'
+                    -- A persistent role has one current replacement-chain
+                    -- leaf. Bound ancestors remain immutable history, even
+                    -- when the leaf has not acquired its own native yet.
+                    -- Certified abandoned, never-bound attempts do not occupy
+                    -- this chain, matching the delivery-role projection.
+                    AND NOT EXISTS (
+                        SELECT 1 FROM agent_runs AS child
+                         WHERE child.project_id = run.project_id
+                           AND child.team_run_id = run.team_run_id
+                           AND child.role_key = run.role_key
+                           AND child.parent_agent_run_id = run.id
+                           AND NOT (
+                               child.terminal_outcome IS 'abandoned'
+                               AND child.terminal_source_kind IS 'operator_abandon'
+                               AND NOT EXISTS (
+                                   SELECT 1 FROM runtime_bindings AS child_binding
+                                    WHERE child_binding.project_id = child.project_id
+                                      AND child_binding.agent_run_id = child.id
+                               )
+                           )
+                    )
                  ORDER BY 1, 8",
             )
             .map_err(backend)?;
