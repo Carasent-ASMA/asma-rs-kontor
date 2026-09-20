@@ -23825,9 +23825,51 @@ impl ApplicationOperations for Services {
             // waiting on a permission request, addressed on another runtime or
             // generation, or in a disposition this build has not audited still
             // refuses with no effect, and every fence above is unchanged.
+            // Re-proved here, after the preview validated and before the
+            // first irreversible effect. The plan proved it too, but that read
+            // is older than this one by a re-plan, and a retirement cannot be
+            // taken back. Drift refuses with the predecessor still live.
+            let control_node = state
+                .with_store(|store| {
+                    store.get_topology_node(project_id, plan.binding.topology_node_id)
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the Core Team control-plane node no longer exists",
+                    )
+                })?;
+            // The readback is the fence. `inspect_bound_container` refuses with
+            // WorkspaceMismatch or StaleBinding when the runtime no longer holds
+            // the exact native the binding records, and that refusal lands here
+            // before the retirement below — predecessor, session and
+            // SeatBinding all still live, no successor, no receipt, no effect.
+            let proved_placement = self
+                .prove_existing_bound_container(project_id, &control_node)
+                .await?;
+            // Never `None` and never guessed: the retirement names the exact
+            // native child this proof just read back, or it does not happen.
+            let proved = proved_placement.as_ref().map(|proved| &proved.binding);
+            let proved = proved.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the hosted Core Team seat has no proved native child to retire",
+                )
+            })?;
+            let placement = kontor_runtime::adapter::HostedSeatRetirePlacement {
+                workspace_native_id: proved.identity.native_id.clone(),
+                canonical_cwd: proved.root.clone().ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "the proved native child records no canonical directory",
+                    )
+                })?,
+                provider_session_id: plan.predecessor.provider_session_id.clone(),
+            };
             let (retired_at, retirement_reason) = match adapter
                 .retire_hosted_seat(&HostedSeatRetireRequest {
-                    placement: None,
+                    placement: Some(placement),
                     seat_binding_id: plan.binding.id,
                     identity: plan.predecessor.native_identity.clone(),
                     model_rung: plan.predecessor.model_rung.clone(),

@@ -58341,3 +58341,224 @@ async fn seat_claim_preview_and_apply_keep_both_independent_placement_proofs() {
         }
     }
 }
+
+/// Exact container drift leaves the node and its seats present.
+fn op4_container_drifts() -> [kontor_runtime::fake::FakeContainerDrift; 2] {
+    use kontor_runtime::fake::FakeContainerDrift;
+    [
+        FakeContainerDrift::NativeId(ExternalId::parse("native-replaced-ecp").unwrap()),
+        FakeContainerDrift::Root(
+            kontor_runtime::workspace::WorkspaceRoot::parse("/tmp/drifted-ecp").unwrap(),
+        ),
+    ]
+}
+
+fn op4_seat_node(
+    world: &World,
+    project_id: ProjectId,
+    binding_id: SeatBindingId,
+) -> TopologyNodeId {
+    world.daemon.state().with_store(|store| {
+        store
+            .get_seat_binding(project_id, binding_id)
+            .unwrap()
+            .unwrap()
+            .topology_node_id
+    })
+}
+
+fn op4_route_request(binding: &str, native: &ExternalId, generation: u64) -> serde_json::Value {
+    serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_native_id": native,
+        "expected_generation": generation,
+        "desired_model_route": {
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": "high"
+        },
+    })
+}
+
+async fn op4_preview(
+    world: &World,
+    project: &str,
+    epic: &str,
+    mut request: serde_json::Value,
+) -> serde_json::Value {
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    request["preview_hash"] = preview.json()["preview_hash"].clone();
+    request
+}
+
+#[tokio::test]
+async fn route_preview_refuses_exact_container_drift_with_node_and_membership_preserved() {
+    for drift in op4_container_drifts() {
+        let (composed, binding, native, generation) = hosted_tpm_seat(
+            "/tmp/kontor-8234-op4-preview",
+            "asma-8234-op4-preview-seats",
+        )
+        .await;
+        let world = &composed.world;
+        let project = &composed.project;
+        let epic = &composed.epic;
+        let project_id = ProjectId::parse(project).unwrap();
+        let binding_id = SeatBindingId::parse(&binding).unwrap();
+        let node = op4_seat_node(world, project_id, binding_id);
+        let shape_before = succession_shape(world, project_id, binding_id);
+        let membership_before = seats_on(world, project_id, node);
+        world.fake.drift_container(node, drift);
+        assert!(world.fake.container_native_id(node).is_some());
+        let calls_before = world.fake.calls().len();
+        let refused = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+            &op4_route_request(&binding, &native, generation),
+        )
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+        assert_eq!(refused.status, 409, "{}", refused.body);
+        assert_eq!(world.fake.last_hosted_retire_placement(binding_id), None);
+        assert!(
+            !world.fake.calls()[calls_before..]
+                .iter()
+                .any(|call| matches!(
+                    call,
+                    AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+                ))
+        );
+        assert_eq!(world.fake.hosted_seat_native_id(binding_id), Some(native));
+        assert_eq!(
+            succession_shape(world, project_id, binding_id),
+            shape_before
+        );
+        assert_eq!(seats_on(world, project_id, node), membership_before);
+    }
+}
+
+#[tokio::test]
+async fn route_apply_reproves_after_planning_before_retiring_the_live_predecessor() {
+    for drift in op4_container_drifts() {
+        let (composed, binding, native, generation) =
+            hosted_tpm_seat("/tmp/kontor-8234-op4-drift", "asma-8234-op4-drift-seats").await;
+        let world = &composed.world;
+        let project = &composed.project;
+        let epic = &composed.epic;
+        let project_id = ProjectId::parse(project).unwrap();
+        let binding_id = SeatBindingId::parse(&binding).unwrap();
+        let node = op4_seat_node(world, project_id, binding_id);
+        let body = op4_preview(
+            world,
+            project,
+            epic,
+            op4_route_request(&binding, &native, generation),
+        )
+        .await;
+        let shape_before = succession_shape(world, project_id, binding_id);
+        let membership_before = seats_on(world, project_id, node);
+        // Apply re-plans successfully, then the native drifts after that read.
+        // Only the immediate pre-retirement proof can still prevent the effect.
+        world
+            .fake
+            .drift_container_after_next_inspection(node, drift);
+        let calls_before = world.fake.calls().len();
+        let refused = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+            &body,
+        )
+        .signed_as(world, "admin")
+        .with_key("asma-8234-op4-drift")
+        .send(world)
+        .await;
+        assert_eq!(refused.status, 409, "{}", refused.body);
+        assert_eq!(
+            world.fake.last_hosted_retire_placement(binding_id),
+            None,
+            "the live predecessor must not be sent to retirement after planning drift"
+        );
+        assert!(
+            !world.fake.calls()[calls_before..]
+                .iter()
+                .any(|call| matches!(
+                    call,
+                    AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+                ))
+        );
+        assert_eq!(world.fake.hosted_seat_native_id(binding_id), Some(native));
+        assert_eq!(
+            succession_shape(world, project_id, binding_id),
+            shape_before
+        );
+        assert_eq!(seats_on(world, project_id, node), membership_before);
+        assert!(receipt_for(world, "asma-8234-op4-drift").is_none());
+    }
+}
+
+#[tokio::test]
+async fn route_apply_threads_the_proved_placement_into_the_retirement() {
+    let (composed, binding, native, generation) = hosted_tpm_seat(
+        "/tmp/kontor-8234-op4-threading",
+        "asma-8234-op4-threading-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).unwrap();
+    let binding_id = SeatBindingId::parse(&binding).unwrap();
+    let node = op4_seat_node(world, project_id, binding_id);
+    let (expected_container, expected_provider_session) =
+        world.daemon.state().with_store(|store| {
+            (
+                store
+                    .get_topology_node_container(project_id, node)
+                    .unwrap()
+                    .unwrap(),
+                store
+                    .get_hosted_topology_seat(project_id, binding_id)
+                    .unwrap()
+                    .unwrap()
+                    .provider_session_id,
+            )
+        });
+    let body = op4_preview(
+        world,
+        project,
+        epic,
+        op4_route_request(&binding, &native, generation),
+    )
+    .await;
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8234-op4-threading")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let placement = world
+        .fake
+        .last_hosted_retire_placement(binding_id)
+        .expect("a real live predecessor was retired")
+        .expect("retirement carries placement");
+    assert_eq!(
+        placement.workspace_native_id,
+        expected_container.identity.native_id
+    );
+    assert_eq!(
+        placement.canonical_cwd.as_str(),
+        expected_container.canonical_cwd.unwrap().as_str()
+    );
+    assert_eq!(placement.provider_session_id, expected_provider_session);
+    assert!(world.fake.calls().iter().any(|call| matches!(
+        call, AdapterCall::RetireHostedSeat(seat) if *seat == binding_id
+    )));
+    assert_ne!(world.fake.hosted_seat_native_id(binding_id), Some(native));
+}
