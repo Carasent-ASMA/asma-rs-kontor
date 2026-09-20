@@ -19749,6 +19749,10 @@ impl ApplicationOperations for Services {
                         ApiErrorCode::ProviderUnreachable,
                         "the fixed provider usage endpoint did not answer successfully",
                     ),
+                    ProviderUsageProbeFailure::Throttled { retry_after_seconds } => self.deny(
+                        ApiErrorCode::ProviderUsageThrottled,
+                        "the provider throttled usage observation requests; model allowance was not observed",
+                    ).with_retry_after(retry_after_seconds),
                     ProviderUsageProbeFailure::Unsupported => self.deny(
                         ApiErrorCode::ProviderUnsupported,
                         "the exact account or provider response is not supported by this build",

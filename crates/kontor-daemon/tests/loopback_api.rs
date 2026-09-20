@@ -35,6 +35,8 @@ mod harness;
 
 #[path = "loopback/committee_evidence.rs"]
 mod committee_evidence;
+#[path = "loopback/provider_refresh.rs"]
+mod provider_refresh;
 
 #[tokio::test]
 async fn open_question_commands_preserve_authority_history_and_completion_blockers() {

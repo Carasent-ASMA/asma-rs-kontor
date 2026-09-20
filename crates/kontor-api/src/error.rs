@@ -144,6 +144,8 @@ closed_enum! {
         ProviderUnauthorized => "provider_unauthorized",
         /// The fixed provider usage endpoint could not be reached successfully.
         ProviderUnreachable => "provider_unreachable",
+        /// The usage endpoint throttled observation requests, not model execution.
+        ProviderUsageThrottled => "provider_usage_throttled",
         /// The exact account or successful provider response is not supported
         /// by this build's closed usage-reader set.
         ProviderUnsupported => "provider_unsupported",
@@ -193,7 +195,7 @@ impl ApiErrorCode {
             // 4xx that blames either would misdirect. "Too many requests" is
             // what a spent ceiling is, and it is the status a client already
             // knows to back off and retry on.
-            Self::CapacityExhausted => StatusCode::TOO_MANY_REQUESTS,
+            Self::CapacityExhausted | Self::ProviderUsageThrottled => StatusCode::TOO_MANY_REQUESTS,
             Self::ReconciliationPending
             | Self::Unavailable
             | Self::DeliveryUnconfirmed
@@ -256,6 +258,9 @@ impl ApiErrorCode {
             Self::ProviderUnreachable => {
                 "retry after the provider usage endpoint is reachable; nothing was changed"
             }
+            Self::ProviderUsageThrottled => {
+                "honor retry_after_seconds before probing again; this is not evidence that model quota is exhausted"
+            }
             Self::ProviderUnsupported => {
                 "use an enabled config-home account and provider response supported by this build"
             }
@@ -300,6 +305,9 @@ const fn const_str_eq(left: &str, right: &str) -> bool {
 /// The JSON body every refusal is reported with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct ApiErrorBody {
+    /// Safe delay before retrying a throttled usage read; quota projections were not changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_seconds: Option<u64>,
     /// The Realm the request was refused in.
     #[schema(value_type = String)]
     pub realm_id: RealmId,
@@ -372,6 +380,8 @@ pub struct ApiError {
 /// Where a refusal happened, in structural terms only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorDiagnostic {
+    /// Delay for a provider-throttled observation, never a quota reset assertion.
+    pub retry_after_seconds: Option<u64>,
     /// The type, field or state machine that refused.
     pub subject: Option<&'static str>,
     /// The structural path of the offending node. Never its value.
@@ -427,10 +437,18 @@ impl ApiError {
     fn diagnostic_mut(&mut self) -> &mut ErrorDiagnostic {
         self.diagnostic.get_or_insert_with(|| {
             Box::new(ErrorDiagnostic {
+                retry_after_seconds: None,
                 subject: None,
                 at: None,
             })
         })
+    }
+
+    /// Attach a safe observation retry delay without asserting a quota reset.
+    #[must_use]
+    pub fn with_retry_after(mut self, seconds: u64) -> Self {
+        self.diagnostic_mut().retry_after_seconds = Some(seconds);
+        self
     }
 
     /// State what the caller can do about it.
@@ -466,6 +484,10 @@ impl ApiError {
     #[must_use]
     pub fn body(&self) -> ApiErrorBody {
         ApiErrorBody {
+            retry_after_seconds: self
+                .diagnostic
+                .as_ref()
+                .and_then(|value| value.retry_after_seconds),
             realm_id: self.realm_id,
             code: self.code,
             rule: self.rule,
@@ -885,7 +907,17 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.code.status(), Json(self.body())).into_response()
+        let body = self.body();
+        let retry_after = body.retry_after_seconds;
+        let mut response = (self.code.status(), Json(body)).into_response();
+        if let Some(seconds) = retry_after
+            && let Ok(value) = axum::http::HeaderValue::from_str(&seconds.to_string())
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, value);
+        }
+        response
     }
 }
 
@@ -1130,6 +1162,20 @@ mod tests {
         );
         assert!(refusal.action.contains("do not resend"));
         assert!(!refusal.action.contains("nothing was changed"));
+    }
+
+    #[test]
+    fn usage_throttle_returns_the_actual_retry_instruction_in_body_and_header() {
+        let error = ApiError::new(
+            RealmId::generate(),
+            ApiErrorCode::ProviderUsageThrottled,
+            "the usage endpoint throttled observation requests",
+        )
+        .with_retry_after(2312);
+        assert_eq!(error.body().retry_after_seconds, Some(2312));
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()["retry-after"], "2312");
     }
 
     /// The two codes are told apart by the one sentence a caller acts on.

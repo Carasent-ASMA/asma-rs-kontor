@@ -6697,6 +6697,16 @@
           "422": {
             "description": ""
           },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "502": {
             "description": ""
           },
@@ -11774,6 +11784,15 @@
           "realm_id": {
             "type": "string",
             "description": "The Realm the request was refused in."
+          },
+          "retry_after_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Safe delay before retrying a throttled usage read; quota projections were not changed.",
+            "minimum": 0
           },
           "rule": {
             "type": "string",

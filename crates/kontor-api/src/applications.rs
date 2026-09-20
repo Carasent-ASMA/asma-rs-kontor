@@ -8532,7 +8532,7 @@ pub async fn record_provider_quota(
     responses(
         (status = 200, body = ProviderUsageObservationDto),
         (status = 401), (status = 403), (status = 404), (status = 409),
-        (status = 422), (status = 502), (status = 503)
+        (status = 422), (status = 429, body = crate::error::ApiErrorBody), (status = 502), (status = 503)
     )
 )]
 pub async fn probe_provider_quota(

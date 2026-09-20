@@ -3644,6 +3644,11 @@ export interface components {
             oldest_retained_cursor?: number | null;
             /** @description The Realm the request was refused in. */
             realm_id: string;
+            /**
+             * Format: int64
+             * @description Safe delay before retrying a throttled usage read; quota projections were not changed.
+             */
+            retry_after_seconds?: number | null;
             /** @description A static description of the rule that refused. Never a stored value. */
             rule: string;
             /**
@@ -16395,6 +16400,14 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
             };
             502: {
                 headers: {
