@@ -14678,11 +14678,10 @@ fn capacity_config(ceilings: &CapacityCeilingsDto) -> CapacityConfig {
 
 /// The policy a durable capacity document carries.
 ///
-/// The startup loader and the read surface both come through here, so a realm
-/// can never compose one set of ceilings and report another. Validating is part
-/// of the conversion rather than the caller's job: a document reaching this
-/// function came back from storage, and storage is not where the domain's rules
-/// were applied.
+/// The startup loader uses this validated conversion. The configuration read
+/// surface retains its separate conversion of the stored document. Validation
+/// belongs here because a document read from storage is not guaranteed to
+/// satisfy the current domain rules.
 ///
 /// # Errors
 /// Returns [`kontor_core::DomainError`] when the document is not a ceilings
