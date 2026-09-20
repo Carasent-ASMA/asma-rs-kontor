@@ -9463,27 +9463,55 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
         .expect("the existing exact ECP is bound")
         .snapshot;
 
-    let outcome = plane
+    // Real daemon order: prepare, inspect at a later instant, then launch.
+    // The inspection refreshes the proof even though every native id is stable.
+    let inspection = plane
         .adapter
-        .launch_hosted_seat(&HostedSeatLaunchRequest {
-            seat_binding_id,
-            role_slot_id: slot("lsa"),
-            display_name: name("LSA · ASMA-7744"),
-            container,
-            cwd: root(),
+        .inspect_container(&ContainerInspectRequest {
+            binding: container.binding.clone(),
+            native_parent: Some(bound_root(node(NODE_B)).identity),
             scope: epic_execution_scope(),
-            prompt: text("continue epic leadership through Kontor"),
-            credential: kontor_runtime::adapter::ScopedSeatCredential::new(
-                "kontor-seat-v2.test.1.redacted".to_owned(),
-            ),
-            fenced_predecessor_native_ids: Vec::new(),
-            model_rung: model_rung(),
-            autonomy: SeatAutonomy::standard(),
-            context_policy: standard_context_policy(),
-            requested_at: at("2026-08-16T09:10:00Z"),
+            epic_container: false,
+            requested_at: at("2026-08-16T09:09:00Z"),
         })
         .await
-        .expect("the Core Team seat launches in the local ECP");
+        .expect("the exact ECP is inspected after preparation");
+    assert_ne!(container.correlation, inspection.correlation);
+    let fresh_container = ContainerBindingSnapshot {
+        binding: inspection.binding,
+        capabilities: container.capabilities.clone(),
+        correlation: inspection.correlation,
+    };
+    let mut launch = HostedSeatLaunchRequest {
+        seat_binding_id,
+        role_slot_id: slot("lsa"),
+        display_name: name("LSA · ASMA-7744"),
+        container,
+        cwd: root(),
+        scope: epic_execution_scope(),
+        prompt: text("continue epic leadership through Kontor"),
+        credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+            "kontor-seat-v2.test.1.redacted".to_owned(),
+        ),
+        fenced_predecessor_native_ids: Vec::new(),
+        model_rung: model_rung(),
+        autonomy: SeatAutonomy::standard(),
+        context_policy: standard_context_policy(),
+        requested_at: at("2026-08-16T09:10:00Z"),
+    };
+    let stale = plane
+        .adapter
+        .launch_hosted_seat(&launch)
+        .await
+        .expect_err("a caller must propagate the latest inspected proof");
+    assert!(matches!(stale, RuntimeError::WorkspaceMismatch { .. }));
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 0);
+    launch.container = fresh_container;
+    let outcome = plane
+        .adapter
+        .launch_hosted_seat(&launch)
+        .await
+        .expect("the Core Team seat launches with the exact inspected proof");
 
     assert!(outcome.created);
     assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
@@ -11929,11 +11957,11 @@ async fn a_bound_ecp_container_is_reconciled_by_exact_id_after_a_restart() {
     }
 }
 
-/// Item 3, semantic shape: an epic container refuses a ticket's worktree and
-/// every shape this adapter has not audited.
+/// Taskless containers may host an ECP or an isolated consultation. Shapes
+/// outside either supported use remain refused.
 #[tokio::test]
-async fn a_bound_ecp_container_refuses_a_worktree_or_unaudited_shape() {
-    for kind in ["worktree", "checkout", "something_else"] {
+async fn a_bound_epic_container_refuses_unaudited_shapes() {
+    for kind in ["checkout", "something_else"] {
         let plane = restarted_plane(workspace_list_of_kind(kind));
 
         let error = plane
@@ -12427,4 +12455,226 @@ async fn a_complete_inspection_rehydrates_the_ledger_from_its_proof() {
         .expect("a proved inspection rehydrates");
     assert_eq!(rehydrated.binding.identity, binding.identity);
     assert!(plane.daemon.mutations().is_empty(), "still read-only");
+}
+
+#[tokio::test]
+async fn inspection_refuses_changed_child_cwd_before_rehydrating_either_ledger() {
+    let plane = restarted_plane(v(WORKSPACE_OTHER_CWD));
+    let binding = bound_container_binding();
+    let error = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: binding.clone(),
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-09-20T12:00:00Z"),
+        })
+        .await
+        .expect_err("an exact native id does not prove its unchanged working directory");
+    assert!(matches!(error, RuntimeError::StaleBinding { .. }));
+    assert!(
+        plane
+            .adapter
+            .container_binding(binding.topology_node_id)
+            .is_none()
+    );
+    assert!(plane.adapter.project_binding().is_none());
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+#[tokio::test]
+async fn inspection_refuses_changed_root_cwd_before_rehydrating_either_ledger() {
+    let plane = restarted_plane(workspace_list_of_kind("worktree"));
+    let mut binding = bound_root(node(NODE_B));
+    binding.root = Some(WorkspaceRoot::parse("/wrong/persisted/root").expect("absolute root"));
+    let error = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: binding.clone(),
+            native_parent: None,
+            scope: epic_execution_scope(),
+            epic_container: true,
+            requested_at: at("2026-09-20T12:00:00Z"),
+        })
+        .await
+        .expect_err("an exact project id does not prove its unchanged root");
+    assert!(matches!(error, RuntimeError::StaleBinding { .. }));
+    assert!(
+        plane
+            .adapter
+            .container_binding(binding.topology_node_id)
+            .is_none()
+    );
+    assert!(plane.adapter.project_binding().is_none());
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+#[tokio::test]
+async fn inspection_refuses_inapplicable_workspace_shapes_before_rehydration() {
+    for (scope, kind) in [
+        (execution_scope(), "directory"),
+        (execution_scope(), "local_checkout"),
+        (execution_scope(), "checkout"),
+        (epic_execution_scope(), "checkout"),
+        (epic_execution_scope(), "something_else"),
+    ] {
+        let plane = restarted_plane(workspace_list_of_kind(kind));
+        let binding = bound_container_binding();
+        let error = plane
+            .adapter
+            .inspect_container(&ContainerInspectRequest {
+                binding: binding.clone(),
+                native_parent: Some(bound_root(node(NODE_B)).identity),
+                scope,
+                epic_container: false,
+                requested_at: at("2026-09-20T12:00:00Z"),
+            })
+            .await
+            .expect_err("the same path does not prove an applicable workspace shape");
+        assert!(
+            matches!(error, RuntimeError::StaleBinding { .. }),
+            "{kind}: {error:?}"
+        );
+        assert!(
+            plane
+                .adapter
+                .container_binding(binding.topology_node_id)
+                .is_none()
+        );
+        assert!(plane.adapter.project_binding().is_none());
+        assert!(plane.daemon.mutations().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn an_epic_consultation_worktree_reconciles_and_inspects_after_restart() {
+    let plane = restarted_plane(workspace_list_of_kind("worktree"));
+    let request = bound_child_request(node(NODE_A), WORKSPACE_ID, epic_execution_scope());
+    assert!(
+        request.scope.task.is_none(),
+        "an epic review serves no ticket"
+    );
+    let prepared = plane
+        .adapter
+        .prepare_container(&request)
+        .await
+        .expect("an epic consultation retains its bound Git worktree after restart");
+    let inspection = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: prepared.snapshot.binding.clone(),
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: epic_execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-09-20T12:00:00Z"),
+        })
+        .await
+        .expect("the same consultation worktree is freshly attested");
+    assert!(!prepared.created);
+    assert_eq!(inspection.binding.identity.native_id.as_str(), WORKSPACE_ID);
+    assert_eq!(inspection.canonical_cwd, Some(root()));
+    assert!(plane.daemon.mutations().is_empty());
+
+    // Container reconciliation serves both consultations and leadership;
+    // the hosted-seat operation still applies the stricter ECP shape rule.
+    let refused = plane
+        .adapter
+        .launch_hosted_seat(&HostedSeatLaunchRequest {
+            seat_binding_id: SeatBindingId::generate(),
+            role_slot_id: slot("lsa"),
+            display_name: name("LSA"),
+            container: ContainerBindingSnapshot {
+                binding: inspection.binding,
+                capabilities: prepared.snapshot.capabilities,
+                correlation: inspection.correlation,
+            },
+            cwd: root(),
+            scope: epic_execution_scope(),
+            prompt: text("leadership requires its own local ECP"),
+            credential: kontor_runtime::adapter::ScopedSeatCredential::new("test".to_owned()),
+            fenced_predecessor_native_ids: Vec::new(),
+            model_rung: model_rung(),
+            autonomy: SeatAutonomy::standard(),
+            context_policy: standard_context_policy(),
+            requested_at: at("2026-09-20T12:01:00Z"),
+        })
+        .await
+        .expect_err("a consultation worktree never becomes a leadership ECP");
+    assert!(matches!(
+        refused,
+        RuntimeError::WorkspaceMismatch {
+            rule: "a Core Team seat may be placed only in the epic's local ECP workspace"
+        }
+    ));
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+/// An intact ECP does not attest the claimant's own workspace or cwd. Both
+/// preview and apply must re-read the claimant before any metadata mutation.
+#[tokio::test]
+async fn a_hosted_claim_refuses_a_moved_claimant_with_a_valid_ecp() {
+    for field in ["workspaceId", "cwd"] {
+        let mut claimant = v(AGENT);
+        claimant["agent"]["title"] = serde_json::json!("hand-started LSA");
+        claimant["agent"]["labels"] = serde_json::json!({});
+        claimant["agent"][field] = serde_json::json!(if field == "workspaceId" {
+            "wks_somewhere_else"
+        } else {
+            "/w/somewhere-else"
+        });
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", v(WORKSPACE_ROOT_LOCAL))
+            .answering_rpc("fetch_agent_request", claimant)
+            .answering_rpc(
+                "fetch_agents_request",
+                serde_json::json!({
+                    "requestId": "req-fixture", "entries": [],
+                    "pageInfo": {"nextCursor": null, "prevCursor": null, "hasMore": false}
+                }),
+            );
+        let plane = Plane::fresh(recorded);
+        plane
+            .adapter
+            .prepare_project("cmd-claim-location-proof", &project_name())
+            .await
+            .expect("the valid epic project");
+        let request = HostedSeatClaimRequest {
+            seat_binding_id: SeatBindingId::generate(),
+            role_slot_id: slot("lsa"),
+            display_name: name("LSA"),
+            container_native_id: external(WORKSPACE_ID),
+            cwd: root(),
+            scope: epic_execution_scope(),
+            claimant_native_id: external(AGENT_ID),
+            expected_claimant_provider_session_id: None,
+            expected_predecessor: None,
+            requested_at: at("2026-09-20T16:00:00Z"),
+        };
+        let preview = plane
+            .adapter
+            .preview_hosted_seat_claim(&request)
+            .await
+            .expect_err("moved claimant must refuse preview even with a valid ECP");
+        assert!(
+            matches!(preview, RuntimeError::WorkspaceMismatch { .. }),
+            "{preview:?}"
+        );
+        let apply = plane
+            .adapter
+            .claim_hosted_seat(&request)
+            .await
+            .expect_err("moved claimant must refuse apply even with a valid ECP");
+        assert!(
+            matches!(apply, RuntimeError::WorkspaceMismatch { .. }),
+            "{apply:?}"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "no metadata or native write"
+        );
+    }
 }

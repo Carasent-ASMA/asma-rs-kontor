@@ -2725,8 +2725,8 @@ impl PaseoAdapter {
                 //
                 // Deliberately not `verify_workspace_placement`: that is the
                 // ticket-role rule, and it refuses anything that is not a
-                // worktree. Applied here it would refuse every epic
-                // consultation container, which is *intentionally* a directory.
+                // worktree. Applied here it would refuse the epic's ECP,
+                // which is intentionally a directory or local checkout.
                 let task_container = request.task_container();
                 if !container_workspace_kind(workspace.workspace_kind)
                     .is_applicable_to(task_container)
@@ -6825,6 +6825,7 @@ impl RuntimeAdapter for PaseoAdapter {
             });
         }
 
+        let mut project_to_remember = None;
         let (identity, observed_kind, visible_title, canonical_cwd, native_parent) = match request
             .binding
             .projection
@@ -6836,15 +6837,12 @@ impl RuntimeAdapter for PaseoAdapter {
                 let cwd = WorkspaceRoot::parse(&project.root_path)?;
                 if request.epic_container {
                     let epic_id = Self::external_epic_id(&request.scope)?;
-                    self.lock().projects.insert(
-                        epic_id.clone(),
-                        PaseoProjectBinding {
-                            mini_project_id: epic_id,
-                            host_key: self.config.host_key.clone(),
-                            project_id: identity.native_id.clone(),
-                            observed_name: project.display_name.clone(),
-                        },
-                    );
+                    project_to_remember = Some(PaseoProjectBinding {
+                        mini_project_id: epic_id,
+                        host_key: self.config.host_key.clone(),
+                        project_id: identity.native_id.clone(),
+                        observed_name: project.display_name.clone(),
+                    });
                 }
                 (
                     identity,
@@ -6882,13 +6880,19 @@ impl RuntimeAdapter for PaseoAdapter {
                         rule: "the inspected container is outside its exact persisted parent",
                     });
                 }
+                let task_container = request.scope.task.is_some();
+                if !container_workspace_kind(workspace.workspace_kind)
+                    .is_applicable_to(task_container)
+                {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: ContainerWorkspaceKind::refusal(task_container),
+                    });
+                }
                 // The exact parent was read by id on the same path that proved
                 // the child. A restarted adapter needs that ephemeral project
                 // binding as well as the child binding before it can compose a
                 // launch in the inspected workspace.
-                self.lock()
-                    .projects
-                    .insert(project_binding.mini_project_id.clone(), project_binding);
+                project_to_remember = Some(project_binding);
                 let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
                 let cwd = WorkspaceRoot::parse(&workspace.workspace_directory)?;
                 (
@@ -6903,6 +6907,23 @@ impl RuntimeAdapter for PaseoAdapter {
         if &identity != expected {
             return Err(RuntimeError::StaleBinding {
                 rule: "the exact container readback returned another native identity",
+            });
+        }
+        // The stored directory is part of the binding being proved. Merely
+        // returning the observed directory while caching the requested one
+        // would authorize later writes against a proof the runtime contradicted.
+        // Legacy native roots without a recorded directory may still be read
+        // so their canonical directory can be backfilled through recovery.
+        if request.binding.root.is_some() && canonical_cwd != request.binding.root {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the inspected container no longer works in its persisted canonical directory",
+            });
+        }
+        if request.binding.projection == ContainerProjection::NativeChild
+            && request.binding.root.is_none()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the inspected child has no persisted canonical directory to prove",
             });
         }
         let correlation = ContainerCorrelationEvidence::by_exact_id(
@@ -6920,7 +6941,13 @@ impl RuntimeAdapter for PaseoAdapter {
         // This is deliberately after every identity, generation, parent and
         // placement check. A failed or merely name-matching inspection never
         // enters the ledger and therefore can never authorize a launch.
-        self.lock().containers.insert(
+        let mut state = self.lock();
+        if let Some(project) = project_to_remember {
+            state
+                .projects
+                .insert(project.mini_project_id.clone(), project);
+        }
+        state.containers.insert(
             request.binding.topology_node_id,
             ContainerBindingSnapshot {
                 binding: request.binding.clone(),

@@ -160,10 +160,10 @@ fn the_container_semantics_come_from_the_durable_scope() {
 
 /// The shared predicate itself, stated once as a table.
 #[test]
-fn the_shared_predicate_admits_exactly_one_shape_per_semantics() {
+fn the_shared_predicate_preserves_ticket_isolation_and_epic_consultation_worktrees() {
     use ContainerWorkspaceKind as K;
     for (kind, ticket, epic) in [
-        (K::Worktree, true, false),
+        (K::Worktree, true, true),
         (K::Directory, false, true),
         (K::LocalCheckout, false, true),
         (K::Checkout, false, false),
@@ -227,13 +227,14 @@ async fn the_fake_refuses_a_ticket_container_that_is_not_a_worktree() {
     }
 }
 
-/// Lockstep: an epic container is a directory or a local checkout, and is
-/// refused when it is somebody's worktree.
+/// Lockstep: taskless containers include stable ECP directories and isolated
+/// consultation worktrees; operation-specific checks govern who may launch.
 #[tokio::test]
-async fn the_fake_accepts_an_epic_directory_and_refuses_an_epic_worktree() {
+async fn the_fake_accepts_epic_directories_and_consultation_worktrees() {
     for kind in [
         ContainerWorkspaceKind::Directory,
         ContainerWorkspaceKind::LocalCheckout,
+        ContainerWorkspaceKind::Worktree,
     ] {
         let fake = ScriptedFakeRuntime::new(every_capability());
         let node_id = TopologyNodeId::generate();
@@ -246,7 +247,6 @@ async fn the_fake_accepts_an_epic_directory_and_refuses_an_epic_worktree() {
     }
 
     for kind in [
-        ContainerWorkspaceKind::Worktree,
         ContainerWorkspaceKind::Checkout,
         ContainerWorkspaceKind::Other,
     ] {
@@ -258,7 +258,7 @@ async fn the_fake_accepts_an_epic_directory_and_refuses_an_epic_worktree() {
         let error = fake
             .prepare_container(&bound)
             .await
-            .expect_err("an epic container is not a worktree");
+            .expect_err("an epic container must use an audited shape");
         assert!(
             matches!(error, RuntimeError::StaleBinding { .. }),
             "{kind:?} is stale for an epic container: {error:?}"

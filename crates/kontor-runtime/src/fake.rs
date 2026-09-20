@@ -307,6 +307,28 @@ pub struct HostedAutonomyObservation {
     pub autonomy: SeatAutonomy,
 }
 
+/// What placement a retirement actually named.
+///
+/// A retirement that passed `None` and one that passed a proved native child
+/// are indistinguishable in the call log, which records only the seat. The
+/// difference is the whole contract under test, so it is observed here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedRetirePlacementObservation {
+    /// The logical seat it addressed.
+    pub seat_binding_id: SeatBindingId,
+    /// The placement the caller supplied, exactly as supplied.
+    pub placement: Option<crate::adapter::HostedSeatRetirePlacement>,
+}
+
+/// Native container drift that preserves the logical node and its membership.
+#[derive(Debug, Clone)]
+pub enum FakeContainerDrift {
+    /// Another native workspace now occupies the node.
+    NativeId(ExternalId),
+    /// The same native workspace now works in another directory.
+    Root(WorkspaceRoot),
+}
+
 /// What the fake was asked to do, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdapterCall {
@@ -387,6 +409,20 @@ pub enum AdapterCall {
 }
 
 impl FakeState {
+    fn drift_container(&mut self, node: TopologyNodeId, drift: FakeContainerDrift) {
+        let held = self
+            .containers
+            .get_mut(&node)
+            .expect("the container exists");
+        match drift {
+            FakeContainerDrift::NativeId(native_id) => {
+                held.binding.identity.native_id = native_id.clone();
+                held.correlation.native.native_id = native_id;
+            }
+            FakeContainerDrift::Root(root) => held.binding.root = Some(root),
+        }
+    }
+
     /// Adopt the one scripted native named by an adoption-only launch.
     ///
     /// Discovery is the only runtime contact on this path. An empty, ambiguous,
@@ -728,6 +764,7 @@ struct FakeState {
     /// the container too would make "re-find it by its stored native id"
     /// untestable, and that path is the whole of the restart contract.
     containers: BTreeMap<TopologyNodeId, ContainerBindingSnapshot>,
+    container_drift_after_inspection: BTreeMap<TopologyNodeId, FakeContainerDrift>,
     container_parents: BTreeMap<TopologyNodeId, ExternalId>,
     archived_containers: BTreeSet<TopologyNodeId>,
     lose_archive_ack_once: BTreeSet<TopologyNodeId>,
@@ -760,6 +797,7 @@ struct FakeState {
     /// the fake records the autonomy a call carried, so re-resolving the plane
     /// default at inspect or retire was invisible to every test.
     hosted_autonomy: Vec<HostedAutonomyObservation>,
+    hosted_retire_placements: Vec<HostedRetirePlacementObservation>,
     /// Plane-wide default this runtime declares, as an operator may change it
     /// between one control operation and the next.
     declared_autonomy: Option<SeatAutonomy>,
@@ -1290,6 +1328,7 @@ impl ScriptedFakeRuntime {
                     .expect("valid runtime root"),
                 workspaces: BTreeMap::new(),
                 containers: BTreeMap::new(),
+                container_drift_after_inspection: BTreeMap::new(),
                 container_parents: BTreeMap::new(),
                 archived_containers: BTreeSet::new(),
                 lose_archive_ack_once: BTreeSet::new(),
@@ -1305,6 +1344,7 @@ impl ScriptedFakeRuntime {
                 consultation_permission_acks: BTreeMap::new(),
                 hosted_seats: BTreeMap::new(),
                 hosted_autonomy: Vec::new(),
+                hosted_retire_placements: Vec::new(),
                 declared_autonomy: None,
                 archived_hosted_seats: BTreeMap::new(),
                 hosted_messages: BTreeMap::new(),
@@ -1680,6 +1720,38 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.lock().generation
+    }
+
+    /// Make this runtime stop holding one node's native container.
+    ///
+    /// What a moved, destroyed or unreachable container looks like from
+    /// Kontor's side: the durable binding still names it and the runtime no
+    /// longer answers for it. The same shape `forget_seat` stages for seats,
+    /// and the only way to test an effect ordering whose whole purpose is to
+    /// refuse before writing anything.
+    pub fn forget_container(&self, topology_node_id: TopologyNodeId) {
+        let mut state = self.lock();
+        state.containers.remove(&topology_node_id);
+        state.container_titles.remove(&topology_node_id);
+        state.container_kinds.remove(&topology_node_id);
+        state.container_parents.remove(&topology_node_id);
+    }
+
+    /// Move one native container without removing its node or memberships.
+    pub fn drift_container(&self, node: TopologyNodeId, drift: FakeContainerDrift) {
+        self.lock().drift_container(node, drift);
+    }
+
+    /// Drift immediately after the next valid inspection returns its old facts.
+    /// This stages a change between a planning read and a pre-effect reproof.
+    pub fn drift_container_after_next_inspection(
+        &self,
+        node: TopologyNodeId,
+        drift: FakeContainerDrift,
+    ) {
+        self.lock()
+            .container_drift_after_inspection
+            .insert(node, drift);
     }
 
     /// Plant the native workspace shape this runtime holds for one container.
@@ -2087,6 +2159,23 @@ impl ScriptedFakeRuntime {
                 observed.operation == operation && observed.seat_binding_id == seat_binding_id
             })
             .map(|observed| observed.autonomy)
+    }
+
+    /// The placement the most recent retirement of this seat actually named.
+    ///
+    /// `Some(None)` is a retirement that named no placement at all, which is a
+    /// different answer from never having retired.
+    #[must_use]
+    pub fn last_hosted_retire_placement(
+        &self,
+        seat_binding_id: SeatBindingId,
+    ) -> Option<Option<crate::adapter::HostedSeatRetirePlacement>> {
+        self.lock()
+            .hosted_retire_placements
+            .iter()
+            .rev()
+            .find(|observed| observed.seat_binding_id == seat_binding_id)
+            .map(|observed| observed.placement.clone())
     }
 
     /// Move the plane-wide default, as an operator editing `runtimes.json`
@@ -3005,7 +3094,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         request.validate()?;
         let mut state = self.lock();
         state.require_plane()?;
-        let snapshot = state
+        let mut snapshot = state
             .containers
             .get(&request.binding.topology_node_id)
             .cloned()
@@ -3027,6 +3116,19 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 rule: "the inspected container does not have its exact persisted parent",
             });
         }
+        if request.binding.projection == ContainerProjection::NativeChild {
+            let task_container = request.scope.task.is_some();
+            let kind = state
+                .container_kinds
+                .get(&request.binding.topology_node_id)
+                .copied()
+                .ok_or(RuntimeError::CorrelationFailed)?;
+            if !kind.is_applicable_to(task_container) {
+                return Err(RuntimeError::StaleBinding {
+                    rule: ContainerWorkspaceKind::refusal(task_container),
+                });
+            }
+        }
         let visible_title = state
             .container_titles
             .get(&request.binding.topology_node_id)
@@ -3035,6 +3137,19 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state.calls.push(AdapterCall::InspectContainer(
             request.binding.topology_node_id,
         ));
+        // A fresh inspection replaces the runtime's proof, as the live adapter
+        // does. Callers must forward this proof instead of the preparation's.
+        snapshot.correlation.established_at = request.requested_at;
+        state
+            .containers
+            .insert(request.binding.topology_node_id, snapshot.clone());
+
+        if let Some(drift) = state
+            .container_drift_after_inspection
+            .remove(&request.binding.topology_node_id)
+        {
+            state.drift_container(request.binding.topology_node_id, drift);
+        }
         Ok(ContainerInspection {
             binding: request.binding.clone(),
             observed_kind: match request.binding.projection {
@@ -3441,6 +3556,15 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         let mut state = self.lock();
         state.require_plane()?;
+        if state
+            .containers
+            .get(&request.container.binding.topology_node_id)
+            != Some(&request.container)
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the hosted launch must use the latest inspected container proof",
+            });
+        }
         preflight(
             &state.capabilities,
             &OperationContext {
@@ -3836,6 +3960,12 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             seat_binding_id: request.seat_binding_id,
             autonomy: request.autonomy,
         });
+        state
+            .hosted_retire_placements
+            .push(HostedRetirePlacementObservation {
+                seat_binding_id: request.seat_binding_id,
+                placement: request.placement.clone(),
+            });
         if let Some(held) = state.hosted_seats.get(&request.seat_binding_id) {
             if held.identity != request.identity {
                 return Err(RuntimeError::CorrelationFailed);

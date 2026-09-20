@@ -121,7 +121,12 @@ pub const PASEO_PERMISSION_WORKSPACE_MANAGE: &str = "workspace.manage";
 pub const MAX_OUTPUT_BYTES: usize = 1 << 20;
 
 /// The most bytes one daemon frame may carry.
-pub const MAX_FRAME_BYTES: usize = 1 << 20;
+///
+/// Canonical history carries complete tool results. One evidenced tool event
+/// alone exceeded 1 MiB, so shrinking the page could never make the previous
+/// CLI-sized bound work. Keep a finite 8 MiB wire bound, independently of the
+/// CLI stdout and outbound-message bounds.
+pub const MAX_FRAME_BYTES: usize = 8 << 20;
 
 /// The largest message body this adapter will hand to Paseo.
 pub const MAX_MESSAGE_BYTES: u64 = 64 * 1024;

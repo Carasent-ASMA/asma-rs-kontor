@@ -8400,7 +8400,18 @@ impl Services {
                     "the hosted-seat runtime is not configured in this daemon",
                 )
             })?;
-        let cwd = self.runtime_root(project_id, Some(epic_id))?;
+        // A claimant being in the named workspace does not prove that the
+        // workspace still satisfies its durable ECP binding. Preserve both
+        // independent read-only fences in preview and in apply's fresh plan.
+        let proved_container = self
+            .bound_container_snapshot(project_id, &node, adapter.as_ref())
+            .await?;
+        let cwd = proved_container.binding.root.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the proved Core Team container has no canonical directory",
+            )
+        })?;
         let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
         let display_name = self.seat_name(
             project_id,
@@ -8413,7 +8424,7 @@ impl Services {
             seat_binding_id: binding.id,
             role_slot_id: binding.role_slot_id.clone(),
             display_name,
-            container_native_id: container.identity.native_id,
+            container_native_id: proved_container.binding.identity.native_id.clone(),
             cwd,
             scope,
             claimant_native_id: request.claimant_native_id.clone(),
@@ -8455,6 +8466,15 @@ impl Services {
             "epic": epic_id.to_string(),
             "epic_revision": epic.revision.get(),
             "seat_binding": binding.id.to_string(),
+            "container": {
+                "binding_id": proved_container.binding.id.to_string(),
+                "topology_node_id": proved_container.binding.topology_node_id.to_string(),
+                "runtime_kind": proved_container.binding.identity.runtime_kind.as_str(),
+                "host": proved_container.binding.identity.host.as_str(),
+                "generation": proved_container.binding.identity.generation,
+                "native_id": proved_container.binding.identity.native_id.as_str(),
+                "canonical_cwd": proved_container.binding.root.as_ref().map(WorkspaceRoot::as_str),
+            },
             "claimant": {
                 "runtime_kind": runtime_preview.identity.runtime_kind.as_str(),
                 "host": runtime_preview.identity.host.as_str(),
@@ -20316,6 +20336,18 @@ impl ApplicationOperations for Services {
         // untouched and the already bound TSW keeps its native identity.
         if replayed && let Some(task_id) = scope.task_id {
             let leaf = self.ensure_task_node(project_id, task_id)?;
+            // A replay repairs seats, and a seat repair is a write, so it earns
+            // the same prerequisite the first pass does: the container those
+            // seats hang off is proved by an exact-id readback before anything
+            // is opened or retired against it.
+            //
+            // Idempotency still suppresses every native *mutation* — nothing
+            // below creates, renames, archives, launches or binds. What it does
+            // not suppress is the proof itself, because repairing logical state
+            // against a container the runtime no longer holds is the outcome
+            // this ordering exists to make unreachable.
+            self.prove_existing_bound_container(project_id, &leaf)
+                .await?;
             self.retire_unrouted_task_persistent_seats(project_id, task_id, leaf.id)?;
             // A historical materialization receipt is exactly the shape the
             // logical gap lives in: the ticket was materialized before the slot
@@ -23327,6 +23359,27 @@ impl ApplicationOperations for Services {
                 &SemanticTopologyTargetDto::EpicControl { epic_id },
             )?,
         )?;
+        // The epic's ECP is proved before a single seat exists.
+        //
+        // The seats below are durable topology. Materializing them against a
+        // control container the runtime has moved, re-rooted or stopped holding
+        // writes logical bindings for a place that is no longer there, and the
+        // native half that follows then fails with the seats already recorded —
+        // a state an operator cannot undo by retrying.
+        //
+        // Deliberately outside the `routes` guard. Whether this materialization
+        // also routes native seats is a separate question from whether the
+        // container its seats hang off is still there, and the logical-only
+        // request is exactly the one that used to write seats having proved
+        // nothing at all.
+        //
+        // A control node with no binding yet answers `None`: there is nothing
+        // to prove, and a first materialization keeps working without a
+        // container it has not been given.
+        let proved_control = self
+            .prove_existing_bound_container(project_id, &control)
+            .await?;
+
         // Missing seats only. Every seat already there keeps its identity,
         // because a seat binding is what a running agent is attached to. This
         // also runs on replay so an old receipt whose process died between the
@@ -23345,6 +23398,18 @@ impl ApplicationOperations for Services {
             let container = self
                 .ensure_container(project_id, &control, &cwd, adapter.as_ref())
                 .await?;
+            // Preparation must not have moved the container the seats above
+            // were materialized against. On the supported path it cannot, which
+            // is why disagreement is a refusal rather than something to
+            // reconcile after the fact.
+            if let Some(proved) = proved_control.as_ref()
+                && proved.binding.identity != container.binding.identity
+            {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Core Team control container changed identity during materialization",
+                ));
+            }
             let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
             let capabilities = adapter
                 .discover_capabilities()
@@ -23765,9 +23830,51 @@ impl ApplicationOperations for Services {
             // waiting on a permission request, addressed on another runtime or
             // generation, or in a disposition this build has not audited still
             // refuses with no effect, and every fence above is unchanged.
+            // Re-proved here, after the preview validated and before the
+            // first irreversible effect. The plan proved it too, but that read
+            // is older than this one by a re-plan, and a retirement cannot be
+            // taken back. Drift refuses with the predecessor still live.
+            let control_node = state
+                .with_store(|store| {
+                    store.get_topology_node(project_id, plan.binding.topology_node_id)
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the Core Team control-plane node no longer exists",
+                    )
+                })?;
+            // The readback is the fence. `inspect_bound_container` refuses with
+            // WorkspaceMismatch or StaleBinding when the runtime no longer holds
+            // the exact native the binding records, and that refusal lands here
+            // before the retirement below — predecessor, session and
+            // SeatBinding all still live, no successor, no receipt, no effect.
+            let proved_placement = self
+                .prove_existing_bound_container(project_id, &control_node)
+                .await?;
+            // Never `None` and never guessed: the retirement names the exact
+            // native child this proof just read back, or it does not happen.
+            let proved = proved_placement.as_ref().map(|proved| &proved.binding);
+            let proved = proved.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the hosted Core Team seat has no proved native child to retire",
+                )
+            })?;
+            let placement = kontor_runtime::adapter::HostedSeatRetirePlacement {
+                workspace_native_id: proved.identity.native_id.clone(),
+                canonical_cwd: proved.root.clone().ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "the proved native child records no canonical directory",
+                    )
+                })?,
+                provider_session_id: plan.predecessor.provider_session_id.clone(),
+            };
             let (retired_at, retirement_reason) = match adapter
                 .retire_hosted_seat(&HostedSeatRetireRequest {
-                    placement: None,
+                    placement: Some(placement),
                     seat_binding_id: plan.binding.id,
                     identity: plan.predecessor.native_identity.clone(),
                     model_rung: plan.predecessor.model_rung.clone(),
@@ -29219,16 +29326,15 @@ impl ApplicationOperations for Services {
                 })?;
             let scope =
                 self.execution_scope(project_id, epic_id, Some(task.id), adapter.as_ref())?;
-            receipt_id = self.record(
-                key,
-                project_id,
-                CommandKind::StartScheduledWork,
-                target,
-                epic.revision,
-                &intent,
-            )?;
-            // Re-attest the bound container through the same preparation path
-            // as seating; the runtime owns the snapshot used by launch.
+            // The placement is proved *before* the receipt exists.
+            //
+            // Recording first and proving afterwards leaves a durable receipt
+            // behind for a fill that never happened: the command is on the
+            // ledger, its idempotency key is spent, and the refusal that
+            // follows can take back neither. Every effect below — the AgentRun,
+            // its launch intent, the launch, the dispatch and the runtime
+            // binding — hangs off this proof, so the proof comes first and a
+            // mismatch costs nothing at all.
             let workspace = self
                 .ensure_container(project_id, &placement, &task_root, adapter.as_ref())
                 .await?;
@@ -29238,6 +29344,14 @@ impl ApplicationOperations for Services {
                     "container preparation changed the existing TSW native identity",
                 ));
             }
+            receipt_id = self.record(
+                key,
+                project_id,
+                CommandKind::StartScheduledWork,
+                target,
+                epic.revision,
+                &intent,
+            )?;
             let seating = Seating {
                 project_id,
                 admitted: &admitted,
@@ -38070,6 +38184,48 @@ impl Services {
         Ok(inspection)
     }
 
+    /// Freshly prove the native container a node already holds, if it holds one.
+    ///
+    /// An exact-id readback against the runtime that recorded the binding, and
+    /// nothing else: it creates nothing, renames nothing, archives nothing and
+    /// launches nothing. That is what makes it usable as a prerequisite — a
+    /// caller that refuses on the answer has spent no seat, no receipt, no
+    /// history row and no native effect.
+    ///
+    /// A node with no persisted binding yet answers `None` rather than
+    /// refusing. There is nothing to prove and nothing for a later write to
+    /// hang off, and refusing would turn a first materialization into a
+    /// requirement for a container that does not exist yet.
+    ///
+    /// The runtime is resolved from the binding's own recorded kind rather than
+    /// from configuration, because the question being asked is whether *the
+    /// runtime holding this container* still agrees about it.
+    async fn prove_existing_bound_container(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+    ) -> Result<Option<ContainerBindingSnapshot>, ApiError> {
+        let state = self.state()?;
+        let Some(binding) = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(None);
+        };
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime holding this node's native container is not configured",
+                )
+            })?;
+        self.bound_container_snapshot(project_id, node, adapter.as_ref())
+            .await
+            .map(Some)
+    }
+
     async fn bound_container_snapshot(
         &self,
         project_id: ProjectId,
@@ -38318,8 +38474,15 @@ impl Services {
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
             self.validate_container_inspection(&request, &outcome.snapshot, &inspection)?;
             self.bind_container(project_id, level.id, &inspection)?;
-            parent = Some(outcome.snapshot.binding.clone());
-            prepared = Some(outcome.snapshot);
+            parent = Some(inspection.binding.clone());
+            // Inspection refreshes the adapter's correlation ledger. The
+            // launch must carry that same proof, not the superseded prepare
+            // snapshot, even when the native container has not moved.
+            prepared = Some(ContainerBindingSnapshot {
+                binding: inspection.binding,
+                capabilities: outcome.snapshot.capabilities,
+                correlation: inspection.correlation,
+            });
         }
         prepared.ok_or_else(|| {
             self.deny(

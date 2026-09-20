@@ -6505,7 +6505,7 @@ async fn an_unplaceable_dynamic_task_is_refused_before_a_team_run_is_committed()
             .fake
             .calls()
             .iter()
-            .all(|call| !matches!(call, kontor_runtime::fake::AdapterCall::PrepareContainer(_))),
+            .all(|call| !matches!(call, AdapterCall::PrepareContainer(_))),
         "a logical placement refusal reaches no native container operation"
     );
 }
@@ -6633,14 +6633,13 @@ async fn scheduler_planning_only_inspects_exact_materialized_topology_and_preser
     assert_eq!(
         planning_calls
             .iter()
-            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::InspectContainer(_)))
+            .filter(|call| matches!(call, AdapterCall::InspectContainer(_)))
             .count(),
         3
     );
     assert!(planning_calls.iter().all(|call| matches!(
         call,
-        kontor_runtime::fake::AdapterCall::DiscoverCapabilities
-            | kontor_runtime::fake::AdapterCall::InspectContainer(_)
+        AdapterCall::DiscoverCapabilities | AdapterCall::InspectContainer(_)
     )));
 
     let start_key = "placement-attested-start";
@@ -21392,13 +21391,13 @@ async fn explicit_materialization_places_an_unconfigured_project_before_schedule
     assert!(
         !calls
             .iter()
-            .any(|call| matches!(call, kontor_runtime::fake::AdapterCall::PrepareContainer(_))),
+            .any(|call| matches!(call, AdapterCall::PrepareContainer(_))),
         "scheduler launch must not materialize a container: {calls:?}"
     );
     assert!(
         !calls
             .iter()
-            .any(|call| matches!(call, kontor_runtime::fake::AdapterCall::PrepareWorkspace(_))),
+            .any(|call| matches!(call, AdapterCall::PrepareWorkspace(_))),
         "no accepted seat falls back to a TeamRun-keyed workspace"
     );
 }
@@ -21582,7 +21581,7 @@ async fn a_task_placed_on_a_node_that_hosts_no_session_is_refused_before_anythin
             .fake
             .calls()
             .iter()
-            .any(|call| matches!(call, kontor_runtime::fake::AdapterCall::PrepareContainer(_))),
+            .any(|call| matches!(call, AdapterCall::PrepareContainer(_))),
         "a blocked placement reaches no native surface"
     );
 }
@@ -27188,7 +27187,7 @@ async fn settling_a_bounded_turn_reads_only_the_claimed_current_window() {
     assert_eq!(
         calls[calls_before..]
             .iter()
-            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::History(_)))
+            .filter(|call| matches!(call, AdapterCall::History(_)))
             .count(),
         2,
         "settlement reads the bounded window and then asks once whether anything \
@@ -27956,13 +27955,7 @@ async fn observing_a_long_never_read_transcript_costs_the_window_not_the_session
     let recent = world.fake.calls();
     let reads = recent[before..]
         .iter()
-        .filter(|call| {
-            matches!(
-                call,
-                kontor_runtime::fake::AdapterCall::TailWindow(_)
-                    | kontor_runtime::fake::AdapterCall::History(_)
-            )
-        })
+        .filter(|call| matches!(call, AdapterCall::TailWindow(_) | AdapterCall::History(_)))
         .count();
     assert!(
         reads <= 2,
@@ -28207,13 +28200,7 @@ async fn observing_refuses_a_duplicate_whose_delivery_is_outside_the_window() {
         .fake
         .calls()
         .iter()
-        .filter(|call| {
-            matches!(
-                call,
-                kontor_runtime::fake::AdapterCall::TailWindow(_)
-                    | kontor_runtime::fake::AdapterCall::History(_)
-            )
-        })
+        .filter(|call| matches!(call, AdapterCall::TailWindow(_) | AdapterCall::History(_)))
         .count();
     assert!(
         reads <= 4,
@@ -28616,12 +28603,7 @@ async fn observing_a_never_read_session_recovers_its_epoch_once() {
     let recent = world.fake.calls();
     let refreshes = recent[before..]
         .iter()
-        .filter(|call| {
-            matches!(
-                call,
-                kontor_runtime::fake::AdapterCall::RefreshTimelineEpoch(_)
-            )
-        })
+        .filter(|call| matches!(call, AdapterCall::RefreshTimelineEpoch(_)))
         .count();
     // Once for the observation, not once per page. A refresh on every refused
     // read would put the session's length back into the cost of observing it.
@@ -29185,7 +29167,7 @@ async fn an_early_proof_in_a_long_session_settles_without_reading_the_tail() {
     // trailing event; this one is bounded by the window and the anchored read.
     let reads = world.fake.calls()[calls_before..]
         .iter()
-        .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::History(_)))
+        .filter(|call| matches!(call, AdapterCall::History(_)))
         .count();
     // The window itself is two events — one page. Everything else this read
     // spends is the terminality question, and the claimed message's distance
@@ -29277,12 +29259,7 @@ async fn a_settlement_answers_a_timeline_refetch_signal_once_and_settles() {
     let recent = world.fake.calls();
     let refreshes = recent[calls_before..]
         .iter()
-        .filter(|call| {
-            matches!(
-                call,
-                kontor_runtime::fake::AdapterCall::RefreshTimelineEpoch(_)
-            )
-        })
+        .filter(|call| matches!(call, AdapterCall::RefreshTimelineEpoch(_)))
         .count();
     // Once for the scan, not once per refused page. A recovery that fired on
     // every page would put the session's length back into the cost of a proof,
@@ -29415,12 +29392,7 @@ async fn a_settlement_naming_an_unmapped_epoch_is_told_to_observe_the_turn_again
     let recent = world.fake.calls();
     let refreshes = recent[calls_before..]
         .iter()
-        .filter(|call| {
-            matches!(
-                call,
-                kontor_runtime::fake::AdapterCall::RefreshTimelineEpoch(_)
-            )
-        })
+        .filter(|call| matches!(call, AdapterCall::RefreshTimelineEpoch(_)))
         .count();
     assert_eq!(
         refreshes, 1,
@@ -29846,7 +29818,7 @@ async fn a_settled_turn_derives_its_follow_up_at_most_once() {
             .fake
             .calls()
             .iter()
-            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::Send(..)))
+            .filter(|call| matches!(call, AdapterCall::Send(..)))
             .count()
     };
     assert_eq!(dispatches(&world).len(), 1, "one follow-up was derived");
@@ -29860,7 +29832,7 @@ async fn a_settled_turn_derives_its_follow_up_at_most_once() {
             .fake
             .calls()
             .iter()
-            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::Resume(_)))
+            .filter(|call| matches!(call, AdapterCall::Resume(_)))
             .count(),
         1,
         "the deferred turn resumes its persistent seat before delivery"
@@ -29923,7 +29895,7 @@ async fn a_settled_turn_derives_its_follow_up_at_most_once() {
     assert_eq!(
         fake.calls()
             .iter()
-            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::Send(..)))
+            .filter(|call| matches!(call, AdapterCall::Send(..)))
             .count(),
         sends_after_first,
         "and a restart produces no second effect either"
@@ -38895,7 +38867,7 @@ async fn ticket_materialization_retires_an_unrouted_legacy_tpm_without_creating_
             "the legacy row starts with no topology-message route"
         );
     });
-    let calls_before = world.fake.calls().len();
+    let native_mutations_before = native_mutations(world).len();
 
     let repaired = Call::post(&uri, &request)
         .signed_as(world, "operator")
@@ -38921,9 +38893,9 @@ async fn ticket_materialization_retires_an_unrouted_legacy_tpm_without_creating_
     assert_eq!(preserved.id, legacy_binding_id);
     assert_eq!(preserved.lifecycle.as_str(), "retired");
     assert_eq!(
-        world.fake.calls().len(),
-        calls_before,
-        "replay has no native effect"
+        native_mutations(world).len(),
+        native_mutations_before,
+        "replay has no native effect beyond re-proving the bound container"
     );
 
     let message = Call::post(
@@ -38939,8 +38911,8 @@ async fn ticket_materialization_retires_an_unrouted_legacy_tpm_without_creating_
     .await;
     assert_eq!(message.status, 404, "{}", message.body);
     assert_eq!(
-        world.fake.calls().len(),
-        calls_before,
+        native_mutations(world).len(),
+        native_mutations_before,
         "messaging an inactive logical row cannot create a native identity"
     );
 }
@@ -42231,6 +42203,30 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
 const SEEDED_CATALOG: &str = "01936f5a-1000-7000-8000-000000000002";
 
 /// One `CoreTeamSeatSelectionDto`.
+/// Every adapter call that changes something native.
+///
+/// A replay is allowed to *prove* and nothing more: an exact-id container
+/// inspection, and the capability read that inspection needs. Both are
+/// readbacks — they create, rename, archive, launch and bind nothing — so
+/// counting them as "a native effect" would make the proof indistinguishable
+/// from the mutations the proof exists to prevent.
+///
+/// Anything else the adapter was asked to do is a native effect and must not
+/// appear on a replay.
+fn native_mutations(world: &World) -> Vec<AdapterCall> {
+    world
+        .fake
+        .calls()
+        .into_iter()
+        .filter(|call| {
+            !matches!(
+                call,
+                AdapterCall::InspectContainer(_) | AdapterCall::DiscoverCapabilities
+            )
+        })
+        .collect()
+}
+
 fn seat(role_code: &str, presence: &str, ad_hoc_allowed: bool) -> serde_json::Value {
     serde_json::json!({
         "role": {
@@ -51543,10 +51539,23 @@ async fn same_key_materialization_repairs_the_calibrated_legacy_four_and_upgrade
         first_receipt,
         "same-key repair reuses the historical receipt"
     );
+    // The replay re-proves the bound container by exact id and mutates
+    // nothing. Both halves are asserted: a replay that skipped the proof would
+    // repair logical state against a container nobody checked, and a replay
+    // that mutated would break idempotency.
     assert!(
-        world.fake.calls().is_empty(),
-        "logical repair contacts no runtime: {:?}",
+        world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::InspectContainer(_))),
+        "logical repair re-proves the bound container by exact id: {:?}",
         world.fake.calls()
+    );
+    assert!(
+        native_mutations(&world).is_empty(),
+        "logical repair performs no native mutation: {:?}",
+        native_mutations(&world)
     );
 
     let (seats_after_first, runs_after_first) = world.daemon.state().with_store(|store| {
@@ -51609,8 +51618,9 @@ async fn same_key_materialization_repairs_the_calibrated_legacy_four_and_upgrade
         "a second replay preserves every deterministic SeatBinding identity"
     );
     assert!(
-        world.fake.calls().is_empty(),
-        "a second replay is also inert"
+        native_mutations(&world).is_empty(),
+        "a second replay mutates nothing natively: {:?}",
+        native_mutations(&world)
     );
 
     let target = kontor_profiles::bundled_operational_domain()
@@ -57608,4 +57618,959 @@ async fn a_hosted_seat_whose_placement_cannot_be_reconfirmed_refuses() {
         shape_before,
         "an unconfirmable placement moved durable seat state"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8234 position 3b.1A — the bound-container proof precedes every effect
+// ---------------------------------------------------------------------------
+
+/// A project, epic and task with their topology materialized and both the ECP
+/// and the ticket container bound.
+///
+/// The real flow, driven through the real routes: nothing here writes a binding
+/// into the store behind the operation's back, so the container the proof
+/// interrogates is the one the product actually bound.
+async fn materialized_ticket_topology(slug: &str) -> (World, String, String, String, u64) {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let worktree = world.directory.path().join(slug);
+    std::fs::create_dir_all(worktree.join(".git")).expect("the worktree exists");
+
+    let created = ensure_project(&world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let project_revision = created.json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    let category = first_category(&world).await;
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Implement",
+            "harness": "fake.runtime",
+            "credential_alias": "implement",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key(format!("{slug}-account"))
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &serde_json::json!({
+            "expected_revision": project_revision,
+            "name": "Bound container effect order",
+            "work_profile_category": category,
+            "runtime_family": "fake.runtime",
+            "account_profile_id": account_id,
+            "epic_backlog_code": "OP34",
+            "execution_scope": {
+                "external_epic_key": "ASMA-8234",
+                "short_title": "Bound container effect order",
+                "kontor_backlog_code": "OP-34",
+                "ai_short_name": "Effect Order"
+            },
+            "tasks": [{
+                "title": "OP-34",
+                "short_code": "OP-34",
+                "ticket_links": [{
+                    "connector": "jira",
+                    "external_issue_key": "ASMA-8235"
+                }],
+                "worktree": worktree.to_string_lossy()
+            }]
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key(format!("{slug}-apply"))
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+    confirm_test_epic_identity_as(&world, &project, &epic, Some("OP34"), "ASMA-8234");
+
+    let control = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": epic},
+            "expected_revision": project_revision
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key(format!("{slug}-control"))
+    .send(&world)
+    .await;
+    assert_eq!(control.status, 200, "{}", control.body);
+
+    let ticket = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task},
+            "expected_revision": project_revision
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key(format!("{slug}-ticket"))
+    .send(&world)
+    .await;
+    assert_eq!(ticket.status, 200, "{}", ticket.body);
+
+    (world, project, epic, task, project_revision)
+}
+
+/// Operation 3 (ASMA-8188): a *replayed* materialization re-proves the bound
+/// container by exact id before it repairs any logical state.
+///
+/// This is the leg that previously proved nothing. A replay short-circuits the
+/// native half by design, and then repairs seats — so before this ordering it
+/// would repair logical state against a container the runtime had stopped
+/// holding, with no readback anywhere in the path to notice.
+///
+/// The proof is read-only, so the assertions are in two halves: the replay must
+/// refuse, and it must have mutated nothing native on the way to refusing.
+#[tokio::test]
+async fn a_replayed_materialization_re_proves_the_bound_container_read_only() {
+    let (world, project, _epic, task, project_revision) =
+        materialized_ticket_topology("asma-8234-op3").await;
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let key = "asma-8234-op3-ticket";
+
+    let node_id = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task_topology_node(project_id, task_id))
+        .expect("the node reads")
+        .expect("the ticket was placed on a node")
+        .id;
+    let seats_before = seats_on(&world, project_id, node_id);
+
+    // The runtime stops holding the ticket's container. Kontor's durable
+    // binding still names it: exactly the state this ordering exists for.
+    world.fake.forget_container(node_id);
+    let mutations_before = native_mutations(&world).len();
+
+    // The same key: this is a replay, and the replay path is the one under
+    // test. It must re-prove before repairing anything.
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task},
+            "expected_revision": project_revision
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key(key)
+    .send(&world)
+    .await;
+
+    assert!(
+        !replayed.status.is_success(),
+        "a replay whose container the runtime cannot show must refuse: {} {}",
+        replayed.status,
+        replayed.body
+    );
+    assert!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::InspectContainer(node) if *node == node_id)),
+        "the replay re-proved the exact bound container: {:?}",
+        world.fake.calls()
+    );
+    assert_eq!(
+        native_mutations(&world).len(),
+        mutations_before,
+        "a refusing replay mutates nothing natively: {:?}",
+        native_mutations(&world)
+    );
+    assert_eq!(
+        seats_on(&world, project_id, node_id),
+        seats_before,
+        "a refusing replay repairs no logical seat"
+    );
+}
+
+/// Every seat this node holds, terminal ones included.
+fn seats_on(world: &World, project_id: ProjectId, node_id: TopologyNodeId) -> usize {
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.list_seat_bindings(project_id, node_id))
+        .expect("the seats read")
+        .len()
+}
+
+/// Operation 5 (ASMA-8049): a seat fill proves the bound container before it
+/// records its receipt or enters `fill_slot`.
+///
+/// Proving late is not a cosmetic ordering problem. The receipt is durable and
+/// its idempotency key is spent, so a fill that recorded first and refused
+/// second would leave the operator holding a key they cannot reuse for the
+/// intent that never happened — and every effect that hangs off the fill
+/// (AgentRun, launch intent, launch, dispatch, runtime binding) is decided
+/// after that point.
+#[tokio::test]
+async fn a_seat_fill_proves_the_bound_container_before_recording_its_receipt() {
+    let fixture = seat_fill_world(true).await;
+    let revision = fixture.task_revision();
+    let runs_before = fixture.members().len();
+    let key = "asma-8234-op5-after-loss";
+
+    // The runtime stops holding the ticket's container. Kontor's durable
+    // binding still names it: exactly the state this ordering exists for.
+    fixture.world.fake.forget_container(fixture.node);
+    // `PrepareContainer` on a bound request *is* the proof — a reconcile by
+    // exact id that creates nothing — so the effect to count here is the one
+    // the fill exists to produce and must not have produced.
+    let launches_before = launches(&fixture.world);
+
+    let refused = fixture.fill("audit", revision, key).await;
+
+    assert!(
+        !refused.status.is_success(),
+        "a container the runtime cannot show must refuse the fill: {} {}",
+        refused.status,
+        refused.body
+    );
+    assert!(
+        receipt_for(&fixture.world, key).is_none(),
+        "a refused fill must not spend the caller's idempotency key"
+    );
+    assert_eq!(
+        fixture.members().len(),
+        runs_before,
+        "a refused fill creates no AgentRun"
+    );
+    assert_eq!(
+        fixture.task_revision(),
+        revision,
+        "a refused fill leaves the task revision untouched"
+    );
+    assert_eq!(
+        launches(&fixture.world),
+        launches_before,
+        "a refused fill launches nothing"
+    );
+}
+
+/// How many native sessions this runtime has been asked to launch.
+fn launches(world: &World) -> usize {
+    world
+        .fake
+        .calls()
+        .into_iter()
+        .filter(|call| matches!(call, AdapterCall::Launch(_)))
+        .count()
+}
+
+/// Operation 3, first-pass leg: a fresh materialization refuses before it
+/// records a receipt when the node's bound container is gone.
+///
+/// Deliberately paired with the replay test above, because the two legs are
+/// proved by different code. This one needs no new ordering: `ensure_container`
+/// already reconciles the bound id through the deployed shared contract, and it
+/// already runs before the receipt at the end of the operation. The test exists
+/// so that ordering is *pinned* — a later change that moved the receipt earlier
+/// would spend the caller's key on a command that then refused.
+#[tokio::test]
+async fn a_first_pass_materialization_refuses_before_recording_a_receipt() {
+    let (world, project, _epic, task, project_revision) =
+        materialized_ticket_topology("asma-8234-op3-first").await;
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+
+    let node_id = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task_topology_node(project_id, task_id))
+        .expect("the node reads")
+        .expect("the ticket was placed on a node")
+        .id;
+    world.fake.forget_container(node_id);
+    let key = "asma-8234-op3-first-after-loss";
+    let launches_before = launches(&world);
+
+    let refused = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task},
+            "expected_revision": project_revision
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key(key)
+    .send(&world)
+    .await;
+
+    assert!(
+        !refused.status.is_success(),
+        "a container the runtime cannot show must refuse: {} {}",
+        refused.status,
+        refused.body
+    );
+    assert!(
+        receipt_for(&world, key).is_none(),
+        "a refused materialization must not spend the caller's idempotency key"
+    );
+    assert_eq!(
+        launches(&world),
+        launches_before,
+        "a refused materialization launches nothing"
+    );
+}
+
+/// An epic whose frozen Core Team roster has seats that genuinely do not exist
+/// yet, and whose ECP is bound.
+///
+/// The shape matters, and a weaker one would prove nothing. A *promoted* epic
+/// is no good: promotion materializes the frozen roster on its way through, so
+/// `core-team/seats:materialize` finds nothing missing and creates nothing —
+/// which makes every no-effect assertion true for the wrong reason.
+///
+/// An applied epic freezes its roster the same way but materializes no roster
+/// seats: `topology:materialize` opens the single control slot and stops. The
+/// roster's own seats are therefore absent, and the operation under test has
+/// real work to do.
+async fn epic_with_missing_roster_seats(slug: &str) -> (World, String, String, u64) {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+
+    let created = ensure_project_raw(&world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    assert_eq!(created.status, 200, "{}", created.body);
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let project_revision = created.json()["revision"].as_u64().expect("a revision");
+    let category = first_category(&world).await;
+
+    // A roster wider than the mandatory pair. Every epic is born with `LSA` and
+    // `TPM` and those two are opened automatically, so a default roster leaves
+    // nothing missing; publishing an `SA` beside them is what gives the
+    // operation under test a seat it actually has to create.
+    adopt_session_base(&world, &project, project_revision).await;
+    publish_core_team(
+        &world,
+        &project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    // Both writes above move the project, so the revision the epic presents is
+    // re-read rather than assumed.
+    let read = Call::get(format!("/v1/projects/{project}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    let project_revision = read.json()["revision"].as_u64().expect("a revision");
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &epic_body(
+            project_revision,
+            "Core Team seat repair",
+            &category,
+            serde_json::json!([{"title": "Repair the missing roster seats"}]),
+        ),
+    )
+    .signed_as(&world, "admin")
+    .with_key(format!("{slug}-epic"))
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    confirm_test_epic_identity(&world, &project, &epic);
+
+    // Binds the ECP and opens the control slot — and nothing from the roster.
+    let control = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": epic},
+            "expected_revision": project_revision,
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key(format!("{slug}-control"))
+    .send(&world)
+    .await;
+    assert_eq!(control.status, 200, "{}", control.body);
+
+    // The legacy hole, made the way a realm actually makes one: a roster seat is
+    // retired through the supported route, so the frozen roster still declares
+    // it while no live binding holds it. That is the only state in which this
+    // operation has work to do *and* an ECP to prove — materializing the
+    // topology opens the whole roster, so an epic that has never been
+    // materialized has no bound container either.
+    let sa = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            let domain = kontor_profiles::bundled_operational_domain().expect("the domain");
+            let control = store
+                .list_topology_nodes(project_id_of(&project), Some(epic_id_of(&epic)))
+                .expect("the nodes read")
+                .into_iter()
+                .find(|node| node.kind == domain.delivery.control_kind)
+                .expect("a control plane");
+            store
+                .list_seat_bindings(project_id_of(&project), control.id)
+                .expect("the seats read")
+                .into_iter()
+                .find(|binding| binding.role.role_code.as_str() == "SA")
+                .expect("the published SA seat was materialized")
+        })
+        .id;
+    let retired = Call::post(
+        format!("/v1/projects/{project}/seat-bindings/{sa}/retire"),
+        &serde_json::json!({"expected_revision": 1, "reason": "legacy roster hole"}),
+    )
+    .signed_as(&world, "admin")
+    .with_key(format!("{slug}-retire-sa"))
+    .send(&world)
+    .await;
+    assert_eq!(retired.status, 200, "{}", retired.body);
+
+    (world, project, epic, project_revision)
+}
+
+fn project_id_of(project: &str) -> ProjectId {
+    ProjectId::parse(project).expect("a project id")
+}
+
+fn epic_id_of(epic: &str) -> MiniProjectId {
+    MiniProjectId::parse(epic).expect("an epic id")
+}
+
+/// Operation 1 (ASMA-7869): a Core Team materialization proves the epic's bound
+/// ECP before it writes a single logical SeatBinding.
+///
+/// Both halves are measured in one test on purpose. The positive control
+/// establishes that this subject genuinely creates missing seats; the negative
+/// establishes that the refusing one created none of them. Without the control
+/// the no-effect assertion would hold just as well against an operation that
+/// never had anything to write — which is exactly the trap a promoted epic sets.
+#[tokio::test]
+async fn core_team_materialization_proves_the_bound_ecp_before_writing_seats() {
+    // Positive control.
+    let (world, project, epic, _revision) =
+        epic_with_missing_roster_seats("asma-8234-op1-ok").await;
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let control_node = epic_control_node(&world, project_id, epic_id);
+    let before_ok = seats_on(&world, project_id, control_node.id);
+    let launches_ok_before = launches(&world);
+
+    // Deliberately no `routes`. The proof used to live inside the non-empty
+    // routes guard, so the logical-only request — this one — was the shape that
+    // wrote seats having proved nothing. It is therefore the shape the route
+    // guard has to be checked on.
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "admin")
+    .with_key("asma-8234-op1-ok-materialize")
+    .send(&world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let after_ok = seats_on(&world, project_id, control_node.id);
+    assert!(
+        after_ok > before_ok,
+        "the subject must genuinely create missing roster seats, or the refusal \
+         below proves nothing (before {before_ok}, after {after_ok})"
+    );
+    assert_eq!(
+        launches(&world),
+        launches_ok_before,
+        "hoisting the proof must not invent hosted-seat work for a request that \
+         routed nothing"
+    );
+
+    // Negative: the same operation against an ECP the runtime no longer holds.
+    let (world, project, epic, _revision) =
+        epic_with_missing_roster_seats("asma-8234-op1-gone").await;
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
+    let control_node = epic_control_node(&world, project_id, epic_id);
+    let before = seats_on(&world, project_id, control_node.id);
+    let key = "asma-8234-op1-gone-materialize";
+
+    world.fake.forget_container(control_node.id);
+    let launches_before = launches(&world);
+
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({"expected_revision": 1}),
+    )
+    .signed_as(&world, "admin")
+    .with_key(key)
+    .send(&world)
+    .await;
+
+    assert!(
+        !refused.status.is_success(),
+        "an ECP the runtime cannot show must refuse: {} {}",
+        refused.status,
+        refused.body
+    );
+    assert_eq!(
+        seats_on(&world, project_id, control_node.id),
+        before,
+        "a refused materialization leaves every missing seat missing"
+    );
+    assert!(
+        receipt_for(&world, key).is_none(),
+        "a refused materialization must not spend the caller's idempotency key"
+    );
+    assert_eq!(
+        launches(&world),
+        launches_before,
+        "a refused materialization launches nothing"
+    );
+}
+
+/// The epic's control-plane node, as the store holds it.
+fn epic_control_node(
+    world: &World,
+    project_id: ProjectId,
+    epic_id: MiniProjectId,
+) -> kontor_core::state::SessionTopologyNode {
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    world.daemon.state().with_store(|store| {
+        store
+            .list_topology_nodes(project_id, Some(epic_id))
+            .expect("the epic's nodes read")
+            .into_iter()
+            .find(|node| node.kind == domain.delivery.control_kind)
+            .expect("the epic has a control plane")
+    })
+}
+
+/// A real empty LSA seat and visible claimant, with an independently bound
+/// ticket workspace available to model a claimant that moves after preview.
+async fn seat_claim_proof_fixture(
+    slug: &str,
+) -> (
+    World,
+    String,
+    String,
+    TopologyNodeId,
+    TopologyNodeId,
+    serde_json::Value,
+) {
+    let (world, project, epic, task, _) = materialized_ticket_topology(slug).await;
+    let project_id = project_id_of(&project);
+    let control = epic_control_node(&world, project_id, epic_id_of(&epic));
+    let (lsa, ticket) = world.daemon.state().with_store(|store| {
+        let lsa = store
+            .list_seat_bindings(project_id, control.id)
+            .expect("seats read")
+            .into_iter()
+            .find(|seat| seat.role.role_code.as_str() == "LSA" && seat.is_non_terminal())
+            .expect("the LSA logical seat");
+        assert!(
+            store
+                .get_hosted_topology_seat(project_id, lsa.id)
+                .expect("native filler reads")
+                .is_none()
+        );
+        let ticket = store
+            .get_task_topology_node(project_id, TaskId::parse(&task).expect("task id"))
+            .expect("ticket reads")
+            .expect("ticket exists")
+            .id;
+        (lsa, ticket)
+    });
+    seed_claim_proof_native(&world, control.id);
+    let request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": lsa.id,
+        "claimant_native_id": "native-claim-proof-lsa",
+        "expected_current_native_id": null,
+    });
+    (world, project, epic, control.id, ticket, request)
+}
+
+fn seed_claim_proof_native(world: &World, node: TopologyNodeId) {
+    world
+        .fake
+        .seed_hosted_seat_claimant(
+            node,
+            ExternalId::parse("native-claim-proof-lsa").expect("native id"),
+            Some(ExternalId::parse("provider-claim-proof-lsa").expect("provider id")),
+            ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: Some(EffortLevel::Xhigh),
+            },
+            "hand-started LSA",
+        )
+        .expect("claimant is present in the requested workspace");
+}
+
+fn claim_native_writes(world: &World) -> usize {
+    world
+        .fake
+        .calls()
+        .iter()
+        .filter(|call| {
+            !matches!(
+                call,
+                AdapterCall::InspectContainer(_)
+                    | AdapterCall::DiscoverCapabilities
+                    | AdapterCall::PreviewClaimHostedSeat(_)
+            )
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn seat_claim_preview_and_apply_keep_both_independent_placement_proofs() {
+    for fault in [
+        "none",
+        "container",
+        "container_native",
+        "container_root",
+        "claimant",
+    ] {
+        let (world, project, epic, control, ticket, request) =
+            seat_claim_proof_fixture(&format!("claim-proof-{fault}")).await;
+        let route = format!("/v1/projects/{project}/epics/{epic}/core-team/seat-claims");
+        let writes_before = claim_native_writes(&world);
+        let preview = Call::post(format!("{route}:preview"), &request)
+            .signed_as(&world, "admin")
+            .send(&world)
+            .await;
+        assert_eq!(preview.status, 200, "{}", preview.body);
+        assert_eq!(
+            claim_native_writes(&world),
+            writes_before,
+            "preview is read-only"
+        );
+        let mut apply = request.clone();
+        apply["preview_hash"] = preview.json()["preview_hash"].clone();
+        if fault == "none" {
+            let mut stale = apply.clone();
+            stale["preview_hash"] = serde_json::json!("0".repeat(64));
+            let refused = Call::post(format!("{route}:apply"), &stale)
+                .signed_as(&world, "admin")
+                .with_key("claim-proof-wrong-preview")
+                .send(&world)
+                .await;
+            assert!(
+                !refused.status.is_success(),
+                "a different preview cannot be applied"
+            );
+            assert_eq!(claim_native_writes(&world), writes_before);
+            assert!(receipt_for(&world, "claim-proof-wrong-preview").is_none());
+        }
+        match fault {
+            "container" => world.fake.forget_container(control),
+            "container_native" => world
+                .fake
+                .drift_container(control, exact_container_drifts()[0].clone()),
+            "container_root" => world
+                .fake
+                .drift_container(control, exact_container_drifts()[1].clone()),
+            "claimant" => seed_claim_proof_native(&world, ticket),
+            _ => {}
+        }
+        if fault != "none" {
+            let refused = Call::post(format!("{route}:preview"), &request)
+                .signed_as(&world, "admin")
+                .send(&world)
+                .await;
+            assert!(
+                !refused.status.is_success(),
+                "{fault} drift preview accepted: {}",
+                refused.body
+            );
+        }
+        let key = format!("claim-proof-{fault}-claim");
+        let applied = Call::post(format!("{route}:apply"), &apply)
+            .signed_as(&world, "admin")
+            .with_key(&key)
+            .send(&world)
+            .await;
+        if fault == "none" {
+            assert_eq!(applied.status, 200, "{}", applied.body);
+            assert!(
+                claim_native_writes(&world) > writes_before,
+                "positive control actually claims"
+            );
+            assert!(receipt_for(&world, &key).is_some());
+        } else {
+            assert!(
+                !applied.status.is_success(),
+                "{fault} drift apply accepted: {}",
+                applied.body
+            );
+            assert_eq!(
+                claim_native_writes(&world),
+                writes_before,
+                "{fault}: no native effect"
+            );
+            assert!(
+                receipt_for(&world, &key).is_none(),
+                "{fault}: key remains unspent"
+            );
+            let binding =
+                SeatBindingId::parse(request["seat_binding_id"].as_str().expect("seat id"))
+                    .expect("canonical seat id");
+            assert!(
+                world
+                    .daemon
+                    .state()
+                    .with_store(|store| store
+                        .get_hosted_topology_seat(project_id_of(&project), binding)
+                        .expect("native filler reads"))
+                    .is_none(),
+                "{fault}: no durable filler"
+            );
+        }
+    }
+}
+
+/// Exact container drift leaves the node and its seats present.
+fn exact_container_drifts() -> [kontor_runtime::fake::FakeContainerDrift; 2] {
+    use kontor_runtime::fake::FakeContainerDrift;
+    [
+        FakeContainerDrift::NativeId(ExternalId::parse("native-replaced-ecp").unwrap()),
+        FakeContainerDrift::Root(
+            kontor_runtime::workspace::WorkspaceRoot::parse("/tmp/drifted-ecp").unwrap(),
+        ),
+    ]
+}
+
+fn op4_seat_node(
+    world: &World,
+    project_id: ProjectId,
+    binding_id: SeatBindingId,
+) -> TopologyNodeId {
+    world.daemon.state().with_store(|store| {
+        store
+            .get_seat_binding(project_id, binding_id)
+            .unwrap()
+            .unwrap()
+            .topology_node_id
+    })
+}
+
+fn op4_route_request(binding: &str, native: &ExternalId, generation: u64) -> serde_json::Value {
+    serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_native_id": native,
+        "expected_generation": generation,
+        "desired_model_route": {
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": "high"
+        },
+    })
+}
+
+async fn op4_preview(
+    world: &World,
+    project: &str,
+    epic: &str,
+    mut request: serde_json::Value,
+) -> serde_json::Value {
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    request["preview_hash"] = preview.json()["preview_hash"].clone();
+    request
+}
+
+#[tokio::test]
+async fn route_preview_refuses_exact_container_drift_with_node_and_membership_preserved() {
+    for drift in exact_container_drifts() {
+        let (composed, binding, native, generation) = hosted_tpm_seat(
+            "/tmp/kontor-8234-op4-preview",
+            "asma-8234-op4-preview-seats",
+        )
+        .await;
+        let world = &composed.world;
+        let project = &composed.project;
+        let epic = &composed.epic;
+        let project_id = ProjectId::parse(project).unwrap();
+        let binding_id = SeatBindingId::parse(&binding).unwrap();
+        let node = op4_seat_node(world, project_id, binding_id);
+        let shape_before = succession_shape(world, project_id, binding_id);
+        let membership_before = seats_on(world, project_id, node);
+        world.fake.drift_container(node, drift);
+        assert!(world.fake.container_native_id(node).is_some());
+        let calls_before = world.fake.calls().len();
+        let refused = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+            &op4_route_request(&binding, &native, generation),
+        )
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+        assert_eq!(refused.status, 409, "{}", refused.body);
+        assert_eq!(world.fake.last_hosted_retire_placement(binding_id), None);
+        assert!(
+            !world.fake.calls()[calls_before..]
+                .iter()
+                .any(|call| matches!(
+                    call,
+                    AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+                ))
+        );
+        assert_eq!(world.fake.hosted_seat_native_id(binding_id), Some(native));
+        assert_eq!(
+            succession_shape(world, project_id, binding_id),
+            shape_before
+        );
+        assert_eq!(seats_on(world, project_id, node), membership_before);
+    }
+}
+
+#[tokio::test]
+async fn route_apply_reproves_after_planning_before_retiring_the_live_predecessor() {
+    for drift in exact_container_drifts() {
+        let (composed, binding, native, generation) =
+            hosted_tpm_seat("/tmp/kontor-8234-op4-drift", "asma-8234-op4-drift-seats").await;
+        let world = &composed.world;
+        let project = &composed.project;
+        let epic = &composed.epic;
+        let project_id = ProjectId::parse(project).unwrap();
+        let binding_id = SeatBindingId::parse(&binding).unwrap();
+        let node = op4_seat_node(world, project_id, binding_id);
+        let body = op4_preview(
+            world,
+            project,
+            epic,
+            op4_route_request(&binding, &native, generation),
+        )
+        .await;
+        let shape_before = succession_shape(world, project_id, binding_id);
+        let membership_before = seats_on(world, project_id, node);
+        // Apply re-plans successfully, then the native drifts after that read.
+        // Only the immediate pre-retirement proof can still prevent the effect.
+        world
+            .fake
+            .drift_container_after_next_inspection(node, drift);
+        let calls_before = world.fake.calls().len();
+        let refused = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+            &body,
+        )
+        .signed_as(world, "admin")
+        .with_key("asma-8234-op4-drift")
+        .send(world)
+        .await;
+        assert_eq!(refused.status, 409, "{}", refused.body);
+        assert_eq!(
+            world.fake.last_hosted_retire_placement(binding_id),
+            None,
+            "the live predecessor must not be sent to retirement after planning drift"
+        );
+        assert!(
+            !world.fake.calls()[calls_before..]
+                .iter()
+                .any(|call| matches!(
+                    call,
+                    AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+                ))
+        );
+        assert_eq!(world.fake.hosted_seat_native_id(binding_id), Some(native));
+        assert_eq!(
+            succession_shape(world, project_id, binding_id),
+            shape_before
+        );
+        assert_eq!(seats_on(world, project_id, node), membership_before);
+        assert!(receipt_for(world, "asma-8234-op4-drift").is_none());
+    }
+}
+
+#[tokio::test]
+async fn route_apply_threads_the_proved_placement_into_the_retirement() {
+    let (composed, binding, native, generation) = hosted_tpm_seat(
+        "/tmp/kontor-8234-op4-threading",
+        "asma-8234-op4-threading-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).unwrap();
+    let binding_id = SeatBindingId::parse(&binding).unwrap();
+    let node = op4_seat_node(world, project_id, binding_id);
+    let (expected_container, expected_provider_session) =
+        world.daemon.state().with_store(|store| {
+            (
+                store
+                    .get_topology_node_container(project_id, node)
+                    .unwrap()
+                    .unwrap(),
+                store
+                    .get_hosted_topology_seat(project_id, binding_id)
+                    .unwrap()
+                    .unwrap()
+                    .provider_session_id,
+            )
+        });
+    let body = op4_preview(
+        world,
+        project,
+        epic,
+        op4_route_request(&binding, &native, generation),
+    )
+    .await;
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8234-op4-threading")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let placement = world
+        .fake
+        .last_hosted_retire_placement(binding_id)
+        .expect("a real live predecessor was retired")
+        .expect("retirement carries placement");
+    assert_eq!(
+        placement.workspace_native_id,
+        expected_container.identity.native_id
+    );
+    assert_eq!(
+        placement.canonical_cwd.as_str(),
+        expected_container.canonical_cwd.unwrap().as_str()
+    );
+    assert_eq!(placement.provider_session_id, expected_provider_session);
+    assert!(world.fake.calls().iter().any(|call| matches!(
+        call, AdapterCall::RetireHostedSeat(seat) if *seat == binding_id
+    )));
+    assert_ne!(world.fake.hosted_seat_native_id(binding_id), Some(native));
 }
