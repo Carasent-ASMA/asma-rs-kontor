@@ -12321,6 +12321,7 @@ impl Services {
                 .map(|seat| ConsultationSeatDto {
                     role_slot_id: seat.role_slot_id.as_str().to_owned(),
                     logical_role: seat.logical_role.as_str().to_owned(),
+                    committee_role: seat.committee_role.map(|role| role.as_str().to_owned()),
                     seat_binding_id: seat.seat_binding_id,
                     occupancy_generation: seat.occupancy_generation,
                     model_route: runtime_model_route_dto(&seat.model_rung),
@@ -13158,6 +13159,7 @@ impl Services {
                 .map(|seat| ConsultationSeatDto {
                     role_slot_id: seat.role_slot_id.as_str().to_owned(),
                     logical_role: seat.logical_role.as_str().to_owned(),
+                    committee_role: seat.committee_role.map(|role| role.as_str().to_owned()),
                     seat_binding_id: seat.seat_binding_id,
                     occupancy_generation: seat.occupancy_generation,
                     model_route: runtime_model_route_dto(&seat.model_rung),

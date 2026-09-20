@@ -1497,6 +1497,9 @@ pub struct ConsultationSeatDto {
     pub role_slot_id: String,
     /// Logical role under the pinned policy.
     pub logical_role: String,
+    /// Committee function frozen from its template; absent for Advisor seats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committee_role: Option<String>,
     /// Exact persistent SeatBinding.
     #[schema(value_type = String)]
     pub seat_binding_id: SeatBindingId,
@@ -10804,21 +10807,45 @@ pub async fn committee_run(
     let mut run = state
         .applications()
         .committee_run(project_id, committee_run_id)?;
-    if let Some(seat) = consultation_reader(&state, caller, &run.seats)? {
+    project_committee_for_caller(&state, caller, &mut run)?;
+    Ok(Json(run))
+}
+
+/// Apply the same evidence visibility after both reads and findings writes.
+fn project_committee_for_caller(
+    state: &ApiState,
+    caller: Caller,
+    run: &mut CommitteeRunDto,
+) -> Result<(), ApiError> {
+    if let Some(seat) = consultation_reader(state, caller, &run.seats)? {
+        // Only the pinned Judge may read its committee's independent findings,
+        // and only after every frozen reviewer has submitted this round.
+        let reviewers: Vec<_> = run
+            .seats
+            .iter()
+            .filter(|candidate| candidate.committee_role.as_deref() == Some("reviewer"))
+            .collect();
+        let judge_ready = seat.committee_role.as_deref() == Some("judge")
+            && !reviewers.is_empty()
+            && reviewers.iter().all(|reviewer| {
+                run.findings.iter().any(|finding| {
+                    finding.round == run.round
+                        && finding.role == "reviewer"
+                        && finding.role_slot_id == reviewer.role_slot_id
+                })
+            });
         run.seats
             .retain(|candidate| candidate.seat_binding_id == seat.seat_binding_id);
         run.findings
-            .retain(|finding| finding.role_slot_id == seat.role_slot_id);
+            .retain(|finding| judge_ready || finding.role_slot_id == seat.role_slot_id);
         run.findings_recorded = u32::try_from(run.findings.len()).unwrap_or(u32::MAX);
-        // Judges receive their authorized reviewer evidence in the frozen launch
-        // prompt. A generic scoped GET never exposes another seat's output.
         run.result = None;
         run.result_hash = None;
         run.outcome = None;
         run.remediation = None;
         run.remediation_hash = None;
     }
-    Ok(Json(run))
+    Ok(())
 }
 
 /// Read pending runtime permission requests from one exact Committee seat.
@@ -11016,19 +11043,19 @@ pub async fn record_committee_findings(
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
     let key = idempotency_key(&state, &headers)?;
-    Ok(Json(
-        state
-            .applications()
-            .record_committee_findings(
-                &key,
-                project_id,
-                committee_run_id,
-                seat_binding_id,
-                seat_occupancy_generation,
-                &request,
-            )
-            .await?,
-    ))
+    let mut run = state
+        .applications()
+        .record_committee_findings(
+            &key,
+            project_id,
+            committee_run_id,
+            seat_binding_id,
+            seat_occupancy_generation,
+            &request,
+        )
+        .await?;
+    project_committee_for_caller(&state, caller, &mut run)?;
+    Ok(Json(run))
 }
 
 /// Settle one Committee consultation.

@@ -1235,6 +1235,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Supersede one never-bound prepared Core Team launch intent. */
+        post: operations["supersede_core_team_launch_intent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply": {
         parameters: {
             query?: never;
@@ -4889,6 +4906,8 @@ export interface components {
         };
         /** @description One declared consultation seat and its exact runtime readback. */
         ConsultationSeatDto: {
+            /** @description Committee function frozen from its template; absent for Advisor seats. */
+            committee_role?: string | null;
             /** @description Logical role under the pinned policy. */
             logical_role: string;
             /**
@@ -5161,6 +5180,61 @@ export interface components {
              * @description The position this read is consistent with.
              */
             snapshot_cursor: number;
+        };
+        /**
+         * @description Supersede one never-bound prepared launch intent with an approved route.
+         *
+         *     Every field is a fence. The operation applies to exactly one durable shape —
+         *     an intent prepared before a launch that never happened — and anything that
+         *     has since become a native, an occupancy or a recorded effect refuses.
+         */
+        CoreTeamLaunchIntentSupersedeRequest: {
+            /** @description The catalog-approved replacement route. */
+            desired_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description The exact inert route being superseded, compared verbatim. */
+            expected_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description The exact instant that inert intent was prepared, compared verbatim. */
+            expected_prepared_at: string;
+            /**
+             * Format: int64
+             * @description Epic revision the caller read.
+             */
+            expected_revision: number;
+            /**
+             * Format: int64
+             * @description The binding revision the caller read.
+             */
+            expected_seat_binding_revision: number;
+            /**
+             * Format: int64
+             * @description The occupancy generation whose inert intent is replaced.
+             */
+            occupancy_generation: number;
+            /** @description The logical seat, preserved exactly. */
+            seat_binding_id: string;
+        };
+        /** @description What one launch-intent supersession replaced, and what now stands. */
+        CoreTeamLaunchIntentSupersessionDto: {
+            /**
+             * Format: int64
+             * @description The occupancy generation whose intent was replaced; unchanged by this.
+             */
+            occupancy_generation: number;
+            /** @description Realm that recorded it. */
+            realm_id: string;
+            /** @description Audited mutation receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The approved route that now stands. */
+            replacement_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description The preserved logical seat. Never retired, never replaced. */
+            seat_binding_id: string;
+            /**
+             * Format: int64
+             * @description Unchanged binding revision the swap was fenced on.
+             */
+            seat_binding_revision: number;
+            /** @description The inert route that was superseded, retained as evidence. */
+            superseded_model_route: components["schemas"]["RuntimeModelRouteRequest"];
         };
         /** @description Materialize the Core Team's seats for one epic. */
         CoreTeamMaterializeRequest: {
@@ -6587,6 +6661,42 @@ export interface components {
             /** @description The task it applies to, for the task-scoped actions. */
             task_id?: string | null;
         };
+        /**
+         * @description How much approved memory the resolved pack could carry.
+         *
+         *     Approved memory grows without bound while the canonical document may not
+         *     exceed its ceiling, so a large enough project eventually has more approved
+         *     memory than one pack can hold. When that happens the resolver narrows the set
+         *     rather than refusing, and this says so explicitly: a caller can see that the
+         *     pack is not the whole of approved memory, and exactly which revisions are
+         *     missing from it. Below the ceiling `omitted` is empty and `narrowed` is
+         *     false, which is the ordinary case and the one that must stay unchanged.
+         */
+        MemorySelectionDto: {
+            /**
+             * Format: int64
+             * @description The canonical byte ceiling the selection was made against.
+             */
+            ceiling_bytes: number;
+            /**
+             * Format: int32
+             * @description How many approved revisions the pack carries.
+             */
+            included: number;
+            /** @description Whether the set had to be narrowed at all. */
+            narrowed: boolean;
+            /**
+             * @description Every approved revision the pack could not carry, in the order the
+             *     resolver would have taken them.
+             */
+            omitted: components["schemas"]["OmittedMemoryRevisionDto"][];
+            /**
+             * Format: int32
+             * @description The selector that chose them, so a changed rule is visible as a changed
+             *     number rather than as an unexplained change of hash.
+             */
+            selector_version: number;
+        };
         /** @description The runtime's answer to one delivered message. */
         MessageAckDto: {
             /**
@@ -6846,6 +6956,18 @@ export interface components {
              * @description The canonical epoch both positions belong to.
              */
             timeline_epoch: number;
+        };
+        /**
+         * @description One approved memory revision a Context Pack could not carry.
+         *
+         *     It names the revision and never its content: the point is that a caller can
+         *     go and read what was left out, not that the pack leaks it by another route.
+         */
+        OmittedMemoryRevisionDto: {
+            /** @description The memory item. */
+            item_id: string;
+            /** @description The immutable approved revision of it. */
+            revision_id: string;
         };
         /** @description Exact queued downstream run and already-created native a partial recovery adopts. */
         PartialAdmissionSeatDto: {
@@ -8232,6 +8354,8 @@ export interface components {
             context_hash: string;
             /** @description The frozen pack, when this call snapshotted one. */
             context_pack_id?: string | null;
+            /** @description Which approved memory revisions the pack carries, and which it could not. */
+            memory_selection: components["schemas"]["MemorySelectionDto"];
             /** @description Where every resolved path came from. */
             provenance: components["schemas"]["ProvenanceDto"][];
             /** @description The Realm it was resolved in. */
@@ -13649,6 +13773,80 @@ export interface operations {
                 content?: never;
             };
             /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    supersede_core_team_launch_intent: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoreTeamLaunchIntentSupersedeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamLaunchIntentSupersessionDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The runtime could not be reached */
             503: {
                 headers: {
                     [name: string]: unknown;

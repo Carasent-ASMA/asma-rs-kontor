@@ -47925,6 +47925,22 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         judge["observed_binding"].is_null(),
         "Judge launched before findings"
     );
+    let premature_judge_read = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
+        .with_token(
+            world
+                .daemon
+                .state()
+                .credentials()
+                .consultation_seat_credential(
+                    SeatBindingId::parse(&judge_id).expect("the Judge SeatBinding"),
+                ),
+        )
+        .send(world)
+        .await;
+    assert_eq!(
+        premature_judge_read.status, 403,
+        "an unlaunched Judge may not read independent work"
+    );
 
     // Deployed Committees predating immutable per-slot admission provenance
     // still freeze their exact template revision and each seat's exact route.
@@ -48265,17 +48281,17 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
             .expect("run revision");
         if index == 1 {
             assert_eq!(recorded.json()["state"], "awaiting_judge");
-            assert!(
-                recorded.json()["seats"]
-                    .as_array()
-                    .expect("seats")
-                    .iter()
-                    .find(|seat| seat["role_slot_id"] == "judge")
-                    .is_some_and(|seat| seat["observed_binding"].is_object()),
-                "Judge did not launch after both findings: {}",
-                recorded.body
-            );
         }
+        assert_eq!(recorded.json()["seats"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            recorded.json()["findings"].as_array().unwrap().len(),
+            1,
+            "a reviewer write response must not leak its peer's independent finding"
+        );
+        assert_eq!(
+            recorded.json()["findings"][0]["role_slot_id"],
+            recorded.json()["seats"][0]["role_slot_id"]
+        );
     }
     let private_read = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
         .with_token(
@@ -48306,6 +48322,27 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .send(world)
         .await;
     assert_eq!(awaiting_judge.status, 200, "{}", awaiting_judge.body);
+    let judge_read = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
+        .with_token(
+            world
+                .daemon
+                .state()
+                .credentials()
+                .consultation_seat_credential(
+                    SeatBindingId::parse(&judge_id).expect("the Judge SeatBinding"),
+                ),
+        )
+        .send(world)
+        .await;
+    assert_eq!(judge_read.status, 200, "{}", judge_read.body);
+    assert_eq!(judge_read.json()["seats"].as_array().unwrap().len(), 1);
+    assert_eq!(judge_read.json()["seats"][0]["committee_role"], "judge");
+    assert_eq!(judge_read.json()["findings_recorded"], 2);
+    assert_eq!(
+        judge_read.json()["findings"],
+        awaiting_judge.json()["findings"],
+        "the exact scoped Judge must read both durable independent findings, including hashes and evidence references"
+    );
     let judge_native = awaiting_judge.json()["seats"]
         .as_array()
         .expect("Committee seats")
@@ -48420,6 +48457,11 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .send(world)
         .await;
     assert_eq!(first_round_read.status, 200, "{}", first_round_read.body);
+    assert_eq!(
+        judged.json()["findings"],
+        first_round_read.json()["findings"],
+        "the Judge submission response must preserve the full durable conjunction"
+    );
     assert_eq!(
         first_round_read.json()["findings"].as_array().map(Vec::len),
         Some(3)
@@ -49001,6 +49043,25 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .as_array()
         .expect("the clean re-review seats")
         .clone();
+    let foreign_judge_read = Call::get(format!(
+        "/v1/projects/{project}/committee-runs/{re_review_run}"
+    ))
+    .with_token(
+        world
+            .daemon
+            .state()
+            .credentials()
+            .consultation_seat_credential_for_generation(
+                SeatBindingId::parse(&judge_id).expect("the earlier Judge SeatBinding"),
+                judge_generation,
+            ),
+    )
+    .send(world)
+    .await;
+    assert_eq!(
+        foreign_judge_read.status, 403,
+        "a Judge may not read another committee run"
+    );
     let re_review_reviewers = re_review_seats
         .iter()
         .filter(|seat| {

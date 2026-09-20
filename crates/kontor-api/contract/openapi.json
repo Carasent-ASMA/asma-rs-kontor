@@ -14454,6 +14454,13 @@
           "model_route"
         ],
         "properties": {
+          "committee_role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Committee function frozen from its template; absent for Advisor seats."
+          },
           "logical_role": {
             "type": "string",
             "description": "Logical role under the pinned policy."
