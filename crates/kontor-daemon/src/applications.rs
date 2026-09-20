@@ -1265,6 +1265,14 @@ impl Services {
 
     /// Turn a domain refusal into the one the caller is owed.
     fn refuse_domain(&self, error: &kontor_core::DomainError) -> ApiError {
+        if let kontor_core::DomainError::MissingEvidence {
+            subject: "ProviderHeadroom",
+            rule,
+        } = error
+        {
+            return self.deny(ApiErrorCode::PlacementBlocked, rule)
+                .advising("probe the exact configured provider account and retry after current quota evidence permits admission");
+        }
         ApiError::from_domain(self.realm_id, error)
     }
 
@@ -5832,6 +5840,32 @@ impl Services {
         self.capacity
             .headroom
             .unwrap_or_else(HeadroomConfig::state_only)
+    }
+
+    /// Admission view of quota evidence. An unchanged successful poll appends
+    /// an immutable heartbeat without rewriting the quota projection. Only an
+    /// exact matching provider report may supply that newer observation time;
+    /// persisted timestamps and public readback remain unchanged.
+    fn admission_quota_states(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Vec<kontor_core::repository::ProviderQuotaState>, ApiError> {
+        self.state()?
+            .with_store(|store| {
+                store
+                    .list_provider_quota_states(project_id)?
+                    .into_iter()
+                    .map(|row| {
+                        let observation = store.latest_provider_usage_observation(
+                            project_id,
+                            row.account_profile_id,
+                            &row.provider,
+                        )?;
+                        Ok(quota_state_for_admission(row, observation.as_ref()))
+                    })
+                    .collect::<Result<Vec<_>, RepositoryError>>()
+            })
+            .map_err(|error| self.refuse(&error))
     }
 
     /// Whether this key has already recorded *this exact* request.
@@ -11975,14 +12009,8 @@ impl Services {
     /// an exhausted account while the chain's other rungs sat unconsulted. The
     /// walk here is the same account-before-rung resolution delivery seats use.
     ///
-    /// Two deliberate asymmetries against the delivery path. A realm that has
-    /// declared no addressable account aliases preserves the prior primary-rung
-    /// fallback when nothing is admissible; once aliases exist, an exhausted
-    /// walk refuses rather than silently launching onto one of those blocked
-    /// accounts. And the admitted account is honoured through the rung's
-    /// provider alias alone, never claimed: a consultation launch carries no
-    /// account pin, so there is nothing for preflight to attest and nothing
-    /// unverified in the receipt.
+    /// A failed account walk is a placement refusal. Runtime availability or a
+    /// template's primary route cannot substitute for quota evidence.
     fn freeze_consultation_model_rung(
         &self,
         project_id: ProjectId,
@@ -11991,18 +12019,17 @@ impl Services {
         missing: &'static str,
     ) -> Result<ModelRung, ApiError> {
         let state = self.state()?;
-        let Some(primary) = rungs.first().cloned() else {
+        if rungs.is_empty() {
             return Err(self.deny(ApiErrorCode::PlacementBlocked, missing));
         };
         let runtime_kind = self.node_runtime_kind()?;
-        let Some(adapter) = state.runtimes().get(&runtime_kind) else {
-            // No adapter means no availability answer; the primary is the same
-            // honest freeze the pre-walk code performed.
-            return Ok(primary);
-        };
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "consultation admission requires its runtime adapter",
+            )
+        })?;
+        let quota_states = self.admission_quota_states(project_id)?;
         let accounts = self.eligible_accounts(project_id)?;
         let effective_rungs = consultation_account_rungs(rungs, &accounts);
         let placement = resolve_chain_placement(
@@ -12017,6 +12044,7 @@ impl Services {
                 account: None,
                 accounts: &accounts,
                 headroom: self.headroom_policy(),
+                freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                 now,
             },
         )
@@ -12024,16 +12052,10 @@ impl Services {
         match placement {
             kontor_scheduler::headroom::Placement::Admit { rung, .. } => Ok(rung),
             kontor_scheduler::headroom::Placement::Wait { .. }
-            | kontor_scheduler::headroom::Placement::NeedsHuman { .. }
-                if effective_rungs != rungs =>
-            {
-                Err(self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "no governed consultation account currently has admissible headroom",
-                ))
-            }
-            kontor_scheduler::headroom::Placement::Wait { .. }
-            | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => Ok(primary),
+            | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "no consultation account has current quota evidence and admissible headroom",
+            )),
         }
     }
 
@@ -12055,34 +12077,20 @@ impl Services {
     ) -> Result<Vec<FrozenCommitteeRoute>, ApiError> {
         let state = self.state()?;
         let runtime_kind = self.node_runtime_kind()?;
-        let Some(adapter) = state.runtimes().get(&runtime_kind) else {
-            if !request.initial_recovery_profiles.is_empty() {
-                return Err(self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "initial Committee recovery profiles require an available runtime adapter",
-                ));
-            }
-            return Ok(template
-                .slots
-                .iter()
-                .map(|slot| FrozenCommitteeRoute {
-                    model_rung: slot.models.rungs[0].clone(),
-                    source: "template",
-                    rank: 1,
-                    profile_hash: template_revision.definition_hash.clone(),
-                    headroom_basis_account_id: None,
-                })
-                .collect());
-        };
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "Committee admission requires its runtime adapter",
+            )
+        })?;
+        let quota_states = self.admission_quota_states(project_id)?;
         let accounts = self.eligible_accounts(project_id)?;
         let quota = QuotaOutlook {
             states: &quota_states,
             account: None,
             accounts: &accounts,
             headroom: self.headroom_policy(),
+            freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
             now,
         };
         let mut recovery_profiles = BTreeMap::new();
@@ -12144,10 +12152,6 @@ impl Services {
                 &accounts,
             )
             .map_err(|error| self.refuse_domain(&error))?;
-            let governed_template = effective
-                .iter()
-                .any(|candidate| consultation_route_has_account(&candidate.model_rung, &accounts));
-            let has_recovery_profile = recovery_profiles.contains_key(&slot.id);
             if let Some((routes, profile_hash)) = recovery_profiles.get(&slot.id) {
                 for candidate in committee_route_candidates(
                     routes,
@@ -12196,27 +12200,6 @@ impl Services {
                     admitted_candidate.model_rung = rung;
                     admitted_candidate.headroom_basis_account_id = Some(account);
                     admitted.push(admitted_candidate);
-                }
-            }
-            if admitted.is_empty() && !governed_template && !has_recovery_profile {
-                // Compatibility for a realm that has no addressable account or
-                // fallback policy for this provider family. The runtime still
-                // owns route validation before anything is frozen.
-                let compatibility = FrozenCommitteeRoute {
-                    model_rung: slot.models.rungs[0].clone(),
-                    source: "template",
-                    rank: 1,
-                    profile_hash: template_revision.definition_hash.clone(),
-                    headroom_basis_account_id: None,
-                };
-                let provenance = compatibility
-                    .provenance()
-                    .map_err(|error| self.refuse_domain(&error))?;
-                if adapter
-                    .validate_consultation_model_rung(&compatibility.model_rung, &provenance)
-                    .is_ok()
-                {
-                    admitted.push(compatibility);
                 }
             }
             if admitted.is_empty() {
@@ -14128,6 +14111,8 @@ struct QuotaOutlook<'a> {
     /// The declared headroom policy, or the state-only fallback when a realm has
     /// declared none.
     headroom: HeadroomConfig,
+    /// The same configured evidence lifetime used by provider preflight.
+    freshness: jiff::SignedDuration,
     now: Timestamp,
 }
 
@@ -14342,15 +14327,6 @@ fn committee_route_candidates(
     Ok(candidates)
 }
 
-fn consultation_route_has_account(
-    rung: &ModelRung,
-    accounts: &[kontor_scheduler::headroom::EligibleAccount],
-) -> bool {
-    accounts
-        .iter()
-        .any(|account| account.selectable_providers.contains(&rung.provider.0))
-}
-
 /// A generic provider spelling can select an account for headroom without
 /// carrying that account identity into a consultation launch. That is honest
 /// only while exactly one enabled account owns the spelling; aliases are the
@@ -14470,6 +14446,28 @@ pub(crate) fn model_route_is_catalogued(rung: &ModelRung) -> bool {
     }
 }
 
+/// Build an ephemeral admission view from a current projection and its exact
+/// immutable provider heartbeat. This never writes or invents an observation.
+fn quota_state_for_admission(
+    mut state: kontor_core::repository::ProviderQuotaState,
+    observation: Option<&ProviderUsageObservation>,
+) -> kontor_core::repository::ProviderQuotaState {
+    if state.source == kontor_core::spec::ProviderQuotaSource::ProviderReport
+        && let Some(observation) = observation
+        && observation.project_id == state.project_id
+        && observation.account_profile_id == state.account_profile_id
+        && observation.provider == state.provider
+        && observation.evidence_hash == state.evidence_hash
+        && observation.state == state.state
+        && observation.resets_at == state.resets_at
+        && observation.windows == state.windows
+        && observation.observed_at > state.observed_at
+    {
+        state.observed_at = observation.observed_at;
+    }
+    state
+}
+
 /// The catalog default used when an explicit task account changes provider
 /// family and the frozen role chain contains no route on that family.
 fn default_model_for_provider(provider: &str) -> Option<&'static str> {
@@ -14484,9 +14482,8 @@ fn default_model_for_provider(provider: &str) -> Option<&'static str> {
 /// Resolve one chain against quota headroom, in the walk's own vocabulary.
 ///
 /// The shared half of delivery-seat and consultation-seat route freezing: the
-/// account-before-rung walk itself. What a caller does when nothing is
-/// admissible stays the caller's, because the two launch paths have different
-/// current behaviour to preserve on that arm.
+/// account-before-rung walk itself. A refusal must remain a refusal at every
+/// caller; falling back to an unpinned primary would bypass admission.
 fn resolve_chain_placement(
     adapter: &dyn RuntimeAdapter,
     rungs: &[ModelRung],
@@ -14507,6 +14504,7 @@ fn resolve_chain_placement(
         &quota.headroom,
         seat,
         quota.now,
+        quota.freshness,
         |provider| adapter.provider_available(provider),
     )
 }
@@ -14615,28 +14613,13 @@ fn freeze_seat_model_rung(
         // ambient login: the rung's provider alias selects the account, and the
         // account id is what the launch claims and quota attribution reads.
         kontor_scheduler::headroom::Placement::Admit { rung, account } => (rung, Some(account)),
-        // Nothing is admissible. Preserve master's refusal shape rather than
-        // inventing a route: an adapter-declared fallback if one is clear, and
-        // otherwise the frozen primary, so the adapter emits its own typed
-        // provider-outage refusal. Deciding here to descend anyway is exactly
-        // what a near reset must not cause, and substituting a model the
-        // template never declared would weaken the template. No account is
-        // claimed on this arm: the walk selected none, and a claim invented
-        // here would be exactly the unverified attestation preflight refuses.
-        //
-        // ponytail: the wait instant and the escalation payload are computed and
-        // then dropped on this path, because this function's contract is to
-        // return a rung. Parking the work on them needs a launch path that can
-        // hold a seat instead of routing it — see the handoff's open risks.
         kontor_scheduler::headroom::Placement::Wait { .. }
-        | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => (
-            effective_rungs
-                .iter()
-                .find_map(|rung| adapter.fallback_model_rung(rung))
-                .or_else(|| effective_rungs.first().cloned())
-                .expect("a validated model chain is non-empty"),
-            None,
-        ),
+        | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => {
+            return Err(kontor_core::DomainError::MissingEvidence {
+                subject: "ProviderHeadroom",
+                rule: "no declared account route has current quota evidence and admissible headroom",
+            });
+        }
     })
 }
 
@@ -26482,9 +26465,7 @@ impl ApplicationOperations for Services {
             {
                 predecessor.model_rung.clone()
             } else {
-                let quota_states = state
-                    .with_store(|store| store.list_provider_quota_states(project_id))
-                    .map_err(|error| self.refuse(&error))?;
+                let quota_states = self.admission_quota_states(project_id)?;
                 let accounts = self.eligible_accounts(project_id)?;
                 resolve_recovery_placement(
                     adapter.as_ref(),
@@ -26494,6 +26475,7 @@ impl ApplicationOperations for Services {
                         account: None,
                         accounts: &accounts,
                         headroom: self.headroom_policy(),
+                freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                         now: kontor_api::now(),
                     },
                 )
@@ -26888,9 +26870,7 @@ impl ApplicationOperations for Services {
                 "no recovery route preserves the pinned provider-family diversity",
             ));
         }
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
+        let quota_states = self.admission_quota_states(project_id)?;
         let accounts = self.eligible_accounts(project_id)?;
         let usage_observations = state
             .with_store(
@@ -26947,6 +26927,7 @@ impl ApplicationOperations for Services {
                 account: None,
                 accounts: &accounts,
                 headroom: self.headroom_policy(),
+                freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                 now,
             },
         )
@@ -32340,20 +32321,25 @@ impl ApplicationOperations for Services {
         // retirement or any native call. A Wait/NeedsHuman answer is a
         // side-effect-free deferral, never permission to archive first and
         // discover afterwards that nowhere can accept the work.
-        let quota_successor_route = if request.quota_exhausted.is_some() {
-            let quota_states = state
-                .with_store(|store| store.list_provider_quota_states(project_id))
-                .map_err(|error| self.refuse(&error))?;
+        let quota_successor_route = if request.quota_exhausted.is_some()
+            || explicit_model_route.is_some()
+        {
+            let quota_states = self.admission_quota_states(project_id)?;
             let eligible = self.eligible_accounts(project_id)?;
             let task_pin = state
                 .with_store(|store| store.task_account_selection(project_id, task_id))
                 .map_err(|error| self.refuse(&error))?
                 .map(|(account_profile_id, _)| account_profile_id);
+            if unbound_recovery && let Some(route) = explicit_model_route.as_ref() {
+                account_for_explicit_provider_alias(route, &eligible)
+                    .map_err(|error| self.refuse_domain(&error))?;
+            }
             let outlook = QuotaOutlook {
                 states: &quota_states,
                 account: task_pin,
                 accounts: &eligible,
                 headroom: self.headroom_policy(),
+                freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                 now,
             };
             let declared = if let Some(route) = explicit_model_route.as_ref() {
@@ -32637,9 +32623,7 @@ impl ApplicationOperations for Services {
             .bound_container_snapshot(project_id, &node, adapter.as_ref())
             .await?;
         let scope = self.execution_scope(project_id, epic_id, Some(task_id), adapter.as_ref())?;
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
+        let quota_states = self.admission_quota_states(project_id)?;
         let eligible = self.eligible_accounts(project_id)?;
         // The *task's* explicit pin constrains the successor's walk; the
         // predecessor's run account must not. `QuotaOutlook::candidates`
@@ -32659,28 +32643,15 @@ impl ApplicationOperations for Services {
             account: task_pin,
             accounts: &eligible,
             headroom: self.headroom_policy(),
+            freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
             now,
         };
-        // A never-bound recovery route has no predecessor account to inherit.
-        // Its exact provider alias must therefore resolve to one enabled
-        // governed account before the native launch. Other explicit replacement
-        // routes retain their existing no-account behavior; their authority and
-        // evidence are separate from this narrow recovery.
+        // Explicit routes were resolved before recording a successor. An
+        // operator-selected alias is placement authority, never quota evidence.
         let (model_rung, routed_account) = match quota_successor_route {
             Some(preplanned) => preplanned,
-            None => match explicit_model_route {
-                Some(route) => {
-                    let account = unbound_recovery
-                        .then(|| account_for_explicit_provider_alias(&route, &eligible))
-                        .transpose()
-                        .map_err(|error| self.refuse_domain(&error))?;
-                    (route, account)
-                }
-                None => {
-                    freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
-                        .map_err(|error| self.refuse_domain(&error))?
-                }
-            },
+            None => freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
+                .map_err(|error| self.refuse_domain(&error))?,
         };
         let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
             .await
@@ -34659,9 +34630,7 @@ impl Services {
                 "quota recovery requires an account-pinned predecessor",
             )
         })?;
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
+        let quota_states = self.admission_quota_states(project_id)?;
         let mut exact_evidence = None;
         for row in quota_states.iter().filter(|row| {
             row.account_profile_id == account_profile_id
@@ -34747,6 +34716,7 @@ impl Services {
             account: task_pin,
             accounts: &eligible,
             headroom: self.headroom_policy(),
+            freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
             now,
         };
         let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
@@ -35171,9 +35141,7 @@ impl Services {
             .with_store(|store| store.get_agent_run(project_id, predecessor.id))
             .map_err(|error| self.refuse(&error))?
             .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the predecessor disappeared"))?;
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
+        let quota_states = self.admission_quota_states(project_id)?;
         let quota = quota_states
             .iter()
             .find(|row| {
@@ -35253,6 +35221,7 @@ impl Services {
             account: task_pin,
             accounts: &eligible,
             headroom: self.headroom_policy(),
+            freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
             now,
         };
         let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
@@ -36657,9 +36626,7 @@ impl Services {
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
                 .into_authority()
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-            let quota_states = state
-                .with_store(|store| store.list_provider_quota_states(project_id))
-                .map_err(|error| self.refuse(&error))?;
+            let quota_states = self.admission_quota_states(project_id)?;
             let (model_rung, routed_account) = freeze_seat_model_rung(
                 adapter.as_ref(),
                 &team_snapshot,
@@ -36669,6 +36636,7 @@ impl Services {
                     account: admitted.account_profile_id,
                     accounts: &self.eligible_accounts(project_id)?,
                     headroom: self.headroom_policy(),
+                    freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                     now,
                 },
             )
@@ -39951,9 +39919,7 @@ impl Services {
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?
             .into_authority()
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
+        let quota_states = self.admission_quota_states(project_id)?;
         let (model_rung, routed_account) = freeze_seat_model_rung(
             adapter.as_ref(),
             &team_snapshot,
@@ -39963,6 +39929,7 @@ impl Services {
                 account: admitted.account_profile_id,
                 accounts: &self.eligible_accounts(project_id)?,
                 headroom: self.headroom_policy(),
+                freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                 now,
             },
         )
@@ -41416,6 +41383,7 @@ mod tests {
             account: Some(selected),
             accounts: &accounts,
             headroom: HeadroomConfig::state_only(),
+            freshness: jiff::SignedDuration::from_secs(60),
             now: Timestamp::from_second(1).expect("a timestamp"),
         };
         let frozen = outlook
@@ -41430,6 +41398,110 @@ mod tests {
         assert_eq!(frozen[0].provider.0, "claude-work");
         assert_eq!(frozen[0].model.0, "claude-opus-5");
         assert_eq!(frozen[0].effort, Some(EffortLevel::Xhigh));
+    }
+
+    #[test]
+    fn provider_admission_never_freezes_a_refused_account_as_an_unpinned_fallback() {
+        let selected = AccountProfileId::generate();
+        let accounts = [EligibleAccount {
+            account_profile_id: selected,
+            selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+        }];
+        let outlook = QuotaOutlook {
+            states: &[],
+            account: Some(selected),
+            accounts: &accounts,
+            headroom: HeadroomConfig::state_only(),
+            freshness: jiff::SignedDuration::from_secs(60),
+            now: Timestamp::from_second(1).expect("a timestamp"),
+        };
+        let adapter = kontor_runtime::fake::ScriptedFakeRuntime::new(
+            kontor_runtime::capability::RuntimeCapabilities {
+                trust_grade: kontor_runtime::capability::TrustGrade::C,
+                supported: BTreeSet::new(),
+                account_env: true,
+                limits: kontor_runtime::capability::RuntimeLimits {
+                    max_message_bytes: 0,
+                    max_history_page: 0,
+                    max_concurrent_sessions: 0,
+                    context_window: kontor_core::spec::ContextWindowBounds::unknown(),
+                },
+            },
+        );
+        let (snapshot, slot) = snapshot_declaring(None);
+        assert!(
+            super::freeze_seat_model_rung(&adapter, &snapshot, &slot, &outlook).is_err(),
+            "a headroom refusal must not become an unpinned primary or fallback launch"
+        );
+    }
+
+    #[test]
+    fn provider_admission_accepts_only_an_exact_matching_immutable_heartbeat() {
+        use kontor_core::repository::{ProviderQuotaState, ProviderUsageObservation};
+        use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
+        let old = Timestamp::from_second(1).expect("old timestamp");
+        let now = Timestamp::from_second(1000).expect("current timestamp");
+        let state = ProviderQuotaState {
+            project_id: kontor_core::id::ProjectId::generate(),
+            account_profile_id: AccountProfileId::generate(),
+            provider: "claude-work".to_owned(),
+            state: ProviderQuotaKind::Available,
+            resets_at: None,
+            windows: Vec::new(),
+            credit: None,
+            evidence_hash: ContentHash::of(b"unchanged exact report"),
+            source: ProviderQuotaSource::ProviderReport,
+            observed_at: old,
+            provenance_id: None,
+            revision: kontor_core::id::AggregateRevision::INITIAL,
+            updated_at: old,
+        };
+        let heartbeat = ProviderUsageObservation {
+            id: kontor_core::id::ProviderUsageObservationId::generate(),
+            project_id: state.project_id,
+            account_profile_id: state.account_profile_id,
+            provider: state.provider.clone(),
+            evidence_hash: state.evidence_hash.clone(),
+            state: state.state,
+            resets_at: state.resets_at,
+            windows: state.windows.clone(),
+            observed_at: now,
+        };
+        assert_eq!(
+            super::quota_state_for_admission(state.clone(), None).observed_at,
+            old
+        );
+        assert_eq!(
+            super::quota_state_for_admission(state.clone(), Some(&heartbeat)).observed_at,
+            now
+        );
+        assert_eq!(
+            state.observed_at, old,
+            "the stored projection remains historical"
+        );
+        for mismatch in 0..6 {
+            let mut wrong = heartbeat.clone();
+            match mismatch {
+                0 => wrong.project_id = kontor_core::id::ProjectId::generate(),
+                1 => wrong.account_profile_id = AccountProfileId::generate(),
+                2 => wrong.provider = "claude-personal".to_owned(),
+                3 => wrong.evidence_hash = ContentHash::of(b"different report"),
+                4 => wrong.state = ProviderQuotaKind::Unknown,
+                _ => wrong.resets_at = Some(now),
+            }
+            assert_eq!(
+                super::quota_state_for_admission(state.clone(), Some(&wrong)).observed_at,
+                old,
+                "a different report must not freshen an old positive projection"
+            );
+        }
+        let mut operator = state;
+        operator.source = ProviderQuotaSource::Operator;
+        assert_eq!(
+            super::quota_state_for_admission(operator, Some(&heartbeat)).observed_at,
+            old,
+            "a provider heartbeat cannot renew a separate operator assertion"
+        );
     }
 
     #[test]
