@@ -10114,7 +10114,14 @@ struct Bootstrapped {
 /// Bring an empty realm to "one epic with one task", the shortest state in which
 /// every task-scoped operation is addressable.
 async fn bootstrap(world: &World, slug: &'static str) -> Bootstrapped {
-    let created = ensure_project(world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    let repository = world.directory.path().join(format!("{slug}-repository"));
+    let created = ensure_project(
+        world,
+        slug,
+        "Kontor",
+        repository.to_str().expect("fixture path"),
+    )
+    .await;
     assert_eq!(created.status, 200, "{}", created.body);
     let project = created.json()["project_id"]
         .as_str()
@@ -10149,6 +10156,9 @@ async fn bootstrap(world: &World, slug: &'static str) -> Bootstrapped {
         .as_object_mut()
         .expect("the task request is an object")
         .remove("ticket_links");
+    let worktree = world.directory.path().join(format!("{slug}-task-worktree"));
+    std::fs::create_dir_all(worktree.join(".git")).expect("isolated fixture worktree");
+    body["tasks"][0]["worktree"] = serde_json::json!(worktree);
     let applied = Call::post(format!("/v1/projects/{project}/epics:apply"), &body)
         .signed_as(world, "admin")
         .with_key(format!("{slug}-epic"))
@@ -12778,6 +12788,23 @@ async fn finish_natively(world: &World, run: &str) {
 
 /// Arm, plan and start an existing bootstrapped task.
 async fn seat_existing(world: &World, seed: &Bootstrapped, prefix: &str) -> Vec<String> {
+    // Evidence-capable fixtures select their real provider account before launch;
+    // a later recovery must never invent an account for an unattributed run.
+    if world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.task_account_selection(
+                ProjectId::parse(&seed.project).expect("project"),
+                TaskId::parse(&seed.task).expect("task"),
+            )
+        })
+        .expect("account selection")
+        .is_none()
+    {
+        let pinned = Call::post(format!("/v1/projects/{}/tasks/{}/account-selection", seed.project, seed.task), &serde_json::json!({"expected_revision":task_revision_of(world, seed).await, "account_profile_id":seed.account, "reason":"Pin producer evidence attribution before launch"})).signed_as(world, "admin").with_key(format!("{prefix}-producer-account-pin")).send(world).await;
+        assert_eq!(pinned.status, 200, "{}", pinned.body);
+    }
     confirm_test_epic_identity(world, &seed.project, &seed.epic);
     materialize_execution_topology(
         world,
@@ -13096,6 +13123,7 @@ async fn settle_every_seat(
         .send(world)
         .await;
         assert_eq!(turn.status, 200, "turn {index}: {}", turn.body);
+        recover_test_turn_artifacts(world, seed, &turn).await;
 
         // A settled-turn team closes from its immutable role-turn rows while
         // the persistent seats remain live and reusable.
@@ -14197,6 +14225,162 @@ async fn run_with_role(world: &World, runs: &[String], role: &str) -> String {
     panic!("the seated team has no {role} seat")
 }
 
+async fn pin_evidence_accounts(
+    world: &World,
+    project: &str,
+    epic: &str,
+    account: &str,
+    prefix: &str,
+) {
+    let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(projection.status, 200, "{}", projection.body);
+    for task in projection.json()["tasks"].as_array().expect("tasks") {
+        let id = task["task_id"].as_str().expect("task id");
+        let selected = Call::post(format!("/v1/projects/{project}/tasks/{id}/account-selection"), &serde_json::json!({"expected_revision":task["revision"], "account_profile_id":account, "reason":"Pin real producer attribution before fixture launch"})).signed_as(world, "admin").with_key(format!("{prefix}-evidence-account-{id}")).send(world).await;
+        assert_eq!(selected.status, 200, "{}", selected.body);
+    }
+}
+
+fn with_test_account(mut body: serde_json::Value, account: &str) -> serde_json::Value {
+    body["account_profile_id"] = serde_json::json!(account);
+    body
+}
+
+async fn recover_project_turn_artifacts(
+    world: &World,
+    project: &str,
+    epic: &str,
+    account: &str,
+    turn: &Answer,
+) {
+    let seed = Bootstrapped {
+        project: project.to_owned(),
+        project_revision: 1,
+        epic: epic.to_owned(),
+        task: turn.json()["task_id"]
+            .as_str()
+            .expect("turn task")
+            .to_owned(),
+        task_revision: 1,
+        account: account.to_owned(),
+    };
+    recover_test_turn_artifacts(world, &seed, turn).await;
+}
+
+/// A committed, independently addressable test artifact in the registered project.
+/// Git is used only for this isolated content fixture; native sessions remain scripted.
+fn artifact_git_fixture(world: &World, seed: &Bootstrapped) -> (String, String) {
+    let project = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_project(ProjectId::parse(&seed.project).expect("project")))
+        .expect("project reads")
+        .expect("project exists");
+    let root = std::path::Path::new(project.root_path.as_str());
+    std::fs::create_dir_all(root).expect("fixture repository directory");
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("git fixture command");
+        assert!(
+            out.status.success(),
+            "git fixture: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout)
+            .expect("git output")
+            .trim()
+            .to_owned()
+    };
+    if !root.join(".git").exists() {
+        git(&["init", "--quiet"]);
+        std::fs::write(
+            root.join("evidence.md"),
+            b"Verified fixture implementation and independent review evidence.\n",
+        )
+        .expect("fixture artifact");
+        git(&["add", "evidence.md"]);
+        git(&[
+            "-c",
+            "user.name=Kontor test",
+            "-c",
+            "user.email=kontor-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "Committed artifact fixture",
+        ]);
+    }
+    (
+        git(&["rev-parse", "HEAD"]),
+        ContentHash::of(b"Verified fixture implementation and independent review evidence.\n")
+            .as_str()
+            .to_owned(),
+    )
+}
+
+async fn recover_test_turn_artifacts(world: &World, seed: &Bootstrapped, turn: &Answer) {
+    if turn.status != 200 {
+        return;
+    }
+    let artifacts = turn.json()["artifacts"]
+        .as_array()
+        .expect("artifact claims")
+        .clone();
+    if artifacts.is_empty() {
+        return;
+    }
+    let (commit, sha256) = artifact_git_fixture(world, seed);
+    for artifact in artifacts {
+        let key = artifact.as_str().expect("key");
+        // A raw free-form label may accompany a turn; only declared contracts
+        // belong in the evidence registry.
+        if !active_workflow(world, seed)
+            .snapshot
+            .definition
+            .artifacts
+            .iter()
+            .any(|a| a.key.as_str() == key)
+        {
+            continue;
+        }
+        let response = Call::post(
+            format!(
+                "/v1/projects/{}/tasks/{}/artifacts:record",
+                seed.project, seed.task
+            ),
+            &serde_json::json!({
+                "role_turn_id":turn.json()["turn_id"], "artifact_key":key,
+                "expected_task_revision": task_revision_of(world, seed).await,
+                "repository":"project", "commit":commit, "path":"evidence.md", "sha256":sha256,
+            }),
+        )
+        .signed_as(world, "operator")
+        .with_key(format!(
+            "artifact-{}-{key}",
+            turn.json()["turn_id"].as_str().expect("turn id")
+        ))
+        .send(world)
+        .await;
+        if response.status == 403 {
+            continue;
+        } // Negative role-mapping fixtures retain only a declaration.
+        assert_eq!(
+            response.status, 200,
+            "recover artifact {key}: {}",
+            response.body
+        );
+    }
+}
+
 /// Settle one bounded turn on one seat, citing exactly `artifacts`.
 async fn settle_turn(
     world: &World,
@@ -14206,7 +14390,7 @@ async fn settle_turn(
     artifacts: serde_json::Value,
     key: &str,
 ) -> Answer {
-    Call::post(
+    let answer = Call::post(
         format!(
             "/v1/projects/{}/agent-runs/{run}/turns:settle",
             seed.project
@@ -14221,7 +14405,9 @@ async fn settle_turn(
     .signed_as(world, "operator")
     .with_key(key.to_owned())
     .send(world)
-    .await
+    .await;
+    recover_test_turn_artifacts(world, seed, &answer).await;
+    answer
 }
 
 /// A second real task in the same project and epic, cloned from the seeded one.
@@ -15955,7 +16141,18 @@ async fn fleet_at_verification(world: &World, slug: &'static str) -> FleetWorld 
     .await;
     assert_eq!(registered.status, 200, "{}", registered.body);
 
-    let created = ensure_project(world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    let created = ensure_project(
+        world,
+        slug,
+        "Kontor",
+        world
+            .directory
+            .path()
+            .join(format!("{slug}-repository"))
+            .to_str()
+            .expect("fixture root"),
+    )
+    .await;
     let project = created.json()["project_id"]
         .as_str()
         .expect("a project id")
@@ -15989,11 +16186,14 @@ async fn fleet_at_verification(world: &World, slug: &'static str) -> FleetWorld 
 
     let applied = Call::post(
         format!("/v1/projects/{project}/epics:apply"),
-        &epic_body(
-            revision,
-            "Fleet epic",
-            "fleet-cat",
-            serde_json::json!([{"title": "Fleet task"}]),
+        &with_test_account(
+            epic_body(
+                revision,
+                "Fleet epic",
+                "fleet-cat",
+                serde_json::json!([{"title": "Fleet task"}]),
+            ),
+            &account,
         ),
     )
     .signed_as(world, "admin")
@@ -16022,6 +16222,7 @@ async fn fleet_at_verification(world: &World, slug: &'static str) -> FleetWorld 
     )
     .await;
 
+    pin_evidence_accounts(world, &project, &epic, &account, slug).await;
     let armed = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/execution:arm"),
         &serde_json::json!({
@@ -16864,6 +17065,7 @@ async fn a_gate_cannot_pass_on_caller_named_unproduced_evidence() {
     .send(&world)
     .await;
     assert_eq!(turn.status, 200, "{}", turn.body);
+    recover_test_turn_artifacts(&world, &seed, &turn).await;
     let (uri, revision, gate) = gate_record_target(&world, &seed).await;
     let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
         .signed_as(&world, "observer")
@@ -16964,6 +17166,7 @@ async fn a_gate_cannot_pass_before_its_workflow_phase_is_ready() {
         .send(&world)
         .await;
         assert_eq!(turn.status, 200, "{}", turn.body);
+        recover_test_turn_artifacts(&world, &seed, &turn).await;
     }
 
     let projection = Call::get(format!("/v1/projects/{}/epics/{}", seed.project, seed.epic))
@@ -23099,8 +23302,31 @@ async fn seated_turns(
     world: &World,
     slug: &'static str,
 ) -> (String, String, String, serde_json::Value) {
-    let ((project, epic, plan_hash), account) =
+    seated_turns_with_attribution(world, slug, false).await
+}
+
+async fn seated_turns_with_attribution(
+    world: &World,
+    slug: &'static str,
+    producer_attribution: bool,
+) -> (String, String, String, serde_json::Value) {
+    let ((project, epic, mut plan_hash), account) =
         armed_and_planned_configured(world, slug, true).await;
+    if producer_attribution {
+        pin_evidence_accounts(world, &project, &epic, &account, slug).await;
+        let replanned = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/scheduler:plan"),
+            &serde_json::json!({}),
+        )
+        .signed_as(world, "operator")
+        .send(world)
+        .await;
+        assert_eq!(replanned.status, 200, "{}", replanned.body);
+        plan_hash = replanned.json()["plan_hash"]
+            .as_str()
+            .expect("replanned after account pin")
+            .to_owned();
+    }
     let started = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/scheduler:start"),
         &serde_json::json!({"plan_hash": plan_hash}),
@@ -23667,7 +23893,8 @@ async fn replacing_a_cancelled_seat_skips_an_operator_abandoned_unbound_successo
     let world = World::open_empty_with_a_plane().await;
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
-    let (project, epic, account, seats) = seated_turns(&world, "replace-abandoned").await;
+    let (project, epic, account, seats) =
+        seated_turns_with_attribution(&world, "replace-abandoned", true).await;
     let seat_list = seats.as_array().expect("the seated roster").clone();
     let seat = seat_list[1].clone();
     let predecessor = seat["agent_run_id"].as_str().expect("the run id");
@@ -23834,6 +24061,7 @@ async fn replacing_a_cancelled_seat_skips_an_operator_abandoned_unbound_successo
         .send(&world)
         .await;
         assert_eq!(settled.status, 200, "slot `{slot}`: {}", settled.body);
+        recover_project_turn_artifacts(&world, &project, &epic, &account, &settled).await;
     }
 
     let projection = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
@@ -30148,7 +30376,8 @@ async fn a_team_closes_on_settled_turns_while_every_seat_stays_live() {
     let world = World::open_empty_with_a_plane().await;
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
-    let (project, epic, account, seats) = seated_turns(&world, "close-live").await;
+    let (project, epic, account, seats) =
+        seated_turns_with_attribution(&world, "close-live", true).await;
     let project_id = kontor_core::id::ProjectId::parse(&project).expect("a project id");
 
     let seat_list = seats.as_array().expect("seats").clone();
@@ -30191,6 +30420,7 @@ async fn a_team_closes_on_settled_turns_while_every_seat_stays_live() {
         .send(&world)
         .await;
         assert_eq!(settled.status, 200, "slot `{role_slot}`: {}", settled.body);
+        recover_project_turn_artifacts(&world, &project, &epic, &account, &settled).await;
         assert_eq!(
             settled.json()["seat_live"],
             serde_json::json!(true),
@@ -30406,6 +30636,32 @@ async fn an_unaccounted_slot_or_an_undischarged_gate_withholds_closure() {
     .send(&world)
     .await;
     assert_eq!(settled.status, 200, "{}", settled.body);
+    let (commit, sha256) = artifact_git_fixture(
+        &world,
+        &Bootstrapped {
+            project: project.clone(),
+            project_revision: 1,
+            epic: epic.clone(),
+            task: task_id.clone(),
+            task_revision: 1,
+            account: account.clone(),
+        },
+    );
+    let project_id = ProjectId::parse(&project).expect("project");
+    let task = TaskId::parse(&task_id).expect("task");
+    world.daemon.state().with_store(|store| {
+        let workflow = store.get_active_task_workflow(project_id, task).expect("workflow").expect("active");
+        for key in ["code-change", "review-notes", "qa-report", "release-notes"] {
+            store.record_artifact_evidence(&kontor_store::NewArtifactEvidence {
+                id:kontor_policy::model::ArtifactEvidenceId::generate(),
+                binding:kontor_store::EvaluationBinding { project_id, task_id:task, workflow_id:workflow.id, team_run_id:None, agent_run_id:None },
+                key:kontor_core::id::ArtifactKey::parse(key).expect("key"),
+                locator:CanonicalDocument::from_value(&serde_json::json!({"schema_version":1,"fixture":"explicit_preexisting_registry", "commit":commit, "path":"evidence.md", "sha256":sha256})).expect("locator"),
+                producer_role:kontor_core::id::RoleKey::parse("architect").expect("role"),
+                producer_account:AccountProfileId::parse(&account).expect("account"), recorded_at:kontor_api::now(),
+            }).expect("explicit addressable fixture evidence");
+        }
+    });
 
     // Every gate and artifact obligation is discharged first, so the *only*
     // thing missing when completion is attempted is the unaccounted slots. A
@@ -58858,4 +59114,304 @@ async fn route_apply_threads_the_proved_placement_into_the_retirement() {
         call, AdapterCall::RetireHostedSeat(seat) if *seat == binding_id
     )));
     assert_ne!(world.fake.hosted_seat_native_id(binding_id), Some(native));
+}
+
+/// A settled label alone cannot pass a gate. Recovering committed bytes is an
+/// explicit operator receipt, followed by the existing independent evaluator.
+#[tokio::test]
+async fn artifact_recovery_requires_a_real_settled_claim_and_verified_git_blob() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "artifact-proof").await;
+    let builder = run_with_role(&world, &runs, "builder").await;
+    let turn = Call::post(format!("/v1/projects/{}/agent-runs/{builder}/turns:settle", seed.project), &serde_json::json!({
+        "role_slot":"builder", "expected_task_revision":task_revision_of(&world, &seed).await,
+        "runtime_proof":observe_current_turn(&world, &seed.project, &builder), "artifacts":["code-change", "review-notes"],
+    })).signed_as(&world, "operator").with_key("artifact-source-turn").send(&world).await;
+    assert_eq!(turn.status, 200, "{}", turn.body);
+    assert!(
+        !turn.json()["follow_ups"]
+            .as_array()
+            .expect("declared handoffs")
+            .is_empty(),
+        "a declaration can coordinate the next role without qualifying acceptance evidence"
+    );
+    let (gate_uri, revision, _) = gate_record_target(&world, &seed).await;
+    let gate_request = serde_json::json!({"expected_revision":revision, "verdict":"passed", "evaluator_role":"inspector", "evaluator_account":seed.account, "evidence":["code-change", "review-notes"]});
+    let uncited = Call::post(&gate_uri, &gate_request)
+        .signed_as(&world, "operator")
+        .with_key("artifact-raw-label-gate")
+        .send(&world)
+        .await;
+    assert_ne!(
+        uncited.status, 200,
+        "a label must not satisfy a gate: {}",
+        uncited.body
+    );
+    assert!(
+        uncited.body.contains("phase"),
+        "a raw label cannot even make the producing phase ready: {}",
+        uncited.body
+    );
+    let (commit, hash) = artifact_git_fixture(&world, &seed);
+    let uri = format!(
+        "/v1/projects/{}/tasks/{}/artifacts:record",
+        seed.project, seed.task
+    );
+    let request = serde_json::json!({"role_turn_id":turn.json()["turn_id"], "artifact_key":"code-change", "expected_task_revision":task_revision_of(&world, &seed).await, "repository":"project", "commit":commit, "path":"evidence.md", "sha256":hash});
+    let mut wrong = request.clone();
+    wrong["sha256"] = serde_json::json!("0".repeat(64));
+    let refused = Call::post(&uri, &wrong)
+        .signed_as(&world, "operator")
+        .with_key("artifact-wrong-hash")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    let mut unclaimed = request.clone();
+    unclaimed["artifact_key"] = serde_json::json!("qa-report");
+    let refused = Call::post(&uri, &unclaimed)
+        .signed_as(&world, "operator")
+        .with_key("artifact-not-claimed")
+        .send(&world)
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    let mut wrong_role = request.clone();
+    wrong_role["artifact_key"] = serde_json::json!("review-notes");
+    let refused = Call::post(&uri, &wrong_role)
+        .signed_as(&world, "operator")
+        .with_key("artifact-wrong-producer-phase")
+        .send(&world)
+        .await;
+    assert_eq!(
+        refused.status, 403,
+        "a claimed key does not replace pinned phase ownership: {}",
+        refused.body
+    );
+    let observer = Call::post(&uri, &request)
+        .signed_as(&world, "observer")
+        .with_key("artifact-observer")
+        .send(&world)
+        .await;
+    assert_eq!(observer.status, 403);
+    let calls_before = world.fake.calls().len();
+    let recorded = Call::post(&uri, &request)
+        .signed_as(&world, "operator")
+        .with_key("artifact-recovered")
+        .send(&world)
+        .await;
+    assert_eq!(recorded.status, 200, "{}", recorded.body);
+    assert_eq!(recorded.json()["provenance"], "operator_recovered_git_blob");
+    assert_eq!(recorded.json()["turn_proof_class"], "runtime_proved");
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before,
+        "recovery itself needs no new native prompt"
+    );
+    let inspector = run_with_role(&world, &runs, "inspector").await;
+    let reviewed = settle_turn(
+        &world,
+        &seed,
+        &inspector,
+        "inspector",
+        serde_json::json!(["review-notes"]),
+        "artifact-reviewer-turn",
+    )
+    .await;
+    assert_eq!(reviewed.status, 200, "{}", reviewed.body);
+    let (_, ready_revision, _) = gate_record_target(&world, &seed).await;
+    let gate_request = serde_json::json!({"expected_revision":ready_revision, "verdict":"passed", "evaluator_role":"inspector", "evaluator_account":seed.account, "evidence":["code-change", "review-notes"]});
+    let passed = Call::post(&gate_uri, &gate_request)
+        .signed_as(&world, "operator")
+        .with_key("artifact-independent-gate")
+        .send(&world)
+        .await;
+    assert_eq!(passed.status, 200, "{}", passed.body);
+    assert_eq!(passed.json()["verdict"], "passed");
+    let replay = Call::post(&uri, &request)
+        .signed_as(&world, "operator")
+        .with_key("artifact-recovered")
+        .send(&world)
+        .await;
+    assert_eq!(replay.json(), recorded.json());
+    let changed = Call::post(&uri, &wrong)
+        .signed_as(&world, "operator")
+        .with_key("artifact-recovered")
+        .send(&world)
+        .await;
+    assert_ne!(changed.status, 200, "key reuse cannot change the locator");
+    let project = ProjectId::parse(&seed.project).expect("project");
+    let task = TaskId::parse(&seed.task).expect("task");
+    let db = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    // Reopen the durable store independently: both receipt and qualifying key survive.
+    let reopened = kontor_store::SqliteStore::open(&db).expect("restart readback");
+    let keys = reopened
+        .list_task_artifact_keys(project, task)
+        .expect("keys survive");
+    assert!(keys.contains(&name("code-change")));
+    let count: i64 = rusqlite::Connection::open(db)
+        .expect("database")
+        .query_row(
+            "SELECT count(*) FROM artifact_producer_submissions",
+            [],
+            |r| r.get(0),
+        )
+        .expect("receipt count");
+    assert_eq!(count, 2);
+}
+
+#[tokio::test]
+async fn artifact_recovery_of_a_closed_legacy_producer_replays_after_daemon_restart() {
+    let world = World::open_empty().await;
+    world.script(HISTORY_LIVE);
+    world.daemon.reconcile().await;
+    let (seed, runs) = seated(&world, "artifact-legacy").await;
+    let builder = run_with_role(&world, &runs, "builder").await;
+    let turn = Call::post(format!("/v1/projects/{}/agent-runs/{builder}/turns:settle", seed.project), &serde_json::json!({
+        "role_slot":"builder", "expected_task_revision":task_revision_of(&world, &seed).await,
+        "runtime_proof":observe_current_turn(&world, &seed.project, &builder), "artifacts":["code-change"],
+    })).signed_as(&world, "operator").with_key("legacy-artifact-source").send(&world).await;
+    assert_eq!(turn.status, 200, "{}", turn.body);
+    // Model a real pre-v88 row: preserve its exact settled claim/producer,
+    // but never invent native positions that historical settlement did not record.
+    let raw = rusqlite::Connection::open(world.directory.path().join(kontor_daemon::DATABASE_FILE))
+        .expect("fixture database");
+    let trigger: String = raw.query_row("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'role_turns_are_immutable'", [], |r| r.get(0)).expect("immutable trigger");
+    raw.execute_batch("DROP TRIGGER role_turns_are_immutable")
+        .expect("historical fixture setup");
+    raw.execute("UPDATE role_turns SET settlement_kind = 'historical', account_profile = NULL, runtime_message_id = NULL, message_timeline_epoch = NULL, message_timeline_sequence = NULL, response_timeline_epoch = NULL, response_timeline_sequence = NULL, runtime_observation_cursor = NULL WHERE id = ?1", [turn.json()["turn_id"].as_str().expect("turn")]).expect("legacy proof shape");
+    raw.execute_batch(&trigger)
+        .expect("restore immutable protection");
+    drop(raw);
+    close_seat(&world, &seed, &builder, "legacy-artifact-close-producer").await;
+    let (commit, hash) = artifact_git_fixture(&world, &seed);
+    let project = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_project(ProjectId::parse(&seed.project).expect("project")))
+        .expect("project reads")
+        .expect("project");
+    let worktree = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.task_worktree(
+                ProjectId::parse(&seed.project).expect("project"),
+                TaskId::parse(&seed.task).expect("task"),
+            )
+        })
+        .expect("worktree reads")
+        .expect("declared worktree");
+    std::fs::remove_dir(std::path::Path::new(worktree.as_str()).join(".git"))
+        .expect("remove empty fake marker in owned fixture");
+    std::fs::remove_dir(worktree.as_str())
+        .expect("replace empty fake checkout with real Git worktree");
+    let added = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project.root_path.as_str())
+        .args(["worktree", "add", "--detach", worktree.as_str(), &commit])
+        .output()
+        .expect("isolated worktree");
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let uri = format!(
+        "/v1/projects/{}/tasks/{}/artifacts:record",
+        seed.project, seed.task
+    );
+    let request = serde_json::json!({"role_turn_id":turn.json()["turn_id"], "artifact_key":"code-change", "expected_task_revision":task_revision_of(&world, &seed).await, "repository":"task", "commit":commit, "path":"evidence.md", "sha256":hash});
+    let before_record = active_workflow(&world, &seed);
+    let native_calls = world.fake.calls().len();
+    let recorded = Call::post(&uri, &request)
+        .signed_as(&world, "operator")
+        .with_key("legacy-artifact-recovered")
+        .send(&world)
+        .await;
+    assert_eq!(recorded.status, 200, "{}", recorded.body);
+    assert_eq!(recorded.json()["turn_proof_class"], "legacy_or_attested");
+    assert_eq!(recorded.json()["provenance"], "operator_recovered_git_blob");
+    assert_eq!(world.fake.calls().len(), native_calls);
+    let derived_phase = active_workflow(&world, &seed).current_phase;
+    assert_ne!(derived_phase, before_record.current_phase);
+    // Crash shape: immutable registry and receipt committed, but the derived
+    // workflow projection did not. A retry after restart must finish that debt.
+    pin_workflow_back_to(
+        &world,
+        &seed,
+        before_record.current_phase.as_str(),
+        before_record.revision.get(),
+    );
+    let removed = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project.root_path.as_str())
+        .args(["worktree", "remove", worktree.as_str()])
+        .output()
+        .expect("worktree cleanup");
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    let persisted_blob = std::process::Command::new("git")
+        .arg(format!(
+            "--git-dir={}",
+            recorded.json()["git_dir"]
+                .as_str()
+                .expect("persistent Git directory")
+        ))
+        .args(["cat-file", "blob", &format!("{commit}:evidence.md")])
+        .output()
+        .expect("artifact still addressable after cleanup");
+    assert!(persisted_blob.status.success());
+    assert_eq!(ContentHash::of(&persisted_blob.stdout).as_str(), hash);
+    let operator = secret(&world, "operator");
+    let World {
+        directory,
+        daemon,
+        router,
+        fake,
+        ..
+    } = world;
+    daemon.state().signals().stop();
+    drop(router);
+    drop(daemon);
+    fake.rebuild_adapter_state();
+    let restarted = Daemon::start(
+        DaemonConfig::at(directory.path()).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("same realm restart");
+    restarted.reconcile().await;
+    let calls_after_restart = fake.calls().len();
+    let replay = Call::post(&uri, &request)
+        .with_token(&operator)
+        .with_key("legacy-artifact-recovered")
+        .send_to(&restarted.router())
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json(), recorded.json());
+    assert_eq!(
+        fake.calls().len(),
+        calls_after_restart,
+        "replaying completed handoffs does not repeat native effects"
+    );
+    let resumed = restarted
+        .state()
+        .with_store(|store| {
+            store.get_active_task_workflow(
+                ProjectId::parse(&seed.project).expect("project"),
+                TaskId::parse(&seed.task).expect("task"),
+            )
+        })
+        .expect("workflow")
+        .expect("active workflow");
+    assert_eq!(
+        resumed.current_phase, derived_phase,
+        "receipt replay must finish post-commit advancement"
+    );
 }

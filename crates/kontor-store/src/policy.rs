@@ -276,27 +276,7 @@ impl SqliteStore {
         record: &NewArtifactEvidence,
     ) -> RepositoryResult<ArtifactEvidenceId> {
         let transaction = self.begin()?;
-        transaction
-            .execute(
-                "INSERT INTO artifact_evidence
-                     (id, project_id, task_id, workflow_id, agent_run_id, artifact_key,
-                      locator, locator_hash, producer_role, producer_account, recorded_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![
-                    record.id.to_string(),
-                    record.binding.project_id.to_string(),
-                    record.binding.task_id.to_string(),
-                    record.binding.workflow_id.to_string(),
-                    record.binding.agent_run_id.map(|run| run.to_string()),
-                    record.key.as_str(),
-                    record.locator.json(),
-                    record.locator.hash().as_str(),
-                    record.producer_role.as_str(),
-                    record.producer_account.to_string(),
-                    text(record.recorded_at)
-                ],
-            )
-            .map_err(backend)?;
+        insert_artifact_evidence(&transaction, record)?;
         transaction.commit().map_err(backend)?;
         Ok(record.id)
     }
@@ -1503,4 +1483,33 @@ fn write_transition(
         closed_at: transition.closed_at,
         ..episode.clone()
     })
+}
+
+/// Insert an already validated artifact within its owning transaction.
+pub(crate) fn insert_artifact_evidence(
+    transaction: &Transaction<'_>,
+    record: &NewArtifactEvidence,
+) -> RepositoryResult<()> {
+    transaction
+        .execute(
+            "INSERT INTO artifact_evidence
+                     (id, project_id, task_id, workflow_id, agent_run_id, artifact_key,
+                      locator, locator_hash, producer_role, producer_account, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                record.id.to_string(),
+                record.binding.project_id.to_string(),
+                record.binding.task_id.to_string(),
+                record.binding.workflow_id.to_string(),
+                record.binding.agent_run_id.map(|run| run.to_string()),
+                record.key.as_str(),
+                record.locator.json(),
+                record.locator.hash().as_str(),
+                record.producer_role.as_str(),
+                record.producer_account.to_string(),
+                text(record.recorded_at)
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
 }

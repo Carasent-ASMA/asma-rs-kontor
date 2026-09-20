@@ -7681,25 +7681,10 @@ impl SqliteStore {
     /// this read in the position of deciding which of several records for one key
     /// counts — a decision the gate does not need and must not make twice.
     ///
-    /// Two producer-owned sources are unioned because an artifact leaves a
-    /// durable trace in two ordinary delivery paths:
-    ///
-    /// - `artifact_evidence` — the addressable record: a key plus a locator
-    ///   someone can follow. Nothing in the delivery path writes it today.
-    /// - `role_turns.artifacts` — the settling role's own declaration of what its
-    ///   turn produced.
-    ///
-    /// Gate evaluations are intentionally absent. Their `evidence` field cites
-    /// already-produced artifacts; admitting the citation as production would
-    /// let a gate request manufacture the evidence it is meant to inspect.
-    /// Evidence drawn from a producer turn is still gated independently by the
-    /// profile's required gate states.
-    ///
-    /// Unparseable entries are skipped rather than raised. `role_turns.artifacts`
-    /// is open data — turns legitimately cite commit shas, filenames and one-off
-    /// labels beside contract keys — and a value that is not a well-formed name
-    /// cannot satisfy a declared artifact anyway. Failing the whole read on one
-    /// such label would deny the gate the keys that *are* present.
+    /// Only addressable registry records qualify. A settled turn's labels and a
+    /// gate's citations are claims about artifacts, not independently addressable
+    /// evidence. Historical explicit registry entries remain supported; legacy
+    /// task closure certificates have their separate epic-only read below.
     ///
     /// # Errors
     /// Returns a backend or decoding error.
@@ -7711,21 +7696,12 @@ impl SqliteStore {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT DISTINCT artifact_key FROM (
-                     SELECT artifact_key
-                       FROM artifact_evidence
-                      WHERE project_id = ?1 AND task_id = ?2
-                     UNION
-                     SELECT entry.value AS artifact_key
-                       FROM role_turns AS turn
-                       JOIN json_each(
-                                CASE WHEN json_valid(turn.artifacts)
-                                     THEN turn.artifacts ELSE '[]' END
-                            ) AS entry
-                      WHERE turn.project_id = ?1 AND turn.task_id = ?2
-                        AND entry.type = 'text'
-                 )
-                 ORDER BY artifact_key",
+                "SELECT DISTINCT evidence.artifact_key FROM artifact_evidence evidence
+                 JOIN task_workflows workflow ON workflow.project_id = evidence.project_id
+                  AND workflow.task_id = evidence.task_id AND workflow.id = evidence.workflow_id
+                  AND workflow.active = 1
+                 WHERE evidence.project_id = ?1 AND evidence.task_id = ?2
+                 ORDER BY evidence.artifact_key",
             )
             .map_err(backend)?;
         let rows = statement

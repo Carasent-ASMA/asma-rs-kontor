@@ -25,6 +25,8 @@
 //! they have no TeamRun and are keyed by their durable SeatBinding. Neither
 //! path can create the other's kind of session.
 
+mod artifact_submission;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -4898,6 +4900,8 @@ impl Services {
         let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team_run.snapshot)
             .map_err(|error| self.refuse_domain(&error))?;
 
+        // Declared labels may coordinate a handoff; they never qualify a gate,
+        // phase or completion requirement, which consumes the artifact registry.
         // Every artifact this task's turns have produced, not only this turn's.
         // A handoff waits on artifacts, and it does not care which turn produced
         // which: the condition is about the task's state, not about authorship.
@@ -31318,6 +31322,18 @@ impl ApplicationOperations for Services {
                 .map(|(epoch, sequence)| TurnTimelinePositionDto { epoch, sequence }),
             applied: applied_dto(applied),
         })
+    }
+
+    async fn record_artifact(
+        &self,
+        key: &IdempotencyKey,
+        authority: kontor_api::auth::CallerCapability,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &kontor_api::artifacts::RecordArtifactRequest,
+    ) -> Result<kontor_api::artifacts::ArtifactSubmissionDto, ApiError> {
+        self.recover_artifact(key, authority, project_id, task_id, request)
+            .await
     }
 
     async fn settle_turn(

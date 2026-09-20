@@ -6021,7 +6021,8 @@ pub struct SettleTurnRequest {
     /// challenge and selects the terminal response server-side.
     #[serde(default)]
     pub correlation_challenge_message_id: Option<String>,
-    /// The artifacts the turn produced.
+    /// Declared artifact claims. Gate/phase evidence requires an addressable
+    /// record through `artifacts:record`; a label alone is not evidence.
     #[serde(default)]
     pub artifacts: Vec<String>,
 }
@@ -7905,6 +7906,16 @@ pub trait ApplicationOperations: Send + Sync {
         role_slot: &str,
         request: &WaiveRoleSlotRequest,
     ) -> Result<RoleSlotWaiverDto, ApiError>;
+
+    /// Recover a verified addressable artifact from an existing settled claim.
+    async fn record_artifact(
+        &self,
+        key: &IdempotencyKey,
+        authority: CallerCapability,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &crate::artifacts::RecordArtifactRequest,
+    ) -> Result<crate::artifacts::ArtifactSubmissionDto, ApiError>;
 
     /// Settle one bounded Kontor role turn, leaving the seat live.
     async fn settle_turn(

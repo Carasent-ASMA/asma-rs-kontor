@@ -321,7 +321,7 @@ mod tests {
     }
 
     /// TEST-001: the worker profile at operator authority serves exactly the
-    /// profile's eighteen tools — no more, no fewer.
+    /// declared tools — no more, no fewer.
     #[test]
     fn the_worker_profile_at_operator_serves_exactly_the_profile() {
         let served: BTreeSet<&str> = profiled(CallerTier::Operator, "worker")
@@ -339,7 +339,11 @@ mod tests {
             served, declared,
             "the served list is exactly the profile ∩ operator, which is the whole profile"
         );
-        assert_eq!(served.len(), 19, "worker v3 is nineteen tools");
+        assert_eq!(
+            served.len(),
+            20,
+            "worker includes verified artifact recovery"
+        );
     }
 
     /// A consultation native receives both family reads and the two

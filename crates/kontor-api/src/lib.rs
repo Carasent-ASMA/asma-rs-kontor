@@ -36,6 +36,7 @@
 //! has nowhere to put.
 
 pub mod applications;
+pub mod artifacts;
 pub mod auth;
 pub mod body;
 pub mod control;
@@ -896,6 +897,10 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
                 post(applications::abandon_run),
+            )
+            .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record",
+                post(artifacts::record_artifact),
             )
             // A *turn* is smaller than a run: settling one closes Kontor's bounded
             // piece of work and leaves the seat's native session live.

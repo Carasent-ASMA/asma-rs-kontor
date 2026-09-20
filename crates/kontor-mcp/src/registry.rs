@@ -743,7 +743,7 @@ impl ServeProfile {
 ///
 /// `worker` is the everyday working seat's surface: read the work, claim it,
 /// settle a turn, record a gate verdict, talk on the session, submit intake,
-/// read/propose memory and resolve context — 18 tools, all at or below operator
+/// read/propose memory, recover verified artifact locators and resolve context — all at or below operator
 /// tier, which the drift test below pins against the registry.
 ///
 /// `consultation` is deliberately separate. An Advisor or Committee native
@@ -765,6 +765,7 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
             "kontor_completion_get",
             "kontor_ticket_claim",
             "kontor_turn_settle",
+            "kontor_artifact_record",
             "kontor_turn_observe",
             "kontor_gate_record",
             "kontor_session_message_send",
@@ -2251,6 +2252,71 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Persist and dispatch at most one future server-generated correlation challenge on the exact existing binding; retries only reconcile.",
     },
     ToolSpec {
+        name: "kontor_artifact_record",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "Owning project.",
+            ),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "Exact task UUID or confirmed ASMA Jira key.",
+            ),
+            req(
+                "role_turn_id",
+                Place::Body,
+                ArgType::Text,
+                "Exact settled turn that already claimed the key.",
+            ),
+            req(
+                "artifact_key",
+                Place::Body,
+                ArgType::OpenKey,
+                "Declared artifact key.",
+            ),
+            req(
+                "expected_task_revision",
+                Place::Body,
+                ArgType::Revision,
+                "Current task revision.",
+            ),
+            req(
+                "repository",
+                Place::Body,
+                ArgType::Enum(&["project", "task"]),
+                "Registered repository root.",
+            ),
+            req(
+                "commit",
+                Place::Body,
+                ArgType::Text,
+                "Full immutable Git commit object id.",
+            ),
+            req(
+                "path",
+                Place::Body,
+                ArgType::Text,
+                "Repository-relative blob path.",
+            ),
+            req(
+                "sha256",
+                Place::Body,
+                ArgType::Text,
+                "Expected SHA-256 of the blob bytes.",
+            ),
+            IDEMPOTENCY,
+        ],
+        about: "Recover a verified Git blob for an exact settled artifact claim; explicit operator provenance, no new native turn.",
+    },
+    ToolSpec {
         name: "kontor_turn_settle",
         tier: CallerTier::Operator,
         method: Method::Post,
@@ -2289,7 +2355,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "artifacts",
                 Place::Body,
                 ArgType::TextArray,
-                "The artifacts the turn produced.",
+                "Declared artifact keys. Register verified locators with kontor_artifact_record before gate/phase acceptance.",
             ),
             opt(
                 "runtime_proof",
@@ -7304,7 +7370,11 @@ mod tests {
         // 19 since ASMA-8203 added `kontor_turn_observe`, the read a post-turn
         // caller uses to state a settlement. The count is pinned so that adding
         // a tool to a seat's surface stays a decision rather than a side effect.
-        assert_eq!(worker.tools.len(), 19, "worker v3 is exactly 19 tools");
+        assert_eq!(
+            worker.tools.len(),
+            20,
+            "worker includes verified artifact recovery"
+        );
         assert!(worker.allows("kontor_turn_observe"));
         assert!(worker.allows("kontor_memory_search"));
         assert!(worker.allows("kontor_memory_history"));

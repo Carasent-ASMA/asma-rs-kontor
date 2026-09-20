@@ -7668,6 +7668,75 @@
         }
       }
     },
+    "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Verify and durably record one settled-turn artifact augmentation.",
+        "operationId": "record_artifact",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordArtifactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactSubmissionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/tasks/{task_id}/context:resolve": {
       "post": {
         "tags": [
@@ -12215,6 +12284,116 @@
               "type": "string"
             },
             "description": "The tasks to arm. Empty arms the whole epic."
+          }
+        }
+      },
+      "ArtifactSubmissionDto": {
+        "type": "object",
+        "description": "Immutable augmentation receipt. Attribution identifies the old claim, not byte authorship.",
+        "required": [
+          "schema_version",
+          "realm_id",
+          "evidence_id",
+          "task_id",
+          "workflow_id",
+          "role_turn_id",
+          "agent_run_id",
+          "producer_role",
+          "producer_account",
+          "artifact_key",
+          "producer_phase",
+          "provenance",
+          "turn_proof_class",
+          "recorded_by",
+          "git_dir",
+          "commit",
+          "path",
+          "sha256",
+          "locator_hash",
+          "recorded_at"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "Source persistent agent run."
+          },
+          "artifact_key": {
+            "type": "string",
+            "description": "Declared artifact key."
+          },
+          "commit": {
+            "type": "string",
+            "description": "Exact commit locator."
+          },
+          "evidence_id": {
+            "type": "string",
+            "description": "Artifact registry identity."
+          },
+          "git_dir": {
+            "type": "string",
+            "description": "Persistent common Git directory, independent of a disposable worktree."
+          },
+          "locator_hash": {
+            "type": "string",
+            "description": "Canonical locator digest."
+          },
+          "path": {
+            "type": "string",
+            "description": "Exact blob path."
+          },
+          "producer_account": {
+            "type": "string",
+            "description": "Provider account derived from the source run; not the calling operator's identity."
+          },
+          "producer_phase": {
+            "type": "string",
+            "description": "Pinned producing phase."
+          },
+          "producer_role": {
+            "type": "string",
+            "description": "Source role slot, derived from the settled turn."
+          },
+          "provenance": {
+            "type": "string",
+            "description": "Always `operator_recovered_git_blob`, never inferred agent authorship."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Owning Realm."
+          },
+          "recorded_at": {
+            "type": "string",
+            "description": "Verification/recording instant."
+          },
+          "recorded_by": {
+            "type": "string",
+            "description": "Credential tier that authorized the augmentation."
+          },
+          "role_turn_id": {
+            "type": "string",
+            "description": "Source settled-turn receipt."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Envelope schema version.",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Verified content digest."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Exact task and workflow."
+          },
+          "turn_proof_class": {
+            "type": "string",
+            "description": "Native-proof versus historical/attested source turn."
+          },
+          "workflow_id": {
+            "type": "string",
+            "description": "Pinned workflow whose declared artifact this satisfies."
           }
         }
       },
@@ -20613,6 +20792,52 @@
           }
         }
       },
+      "RecordArtifactRequest": {
+        "type": "object",
+        "description": "Attaches verified Git bytes to an existing claim; does not assert agent authorship.",
+        "required": [
+          "role_turn_id",
+          "artifact_key",
+          "expected_task_revision",
+          "repository",
+          "commit",
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "artifact_key": {
+            "type": "string",
+            "description": "Declared artifact key already claimed by that turn."
+          },
+          "commit": {
+            "type": "string",
+            "description": "Full immutable Git commit object id (40 or 64 lower-case hexadecimal digits)."
+          },
+          "expected_task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Current task revision.",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string",
+            "description": "Repository-relative blob path, without parent traversal."
+          },
+          "repository": {
+            "type": "string",
+            "description": "Registered repository root: `task` worktree or `project` checkout."
+          },
+          "role_turn_id": {
+            "type": "string",
+            "description": "Exact existing settled-turn receipt."
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Expected SHA-256 of the blob contents, verified by the daemon."
+          }
+        },
+        "additionalProperties": false
+      },
       "RecordFindingsRequest": {
         "type": "object",
         "description": "Record one round of Committee findings.",
@@ -22840,7 +23065,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The artifacts the turn produced."
+            "description": "Declared artifact claims. Gate/phase evidence requires an addressable\nrecord through `artifacts:record`; a label alone is not evidence."
           },
           "correlation_challenge_message_id": {
             "type": [

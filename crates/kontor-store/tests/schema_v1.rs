@@ -31,6 +31,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "agent_runs",
     "approval_receipts",
     "artifact_evidence",
+    "artifact_producer_submissions",
     "availability_overrides",
     "calendar_exceptions",
     "calendar_profiles",
@@ -732,7 +733,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // declared TeamRun slot, and at which revision of that run, so a slot with
     // no owed dispatch has a supported authority that is not a second run
     // (ASMA-8234).
-    assert_eq!(SCHEMA_VERSION, 110);
+    assert_eq!(SCHEMA_VERSION, 111);
 }
 
 #[test]
@@ -742,7 +743,10 @@ fn v108_worktree_correction_evidence_is_append_only() {
     // The current version, not the one this feature landed at: the table under
     // test is unchanged by later migrations, and pinning 108 here would make
     // every subsequent migration fail a test about worktree corrections.
-    assert_eq!(store.schema_version().expect("the version reads"), 110);
+    assert_eq!(
+        store.schema_version().expect("the version reads"),
+        SCHEMA_VERSION
+    );
     drop(store);
     let connection =
         Connection::open(directory.path().join("kontor.db")).expect("the migrated database opens");
