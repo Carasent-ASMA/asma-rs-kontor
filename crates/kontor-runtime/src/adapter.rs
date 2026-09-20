@@ -1575,11 +1575,15 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
-    /// Archive an exact retired native child and prove its absence.
+    /// Archive an exact retired native container and prove its absence.
     ///
-    /// Implementations must refuse native roots, foreign/moved identities and
-    /// live occupants. A missing child on retry is confirmed through a complete
-    /// readback, never inferred from an acknowledgement or cached binding.
+    /// Both materialized shapes pass here, and the request's own
+    /// [`crate::container::ArchiveContainerRequest::parent_project`] decides
+    /// which ancestry is admissible. Implementations must refuse foreign or
+    /// moved identities, live occupants, and — for a root — any container still
+    /// held beneath it and any root the operator adopted rather than Kontor
+    /// created. Absence on retry is confirmed through a complete readback, never
+    /// inferred from an acknowledgement or a cached binding.
     async fn archive_container(
         &self,
         request: &crate::container::ArchiveContainerRequest,

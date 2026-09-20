@@ -826,3 +826,121 @@ fn a_new_epic_can_share_its_lineages_historical_project_root() {
         );
     }
 }
+
+/// ASMA-8204: a parent may not archive while any child is short of archived.
+///
+/// Retiring a child says its work is over; archiving it says its native place
+/// is gone. Only the second makes the parent's own archive safe, and the store
+/// is where that has to hold, because every route into the lifecycle — service,
+/// recovery, migration — passes through this one transition.
+#[test]
+fn a_retired_but_unarchived_child_blocks_its_parents_archive() {
+    let home = TempDir::new().expect("a temporary directory");
+    let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
+    let project_id = ProjectId::generate();
+    let mini_project_id = MiniProjectId::generate();
+    let created_at = at("2026-09-17T09:00:00Z");
+    store
+        .create_project(&NewProject {
+            id: project_id,
+            name: name("Closeout ordering project"),
+            root_path: name("/tmp/closeout-ordering-project"),
+            created_at,
+        })
+        .expect("the project is created");
+    store
+        .create_mini_project(&NewMiniProject {
+            id: mini_project_id,
+            project_id,
+            name: name("Closeout ordering epic"),
+            created_at,
+        })
+        .expect("the epic is created");
+
+    let topology = bundled_operational_domain()
+        .expect("the bundled domain validates")
+        .topology_specs
+        .first()
+        .expect("a topology")
+        .clone();
+    let canonical_hash = store
+        .publish_topology_spec(project_id, &topology, &default_stamp(), created_at)
+        .expect("the topology is published");
+    let snapshot = TopologySnapshot {
+        spec_id: topology.spec_id,
+        version: topology.version,
+        canonical_hash,
+    };
+    store
+        .pin_mini_project_topology(&MiniProjectTopologySnapshot {
+            project_id,
+            mini_project_id,
+            topology: snapshot.clone(),
+            pinned_at: created_at,
+        })
+        .expect("the epic is pinned");
+
+    let place = |kind: &str, scope: Option<MiniProjectId>, parent: Option<TopologyNodeId>| {
+        store
+            .create_topology_node(&NewSessionTopologyNode {
+                id: TopologyNodeId::generate(),
+                project_id,
+                mini_project_id: scope,
+                topology: snapshot.clone(),
+                kind: TopologyKindKey::parse(kind).expect("a declared kind"),
+                parent_id: parent,
+                task_id: None,
+                created_at,
+            })
+            .expect("the node is created")
+    };
+    let root = place("PSW", None, None);
+    let epic = place("ESW", Some(mini_project_id), Some(root.id));
+    let control = place("ECP", Some(mini_project_id), Some(epic.id));
+
+    let advance = |id: TopologyNodeId, to: TopologyLifecycle, revision: AggregateRevision| {
+        store.transition_topology_node(project_id, id, to, revision, created_at)
+    };
+
+    let control = advance(control.id, TopologyLifecycle::Retired, control.revision)
+        .expect("the leaf retires with nothing beneath it");
+    let epic = advance(epic.id, TopologyLifecycle::Retired, epic.revision)
+        .expect("the parent retires once its child is non-active");
+
+    // The whole point: retired is not archived.
+    let blocked = advance(epic.id, TopologyLifecycle::Archived, epic.revision);
+    assert!(
+        matches!(
+            blocked,
+            Err(RepositoryError::Conflict { subject, rule })
+                if subject == "topology node"
+                    && rule == "the node still has children that are not archived"
+        ),
+        "a retired child must block its parent's archive: {blocked:?}"
+    );
+    assert_eq!(
+        store
+            .get_topology_node(project_id, epic.id)
+            .expect("the parent reads")
+            .expect("the parent is retained")
+            .lifecycle,
+        TopologyLifecycle::Retired,
+        "a refused archive must leave the parent exactly where it was"
+    );
+
+    let control = advance(control.id, TopologyLifecycle::Archived, control.revision)
+        .expect("the leaf archives");
+    assert_eq!(control.lifecycle, TopologyLifecycle::Archived);
+    let epic = advance(epic.id, TopologyLifecycle::Archived, epic.revision)
+        .expect("the parent archives once every child is archived");
+    assert_eq!(epic.lifecycle, TopologyLifecycle::Archived);
+
+    // And the rule composes upward rather than stopping at one generation: the
+    // project root is still held open by the epic's sibling-free subtree only
+    // because that subtree is now archived, so the root's own turn is next.
+    let root = advance(root.id, TopologyLifecycle::Retired, root.revision)
+        .expect("the project root retires");
+    let root = advance(root.id, TopologyLifecycle::Archived, root.revision)
+        .expect("the project root archives last");
+    assert_eq!(root.lifecycle, TopologyLifecycle::Archived);
+}
