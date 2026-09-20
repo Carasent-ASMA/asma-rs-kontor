@@ -41060,12 +41060,12 @@ mod tests {
         assert_eq!(Services::write_key_for(&entry, &unchanged), entry);
     }
     use super::{
-        FrozenCommitteeRoute, IdentityDecision, QuotaOutlook, Services,
+        FrozenCommitteeRoute, IdentityDecision, QuotaOutlook, RuntimeModelRouteRequest, Services,
         account_for_explicit_provider_alias, consultation_account_rungs, counts_towards_completion,
         eligible_roots, ensure_unambiguous_generic_consultation_routes,
         freeze_hosted_seat_autonomy, freeze_seat_autonomy, kickoff_is_ready,
-        re_review_remediation_identity, render_legacy_container_name, seat_block,
-        select_committee_allocation, slot_prompt,
+        parse_runtime_model_route, re_review_remediation_identity, render_legacy_container_name,
+        seat_block, select_committee_allocation, slot_prompt,
     };
     use kontor_api::error::ApiError;
     use kontor_core::id::{
@@ -41302,6 +41302,47 @@ mod tests {
         );
     }
 
+    /// ASMA-8237: a model the runtime does not list is refused when it is
+    /// *requested*, not merely left out of what `/v1/catalog` advertises.
+    ///
+    /// The catalog regression proves the guessed aliases are absent from the
+    /// advertised list. Absence alone is not a refusal: the enforced boundary
+    /// is `model_route_is_catalogued`, consulted here on the write path, and a
+    /// route that never reaches the advertised list would still be admitted if
+    /// that predicate were widened. The admitted control below is what keeps
+    /// this honest — it fails if the parser starts refusing everything, so the
+    /// refusals above cannot pass for the wrong reason.
+    #[test]
+    fn requesting_a_model_the_runtime_does_not_list_is_refused_by_the_governed_catalog() {
+        let request = |provider: &str, model: &str| RuntimeModelRouteRequest {
+            provider: provider.to_owned(),
+            model: model.to_owned(),
+            effort: None,
+        };
+        for (provider, model) in [
+            ("opencode", "glm-5.3-flash"),
+            ("opencode", "nemotron-3-ultra:free"),
+            ("cursor", "cursor-auto"),
+        ] {
+            assert_eq!(
+                parse_runtime_model_route(&request(provider, model)),
+                Err(kontor_core::DomainError::invalid(
+                    "RuntimeModelRouteRequest",
+                    "the model route is not in the governed catalog",
+                )),
+                "an unlisted {provider}/{model} route is refused on request"
+            );
+        }
+        assert_eq!(
+            parse_runtime_model_route(&request("codex", "gpt-5.6-sol")),
+            Ok(ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: None,
+            }),
+            "a listed route is still admitted"
+        );
+    }
     #[test]
     fn a_native_launch_refusal_keeps_its_exact_actionable_reason_in_scheduler_evidence() {
         let caller =
