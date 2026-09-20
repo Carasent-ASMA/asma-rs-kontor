@@ -743,7 +743,7 @@ impl ServeProfile {
 ///
 /// `worker` is the everyday working seat's surface: read the work, claim it,
 /// settle a turn, record a gate verdict, talk on the session, submit intake,
-/// read/propose memory and resolve context — 18 tools, all at or below operator
+/// read/propose memory, recover verified artifact locators and resolve context — all at or below operator
 /// tier, which the drift test below pins against the registry.
 ///
 /// `consultation` is deliberately separate. An Advisor or Committee native
@@ -765,6 +765,7 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
             "kontor_completion_get",
             "kontor_ticket_claim",
             "kontor_turn_settle",
+            "kontor_artifact_record",
             "kontor_turn_observe",
             "kontor_gate_record",
             "kontor_session_message_send",
@@ -774,6 +775,8 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
             "kontor_memory_history",
             "kontor_memory_propose",
             "kontor_context_resolve",
+            "kontor_open_questions_list",
+            "kontor_open_question_record",
         ],
     },
     ServeProfile {
@@ -790,6 +793,8 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
         tools: &[
             "kontor_completion_get",
             "kontor_completion_remediate",
+            "kontor_open_questions_list",
+            "kontor_open_question_record",
             "kontor_committee_permissions_inspect",
             "kontor_committee_permission_respond",
         ],
@@ -802,6 +807,75 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
 /// [`NON_AGENT_ROUTES`]. The parity oracle proves that this table plus that list
 /// covers the generated contract exactly.
 pub static REGISTRY: &[ToolSpec] = &[
+    ToolSpec {
+        name: "kontor_open_questions_list",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/open-questions",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic by UUID or confirmed Jira key.",
+            ),
+        ],
+        about: "Read an epic's open questions, append-only history and derived status.",
+    },
+    ToolSpec {
+        name: "kontor_open_question_record",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/open-questions:record",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic by UUID or confirmed Jira key.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "question_id",
+                Place::Body,
+                ArgType::Text,
+                "Stable question UUID; reuse it on retries.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::U64,
+                "Zero to raise; otherwise the exact question revision read.",
+            ),
+            opt(
+                "author_seat_binding_id",
+                Place::Body,
+                ArgType::Text,
+                "Active seat reporting through Operator authority; omitted with its scoped credential. Disposition requires the exact epic LSA or TPM scoped credential.",
+            ),
+            req(
+                "action",
+                Place::Body,
+                ArgType::Json,
+                "Typed action: raise with subject, scope (architecture/product/process/routing), attachment {record: aggregate} or {document: hash}, why_ambiguous and options; correct with why_ambiguous/options/supersedes; dispose with outcome {resolved:{record,revision}}, {deferred:{key,condition}} or {not_relevant:reason} and supersedes; fire_trigger with trigger key. Histories are immutable; a fired deferral reopens the question.",
+            ),
+        ],
+        about: "Raise, correct, disposition or reopen one question with an atomic idempotent receipt.",
+    },
     // ---- Observer: projections, catalogs and session content -----------------
     ToolSpec {
         name: "kontor_realm_get",
@@ -2251,6 +2325,71 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Persist and dispatch at most one future server-generated correlation challenge on the exact existing binding; retries only reconcile.",
     },
     ToolSpec {
+        name: "kontor_artifact_record",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "Owning project.",
+            ),
+            req(
+                "task_id",
+                Place::Path,
+                ArgType::TaskSelector,
+                "Exact task UUID or confirmed ASMA Jira key.",
+            ),
+            req(
+                "role_turn_id",
+                Place::Body,
+                ArgType::Text,
+                "Exact settled turn that already claimed the key.",
+            ),
+            req(
+                "artifact_key",
+                Place::Body,
+                ArgType::OpenKey,
+                "Declared artifact key.",
+            ),
+            req(
+                "expected_task_revision",
+                Place::Body,
+                ArgType::Revision,
+                "Current task revision.",
+            ),
+            req(
+                "repository",
+                Place::Body,
+                ArgType::Enum(&["project", "task"]),
+                "Registered repository root.",
+            ),
+            req(
+                "commit",
+                Place::Body,
+                ArgType::Text,
+                "Full immutable Git commit object id.",
+            ),
+            req(
+                "path",
+                Place::Body,
+                ArgType::Text,
+                "Repository-relative blob path.",
+            ),
+            req(
+                "sha256",
+                Place::Body,
+                ArgType::Text,
+                "Expected SHA-256 of the blob bytes.",
+            ),
+            IDEMPOTENCY,
+        ],
+        about: "Recover a verified Git blob for an exact settled artifact claim; explicit operator provenance, no new native turn.",
+    },
+    ToolSpec {
         name: "kontor_turn_settle",
         tier: CallerTier::Operator,
         method: Method::Post,
@@ -2289,7 +2428,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "artifacts",
                 Place::Body,
                 ArgType::TextArray,
-                "The artifacts the turn produced.",
+                "Declared artifact keys. Register verified locators with kontor_artifact_record before gate/phase acceptance.",
             ),
             opt(
                 "runtime_proof",
@@ -7304,7 +7443,11 @@ mod tests {
         // 19 since ASMA-8203 added `kontor_turn_observe`, the read a post-turn
         // caller uses to state a settlement. The count is pinned so that adding
         // a tool to a seat's surface stays a decision rather than a side effect.
-        assert_eq!(worker.tools.len(), 19, "worker v3 is exactly 19 tools");
+        assert_eq!(
+            worker.tools.len(),
+            22,
+            "worker includes artifact recovery, question reporting and readback"
+        );
         assert!(worker.allows("kontor_turn_observe"));
         assert!(worker.allows("kontor_memory_search"));
         assert!(worker.allows("kontor_memory_history"));
@@ -7347,6 +7490,8 @@ mod tests {
             [
                 "kontor_completion_get",
                 "kontor_completion_remediate",
+                "kontor_open_questions_list",
+                "kontor_open_question_record",
                 "kontor_committee_permissions_inspect",
                 "kontor_committee_permission_respond",
             ]

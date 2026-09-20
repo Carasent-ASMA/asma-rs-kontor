@@ -366,6 +366,7 @@ fn a_stale_container_recovery_cas_preserves_logical_identity_and_history() {
         observed_at: at("2026-09-04T09:00:00Z"),
     };
     let recovery = TopologyContainerRecovery {
+        disposition: kontor_core::repository::TopologyContainerRecoveryDisposition::AdoptExisting,
         expected: original.clone(),
         replacement,
         parent_native_id: ExternalId::parse("prj_epic").expect("a parent id"),

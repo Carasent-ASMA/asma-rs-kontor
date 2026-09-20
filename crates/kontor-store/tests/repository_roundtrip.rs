@@ -7882,7 +7882,7 @@ fn a_settled_turn_closure_missing_a_slots_turn_is_refused_by_the_store() {
 }
 
 #[test]
-fn a_settled_turns_declared_artifacts_are_evidence_for_the_ticket_gate() {
+fn a_settled_turns_labels_are_not_addressable_artifact_evidence() {
     let fixture = fixture();
 
     // A team run and one seat, so a turn has something to settle against.
@@ -8033,21 +8033,9 @@ fn a_settled_turns_declared_artifacts_are_evidence_for_the_ticket_gate() {
         .list_task_artifact_keys(fixture.project, fixture.task)
         .expect("the read succeeds");
 
-    // The declared contract key is evidence. Without this the completion ticket
-    // gate is unsatisfiable for every task closed through `turn-settle`.
     assert!(
-        keys.contains(&name("zz.output")),
-        "a settled turn's declared artifact is evidence: {keys:?}"
-    );
-    // The free-form labels are carried through rather than failing the read.
-    assert!(
-        keys.contains(&name("architecture.md")),
-        "a filename label does not break the read: {keys:?}"
-    );
-    assert_eq!(
-        keys.len(),
-        3,
-        "every declared label is reported once: {keys:?}"
+        keys.is_empty(),
+        "settled labels are not addressable producer evidence: {keys:?}"
     );
 }
 

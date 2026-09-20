@@ -27,6 +27,9 @@
 //! The rule they share is the one uncertainty always breaks: an absence, a
 //! timeout, a closed stream or a missing session is never a completion.
 
+mod artifact_submissions;
+pub use artifact_submissions::NewArtifactSubmission;
+
 pub mod authority;
 pub mod backup;
 mod commands;

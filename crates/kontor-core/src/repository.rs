@@ -1211,9 +1211,43 @@ pub struct LegacyConsultationTopicCorrection {
     pub corrected_at: Timestamp,
 }
 
+/// The operation authorized by one immutable container recovery receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopologyContainerRecoveryDisposition {
+    /// Adopt the sole existing candidate proved by the recovery census.
+    AdoptExisting,
+    /// Recreate an absent native, adopting a lost creation on retry if needed.
+    RecreateAbsent,
+}
+
+impl TopologyContainerRecoveryDisposition {
+    /// Stable spelling stored alongside the recovery receipt.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AdoptExisting => "adopt_existing",
+            Self::RecreateAbsent => "recreate_absent",
+        }
+    }
+
+    /// Parse one of the two authorized recovery operations.
+    pub fn parse(value: &str) -> Result<Self, crate::DomainError> {
+        match value {
+            "adopt_existing" => Ok(Self::AdoptExisting),
+            "recreate_absent" => Ok(Self::RecreateAbsent),
+            _ => Err(crate::DomainError::invalid(
+                "container recovery disposition",
+                "is not a supported recovery operation",
+            )),
+        }
+    }
+}
+
 /// Compare-and-swap replacement of one stale native container identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopologyContainerRecovery {
+    /// Exact authorized operation, retained for restart and retry readback.
+    pub disposition: TopologyContainerRecoveryDisposition,
     /// The complete stored binding the caller proved stale.
     pub expected: NativeContainerBinding,
     /// The sole live replacement returned by the runtime census.
@@ -1227,6 +1261,8 @@ pub struct TopologyContainerRecovery {
 /// Immutable before/after evidence for one completed container recovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredTopologyContainerRecovery {
+    /// Exact operation that the immutable receipt authorized.
+    pub disposition: TopologyContainerRecoveryDisposition,
     /// Receipt that authorized the compare-and-swap.
     pub receipt_id: CommandReceiptId,
     /// Owning project.

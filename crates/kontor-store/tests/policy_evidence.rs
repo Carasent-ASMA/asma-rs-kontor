@@ -1245,7 +1245,7 @@ fn stored_evidence_refuses_update_and_delete_from_direct_sql() {
             key: artifact("zz.output"),
             locator: document("locator"),
             producer_role: role("zz.maker"),
-            producer_account: fixture.account,
+            producer_account: Some(fixture.account),
             recorded_at: now(),
         })
         .expect("the artifact evidence is recorded");

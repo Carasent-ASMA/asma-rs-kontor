@@ -5104,6 +5104,115 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/open-questions": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "operationId": "list_open_questions",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/open-questions:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "operationId": "record_open_question",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordQuestionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply": {
       "post": {
         "tags": [
@@ -7664,6 +7773,75 @@
           },
           "422": {
             "description": "The runtime cannot prove a per-run account environment"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Verify and durably record one settled-turn artifact augmentation.",
+        "operationId": "record_artifact",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordArtifactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactSubmissionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
           }
         }
       }
@@ -12218,6 +12396,129 @@
           }
         }
       },
+      "ArtifactSubmissionDto": {
+        "type": "object",
+        "description": "Immutable augmentation receipt. Attribution identifies the old claim, not byte authorship.",
+        "required": [
+          "schema_version",
+          "realm_id",
+          "evidence_id",
+          "task_id",
+          "workflow_id",
+          "role_turn_id",
+          "agent_run_id",
+          "producer_role",
+          "artifact_key",
+          "producer_phase",
+          "provenance",
+          "turn_proof_class",
+          "recorded_by",
+          "git_dir",
+          "commit",
+          "path",
+          "sha256",
+          "locator_hash",
+          "recorded_at"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "Source persistent agent run."
+          },
+          "artifact_key": {
+            "type": "string",
+            "description": "Declared artifact key."
+          },
+          "commit": {
+            "type": "string",
+            "description": "Exact commit locator."
+          },
+          "evidence_id": {
+            "type": "string",
+            "description": "Artifact registry identity."
+          },
+          "git_dir": {
+            "type": "string",
+            "description": "Persistent common Git directory, independent of a disposable worktree."
+          },
+          "locator_hash": {
+            "type": "string",
+            "description": "Canonical locator digest."
+          },
+          "path": {
+            "type": "string",
+            "description": "Exact blob path."
+          },
+          "producer_account": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Provider account derived from the source run; not the calling operator's identity."
+          },
+          "producer_account_attribution": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProducerAccountAttribution",
+                "description": "Explicit account provenance. Absent only on receipts written before schema113."
+              }
+            ]
+          },
+          "producer_phase": {
+            "type": "string",
+            "description": "Pinned producing phase."
+          },
+          "producer_role": {
+            "type": "string",
+            "description": "Source role slot, derived from the settled turn."
+          },
+          "provenance": {
+            "type": "string",
+            "description": "Always `operator_recovered_git_blob`, never inferred agent authorship."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Owning Realm."
+          },
+          "recorded_at": {
+            "type": "string",
+            "description": "Verification/recording instant."
+          },
+          "recorded_by": {
+            "type": "string",
+            "description": "Credential tier that authorized the augmentation."
+          },
+          "role_turn_id": {
+            "type": "string",
+            "description": "Source settled-turn receipt."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Envelope schema version.",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Verified content digest."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Exact task and workflow."
+          },
+          "turn_proof_class": {
+            "type": "string",
+            "description": "Native-proof versus historical/attested source turn."
+          },
+          "workflow_id": {
+            "type": "string",
+            "description": "Pinned workflow whose declared artifact this satisfies."
+          }
+        }
+      },
       "Attest": {
         "type": "object",
         "required": [
@@ -14454,6 +14755,13 @@
           "model_route"
         ],
         "properties": {
+          "committee_role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Committee function frozen from its template; absent for Advisor seats."
+          },
           "logical_role": {
             "type": "string",
             "description": "Logical role under the pinned policy."
@@ -14622,6 +14930,14 @@
         },
         "additionalProperties": false
       },
+      "ContainerRecoveryDispositionDto": {
+        "type": "string",
+        "description": "Which of the two dispositions one recovery census authorizes.\n\nThe operation has always had one answer — adopt the sole live candidate.\nThis names that answer so a second one can exist beside it without either\nbeing inferred from the shape of the payload. An operator reading a preview\nshould not have to deduce \"it is going to build one\" from a missing field.",
+        "enum": [
+          "adopt_existing",
+          "recreate_absent"
+        ]
+      },
       "ContainerRecoveryPreviewDto": {
         "type": "object",
         "description": "Exact before/after identity proved by a read-only recovery census.",
@@ -14629,8 +14945,8 @@
           "realm_id",
           "project_id",
           "topology_node_id",
+          "disposition",
           "stale_native_id",
-          "replacement_native_id",
           "parent_native_id",
           "canonical_cwd",
           "observed_title",
@@ -14642,9 +14958,13 @@
             "type": "string",
             "description": "Preserved canonical working directory."
           },
+          "disposition": {
+            "$ref": "#/components/schemas/ContainerRecoveryDispositionDto",
+            "description": "Which answer this census reached."
+          },
           "observed_title": {
             "type": "string",
-            "description": "Runtime-reported candidate title."
+            "description": "Runtime-reported candidate title.\n\nOn a `recreate_absent` preview there is no candidate to report one from,\nso this carries the exact title apply will write — the same bytes the\nnaming authority already rendered, never a title the caller chose."
           },
           "parent_native_id": {
             "type": "string",
@@ -14663,8 +14983,11 @@
             "description": "Realm that performed the census."
           },
           "replacement_native_id": {
-            "type": "string",
-            "description": "Sole live parent/path/title candidate."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sole live parent/path/title candidate.\n\nAbsent exactly when the disposition is\n[`ContainerRecoveryDispositionDto::RecreateAbsent`] and this is a\npreview: there is no candidate yet, and naming one before apply has run\nwould be predicting an identity the runtime has not minted. Always\npresent on an applied result."
           },
           "snapshot_cursor": {
             "type": "integer",
@@ -18826,6 +19149,14 @@
         },
         "additionalProperties": false
       },
+      "ProducerAccountAttribution": {
+        "type": "string",
+        "description": "Account identity evidenced by the original producer, never the calling operator.",
+        "enum": [
+          "original_run_pin",
+          "native_proved_unknown"
+        ]
+      },
       "ProfileApplyRequest": {
         "type": "object",
         "description": "Publish one revalidated definition as an immutable revision.",
@@ -20216,6 +20547,124 @@
           }
         }
       },
+      "QuestionAction": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "subject",
+              "scope",
+              "attachment",
+              "why_ambiguous",
+              "options",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "raise"
+                ]
+              },
+              "attachment": {
+                "type": "object"
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "scope": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              },
+              "why_ambiguous": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "why_ambiguous",
+              "options",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "correct"
+                ]
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "supersedes": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              },
+              "why_ambiguous": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "dispose"
+                ]
+              },
+              "outcome": {
+                "type": "object"
+              },
+              "supersedes": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "trigger",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "fire_trigger"
+                ]
+              },
+              "trigger": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
       "QuickRolesDto": {
         "type": "object",
         "description": "The roles a Quick session may be opened against.",
@@ -20606,6 +21055,52 @@
           }
         }
       },
+      "RecordArtifactRequest": {
+        "type": "object",
+        "description": "Attaches verified Git bytes to an existing claim; does not assert agent authorship.",
+        "required": [
+          "role_turn_id",
+          "artifact_key",
+          "expected_task_revision",
+          "repository",
+          "commit",
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "artifact_key": {
+            "type": "string",
+            "description": "Declared artifact key already claimed by that turn."
+          },
+          "commit": {
+            "type": "string",
+            "description": "Full immutable Git commit object id (40 or 64 lower-case hexadecimal digits)."
+          },
+          "expected_task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Current task revision.",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string",
+            "description": "Repository-relative blob path, without parent traversal."
+          },
+          "repository": {
+            "type": "string",
+            "description": "Registered repository root: `task` worktree or `project` checkout."
+          },
+          "role_turn_id": {
+            "type": "string",
+            "description": "Exact existing settled-turn receipt."
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Expected SHA-256 of the blob contents, verified by the daemon."
+          }
+        },
+        "additionalProperties": false
+      },
       "RecordFindingsRequest": {
         "type": "object",
         "description": "Record one round of Committee findings.",
@@ -20761,6 +21256,36 @@
               "$ref": "#/components/schemas/QuotaWindowDto"
             },
             "description": "Every concurrent window this pair holds. Replaces the stored set\nwholesale rather than merging into it: a collector reports what the\nprovider offers *now*, and a merge would keep a window it has withdrawn."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RecordQuestionRequest": {
+        "type": "object",
+        "required": [
+          "question_id",
+          "expected_revision",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/QuestionAction"
+          },
+          "author_seat_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Ordinary Operator reporting names the active seat on whose behalf it\nreports. Closing always requires that leadership seat's scoped bearer."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Zero when raising; otherwise the exact question revision just read.",
+            "minimum": 0
+          },
+          "question_id": {
+            "type": "string"
           }
         },
         "additionalProperties": false
@@ -22833,7 +23358,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The artifacts the turn produced."
+            "description": "Declared artifact claims. Gate/phase evidence requires an addressable\nrecord through `artifacts:record`; a label alone is not evidence."
           },
           "correlation_challenge_message_id": {
             "type": [

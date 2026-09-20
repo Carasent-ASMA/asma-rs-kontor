@@ -1845,7 +1845,7 @@ exported_tables! {
         locator: String,
         locator_hash: String,
         producer_role: String,
-        producer_account: String,
+        producer_account: Option<String>,
         recorded_at: String,
     }
     gate_waivers: GateWaiversRow from "gate_waivers" key(id) {
