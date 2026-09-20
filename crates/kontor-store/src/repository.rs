@@ -4446,6 +4446,89 @@ impl SqliteStore {
         .transpose()
     }
 
+    /// Every durable launch intent of one logical seat, oldest generation first.
+    ///
+    /// The singular reader answers "what was intended for this generation".
+    /// Lineage asks a different question — "which natives did Kontor itself
+    /// install for this seat" — and that cannot be answered one generation at a
+    /// time without the caller choosing the generation first, which is the
+    /// choice lineage exists to make.
+    pub fn list_hosted_seat_launch_intents(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> RepositoryResult<Vec<StoredHostedSeatLaunchIntent>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT occupancy_generation, autonomy, model_rung, state,
+                        observed_native_id, prepared_at, installed_at
+                 FROM hosted_topology_seat_launch_intents
+                 WHERE project_id = ?1 AND seat_binding_id = ?2
+                 ORDER BY occupancy_generation ASC",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), seat_binding_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                },
+            )
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(
+                |(generation, autonomy, model, state, observed, prepared_at, installed_at)| {
+                    Ok(StoredHostedSeatLaunchIntent {
+                        project_id,
+                        seat_binding_id,
+                        occupancy_generation: u64::try_from(generation).map_err(|_| {
+                            RepositoryError::Backend {
+                                detail: "a hosted-seat launch intent generation is negative"
+                                    .to_owned(),
+                            }
+                        })?,
+                        autonomy: read_seat_autonomy(&autonomy)?,
+                        model_rung: serde_json::from_str(&model).map_err(|error| {
+                            RepositoryError::Backend {
+                                detail: format!(
+                                    "a hosted-seat intent model rung could not be decoded: {error}"
+                                ),
+                            }
+                        })?,
+                        state: match state.as_str() {
+                            "prepared" => HostedSeatLaunchIntentState::Prepared,
+                            "installed" => HostedSeatLaunchIntentState::Installed,
+                            other => {
+                                return Err(RepositoryError::Backend {
+                                    detail: format!(
+                                        "a hosted-seat launch intent state is unknown: {other}"
+                                    ),
+                                });
+                            }
+                        },
+                        observed_native_id: observed
+                            .as_deref()
+                            .map(ExternalId::parse)
+                            .transpose()?,
+                        prepared_at: read_timestamp(&prepared_at)?,
+                        installed_at: installed_at.as_deref().map(read_timestamp).transpose()?,
+                    })
+                },
+            )
+            .collect()
+    }
+
     /// Reconcile one prepared intent against the native its launch produced.
     ///
     /// Repeating this after a crash with the same native is unchanged. Naming a
@@ -4880,6 +4963,83 @@ impl SqliteStore {
             },
         )
         .transpose()
+    }
+
+    /// Every immutable predecessor of one logical seat, as whole occupancies.
+    ///
+    /// [`Self::list_hosted_topology_seat_history_native_ids`] answers a
+    /// negative admission fence and deliberately carries nothing but ids.
+    /// Lineage needs the generation and the route each native was bound under,
+    /// because a history row whose route disagrees is a different admission,
+    /// however well its native id matches.
+    pub fn list_hosted_topology_seat_history(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> RepositoryResult<Vec<StoredHostedTopologySeat>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT native_id, model_rung, runtime_kind, host, generation,
+                        provider_session_id, observed_at, autonomy
+                 FROM hosted_topology_seat_history
+                 WHERE project_id = ?1 AND seat_binding_id = ?2
+                 ORDER BY retired_at ASC, rowid ASC",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), seat_binding_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(
+                |(native, model, runtime, host, generation, provider, observed, autonomy)| {
+                    Ok(StoredHostedTopologySeat {
+                        project_id,
+                        seat_binding_id,
+                        model_rung: serde_json::from_str(&model).map_err(|error| {
+                            RepositoryError::Backend {
+                                detail: format!(
+                                    "a hosted-seat history model rung could not be decoded: {error}"
+                                ),
+                            }
+                        })?,
+                        native_identity: NativeRuntimeIdentity {
+                            runtime_kind: RuntimeKindKey::parse(&runtime)?,
+                            host: ExternalName::parse(&host)?,
+                            generation: u64::try_from(generation).map_err(|_| {
+                                RepositoryError::Backend {
+                                    detail: "a hosted-seat history generation is negative"
+                                        .to_owned(),
+                                }
+                            })?,
+                            native_id: ExternalId::parse(&native)?,
+                        },
+                        autonomy: read_seat_autonomy(&autonomy)?,
+                        provider_session_id: provider
+                            .as_deref()
+                            .map(ExternalId::parse)
+                            .transpose()?,
+                        observed_at: read_timestamp(&observed)?,
+                    })
+                },
+            )
+            .collect()
     }
 
     /// Read every immutable predecessor of one persistent topology seat.

@@ -1680,6 +1680,10 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ("select_task_profile", "task", "witness", None),
     ("select_task_team", "task", "witness", None),
     ("select_task_account", "task", "witness", None),
+    // Corrects one task's pre-run worktree, so the task is the aggregate
+    // the authority is over — the same group `rule_for` already admits only
+    // for a task. The row was missing here, not the capability there.
+    ("correct_task_worktree", "task", "witness", None),
     ("reconcile_ticket", "task", "witness", None),
     ("settle_runtime", "agent_run", "witness", None),
     ("replace_seat", "team_run", "witness", None),

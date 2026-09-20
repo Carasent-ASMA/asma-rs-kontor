@@ -777,3 +777,132 @@ fn the_schema_refuses_to_rewrite_a_recorded_decision() {
         "the schema itself refuses it: {refusal:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ASMA-8098 — the durable lineage readers.
+//
+// `tpm_lineage::resolve` answers which native authoritatively fills a seat, and
+// it can only be as good as what it is handed. The singular readers answer
+// "this native" and "this generation", both of which require the caller to have
+// already chosen — which is the choice lineage exists to make. These two read
+// the whole durable set for one logical seat instead.
+//
+// Retirement order is the load-bearing detail. The store derives an occupancy
+// generation as one more than the number of predecessors retired, so history
+// read back in any other order renumbers every occupancy.
+// ---------------------------------------------------------------------------
+
+/// Every occupancy of one seat, whole, in the order that defines its ordinal.
+#[test]
+fn seat_history_reads_back_every_predecessor_in_retirement_order() {
+    let fixture = Fixture::build();
+    let (seat, first) = fixture.lsa(SeatAutonomy::Bounded);
+
+    fixture
+        .store
+        .archive_hosted_topology_seat_route(&first, at("2026-09-17T02:00:00Z"), "route correction")
+        .expect("the first predecessor is archived");
+    let second = StoredHostedTopologySeat {
+        native_identity: identity("lsa-second", 1),
+        observed_at: at("2026-09-17T02:00:01Z"),
+        ..first.clone()
+    };
+    fixture
+        .store
+        .bind_hosted_topology_seat(&second)
+        .expect("the successor binds");
+    fixture
+        .store
+        .archive_hosted_topology_seat_route(
+            &second,
+            at("2026-09-17T03:00:00Z"),
+            "second route correction",
+        )
+        .expect("the second predecessor is archived");
+
+    let history = fixture
+        .store
+        .list_hosted_topology_seat_history(fixture.project_id, seat)
+        .expect("the seat history reads");
+    assert_eq!(
+        history
+            .iter()
+            .map(|row| row.native_identity.native_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["lsa-first", "lsa-second"],
+        "history must read back in the retirement order that numbers occupancies"
+    );
+    // Whole occupancies, not bare ids: lineage refuses a record whose route
+    // disagrees, and it cannot do that without the route.
+    assert!(
+        history.iter().all(|row| row.model_rung == rung()),
+        "a history row must carry the route its native was bound under"
+    );
+    assert!(
+        history
+            .iter()
+            .all(|row| row.autonomy == SeatAutonomy::Bounded),
+        "a history row must carry the authority its generation ran under"
+    );
+}
+
+/// Every launch intent of one seat, across generations, oldest first.
+#[test]
+fn seat_launch_intents_read_back_across_every_generation() {
+    let fixture = Fixture::build();
+    let (seat, _) = fixture.lsa(SeatAutonomy::Bounded);
+
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&intent(&fixture, seat, SeatAutonomy::Bounded))
+        .expect("the first intent is prepared");
+    fixture
+        .store
+        .install_hosted_seat_launch_intent(
+            fixture.project_id,
+            seat,
+            1,
+            &ExternalId::parse("lsa-first").expect("a native id"),
+            at("2026-09-17T01:02:00Z"),
+        )
+        .expect("the first intent installs");
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+            occupancy_generation: 2,
+            prepared_at: at("2026-09-17T02:00:30Z"),
+            ..intent(&fixture, seat, SeatAutonomy::Bounded)
+        })
+        .expect("the second intent is prepared");
+
+    let intents = fixture
+        .store
+        .list_hosted_seat_launch_intents(fixture.project_id, seat)
+        .expect("the launch intents read");
+    assert_eq!(
+        intents
+            .iter()
+            .map(|row| row.occupancy_generation)
+            .collect::<Vec<_>>(),
+        vec![1, 2],
+        "every generation's intent must be read back, oldest first"
+    );
+    assert_eq!(
+        intents[0].state,
+        HostedSeatLaunchIntentState::Installed,
+        "an installed intent must report the state that lets it name a native"
+    );
+    assert_eq!(
+        intents[0]
+            .observed_native_id
+            .as_ref()
+            .map(ExternalId::as_str),
+        Some("lsa-first"),
+        "an installed intent must name the native its launch produced"
+    );
+    // The unused second intent is prepared and names nothing. Lineage must be
+    // able to tell that apart from an installed one, because a prepared intent
+    // is evidence a launch was *intended* and never that one happened.
+    assert_eq!(intents[1].state, HostedSeatLaunchIntentState::Prepared);
+    assert!(intents[1].observed_native_id.is_none());
+}

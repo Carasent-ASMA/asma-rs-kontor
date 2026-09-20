@@ -740,6 +740,8 @@ struct FakeState {
     /// exist until that same call creates it, so a caller arming this failure
     /// cannot name it in advance.
     lose_hosted_launch_ack_once: bool,
+    /// One exact `StaleBinding` rule every hosted-seat inspection answers with.
+    hosted_inspect_stale_rule: Option<&'static str>,
     /// The seat is restored for terminal readback only: no placement, so it
     /// answers an inspection and refuses every driving operation.
     readback_only: bool,
@@ -1286,6 +1288,7 @@ impl ScriptedFakeRuntime {
                 lose_archive_ack_once: BTreeSet::new(),
                 lose_hosted_retire_ack_once: BTreeSet::new(),
                 lose_hosted_launch_ack_once: false,
+                hosted_inspect_stale_rule: None,
                 readback_only: false,
                 pause_hosted_retire_once: None,
                 pause_send_once: None,
@@ -1887,6 +1890,16 @@ impl ScriptedFakeRuntime {
         let pause = FakeNativePause::default();
         self.lock().pause_hosted_retire_once = Some(pause.clone());
         pause
+    }
+
+    /// Answer every hosted-seat inspection with one exact `StaleBinding` rule.
+    ///
+    /// The live runtime distinguishes a predecessor that is gone from one it
+    /// declines to speak for by the rule string alone, and both arrive as the
+    /// same variant. Staging the rule is the only way a test can put those two
+    /// cases side by side.
+    pub fn refuse_hosted_inspection(&self, rule: &'static str) {
+        self.lock().hosted_inspect_stale_rule = Some(rule);
     }
 
     /// Lose one acknowledgement after the hosted native has already been
@@ -3448,6 +3461,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             return Err(RuntimeError::StaleBinding {
                 rule: "the hosted topology predecessor belongs to another runtime",
             });
+        }
+        // A staged refusal stands in for a live runtime that answers this exact
+        // way. It is deliberately not consumed: the succession inspects the
+        // predecessor twice — once when planning and once immediately before
+        // the archive — and a one-shot would let the second look see a state
+        // the first did not.
+        if let Some(rule) = state.hosted_inspect_stale_rule {
+            return Err(RuntimeError::StaleBinding { rule });
         }
         let disposition = match state.hosted_seats.get(&request.seat_binding_id) {
             Some(held) if held.identity == request.identity => HostedSeatNativeState::Live,

@@ -232,6 +232,10 @@ use kontor_core::ticket::{
     StatusConflictKind, StatusSelector, TicketFieldKey, TicketSyncProjection, TransitionPlan,
     classify_body, classify_observed_body, reconcile_epic,
 };
+use kontor_core::tpm_lineage::{
+    self, AuthoritativeNative, CatalogRoute, IntentState, LineageEvidence, LineageQuery,
+    LineageRefusal, ObservedLaunchIntent, ObservedOccupancy,
+};
 use kontor_jira::jira::{
     ApplyAuthority, BodyAmbiguityVerdict, CompiledFieldSpec, CompiledWorkflowSpec, FieldWrite,
     IssueAmbiguityVerdict, JiraIssueDelegation, JiraOutcome, Observed, ObservedIssue,
@@ -701,6 +705,15 @@ struct CoreTeamSeatClaimPlan {
 /// and it is also a closed `CHECK` value in the schema, so the two spellings have
 /// to be the same one.
 const REGISTER_PACK: &str = "register_profile_pack";
+
+/// The placement recorded when the control plane's container could not be
+/// re-read at all.
+///
+/// Deliberately not a shape any runtime issues, so it can only ever mismatch.
+/// Lineage then refuses through [`kontor_core::tpm_lineage::resolve`] rather
+/// than through a second, separately-worded guard here — one authority, one
+/// refusal vocabulary, and a fence a mutant cannot quietly delete.
+const UNCONFIRMED_PLACEMENT: &str = "kontor:control-plane-placement-unconfirmed";
 
 /// How long a scheduler-held module or worktree lease lives, in seconds.
 const LEASE_SECONDS: i64 = 3_600;
@@ -7802,6 +7815,159 @@ impl Services {
         })
     }
 
+    /// The one native durable Kontor records name for this seat and generation.
+    ///
+    /// Read only from what Kontor itself wrote — the occupancies it bound and
+    /// the launch intents it installed — and correlated by
+    /// [`kontor_core::tpm_lineage::resolve`]. A native answering to the seat's
+    /// labels but present in neither record is not a weak candidate here; it is
+    /// not a candidate, which is the whole point of asking this before anything
+    /// is adopted or retired.
+    ///
+    /// Placement is proved, not assumed, whenever a native decision may follow.
+    /// The topology holds one ECP workspace for this control plane; if that
+    /// exact container cannot be re-read, the observed placement is recorded as
+    /// unconfirmed and the resolver refuses. Failing closed there is the
+    /// difference between "the seat is where we think it is" and "nobody
+    /// checked".
+    ///
+    /// `may_bind_native` is what decides whether that re-read happens, and it
+    /// is a statement about consequence rather than an optimization. A plan
+    /// whose successor is already bound will adopt nothing and retire nothing,
+    /// so it makes no placement claim and must not spend a runtime call to
+    /// restate one — that is what keeps an idempotent replay free of runtime
+    /// effects. The lineage *answer* is identical either way: placement can
+    /// only refuse, never change which native is authoritative.
+    async fn hosted_seat_lineage(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        binding: &SeatBinding,
+        predecessor: &StoredHostedTopologySeat,
+        may_bind_native: bool,
+    ) -> Result<AuthoritativeNative, ApiError> {
+        let state = self.state()?;
+        let container = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Core Team control plane has no persisted native container",
+                )
+            })?;
+        let observed_placement = if may_bind_native {
+            let adapter = state
+                .runtimes()
+                .get(&container.identity.runtime_kind)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the control plane's container runtime is not configured in this daemon",
+                    )
+                })?;
+            match self
+                .inspect_bound_container(project_id, node, &container, adapter.as_ref())
+                .await
+            {
+                Ok(inspection) => inspection.binding.identity.native_id,
+                Err(_) => ExternalId::parse(UNCONFIRMED_PLACEMENT)
+                    .map_err(|error| self.refuse_domain(&error))?,
+            }
+        } else {
+            container.identity.native_id.clone()
+        };
+        let expected_route = catalog_route(&predecessor.model_rung);
+        // An occupancy generation is an *ordinal*, not the runtime generation
+        // carried by a native identity: the store derives it as one more than
+        // the number of predecessors this seat has retired. Reconstructing it
+        // the same way here is what makes an occupancy row and a launch intent
+        // comparable at all — the native identity's own generation counts
+        // runtime restarts and is shared by every occupancy between two of
+        // them.
+        let mut occupancies = state
+            .with_store(|store| store.list_hosted_topology_seat_history(project_id, binding.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .enumerate()
+            .map(|(retired, row)| ObservedOccupancy {
+                generation: retired as u64 + 1,
+                native_id: row.native_identity.native_id,
+                route: catalog_route(&row.model_rung),
+            })
+            .collect::<Vec<_>>();
+        let current_generation = occupancies.len() as u64 + 1;
+        if let Some(active) = state
+            .with_store(|store| store.get_hosted_topology_seat(project_id, binding.id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            occupancies.push(ObservedOccupancy {
+                generation: current_generation,
+                native_id: active.native_identity.native_id,
+                route: catalog_route(&active.model_rung),
+            });
+        }
+        // Which occupancy the caller's predecessor *is*, named by the same
+        // ordinal. A predecessor that appears in no occupancy at all leaves the
+        // generation unresolvable, and that refuses through the resolver's own
+        // vocabulary rather than a second guard here.
+        let generation = occupancies
+            .iter()
+            .find(|occupancy| occupancy.native_id == predecessor.native_identity.native_id)
+            .map_or(current_generation, |occupancy| occupancy.generation);
+        let intents = state
+            .with_store(|store| store.list_hosted_seat_launch_intents(project_id, binding.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .map(|row| ObservedLaunchIntent {
+                occupancy_generation: row.occupancy_generation,
+                state: match row.state {
+                    HostedSeatLaunchIntentState::Prepared => IntentState::Prepared,
+                    HostedSeatLaunchIntentState::Installed => IntentState::Installed,
+                },
+                observed_native_id: row.observed_native_id,
+                route: catalog_route(&row.model_rung),
+            })
+            .collect::<Vec<_>>();
+        tpm_lineage::resolve(
+            &LineageQuery {
+                generation,
+                expected_route,
+                expected_placement: container.identity.native_id.clone(),
+                observed_placement,
+            },
+            &occupancies,
+            &intents,
+        )
+        .map_err(|refusal| self.refuse_lineage(refusal))
+    }
+
+    /// One closed refusal vocabulary, mapped to the codes the contract owes.
+    fn refuse_lineage(&self, refusal: LineageRefusal) -> ApiError {
+        match refusal {
+            LineageRefusal::PlacementMismatch => self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the hosted seat is not in the ECP workspace its topology holds",
+            ),
+            LineageRefusal::NoEligibleLineage => self.deny(
+                ApiErrorCode::StaleBinding,
+                "no durable Kontor record names a native for this seat and generation",
+            ),
+            LineageRefusal::AmbiguousLineage => self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "more than one durable record names a different native for this generation",
+            ),
+            LineageRefusal::RouteMismatch => self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "a durable record's route disagrees with the seat's catalog route",
+            ),
+            LineageRefusal::ContradictoryOccupancy => self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the occupancy and the launch intent name different natives for one generation",
+            ),
+        }
+    }
+
     async fn core_team_route_plan(
         &self,
         project_id: ProjectId,
@@ -7843,7 +8009,6 @@ impl Services {
                     "the SeatBinding is not hosted by this epic's control plane",
                 )
             })?;
-        let _ = node;
         if !roster.revision.seats.iter().any(|seat| {
             seat.presence != EpicPresence::OnDemand
                 && seat.role_slot_id == binding.role_slot_id
@@ -7897,6 +8062,28 @@ impl Services {
             }
             (predecessor, Some(active))
         };
+        // Asked before anything is adopted or retired, and before the runtime
+        // is consulted about liveness at all. The absence classification below
+        // says whether the predecessor is still *there*; this says whether that
+        // predecessor is the native Kontor's own records name for this seat and
+        // generation. A proved-gone answer must never be allowed to stand in
+        // for that: converging on a successor is only safe once the native
+        // being replaced is the authoritative one.
+        let lineage = self
+            .hosted_seat_lineage(
+                project_id,
+                &node,
+                &binding,
+                &predecessor,
+                successor.is_none(),
+            )
+            .await?;
+        if lineage.native_id != predecessor.native_identity.native_id {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "durable lineage names a different native for this seat and generation",
+            ));
+        }
         let native_is_live = if successor.is_some() {
             true
         } else {
@@ -7909,7 +8096,7 @@ impl Services {
                         "the hosted-seat runtime is not configured in this daemon",
                     )
                 })?;
-            adapter
+            match adapter
                 .inspect_hosted_seat(&HostedSeatInspectRequest {
                     seat_binding_id: binding.id,
                     identity: predecessor.native_identity.clone(),
@@ -7921,9 +8108,23 @@ impl Services {
                     requested_at: kontor_api::now(),
                 })
                 .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-                .state
-                .is_live()
+            {
+                Ok(inspection) => inspection.state.is_live(),
+                // The runtime proved this predecessor is gone rather than
+                // declining to answer: it holds a different native for the seat
+                // (a lost launch acknowledgement leaves exactly that), or the
+                // exact session no longer exists or is already terminal.
+                // Refusing here would wedge the seat on the very retry that
+                // exists to recover it.
+                //
+                // Every other refusal — a working or permission-waiting
+                // session, a wrong runtime or generation, a disposition this
+                // build has not audited — still refuses.
+                Err(error) if error.proves_hosted_predecessor_absent() => false,
+                Err(error) => {
+                    return Err(ApiError::from_runtime(state.realm_id(), &error));
+                }
+            }
         };
         let stale_native_recovery =
             predecessor.model_rung == desired && (successor.is_some() || !native_is_live);
@@ -7957,6 +8158,20 @@ impl Services {
                 "model": predecessor.model_rung,
             },
             "desired": desired,
+            // The resolved lineage is part of what was previewed, not a note
+            // about it. Apply re-plans and compares this hash before its first
+            // native effect, so a seat whose durable records come to name a
+            // different native — or name it on different evidence — expires the
+            // preview instead of retiring whatever now answers.
+            "lineage": {
+                "native_id": lineage.native_id.as_str(),
+                "generation": lineage.generation,
+                "evidence": match lineage.evidence {
+                    LineageEvidence::Occupancy => "occupancy",
+                    LineageEvidence::InstalledIntent => "installed_intent",
+                    LineageEvidence::OccupancyAndIntent => "occupancy_and_intent",
+                },
+            },
         });
         if stale_native_recovery {
             preview_document["stale_native_recovery"] = serde_json::Value::Bool(true);
@@ -14210,6 +14425,15 @@ fn validate_team_draft_routes(request: &TeamDraftRequest) -> kontor_core::Domain
         ModelChainPolicy { rungs }.validate()?;
     }
     Ok(())
+}
+
+/// One catalog route, in the shape lineage compares: whole, never by part.
+fn catalog_route(rung: &ModelRung) -> CatalogRoute {
+    CatalogRoute {
+        provider: rung.provider.0.clone(),
+        model: rung.model.0.clone(),
+        effort: rung.effort.map(|effort| effort.as_str().to_owned()),
+    }
 }
 
 fn runtime_model_route_dto(rung: &ModelRung) -> RuntimeModelRouteRequest {
@@ -23735,7 +23959,18 @@ impl ApplicationOperations for Services {
                     "the hosted seat runtime is not configured in this daemon",
                 )
             })?;
-            let retired = adapter
+            // The same closed classification the plan used, re-asked here
+            // because the answer may have changed since it was previewed. A
+            // predecessor the runtime proves gone has nothing left to archive,
+            // and this is the shape the live ASMA-8098 TPM recovery hit: a
+            // closed predecessor answered `stale_binding` and the apply refused
+            // instead of converging on the successor it was there to create.
+            //
+            // Nothing else is read as absence. A session that is working,
+            // waiting on a permission request, addressed on another runtime or
+            // generation, or in a disposition this build has not audited still
+            // refuses with no effect, and every fence above is unchanged.
+            let (retired_at, retirement_reason) = match adapter
                 .retire_hosted_seat(&HostedSeatRetireRequest {
                     placement: None,
                     seat_binding_id: plan.binding.id,
@@ -23745,7 +23980,24 @@ impl ApplicationOperations for Services {
                     requested_at: kontor_api::now(),
                 })
                 .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            {
+                Ok(retired) => (
+                    retired.archived_at,
+                    "authorized Core Team provider/model route correction",
+                ),
+                // The server clock, because the runtime reported no archival
+                // instant: it had nothing to archive. Recording a fabricated
+                // runtime timestamp would make history claim an effect that
+                // never happened, and the distinct reason keeps the two cases
+                // tellable apart in the immutable record.
+                Err(error) if error.proves_hosted_predecessor_absent() => (
+                    kontor_api::now(),
+                    "authorized Core Team route correction; the predecessor was already gone",
+                ),
+                Err(error) => {
+                    return Err(ApiError::from_runtime(state.realm_id(), &error));
+                }
+            };
             let control = state
                 .with_store(|store| {
                     store.get_topology_node(project_id, plan.binding.topology_node_id)
@@ -23886,8 +24138,8 @@ impl ApplicationOperations for Services {
                     store.replace_hosted_topology_seat_route(
                         &plan.predecessor,
                         &successor,
-                        retired.archived_at,
-                        "authorized Core Team provider/model route correction",
+                        retired_at,
+                        retirement_reason,
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
