@@ -1607,7 +1607,7 @@ pub trait PaseoTransport: Send + Sync + fmt::Debug {
 #[derive(Debug, Default)]
 struct Multiplex {
     /// Answers still owed, by correlation id.
-    pending: std::sync::Mutex<HashMap<String, oneshot::Sender<PaseoFrame>>>,
+    pending: std::sync::Mutex<HashMap<String, oneshot::Sender<RuntimeResult<PaseoFrame>>>>,
     /// Unsolicited frames, by agent.
     streams: std::sync::Mutex<BTreeMap<String, StreamBuffer>>,
 }
@@ -1621,6 +1621,19 @@ struct StreamBuffer {
 }
 
 impl Multiplex {
+    /// A rejected frame cannot be correlated without parsing beyond the bound.
+    /// Fail this connection's requests explicitly and let the next call reconnect.
+    fn fail_pending(&self, error: &RuntimeError) {
+        for (_, waiting) in self
+            .pending
+            .lock()
+            .expect("the transport lock is intact")
+            .drain()
+        {
+            let _ = waiting.send(Err(error.clone()));
+        }
+    }
+
     fn drain_stream(&self, agent_id: &str) -> Vec<serde_json::Value> {
         let Some(buffer) = self
             .streams
@@ -1692,7 +1705,7 @@ impl Multiplex {
             };
             // A receiver that has already given up is not an error here: the
             // request timed out, and its slot is gone.
-            let _ = waiting.send(frame);
+            let _ = waiting.send(Ok(frame));
         }
     }
 }
@@ -1879,10 +1892,22 @@ impl PaseoLiveTransport {
         let routed = Arc::clone(&multiplex);
         let reader = tokio::spawn(async move {
             while let Some(Ok(message)) = readable.next().await {
+                if message.len() > MAX_FRAME_BYTES {
+                    // Silently dropping a correlated reply makes a reachable
+                    // runtime appear hung. Do not parse or truncate it: retire
+                    // this connection and return the bounded refusal now.
+                    routed.fail_pending(&RuntimeError::Transport {
+                        rule: "frame exceeded the bounded frame size",
+                    });
+                    return;
+                }
                 if let Some(decoded) = decode_session_frame(&message) {
                     routed.route(&decoded);
                 }
             }
+            routed.fail_pending(&RuntimeError::Transport {
+                rule: "channel failed before the runtime answered",
+            });
         });
         Ok(LiveConnection {
             writer,
@@ -1900,6 +1925,11 @@ impl PaseoLiveTransport {
             let message = message.map_err(|_| RuntimeError::Transport {
                 rule: "channel failed before the runtime announced itself",
             })?;
+            if message.len() > MAX_FRAME_BYTES {
+                return Err(RuntimeError::Transport {
+                    rule: "frame exceeded the bounded frame size",
+                });
+            }
             let Some(decoded) = decode_session_frame(&message) else {
                 continue;
             };
@@ -1931,8 +1961,8 @@ impl PaseoLiveTransport {
 /// Decode one WebSocket message into the session message it carries.
 ///
 /// Binary frames, oversized frames, malformed JSON and unknown outer envelopes
-/// all decode to `None` — they are not answers and they are not content, so the
-/// only safe thing to do with them is nothing.
+/// all decode to `None`. Live callers reject an oversized frame before this
+/// decoder so pending requests receive a refusal rather than waiting forever.
 fn decode_session_frame(message: &Message) -> Option<serde_json::Value> {
     let Message::Text(text) = message else {
         return None;
@@ -2035,7 +2065,7 @@ impl PaseoTransport for PaseoLiveTransport {
             }
         }
         match tokio::time::timeout(deadline, waiting).await {
-            Ok(Ok(frame)) => Ok(frame),
+            Ok(Ok(frame)) => frame,
             // The sender was dropped, which means the reader task ended: the
             // socket died with this request in flight.
             Ok(Err(_)) => Err(RuntimeError::Transport {
@@ -3007,6 +3037,113 @@ mod tests {
         assert!(!printed.contains("u:p@host"), "got {printed}");
     }
 
+    /// A real socket is necessary here: the recorded transport never passes
+    /// through the live reader's frame bound or its pending-request routing.
+    async fn read_canonical_socket_answer(output_bytes: usize) -> RuntimeResult<PaseoFrame> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let address = listener.local_addr().expect("loopback address");
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("client connection");
+            let mut socket = tokio_tungstenite::accept_async(socket)
+                .await
+                .expect("WebSocket handshake");
+            socket.next().await.expect("hello").expect("hello frame");
+            let info: serde_json::Value = serde_json::from_str(include_str!(
+                "../tests/fixtures/paseo-0.8.0/protocol/server-info.json"
+            ))
+            .expect("server identity fixture");
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "session",
+                        "message": { "type": "status", "payload": info },
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .expect("server identity");
+            let request = socket
+                .next()
+                .await
+                .expect("request")
+                .expect("request frame");
+            let request: serde_json::Value =
+                serde_json::from_str(request.to_text().expect("text request"))
+                    .expect("request JSON");
+            assert_eq!(request["message"]["projection"], "canonical");
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "session",
+                        "message": {
+                            "type": "fetch_agent_timeline_response",
+                            "payload": {
+                                "requestId": request["message"]["requestId"],
+                                "entries": [{ "item": { "type": "tool_call", "output": "x".repeat(output_bytes) } }],
+                            },
+                        },
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .expect("canonical answer");
+            // Keep the connection open: an ignored reply must not look like a
+            // fast disconnect. Production stayed connected and waited forever.
+            let _ = socket.next().await;
+        });
+        let transport = PaseoLiveTransport::new(
+            "paseo",
+            SecretString::from(address.to_string()),
+            &format!("ws://{address}/ws"),
+            "canonical-frame-test",
+            30,
+        )
+        .expect("test transport");
+        let request = PaseoRpc::timeline_fetch(
+            "canonical-frame-request".to_owned(),
+            "agt_1",
+            PaseoProjection::Canonical,
+            PaseoDirection::Tail,
+            None,
+            1,
+        );
+        let answer =
+            tokio::time::timeout(Duration::from_secs(2), transport.request(&request)).await;
+        server.abort();
+        answer.expect("a reply or explicit refusal must arrive before the request deadline")
+    }
+
+    #[tokio::test]
+    async fn a_canonical_tool_output_over_one_megabyte_is_read_without_truncation() {
+        // Live ASMA-8189 evidence contained a 1,146,605-byte tool event. Page
+        // size 1 cannot make that event fit beneath the former 1 MiB ceiling.
+        let output_bytes = 1_146_605;
+        let answer = read_canonical_socket_answer(output_bytes)
+            .await
+            .expect("the canonical tool result is within the supported bound");
+        let payload = answer.payload.expect("canonical payload");
+        assert_eq!(
+            payload["entries"][0]["item"]["output"].as_str(),
+            Some("x".repeat(output_bytes).as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_canonical_socket_answer_fails_without_waiting_for_timeout() {
+        assert_eq!(
+            read_canonical_socket_answer(MAX_FRAME_BYTES + 1)
+                .await
+                .expect_err("a frame beyond the bound remains refused"),
+            RuntimeError::Transport {
+                rule: "frame exceeded the bounded frame size",
+            }
+        );
+    }
+
     #[test]
     fn the_reader_routes_answers_by_id_and_streams_by_agent() {
         let multiplex = Multiplex::default();
@@ -3032,7 +3169,10 @@ mod tests {
             "type": "fetch_agent_response",
             "payload": { "requestId": "req-1", "agent": null },
         }));
-        let frame = receiver.try_recv().expect("the answer arrives");
+        let frame = receiver
+            .try_recv()
+            .expect("the answer arrives")
+            .expect("the frame is within the bound");
         assert_eq!(frame.response_type, "fetch_agent_response");
         assert_eq!(frame.request_id, "req-1");
 
@@ -3119,7 +3259,10 @@ mod tests {
             "type": "rpc_error",
             "payload": { "requestId": "req-1", "error": "/Users/someone/secret" },
         }));
-        let frame = receiver.try_recv().expect("a refusal is delivered");
+        let frame = receiver
+            .try_recv()
+            .expect("a refusal is delivered")
+            .expect("the RPC refusal is a valid frame");
         assert!(frame.payload.is_none());
         assert!(!format!("{frame:?}").contains("secret"));
     }
