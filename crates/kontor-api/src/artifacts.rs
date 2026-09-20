@@ -34,6 +34,16 @@ pub struct RecordArtifactRequest {
     pub sha256: String,
 }
 
+/// Account identity evidenced by the original producer, never the calling operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProducerAccountAttribution {
+    /// A provider account pinned to the exact original run.
+    OriginalRunPin,
+    /// Native turn and binding proved, but the account was never recorded.
+    NativeProvedUnknown,
+}
+
 /// Immutable augmentation receipt. Attribution identifies the old claim, not byte authorship.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ArtifactSubmissionDto {
@@ -54,7 +64,10 @@ pub struct ArtifactSubmissionDto {
     /// Source role slot, derived from the settled turn.
     pub producer_role: String,
     /// Provider account derived from the source run; not the calling operator's identity.
-    pub producer_account: String,
+    pub producer_account: Option<String>,
+    /// Explicit account provenance. Absent only on receipts written before schema113.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_account_attribution: Option<ProducerAccountAttribution>,
     /// Declared artifact key.
     pub artifact_key: String,
     /// Pinned producing phase.

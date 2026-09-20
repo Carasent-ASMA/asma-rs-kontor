@@ -12408,7 +12408,6 @@
           "role_turn_id",
           "agent_run_id",
           "producer_role",
-          "producer_account",
           "artifact_key",
           "producer_phase",
           "provenance",
@@ -12451,8 +12450,22 @@
             "description": "Exact blob path."
           },
           "producer_account": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Provider account derived from the source run; not the calling operator's identity."
+          },
+          "producer_account_attribution": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProducerAccountAttribution",
+                "description": "Explicit account provenance. Absent only on receipts written before schema113."
+              }
+            ]
           },
           "producer_phase": {
             "type": "string",
@@ -19120,6 +19133,14 @@
           }
         },
         "additionalProperties": false
+      },
+      "ProducerAccountAttribution": {
+        "type": "string",
+        "description": "Account identity evidenced by the original producer, never the calling operator.",
+        "enum": [
+          "original_run_pin",
+          "native_proved_unknown"
+        ]
       },
       "ProfileApplyRequest": {
         "type": "object",

@@ -80,13 +80,13 @@ impl SqliteStore {
                 WHERE turn.id = ?1 AND turn.project_id = ?2 AND turn.task_id = ?3
                   AND task.revision = ?4 AND workflow.id = ?5 AND run.id = ?6
                   AND turn.settled_at >= workflow.created_at
-                  AND run.role_key = ?7 AND run.account_profile_id = ?8
-                  AND (turn.account_profile IS NULL OR turn.account_profile = ?8)
+                  AND run.role_key = ?7 AND run.account_profile_id IS ?8
+                  AND (turn.account_profile IS NULL OR turn.account_profile IS ?8)
                   AND EXISTS (SELECT 1 FROM json_each(turn.artifacts) a WHERE a.type = 'text' AND a.value = ?9)
             )",
             params![request.role_turn_id.to_string(), e.binding.project_id.to_string(), e.binding.task_id.to_string(),
                 i64::try_from(request.task_revision.get()).map_err(|_| DomainError::invalid("artifact submission", "task revision exceeds storage range"))?, e.binding.workflow_id.to_string(), e.binding.agent_run_id.map(|id| id.to_string()),
-                e.producer_role.as_str(), e.producer_account.to_string(), e.key.as_str()], |row| row.get(0)).map_err(backend)?;
+                e.producer_role.as_str(), e.producer_account.map(|account| account.to_string()), e.key.as_str()], |row| row.get(0)).map_err(backend)?;
         if !valid {
             return Err(RepositoryError::Domain(DomainError::invalid(
                 "artifact submission",

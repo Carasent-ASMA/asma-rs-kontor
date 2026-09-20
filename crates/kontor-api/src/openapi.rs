@@ -476,6 +476,7 @@ impl Modify for RealmBearer {
         crate::applications::SettleTurnRequest,
         crate::artifacts::RecordArtifactRequest,
         crate::artifacts::ArtifactSubmissionDto,
+        crate::artifacts::ProducerAccountAttribution,
         crate::applications::TurnCorrelationChallengePreviewRequest,
         crate::applications::TurnCorrelationChallengeApplyRequest,
         crate::applications::TurnCorrelationChallengePreviewDto,

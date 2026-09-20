@@ -3950,7 +3950,8 @@ export interface components {
             /** @description Exact blob path. */
             path: string;
             /** @description Provider account derived from the source run; not the calling operator's identity. */
-            producer_account: string;
+            producer_account?: string | null;
+            producer_account_attribution?: null | components["schemas"]["ProducerAccountAttribution"];
             /** @description Pinned producing phase. */
             producer_phase: string;
             /** @description Source role slot, derived from the settled turn. */
@@ -7183,6 +7184,11 @@ export interface components {
             /** @description The exact selectable provider route to refresh. */
             provider: string;
         };
+        /**
+         * @description Account identity evidenced by the original producer, never the calling operator.
+         * @enum {string}
+         */
+        ProducerAccountAttribution: "original_run_pin" | "native_proved_unknown";
         /** @description Publish one revalidated definition as an immutable revision. */
         ProfileApplyRequest: {
             /** @description The complete definition to publish. */

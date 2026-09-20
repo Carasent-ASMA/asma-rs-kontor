@@ -1,6 +1,8 @@
 //! Explicit operator recovery, never inferred agent authorship of bytes.
 use super::*;
-use kontor_api::artifacts::{ArtifactSubmissionDto, RecordArtifactRequest};
+use kontor_api::artifacts::{
+    ArtifactSubmissionDto, ProducerAccountAttribution, RecordArtifactRequest,
+};
 use kontor_api::auth::CallerCapability;
 use kontor_core::id::RoleTurnId;
 use kontor_policy::model::ArtifactEvidenceId;
@@ -155,12 +157,39 @@ impl Services {
                 "the pinned producing phase is assigned to another logical role",
             ));
         }
-        let account = run.account_profile_id.ok_or_else(|| {
-            self.deny(
+        let account = run.account_profile_id;
+        let (account_attribution, source_binding) = if account.is_some() {
+            (ProducerAccountAttribution::OriginalRunPin, None)
+        } else {
+            let proof = turn.runtime_proof.as_ref().ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "an unknown producer account requires the exact native-proved source turn",
+                )
+            })?;
+            let binding = run
+                .binding
+                .as_ref()
+                .filter(|binding| {
+                    binding.identity.generation == turn.binding_generation
+                        && binding.bound_at <= turn.settled_at
+                        && proof.response_sequence > proof.message_sequence
+                })
+                .ok_or_else(|| {
+                    self.deny(
                 ApiErrorCode::RevisionConflict,
-                "the source producer has no attributable provider account",
+                "an unknown producer account requires the source turn's original native binding",
             )
-        })?;
+                })?;
+            (
+                ProducerAccountAttribution::NativeProvedUnknown,
+                Some(serde_json::json!({
+                    "id":binding.id, "runtime_kind":binding.identity.runtime_kind,
+                    "host":binding.identity.host, "native_id":binding.identity.native_id,
+                    "generation":binding.identity.generation,
+                })),
+            )
+        };
         let root = match request.repository.as_str() {
             "project" => state
                 .with_store(|s| s.get_project(project_id))
@@ -196,7 +225,7 @@ impl Services {
             "legacy_or_attested"
         };
         let now = kontor_api::now();
-        let locator = CanonicalDocument::from_value(&serde_json::json!({"schema_version":1, "kind":"git_blob", "git_dir":git_dir, "commit":request.commit, "path":request.path, "sha256":hash.as_str(), "provenance":"operator_recovered_git_blob", "role_turn_id":turn.id, "turn_proof_class":class, "producer_phase":contract.producer_phase.as_str()})).map_err(|e| self.refuse_domain(&e))?;
+        let locator = CanonicalDocument::from_value(&serde_json::json!({"schema_version":1, "kind":"git_blob", "git_dir":git_dir, "commit":request.commit, "path":request.path, "sha256":hash.as_str(), "provenance":"operator_recovered_git_blob", "role_turn_id":turn.id, "turn_proof_class":class, "producer_phase":contract.producer_phase.as_str(), "producer_account_attribution":account_attribution, "source_binding":source_binding})).map_err(|e| self.refuse_domain(&e))?;
         let id = ArtifactEvidenceId::generate();
         let response = ArtifactSubmissionDto {
             schema_version: 1,
@@ -207,7 +236,8 @@ impl Services {
             role_turn_id: turn.id.to_string(),
             agent_run_id: run.id.to_string(),
             producer_role: run.role.as_str().to_owned(),
-            producer_account: account.to_string(),
+            producer_account: account.map(|account| account.to_string()),
+            producer_account_attribution: Some(account_attribution),
             artifact_key: artifact.as_str().to_owned(),
             producer_phase: contract.producer_phase.as_str().to_owned(),
             provenance: "operator_recovered_git_blob".to_owned(),

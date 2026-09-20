@@ -12957,19 +12957,29 @@ async fn finish_natively(world: &World, run: &str) {
 
 /// Arm, plan and start an existing bootstrapped task.
 async fn seat_existing(world: &World, seed: &Bootstrapped, prefix: &str) -> Vec<String> {
+    seat_existing_with_attribution(world, seed, prefix, true).await
+}
+
+async fn seat_existing_with_attribution(
+    world: &World,
+    seed: &Bootstrapped,
+    prefix: &str,
+    producer_attribution: bool,
+) -> Vec<String> {
     // Evidence-capable fixtures select their real provider account before launch;
     // a later recovery must never invent an account for an unattributed run.
-    if world
-        .daemon
-        .state()
-        .with_store(|store| {
-            store.task_account_selection(
-                ProjectId::parse(&seed.project).expect("project"),
-                TaskId::parse(&seed.task).expect("task"),
-            )
-        })
-        .expect("account selection")
-        .is_none()
+    if producer_attribution
+        && world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store.task_account_selection(
+                    ProjectId::parse(&seed.project).expect("project"),
+                    TaskId::parse(&seed.task).expect("task"),
+                )
+            })
+            .expect("account selection")
+            .is_none()
     {
         let pinned = Call::post(format!("/v1/projects/{}/tasks/{}/account-selection", seed.project, seed.task), &serde_json::json!({"expected_revision":task_revision_of(world, seed).await, "account_profile_id":seed.account, "reason":"Pin producer evidence attribution before launch"})).signed_as(world, "admin").with_key(format!("{prefix}-producer-account-pin")).send(world).await;
         assert_eq!(pinned.status, 200, "{}", pinned.body);
@@ -31095,7 +31105,7 @@ async fn an_unaccounted_slot_or_an_undischarged_gate_withholds_closure() {
                 key:kontor_core::id::ArtifactKey::parse(key).expect("key"),
                 locator:CanonicalDocument::from_value(&serde_json::json!({"schema_version":1,"fixture":"explicit_preexisting_registry", "commit":commit, "path":"evidence.md", "sha256":sha256})).expect("locator"),
                 producer_role:kontor_core::id::RoleKey::parse("architect").expect("role"),
-                producer_account:AccountProfileId::parse(&account).expect("account"), recorded_at:kontor_api::now(),
+                producer_account:Some(AccountProfileId::parse(&account).expect("account")), recorded_at:kontor_api::now(),
             }).expect("explicit addressable fixture evidence");
         }
     });
@@ -59640,6 +59650,19 @@ async fn artifact_recovery_requires_a_real_settled_claim_and_verified_git_blob()
     assert_eq!(recorded.status, 200, "{}", recorded.body);
     assert_eq!(recorded.json()["provenance"], "operator_recovered_git_blob");
     assert_eq!(recorded.json()["turn_proof_class"], "runtime_proved");
+    // Receipts written at schema111 omit the new attribution annotation. A
+    // decoder upgrade must replay that original shape, not invent new fields.
+    let mut legacy_receipt = recorded.json();
+    legacy_receipt
+        .as_object_mut()
+        .expect("receipt")
+        .remove("producer_account_attribution");
+    let decoded: kontor_api::artifacts::ArtifactSubmissionDto =
+        serde_json::from_value(legacy_receipt.clone()).expect("prior receipt remains readable");
+    assert_eq!(
+        serde_json::to_value(decoded).expect("prior receipt replays"),
+        legacy_receipt
+    );
     assert_eq!(
         world.fake.calls().len(),
         calls_before,
@@ -59851,4 +59874,105 @@ async fn artifact_recovery_of_a_closed_legacy_producer_replays_after_daemon_rest
         resumed.current_phase, derived_phase,
         "receipt replay must finish post-commit advancement"
     );
+}
+
+/// A missing historic account stays unknown. Only the exact canonically proved
+/// source turn/native binding can recover bytes without an account identity.
+#[tokio::test]
+async fn artifact_recovery_preserves_unknown_accounts_only_with_exact_native_proof() {
+    for proof_case in ["canonical", "historical", "wrong_binding"] {
+        let canonical_proof = proof_case == "canonical";
+        let world = World::open_empty().await;
+        world.script(HISTORY_LIVE);
+        world.daemon.reconcile().await;
+        let seed = bootstrap(&world, "unknown-artifact-account").await;
+        let runs = seat_existing_with_attribution(&world, &seed, "unknown-artifact", false).await;
+        let builder = run_with_role(&world, &runs, "builder").await;
+        let source = world
+            .daemon
+            .state()
+            .with_store(|s| {
+                s.get_agent_run(
+                    ProjectId::parse(&seed.project).expect("project"),
+                    AgentRunId::parse(&builder).expect("run"),
+                )
+            })
+            .expect("run")
+            .expect("source");
+        assert!(
+            source.account_profile_id.is_none(),
+            "unknown identity is the actual fixture"
+        );
+        let turn = Call::post(format!("/v1/projects/{}/agent-runs/{builder}/turns:settle", seed.project), &serde_json::json!({
+            "role_slot":"builder", "expected_task_revision":task_revision_of(&world, &seed).await,
+            "runtime_proof":observe_current_turn(&world, &seed.project, &builder), "artifacts":["code-change"],
+        })).signed_as(&world, "operator").with_key("unknown-source-turn").send(&world).await;
+        assert_eq!(turn.status, 200, "{}", turn.body);
+        let db = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+        if !canonical_proof {
+            let raw = rusqlite::Connection::open(&db).expect("fixture database");
+            let trigger: String = raw.query_row("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='role_turns_are_immutable'", [], |r| r.get(0)).expect("trigger");
+            raw.execute_batch("DROP TRIGGER role_turns_are_immutable")
+                .expect("historical fixture");
+            let sql = if proof_case == "historical" {
+                "UPDATE role_turns SET settlement_kind='historical', runtime_message_id=NULL, message_timeline_epoch=NULL, message_timeline_sequence=NULL, response_timeline_epoch=NULL, response_timeline_sequence=NULL, runtime_observation_cursor=NULL WHERE id=?1"
+            } else {
+                "UPDATE role_turns SET binding_generation=binding_generation+1 WHERE id=?1"
+            };
+            raw.execute(sql, [turn.json()["turn_id"].as_str().expect("turn")])
+                .expect("ineligible source fixture");
+            raw.execute_batch(&trigger)
+                .expect("restore immutable trigger");
+        }
+        let (commit, hash) = artifact_git_fixture(&world, &seed);
+        let uri = format!(
+            "/v1/projects/{}/tasks/{}/artifacts:record",
+            seed.project, seed.task
+        );
+        let request = serde_json::json!({"role_turn_id":turn.json()["turn_id"], "artifact_key":"code-change", "expected_task_revision":task_revision_of(&world, &seed).await, "repository":"project", "commit":commit, "path":"evidence.md", "sha256":hash});
+        let response = Call::post(&uri, &request)
+            .signed_as(&world, "operator")
+            .with_key("unknown-artifact-record")
+            .send(&world)
+            .await;
+        if canonical_proof {
+            assert_eq!(response.status, 200, "{}", response.body);
+            assert!(response.json()["producer_account"].is_null());
+            assert_eq!(
+                response.json()["producer_account_attribution"],
+                "native_proved_unknown"
+            );
+            assert_eq!(response.json()["provenance"], "operator_recovered_git_blob");
+            let raw = rusqlite::Connection::open(&db).expect("database");
+            let known: (Option<String>, Option<String>, Option<String>) = raw.query_row("SELECT e.producer_account, t.account_profile, r.account_profile_id FROM artifact_evidence e JOIN artifact_producer_submissions s ON s.evidence_id=e.id JOIN role_turns t ON t.id=s.role_turn_id JOIN agent_runs r ON r.id=t.agent_run_id WHERE e.id=?1", [response.json()["evidence_id"].as_str().expect("evidence")], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).expect("actual persisted attribution");
+            assert_eq!(known, (None, None, None));
+            let rejected = raw.execute(
+                "INSERT INTO artifact_evidence SELECT ?1, project_id, task_id, workflow_id, agent_run_id, artifact_key, json_set(locator, '$.source_binding.generation', ?3), locator_hash, producer_role, producer_account, recorded_at FROM artifact_evidence WHERE id=?2",
+                rusqlite::params![kontor_policy::model::ArtifactEvidenceId::generate().to_string(), response.json()["evidence_id"].as_str().expect("evidence"), i64::try_from(source.binding.as_ref().expect("binding").identity.generation + 1).expect("fixture generation")],
+            ).expect_err("the storage boundary independently rejects a different native generation");
+            assert!(
+                rejected
+                    .to_string()
+                    .contains("exact native-proved source turn and binding"),
+                "{rejected}"
+            );
+            let replay = Call::post(&uri, &request)
+                .signed_as(&world, "operator")
+                .with_key("unknown-artifact-record")
+                .send(&world)
+                .await;
+            assert_eq!(replay.json(), response.json());
+        } else {
+            assert_eq!(
+                response.status, 409,
+                "a proofless unknown producer is refused: {}",
+                response.body
+            );
+            assert!(
+                response.body.contains("native"),
+                "the refusal identifies missing native provenance: {}",
+                response.body
+            );
+        }
+    }
 }

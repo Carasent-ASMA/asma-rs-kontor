@@ -105,8 +105,8 @@ pub struct NewArtifactEvidence {
     pub locator: CanonicalDocument,
     /// The role that produced it.
     pub producer_role: RoleKey,
-    /// The account that produced it.
-    pub producer_account: AccountProfileId,
+    /// The original producer account, when known. Absence never proves account separation.
+    pub producer_account: Option<AccountProfileId>,
     /// When it was recorded.
     pub recorded_at: Timestamp,
 }
@@ -1506,7 +1506,7 @@ pub(crate) fn insert_artifact_evidence(
                 record.locator.json(),
                 record.locator.hash().as_str(),
                 record.producer_role.as_str(),
-                record.producer_account.to_string(),
+                record.producer_account.map(|account| account.to_string()),
                 text(record.recorded_at)
             ],
         )

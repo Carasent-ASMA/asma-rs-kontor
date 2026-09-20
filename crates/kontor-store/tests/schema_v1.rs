@@ -735,7 +735,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // no owed dispatch has a supported authority that is not a second run
     // (ASMA-8234).
     // v112 makes question history and its retry receipt one atomic effect.
-    assert_eq!(SCHEMA_VERSION, 112);
+    assert_eq!(SCHEMA_VERSION, 113);
 }
 
 #[test]
@@ -5960,4 +5960,69 @@ fn read_rows(connection: &Connection, sql: &str) -> Vec<String> {
         .expect("the query runs")
         .collect::<Result<Vec<_>, _>>()
         .expect("every row reads")
+}
+
+/// The nullable extension preserves existing identities and references; it does
+/// not recast known accounts or remove immutable evidence protection.
+#[test]
+fn v113_preserves_known_artifacts_and_their_existing_references() {
+    let connection = Connection::open_in_memory().expect("legacy database");
+    // Match the migration runner's temporary rebuild mode. This focused fixture
+    // contains the evidence table and its child reference, not every parent.
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("migration rebuild mode");
+    let original = include_str!("../migrations/0003_guardrails_and_recovery.sql");
+    let start = original
+        .find("CREATE TABLE artifact_evidence (")
+        .expect("original table");
+    let end = original[start..].find(") STRICT;").expect("table end") + start + ") STRICT;".len();
+    connection
+        .execute_batch(&original[start..end])
+        .expect("the deployed non-null schema");
+    connection.execute_batch(r#"
+        INSERT INTO artifact_evidence VALUES (
+            '01890000-0000-7000-8000-000000000001', 'project', 'task', 'workflow', NULL,
+            'output', '{"schema_version":1,"kind":"legacy_explicit_locator"}',
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'maker', 'recorded-account', '2026-09-19T00:00:00Z'
+        );
+        CREATE TABLE existing_reference (id TEXT PRIMARY KEY, artifact_id TEXT REFERENCES artifact_evidence(id));
+        INSERT INTO existing_reference VALUES ('receipt', '01890000-0000-7000-8000-000000000001');
+        PRAGMA user_version=112;
+    "#).expect("known legacy evidence and its existing receipt");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0113_artifact_unknown_producer_account.sql"
+        ))
+        .expect("the migration applies");
+    let observed: (String, String) = connection.query_row(
+        "SELECT e.producer_account, e.locator FROM artifact_evidence e JOIN existing_reference r ON r.artifact_id=e.id WHERE r.id='receipt'", [], |r| Ok((r.get(0)?,r.get(1)?))
+    ).expect("the original receipt still addresses its evidence");
+    assert_eq!(
+        observed,
+        (
+            "recorded-account".to_owned(),
+            r#"{"schema_version":1,"kind":"legacy_explicit_locator"}"#.to_owned()
+        )
+    );
+    let referenced_table: String = connection
+        .query_row(
+            "SELECT [table] FROM pragma_foreign_key_list('existing_reference')",
+            [],
+            |r| r.get(0),
+        )
+        .expect("reference target");
+    assert_eq!(referenced_table, "artifact_evidence");
+    let required: i64 = connection.query_row("SELECT [notnull] FROM pragma_table_info('artifact_evidence') WHERE name='producer_account'", [], |r| r.get(0)).expect("account nullability");
+    assert_eq!(required, 0);
+    for statement in [
+        "UPDATE artifact_evidence SET producer_account='invented'",
+        "DELETE FROM artifact_evidence",
+    ] {
+        let error = connection
+            .execute(statement, [])
+            .expect_err("evidence remains immutable");
+        assert!(error.to_string().contains("artifact evidence is immutable"));
+    }
 }
