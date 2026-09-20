@@ -9235,8 +9235,11 @@ async fn a_container_is_keyed_by_topology_node_and_not_by_team_run() {
         WORKSPACE_ID
     );
 
-    // A second preparation of the same node is answered from the ledger and
-    // never reaches the wire.
+    // A second preparation of the same node reaches the wire and is answered
+    // from what it reads back, not from the adapter's ledger — there is
+    // deliberately no cache short-circuit. What stays true is the part that
+    // matters: it is idempotent and it mutates nothing, because the readback
+    // says the container is already there.
     let before = plane.daemon.mutations().len();
     let again = plane
         .adapter
@@ -11815,4 +11818,613 @@ async fn the_retitle_and_the_bind_path_agree_on_what_a_container_is_called() {
         "a repair must not rename a container the bind path named correctly"
     );
     assert!(!preview.changed, "so there is nothing to repair");
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8234 position 3a — the shared bound-container proof
+// ---------------------------------------------------------------------------
+//
+// Every test below addresses a container by the id Kontor persisted, on a plane
+// whose own ledger is empty. That is the restart path, and it is the whole
+// point of the correction: the answer has to come from a readback, because the
+// adapter has nothing cached to answer from.
+
+/// One workspace directory listing with an exact native shape planted on it.
+fn workspace_list_of_kind(kind: &str) -> serde_json::Value {
+    let mut listing = v(WORKSPACE_LIST_NODE);
+    listing["entries"][0]["workspaceKind"] = serde_json::json!(kind);
+    listing
+}
+
+/// A request that addresses a container Kontor already holds a binding for.
+fn bound_child_request(
+    node_id: TopologyNodeId,
+    bound: &str,
+    scope: ExecutionScope,
+) -> ContainerRequest {
+    ContainerRequest {
+        bound_native_id: Some(external(bound)),
+        scope,
+        ..child_request(node_id, Some(bound_root(node(NODE_B))))
+    }
+}
+
+/// A plane that has never prepared anything: the restart state.
+fn restarted_plane(listing: serde_json::Value) -> Plane {
+    Plane::fresh(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", listing),
+    )
+}
+
+/// Item 2: a bound ticket container is re-proved by exact id after a restart.
+#[tokio::test]
+async fn a_bound_tsw_container_is_reconciled_by_exact_id_after_a_restart() {
+    let plane = restarted_plane(workspace_list_of_kind("worktree"));
+    let node_id = node(NODE_A);
+
+    let outcome = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node_id,
+            WORKSPACE_ID,
+            execution_scope(),
+        ))
+        .await
+        .expect("the exact bound ticket container is re-proved");
+
+    assert!(
+        !outcome.created,
+        "reconciling an existing container creates nothing"
+    );
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID
+    );
+    assert_eq!(outcome.snapshot.topology_node_id(), node_id);
+    assert_eq!(
+        outcome.snapshot.root().map(WorkspaceRoot::as_str),
+        Some(CWD),
+        "the exact canonical root is preserved"
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "a reconcile mutates nothing: {:?}",
+        plane.daemon.mutations()
+    );
+}
+
+/// Item 1: the same, for an epic-level container, whose shape is deliberately
+/// *not* a worktree.
+#[tokio::test]
+async fn a_bound_ecp_container_is_reconciled_by_exact_id_after_a_restart() {
+    for kind in ["directory", "local_checkout"] {
+        let plane = restarted_plane(workspace_list_of_kind(kind));
+        let node_id = node(NODE_A);
+
+        let outcome = plane
+            .adapter
+            .prepare_container(&bound_child_request(
+                node_id,
+                WORKSPACE_ID,
+                epic_execution_scope(),
+            ))
+            .await
+            .unwrap_or_else(|error| panic!("an epic container may be a {kind}: {error:?}"));
+
+        assert!(!outcome.created);
+        assert_eq!(
+            outcome.snapshot.binding.identity.native_id.as_str(),
+            WORKSPACE_ID
+        );
+        assert_eq!(
+            outcome.snapshot.root().map(WorkspaceRoot::as_str),
+            Some(CWD)
+        );
+        assert!(plane.daemon.mutations().is_empty());
+    }
+}
+
+/// Item 3, semantic shape: an epic container refuses a ticket's worktree and
+/// every shape this adapter has not audited.
+#[tokio::test]
+async fn a_bound_ecp_container_refuses_a_worktree_or_unaudited_shape() {
+    for kind in ["worktree", "checkout", "something_else"] {
+        let plane = restarted_plane(workspace_list_of_kind(kind));
+
+        let error = plane
+            .adapter
+            .prepare_container(&bound_child_request(
+                node(NODE_A),
+                WORKSPACE_ID,
+                epic_execution_scope(),
+            ))
+            .await
+            .expect_err(kind);
+
+        assert!(
+            matches!(error, RuntimeError::StaleBinding { .. }),
+            "an epic container that is a {kind} is stale: {error:?}"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "a refused shape mutates nothing: {:?}",
+            plane.daemon.mutations()
+        );
+    }
+}
+
+/// Item 3, semantic shape: a ticket container refuses every non-worktree shape.
+#[tokio::test]
+async fn a_bound_tsw_container_refuses_every_non_worktree_shape() {
+    for kind in ["directory", "local_checkout", "checkout", "something_else"] {
+        let plane = restarted_plane(workspace_list_of_kind(kind));
+
+        let error = plane
+            .adapter
+            .prepare_container(&bound_child_request(
+                node(NODE_A),
+                WORKSPACE_ID,
+                execution_scope(),
+            ))
+            .await
+            .expect_err(kind);
+
+        assert!(
+            matches!(error, RuntimeError::StaleBinding { .. }),
+            "a ticket container that is a {kind} is stale: {error:?}"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "a refused shape mutates nothing: {:?}",
+            plane.daemon.mutations()
+        );
+    }
+}
+
+/// Item 4: an exact bound id the runtime does not hold is stale, and is never
+/// a licence to make a replacement beside the one that went missing.
+#[tokio::test]
+async fn a_missing_exact_bound_id_is_stale_and_creates_nothing() {
+    let plane = restarted_plane(v(WORKSPACE_LIST_EMPTY));
+
+    let error = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node(NODE_A),
+            "wks_gone",
+            execution_scope(),
+        ))
+        .await
+        .expect_err("a bound id the runtime cannot show is stale");
+
+    assert!(
+        matches!(error, RuntimeError::StaleBinding { .. }),
+        "an absent bound container is stale, never a create: {error:?}"
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "no create, no search, no replacement: {:?}",
+        plane.daemon.mutations()
+    );
+}
+
+/// Item 3: the bound container must be inside the exact parent this node is
+/// placed under.
+#[tokio::test]
+async fn a_bound_container_outside_its_exact_parent_is_stale() {
+    let plane = restarted_plane(v(WORKSPACE_NODE_OTHER_PROJECT));
+
+    let error = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node(NODE_A),
+            WORKSPACE_ID,
+            execution_scope(),
+        ))
+        .await
+        .expect_err("a container under another parent is not this node's");
+
+    assert!(
+        matches!(error, RuntimeError::StaleBinding { .. }),
+        "{error:?}"
+    );
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+/// Item 3: the canonical directory is proved from the readback, not copied
+/// from the request.
+///
+/// This is the case the correction exists for. Before it, the snapshot carried
+/// `request.cwd` regardless of where the container had actually been re-rooted,
+/// so every later placement check agreed with a directory nobody had verified.
+#[tokio::test]
+async fn a_bound_container_re_rooted_since_binding_is_stale() {
+    let plane = restarted_plane(v(WORKSPACE_OTHER_CWD));
+
+    let error = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node(NODE_A),
+            WORKSPACE_ID,
+            execution_scope(),
+        ))
+        .await
+        .expect_err("a re-rooted container no longer works where the node declares");
+
+    assert!(
+        matches!(error, RuntimeError::StaleBinding { .. }),
+        "{error:?}"
+    );
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+/// Item 6: a title that has drifted is not an identity change.
+///
+/// The container is addressed by id. An operator who renamed it did not move
+/// it, and the reconcile must still return the same native bound to the same
+/// node — the opposite of the parent, path and shape checks above.
+#[tokio::test]
+async fn a_bound_container_whose_title_drifted_is_still_the_same_container() {
+    let plane = restarted_plane(v(WORKSPACE_LIST_NODE_STALE_TITLE));
+
+    let outcome = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node(NODE_A),
+            WORKSPACE_ID,
+            execution_scope(),
+        ))
+        .await
+        .expect("a renamed container is still the bound container");
+
+    assert!(!outcome.created);
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID,
+        "identity survives a title change"
+    );
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+/// Item 3: host, runtime kind and generation are proved on the exact-id
+/// readback surface, which is where a full persisted identity is presented.
+#[tokio::test]
+async fn an_exact_id_inspection_refuses_a_foreign_host_kind_or_generation() {
+    let base = bound_container_binding();
+    let foreign_kind = NativeRuntimeIdentity {
+        runtime_kind: RuntimeKindKey::parse("other.runtime").expect("a runtime kind"),
+        ..base.identity.clone()
+    };
+    let foreign_host = NativeRuntimeIdentity {
+        host: name("another-host"),
+        ..base.identity.clone()
+    };
+    let stale_generation = NativeRuntimeIdentity {
+        generation: base.identity.generation + 1,
+        ..base.identity.clone()
+    };
+
+    for (identity, what) in [
+        (foreign_kind, "runtime kind"),
+        (foreign_host, "runtime host"),
+        (stale_generation, "generation"),
+    ] {
+        let plane = restarted_plane(workspace_list_of_kind("worktree"));
+        let request = ContainerInspectRequest {
+            binding: ContainerBinding {
+                identity,
+                ..base.clone()
+            },
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        };
+
+        let error = plane
+            .adapter
+            .inspect_container(&request)
+            .await
+            .expect_err(what);
+
+        assert!(
+            matches!(error, RuntimeError::StaleBinding { .. }),
+            "a foreign {what} is stale: {error:?}"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "a refused inspection mutates nothing"
+        );
+    }
+}
+
+/// Item 5: inspection is read-only whether it succeeds or refuses.
+#[tokio::test]
+async fn an_exact_id_inspection_writes_nothing_either_way() {
+    for listing in [workspace_list_of_kind("worktree"), v(WORKSPACE_LIST_EMPTY)] {
+        let plane = restarted_plane(listing);
+        let request = ContainerInspectRequest {
+            binding: bound_container_binding(),
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        };
+
+        let _ = plane.adapter.inspect_container(&request).await;
+
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "inspection is read-only: {:?}",
+            plane.daemon.mutations()
+        );
+    }
+}
+
+/// The exact persisted binding the inspection surface addresses.
+fn bound_container_binding() -> ContainerBinding {
+    ContainerBinding {
+        id: ContainerBindingId::generate(),
+        topology_node_id: node(NODE_A),
+        projection: ContainerProjection::NativeChild,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("a runtime kind"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(WORKSPACE_ID),
+        },
+        root: Some(WorkspaceRoot::parse(CWD).expect("an absolute path")),
+        bound_at: at("2026-08-16T09:00:00Z"),
+    }
+}
+
+/// The case the cache short-circuit got wrong, and the reason it was removed.
+///
+/// The adapter has prepared this node once, so its ledger holds a perfectly
+/// good snapshot. Then the container moves. A preparation answered from that
+/// ledger reports the container as present and correctly rooted — it reaches no
+/// wire, so it cannot know otherwise — and every placement check downstream
+/// agrees with it. That is the mismatch five call sites reported and could not
+/// explain.
+///
+/// Proving it needs a *warm* plane: every other test here starts cold, which is
+/// precisely why a restored bypass survived them all.
+#[tokio::test]
+async fn a_warm_ledger_never_answers_for_a_container_that_moved() {
+    let plane = Plane::fresh(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            // First: the container is where it should be, and the ledger warms.
+            .then_answering_rpc(
+                "fetch_workspaces_request",
+                workspace_list_of_kind("worktree"),
+            )
+            // Then: it has been re-rooted somewhere else.
+            .answering_rpc("fetch_workspaces_request", v(WORKSPACE_OTHER_CWD)),
+    );
+    let node_id = node(NODE_A);
+
+    let first = plane
+        .adapter
+        .prepare_container(&child_request(node_id, Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the container is prepared and the ledger warms");
+    assert_eq!(
+        first.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID
+    );
+
+    // The same node, now addressed by the id Kontor persisted. A cached answer
+    // would return the warm snapshot and call it proof.
+    let error = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node_id,
+            WORKSPACE_ID,
+            execution_scope(),
+        ))
+        .await
+        .expect_err("a moved container must not be answered from memory");
+
+    assert!(
+        matches!(error, RuntimeError::StaleBinding { .. }),
+        "the readback, not the ledger, decides: {error:?}"
+    );
+}
+
+/// The same shape, for a container that is gone rather than moved.
+#[tokio::test]
+async fn a_warm_ledger_never_answers_for_a_container_that_vanished() {
+    let plane = Plane::fresh(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .then_answering_rpc(
+                "fetch_workspaces_request",
+                workspace_list_of_kind("worktree"),
+            )
+            .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY)),
+    );
+    let node_id = node(NODE_A);
+
+    plane
+        .adapter
+        .prepare_container(&child_request(node_id, Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the ledger warms");
+
+    let error = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node_id,
+            WORKSPACE_ID,
+            execution_scope(),
+        ))
+        .await
+        .expect_err("a vanished container is never reported as present");
+
+    assert!(
+        matches!(error, RuntimeError::StaleBinding { .. }),
+        "{error:?}"
+    );
+}
+
+/// Item 3, lockstep with the fake: an unbound request is never answered by
+/// reconciling whatever this process last put in its own map.
+///
+/// Kontor holds no binding for this node. Adoption by local memory would bind
+/// it to a container this adapter merely happens to remember — authority by
+/// coincidence rather than by the realm's own record.
+#[tokio::test]
+async fn an_unbound_request_is_never_adopted_from_the_adapters_own_memory() {
+    let plane = Plane::fresh(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            // Warm the ledger, then report the canonical path empty, then
+            // answer the post-create readback.
+            .then_answering_rpc(
+                "fetch_workspaces_request",
+                workspace_list_of_kind("worktree"),
+            )
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc(
+                "fetch_workspaces_request",
+                workspace_list_of_kind("worktree"),
+            ),
+    );
+    let node_id = node(NODE_A);
+
+    plane
+        .adapter
+        .prepare_container(&child_request(node_id, Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the ledger warms");
+
+    // No `bound_native_id`: Kontor is not claiming a binding here. The census
+    // now finds nothing, so this must create rather than silently reconcile the
+    // remembered id.
+    let outcome = plane
+        .adapter
+        .prepare_container(&child_request(node_id, Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("an unbound request falls through to placement");
+
+    assert!(
+        outcome.created,
+        "an empty census with no persisted binding is a creation, not a remembered adoption"
+    );
+}
+
+/// Item 5: a refused inspection never enters the ledger.
+///
+/// Rehydration is the *reward* for a complete proof, and it is deliberately
+/// the last thing the inspection does. An inspection that seeded the ledger on
+/// its way to refusing would leave behind exactly the thing a later placement
+/// trusts — a binding no readback ever confirmed.
+#[tokio::test]
+async fn a_refused_inspection_never_rehydrates_the_ledger() {
+    let base = bound_container_binding();
+    let node_id = base.topology_node_id;
+
+    for (identity, what) in [
+        (
+            NativeRuntimeIdentity {
+                host: name("another-host"),
+                ..base.identity.clone()
+            },
+            "a foreign host",
+        ),
+        (
+            NativeRuntimeIdentity {
+                generation: base.identity.generation + 1,
+                ..base.identity.clone()
+            },
+            "a stale generation",
+        ),
+        (
+            NativeRuntimeIdentity {
+                native_id: external("wks_gone"),
+                ..base.identity.clone()
+            },
+            "a native the runtime cannot show",
+        ),
+    ] {
+        let plane = restarted_plane(workspace_list_of_kind("worktree"));
+        assert!(
+            plane.adapter.container_binding(node_id).is_none(),
+            "the ledger starts empty"
+        );
+
+        let error = plane
+            .adapter
+            .inspect_container(&ContainerInspectRequest {
+                binding: ContainerBinding {
+                    identity,
+                    ..base.clone()
+                },
+                native_parent: Some(bound_root(node(NODE_B)).identity),
+                scope: execution_scope(),
+                epic_container: false,
+                requested_at: at("2026-08-16T09:05:00Z"),
+            })
+            .await
+            .expect_err(what);
+
+        assert!(
+            matches!(
+                error,
+                RuntimeError::StaleBinding { .. }
+                    | RuntimeError::WorkspaceMismatch { .. }
+                    | RuntimeError::CorrelationFailed
+            ),
+            "{what} is refused: {error:?}"
+        );
+        assert!(
+            plane.adapter.container_binding(node_id).is_none(),
+            "{what} must leave the ledger empty"
+        );
+        assert!(plane.daemon.mutations().is_empty());
+    }
+}
+
+/// And a complete inspection *does* rehydrate, which is what makes the refusal
+/// above meaningful rather than merely true of a method that never writes.
+#[tokio::test]
+async fn a_complete_inspection_rehydrates_the_ledger_from_its_proof() {
+    let plane = restarted_plane(workspace_list_of_kind("worktree"));
+    let binding = bound_container_binding();
+    let node_id = binding.topology_node_id;
+    assert!(plane.adapter.container_binding(node_id).is_none());
+
+    plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: binding.clone(),
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        })
+        .await
+        .expect("the exact container is proved");
+
+    let rehydrated = plane
+        .adapter
+        .container_binding(node_id)
+        .expect("a proved inspection rehydrates");
+    assert_eq!(rehydrated.binding.identity, binding.identity);
+    assert!(plane.daemon.mutations().is_empty(), "still read-only");
 }

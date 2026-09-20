@@ -83,8 +83,8 @@ use kontor_runtime::capability::{
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence,
     ContainerInspectRequest, ContainerInspection, ContainerOutcome, ContainerProjection,
-    ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRequest, RetitleContainerOutcome,
-    RetitleContainerRequest,
+    ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRequest, ContainerWorkspaceKind,
+    RetitleContainerOutcome, RetitleContainerRequest,
 };
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -119,6 +119,20 @@ use crate::wire::{
     PaseoTimelineCursor, PaseoTimelineEntry, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind,
     PaseoWorkspacePage, label, normalize_entry, stream_permission_external_id,
 };
+
+/// Map this plane's wire vocabulary onto the runtime-neutral container shape.
+///
+/// The mapping is total and explicit so a new Paseo workspace kind is a
+/// compile error here rather than a silently accepted container.
+const fn container_workspace_kind(kind: PaseoWorkspaceKind) -> ContainerWorkspaceKind {
+    match kind {
+        PaseoWorkspaceKind::Worktree => ContainerWorkspaceKind::Worktree,
+        PaseoWorkspaceKind::Checkout => ContainerWorkspaceKind::Checkout,
+        PaseoWorkspaceKind::LocalCheckout => ContainerWorkspaceKind::LocalCheckout,
+        PaseoWorkspaceKind::Directory => ContainerWorkspaceKind::Directory,
+        PaseoWorkspaceKind::Other => ContainerWorkspaceKind::Other,
+    }
+}
 
 /// Everything Paseo can prove at trust grade A.
 const SUPPORTED: &[RuntimeCapability] = &[
@@ -2674,6 +2688,53 @@ impl PaseoAdapter {
                     .ok_or(RuntimeError::StaleBinding {
                         rule: "the bound container is not in the parent this node is placed under",
                     })?;
+                // Containment is proved, not assumed. The listing is *asked*
+                // for one parent's workspaces, but a reply is evidence only for
+                // what it actually says: a descriptor naming another project is
+                // a container in another parent, whatever it was returned by.
+                // `inspect_container` proves the same fact on the same shape.
+                if workspace.project_id != project_id.as_str() {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: "the bound container is not in the parent this node is placed under",
+                    });
+                }
+                // The directory is proved on the way back, not carried over
+                // from the request. Creation already refuses a child that does
+                // not say where it works and refuses to bind one whose path is
+                // not the canonical one; a reconcile that copied `request.cwd`
+                // onto the snapshot would report the directory the caller
+                // *asked* for while the container had been re-rooted somewhere
+                // else, and every later placement check would agree with it.
+                let cwd = request
+                    .cwd
+                    .as_ref()
+                    .ok_or(RuntimeError::WorkspaceMismatch {
+                        rule: "a native_child must say which directory it works in",
+                    })?;
+                if !WorkspaceRoot::parse(&workspace.workspace_directory)
+                    .is_ok_and(|root| &root == cwd)
+                {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: "the bound container no longer works in the canonical directory this node declares",
+                    });
+                }
+                // And it is the right *kind* of place, which the path alone
+                // cannot say: a ticket worktree and an epic's stable directory
+                // can sit at paths that look equally plausible. The predicate
+                // is the shared one so this plane and the fake cannot drift.
+                //
+                // Deliberately not `verify_workspace_placement`: that is the
+                // ticket-role rule, and it refuses anything that is not a
+                // worktree. Applied here it would refuse every epic
+                // consultation container, which is *intentionally* a directory.
+                let task_container = request.task_container();
+                if !container_workspace_kind(workspace.workspace_kind)
+                    .is_applicable_to(task_container)
+                {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: ContainerWorkspaceKind::refusal(task_container),
+                    });
+                }
                 let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
                 (
                     identity.clone(),
@@ -6900,24 +6961,24 @@ impl RuntimeAdapter for PaseoAdapter {
         }
         let generation = self.generation();
 
-        // An in-ledger binding is answered from state, so a retry after a lost
-        // answer never reaches the wire at all.
-        if let Some(existing) = self
-            .lock()
-            .containers
-            .get(&request.topology_node_id)
-            .cloned()
-            && existing.binding.identity.generation == generation
-            && request
-                .bound_native_id
-                .as_ref()
-                .is_none_or(|persisted| persisted == &existing.binding.identity.native_id)
-        {
-            return Ok(ContainerOutcome {
-                snapshot: existing,
-                created: false,
-            });
-        }
+        // There is deliberately no cache short-circuit here.
+        //
+        // Answering a preparation out of the adapter's own ledger returns a
+        // container this process once prepared, which is a different claim from
+        // the one every caller below actually relies on: that the container the
+        // realm is asking for is the one the *current* runtime holds, under the
+        // parent it is placed in, at this generation. A cached answer proves
+        // none of that — it reaches no wire, so a container that was moved,
+        // re-parented, re-rooted or destroyed since it was cached is reported as
+        // present and correct. That is the shape five separate call sites
+        // reported as a workspace mismatch they could not explain.
+        //
+        // The cache is still worth having, and it is still written below; it is
+        // rehydrated *from* a proof rather than offered *instead of* one.
+        // Idempotence is unchanged and is stronger for it: a retry reconciles
+        // the same exact id and returns the same binding with `created: false`,
+        // because that is what the readback says, not because a local map
+        // remembered saying it.
 
         // Everything below reconciles or binds against the *exact* native id,
         // and never against a display name or a path. A name is validation
@@ -6945,12 +7006,12 @@ impl RuntimeAdapter for PaseoAdapter {
         // A binding Kontor already holds is reconciled by its stored id, which
         // is the whole of the restart path: the adapter's ledger is gone, the
         // container is not.
-        let stored = request.bound_native_id.clone().or_else(|| {
-            self.lock()
-                .containers
-                .get(&request.topology_node_id)
-                .map(|it| it.binding.identity.native_id.clone())
-        });
+        //
+        // Only Kontor's persisted id counts. Falling back to the adapter's own
+        // cached id would let an *unbound* request — one Kontor holds no binding
+        // for — be answered by reconciling whatever this process last put in the
+        // map, which is adoption by local memory rather than by authority.
+        let stored = request.bound_native_id.clone();
         if let Some(native_id) = stored {
             let snapshot = self
                 .reconcile_container_by_id(

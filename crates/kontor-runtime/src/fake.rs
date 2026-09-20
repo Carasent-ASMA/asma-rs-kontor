@@ -53,7 +53,7 @@ use crate::capability::{
 use crate::container::{
     ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence,
     ContainerInspectRequest, ContainerInspection, ContainerOutcome, ContainerProjection,
-    ContainerRequest, RetitleContainerOutcome, RetitleContainerRequest,
+    ContainerRequest, ContainerWorkspaceKind, RetitleContainerOutcome, RetitleContainerRequest,
 };
 use crate::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -781,6 +781,13 @@ struct FakeState {
     /// container that may change without the binding changing — which is the
     /// whole point of a retitle, and the reason it can be read back.
     container_titles: BTreeMap<TopologyNodeId, String>,
+    /// The native workspace shape this runtime holds for each container.
+    ///
+    /// The minimum needed to implement the shared bound-container contract in
+    /// lockstep with a wire plane. A container created here takes the shape its
+    /// own semantics require, so the default is always applicable and only a
+    /// test that deliberately plants a wrong shape can make it refuse.
+    container_kinds: BTreeMap<TopologyNodeId, ContainerWorkspaceKind>,
     /// Container retitles whose native effect succeeds but acknowledgement is
     /// deliberately dropped once, modelling a transport loss after commit.
     lose_retitle_ack_once: BTreeSet<TopologyNodeId>,
@@ -1305,6 +1312,7 @@ impl ScriptedFakeRuntime {
                 seat_titles: BTreeMap::new(),
                 archived_seats: BTreeSet::new(),
                 container_titles: BTreeMap::new(),
+                container_kinds: BTreeMap::new(),
                 lose_retitle_ack_once: BTreeSet::new(),
                 lose_next_send_ack: false,
                 epoch_mappings: BTreeMap::new(),
@@ -1672,6 +1680,20 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.lock().generation
+    }
+
+    /// Plant the native workspace shape this runtime holds for one container.
+    ///
+    /// The only way to stage a container whose shape is wrong for its
+    /// semantics — a ticket container that is a plain directory, or an epic
+    /// container that is somebody's worktree. Nothing in ordinary operation
+    /// produces one, which is exactly why a test has to be able to.
+    pub fn seed_container_kind(
+        &self,
+        topology_node_id: TopologyNodeId,
+        kind: ContainerWorkspaceKind,
+    ) {
+        self.lock().container_kinds.insert(topology_node_id, kind);
     }
 
     /// The capabilities the runtime currently declares.
@@ -2863,6 +2885,50 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 rule: "the native child is archived",
             });
         }
+        // A request Kontor holds a binding for addresses that exact container
+        // and nothing else. The same rule the wire adapter reconciles by: the
+        // persisted id is the address, so a node whose container this runtime
+        // no longer holds, or holds under a different id, is stale — never a
+        // licence to mint a replacement beside the one that went missing.
+        if let Some(bound) = request.bound_native_id.as_ref() {
+            let held = state
+                .containers
+                .get(&request.topology_node_id)
+                .map(|it| it.binding.identity.native_id.clone());
+            match held {
+                None => {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: "the exact bound native container is not present",
+                    });
+                }
+                Some(native_id) if &native_id != bound => {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: "the persisted container binding no longer matches the runtime",
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        // The same shared predicate the wire plane proves on its readback. A
+        // fake that accepted a shape Paseo refuses would let a test pass
+        // against a container no real runtime would have bound.
+        if request.bound_native_id.is_some() {
+            let task_container = request.task_container();
+            let held = state
+                .container_kinds
+                .get(&request.topology_node_id)
+                .copied()
+                .unwrap_or(if task_container {
+                    ContainerWorkspaceKind::Worktree
+                } else {
+                    ContainerWorkspaceKind::Directory
+                });
+            if !held.is_applicable_to(task_container) {
+                return Err(RuntimeError::StaleBinding {
+                    rule: ContainerWorkspaceKind::refusal(task_container),
+                });
+            }
+        }
         // Idempotent per *node*, and a contradiction is a contradiction rather
         // than a second container: the same node asked for at a different root,
         // or as a different shape, is not the retry it looks like.
@@ -2915,6 +2981,16 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state.container_titles.insert(
             request.topology_node_id,
             request.display_name.as_str().to_owned(),
+        );
+        // A container this runtime makes takes the shape its own semantics
+        // require, so the default can never be the reason a later proof fails.
+        state.container_kinds.insert(
+            request.topology_node_id,
+            if request.task_container() {
+                ContainerWorkspaceKind::Worktree
+            } else {
+                ContainerWorkspaceKind::Directory
+            },
         );
         Ok(ContainerOutcome {
             snapshot,
