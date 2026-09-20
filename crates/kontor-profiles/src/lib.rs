@@ -42,8 +42,9 @@ pub use kontor_core::spec::WorkProfileSpec;
 pub use pack::{
     ContextDefinition, DeliveryRoleBinding, GateWaiver, OperationalDelivery, OperationalDomainPack,
     PackAvailability, PackCategoryKey, PackManifestEntry, PackPersona, ProfilePackKey,
-    ProfilePackSpec, ResolvedProfileBundle, RoleDefinition, SkillDefinition, TaskTeamEvidence,
-    certify_task_closure, parse_operational_domain_pack, parse_pack, parse_pack_with_teams,
-    resolve_profile, revise_persona_scenario, revise_work_profile, validate_pack,
+    ProfilePackSpec, ResolvedProfileBundle, RoleDefinition, RolePrompt, SkillDefinition,
+    TaskTeamEvidence, certify_task_closure, parse_operational_domain_pack, parse_pack,
+    parse_pack_with_teams, resolve_profile, revise_persona_scenario, revise_work_profile,
+    validate_pack,
 };
 pub use seeds::{bundled_operational_domain, bundled_pack};
