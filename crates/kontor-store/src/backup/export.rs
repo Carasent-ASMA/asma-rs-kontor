@@ -46,7 +46,7 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 11;
+pub const EXPORT_SCHEMA_VERSION: u32 = 12;
 
 /// The database generation that introduced the launch-intent supersession ledger.
 const LAUNCH_INTENT_SUPERSESSION_SCHEMA_VERSION: i64 = 109;
@@ -70,6 +70,20 @@ const RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION: u32 = 10;
 
 /// The record array introduced in generation 10.
 const RETIRED_EVALUATOR_ATTESTATION_RECORD_FIELDS: [&str; 1] = ["retired_evaluator_attestations"];
+
+/// The database generation that introduced the TeamRun admission-adoption
+/// ledger.
+const TEAM_RUN_ADMISSION_ADOPTION_SCHEMA_VERSION: i64 = 110;
+
+/// The export generation that first carried it.
+///
+/// Named for the same reason as the constants around it: adding this generation
+/// must not silently reclassify an older document as unable to prove what it
+/// does in fact carry.
+const TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION: u32 = 12;
+
+/// The record array introduced in generation 12.
+const TEAM_RUN_ADMISSION_ADOPTION_RECORD_FIELDS: [&str; 1] = ["team_run_admission_adoptions"];
 
 /// The oldest export generation this build can read without inventing state.
 const MIN_SUPPORTED_EXPORT_SCHEMA_VERSION: u32 = 2;
@@ -493,6 +507,20 @@ impl KontorExportV1 {
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation carries retired-evaluator attestations it did not define",
+            });
+        }
+        if self.schema_version < TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION
+            && self.database_schema_version >= TEAM_RUN_ADMISSION_ADOPTION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove admission-adoption completeness",
+            });
+        }
+        if self.schema_version < TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION
+            && !self.records.team_run_admission_adoptions.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries admission adoptions it did not define",
             });
         }
         if self.schema_version < SUCCESSION_EXPORT_VERSION
@@ -971,6 +999,19 @@ impl KontorExportV1 {
                     detail: "the export has no records object",
                 })?;
             for field in RETIRED_EVALUATOR_ATTESTATION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in TEAM_RUN_ADMISSION_ADOPTION_RECORD_FIELDS {
                 records
                     .entry(field.to_owned())
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
@@ -1782,6 +1823,17 @@ exported_tables! {
         evidence_digest: String,
         proof_digest: String,
         attested_at: String,
+    }
+    team_run_admission_adoptions: TeamRunAdmissionAdoptionsRow from "team_run_admission_adoptions" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        team_run_id: String,
+        role_slot_id: String,
+        agent_run_id: String,
+        adopted_agent_run_revision: i64,
+        receipt_id: String,
+        adopted_at: String,
     }
     artifact_evidence: ArtifactEvidenceRow from "artifact_evidence" key(id) {
         id: String,

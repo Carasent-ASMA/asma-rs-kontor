@@ -122,6 +122,47 @@ pub struct StoredRetiredEvaluatorAttestation {
     pub attested_at: Timestamp,
 }
 
+/// One recorded adoption of an existing AgentRun into a declared TeamRun slot.
+///
+/// Append-only. The row states which run was claimed for which slot and at
+/// which revision of that run the claim was made, so a later seat fill can
+/// revalidate against the exact thing the adopter proved it had read instead of
+/// trusting that nothing moved in between.
+///
+/// Recording one seats nothing and dispatches nothing. It is the authority a
+/// later fill consumes, not the fill.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredTeamRunAdmissionAdoption {
+    /// This adoption's own id.
+    pub id: ExternalId,
+    /// The owning project.
+    pub project_id: ProjectId,
+    /// The task the TeamRun belongs to.
+    pub task_id: TaskId,
+    /// The TeamRun whose slot is adopted.
+    pub team_run_id: TeamRunId,
+    /// The declared slot.
+    pub role_slot_id: RoleSlotId,
+    /// The already-created run claimed for it.
+    pub agent_run_id: AgentRunId,
+    /// The run's revision the caller proved it had read.
+    pub adopted_agent_run_revision: AggregateRevision,
+    /// The command receipt that recorded it.
+    pub receipt_id: CommandReceiptId,
+    /// When the adoption was recorded.
+    pub adopted_at: Timestamp,
+}
+
+/// Whether an adoption was newly recorded or replayed onto the existing one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdoptionWrite {
+    /// The adoption is new.
+    Recorded,
+    /// The same command already recorded this exact adoption; nothing was
+    /// written. This is what makes a lost acknowledgement safe.
+    Replayed,
+}
+
 /// Whether a proof was newly recorded or replayed onto the existing one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttestationWrite {
