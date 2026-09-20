@@ -57040,3 +57040,407 @@ async fn a_launch_intent_supersession_replay_reports_unchanged() {
         "a replay minted a second receipt"
     );
 }
+
+/// One succession's durable shape: the active occupant, its retirements, and
+/// the occupancy generation the seat has reached.
+fn succession_shape(
+    world: &World,
+    project_id: ProjectId,
+    binding_id: SeatBindingId,
+) -> (String, Vec<String>, u64) {
+    world.daemon.state().with_store(|store| {
+        let active = store
+            .get_hosted_topology_seat(project_id, binding_id)
+            .expect("the hosted seat reads")
+            .expect("the hosted seat exists")
+            .native_identity
+            .native_id
+            .as_str()
+            .to_owned();
+        let history = store
+            .list_hosted_topology_seat_history_native_ids(project_id, binding_id)
+            .expect("the seat history reads")
+            .iter()
+            .map(|native| native.as_str().to_owned())
+            .collect();
+        let generation = store
+            .hosted_topology_seat_occupancy_generation(project_id, binding_id)
+            .expect("the occupancy generation reads")
+            .expect("the seat is occupied");
+        (active, history, generation)
+    })
+}
+
+/// Preview one stale-native succession and answer with the body an apply needs.
+async fn previewed_succession(
+    world: &World,
+    project: &str,
+    epic: &str,
+    binding: &str,
+    native: &ExternalId,
+    generation: u64,
+) -> serde_json::Value {
+    let request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_native_id": native,
+        "expected_generation": generation,
+        "desired_model_route": {
+            "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+        },
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let mut body = request;
+    body["preview_hash"] = preview.json()["preview_hash"].clone();
+    body
+}
+
+/// The live ASMA-8098 shape: a closed predecessor the runtime calls stale.
+///
+/// The TPM recovery previewed cleanly and then refused at apply with 409
+/// `stale_binding`, rule "the binding no longer names a session this runtime
+/// will act on". The predecessor was closed — gone — but the flow only read
+/// `CorrelationFailed` as absence, so a runtime that says "this session no
+/// longer exists" in the other variant wedged the seat it was there to recover.
+///
+/// Each rule below is one the runtime raises for a predecessor that is
+/// genuinely terminal or missing. Every one must let the succession converge on
+/// exactly one new occupant, with the predecessor written once to immutable
+/// history and nothing archived that was not there to archive.
+#[tokio::test]
+async fn a_terminal_predecessor_the_runtime_calls_stale_is_proved_gone() {
+    for (case, rule) in [
+        ("missing", "the exact native agent no longer exists"),
+        ("archived", "the exact native agent is archived"),
+        (
+            "retired",
+            "this session has been retired and cannot be resumed",
+        ),
+        (
+            "wrong-generation-session",
+            "this runtime holds no session with that native identity in this generation",
+        ),
+    ] {
+        let (composed, binding, native, generation) = hosted_tpm_seat(
+            &format!("/tmp/kontor-8187-stale-{case}"),
+            &format!("asma-8098-stale-{case}-seats"),
+        )
+        .await;
+        let world = &composed.world;
+        let project = &composed.project;
+        let epic = &composed.epic;
+        // The predecessor really is gone in the runtime, which is the state
+        // these rules describe. The staged rule is how the runtime *reports*
+        // that, and the point of the case is that the report is believed.
+        world.fake.archive_hosted_seat(&native);
+        world.fake.refuse_hosted_inspection(rule);
+
+        let project_id = ProjectId::parse(project).expect("a canonical project id");
+        let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+        let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+        let applied = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+            &body,
+        )
+        .signed_as(world, "admin")
+        .with_key(format!("asma-8187-stale-{case}"))
+        .send(world)
+        .await;
+        assert_eq!(
+            applied.status, 200,
+            "{case}: a terminal predecessor still refused: {}",
+            applied.body
+        );
+
+        let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+        assert_ne!(
+            active,
+            native.as_str(),
+            "{case}: the seat kept its predecessor"
+        );
+        assert_eq!(
+            history,
+            vec![native.as_str().to_owned()],
+            "{case}: the predecessor is not immutable history exactly once"
+        );
+        assert_eq!(occupancy, 2, "{case}: the seat is not at generation two");
+        // Nothing terminal is archived: there was nothing there to archive.
+        assert!(
+            !world
+                .fake
+                .calls()
+                .iter()
+                .any(|call| matches!(call, AdapterCall::RetireHostedSeat(_))),
+            "{case}: a predecessor proved gone was archived anyway"
+        );
+    }
+}
+
+/// A stale binding that refuses to answer is not a predecessor that is gone.
+///
+/// These rules say the caller addressed another runtime, another generation or
+/// a container this plane cannot resolve. Reading any of them as absence would
+/// retire a logical seat on the strength of a lookup that never found it, so
+/// each must refuse before the first native effect and leave the seat exactly
+/// as it was. An unaudited rule is included deliberately: the classification is
+/// a closed list, and anything outside it must fail closed.
+#[tokio::test]
+async fn a_stale_binding_that_is_not_absence_refuses_before_any_effect() {
+    for (case, rule) in [
+        (
+            "another-runtime",
+            "the hosted topology predecessor belongs to another runtime",
+        ),
+        (
+            "another-generation",
+            "the hosted topology seat belongs to another runtime generation",
+        ),
+        (
+            "container-gone",
+            "the bound native project no longer exists on this runtime",
+        ),
+        ("unaudited", "a rule this build has never seen"),
+    ] {
+        let (composed, binding, native, generation) = hosted_tpm_seat(
+            &format!("/tmp/kontor-8187-notabsent-{case}"),
+            &format!("asma-8098-notabsent-{case}-seats"),
+        )
+        .await;
+        let world = &composed.world;
+        let project = &composed.project;
+        let epic = &composed.epic;
+        // Previewed while the predecessor still answers, so the refusal under
+        // test is the one the staged rule causes and not a stale preview.
+        world.fake.archive_hosted_seat(&native);
+        let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+
+        let project_id = ProjectId::parse(project).expect("a canonical project id");
+        let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+        let shape_before = succession_shape(world, project_id, binding_id);
+        world.fake.refuse_hosted_inspection(rule);
+        let calls_before = world.fake.calls().len();
+        let refused = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+            &body,
+        )
+        .signed_as(world, "admin")
+        .with_key(format!("asma-8187-notabsent-{case}"))
+        .send(world)
+        .await;
+        assert_ne!(
+            refused.status, 200,
+            "{case}: a refusal to answer was read as absence: {}",
+            refused.body
+        );
+        assert!(
+            !world.fake.calls()[calls_before..]
+                .iter()
+                .any(|call| matches!(
+                    call,
+                    AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+                )),
+            "{case}: a refusal produced a native effect"
+        );
+        assert_eq!(
+            succession_shape(world, project_id, binding_id),
+            shape_before,
+            "{case}: a refusal moved durable seat state"
+        );
+    }
+}
+
+/// Durable lineage is the authority, and it refuses before any native effect.
+///
+/// Each case stages a different durable contradiction for the seat's own
+/// records. None of them is something a caller can assert or deny — they are
+/// facts about what Kontor wrote — so the refusal has to come from resolving
+/// that evidence rather than from re-reading the request. The runtime is left
+/// untouched in every case, because a seat whose own records disagree is
+/// exactly the seat that must not be adopted from or retired.
+#[tokio::test]
+async fn a_hosted_seat_whose_durable_lineage_disagrees_refuses_with_no_effect() {
+    for (case, replacement, rule) in [
+        (
+            "intent-names-another-native",
+            "INSERT INTO hosted_topology_seat_launch_intents
+                 (project_id, seat_binding_id, occupancy_generation, autonomy, model_rung,
+                  state, observed_native_id, prepared_at, installed_at)
+             VALUES (?1, ?2, 1, 'bounded',
+                     json('{\"provider\":\"codex\",\"model\":\"gpt-5.6-sol\",\"effort\":\"xhigh\"}'),
+                     'installed', 'a-native-kontor-never-bound',
+                     '2026-09-18T20:50:00Z', '2026-09-18T21:00:00Z')",
+            "the occupancy and the launch intent name different natives for one generation",
+        ),
+        (
+            "intent-route-disagrees",
+            "INSERT INTO hosted_topology_seat_launch_intents
+                 (project_id, seat_binding_id, occupancy_generation, autonomy, model_rung,
+                  state, observed_native_id, prepared_at, installed_at)
+             VALUES (?1, ?2, 1, 'bounded',
+                     json('{\"provider\":\"codex\",\"model\":\"gpt-5.6-sol\",\"effort\":\"low\"}'),
+                     'prepared', NULL, '2026-09-18T20:50:00Z', NULL)",
+            "a durable record's route disagrees with the seat's catalog route",
+        ),
+    ] {
+        let (composed, binding, native, generation) = hosted_tpm_seat(
+            &format!("/tmp/kontor-8098-lineage-{case}"),
+            &format!("asma-8098-lineage-{case}-seats"),
+        )
+        .await;
+        let world = &composed.world;
+        let project = &composed.project;
+        let epic = &composed.epic;
+        let project_id = ProjectId::parse(project).expect("a canonical project id");
+        let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+        // Replaced rather than edited: the schema refuses to rewrite a
+        // recorded decision, which is the rule that makes these records worth
+        // resolving in the first place. Staging the contradiction means writing
+        // the row as a divergent history would have left it.
+        let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+        let connection = rusqlite::Connection::open(database).expect("the database opens");
+        connection
+            .execute(
+                "DELETE FROM hosted_topology_seat_launch_intents
+                  WHERE project_id = ?1 AND seat_binding_id = ?2",
+                rusqlite::params![project, binding],
+            )
+            .unwrap_or_else(|error| panic!("{case}: the intent is removable: {error}"));
+        let staged = connection
+            .execute(replacement, rusqlite::params![project, binding])
+            .unwrap_or_else(|error| panic!("{case} is stageable: {error}"));
+        assert_eq!(staged, 1, "{case}: staging wrote no row");
+        drop(connection);
+
+        let shape_before = succession_shape(world, project_id, binding_id);
+        let calls_before = world.fake.calls().len();
+        let refused = Call::post(
+            format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+            &serde_json::json!({
+                "expected_revision": 1,
+                "seat_binding_id": binding,
+                "expected_native_id": native,
+                "expected_generation": generation,
+                "desired_model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "high"
+                },
+            }),
+        )
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+        assert_ne!(
+            refused.status, 200,
+            "{case}: a seat with contradictory lineage was previewed: {}",
+            refused.body
+        );
+        // Named exactly. Several guards would refuse this seat for unrelated
+        // reasons, and any of them standing in for the lineage resolver would
+        // leave the resolver itself unproven.
+        assert_eq!(
+            refused.json()["rule"], rule,
+            "{case}: refused, but not by the lineage resolver: {}",
+            refused.body
+        );
+        assert!(
+            !world.fake.calls()[calls_before..].iter().any(|call| matches!(
+                call,
+                AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+            )),
+            "{case}: a lineage refusal produced a native effect"
+        );
+        assert_eq!(
+            succession_shape(world, project_id, binding_id),
+            shape_before,
+            "{case}: a lineage refusal moved durable seat state"
+        );
+    }
+}
+
+/// A placement that cannot be re-confirmed is not a placement.
+///
+/// The topology holds one ECP workspace for this control plane. If that exact
+/// container cannot be read back, nothing has proved the seat is where the
+/// topology says it is — and a correction that adopted or retired a native on
+/// that basis would be acting on an unchecked assumption. The resolver, not a
+/// second guard, is what refuses: the observed placement is recorded as
+/// unconfirmed and can only ever mismatch.
+#[tokio::test]
+async fn a_hosted_seat_whose_placement_cannot_be_reconfirmed_refuses() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8098-placement", "asma-8098-placement-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+
+    // Nothing about the seat changes here. What changes is that the workspace
+    // the topology records is one this runtime does not hold, so the readback
+    // that would confirm the placement cannot succeed.
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+    let connection = rusqlite::Connection::open(database).expect("the database opens");
+    let staged = connection
+        .execute(
+            "UPDATE topology_node_containers
+                SET native_id = 'a-workspace-this-runtime-never-had'
+              WHERE project_id = ?1
+                AND topology_node_id = (
+                    SELECT topology_node_id FROM seat_bindings WHERE id = ?2
+                )",
+            rusqlite::params![project, binding],
+        )
+        .expect("the recorded placement is stageable");
+    assert_eq!(staged, 1, "staging matched no container");
+    drop(connection);
+
+    let shape_before = succession_shape(world, project_id, binding_id);
+    let calls_before = world.fake.calls().len();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "seat_binding_id": binding,
+            "expected_native_id": native,
+            "expected_generation": generation,
+            "desired_model_route": {
+                "provider": "codex", "model": "gpt-5.6-sol", "effort": "high"
+            },
+        }),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_ne!(
+        refused.status, 200,
+        "an unconfirmable placement was previewed anyway: {}",
+        refused.body
+    );
+    assert_eq!(
+        refused.json()["rule"],
+        "the hosted seat is not in the ECP workspace its topology holds",
+        "refused, but not by the placement fence: {}",
+        refused.body
+    );
+    assert!(
+        !world.fake.calls()[calls_before..]
+            .iter()
+            .any(|call| matches!(
+                call,
+                AdapterCall::RetireHostedSeat(_) | AdapterCall::LaunchHostedSeat(_)
+            )),
+        "an unconfirmable placement produced a native effect"
+    );
+    assert_eq!(
+        succession_shape(world, project_id, binding_id),
+        shape_before,
+        "an unconfirmable placement moved durable seat state"
+    );
+}

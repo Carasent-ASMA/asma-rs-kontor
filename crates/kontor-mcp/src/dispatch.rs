@@ -721,6 +721,84 @@ mod tests {
         assert!(request.idempotency_key.is_none());
     }
 
+    /// The governed supersession is reachable, and reachable exactly once.
+    ///
+    /// A route that no tool maps is a route no Lead can reach through the only
+    /// surface they have, and the parity gate exists to catch that. This proves
+    /// the other half: that the mapping actually builds the request the daemon
+    /// serves — path substituted, idempotency key carried out of the body, and
+    /// every fence the operation refuses without present where the contract
+    /// puts it.
+    #[test]
+    fn a_launch_intent_supersession_is_reachable_through_the_mcp_route() {
+        let request = build(
+            spec("kontor_core_team_launch_intent_supersede"),
+            &serde_json::json!({
+                "project_id": UUID,
+                "epic_id": UUID,
+                "idempotency_key": "asma-7869-supersede-1",
+                "expected_revision": 1,
+                "seat_binding_id": UUID,
+                "expected_seat_binding_revision": 2,
+                "occupancy_generation": 1,
+                "expected_model_route": {
+                    "provider": "opencode", "model": "deepseek/deepseek-flash", "effort": "max"
+                },
+                "expected_prepared_at": "2026-09-18T20:50:33.373705Z",
+                "desired_model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }
+            }),
+        )
+        .expect("the supported MCP route accepts a governed supersession");
+        assert_eq!(
+            request.path,
+            format!("/v1/projects/{UUID}/epics/{UUID}/core-team/launch-intents:supersede")
+        );
+        // The key is an authority fence, not a body field: an exactly-once
+        // operation whose key travelled in the body would be re-executed by a
+        // retry that the daemon never recognized as one.
+        assert_eq!(
+            request.idempotency_key.as_deref(),
+            Some("asma-7869-supersede-1")
+        );
+        let body = request.body.as_ref().expect("a write carries its body");
+        assert!(body.get("idempotency_key").is_none());
+        for fence in [
+            "expected_revision",
+            "seat_binding_id",
+            "expected_seat_binding_revision",
+            "occupancy_generation",
+            "expected_model_route",
+            "expected_prepared_at",
+            "desired_model_route",
+        ] {
+            assert!(body.get(fence).is_some(), "{fence} did not reach the body");
+        }
+    }
+
+    /// Exactly one tool maps this operation.
+    ///
+    /// Two would make a Lead's reachable authority depend on which name they
+    /// happened to call, and the tier assertion would only hold for whichever
+    /// one the reviewer looked at.
+    #[test]
+    fn exactly_one_tool_maps_the_launch_intent_supersession() {
+        let mapped: Vec<&ToolSpec> = REGISTRY
+            .iter()
+            .filter(|tool| {
+                tool.path == "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede"
+            })
+            .collect();
+        assert_eq!(mapped.len(), 1, "the supersession must map exactly once");
+        assert_eq!(mapped[0].name, "kontor_core_team_launch_intent_supersede");
+        assert_eq!(mapped[0].tier, crate::CallerTier::Admin);
+        assert!(
+            !CLI_ONLY.contains(&mapped[0].name),
+            "a governed recovery operation must stay advertised, not CLI-only"
+        );
+    }
+
     #[test]
     fn committee_re_review_provenance_is_reachable_through_the_mcp_route() {
         let request = build(
