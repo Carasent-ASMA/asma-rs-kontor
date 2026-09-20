@@ -2725,8 +2725,8 @@ impl PaseoAdapter {
                 //
                 // Deliberately not `verify_workspace_placement`: that is the
                 // ticket-role rule, and it refuses anything that is not a
-                // worktree. Applied here it would refuse every epic
-                // consultation container, which is *intentionally* a directory.
+                // worktree. Applied here it would refuse the epic's ECP,
+                // which is intentionally a directory or local checkout.
                 let task_container = request.task_container();
                 if !container_workspace_kind(workspace.workspace_kind)
                     .is_applicable_to(task_container)

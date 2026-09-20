@@ -284,18 +284,18 @@ pub enum ContainerWorkspaceKind {
 impl ContainerWorkspaceKind {
     /// Whether this shape is one the addressed container may legitimately have.
     ///
-    /// The two container semantics are genuinely different places, and the
-    /// difference is not cosmetic:
+    /// Ticket scope requires isolation. Epic scope can serve several operations:
     ///
     /// * A **ticket** container is where a ticket's work happens, so it must be
     ///   a real Git worktree. A ticket role editing in a plain directory is
     ///   editing outside version control, and a ticket role editing in the
     ///   project's own local checkout is editing the shared tree every other
     ///   ticket depends on.
-    /// * An **epic-level** container — a consultation pane, an advisory or
-    ///   committee workspace — deliberately is *not* a worktree. It is rooted
-    ///   at the epic's stable runtime directory so it survives every ticket
-    ///   inside it, which is exactly what a worktree does not do.
+    /// * A **taskless** container may be an ECP rooted at a stable directory or
+    ///   local checkout, or an Advisor/Committee consultation in its own Git
+    ///   worktree. Scope alone cannot distinguish those uses. Their launch
+    ///   operations enforce the narrower shape: leadership requires a local
+    ///   ECP; consultations require an isolated worktree.
     ///
     /// Everything else is outside the applicable set. `Checkout` is excluded
     /// from both: it is a branch checkout the runtime manages, which is neither
@@ -305,10 +305,10 @@ impl ContainerWorkspaceKind {
     #[must_use]
     pub const fn is_applicable_to(self, task_container: bool) -> bool {
         match (task_container, self) {
-            (true, Self::Worktree) => true,
+            (_, Self::Worktree) => true,
             (false, Self::Directory | Self::LocalCheckout) => true,
             (true, Self::Checkout | Self::LocalCheckout | Self::Directory | Self::Other)
-            | (false, Self::Worktree | Self::Checkout | Self::Other) => false,
+            | (false, Self::Checkout | Self::Other) => false,
         }
     }
 
@@ -318,7 +318,7 @@ impl ContainerWorkspaceKind {
         if task_container {
             "the bound container of a ticket is not a Git worktree"
         } else {
-            "the bound container of an epic node is not a directory or local checkout"
+            "the bound container of an epic node is not a directory, local checkout or consultation worktree"
         }
     }
 }

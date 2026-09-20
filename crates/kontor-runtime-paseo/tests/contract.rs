@@ -11957,11 +11957,11 @@ async fn a_bound_ecp_container_is_reconciled_by_exact_id_after_a_restart() {
     }
 }
 
-/// Item 3, semantic shape: an epic container refuses a ticket's worktree and
-/// every shape this adapter has not audited.
+/// Taskless containers may host an ECP or an isolated consultation. Shapes
+/// outside either supported use remain refused.
 #[tokio::test]
-async fn a_bound_ecp_container_refuses_a_worktree_or_unaudited_shape() {
-    for kind in ["worktree", "checkout", "something_else"] {
+async fn a_bound_epic_container_refuses_unaudited_shapes() {
+    for kind in ["checkout", "something_else"] {
         let plane = restarted_plane(workspace_list_of_kind(kind));
 
         let error = plane
@@ -12545,4 +12545,67 @@ async fn inspection_refuses_inapplicable_workspace_shapes_before_rehydration() {
         assert!(plane.adapter.project_binding().is_none());
         assert!(plane.daemon.mutations().is_empty());
     }
+}
+
+#[tokio::test]
+async fn an_epic_consultation_worktree_reconciles_and_inspects_after_restart() {
+    let plane = restarted_plane(workspace_list_of_kind("worktree"));
+    let request = bound_child_request(node(NODE_A), WORKSPACE_ID, epic_execution_scope());
+    assert!(
+        request.scope.task.is_none(),
+        "an epic review serves no ticket"
+    );
+    let prepared = plane
+        .adapter
+        .prepare_container(&request)
+        .await
+        .expect("an epic consultation retains its bound Git worktree after restart");
+    let inspection = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: prepared.snapshot.binding.clone(),
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: epic_execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-09-20T12:00:00Z"),
+        })
+        .await
+        .expect("the same consultation worktree is freshly attested");
+    assert!(!prepared.created);
+    assert_eq!(inspection.binding.identity.native_id.as_str(), WORKSPACE_ID);
+    assert_eq!(inspection.canonical_cwd, Some(root()));
+    assert!(plane.daemon.mutations().is_empty());
+
+    // Container reconciliation serves both consultations and leadership;
+    // the hosted-seat operation still applies the stricter ECP shape rule.
+    let refused = plane
+        .adapter
+        .launch_hosted_seat(&HostedSeatLaunchRequest {
+            seat_binding_id: SeatBindingId::generate(),
+            role_slot_id: slot("lsa"),
+            display_name: name("LSA"),
+            container: ContainerBindingSnapshot {
+                binding: inspection.binding,
+                capabilities: prepared.snapshot.capabilities,
+                correlation: inspection.correlation,
+            },
+            cwd: root(),
+            scope: epic_execution_scope(),
+            prompt: text("leadership requires its own local ECP"),
+            credential: kontor_runtime::adapter::ScopedSeatCredential::new("test".to_owned()),
+            fenced_predecessor_native_ids: Vec::new(),
+            model_rung: model_rung(),
+            autonomy: SeatAutonomy::standard(),
+            context_policy: standard_context_policy(),
+            requested_at: at("2026-09-20T12:01:00Z"),
+        })
+        .await
+        .expect_err("a consultation worktree never becomes a leadership ECP");
+    assert!(matches!(
+        refused,
+        RuntimeError::WorkspaceMismatch {
+            rule: "a Core Team seat may be placed only in the epic's local ECP workspace"
+        }
+    ));
+    assert!(plane.daemon.mutations().is_empty());
 }
