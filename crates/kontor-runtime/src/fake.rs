@@ -1682,6 +1682,21 @@ impl ScriptedFakeRuntime {
         self.lock().generation
     }
 
+    /// Make this runtime stop holding one node's native container.
+    ///
+    /// What a moved, destroyed or unreachable container looks like from
+    /// Kontor's side: the durable binding still names it and the runtime no
+    /// longer answers for it. The same shape `forget_seat` stages for seats,
+    /// and the only way to test an effect ordering whose whole purpose is to
+    /// refuse before writing anything.
+    pub fn forget_container(&self, topology_node_id: TopologyNodeId) {
+        let mut state = self.lock();
+        state.containers.remove(&topology_node_id);
+        state.container_titles.remove(&topology_node_id);
+        state.container_kinds.remove(&topology_node_id);
+        state.container_parents.remove(&topology_node_id);
+    }
+
     /// Plant the native workspace shape this runtime holds for one container.
     ///
     /// The only way to stage a container whose shape is wrong for its

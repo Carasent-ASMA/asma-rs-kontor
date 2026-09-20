@@ -20316,6 +20316,18 @@ impl ApplicationOperations for Services {
         // untouched and the already bound TSW keeps its native identity.
         if replayed && let Some(task_id) = scope.task_id {
             let leaf = self.ensure_task_node(project_id, task_id)?;
+            // A replay repairs seats, and a seat repair is a write, so it earns
+            // the same prerequisite the first pass does: the container those
+            // seats hang off is proved by an exact-id readback before anything
+            // is opened or retired against it.
+            //
+            // Idempotency still suppresses every native *mutation* — nothing
+            // below creates, renames, archives, launches or binds. What it does
+            // not suppress is the proof itself, because repairing logical state
+            // against a container the runtime no longer holds is the outcome
+            // this ordering exists to make unreachable.
+            self.prove_existing_bound_container(project_id, &leaf)
+                .await?;
             self.retire_unrouted_task_persistent_seats(project_id, task_id, leaf.id)?;
             // A historical materialization receipt is exactly the shape the
             // logical gap lives in: the ticket was materialized before the slot
@@ -29219,16 +29231,15 @@ impl ApplicationOperations for Services {
                 })?;
             let scope =
                 self.execution_scope(project_id, epic_id, Some(task.id), adapter.as_ref())?;
-            receipt_id = self.record(
-                key,
-                project_id,
-                CommandKind::StartScheduledWork,
-                target,
-                epic.revision,
-                &intent,
-            )?;
-            // Re-attest the bound container through the same preparation path
-            // as seating; the runtime owns the snapshot used by launch.
+            // The placement is proved *before* the receipt exists.
+            //
+            // Recording first and proving afterwards leaves a durable receipt
+            // behind for a fill that never happened: the command is on the
+            // ledger, its idempotency key is spent, and the refusal that
+            // follows can take back neither. Every effect below — the AgentRun,
+            // its launch intent, the launch, the dispatch and the runtime
+            // binding — hangs off this proof, so the proof comes first and a
+            // mismatch costs nothing at all.
             let workspace = self
                 .ensure_container(project_id, &placement, &task_root, adapter.as_ref())
                 .await?;
@@ -29238,6 +29249,14 @@ impl ApplicationOperations for Services {
                     "container preparation changed the existing TSW native identity",
                 ));
             }
+            receipt_id = self.record(
+                key,
+                project_id,
+                CommandKind::StartScheduledWork,
+                target,
+                epic.revision,
+                &intent,
+            )?;
             let seating = Seating {
                 project_id,
                 admitted: &admitted,
@@ -38068,6 +38087,48 @@ impl Services {
             ));
         }
         Ok(inspection)
+    }
+
+    /// Freshly prove the native container a node already holds, if it holds one.
+    ///
+    /// An exact-id readback against the runtime that recorded the binding, and
+    /// nothing else: it creates nothing, renames nothing, archives nothing and
+    /// launches nothing. That is what makes it usable as a prerequisite — a
+    /// caller that refuses on the answer has spent no seat, no receipt, no
+    /// history row and no native effect.
+    ///
+    /// A node with no persisted binding yet answers `None` rather than
+    /// refusing. There is nothing to prove and nothing for a later write to
+    /// hang off, and refusing would turn a first materialization into a
+    /// requirement for a container that does not exist yet.
+    ///
+    /// The runtime is resolved from the binding's own recorded kind rather than
+    /// from configuration, because the question being asked is whether *the
+    /// runtime holding this container* still agrees about it.
+    async fn prove_existing_bound_container(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+    ) -> Result<Option<ContainerBindingSnapshot>, ApiError> {
+        let state = self.state()?;
+        let Some(binding) = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(None);
+        };
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime holding this node's native container is not configured",
+                )
+            })?;
+        self.bound_container_snapshot(project_id, node, adapter.as_ref())
+            .await
+            .map(Some)
     }
 
     async fn bound_container_snapshot(

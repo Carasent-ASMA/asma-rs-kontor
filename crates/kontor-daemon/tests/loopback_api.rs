@@ -6505,7 +6505,7 @@ async fn an_unplaceable_dynamic_task_is_refused_before_a_team_run_is_committed()
             .fake
             .calls()
             .iter()
-            .all(|call| !matches!(call, kontor_runtime::fake::AdapterCall::PrepareContainer(_))),
+            .all(|call| !matches!(call, AdapterCall::PrepareContainer(_))),
         "a logical placement refusal reaches no native container operation"
     );
 }
@@ -6633,14 +6633,13 @@ async fn scheduler_planning_only_inspects_exact_materialized_topology_and_preser
     assert_eq!(
         planning_calls
             .iter()
-            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::InspectContainer(_)))
+            .filter(|call| matches!(call, AdapterCall::InspectContainer(_)))
             .count(),
         3
     );
     assert!(planning_calls.iter().all(|call| matches!(
         call,
-        kontor_runtime::fake::AdapterCall::DiscoverCapabilities
-            | kontor_runtime::fake::AdapterCall::InspectContainer(_)
+        AdapterCall::DiscoverCapabilities | AdapterCall::InspectContainer(_)
     )));
 
     let start_key = "placement-attested-start";
@@ -21392,13 +21391,13 @@ async fn explicit_materialization_places_an_unconfigured_project_before_schedule
     assert!(
         !calls
             .iter()
-            .any(|call| matches!(call, kontor_runtime::fake::AdapterCall::PrepareContainer(_))),
+            .any(|call| matches!(call, AdapterCall::PrepareContainer(_))),
         "scheduler launch must not materialize a container: {calls:?}"
     );
     assert!(
         !calls
             .iter()
-            .any(|call| matches!(call, kontor_runtime::fake::AdapterCall::PrepareWorkspace(_))),
+            .any(|call| matches!(call, AdapterCall::PrepareWorkspace(_))),
         "no accepted seat falls back to a TeamRun-keyed workspace"
     );
 }
@@ -21582,7 +21581,7 @@ async fn a_task_placed_on_a_node_that_hosts_no_session_is_refused_before_anythin
             .fake
             .calls()
             .iter()
-            .any(|call| matches!(call, kontor_runtime::fake::AdapterCall::PrepareContainer(_))),
+            .any(|call| matches!(call, AdapterCall::PrepareContainer(_))),
         "a blocked placement reaches no native surface"
     );
 }
@@ -27188,7 +27187,7 @@ async fn settling_a_bounded_turn_reads_only_the_claimed_current_window() {
     assert_eq!(
         calls[calls_before..]
             .iter()
-            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::History(_)))
+            .filter(|call| matches!(call, AdapterCall::History(_)))
             .count(),
         2,
         "settlement reads the bounded window and then asks once whether anything \
@@ -27956,13 +27955,7 @@ async fn observing_a_long_never_read_transcript_costs_the_window_not_the_session
     let recent = world.fake.calls();
     let reads = recent[before..]
         .iter()
-        .filter(|call| {
-            matches!(
-                call,
-                kontor_runtime::fake::AdapterCall::TailWindow(_)
-                    | kontor_runtime::fake::AdapterCall::History(_)
-            )
-        })
+        .filter(|call| matches!(call, AdapterCall::TailWindow(_) | AdapterCall::History(_)))
         .count();
     assert!(
         reads <= 2,
@@ -28207,13 +28200,7 @@ async fn observing_refuses_a_duplicate_whose_delivery_is_outside_the_window() {
         .fake
         .calls()
         .iter()
-        .filter(|call| {
-            matches!(
-                call,
-                kontor_runtime::fake::AdapterCall::TailWindow(_)
-                    | kontor_runtime::fake::AdapterCall::History(_)
-            )
-        })
+        .filter(|call| matches!(call, AdapterCall::TailWindow(_) | AdapterCall::History(_)))
         .count();
     assert!(
         reads <= 4,
@@ -28616,12 +28603,7 @@ async fn observing_a_never_read_session_recovers_its_epoch_once() {
     let recent = world.fake.calls();
     let refreshes = recent[before..]
         .iter()
-        .filter(|call| {
-            matches!(
-                call,
-                kontor_runtime::fake::AdapterCall::RefreshTimelineEpoch(_)
-            )
-        })
+        .filter(|call| matches!(call, AdapterCall::RefreshTimelineEpoch(_)))
         .count();
     // Once for the observation, not once per page. A refresh on every refused
     // read would put the session's length back into the cost of observing it.
@@ -29185,7 +29167,7 @@ async fn an_early_proof_in_a_long_session_settles_without_reading_the_tail() {
     // trailing event; this one is bounded by the window and the anchored read.
     let reads = world.fake.calls()[calls_before..]
         .iter()
-        .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::History(_)))
+        .filter(|call| matches!(call, AdapterCall::History(_)))
         .count();
     // The window itself is two events — one page. Everything else this read
     // spends is the terminality question, and the claimed message's distance
@@ -29277,12 +29259,7 @@ async fn a_settlement_answers_a_timeline_refetch_signal_once_and_settles() {
     let recent = world.fake.calls();
     let refreshes = recent[calls_before..]
         .iter()
-        .filter(|call| {
-            matches!(
-                call,
-                kontor_runtime::fake::AdapterCall::RefreshTimelineEpoch(_)
-            )
-        })
+        .filter(|call| matches!(call, AdapterCall::RefreshTimelineEpoch(_)))
         .count();
     // Once for the scan, not once per refused page. A recovery that fired on
     // every page would put the session's length back into the cost of a proof,
@@ -29415,12 +29392,7 @@ async fn a_settlement_naming_an_unmapped_epoch_is_told_to_observe_the_turn_again
     let recent = world.fake.calls();
     let refreshes = recent[calls_before..]
         .iter()
-        .filter(|call| {
-            matches!(
-                call,
-                kontor_runtime::fake::AdapterCall::RefreshTimelineEpoch(_)
-            )
-        })
+        .filter(|call| matches!(call, AdapterCall::RefreshTimelineEpoch(_)))
         .count();
     assert_eq!(
         refreshes, 1,
@@ -29846,7 +29818,7 @@ async fn a_settled_turn_derives_its_follow_up_at_most_once() {
             .fake
             .calls()
             .iter()
-            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::Send(..)))
+            .filter(|call| matches!(call, AdapterCall::Send(..)))
             .count()
     };
     assert_eq!(dispatches(&world).len(), 1, "one follow-up was derived");
@@ -29860,7 +29832,7 @@ async fn a_settled_turn_derives_its_follow_up_at_most_once() {
             .fake
             .calls()
             .iter()
-            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::Resume(_)))
+            .filter(|call| matches!(call, AdapterCall::Resume(_)))
             .count(),
         1,
         "the deferred turn resumes its persistent seat before delivery"
@@ -29923,7 +29895,7 @@ async fn a_settled_turn_derives_its_follow_up_at_most_once() {
     assert_eq!(
         fake.calls()
             .iter()
-            .filter(|call| matches!(call, kontor_runtime::fake::AdapterCall::Send(..)))
+            .filter(|call| matches!(call, AdapterCall::Send(..)))
             .count(),
         sends_after_first,
         "and a restart produces no second effect either"
@@ -38895,7 +38867,7 @@ async fn ticket_materialization_retires_an_unrouted_legacy_tpm_without_creating_
             "the legacy row starts with no topology-message route"
         );
     });
-    let calls_before = world.fake.calls().len();
+    let native_mutations_before = native_mutations(world).len();
 
     let repaired = Call::post(&uri, &request)
         .signed_as(world, "operator")
@@ -38921,9 +38893,9 @@ async fn ticket_materialization_retires_an_unrouted_legacy_tpm_without_creating_
     assert_eq!(preserved.id, legacy_binding_id);
     assert_eq!(preserved.lifecycle.as_str(), "retired");
     assert_eq!(
-        world.fake.calls().len(),
-        calls_before,
-        "replay has no native effect"
+        native_mutations(world).len(),
+        native_mutations_before,
+        "replay has no native effect beyond re-proving the bound container"
     );
 
     let message = Call::post(
@@ -38939,8 +38911,8 @@ async fn ticket_materialization_retires_an_unrouted_legacy_tpm_without_creating_
     .await;
     assert_eq!(message.status, 404, "{}", message.body);
     assert_eq!(
-        world.fake.calls().len(),
-        calls_before,
+        native_mutations(world).len(),
+        native_mutations_before,
         "messaging an inactive logical row cannot create a native identity"
     );
 }
@@ -42231,6 +42203,30 @@ async fn an_epic_pin_moves_only_through_the_preview_that_was_authorized() {
 const SEEDED_CATALOG: &str = "01936f5a-1000-7000-8000-000000000002";
 
 /// One `CoreTeamSeatSelectionDto`.
+/// Every adapter call that changes something native.
+///
+/// A replay is allowed to *prove* and nothing more: an exact-id container
+/// inspection, and the capability read that inspection needs. Both are
+/// readbacks — they create, rename, archive, launch and bind nothing — so
+/// counting them as "a native effect" would make the proof indistinguishable
+/// from the mutations the proof exists to prevent.
+///
+/// Anything else the adapter was asked to do is a native effect and must not
+/// appear on a replay.
+fn native_mutations(world: &World) -> Vec<AdapterCall> {
+    world
+        .fake
+        .calls()
+        .into_iter()
+        .filter(|call| {
+            !matches!(
+                call,
+                AdapterCall::InspectContainer(_) | AdapterCall::DiscoverCapabilities
+            )
+        })
+        .collect()
+}
+
 fn seat(role_code: &str, presence: &str, ad_hoc_allowed: bool) -> serde_json::Value {
     serde_json::json!({
         "role": {
@@ -51543,10 +51539,23 @@ async fn same_key_materialization_repairs_the_calibrated_legacy_four_and_upgrade
         first_receipt,
         "same-key repair reuses the historical receipt"
     );
+    // The replay re-proves the bound container by exact id and mutates
+    // nothing. Both halves are asserted: a replay that skipped the proof would
+    // repair logical state against a container nobody checked, and a replay
+    // that mutated would break idempotency.
     assert!(
-        world.fake.calls().is_empty(),
-        "logical repair contacts no runtime: {:?}",
+        world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::InspectContainer(_))),
+        "logical repair re-proves the bound container by exact id: {:?}",
         world.fake.calls()
+    );
+    assert!(
+        native_mutations(&world).is_empty(),
+        "logical repair performs no native mutation: {:?}",
+        native_mutations(&world)
     );
 
     let (seats_after_first, runs_after_first) = world.daemon.state().with_store(|store| {
@@ -51609,8 +51618,9 @@ async fn same_key_materialization_repairs_the_calibrated_legacy_four_and_upgrade
         "a second replay preserves every deterministic SeatBinding identity"
     );
     assert!(
-        world.fake.calls().is_empty(),
-        "a second replay is also inert"
+        native_mutations(&world).is_empty(),
+        "a second replay mutates nothing natively: {:?}",
+        native_mutations(&world)
     );
 
     let target = kontor_profiles::bundled_operational_domain()
@@ -57607,5 +57617,323 @@ async fn a_hosted_seat_whose_placement_cannot_be_reconfirmed_refuses() {
         succession_shape(world, project_id, binding_id),
         shape_before,
         "an unconfirmable placement moved durable seat state"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8234 position 3b.1A — the bound-container proof precedes every effect
+// ---------------------------------------------------------------------------
+
+/// A project, epic and task with their topology materialized and both the ECP
+/// and the ticket container bound.
+///
+/// The real flow, driven through the real routes: nothing here writes a binding
+/// into the store behind the operation's back, so the container the proof
+/// interrogates is the one the product actually bound.
+async fn materialized_ticket_topology(slug: &str) -> (World, String, String, String, u64) {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let worktree = world.directory.path().join(slug);
+    std::fs::create_dir_all(worktree.join(".git")).expect("the worktree exists");
+
+    let created = ensure_project(&world, slug, "Kontor", &format!("/tmp/kontor-{slug}")).await;
+    let project = created.json()["project_id"]
+        .as_str()
+        .expect("a project id")
+        .to_owned();
+    let project_revision = created.json()["revision"]
+        .as_u64()
+        .expect("a project revision");
+    let category = first_category(&world).await;
+    let account = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Implement",
+            "harness": "fake.runtime",
+            "credential_alias": "implement",
+            "enabled": true
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key(format!("{slug}-account"))
+    .send(&world)
+    .await;
+    assert_eq!(account.status, 200, "{}", account.body);
+    let account_id = account.json()["account_profile_id"]
+        .as_str()
+        .expect("an account id")
+        .to_owned();
+
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics:apply"),
+        &serde_json::json!({
+            "expected_revision": project_revision,
+            "name": "Bound container effect order",
+            "work_profile_category": category,
+            "runtime_family": "fake.runtime",
+            "account_profile_id": account_id,
+            "epic_backlog_code": "OP34",
+            "execution_scope": {
+                "external_epic_key": "ASMA-8234",
+                "short_title": "Bound container effect order",
+                "kontor_backlog_code": "OP-34",
+                "ai_short_name": "Effect Order"
+            },
+            "tasks": [{
+                "title": "OP-34",
+                "short_code": "OP-34",
+                "ticket_links": [{
+                    "connector": "jira",
+                    "external_issue_key": "ASMA-8235"
+                }],
+                "worktree": worktree.to_string_lossy()
+            }]
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key(format!("{slug}-apply"))
+    .send(&world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    let epic = applied.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    let task = applied.json()["tasks"][0]["task_id"]
+        .as_str()
+        .expect("a task id")
+        .to_owned();
+    confirm_test_epic_identity_as(&world, &project, &epic, Some("OP34"), "ASMA-8234");
+
+    let control = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "epic_control", "epic_id": epic},
+            "expected_revision": project_revision
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key(format!("{slug}-control"))
+    .send(&world)
+    .await;
+    assert_eq!(control.status, 200, "{}", control.body);
+
+    let ticket = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task},
+            "expected_revision": project_revision
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key(format!("{slug}-ticket"))
+    .send(&world)
+    .await;
+    assert_eq!(ticket.status, 200, "{}", ticket.body);
+
+    (world, project, epic, task, project_revision)
+}
+
+/// Operation 3 (ASMA-8188): a *replayed* materialization re-proves the bound
+/// container by exact id before it repairs any logical state.
+///
+/// This is the leg that previously proved nothing. A replay short-circuits the
+/// native half by design, and then repairs seats — so before this ordering it
+/// would repair logical state against a container the runtime had stopped
+/// holding, with no readback anywhere in the path to notice.
+///
+/// The proof is read-only, so the assertions are in two halves: the replay must
+/// refuse, and it must have mutated nothing native on the way to refusing.
+#[tokio::test]
+async fn a_replayed_materialization_re_proves_the_bound_container_read_only() {
+    let (world, project, _epic, task, project_revision) =
+        materialized_ticket_topology("asma-8234-op3").await;
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+    let key = "asma-8234-op3-ticket";
+
+    let node_id = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task_topology_node(project_id, task_id))
+        .expect("the node reads")
+        .expect("the ticket was placed on a node")
+        .id;
+    let seats_before = seats_on(&world, project_id, node_id);
+
+    // The runtime stops holding the ticket's container. Kontor's durable
+    // binding still names it: exactly the state this ordering exists for.
+    world.fake.forget_container(node_id);
+    let mutations_before = native_mutations(&world).len();
+
+    // The same key: this is a replay, and the replay path is the one under
+    // test. It must re-prove before repairing anything.
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task},
+            "expected_revision": project_revision
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key(key)
+    .send(&world)
+    .await;
+
+    assert!(
+        !replayed.status.is_success(),
+        "a replay whose container the runtime cannot show must refuse: {} {}",
+        replayed.status,
+        replayed.body
+    );
+    assert!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::InspectContainer(node) if *node == node_id)),
+        "the replay re-proved the exact bound container: {:?}",
+        world.fake.calls()
+    );
+    assert_eq!(
+        native_mutations(&world).len(),
+        mutations_before,
+        "a refusing replay mutates nothing natively: {:?}",
+        native_mutations(&world)
+    );
+    assert_eq!(
+        seats_on(&world, project_id, node_id),
+        seats_before,
+        "a refusing replay repairs no logical seat"
+    );
+}
+
+/// Every seat this node holds, terminal ones included.
+fn seats_on(world: &World, project_id: ProjectId, node_id: TopologyNodeId) -> usize {
+    world
+        .daemon
+        .state()
+        .with_store(|store| store.list_seat_bindings(project_id, node_id))
+        .expect("the seats read")
+        .len()
+}
+
+/// Operation 5 (ASMA-8049): a seat fill proves the bound container before it
+/// records its receipt or enters `fill_slot`.
+///
+/// Proving late is not a cosmetic ordering problem. The receipt is durable and
+/// its idempotency key is spent, so a fill that recorded first and refused
+/// second would leave the operator holding a key they cannot reuse for the
+/// intent that never happened — and every effect that hangs off the fill
+/// (AgentRun, launch intent, launch, dispatch, runtime binding) is decided
+/// after that point.
+#[tokio::test]
+async fn a_seat_fill_proves_the_bound_container_before_recording_its_receipt() {
+    let fixture = seat_fill_world(true).await;
+    let revision = fixture.task_revision();
+    let runs_before = fixture.members().len();
+    let key = "asma-8234-op5-after-loss";
+
+    // The runtime stops holding the ticket's container. Kontor's durable
+    // binding still names it: exactly the state this ordering exists for.
+    fixture.world.fake.forget_container(fixture.node);
+    // `PrepareContainer` on a bound request *is* the proof — a reconcile by
+    // exact id that creates nothing — so the effect to count here is the one
+    // the fill exists to produce and must not have produced.
+    let launches_before = launches(&fixture.world);
+
+    let refused = fixture.fill("audit", revision, key).await;
+
+    assert!(
+        !refused.status.is_success(),
+        "a container the runtime cannot show must refuse the fill: {} {}",
+        refused.status,
+        refused.body
+    );
+    assert!(
+        receipt_for(&fixture.world, key).is_none(),
+        "a refused fill must not spend the caller's idempotency key"
+    );
+    assert_eq!(
+        fixture.members().len(),
+        runs_before,
+        "a refused fill creates no AgentRun"
+    );
+    assert_eq!(
+        fixture.task_revision(),
+        revision,
+        "a refused fill leaves the task revision untouched"
+    );
+    assert_eq!(
+        launches(&fixture.world),
+        launches_before,
+        "a refused fill launches nothing"
+    );
+}
+
+/// How many native sessions this runtime has been asked to launch.
+fn launches(world: &World) -> usize {
+    world
+        .fake
+        .calls()
+        .into_iter()
+        .filter(|call| matches!(call, AdapterCall::Launch(_)))
+        .count()
+}
+
+/// Operation 3, first-pass leg: a fresh materialization refuses before it
+/// records a receipt when the node's bound container is gone.
+///
+/// Deliberately paired with the replay test above, because the two legs are
+/// proved by different code. This one needs no new ordering: `ensure_container`
+/// already reconciles the bound id through the deployed shared contract, and it
+/// already runs before the receipt at the end of the operation. The test exists
+/// so that ordering is *pinned* — a later change that moved the receipt earlier
+/// would spend the caller's key on a command that then refused.
+#[tokio::test]
+async fn a_first_pass_materialization_refuses_before_recording_a_receipt() {
+    let (world, project, _epic, task, project_revision) =
+        materialized_ticket_topology("asma-8234-op3-first").await;
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let task_id = TaskId::parse(&task).expect("a task id");
+
+    let node_id = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_task_topology_node(project_id, task_id))
+        .expect("the node reads")
+        .expect("the ticket was placed on a node")
+        .id;
+    world.fake.forget_container(node_id);
+    let key = "asma-8234-op3-first-after-loss";
+    let launches_before = launches(&world);
+
+    let refused = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({
+            "target": {"scope": "ticket", "task_id": task},
+            "expected_revision": project_revision
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key(key)
+    .send(&world)
+    .await;
+
+    assert!(
+        !refused.status.is_success(),
+        "a container the runtime cannot show must refuse: {} {}",
+        refused.status,
+        refused.body
+    );
+    assert!(
+        receipt_for(&world, key).is_none(),
+        "a refused materialization must not spend the caller's idempotency key"
+    );
+    assert_eq!(
+        launches(&world),
+        launches_before,
+        "a refused materialization launches nothing"
     );
 }
