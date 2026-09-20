@@ -58249,7 +58249,13 @@ fn claim_native_writes(world: &World) -> usize {
 
 #[tokio::test]
 async fn seat_claim_preview_and_apply_keep_both_independent_placement_proofs() {
-    for fault in ["none", "container", "claimant"] {
+    for fault in [
+        "none",
+        "container",
+        "container_native",
+        "container_root",
+        "claimant",
+    ] {
         let (world, project, epic, control, ticket, request) =
             seat_claim_proof_fixture(&format!("claim-proof-{fault}")).await;
         let route = format!("/v1/projects/{project}/epics/{epic}/core-team/seat-claims");
@@ -58283,6 +58289,12 @@ async fn seat_claim_preview_and_apply_keep_both_independent_placement_proofs() {
         }
         match fault {
             "container" => world.fake.forget_container(control),
+            "container_native" => world
+                .fake
+                .drift_container(control, exact_container_drifts()[0].clone()),
+            "container_root" => world
+                .fake
+                .drift_container(control, exact_container_drifts()[1].clone()),
             "claimant" => seed_claim_proof_native(&world, ticket),
             _ => {}
         }
@@ -58343,7 +58355,7 @@ async fn seat_claim_preview_and_apply_keep_both_independent_placement_proofs() {
 }
 
 /// Exact container drift leaves the node and its seats present.
-fn op4_container_drifts() -> [kontor_runtime::fake::FakeContainerDrift; 2] {
+fn exact_container_drifts() -> [kontor_runtime::fake::FakeContainerDrift; 2] {
     use kontor_runtime::fake::FakeContainerDrift;
     [
         FakeContainerDrift::NativeId(ExternalId::parse("native-replaced-ecp").unwrap()),
@@ -58399,7 +58411,7 @@ async fn op4_preview(
 
 #[tokio::test]
 async fn route_preview_refuses_exact_container_drift_with_node_and_membership_preserved() {
-    for drift in op4_container_drifts() {
+    for drift in exact_container_drifts() {
         let (composed, binding, native, generation) = hosted_tpm_seat(
             "/tmp/kontor-8234-op4-preview",
             "asma-8234-op4-preview-seats",
@@ -58444,7 +58456,7 @@ async fn route_preview_refuses_exact_container_drift_with_node_and_membership_pr
 
 #[tokio::test]
 async fn route_apply_reproves_after_planning_before_retiring_the_live_predecessor() {
-    for drift in op4_container_drifts() {
+    for drift in exact_container_drifts() {
         let (composed, binding, native, generation) =
             hosted_tpm_seat("/tmp/kontor-8234-op4-drift", "asma-8234-op4-drift-seats").await;
         let world = &composed.world;

@@ -8406,7 +8406,12 @@ impl Services {
         let proved_container = self
             .bound_container_snapshot(project_id, &node, adapter.as_ref())
             .await?;
-        let cwd = self.runtime_root(project_id, Some(epic_id))?;
+        let cwd = proved_container.binding.root.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the proved Core Team container has no canonical directory",
+            )
+        })?;
         let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
         let display_name = self.seat_name(
             project_id,
@@ -8419,7 +8424,7 @@ impl Services {
             seat_binding_id: binding.id,
             role_slot_id: binding.role_slot_id.clone(),
             display_name,
-            container_native_id: container.identity.native_id,
+            container_native_id: proved_container.binding.identity.native_id.clone(),
             cwd,
             scope,
             claimant_native_id: request.claimant_native_id.clone(),
