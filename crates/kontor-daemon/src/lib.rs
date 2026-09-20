@@ -167,6 +167,21 @@ pub enum StartupError {
         #[source]
         source: kontor_core::DomainError,
     },
+    /// A durable capacity configuration exists but cannot be honoured.
+    ///
+    /// Absence is valid and leaves the composed seed in force. A present row
+    /// that will not read back as ceilings this build understands, or that
+    /// carries a set the domain refuses, refuses the start for the same reason a
+    /// broken quota-signal document does: an operator who applied it believes
+    /// those ceilings are what the realm admits under, and starting under the
+    /// seed instead would enforce a policy nobody chose while reporting that no
+    /// restart is required.
+    #[error("the realm's stored capacity configuration could not be used: {source}")]
+    StoredCapacity {
+        /// The domain's own refusal.
+        #[source]
+        source: kontor_core::DomainError,
+    },
     /// A present `quota-signals.yml` could not be read or validated.
     ///
     /// Absence is valid and leaves classification inert. A document that exists
@@ -270,6 +285,11 @@ pub struct DaemonConfig {
     /// to hold as a compile-time constant. Validated at startup rather than here,
     /// so setting the field is infallible and a refused set of ceilings refuses
     /// the *start* — the one moment an operator is watching.
+    ///
+    /// This is the *seed*. A realm holding a durable capacity configuration
+    /// composes that instead, and startup replaces this field with the ceilings
+    /// actually in force, so [`Daemon::config`] has exactly one answer to what
+    /// the process admits under.
     pub capacity: CapacityConfig,
     /// An explicitly composed connector set for embeddings and tests. Ordinary
     /// daemon startup reads strict `jira.json` from the state root instead.
@@ -356,6 +376,45 @@ impl DaemonConfig {
     }
 }
 
+/// The ceilings this start admits under.
+///
+/// A durable configuration is the realm's policy; the composed one is only the
+/// seed it starts from. An operator who applies ceilings expects the next daemon
+/// to enforce them, and before this existed a restart went back to whatever the
+/// composition root held — so a realm could sit against a compiled ceiling with
+/// an applied configuration that enforced nothing.
+///
+/// Read exactly once, at composition, and never again while the process runs.
+/// The composed ceilings and every admission plan built from them are
+/// process-lifetime state, so re-reading later would let one process admit under
+/// two policies. That is why the read contract reports `restart_required` rather
+/// than promising a live reload.
+///
+/// # Errors
+/// Returns [`StartupError::StoredCapacity`] when a *present* configuration
+/// cannot be read back or is not a set the domain accepts, and
+/// [`StartupError::Store`] when the row cannot be read at all. Refusing is the
+/// point: starting under the seed instead would enforce a policy nobody chose
+/// while reporting that no restart is required.
+fn capacity_in_force(
+    store: &SqliteStore,
+    seed: CapacityConfig,
+) -> Result<CapacityConfig, StartupError> {
+    let Some(stored) =
+        store
+            .get_capacity_configuration()
+            .map_err(|source| StartupError::Store {
+                source: source.into(),
+            })?
+    else {
+        // Nothing durable to honour, so the seed stands. This is what a realm
+        // no operator has configured has always admitted under.
+        return Ok(seed);
+    };
+    applications::stored_capacity(&stored.ceilings)
+        .map_err(|source| StartupError::StoredCapacity { source })
+}
+
 /// A started, locked, reconciled daemon.
 ///
 /// Holding one means this process owns its state root: the lock lives here, so
@@ -414,7 +473,7 @@ impl Daemon {
     }
 
     fn start_with_supervision(
-        config: DaemonConfig,
+        mut config: DaemonConfig,
         runtimes: RuntimeRegistry,
         supervision: Option<SupervisionPolicy>,
         usage_poller: Option<usage::UsagePoller>,
@@ -438,6 +497,11 @@ impl Daemon {
         }
         let store = SqliteStore::open(&config.state_root.join(DATABASE_FILE))
             .map_err(|source| StartupError::Store { source })?;
+        // The store has opened and migrated and nothing has been composed yet,
+        // which is the only moment a realm can adopt its durable policy without
+        // splitting one process between two of them. A present configuration
+        // overrides the seed from here on, including in `config` itself.
+        config.capacity = capacity_in_force(&store, config.capacity)?;
         let credentials = credentials::open_or_create(&config.state_root)?;
         let realm_id = store.realm_id();
         // The services and the state are mutually dependent — the state serves
@@ -1466,6 +1530,83 @@ mod tests {
         assert!(
             !state_root.exists(),
             "a refused start leaves no state root behind"
+        );
+    }
+
+    /// A durable capacity configuration the composition root cannot honour
+    /// refuses the start rather than quietly falling back to the seed.
+    ///
+    /// Reachable only by writing the row directly, and that is the point: the
+    /// apply route validates before it writes, so nothing crossing the public
+    /// boundary can leave one of these in the table. What can is a hand-edited
+    /// row, a snapshot restored from a build with other rules, or a downgraded
+    /// binary — and in every one of those an operator believes the stored
+    /// ceilings are what the realm admits under. Starting under the seed instead
+    /// would enforce a policy nobody chose while reporting no restart is owed.
+    #[test]
+    fn a_stored_capacity_the_composition_root_cannot_honour_refuses_the_start() {
+        fn refuse(ceilings: serde_json::Value) -> StartupError {
+            let directory = tempfile::TempDir::new().expect("a temporary directory");
+            let state_root = directory.path();
+            let document = kontor_core::id::CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "ceilings": ceilings,
+            }))
+            .expect("the fixture is a canonical document");
+            {
+                let store =
+                    SqliteStore::open(&state_root.join(DATABASE_FILE)).expect("the realm migrates");
+                store
+                    .set_capacity_configuration(
+                        &document,
+                        &kontor_store::IdempotencyBinding {
+                            key: "stored-capacity-fixture".to_owned(),
+                            operation: "apply_capacity_configuration",
+                            fingerprint: document.hash().clone(),
+                            bound_at: kontor_api::now(),
+                        },
+                        kontor_core::id::AggregateRevision::INITIAL,
+                    )
+                    .expect("the store records what it is given");
+            }
+            Daemon::start(
+                DaemonConfig::at(state_root).with_port(0),
+                RuntimeRegistry::new(),
+            )
+            .expect_err("a stored configuration this build cannot honour refuses the start")
+        }
+
+        let complete = serde_json::json!({
+            "global_max_in_flight": 9,
+            "project_max_in_flight": 7,
+            "mission_max_in_flight": 5,
+            "account_max_in_flight": 3,
+            "provider_max_in_flight": 2,
+            "runtime_max_in_flight": 6,
+            "adaptive": {"initial": 2, "floor": 1, "ceiling": 5, "growth_step": 1},
+        });
+
+        // Present and unreadable: canonical JSON, and not a ceilings document
+        // this build understands.
+        let mut truncated = complete.clone();
+        truncated
+            .as_object_mut()
+            .expect("the fixture is an object")
+            .remove("runtime_max_in_flight");
+        let error = refuse(truncated);
+        assert!(
+            matches!(error, StartupError::StoredCapacity { .. }),
+            "the refusal names the stored configuration and not the store: {error}"
+        );
+
+        // Present, readable, and a set the domain refuses: a zero ceiling reads
+        // as "no work allowed" in one place and "no limit" in another.
+        let mut zeroed = complete;
+        zeroed["account_max_in_flight"] = serde_json::json!(0);
+        let error = refuse(zeroed);
+        assert!(
+            matches!(error, StartupError::StoredCapacity { .. }),
+            "a stored zero ceiling is refused exactly as a composed one is: {error}"
         );
     }
 

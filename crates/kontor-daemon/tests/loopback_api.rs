@@ -39648,6 +39648,205 @@ async fn the_capacity_configuration_reports_the_operational_ceilings_and_guards_
     assert_eq!(stale.status, 409, "{}", stale.body);
 }
 
+/// ASMA-8200: a durable capacity configuration is what the *next* daemon admits
+/// under, and the scheduler projects it.
+///
+/// The gap this closes was observed rather than argued. An apply answered 200
+/// and wrote a revision, and the realm went on admitting against the ceilings
+/// its composition root held — through a full restart, because startup never
+/// read the row. So the assertion that matters is the one after the reopen, and
+/// it is deliberately made twice: the configuration endpoint *echoed* the stored
+/// document back all along, so only a reader of the composed ceilings can tell
+/// "recorded" from "in force". `mission_ceiling` on the project projection is
+/// that reader — it is the scheduler's own copy, the one admission counts
+/// against.
+///
+/// The reopen goes through `Daemon::start`, which shares
+/// `start_with_supervision` with the `start_configured` path the binary takes,
+/// so the seam under test is the shipped one. It keeps the scripted runtime,
+/// because a restarted realm with an empty fleet could not answer for the
+/// project this reads.
+#[tokio::test]
+async fn a_reopened_realm_admits_under_the_stored_capacity_and_the_scheduler_projects_it() {
+    let composed = compose_realm("/tmp/kontor-cp3-restart").await;
+    let project = composed.project.clone();
+
+    // No operator has configured anything yet, so the composed seed is in force
+    // and there is no durable policy to differ from it.
+    let seeded = Call::get("/v1/capacity/configuration")
+        .signed_as(&composed.world, "admin")
+        .send(&composed.world)
+        .await;
+    assert_eq!(seeded.status, 200, "{}", seeded.body);
+    assert_eq!(seeded.json()["ceilings"]["mission_max_in_flight"], 12);
+    assert_eq!(
+        seeded.json()["restart_required"],
+        false,
+        "an unconfigured realm is already enforcing everything it has been told: {}",
+        seeded.body
+    );
+    assert!(
+        seeded.json()["stored_ceilings"].is_null(),
+        "there is no durable replacement to report: {}",
+        seeded.body
+    );
+
+    // A complete policy, different from the seed in every ceiling it names and
+    // internally coherent — the adaptive window may never grow wider than the
+    // mission ceiling it admits against. `headroom` is named explicitly so the
+    // readback below can compare the whole document rather than a few fields.
+    let ceilings = serde_json::json!({
+        "global_max_in_flight": 9,
+        "project_max_in_flight": 7,
+        "mission_max_in_flight": 5,
+        "account_max_in_flight": 3,
+        "provider_max_in_flight": 2,
+        "runtime_max_in_flight": 6,
+        "adaptive": {"initial": 2, "floor": 1, "ceiling": 5, "growth_step": 1},
+        "headroom": null,
+    });
+    let applied = Call::post(
+        "/v1/capacity/configuration:apply",
+        &serde_json::json!({"ceilings": ceilings, "expected_revision": 1}),
+    )
+    .signed_as(&composed.world, "admin")
+    .with_key("restart-capacity-apply")
+    .send(&composed.world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["revision"], 1);
+    assert_eq!(
+        applied.json()["restart_required"],
+        true,
+        "the write is durable and not yet composed, and says so: {}",
+        applied.body
+    );
+
+    // The running process is unmoved: durable is not composed.
+    let before = Call::get("/v1/capacity/configuration")
+        .signed_as(&composed.world, "admin")
+        .send(&composed.world)
+        .await;
+    assert_eq!(before.status, 200, "{}", before.body);
+    assert_eq!(
+        before.json()["ceilings"]["mission_max_in_flight"],
+        12,
+        "the composed ceilings are still what admission uses: {}",
+        before.body
+    );
+    assert_eq!(
+        before.json()["stored_ceilings"]["mission_max_in_flight"],
+        5,
+        "the stored replacement is reported rather than hidden: {}",
+        before.body
+    );
+    assert_eq!(before.json()["restart_required"], true, "{}", before.body);
+    let projected_before = Call::get(format!("/v1/projects/{project}/capacity"))
+        .signed_as(&composed.world, "admin")
+        .send(&composed.world)
+        .await;
+    assert_eq!(projected_before.status, 200, "{}", projected_before.body);
+    assert_eq!(
+        projected_before.json()["mission_ceiling"],
+        12,
+        "the scheduler still counts against the ceiling this process composed: {}",
+        projected_before.body
+    );
+
+    // Stop the realm and reopen the same state root.
+    let admin = secret(&composed.world, "admin");
+    let realm = composed.world.realm_id();
+    let World {
+        directory,
+        daemon,
+        fake,
+        ..
+    } = composed.world;
+    let state_root = directory.path().to_owned();
+    daemon.state().signals().stop();
+    drop(daemon);
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the configured realm reopens");
+    assert_eq!(
+        restarted.realm_id(),
+        realm,
+        "activation reopens the same realm and does not mint another"
+    );
+    restarted.reconcile().await;
+    let router = restarted.router();
+
+    let after = Call::get("/v1/capacity/configuration")
+        .with_token(&admin)
+        .send_to(&router)
+        .await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    assert_eq!(
+        after.json()["ceilings"],
+        ceilings,
+        "the reopened realm admits under exactly the stored policy, field for field: {}",
+        after.body
+    );
+    assert_eq!(
+        after.json()["revision"],
+        1,
+        "activating a configuration is not another write of it: {}",
+        after.body
+    );
+    assert_eq!(
+        after.json()["restart_required"],
+        false,
+        "what is stored is now what is composed, so no restart is owed: {}",
+        after.body
+    );
+    assert!(
+        after.json()["stored_ceilings"].is_null(),
+        "no differing durable replacement remains: {}",
+        after.body
+    );
+
+    // The endpoint above reports the composed ceilings; this one is the
+    // scheduler's own. Without the startup loader it answers 12 here — which is
+    // the whole defect, and the reason an echo is not evidence.
+    let projected = Call::get(format!("/v1/projects/{project}/capacity"))
+        .with_token(&admin)
+        .send_to(&router)
+        .await;
+    assert_eq!(projected.status, 200, "{}", projected.body);
+    assert_eq!(
+        projected.json()["mission_ceiling"],
+        5,
+        "the scheduler counts against the reopened ceiling: {}",
+        projected.body
+    );
+
+    // An apply of the ceilings already in force leaves nothing for a restart to
+    // reveal. Claiming one would send an operator to restart a realm that is
+    // already enforcing exactly what they asked for.
+    let reapplied = Call::post(
+        "/v1/capacity/configuration:apply",
+        &serde_json::json!({"ceilings": ceilings, "expected_revision": 1}),
+    )
+    .with_token(&admin)
+    .with_key("restart-capacity-reapply")
+    .send_to(&router)
+    .await;
+    assert_eq!(reapplied.status, 200, "{}", reapplied.body);
+    assert_eq!(
+        reapplied.json()["restart_required"],
+        false,
+        "re-applying what is in force owes no restart: {}",
+        reapplied.body
+    );
+
+    restarted.shutdown();
+}
+
 /// The width a *plan* admits against is the persisted one, not a fresh four.
 ///
 /// This is the round-2 defect observed rather than argued: with
