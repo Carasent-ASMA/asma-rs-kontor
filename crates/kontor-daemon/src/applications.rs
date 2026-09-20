@@ -29793,7 +29793,7 @@ impl ApplicationOperations for Services {
             )?;
             applied = AppliedDto::Unchanged;
         } else {
-            let owed = state
+            let owed_by_dispatch = state
                 .with_store(|store| store.list_turn_dispatches(project_id))
                 .map_err(|error| self.refuse(&error))?
                 .into_iter()
@@ -29802,6 +29802,44 @@ impl ApplicationOperations for Services {
                         && row.to_role_slot_id == slot.id
                         && !row.dispatched
                 });
+            // A slot can be owed a seat for a second, narrower reason: an
+            // immutable adoption recorded that an already-created run belongs
+            // to it. A run admitted before its handoff existed has no dispatch
+            // and never will, so a dispatch-only reading leaves it permanently
+            // unattachable — which is the state verifier runs reach today.
+            //
+            // The adoption is authority to fill, not a substitute for the
+            // checks below: the run it names is re-proved here against the same
+            // revision the adoption recorded, and a run that has since bound,
+            // moved role or left the team is refused rather than reused.
+            let adoption = state
+                .with_store(|store| {
+                    store.team_run_admission_adoption(project_id, team_run_id, &slot.id)
+                })
+                .map_err(|error| self.refuse(&error))?;
+            if let Some(adoption) = adoption.as_ref() {
+                let adopted = state
+                    .with_store(|store| store.get_agent_run(project_id, adoption.agent_run_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::StaleBinding,
+                            "the adopted run named by this slot's adoption no longer exists",
+                        )
+                    })?;
+                if adopted.team_run_id != team_run_id
+                    || adopted.role != *slot.id.as_role_key()
+                    || adopted.revision != adoption.adopted_agent_run_revision
+                    || adopted.binding.is_some()
+                    || adopted.terminal.is_some()
+                {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the adopted run moved since its adoption was recorded",
+                    ));
+                }
+            }
+            let owed = owed_by_dispatch || adoption.is_some();
             if !owed {
                 return Err(self.deny(
                     ApiErrorCode::InvalidRequest,
