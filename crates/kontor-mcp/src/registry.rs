@@ -775,6 +775,8 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
             "kontor_memory_history",
             "kontor_memory_propose",
             "kontor_context_resolve",
+            "kontor_open_questions_list",
+            "kontor_open_question_record",
         ],
     },
     ServeProfile {
@@ -791,6 +793,8 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
         tools: &[
             "kontor_completion_get",
             "kontor_completion_remediate",
+            "kontor_open_questions_list",
+            "kontor_open_question_record",
             "kontor_committee_permissions_inspect",
             "kontor_committee_permission_respond",
         ],
@@ -803,6 +807,75 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
 /// [`NON_AGENT_ROUTES`]. The parity oracle proves that this table plus that list
 /// covers the generated contract exactly.
 pub static REGISTRY: &[ToolSpec] = &[
+    ToolSpec {
+        name: "kontor_open_questions_list",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/open-questions",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic by UUID or confirmed Jira key.",
+            ),
+        ],
+        about: "Read an epic's open questions, append-only history and derived status.",
+    },
+    ToolSpec {
+        name: "kontor_open_question_record",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/open-questions:record",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic by UUID or confirmed Jira key.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "question_id",
+                Place::Body,
+                ArgType::Text,
+                "Stable question UUID; reuse it on retries.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::U64,
+                "Zero to raise; otherwise the exact question revision read.",
+            ),
+            opt(
+                "author_seat_binding_id",
+                Place::Body,
+                ArgType::Text,
+                "Active seat reporting through Operator authority; omitted with its scoped credential. Disposition requires the exact epic LSA or TPM scoped credential.",
+            ),
+            req(
+                "action",
+                Place::Body,
+                ArgType::Json,
+                "Typed action: raise with subject, scope (architecture/product/process/routing), attachment {record: aggregate} or {document: hash}, why_ambiguous and options; correct with why_ambiguous/options/supersedes; dispose with outcome {resolved:{record,revision}}, {deferred:{key,condition}} or {not_relevant:reason} and supersedes; fire_trigger with trigger key. Histories are immutable; a fired deferral reopens the question.",
+            ),
+        ],
+        about: "Raise, correct, disposition or reopen one question with an atomic idempotent receipt.",
+    },
     // ---- Observer: projections, catalogs and session content -----------------
     ToolSpec {
         name: "kontor_realm_get",
@@ -7372,8 +7445,8 @@ mod tests {
         // a tool to a seat's surface stays a decision rather than a side effect.
         assert_eq!(
             worker.tools.len(),
-            20,
-            "worker includes verified artifact recovery"
+            22,
+            "worker includes artifact recovery, question reporting and readback"
         );
         assert!(worker.allows("kontor_turn_observe"));
         assert!(worker.allows("kontor_memory_search"));
@@ -7417,6 +7490,8 @@ mod tests {
             [
                 "kontor_completion_get",
                 "kontor_completion_remediate",
+                "kontor_open_questions_list",
+                "kontor_open_question_record",
                 "kontor_committee_permissions_inspect",
                 "kontor_committee_permission_respond",
             ]

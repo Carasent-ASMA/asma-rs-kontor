@@ -31,6 +31,175 @@
 
 mod harness;
 
+#[tokio::test]
+async fn open_question_commands_preserve_authority_history_and_completion_blockers() {
+    use kontor_core::id::OpenQuestionId;
+    use kontor_core::repository::OpenQuestionRepository;
+    let (composed, tpm, _, _) =
+        hosted_tpm_seat("/tmp/question-surface", "question-core-team").await;
+    let world = &composed.world;
+    let project = ProjectId::parse(&composed.project).unwrap();
+    let epic = MiniProjectId::parse(&composed.epic).unwrap();
+    let tpm = SeatBindingId::parse(&tpm).unwrap();
+    let tpm_binding = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_seat_binding(project, tpm))
+        .unwrap()
+        .unwrap();
+    let seats = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_seat_bindings(project, tpm_binding.topology_node_id))
+        .unwrap();
+    let lsa = seats
+        .iter()
+        .find(|seat| seat.role.role_code.as_str() == "LSA")
+        .unwrap()
+        .id;
+    let token = |seat| {
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(seat, 1)
+    };
+    let question = OpenQuestionId::generate();
+    let path = format!("/v1/projects/{project}/epics/{epic}/open-questions:record");
+    let raise = serde_json::json!({
+        "question_id":question,"expected_revision":0,"author_seat_binding_id":tpm,
+        "action":{"action":"raise","subject":"Which acceptance record resolves the ambiguous contract?",
+          "scope":"architecture","attachment":{"record":{"kind":"mini_project","mini_project_id":epic}},
+          "why_ambiguous":"Two reports describe different acceptance boundaries.",
+          "options":["Retain the original contract","Record a reviewed supersession"]}
+    });
+    let denied = Call::post(&path, &raise)
+        .signed_as(world, "observer")
+        .with_key("oq-denied")
+        .send(world)
+        .await;
+    assert_eq!(denied.status, 403, "{}", denied.body);
+    let raised = Call::post(&path, &raise)
+        .signed_as(world, "operator")
+        .with_key("oq-raise")
+        .send(world)
+        .await;
+    assert_eq!(raised.status, 200, "{}", raised.body);
+    assert_eq!(raised.json()["result"]["status"], "open");
+    let replay = Call::post(&path, &raise)
+        .signed_as(world, "operator")
+        .with_key("oq-raise")
+        .send(world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["result"], raised.json()["result"]);
+    let mut changed = raise.clone();
+    changed["action"]["subject"] = serde_json::json!("Another question under the same key");
+    let conflict = Call::post(&path, &changed)
+        .signed_as(world, "operator")
+        .with_key("oq-raise")
+        .send(world)
+        .await;
+    assert_eq!(conflict.status, 409, "{}", conflict.body);
+    let blockers = || {
+        let summaries = world
+            .daemon
+            .state()
+            .with_store(|store| store.summarize_questions_for_epic(project, epic))
+            .unwrap();
+        kontor_policy::completion::open_question_blockers(&summaries)
+    };
+    assert_eq!(blockers()[0].question_id(), question);
+    let defer = serde_json::json!({"question_id":question,"expected_revision":1,
+      "action":{"action":"dispose","outcome":{"deferred":{"key":"acceptance-reviewed","condition":"The independent committee records its acceptance finding."}}}});
+    let wrong_role = Call::post(&path, &defer)
+        .with_token(token(tpm))
+        .with_key("oq-wrong-closer")
+        .send(world)
+        .await;
+    assert_eq!(wrong_role.status, 403, "{}", wrong_role.body);
+    let operator_closure = Call::post(&path, &defer)
+        .signed_as(world, "admin")
+        .with_key("oq-operator-closer")
+        .send(world)
+        .await;
+    assert_eq!(operator_closure.status, 403, "{}", operator_closure.body);
+    let mut invalid = defer.clone();
+    invalid["action"]["outcome"]["deferred"]["condition"] = serde_json::json!(" ");
+    let invalid = Call::post(&path, &invalid)
+        .with_token(token(lsa))
+        .with_key("oq-empty-trigger")
+        .send(world)
+        .await;
+    assert_eq!(invalid.status, 400, "{}", invalid.body);
+    let deferred = Call::post(&path, &defer)
+        .with_token(token(lsa))
+        .with_key("oq-defer")
+        .send(world)
+        .await;
+    assert_eq!(deferred.status, 200, "{}", deferred.body);
+    assert!(blockers().is_empty());
+    let stale = Call::post(&path, &defer)
+        .with_token(token(lsa))
+        .with_key("oq-stale")
+        .send(world)
+        .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    let fire = serde_json::json!({"question_id":question,"expected_revision":2,"author_seat_binding_id":tpm,
+       "action":{"action":"fire_trigger","trigger":"acceptance-reviewed"}});
+    let reopened = Call::post(&path, &fire)
+        .signed_as(world, "operator")
+        .with_key("oq-fire")
+        .send(world)
+        .await;
+    assert_eq!(reopened.status, 200, "{}", reopened.body);
+    assert_eq!(reopened.json()["result"]["status"], "reopened");
+    assert_eq!(blockers()[0].question_id(), question);
+    let resolve = serde_json::json!({"question_id":question,"expected_revision":3,
+       "action":{"action":"dispose","supersedes":1,"outcome":{"resolved":{
+          "record":{"kind":"mini_project","mini_project_id":epic},"revision":"a".repeat(64)}}}});
+    let resolved = Call::post(&path, &resolve)
+        .with_token(token(lsa))
+        .with_key("oq-resolve")
+        .send(world)
+        .await;
+    assert_eq!(resolved.status, 200, "{}", resolved.body);
+    assert!(blockers().is_empty());
+    let listed = Call::get(format!(
+        "/v1/projects/{project}/epics/{epic}/open-questions"
+    ))
+    .with_token(token(lsa))
+    .send(world)
+    .await;
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    assert_eq!(
+        listed.json()["questions"][0]["dispositions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        listed.json()["questions"][0]["firings"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(listed.json()["questions"][0]["revision"], 4);
+    // A newly opened connection observes the persisted history, not an API cache.
+    let reopened_store =
+        kontor_store::SqliteStore::open(&world.directory.path().join(kontor_daemon::DATABASE_FILE))
+            .unwrap();
+    let durable = reopened_store
+        .get_question(project, question)
+        .unwrap()
+        .unwrap();
+    assert_eq!(durable.dispositions.len(), 2);
+    assert_eq!(durable.firings.len(), 1);
+    assert_eq!(durable.revision.get(), 4);
+}
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{

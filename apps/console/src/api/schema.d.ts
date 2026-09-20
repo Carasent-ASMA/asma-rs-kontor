@@ -1524,6 +1524,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/open-questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_open_questions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/open-questions:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["record_open_question"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply": {
         parameters: {
             query?: never;
@@ -7711,6 +7743,32 @@ export interface components {
         Purge: {
             by: string;
         };
+        QuestionAction: {
+            /** @enum {string} */
+            action: "raise";
+            attachment: Record<string, never>;
+            options: string[];
+            scope: string;
+            subject: string;
+            why_ambiguous: string;
+        } | {
+            /** @enum {string} */
+            action: "correct";
+            options: string[];
+            /** Format: int32 */
+            supersedes?: number | null;
+            why_ambiguous: string;
+        } | {
+            /** @enum {string} */
+            action: "dispose";
+            outcome: Record<string, never>;
+            /** Format: int32 */
+            supersedes?: number | null;
+        } | {
+            /** @enum {string} */
+            action: "fire_trigger";
+            trigger: string;
+        };
         /** @description The roles a Quick session may be opened against. */
         QuickRolesDto: {
             /** @description The project. */
@@ -8023,6 +8081,20 @@ export interface components {
              *     provider offers *now*, and a merge would keep a window it has withdrawn.
              */
             windows?: components["schemas"]["QuotaWindowDto"][];
+        };
+        RecordQuestionRequest: {
+            action: components["schemas"]["QuestionAction"];
+            /**
+             * @description Ordinary Operator reporting names the active seat on whose behalf it
+             *     reports. Closing always requires that leadership seat's scoped bearer.
+             */
+            author_seat_binding_id?: string | null;
+            /**
+             * Format: int64
+             * @description Zero when raising; otherwise the exact question revision just read.
+             */
+            expected_revision: number;
+            question_id: string;
         };
         /** @description Closeout evidence retained from one earlier completion era. */
         RecordedCloseoutDto: {
@@ -14812,6 +14884,86 @@ export interface operations {
                 content?: never;
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_open_questions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_open_question: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordQuestionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

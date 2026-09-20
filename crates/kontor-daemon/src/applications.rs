@@ -26,6 +26,7 @@
 //! path can create the other's kind of session.
 
 mod artifact_submission;
+mod open_questions;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -18380,6 +18381,25 @@ impl Services {
 
 #[async_trait]
 impl ApplicationOperations for Services {
+    fn open_questions(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        actor: Option<kontor_api::open_questions::QuestionActor>,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.read_open_questions(project_id, epic_id, actor)
+    }
+    fn record_open_question(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        actor: kontor_api::open_questions::QuestionActor,
+        request: &kontor_api::open_questions::RecordQuestionRequest,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.write_open_question(key, project_id, epic_id, actor, request)
+    }
+
     async fn preview_publication(
         &self,
         project_id: ProjectId,

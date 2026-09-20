@@ -7595,6 +7595,22 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         request: &ProfileApplyRequest,
     ) -> Result<AppliedProfileDto, ApiError>;
+    /// Read one epic's complete immutable question histories.
+    fn open_questions(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        actor: Option<crate::open_questions::QuestionActor>,
+    ) -> Result<serde_json::Value, ApiError>;
+    /// Append one question operation with its exact retry receipt.
+    fn record_open_question(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        actor: crate::open_questions::QuestionActor,
+        request: &crate::open_questions::RecordQuestionRequest,
+    ) -> Result<serde_json::Value, ApiError>;
     /// One epic's completion state.
     fn completion(
         &self,

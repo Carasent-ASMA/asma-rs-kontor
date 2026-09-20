@@ -41,6 +41,8 @@ impl Modify for RealmBearer {
     ),
     modifiers(&RealmBearer),
     paths(
+        crate::open_questions::list_open_questions,
+        crate::open_questions::record_open_question,
         crate::memory::list,
         crate::memory::history,
         crate::memory::propose,

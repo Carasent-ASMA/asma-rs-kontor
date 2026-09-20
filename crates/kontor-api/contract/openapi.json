@@ -5104,6 +5104,115 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/open-questions": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "operationId": "list_open_questions",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/open-questions:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "operationId": "record_open_question",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordQuestionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply": {
       "post": {
         "tags": [
@@ -20402,6 +20511,124 @@
           }
         }
       },
+      "QuestionAction": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "subject",
+              "scope",
+              "attachment",
+              "why_ambiguous",
+              "options",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "raise"
+                ]
+              },
+              "attachment": {
+                "type": "object"
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "scope": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              },
+              "why_ambiguous": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "why_ambiguous",
+              "options",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "correct"
+                ]
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "supersedes": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              },
+              "why_ambiguous": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "dispose"
+                ]
+              },
+              "outcome": {
+                "type": "object"
+              },
+              "supersedes": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "trigger",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "fire_trigger"
+                ]
+              },
+              "trigger": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
       "QuickRolesDto": {
         "type": "object",
         "description": "The roles a Quick session may be opened against.",
@@ -20993,6 +21220,36 @@
               "$ref": "#/components/schemas/QuotaWindowDto"
             },
             "description": "Every concurrent window this pair holds. Replaces the stored set\nwholesale rather than merging into it: a collector reports what the\nprovider offers *now*, and a merge would keep a window it has withdrawn."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RecordQuestionRequest": {
+        "type": "object",
+        "required": [
+          "question_id",
+          "expected_revision",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/QuestionAction"
+          },
+          "author_seat_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Ordinary Operator reporting names the active seat on whose behalf it\nreports. Closing always requires that leadership seat's scoped bearer."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Zero when raising; otherwise the exact question revision just read.",
+            "minimum": 0
+          },
+          "question_id": {
+            "type": "string"
           }
         },
         "additionalProperties": false

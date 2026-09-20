@@ -141,6 +141,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "mini_project_team_definition_snapshots",
     "mini_project_topology_snapshots",
     "open_questions",
+    "open_question_commands",
     "open_question_dispositions",
     "open_question_rounds",
     "open_question_trigger_firings",
@@ -733,7 +734,8 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // declared TeamRun slot, and at which revision of that run, so a slot with
     // no owed dispatch has a supported authority that is not a second run
     // (ASMA-8234).
-    assert_eq!(SCHEMA_VERSION, 111);
+    // v112 makes question history and its retry receipt one atomic effect.
+    assert_eq!(SCHEMA_VERSION, 112);
 }
 
 #[test]

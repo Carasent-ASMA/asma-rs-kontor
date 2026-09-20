@@ -43,6 +43,7 @@ pub mod control;
 pub mod dto;
 pub mod error;
 pub mod memory;
+pub mod open_questions;
 pub mod openapi;
 pub mod sessions;
 pub mod state;
@@ -292,6 +293,8 @@ pub fn router(state: ApiState) -> Router {
         ]);
 
     Router::new()
+        .route("/v1/projects/{project_id}/epics/{epic_id}/open-questions", get(open_questions::list_open_questions))
+        .route("/v1/projects/{project_id}/epics/{epic_id}/open-questions:record", post(open_questions::record_open_question))
         .route("/v1/health", get(control::health))
         .route("/v1/realm", get(control::realm))
         .route("/v1/projects/{project_id}/memory", get(memory::list))
