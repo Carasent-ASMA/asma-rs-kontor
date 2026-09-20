@@ -211,6 +211,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "team_definition_migration_targets",
     "team_drafts",
     "team_revisions",
+    // Schema v110 (ASMA-8234): which existing AgentRun was adopted into which
+    // declared TeamRun slot, at the revision the caller proved it had read.
+    "team_run_admission_adoptions",
     "team_runs",
     "team_templates",
     "teams_projection",
@@ -725,7 +728,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v109 lets an inert launch intent -- prepared before a launch that never
     // happened -- have its route and prepared instant superseded exactly once,
     // on recorded evidence, without the intent losing its identity (ASMA-7869).
-    assert_eq!(SCHEMA_VERSION, 109);
+    // v110 records which already-created AgentRun was adopted into which
+    // declared TeamRun slot, and at which revision of that run, so a slot with
+    // no owed dispatch has a supported authority that is not a second run
+    // (ASMA-8234).
+    assert_eq!(SCHEMA_VERSION, 110);
 }
 
 #[test]
@@ -735,7 +742,7 @@ fn v108_worktree_correction_evidence_is_append_only() {
     // The current version, not the one this feature landed at: the table under
     // test is unchanged by later migrations, and pinning 108 here would make
     // every subsequent migration fail a test about worktree corrections.
-    assert_eq!(store.schema_version().expect("the version reads"), 109);
+    assert_eq!(store.schema_version().expect("the version reads"), 110);
     drop(store);
     let connection =
         Connection::open(directory.path().join("kontor.db")).expect("the migrated database opens");

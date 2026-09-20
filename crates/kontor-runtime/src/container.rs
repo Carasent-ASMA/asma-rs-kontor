@@ -260,6 +260,69 @@ impl fmt::Display for ContainerProjection {
     }
 }
 
+/// The native workspace shape a runtime reported for a bound container.
+///
+/// Runtime-neutral on purpose. Each adapter maps its own wire vocabulary onto
+/// this set so the *contract* about which shapes a container may legitimately
+/// have is written once and proved identically by every plane. An adapter that
+/// kept the rule in its own vocabulary would be free to disagree with the fake
+/// that is supposed to stand in for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ContainerWorkspaceKind {
+    /// A registered Git worktree.
+    Worktree,
+    /// A checkout the runtime tracks as a branch of the project.
+    Checkout,
+    /// A plain local checkout, typically the project root.
+    LocalCheckout,
+    /// A plain directory.
+    Directory,
+    /// Anything the adapter has not audited.
+    Other,
+}
+
+impl ContainerWorkspaceKind {
+    /// Whether this shape is one the addressed container may legitimately have.
+    ///
+    /// The two container semantics are genuinely different places, and the
+    /// difference is not cosmetic:
+    ///
+    /// * A **ticket** container is where a ticket's work happens, so it must be
+    ///   a real Git worktree. A ticket role editing in a plain directory is
+    ///   editing outside version control, and a ticket role editing in the
+    ///   project's own local checkout is editing the shared tree every other
+    ///   ticket depends on.
+    /// * An **epic-level** container — a consultation pane, an advisory or
+    ///   committee workspace — deliberately is *not* a worktree. It is rooted
+    ///   at the epic's stable runtime directory so it survives every ticket
+    ///   inside it, which is exactly what a worktree does not do.
+    ///
+    /// Everything else is outside the applicable set. `Checkout` is excluded
+    /// from both: it is a branch checkout the runtime manages, which is neither
+    /// a ticket's isolated worktree nor an epic's stable directory, and
+    /// accepting it for either would let a container drift onto a tree whose
+    /// branch some other actor moves.
+    #[must_use]
+    pub const fn is_applicable_to(self, task_container: bool) -> bool {
+        match (task_container, self) {
+            (true, Self::Worktree) => true,
+            (false, Self::Directory | Self::LocalCheckout) => true,
+            (true, Self::Checkout | Self::LocalCheckout | Self::Directory | Self::Other)
+            | (false, Self::Worktree | Self::Checkout | Self::Other) => false,
+        }
+    }
+
+    /// The stable refusal text for a shape outside the applicable set.
+    #[must_use]
+    pub const fn refusal(task_container: bool) -> &'static str {
+        if task_container {
+            "the bound container of a ticket is not a Git worktree"
+        } else {
+            "the bound container of an epic node is not a directory or local checkout"
+        }
+    }
+}
+
 /// Ask a runtime to make one topology node's native container exist and be
 /// usable.
 ///
@@ -324,6 +387,23 @@ impl ContainerRequest {
     #[must_use]
     pub const fn correlation(&self) -> ContainerLabel {
         ContainerLabel::for_node(self.topology_node_id)
+    }
+
+    /// Whether this container is a ticket's place rather than an epic node's.
+    ///
+    /// Read from the durable execution scope, which is the caller's *only*
+    /// authoritative statement about what this container is for:
+    /// [`ExecutionScope::for_epic`] is documented as the scope of "a node or a
+    /// consultation that serves no ticket", and a ticket scope carries the
+    /// canonical worktree the ticket's work happens in.
+    ///
+    /// Deliberately not derived from `task_id`, which this type documents as
+    /// tracker metadata a runtime may use for display and must never read back
+    /// as identity, and deliberately not a new caller-supplied flag: the
+    /// distinction is already durable in the scope every caller passes.
+    #[must_use]
+    pub const fn task_container(&self) -> bool {
+        self.scope.task.is_some()
     }
 
     /// The shape this request's capabilities require.

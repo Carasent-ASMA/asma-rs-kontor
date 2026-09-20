@@ -49,32 +49,33 @@ use kontor_core::receipt::{
 };
 use kontor_core::repository::OpenQuestionRepository;
 use kontor_core::repository::{
-    AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, AttestationWrite,
-    AvailabilityOverride, CalendarRepository, CapacityObservation, CapacityRepository,
-    CommandRepository, CompletionWrite, ConnectorSpecSelector, CredentialReference,
-    CredentialReferenceKind, GateEvaluation, GateRejectionRecovery, GateRejectionRoute,
-    GateRouteOrigin, HistoryGapKind, HistoryGapMarker, HostedSeatLaunchIntentState,
-    HostedSeatLaunchIntentSupersession, IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome,
-    IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
-    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
-    NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
-    NewConsultationRecoveryAttempt, NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord,
-    NewIntakeReevaluation, NewLocalCommand, NewMiniProject, NewNativeContainerBinding,
-    NewObservation, NewProject, NewProviderQuotaState, NewProviderUsageObservation,
-    NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
-    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
-    ProjectRepository, ProjectTopologyDefault, ProviderQuotaState, ProviderUsageObservation,
-    QuotaObservationProvenance, RealmEventPage, RealmRepository, ReceiptAdvance,
-    ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunInspection,
-    RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence,
-    SourceDisposition, SourceEventIngest, SpecRepository, StoredAdvisorAdvice,
-    StoredCapacityConfiguration, StoredCommitteeFinding, StoredCompletionProfile,
-    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationMaterializationReroute,
-    StoredConsultationProfileRevision, StoredConsultationRecoveryAttempt, StoredConsultationRun,
-    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal,
-    StoredRetiredEvaluatorAttestation, StoredTopologyContainerRecovery, SuccessionRepository, Task,
+    AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AdoptionWrite, AgentRun,
+    AttestationWrite, AvailabilityOverride, CalendarRepository, CapacityObservation,
+    CapacityRepository, CommandRepository, CompletionWrite, ConnectorSpecSelector,
+    CredentialReference, CredentialReferenceKind, GateEvaluation, GateRejectionRecovery,
+    GateRejectionRoute, GateRouteOrigin, HistoryGapKind, HistoryGapMarker,
+    HostedSeatLaunchIntentState, HostedSeatLaunchIntentSupersession, IntakeCreatedWork,
+    IntakeDecisionRecord, IntakeOutcome, IntakeRepository, MiniProject,
+    MiniProjectTopologySnapshot, NewAbandonReceipt, NewAccountProfile, NewAdaptiveAdmissionState,
+    NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
+    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt, NewGateEvaluation,
+    NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation, NewLocalCommand,
+    NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState,
+    NewProviderUsageObservation, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
+    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
+    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, ProviderQuotaState,
+    ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage, RealmRepository,
+    ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure,
+    RunInspection, RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation,
+    SessionVerdictEvidence, SourceDisposition, SourceEventIngest, SpecRepository,
+    StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
+    StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
+    StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
+    StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
+    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedSeatLaunchIntent,
+    StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection, StoredPromotion,
+    StoredQuickSession, StoredRemediationProposal, StoredRetiredEvaluatorAttestation,
+    StoredTeamRunAdmissionAdoption, StoredTopologyContainerRecovery, SuccessionRepository, Task,
     TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
     TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
     validate_dependency_graph,
@@ -1610,6 +1611,36 @@ impl ProjectRepository for SqliteStore {
 
 const TOPOLOGY_NODE_COLUMNS: &str = "id, project_id, mini_project_id, spec_id, spec_version, \
     spec_hash, kind, parent_id, lifecycle, placement, revision, created_at, updated_at, task_id";
+/// Read one adoption row in the column order every adoption query selects.
+fn read_adoption_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RepositoryResult<StoredTeamRunAdmissionAdoption>> {
+    let id: String = row.get(0)?;
+    let project_id: String = row.get(1)?;
+    let task_id: String = row.get(2)?;
+    let team_run_id: String = row.get(3)?;
+    let role_slot_id: String = row.get(4)?;
+    let agent_run_id: String = row.get(5)?;
+    let revision: i64 = row.get(6)?;
+    let receipt_id: String = row.get(7)?;
+    let adopted_at: String = row.get(8)?;
+    Ok((|| {
+        Ok(StoredTeamRunAdmissionAdoption {
+            id: ExternalId::parse(&id)?,
+            project_id: ProjectId::parse(&project_id)?,
+            task_id: TaskId::parse(&task_id)?,
+            team_run_id: TeamRunId::parse(&team_run_id)?,
+            role_slot_id: RoleSlotId::parse(&role_slot_id)?,
+            agent_run_id: AgentRunId::parse(&agent_run_id)?,
+            adopted_agent_run_revision: AggregateRevision::parse(
+                u64::try_from(revision).unwrap_or(u64::MAX),
+            )?,
+            receipt_id: CommandReceiptId::parse(&receipt_id)?,
+            adopted_at: read_timestamp(&adopted_at)?,
+        })
+    })())
+}
+
 const SEAT_BINDING_COLUMNS: &str = "id, project_id, topology_node_id, role_slot_id, \
     role_catalog_id, role_catalog_version, role_code, standard_title, custom_display_name, \
     task_id, team_run_id, lifecycle, attach_deadline, last_attached_at, last_activity_at, \
@@ -6557,6 +6588,331 @@ impl SqliteStore {
             })
         })
         .transpose()
+    }
+
+    /// Adopt one already-created AgentRun into a declared TeamRun slot.
+    ///
+    /// Every precondition is read inside the same transaction as the insert, so
+    /// a run that stops qualifying between the check and the write cannot be
+    /// adopted on the strength of a read that was true a moment earlier. The
+    /// three uniqueness rules in the schema are the final boundary; the checks
+    /// here exist to choose the refusal that names what was actually wrong.
+    ///
+    /// An exact-key replay — the same receipt recording the same claim — reads
+    /// the row the first call wrote and reports [`AdoptionWrite::Replayed`]
+    /// without writing again. The same receipt carrying a *different* claim is
+    /// changed-intent drift and is refused rather than overwriting the first.
+    ///
+    /// Nothing here admits a candidate, dispatches a turn, binds a runtime or
+    /// touches the run, task, team or topology.
+    ///
+    /// # Errors
+    /// [`RepositoryError::Conflict`] when any precondition fails or on
+    /// changed-intent drift; backend failure otherwise.
+    pub fn adopt_team_run_admission(
+        &self,
+        adoption: &StoredTeamRunAdmissionAdoption,
+    ) -> RepositoryResult<(StoredTeamRunAdmissionAdoption, AdoptionWrite)> {
+        let conflict = |rule: &'static str| RepositoryError::Conflict {
+            subject: "team-run admission adoption",
+            rule,
+        };
+        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
+
+        // Exact-key replay first: the same command asking again is the common
+        // case after a lost acknowledgement and must not be read as drift.
+        if let Some(existing) = Self::read_adoption_by_receipt(&transaction, adoption.receipt_id)? {
+            if existing == *adoption {
+                return Ok((existing, AdoptionWrite::Replayed));
+            }
+            return Err(conflict(
+                "this receipt already recorded a different adoption",
+            ));
+        }
+
+        // The team, in this project, and still able to take a seat.
+        let team: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT lifecycle, task_id FROM team_runs WHERE project_id = ?1 AND id = ?2",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.team_run_id.to_string()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((team_lifecycle, team_task)) = team else {
+            return Err(conflict("the TeamRun does not exist in this project"));
+        };
+        if matches!(
+            team_lifecycle.as_str(),
+            "succeeded" | "failed" | "cancelled" | "parked"
+        ) {
+            return Err(conflict("a terminal TeamRun cannot adopt a run"));
+        }
+        if team_task != adoption.task_id.to_string() {
+            return Err(conflict("the TeamRun belongs to a different task"));
+        }
+
+        // The task is still live.
+        let task_state: Option<String> = transaction
+            .query_row(
+                "SELECT state FROM tasks WHERE project_id = ?1 AND id = ?2",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.task_id.to_string()
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(task_state) = task_state else {
+            return Err(conflict("the task does not exist in this project"));
+        };
+        if matches!(task_state.as_str(), "done" | "cancelled" | "withdrawn") {
+            return Err(conflict("a closed task cannot adopt a run"));
+        }
+
+        // The slot is one the frozen snapshot declares, and it declares the
+        // role the run actually holds. A slot invented by the caller, or one
+        // whose role does not match, is not the place this run belongs.
+        let slot_role: Option<String> = transaction
+            .query_row(
+                "SELECT json_extract(slot.value, '$.role')
+                   FROM team_runs AS team,
+                        json_each(json_extract(team.snapshot, '$.definition.slots')) AS slot
+                  WHERE team.project_id = ?1 AND team.id = ?2
+                    AND json_extract(slot.value, '$.id') = ?3",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.team_run_id.to_string(),
+                    adoption.role_slot_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(slot_role) = slot_role else {
+            return Err(conflict(
+                "the frozen TeamRun snapshot does not declare this slot",
+            ));
+        };
+
+        // The run: in this project, on this team, at the revision the caller
+        // proved it had read, and still an unstarted admission.
+        let run: Option<(String, String, String, String, String, i64)> = transaction
+            .query_row(
+                "SELECT team_run_id, role_key, lifecycle, desired_state, observed_state, revision
+                   FROM agent_runs WHERE project_id = ?1 AND id = ?2",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.agent_run_id.to_string()
+                ],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((run_team, run_role, lifecycle, desired, observed, revision)) = run else {
+            return Err(conflict("the run does not exist in this project"));
+        };
+        if run_team != adoption.team_run_id.to_string() {
+            return Err(conflict("the run belongs to a different TeamRun"));
+        }
+        if run_role != slot_role {
+            return Err(conflict(
+                "the run does not hold the role this slot declares",
+            ));
+        }
+        if revision != i64::try_from(adoption.adopted_agent_run_revision.get()).unwrap_or(i64::MAX)
+        {
+            return Err(conflict("the run moved since the caller read it"));
+        }
+        if lifecycle != "queued" || desired != "run_requested" || observed != "unknown" {
+            return Err(conflict("the run is not an unstarted admission"));
+        }
+
+        // Nothing may already own this run: not a runtime, not the scheduler,
+        // not an owed dispatch, and not an earlier adoption.
+        let bound: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_bindings
+                                WHERE project_id = ?1 AND agent_run_id = ?2)",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.agent_run_id.to_string()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if bound {
+            return Err(conflict("the run already has a runtime binding"));
+        }
+        let admitted: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM scheduler_admission_events
+                                WHERE project_id = ?1 AND agent_run_id = ?2)",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.agent_run_id.to_string()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if admitted {
+            return Err(conflict("the run already has a scheduler admission"));
+        }
+        let owed: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM turn_dispatches
+                                WHERE project_id = ?1 AND team_run_id = ?2
+                                  AND to_role_slot_id = ?3)",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.team_run_id.to_string(),
+                    adoption.role_slot_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if owed {
+            return Err(conflict(
+                "the slot already has an owed dispatch and needs no adoption",
+            ));
+        }
+        let waived: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM role_slot_waivers
+                                WHERE project_id = ?1 AND team_run_id = ?2 AND role_slot_id = ?3)",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.team_run_id.to_string(),
+                    adoption.role_slot_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if waived {
+            return Err(conflict("the declared slot was waived"));
+        }
+        let slot_taken: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM team_run_admission_adoptions
+                                WHERE project_id = ?1 AND team_run_id = ?2 AND role_slot_id = ?3)",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.team_run_id.to_string(),
+                    adoption.role_slot_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if slot_taken {
+            return Err(conflict("this slot was already adopted"));
+        }
+        let run_taken: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM team_run_admission_adoptions
+                                WHERE project_id = ?1 AND agent_run_id = ?2)",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.agent_run_id.to_string()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if run_taken {
+            return Err(conflict("this run was already adopted"));
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO team_run_admission_adoptions
+                     (id, project_id, task_id, team_run_id, role_slot_id, agent_run_id,
+                      adopted_agent_run_revision, receipt_id, adopted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    adoption.id.as_str(),
+                    adoption.project_id.to_string(),
+                    adoption.task_id.to_string(),
+                    adoption.team_run_id.to_string(),
+                    adoption.role_slot_id.as_str(),
+                    adoption.agent_run_id.to_string(),
+                    i64::try_from(adoption.adopted_agent_run_revision.get()).unwrap_or(i64::MAX),
+                    adoption.receipt_id.to_string(),
+                    adoption.adopted_at.to_string(),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok((adoption.clone(), AdoptionWrite::Recorded))
+    }
+
+    /// The adoption one command recorded, if it recorded one.
+    ///
+    /// # Errors
+    /// Backend failure.
+    pub fn team_run_admission_adoption_by_receipt(
+        &self,
+        receipt_id: CommandReceiptId,
+    ) -> RepositoryResult<Option<StoredTeamRunAdmissionAdoption>> {
+        Self::read_adoption_by_receipt(&self.connection, receipt_id)
+    }
+
+    /// The adoption recorded against one declared slot, if any.
+    ///
+    /// This is the read a later seat fill consumes as its authority.
+    ///
+    /// # Errors
+    /// Backend failure.
+    pub fn team_run_admission_adoption(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        role_slot_id: &RoleSlotId,
+    ) -> RepositoryResult<Option<StoredTeamRunAdmissionAdoption>> {
+        self.connection
+            .query_row(
+                "SELECT id, project_id, task_id, team_run_id, role_slot_id, agent_run_id,
+                        adopted_agent_run_revision, receipt_id, adopted_at
+                   FROM team_run_admission_adoptions
+                  WHERE project_id = ?1 AND team_run_id = ?2 AND role_slot_id = ?3",
+                params![
+                    project_id.to_string(),
+                    team_run_id.to_string(),
+                    role_slot_id.as_str()
+                ],
+                read_adoption_row,
+            )
+            .optional()
+            .map_err(backend)?
+            .transpose()
+    }
+
+    fn read_adoption_by_receipt(
+        connection: &Connection,
+        receipt_id: CommandReceiptId,
+    ) -> RepositoryResult<Option<StoredTeamRunAdmissionAdoption>> {
+        connection
+            .query_row(
+                "SELECT id, project_id, task_id, team_run_id, role_slot_id, agent_run_id,
+                        adopted_agent_run_revision, receipt_id, adopted_at
+                   FROM team_run_admission_adoptions WHERE receipt_id = ?1",
+                params![receipt_id.to_string()],
+                read_adoption_row,
+            )
+            .optional()
+            .map_err(backend)?
+            .transpose()
     }
 
     /// Record one retired-evaluator proof, idempotently on its digest.
