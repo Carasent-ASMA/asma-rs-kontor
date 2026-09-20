@@ -8630,7 +8630,7 @@ async fn exact_container_inspection_preserves_raw_uuid_titles_and_native_identit
         .inspect_container(&ContainerInspectRequest {
             binding: root_binding.clone(),
             native_parent: None,
-            scope: epic_execution_scope(),
+            scope: Some(epic_execution_scope()),
             epic_container: true,
             requested_at: at("2026-09-06T12:00:00Z"),
         })
@@ -8673,7 +8673,7 @@ async fn exact_container_inspection_preserves_raw_uuid_titles_and_native_identit
         .inspect_container(&ContainerInspectRequest {
             binding: child_binding.clone(),
             native_parent: Some(root_binding.identity.clone()),
-            scope: execution_scope(),
+            scope: Some(execution_scope()),
             epic_container: false,
             requested_at: at("2026-09-06T12:01:00Z"),
         })
@@ -8723,7 +8723,7 @@ async fn exact_container_inspection_rehydrates_launch_placement_after_restart() 
         .inspect_container(&ContainerInspectRequest {
             binding,
             native_parent: Some(parent.identity),
-            scope: execution_scope(),
+            scope: Some(execution_scope()),
             epic_container: false,
             requested_at: at("2026-09-19T20:35:38Z"),
         })
@@ -8806,7 +8806,7 @@ async fn container_inspection_never_resolves_a_matching_title_or_cwd() {
         .inspect_container(&ContainerInspectRequest {
             binding: missing,
             native_parent: Some(parent.identity),
-            scope: execution_scope(),
+            scope: Some(execution_scope()),
             epic_container: false,
             requested_at: at("2026-09-06T12:02:00Z"),
         })

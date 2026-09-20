@@ -6773,8 +6773,12 @@ impl RuntimeAdapter for PaseoAdapter {
                 let project = self.read_project_by_id(expected.native_id.as_str()).await?;
                 let identity = self.identity(ExternalId::parse(&project.id)?, generation);
                 let cwd = WorkspaceRoot::parse(&project.root_path)?;
+                // Addressed by persisted native id alone; the scope is never
+                // read here. A project-wide root has no epic to carry, and
+                // consulting one would make the exact-id lookup depend on a
+                // value the address does not need.
                 if request.epic_container {
-                    let epic_id = Self::external_epic_id(&request.scope)?;
+                    let epic_id = Self::external_epic_id(request.required_scope()?)?;
                     self.lock().projects.insert(
                         epic_id.clone(),
                         PaseoProjectBinding {
@@ -6808,7 +6812,7 @@ impl RuntimeAdapter for PaseoAdapter {
                 }
                 let project = self.read_project_by_id(parent.native_id.as_str()).await?;
                 let project_binding = PaseoProjectBinding {
-                    mini_project_id: Self::external_epic_id(&request.scope)?,
+                    mini_project_id: Self::external_epic_id(request.required_scope()?)?,
                     host_key: self.config.host_key.clone(),
                     project_id: ExternalId::parse(&project.id)?,
                     observed_name: project.display_name,

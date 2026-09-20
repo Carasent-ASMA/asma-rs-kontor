@@ -86,6 +86,7 @@ use kontor_core::repository::{
     TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTarget,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyContainerRecovery,
+    TopologyContainerRootFill,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, ModelRung, NodeProjectionCapability,
@@ -11869,6 +11870,28 @@ fn ensure_atomic_intent_matches(
     Ok(())
 }
 
+/// One node's container binding read inside an open transaction.
+fn read_one_native_container_binding_impl(
+    transaction: &rusqlite::Transaction<'_>,
+    project_id: ProjectId,
+    topology_node_id: TopologyNodeId,
+) -> RepositoryResult<NativeContainerBinding> {
+    transaction
+        .query_row(
+            &format!(
+                "SELECT {NATIVE_CONTAINER_COLUMNS} FROM topology_node_containers
+                 WHERE project_id = ?1 AND topology_node_id = ?2"
+            ),
+            params![project_id.to_string(), topology_node_id.to_string()],
+            |row| Ok(read_native_container_binding(row)),
+        )
+        .optional()
+        .map_err(backend)?
+        .ok_or(RepositoryError::NotFound {
+            subject: "native container binding",
+        })?
+}
+
 fn topology_container_recovery_by_receipt(
     transaction: &Transaction<'_>,
     project_id: ProjectId,
@@ -12316,6 +12339,152 @@ impl SqliteStore {
         receipt_id: CommandReceiptId,
     ) -> RepositoryResult<StoredLegacyEpicBacklogCodeCorrection> {
         legacy_epic_backlog_code_correction_by_receipt(&self.connection, project_id, receipt_id)
+    }
+
+    /// Fill one native project root's missing canonical directory and readback,
+    /// atomically with the receipt that authorized it.
+    ///
+    /// The receipt and the binding move together or not at all: a realm can
+    /// never hold a completed binding nobody authorized, nor an authorization
+    /// for a fill that did not happen. The before/after is the receipt's own
+    /// canonical intent, which is immutable and hashed — the recovery evidence
+    /// ledger cannot be used here, because its `CHECK` requires the native
+    /// identity to change and this operation preserves it.
+    ///
+    /// Fill-only, never overwrite: a directory already recorded must equal the
+    /// one being written, so a second correction cannot quietly relocate a seat.
+    ///
+    /// # Errors
+    /// Refuses an authority that does not match, a binding that moved, a
+    /// different native, or a recorded directory that disagrees.
+    pub fn fill_topology_container_root_with_intent(
+        &self,
+        fill: &TopologyContainerRootFill,
+        expected_revision: AggregateRevision,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<(
+        NativeContainerBinding,
+        CommandReceipt,
+        crate::graph::Applied,
+    )> {
+        let intent = envelope.peek(self.realm_id())?;
+        let project_id = fill.expected.project_id;
+        let target = AggregateRef::Project { project_id };
+        if intent.project_id != project_id
+            || intent.kind != CommandKind::RecoverTopologyContainer
+            || intent.target != target
+            || intent.target_revision != expected_revision
+        {
+            return Err(DomainError::invalid(
+                "CommandReceipt",
+                "the local command authority does not match the container root fill",
+            )
+            .into());
+        }
+        if fill.replacement.project_id != project_id
+            || fill.replacement.topology_node_id != fill.expected.topology_node_id
+            || fill.replacement.container_binding_id != fill.expected.container_binding_id
+            || fill.replacement.identity != fill.expected.identity
+        {
+            return Err(DomainError::invalid(
+                "topology container root fill",
+                "the fill must preserve project, node, logical binding and native identity",
+            )
+            .into());
+        }
+        let canonical_cwd = fill.replacement.canonical_cwd.as_ref().ok_or_else(|| {
+            DomainError::invalid(
+                "topology container root fill",
+                "a root fill must supply the canonical directory it proved",
+            )
+        })?;
+        let transaction = self.begin()?;
+        if let Some(existing) = crate::commands::intent::insert_local_command(&transaction, intent)?
+        {
+            // The lost acknowledgement: the fill already happened under this
+            // key. Answer with what it produced rather than doing it twice.
+            let binding = read_one_native_container_binding_impl(
+                &transaction,
+                project_id,
+                fill.expected.topology_node_id,
+            )?;
+            transaction.rollback().map_err(backend)?;
+            return Ok((binding, existing, crate::graph::Applied::Unchanged));
+        }
+        let stored = read_one_native_container_binding_impl(
+            &transaction,
+            project_id,
+            fill.expected.topology_node_id,
+        )?;
+        if stored.identity != fill.expected.identity {
+            return Err(conflict(
+                "native container binding",
+                "this topology node is bound to another native container",
+            ));
+        }
+        if stored.revision != fill.expected_binding_revision {
+            return Err(conflict(
+                "native container binding",
+                "the container binding moved since the fill was previewed",
+            ));
+        }
+        if let Some(recorded) = stored.canonical_cwd.as_ref()
+            && recorded != canonical_cwd
+        {
+            return Err(conflict(
+                "native container binding",
+                "a canonical directory is already recorded and disagrees",
+            ));
+        }
+        let readback = fill.replacement.readback.as_ref();
+        let parent = readback.and_then(|readback| readback.native_parent.as_ref());
+        transaction
+            .execute(
+                "UPDATE topology_node_containers
+                 SET last_readback_at = ?2, observed_kind = ?3, canonical_cwd = ?4,
+                     observed_projection = CASE WHEN ?5 THEN ?6 ELSE observed_projection END,
+                     visible_title = CASE WHEN ?5 THEN ?7 ELSE visible_title END,
+                     parent_runtime_kind = CASE WHEN ?5 THEN ?8 ELSE parent_runtime_kind END,
+                     parent_host = CASE WHEN ?5 THEN ?9 ELSE parent_host END,
+                     parent_generation = CASE WHEN ?5 THEN ?10 ELSE parent_generation END,
+                     parent_native_id = CASE WHEN ?5 THEN ?11 ELSE parent_native_id END,
+                     topology_correlation = CASE WHEN ?5 THEN ?12 ELSE topology_correlation END,
+                     revision = revision + 1
+                 WHERE topology_node_id = ?1",
+                params![
+                    fill.expected.topology_node_id.to_string(),
+                    text(fill.replacement.observed_at),
+                    fill.replacement.observed_kind.as_str(),
+                    Some(canonical_cwd.as_str()),
+                    readback.is_some(),
+                    readback.map(|readback| readback.projection.as_str()),
+                    readback.map(|readback| readback.visible_title.as_str()),
+                    parent.map(|parent| parent.runtime_kind.as_str()),
+                    parent.map(|parent| parent.host.as_str()),
+                    parent
+                        .map(|parent| i64::try_from(parent.generation))
+                        .transpose()
+                        .map_err(|_| DomainError::invalid(
+                            "NativeRuntimeIdentity",
+                            "a native parent generation is out of range",
+                        ))?,
+                    parent.map(|parent| parent.native_id.as_str()),
+                    readback.map(|readback| readback.topology_correlation.as_str()),
+                ],
+            )
+            .map_err(backend)?;
+        let filled = read_one_native_container_binding_impl(
+            &transaction,
+            project_id,
+            fill.expected.topology_node_id,
+        )?;
+        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "command receipt",
+            },
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok((filled, receipt, crate::graph::Applied::Updated))
     }
 
     /// Replace one stale native container identity and record the authority atomically.

@@ -37644,7 +37644,7 @@ impl Services {
             .inspect_container(&ContainerInspectRequest {
                 binding: durable.clone(),
                 native_parent: native_parent.clone(),
-                scope,
+                scope: Some(scope),
                 epic_container: projection == ContainerProjection::NativeRoot,
                 requested_at: kontor_api::now(),
             })
@@ -37909,7 +37909,7 @@ impl Services {
                         .parent
                         .as_ref()
                         .map(|parent| parent.identity.clone()),
-                    scope: request.scope.clone(),
+                    scope: Some(request.scope.clone()),
                     epic_container: request.epic_container,
                     requested_at: kontor_api::now(),
                 })

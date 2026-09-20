@@ -1183,6 +1183,24 @@ pub struct TopologyContainerRecovery {
     pub observed_title: ExternalName,
 }
 
+/// One identity-preserving fill of a native project root's missing binding.
+///
+/// Distinct from [`TopologyContainerRecovery`] in the one way that matters: a
+/// recovery *replaces* a native identity and its evidence ledger refuses a row
+/// whose identity did not change. This changes no identity at all. It completes
+/// a legacy binding that was written before canonical directories and readbacks
+/// were recorded, and its before/after lives in the authorizing receipt's
+/// canonical intent rather than in that ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyContainerRootFill {
+    /// The complete stored binding, exactly as the caller read it.
+    pub expected: NativeContainerBinding,
+    /// The same binding with only its missing root facts filled in.
+    pub replacement: NewNativeContainerBinding,
+    /// The binding revision the fill is fenced on.
+    pub expected_binding_revision: AggregateRevision,
+}
+
 /// Immutable before/after evidence for one completed container recovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredTopologyContainerRecovery {

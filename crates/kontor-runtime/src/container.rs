@@ -419,7 +419,13 @@ pub struct ContainerInspectRequest {
     /// Complete exact native parent; required only for a native child.
     pub native_parent: Option<NativeRuntimeIdentity>,
     /// Durable execution scope, used only to rehydrate an exact ESW binding.
-    pub scope: ExecutionScope,
+    ///
+    /// Absent for the one address that has no epic to carry: a project-wide
+    /// native root, which is reached by its persisted native id alone. Every
+    /// other address still requires it, because every other address is
+    /// resolved relative to an epic's project binding. The matrix is closed
+    /// and proved in [`Self::validate`] rather than left to each adapter.
+    pub scope: Option<ExecutionScope>,
     /// Whether this root is the epic's ESW project.
     pub epic_container: bool,
     /// Observation instant supplied by the control plane.
@@ -427,11 +433,28 @@ pub struct ContainerInspectRequest {
 }
 
 impl ContainerInspectRequest {
+    /// The execution scope this address requires, refused when absent.
+    ///
+    /// [`Self::validate`] already closes the matrix, so this is the second
+    /// half of the same fence rather than a new rule: the one address allowed
+    /// to omit a scope — a project-wide native root — never calls it. Adapters
+    /// use it instead of unwrapping, so a future address that forgets the
+    /// scope refuses instead of panicking.
+    ///
+    /// # Errors
+    /// Refuses an address that needs a scope and was given none.
+    pub fn required_scope(&self) -> RuntimeResult<&ExecutionScope> {
+        self.scope.as_ref().ok_or(RuntimeError::WorkspaceMismatch {
+            rule: "this container address requires its exact execution scope",
+        })
+    }
+
     /// Prove the exact-address request is internally coherent.
     ///
     /// # Errors
     /// Refuses logical nodes, a child without one exact native parent, a root
-    /// with a parent, or an epic container that is not a native root.
+    /// with a parent, an epic container that is not a native root, or a
+    /// scope-less address that is not a project-wide native root.
     pub fn validate(&self) -> RuntimeResult<()> {
         match self.binding.projection {
             ContainerProjection::LogicalOnly => {
@@ -455,6 +478,18 @@ impl ContainerInspectRequest {
         if self.epic_container && self.binding.projection != ContainerProjection::NativeRoot {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "an epic container inspection must address a native_root",
+            });
+        }
+        // The scope matrix, closed. Exactly one address needs no epic — a
+        // project-wide native root, which the runtime reaches by its persisted
+        // native id and nothing else. An epic's own root and every child are
+        // resolved through that epic's project binding, so omitting the scope
+        // there would leave the adapter to search rather than address.
+        if self.scope.is_none()
+            && !(self.binding.projection == ContainerProjection::NativeRoot && !self.epic_container)
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "only a project-wide native_root may be inspected without an execution scope",
             });
         }
         Ok(())
@@ -798,6 +833,135 @@ mod tests {
             generation: 1,
             native_id: kontor_core::id::ExternalId::parse(native_id).expect("a native id"),
         }
+    }
+
+    fn inspect(
+        projection: ContainerProjection,
+        epic_container: bool,
+        scope: Option<ExecutionScope>,
+        native_parent: Option<NativeRuntimeIdentity>,
+    ) -> ContainerInspectRequest {
+        ContainerInspectRequest {
+            binding: ContainerBinding {
+                id: ContainerBindingId::generate(),
+                topology_node_id: TopologyNodeId::generate(),
+                projection,
+                identity: identity("prj_inspected"),
+                root: None,
+                bound_at: Timestamp::now(),
+            },
+            native_parent,
+            scope,
+            epic_container,
+            requested_at: Timestamp::now(),
+        }
+    }
+
+    fn a_scope() -> ExecutionScope {
+        ExecutionScope::for_epic(EpicScope {
+            mini_project_id: MiniProjectId::generate(),
+            external_epic_key: ExternalId::parse("ASMA-SCOPE").expect("epic key"),
+            short_title: ExternalName::parse("Scoped").expect("epic title"),
+        })
+    }
+
+    /// The one address with no epic to carry: a project-wide native root.
+    ///
+    /// It is reached by its persisted native id alone, which is why it can be
+    /// addressed at all on a node that belongs to no epic. Accepting a scope
+    /// here too is deliberate — the rule is that one is not *required*, not
+    /// that supplying one is an error.
+    #[test]
+    fn a_project_wide_native_root_may_be_inspected_without_a_scope() {
+        assert!(
+            inspect(ContainerProjection::NativeRoot, false, None, None)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            inspect(
+                ContainerProjection::NativeRoot,
+                false,
+                Some(a_scope()),
+                None
+            )
+            .validate()
+            .is_ok()
+        );
+    }
+
+    /// Every other address is resolved through an epic's project binding, so
+    /// omitting the scope would leave an adapter searching rather than
+    /// addressing. Each case names the exact rule: a refusal arriving from one
+    /// of the other fences would not prove this one exists.
+    #[test]
+    fn every_other_address_still_requires_its_exact_scope() {
+        for (case, request) in [
+            (
+                "epic-root",
+                inspect(ContainerProjection::NativeRoot, true, None, None),
+            ),
+            (
+                "child",
+                inspect(
+                    ContainerProjection::NativeChild,
+                    false,
+                    None,
+                    Some(identity("prj_parent")),
+                ),
+            ),
+        ] {
+            let refused = request.validate().expect_err(case);
+            assert!(
+                matches!(
+                    refused,
+                    RuntimeError::WorkspaceMismatch {
+                        rule: "only a project-wide native_root may be inspected without an execution scope"
+                    }
+                ),
+                "{case}: refused, but not by the scope matrix: {refused:?}"
+            );
+            assert!(request.required_scope().is_err(), "{case}");
+        }
+    }
+
+    /// A scoped child and epic root still pass, and a logical node still has
+    /// nothing to inspect. Widening the scope must not have widened anything
+    /// else.
+    #[test]
+    fn the_rest_of_the_matrix_is_unchanged() {
+        assert!(
+            inspect(
+                ContainerProjection::NativeChild,
+                false,
+                Some(a_scope()),
+                Some(identity("prj_parent")),
+            )
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            inspect(ContainerProjection::NativeRoot, true, Some(a_scope()), None)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            inspect(ContainerProjection::LogicalOnly, false, None, None)
+                .validate()
+                .is_err(),
+            "a logical_only node has no native container to inspect"
+        );
+        assert!(
+            inspect(
+                ContainerProjection::NativeChild,
+                false,
+                Some(a_scope()),
+                None
+            )
+            .validate()
+            .is_err(),
+            "a native_child inspection requires its exact native parent"
+        );
     }
 
     fn request(
