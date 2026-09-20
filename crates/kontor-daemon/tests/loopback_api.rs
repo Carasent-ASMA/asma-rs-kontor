@@ -58266,6 +58266,21 @@ async fn seat_claim_preview_and_apply_keep_both_independent_placement_proofs() {
         );
         let mut apply = request.clone();
         apply["preview_hash"] = preview.json()["preview_hash"].clone();
+        if fault == "none" {
+            let mut stale = apply.clone();
+            stale["preview_hash"] = serde_json::json!("0".repeat(64));
+            let refused = Call::post(format!("{route}:apply"), &stale)
+                .signed_as(&world, "admin")
+                .with_key("claim-proof-wrong-preview")
+                .send(&world)
+                .await;
+            assert!(
+                !refused.status.is_success(),
+                "a different preview cannot be applied"
+            );
+            assert_eq!(claim_native_writes(&world), writes_before);
+            assert!(receipt_for(&world, "claim-proof-wrong-preview").is_none());
+        }
         match fault {
             "container" => world.fake.forget_container(control),
             "claimant" => seed_claim_proof_native(&world, ticket),

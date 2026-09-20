@@ -3042,6 +3042,19 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 rule: "the inspected container does not have its exact persisted parent",
             });
         }
+        if request.binding.projection == ContainerProjection::NativeChild {
+            let task_container = request.scope.task.is_some();
+            let kind = state
+                .container_kinds
+                .get(&request.binding.topology_node_id)
+                .copied()
+                .ok_or(RuntimeError::CorrelationFailed)?;
+            if !kind.is_applicable_to(task_container) {
+                return Err(RuntimeError::StaleBinding {
+                    rule: ContainerWorkspaceKind::refusal(task_container),
+                });
+            }
+        }
         let visible_title = state
             .container_titles
             .get(&request.binding.topology_node_id)

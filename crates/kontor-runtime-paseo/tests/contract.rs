@@ -12609,3 +12609,72 @@ async fn an_epic_consultation_worktree_reconciles_and_inspects_after_restart() {
     ));
     assert!(plane.daemon.mutations().is_empty());
 }
+
+/// An intact ECP does not attest the claimant's own workspace or cwd. Both
+/// preview and apply must re-read the claimant before any metadata mutation.
+#[tokio::test]
+async fn a_hosted_claim_refuses_a_moved_claimant_with_a_valid_ecp() {
+    for field in ["workspaceId", "cwd"] {
+        let mut claimant = v(AGENT);
+        claimant["agent"]["title"] = serde_json::json!("hand-started LSA");
+        claimant["agent"]["labels"] = serde_json::json!({});
+        claimant["agent"][field] = serde_json::json!(if field == "workspaceId" {
+            "wks_somewhere_else"
+        } else {
+            "/w/somewhere-else"
+        });
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", v(WORKSPACE_ROOT_LOCAL))
+            .answering_rpc("fetch_agent_request", claimant)
+            .answering_rpc(
+                "fetch_agents_request",
+                serde_json::json!({
+                    "requestId": "req-fixture", "entries": [],
+                    "pageInfo": {"nextCursor": null, "prevCursor": null, "hasMore": false}
+                }),
+            );
+        let plane = Plane::fresh(recorded);
+        plane
+            .adapter
+            .prepare_project("cmd-claim-location-proof", &project_name())
+            .await
+            .expect("the valid epic project");
+        let request = HostedSeatClaimRequest {
+            seat_binding_id: SeatBindingId::generate(),
+            role_slot_id: slot("lsa"),
+            display_name: name("LSA"),
+            container_native_id: external(WORKSPACE_ID),
+            cwd: root(),
+            scope: epic_execution_scope(),
+            claimant_native_id: external(AGENT_ID),
+            expected_claimant_provider_session_id: None,
+            expected_predecessor: None,
+            requested_at: at("2026-09-20T16:00:00Z"),
+        };
+        let preview = plane
+            .adapter
+            .preview_hosted_seat_claim(&request)
+            .await
+            .expect_err("moved claimant must refuse preview even with a valid ECP");
+        assert!(
+            matches!(preview, RuntimeError::WorkspaceMismatch { .. }),
+            "{preview:?}"
+        );
+        let apply = plane
+            .adapter
+            .claim_hosted_seat(&request)
+            .await
+            .expect_err("moved claimant must refuse apply even with a valid ECP");
+        assert!(
+            matches!(apply, RuntimeError::WorkspaceMismatch { .. }),
+            "{apply:?}"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "no metadata or native write"
+        );
+    }
+}
