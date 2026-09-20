@@ -5258,6 +5258,45 @@ pub struct ResolvedContextDto {
     pub provenance: Vec<ProvenanceDto>,
     /// Every member the resolver removed.
     pub redactions: Vec<RedactionDto>,
+    /// Which approved memory revisions the pack carries, and which it could not.
+    pub memory_selection: MemorySelectionDto,
+}
+
+/// How much approved memory the resolved pack could carry.
+///
+/// Approved memory grows without bound while the canonical document may not
+/// exceed its ceiling, so a large enough project eventually has more approved
+/// memory than one pack can hold. When that happens the resolver narrows the set
+/// rather than refusing, and this says so explicitly: a caller can see that the
+/// pack is not the whole of approved memory, and exactly which revisions are
+/// missing from it. Below the ceiling `omitted` is empty and `narrowed` is
+/// false, which is the ordinary case and the one that must stay unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct MemorySelectionDto {
+    /// The selector that chose them, so a changed rule is visible as a changed
+    /// number rather than as an unexplained change of hash.
+    pub selector_version: u32,
+    /// The canonical byte ceiling the selection was made against.
+    pub ceiling_bytes: u64,
+    /// How many approved revisions the pack carries.
+    pub included: u32,
+    /// Whether the set had to be narrowed at all.
+    pub narrowed: bool,
+    /// Every approved revision the pack could not carry, in the order the
+    /// resolver would have taken them.
+    pub omitted: Vec<OmittedMemoryRevisionDto>,
+}
+
+/// One approved memory revision a Context Pack could not carry.
+///
+/// It names the revision and never its content: the point is that a caller can
+/// go and read what was left out, not that the pack leaks it by another route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct OmittedMemoryRevisionDto {
+    /// The memory item.
+    pub item_id: String,
+    /// The immutable approved revision of it.
+    pub revision_id: String,
 }
 
 /// The session record one recovery verdict is transcribed from.

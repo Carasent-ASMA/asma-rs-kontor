@@ -10199,6 +10199,21 @@ async fn resolving_a_task_context_tracks_approved_memory_and_returns_no_content(
         first.json()["context_pack_id"].is_null(),
         "a preview freezes nothing"
     );
+    // Below the canonical ceiling the whole approved set is carried, and the
+    // selector says so rather than being silently active.
+    assert_eq!(
+        first.json()["memory_selection"]["narrowed"],
+        serde_json::json!(false),
+        "a project under the ceiling is never narrowed: {}",
+        first.body
+    );
+    assert!(
+        first.json()["memory_selection"]["omitted"]
+            .as_array()
+            .expect("omitted")
+            .is_empty(),
+        "nothing is omitted below the ceiling"
+    );
     assert!(
         !first.json()["provenance"]
             .as_array()
@@ -10293,6 +10308,156 @@ async fn resolving_a_task_context_tracks_approved_memory_and_returns_no_content(
         .send(&world)
         .await;
     assert_eq!(observer.status, 403);
+}
+
+#[tokio::test]
+async fn approved_memory_past_the_canonical_ceiling_still_resolves_a_context() {
+    // Each document is individually well within the 1 MiB canonical ceiling;
+    // together they are past it. This is the live shape of ASMA-8234's realm,
+    // where 247 approved items total 1,779,910 bytes and the largest single
+    // document is 531,749 — every item valid, the aggregate not. Before the
+    // selector this resolved to 400 invalid_request / CanonicalDocument, so a
+    // project simply stopped being able to resolve a context at all.
+    const ITEMS: usize = 5;
+    const DOCUMENT_BYTES: usize = 250_000;
+
+    let world = World::open_empty().await;
+    world.daemon.reconcile().await;
+    let seed = bootstrap(&world, "ceiling").await;
+    let uri = format!(
+        "/v1/projects/{}/tasks/{}/context:resolve",
+        seed.project, seed.task
+    );
+    let project_id = ProjectId::parse(&seed.project).expect("a project id");
+
+    world
+        .daemon
+        .state()
+        .with_store(|store| {
+            for index in 0..ITEMS {
+                let item = format!("bulk-note-{index:02}");
+                let text = "approved convention note ".repeat(DOCUMENT_BYTES / 25);
+                let document = CanonicalDocument::from_value(&serde_json::json!({
+                    "schema_version": 1,
+                    "text": text,
+                }))?;
+                let provenance = kontor_store::memory::MemoryProvenance {
+                    source: "operator".to_owned(),
+                    source_id: None,
+                    legacy_last_write_wins: false,
+                    history_unavailable: false,
+                };
+                let (proposal, _) = store.propose_memory_revision(
+                    project_id,
+                    &item,
+                    0,
+                    &document,
+                    &provenance,
+                    "test-author",
+                )?;
+                store.approve_memory_revision(
+                    project_id,
+                    &item,
+                    &proposal.revision_id,
+                    1,
+                    "test-reviewer",
+                )?;
+            }
+            Ok::<_, kontor_store::memory::MemoryError>(())
+        })
+        .expect("bulk approved project memory is seeded");
+
+    let resolved = Call::post(&uri, &serde_json::json!({"snapshot": false}))
+        .signed_as(&world, "operator")
+        .with_key("ceiling-preview-1")
+        .send(&world)
+        .await;
+    assert_eq!(resolved.status, 200, "{}", resolved.body);
+    let hash = resolved.json()["context_hash"]
+        .as_str()
+        .expect("a hash")
+        .to_owned();
+    assert_eq!(hash.len(), 64, "the pack still has a real content digest");
+
+    // The narrowing is stated, never silent.
+    let selection = resolved.json()["memory_selection"].clone();
+    assert_eq!(selection["narrowed"], serde_json::json!(true));
+    assert_eq!(selection["selector_version"], serde_json::json!(1));
+    assert_eq!(selection["ceiling_bytes"], serde_json::json!(1_048_576u64));
+    let included = selection["included"].as_u64().expect("an included count") as usize;
+    let omitted = selection["omitted"].as_array().expect("omitted").clone();
+    assert!(
+        (1..ITEMS).contains(&included),
+        "some approved memory is carried and some is not: {}",
+        resolved.body
+    );
+    assert_eq!(
+        omitted.len(),
+        ITEMS - included,
+        "every approved revision is either carried or named as omitted"
+    );
+
+    // The omitted revisions are the tail of the store's own order, so the choice
+    // is reproducible rather than arbitrary.
+    let omitted_items: Vec<String> = omitted
+        .iter()
+        .map(|entry| entry["item_id"].as_str().expect("an item id").to_owned())
+        .collect();
+    let expected_tail: Vec<String> = (included..ITEMS)
+        .map(|index| format!("bulk-note-{index:02}"))
+        .collect();
+    assert_eq!(
+        omitted_items, expected_tail,
+        "omission follows the deterministic order, taking the tail"
+    );
+    for entry in &omitted {
+        assert!(
+            entry["revision_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty()),
+            "an omitted revision is named by its immutable revision id"
+        );
+    }
+
+    // What is carried is attributable, and what is not carried is absent from
+    // the pack rather than half-present in it.
+    let provenance = resolved.json()["provenance"].as_array().expect("p").clone();
+    let paths: Vec<String> = provenance
+        .iter()
+        .map(|entry| entry["path"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    for index in 0..included {
+        let item = format!("bulk-note-{index:02}");
+        assert!(
+            paths.iter().any(|path| path.contains(&item)),
+            "a carried revision is attributable: {item}"
+        );
+    }
+    for item in &omitted_items {
+        assert!(
+            !paths.iter().any(|path| path.contains(item)),
+            "an omitted revision contributes nothing to the pack: {item}"
+        );
+    }
+
+    // Same inputs, same bytes — under a fresh key and under the original one.
+    let stable = Call::post(&uri, &serde_json::json!({"snapshot": false}))
+        .signed_as(&world, "operator")
+        .with_key("ceiling-preview-2")
+        .send(&world)
+        .await;
+    assert_eq!(stable.status, 200, "{}", stable.body);
+    assert_eq!(stable.json()["context_hash"], serde_json::json!(hash));
+    assert_eq!(stable.json()["memory_selection"], selection);
+
+    let replay = Call::post(&uri, &serde_json::json!({"snapshot": false}))
+        .signed_as(&world, "operator")
+        .with_key("ceiling-preview-1")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["context_hash"], serde_json::json!(hash));
+    assert_eq!(replay.json()["memory_selection"], selection);
 }
 
 #[tokio::test]

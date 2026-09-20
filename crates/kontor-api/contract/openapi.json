@@ -17996,6 +17996,48 @@
           }
         }
       },
+      "MemorySelectionDto": {
+        "type": "object",
+        "description": "How much approved memory the resolved pack could carry.\n\nApproved memory grows without bound while the canonical document may not\nexceed its ceiling, so a large enough project eventually has more approved\nmemory than one pack can hold. When that happens the resolver narrows the set\nrather than refusing, and this says so explicitly: a caller can see that the\npack is not the whole of approved memory, and exactly which revisions are\nmissing from it. Below the ceiling `omitted` is empty and `narrowed` is\nfalse, which is the ordinary case and the one that must stay unchanged.",
+        "required": [
+          "selector_version",
+          "ceiling_bytes",
+          "included",
+          "narrowed",
+          "omitted"
+        ],
+        "properties": {
+          "ceiling_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The canonical byte ceiling the selection was made against.",
+            "minimum": 0
+          },
+          "included": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many approved revisions the pack carries.",
+            "minimum": 0
+          },
+          "narrowed": {
+            "type": "boolean",
+            "description": "Whether the set had to be narrowed at all."
+          },
+          "omitted": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OmittedMemoryRevisionDto"
+            },
+            "description": "Every approved revision the pack could not carry, in the order the\nresolver would have taken them."
+          },
+          "selector_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The selector that chose them, so a changed rule is visible as a changed\nnumber rather than as an unexplained change of hash.",
+            "minimum": 0
+          }
+        }
+      },
       "MessageAckDto": {
         "type": "object",
         "description": "The runtime's answer to one delivered message.",
@@ -18478,6 +18520,24 @@
             "format": "int64",
             "description": "The canonical epoch both positions belong to.",
             "minimum": 0
+          }
+        }
+      },
+      "OmittedMemoryRevisionDto": {
+        "type": "object",
+        "description": "One approved memory revision a Context Pack could not carry.\n\nIt names the revision and never its content: the point is that a caller can\ngo and read what was left out, not that the pack leaks it by another route.",
+        "required": [
+          "item_id",
+          "revision_id"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "description": "The memory item."
+          },
+          "revision_id": {
+            "type": "string",
+            "description": "The immutable approved revision of it."
           }
         }
       },
@@ -21283,7 +21343,8 @@
           "task_id",
           "context_hash",
           "provenance",
-          "redactions"
+          "redactions",
+          "memory_selection"
         ],
         "properties": {
           "agent_run_id": {
@@ -21303,6 +21364,10 @@
               "null"
             ],
             "description": "The frozen pack, when this call snapshotted one."
+          },
+          "memory_selection": {
+            "$ref": "#/components/schemas/MemorySelectionDto",
+            "description": "Which approved memory revisions the pack carries, and which it could not."
           },
           "provenance": {
             "type": "array",
