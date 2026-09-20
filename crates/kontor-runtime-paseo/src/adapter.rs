@@ -6380,9 +6380,13 @@ impl RuntimeAdapter for PaseoAdapter {
         {
             return Err(RuntimeError::CorrelationFailed);
         }
-        if before.status != PaseoAgentStatus::Idle || !before.pending_permissions.is_empty() {
+        if !matches!(
+            before.status,
+            PaseoAgentStatus::Idle | PaseoAgentStatus::Error
+        ) || !before.pending_permissions.is_empty()
+        {
             return Err(RuntimeError::ReplacementNotEvidenced {
-                rule: "consultation recovery requires an idle predecessor with no pending permission",
+                rule: "consultation recovery requires an idle or failed predecessor with no pending permission",
             });
         }
         let output = self
@@ -6654,9 +6658,13 @@ impl RuntimeAdapter for PaseoAdapter {
                 archived_at: request.requested_at,
             });
         }
-        if before.status != PaseoAgentStatus::Idle || !before.pending_permissions.is_empty() {
+        if !matches!(
+            before.status,
+            PaseoAgentStatus::Idle | PaseoAgentStatus::Error
+        ) || !before.pending_permissions.is_empty()
+        {
             return Err(RuntimeError::ReplacementNotEvidenced {
-                rule: "Core Team route correction requires an idle predecessor with no pending permission",
+                rule: "Core Team route correction requires an idle or failed predecessor with no pending permission",
             });
         }
         let output = self

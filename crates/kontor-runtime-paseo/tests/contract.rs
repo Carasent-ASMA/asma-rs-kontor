@@ -7278,8 +7278,9 @@ async fn consultation_recovery_retires_legacy_modes_but_refuses_another_route() 
     use kontor_runtime::adapter::ConsultationSeatRetireRequest;
     let run_id = ConsultationRunId::Committee(CommitteeRunId::parse(MINI_PROJECT).unwrap());
     let seat_binding_id = SeatBindingId::parse(RUN_QA).unwrap();
-    for mode in ["plan", "acceptEdits"] {
+    for (mode, status) in [("plan", "idle"), ("acceptEdits", "idle"), ("plan", "error")] {
         let mut before = consultation_agent(AGENT_IDLE_FINISHED, run_id, seat_binding_id);
+        before["agent"]["status"] = serde_json::json!(status);
         before["agent"]["currentModeId"] = serde_json::json!(mode);
         before["agent"]["labels"][label::READ_ONLY] = serde_json::json!("true");
         let mut archived_list = v(AGENT_LIST_ARCHIVED_ONLY);
@@ -10415,60 +10416,63 @@ async fn a_sibling_workspace_title_does_not_block_an_exact_hosted_seat_claim() {
 /// the archived stamp and emits no second native effect.
 #[tokio::test]
 async fn an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved() {
-    let seat_binding_id = SeatBindingId::generate();
-    let labels = serde_json::json!({
-        "kontor.seat_binding_id": seat_binding_id.to_string(),
-        "kontor.hosted_seat": "true",
-    });
-    let mut before = v(AGENT);
-    before["agent"]["labels"] = labels.clone();
-    let mut after = before.clone();
-    after["agent"]["archivedAt"] = serde_json::json!("2026-08-20T05:10:00.000Z");
+    for status in ["idle", "error"] {
+        let seat_binding_id = SeatBindingId::generate();
+        let labels = serde_json::json!({
+            "kontor.seat_binding_id": seat_binding_id.to_string(),
+            "kontor.hosted_seat": "true",
+        });
+        let mut before = v(AGENT);
+        before["agent"]["status"] = serde_json::json!(status);
+        before["agent"]["labels"] = labels.clone();
+        let mut after = before.clone();
+        after["agent"]["archivedAt"] = serde_json::json!("2026-08-20T05:10:00.000Z");
 
-    let recorded = RecordedPaseo::new()
-        .answering(&PaseoCommand::version(), VERSION)
-        .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
-        .announcing(&v(SERVER_INFO))
-        .then_answering_rpc("fetch_agent_request", before)
-        .answering_rpc("fetch_agent_request", after);
-    let plane = Plane::fresh(recorded);
-    let request = HostedSeatRetireRequest {
-        placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
-            workspace_native_id: external(WORKSPACE_ID),
-            canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
-            provider_session_id: None,
-        }),
-        seat_binding_id,
-        identity: NativeRuntimeIdentity {
-            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
-            host: name(HOST_KEY),
-            generation: 1,
-            native_id: external(AGENT_ID),
-        },
-        model_rung: model_rung(),
-        autonomy: SeatAutonomy::standard(),
-        requested_at: at("2026-08-20T05:10:00Z"),
-    };
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
+            .announcing(&v(SERVER_INFO))
+            .then_answering_rpc("fetch_agent_request", before)
+            .answering_rpc("fetch_agent_request", after);
+        let plane = Plane::fresh(recorded);
+        let request = HostedSeatRetireRequest {
+            placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
+                workspace_native_id: external(WORKSPACE_ID),
+                canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
+                provider_session_id: None,
+            }),
+            seat_binding_id,
+            identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+                host: name(HOST_KEY),
+                generation: 1,
+                native_id: external(AGENT_ID),
+            },
+            model_rung: model_rung(),
+            autonomy: SeatAutonomy::standard(),
+            requested_at: at("2026-08-20T05:10:00Z"),
+        };
 
-    let retired = plane
-        .adapter
-        .retire_hosted_seat(&request)
-        .await
-        .expect("the exact idle predecessor is retired");
-    assert_eq!(retired.identity, request.identity);
-    assert_eq!(plane.daemon.count("agent archive agt_implement"), 1);
+        let retired = plane
+            .adapter
+            .retire_hosted_seat(&request)
+            .await
+            .expect("the exact idle predecessor is retired");
+        assert_eq!(retired.identity, request.identity);
+        assert_eq!(plane.daemon.count("agent archive agt_implement"), 1);
 
-    let replayed = plane
-        .adapter
-        .retire_hosted_seat(&request)
-        .await
-        .expect("the archived predecessor is an idempotent readback");
-    assert_eq!(replayed.identity, request.identity);
-    assert_eq!(
-        plane.daemon.count("agent archive agt_implement"),
-        1,
-        "retirement replay must not archive twice"
-    );
+        let replayed = plane
+            .adapter
+            .retire_hosted_seat(&request)
+            .await
+            .expect("the archived predecessor is an idempotent readback");
+        assert_eq!(replayed.identity, request.identity);
+        assert_eq!(
+            plane.daemon.count("agent archive agt_implement"),
+            1,
+            "retirement replay must not archive twice"
+        );
+    }
 }
 
 /// Paseo removes an archived agent from its exact active lookup even though
@@ -10529,6 +10533,7 @@ async fn hosted_seat_retirement_replays_when_exact_fetch_hides_the_archive() {
 async fn hosted_cleanup_refuses_running_or_moved_sessions_before_native_retirement() {
     for case in [
         "running",
+        "error-with-permission",
         "workspace",
         "cwd",
         "provider-conversation",
@@ -10557,6 +10562,11 @@ async fn hosted_cleanup_refuses_running_or_moved_sessions_before_native_retireme
         };
         match case {
             "running" => before["agent"]["status"] = serde_json::json!("running"),
+            "error-with-permission" => {
+                before["agent"]["status"] = serde_json::json!("error");
+                before["agent"]["pendingPermissions"] =
+                    v(AGENT_PERMISSION_OPEN)["agent"]["pendingPermissions"].clone();
+            }
             "workspace" => before["agent"]["workspaceId"] = serde_json::json!("wks_other"),
             "cwd" => before["agent"]["cwd"] = serde_json::json!("/somebody/else"),
             "provider-conversation" => {
