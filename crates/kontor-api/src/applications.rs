@@ -1497,6 +1497,9 @@ pub struct ConsultationSeatDto {
     pub role_slot_id: String,
     /// Logical role under the pinned policy.
     pub logical_role: String,
+    /// Committee function frozen from its template; absent for Advisor seats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committee_role: Option<String>,
     /// Exact persistent SeatBinding.
     #[schema(value_type = String)]
     pub seat_binding_id: SeatBindingId,
@@ -3304,6 +3307,23 @@ pub struct ContainerRecoveryApplyRequest {
     pub preview_hash: ContentHash,
 }
 
+/// Which of the two dispositions one recovery census authorizes.
+///
+/// The operation has always had one answer — adopt the sole live candidate.
+/// This names that answer so a second one can exist beside it without either
+/// being inferred from the shape of the payload. An operator reading a preview
+/// should not have to deduce "it is going to build one" from a missing field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerRecoveryDispositionDto {
+    /// Exactly one candidate carries the exact parent, canonical path and
+    /// rendered title. Apply adopts it and creates nothing.
+    AdoptExisting,
+    /// The persisted native is absent and nothing occupies the canonical path.
+    /// Apply creates exactly one replacement below the exact persisted parent.
+    RecreateAbsent,
+}
+
 /// Exact before/after identity proved by a read-only recovery census.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct ContainerRecoveryPreviewDto {
@@ -3316,12 +3336,20 @@ pub struct ContainerRecoveryPreviewDto {
     /// Topology node whose logical binding is preserved.
     #[schema(value_type = String)]
     pub topology_node_id: TopologyNodeId,
+    /// Which answer this census reached.
+    pub disposition: ContainerRecoveryDispositionDto,
     /// Native identity currently persisted and proved absent.
     #[schema(value_type = String)]
     pub stale_native_id: ExternalId,
     /// Sole live parent/path/title candidate.
-    #[schema(value_type = String)]
-    pub replacement_native_id: ExternalId,
+    ///
+    /// Absent exactly when the disposition is
+    /// [`ContainerRecoveryDispositionDto::RecreateAbsent`] and this is a
+    /// preview: there is no candidate yet, and naming one before apply has run
+    /// would be predicting an identity the runtime has not minted. Always
+    /// present on an applied result.
+    #[schema(value_type = Option<String>)]
+    pub replacement_native_id: Option<ExternalId>,
     /// Exact native parent in which the census ran.
     #[schema(value_type = String)]
     pub parent_native_id: ExternalId,
@@ -3329,6 +3357,10 @@ pub struct ContainerRecoveryPreviewDto {
     #[schema(value_type = String)]
     pub canonical_cwd: ExternalName,
     /// Runtime-reported candidate title.
+    ///
+    /// On a `recreate_absent` preview there is no candidate to report one from,
+    /// so this carries the exact title apply will write — the same bytes the
+    /// naming authority already rendered, never a title the caller chose.
     pub observed_title: String,
     /// Hash binding the complete preview.
     #[schema(value_type = String)]
@@ -6018,7 +6050,8 @@ pub struct SettleTurnRequest {
     /// challenge and selects the terminal response server-side.
     #[serde(default)]
     pub correlation_challenge_message_id: Option<String>,
-    /// The artifacts the turn produced.
+    /// Declared artifact claims. Gate/phase evidence requires an addressable
+    /// record through `artifacts:record`; a label alone is not evidence.
     #[serde(default)]
     pub artifacts: Vec<String>,
 }
@@ -7591,6 +7624,22 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         request: &ProfileApplyRequest,
     ) -> Result<AppliedProfileDto, ApiError>;
+    /// Read one epic's complete immutable question histories.
+    fn open_questions(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        actor: Option<crate::open_questions::QuestionActor>,
+    ) -> Result<serde_json::Value, ApiError>;
+    /// Append one question operation with its exact retry receipt.
+    fn record_open_question(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        actor: crate::open_questions::QuestionActor,
+        request: &crate::open_questions::RecordQuestionRequest,
+    ) -> Result<serde_json::Value, ApiError>;
     /// One epic's completion state.
     fn completion(
         &self,
@@ -7902,6 +7951,16 @@ pub trait ApplicationOperations: Send + Sync {
         role_slot: &str,
         request: &WaiveRoleSlotRequest,
     ) -> Result<RoleSlotWaiverDto, ApiError>;
+
+    /// Recover a verified addressable artifact from an existing settled claim.
+    async fn record_artifact(
+        &self,
+        key: &IdempotencyKey,
+        authority: CallerCapability,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &crate::artifacts::RecordArtifactRequest,
+    ) -> Result<crate::artifacts::ArtifactSubmissionDto, ApiError>;
 
     /// Settle one bounded Kontor role turn, leaving the seat live.
     async fn settle_turn(
@@ -10804,21 +10863,45 @@ pub async fn committee_run(
     let mut run = state
         .applications()
         .committee_run(project_id, committee_run_id)?;
-    if let Some(seat) = consultation_reader(&state, caller, &run.seats)? {
+    project_committee_for_caller(&state, caller, &mut run)?;
+    Ok(Json(run))
+}
+
+/// Apply the same evidence visibility after both reads and findings writes.
+fn project_committee_for_caller(
+    state: &ApiState,
+    caller: Caller,
+    run: &mut CommitteeRunDto,
+) -> Result<(), ApiError> {
+    if let Some(seat) = consultation_reader(state, caller, &run.seats)? {
+        // Only the pinned Judge may read its committee's independent findings,
+        // and only after every frozen reviewer has submitted this round.
+        let reviewers: Vec<_> = run
+            .seats
+            .iter()
+            .filter(|candidate| candidate.committee_role.as_deref() == Some("reviewer"))
+            .collect();
+        let judge_ready = seat.committee_role.as_deref() == Some("judge")
+            && !reviewers.is_empty()
+            && reviewers.iter().all(|reviewer| {
+                run.findings.iter().any(|finding| {
+                    finding.round == run.round
+                        && finding.role == "reviewer"
+                        && finding.role_slot_id == reviewer.role_slot_id
+                })
+            });
         run.seats
             .retain(|candidate| candidate.seat_binding_id == seat.seat_binding_id);
         run.findings
-            .retain(|finding| finding.role_slot_id == seat.role_slot_id);
+            .retain(|finding| judge_ready || finding.role_slot_id == seat.role_slot_id);
         run.findings_recorded = u32::try_from(run.findings.len()).unwrap_or(u32::MAX);
-        // Judges receive their authorized reviewer evidence in the frozen launch
-        // prompt. A generic scoped GET never exposes another seat's output.
         run.result = None;
         run.result_hash = None;
         run.outcome = None;
         run.remediation = None;
         run.remediation_hash = None;
     }
-    Ok(Json(run))
+    Ok(())
 }
 
 /// Read pending runtime permission requests from one exact Committee seat.
@@ -11016,19 +11099,19 @@ pub async fn record_committee_findings(
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let committee_run_id = parse_id(&state, CommitteeRunId::parse(&committee_run_id))?;
     let key = idempotency_key(&state, &headers)?;
-    Ok(Json(
-        state
-            .applications()
-            .record_committee_findings(
-                &key,
-                project_id,
-                committee_run_id,
-                seat_binding_id,
-                seat_occupancy_generation,
-                &request,
-            )
-            .await?,
-    ))
+    let mut run = state
+        .applications()
+        .record_committee_findings(
+            &key,
+            project_id,
+            committee_run_id,
+            seat_binding_id,
+            seat_occupancy_generation,
+            &request,
+        )
+        .await?;
+    project_committee_for_caller(&state, caller, &mut run)?;
+    Ok(Json(run))
 }
 
 /// Settle one Committee consultation.

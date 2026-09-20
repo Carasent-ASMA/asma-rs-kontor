@@ -25,6 +25,9 @@
 //! they have no TeamRun and are keyed by their durable SeatBinding. Neither
 //! path can create the other's kind of session.
 
+mod artifact_submission;
+mod open_questions;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -91,19 +94,20 @@ use kontor_api::applications::{
     AppliedTeamDefinitionUpgradeDto, AppliedTopologyUpgradeDto, CodeHelpEntryDto,
     CommitteeTopicCorrectionApplyRequest, CommitteeTopicCorrectionPreviewDto,
     CommitteeTopicCorrectionPreviewRequest, ContainerRecoveryApplyRequest,
-    ContainerRecoveryPreviewDto, ContainerRecoveryPreviewRequest, ContainerRetitlePreviewDto,
-    ContainerRetitleRequest, DesiredBindingDto, EpicBacklogCodeCorrectionApplyRequest,
-    EpicBacklogCodeCorrectionPreviewDto, EpicBacklogCodeCorrectionPreviewRequest,
-    JiraMaterializationAppliedDto, JiraMaterializationApplyRequest, JiraMaterializationIntentDto,
-    JiraMaterializationItemDto, JiraMaterializationModeDto, JiraMaterializationPreviewDto,
-    JiraMaterializationPreviewRequest, NativeNameSubjectKindDto, NativeNameTargetDto,
-    NativeNamesApplyRequest, NativeNamesPreviewDto, NativeNamesPreviewRequest, PinnedSpecDto,
-    PinnedTeamDefinitionDto, ProjectTeamDefinitionSelectionApplyRequest,
-    ProjectTeamDefinitionSelectionPreviewDto, ProjectTeamDefinitionSelectionPreviewRequest,
-    ProjectTopologySelectionApplyRequest, ProjectTopologySelectionPreviewDto,
-    ProjectTopologySelectionPreviewRequest, SemanticTopologyRequest, SemanticTopologyTargetDto,
-    SessionLabelsReconcileRequest, SessionLabelsReconciledDto, ShareabilityDto,
-    TeamDefinitionRefDto, TeamDefinitionUpgradeApplyRequest, TeamDefinitionUpgradePreviewDto,
+    ContainerRecoveryDispositionDto, ContainerRecoveryPreviewDto, ContainerRecoveryPreviewRequest,
+    ContainerRetitlePreviewDto, ContainerRetitleRequest, DesiredBindingDto,
+    EpicBacklogCodeCorrectionApplyRequest, EpicBacklogCodeCorrectionPreviewDto,
+    EpicBacklogCodeCorrectionPreviewRequest, JiraMaterializationAppliedDto,
+    JiraMaterializationApplyRequest, JiraMaterializationIntentDto, JiraMaterializationItemDto,
+    JiraMaterializationModeDto, JiraMaterializationPreviewDto, JiraMaterializationPreviewRequest,
+    NativeNameSubjectKindDto, NativeNameTargetDto, NativeNamesApplyRequest, NativeNamesPreviewDto,
+    NativeNamesPreviewRequest, PinnedSpecDto, PinnedTeamDefinitionDto,
+    ProjectTeamDefinitionSelectionApplyRequest, ProjectTeamDefinitionSelectionPreviewDto,
+    ProjectTeamDefinitionSelectionPreviewRequest, ProjectTopologySelectionApplyRequest,
+    ProjectTopologySelectionPreviewDto, ProjectTopologySelectionPreviewRequest,
+    SemanticTopologyRequest, SemanticTopologyTargetDto, SessionLabelsReconcileRequest,
+    SessionLabelsReconciledDto, ShareabilityDto, TeamDefinitionRefDto,
+    TeamDefinitionUpgradeApplyRequest, TeamDefinitionUpgradePreviewDto,
     TeamDefinitionUpgradePreviewRequest, TopologyMutationDto, TopologyNodeDto, TopologyNodeRequest,
     TopologyProjectionDto, TopologyUpgradeApplyRequest, TopologyUpgradeEffectDto,
     TopologyUpgradePreviewDto, TopologyUpgradePreviewRequest,
@@ -199,8 +203,8 @@ use kontor_core::repository::{
     StoredQuickSession, StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest,
     TaskWorkflow, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
-    TicketLink, TicketRepository, TopologyContainerRecovery, TopologyRepository,
-    WorkflowRepository,
+    TicketLink, TicketRepository, TopologyContainerRecovery, TopologyContainerRecoveryDisposition,
+    TopologyRepository, WorkflowRepository,
 };
 use kontor_core::spec::HoldLiftCondition;
 use kontor_core::spec::{
@@ -263,8 +267,8 @@ use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
 use kontor_runtime::container::{
     ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerInspectRequest,
-    ContainerInspection, ContainerProjection, ContainerRecoveryRequest, ContainerRequest,
-    RetitleContainerRequest,
+    ContainerInspection, ContainerProjection, ContainerRecoveryRequest, ContainerRecreationRequest,
+    ContainerRequest, RetitleContainerRequest,
 };
 use kontor_runtime::observation::ControlPlaneObservation;
 use kontor_runtime::request::{
@@ -654,7 +658,24 @@ struct PreparedNativeNames {
 struct PreparedContainerRecovery {
     preview: ContainerRecoveryPreviewDto,
     expected: NativeContainerBinding,
-    replacement: NewNativeContainerBinding,
+    /// The identity apply will bind, when the census already found one.
+    ///
+    /// `None` is exactly the `recreate_absent` disposition: nothing stands at
+    /// the canonical place yet, so there is no identity to carry. Apply mints
+    /// it by issuing one create and reading it back, and refuses to bind
+    /// anything it did not read back.
+    replacement: Option<NewNativeContainerBinding>,
+    /// The exact request apply replays to drive its single create.
+    ///
+    /// Carried from preview so apply cannot re-derive placement from anything
+    /// the caller sent. Present only for `recreate_absent`.
+    recreation: Option<ContainerRecreationRequest>,
+    /// The runtime this subject's container lives in.
+    ///
+    /// Resolved during preview and carried, exactly as
+    /// [`PreparedCommitteeTopicCorrection`] does, so apply drives the same
+    /// runtime the census read rather than re-resolving one.
+    adapter: Arc<dyn RuntimeAdapter>,
 }
 
 struct PreparedCommitteeTopicCorrection {
@@ -966,6 +987,24 @@ impl Services {
             self.deny(
                 ApiErrorCode::PlacementBlocked,
                 "native topology work is in progress; retirement or migration must wait",
+            )
+        })
+    }
+
+    /// A migration waits for already-started native operations to drain.
+    /// Queueing the writer prevents recurring background reads from starving it.
+    async fn native_migration_change(
+        &self,
+    ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ApiError> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.native_lifecycle_guard.write(),
+        )
+        .await
+        .map_err(|_| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "native topology work is in progress; migration wait timed out before any write",
             )
         })
     }
@@ -4898,6 +4937,8 @@ impl Services {
         let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team_run.snapshot)
             .map_err(|error| self.refuse_domain(&error))?;
 
+        // Declared labels may coordinate a handoff; they never qualify a gate,
+        // phase or completion requirement, which consumes the artifact registry.
         // Every artifact this task's turns have produced, not only this turn's.
         // A handoff waits on artifacts, and it does not care which turn produced
         // which: the condition is about the task's state, not about authorship.
@@ -5159,7 +5200,12 @@ impl Services {
                 // same reason: a follow-up is a Kontor-minted id in a session,
                 // and an observation of the turn it opens has to be able to tell
                 // the occurrence Kontor delivered from any other mention of it.
-                state.record_message_delivery(message_id, acknowledged.position)?;
+                state.record_message_delivery_durably(
+                    adapter.as_ref(),
+                    request.binding.identity(),
+                    message_id,
+                    acknowledged.position,
+                )?;
                 state
                     .with_store(|store| {
                         store.mark_turn_dispatched(settled.id, &handoff.to_slot, target)
@@ -6741,6 +6787,11 @@ impl Services {
                     "no such role catalog revision exists in this realm",
                 )
             })
+    }
+
+    /// The configured launch-time persona for one role.
+    fn role_persona(&self, role_code: &RoleCode) -> Option<BoundedText> {
+        self.domain.role_prompt(role_code).cloned()
     }
 
     /// The catalog revision this build publishes.
@@ -9601,10 +9652,43 @@ impl Services {
             expected_title: retitle.desired_title,
             requested_at: kontor_api::now(),
         };
-        let outcome = adapter
-            .preview_container_recovery(&recovery_request)
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        // The adoption census is tried first and is unchanged. Only when it
+        // declines does the second disposition get a hearing, so every subject
+        // that has a live candidate keeps taking exactly the path it always
+        // took.
+        let outcome = match adapter.preview_container_recovery(&recovery_request).await {
+            Ok(outcome) => outcome,
+            Err(adopt_refusal) => {
+                let recreation_request = ContainerRecreationRequest {
+                    topology_node_id,
+                    container_binding_id: recovery_request.container_binding_id,
+                    absent_identity: recovery_request.stale_identity.clone(),
+                    bound_project_native_id: recovery_request.bound_project_native_id.clone(),
+                    canonical_cwd: recovery_request.canonical_cwd.clone(),
+                    expected_title: recovery_request.expected_title.clone(),
+                    requested_at: recovery_request.requested_at,
+                };
+                // Only a positively proved vacancy authorizes creation. Every
+                // other refusal — live native, several candidates, drifted
+                // title — is reported as the adoption census stated it, rather
+                // than being re-described by a second census that refused for
+                // the same underlying reason.
+                let vacant = matches!(
+                    adapter.preview_container_recreation(&recreation_request).await,
+                    Ok(outcome) if outcome.created
+                );
+                if !vacant {
+                    return Err(ApiError::from_runtime(state.realm_id(), &adopt_refusal));
+                }
+                return self.prepared_container_recreation(
+                    project_id,
+                    expected_revision,
+                    expected,
+                    recreation_request,
+                    adapter,
+                );
+            }
+        };
         outcome
             .snapshot
             .ensure_node(topology_node_id)
@@ -9715,8 +9799,9 @@ impl Services {
                 realm_id: state.realm_id(),
                 project_id,
                 topology_node_id,
+                disposition: ContainerRecoveryDispositionDto::AdoptExisting,
                 stale_native_id: expected.identity.native_id.clone(),
-                replacement_native_id: replacement.identity.native_id.clone(),
+                replacement_native_id: Some(replacement.identity.native_id.clone()),
                 parent_native_id,
                 canonical_cwd,
                 observed_title: outcome.observed_title,
@@ -9724,8 +9809,159 @@ impl Services {
                 snapshot_cursor: self.cursor()?,
             },
             expected,
-            replacement,
+            replacement: Some(replacement),
+            recreation: None,
+            adapter,
         })
+    }
+
+    /// The `recreate_absent` half of one container-recovery preview.
+    ///
+    /// Reached only after the adoption census declined *and* a second census
+    /// positively proved the canonical place vacant. It writes nothing and
+    /// names no replacement identity, because none exists yet: what it freezes
+    /// is the placement tuple apply must build at, and the disposition that
+    /// says apply is allowed to build at all.
+    fn prepared_container_recreation(
+        &self,
+        project_id: ProjectId,
+        expected_revision: AggregateRevision,
+        expected: NativeContainerBinding,
+        recreation: ContainerRecreationRequest,
+        adapter: Arc<dyn RuntimeAdapter>,
+    ) -> Result<PreparedContainerRecovery, ApiError> {
+        let state = self.state()?;
+        // Both are already inside the request the census froze, so taking them
+        // as separate arguments would only create a way for them to disagree
+        // with it.
+        let parent_native_id = recreation.bound_project_native_id.clone();
+        let canonical_cwd = ExternalName::parse(recreation.canonical_cwd.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
+        // The disposition is inside the hash. An adopt preview and a recreate
+        // preview over the same subject must not produce the same digest, or
+        // one could authorize the other's apply — and only one of the two is
+        // permitted to create a native.
+        let preview_hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "disposition": "recreate_absent",
+            "project_id": project_id.to_string(),
+            "project_revision": expected_revision.get(),
+            "topology_node_id": recreation.topology_node_id.to_string(),
+            "container_binding_id": expected.container_binding_id.as_str(),
+            "stale_identity": {
+                "runtime_kind": expected.identity.runtime_kind.as_str(),
+                "host": expected.identity.host.as_str(),
+                "generation": expected.identity.generation,
+                "native_id": expected.identity.native_id.as_str(),
+                "binding_revision": expected.revision.get(),
+            },
+            "parent_native_id": parent_native_id.as_str(),
+            "canonical_cwd": canonical_cwd.as_str(),
+            "expected_title": recreation.expected_title.as_str(),
+        }))?;
+        Ok(PreparedContainerRecovery {
+            preview: ContainerRecoveryPreviewDto {
+                realm_id: state.realm_id(),
+                project_id,
+                topology_node_id: recreation.topology_node_id,
+                disposition: ContainerRecoveryDispositionDto::RecreateAbsent,
+                stale_native_id: expected.identity.native_id.clone(),
+                // Deliberately none: apply mints it, and a preview that named
+                // one would be predicting an identity no runtime has issued.
+                replacement_native_id: None,
+                parent_native_id,
+                canonical_cwd,
+                observed_title: recreation.expected_title.as_str().to_owned(),
+                preview_hash,
+                snapshot_cursor: self.cursor()?,
+            },
+            expected,
+            replacement: None,
+            recreation: Some(recreation),
+            adapter,
+        })
+    }
+
+    /// Issue the one create a `recreate_absent` apply is authorized to make.
+    ///
+    /// An adopt-disposition preview passes through untouched, so the existing
+    /// path reaches the store having spoken to no runtime.
+    ///
+    /// Nothing is bound that was not read back. The adapter returns the native
+    /// it observed at the exact parent, canonical path and rendered title, and
+    /// every one of those is re-checked here before a replacement binding is
+    /// built — a create that silently landed elsewhere must not become this
+    /// node's container.
+    async fn recreate_prepared_container(
+        &self,
+        mut prepared: PreparedContainerRecovery,
+    ) -> Result<Option<PreparedContainerRecovery>, ApiError> {
+        let Some(recreation) = prepared.recreation.clone() else {
+            return Ok(Some(prepared));
+        };
+        let state = self.state()?;
+        let outcome = prepared
+            .adapter
+            .recreate_container(&recreation)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+
+        // The same proofs the adoption disposition demands. A native this
+        // operation built is not trusted more than one it found.
+        outcome
+            .snapshot
+            .ensure_node(recreation.topology_node_id)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        outcome
+            .snapshot
+            .ensure_correlated()
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        outcome
+            .snapshot
+            .ensure_root(&recreation.canonical_cwd)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if outcome.snapshot.binding.id != recreation.container_binding_id
+            || outcome.snapshot.binding.projection != ContainerProjection::NativeChild
+            || outcome.snapshot.binding.identity == prepared.expected.identity
+            || outcome.observed_title != recreation.expected_title.as_str()
+        {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the runtime recreation readback did not preserve the logical binding and exact rendered title",
+            ));
+        }
+
+        let parent_native_id = prepared.preview.parent_native_id.clone();
+        let canonical_cwd = prepared.preview.canonical_cwd.clone();
+        let identity = outcome.snapshot.binding.identity.clone();
+        prepared.preview.replacement_native_id = Some(identity.native_id.clone());
+        prepared.preview.observed_title = outcome.observed_title.clone();
+        prepared.replacement = Some(NewNativeContainerBinding {
+            topology_node_id: recreation.topology_node_id,
+            project_id: prepared.preview.project_id,
+            container_binding_id: prepared.expected.container_binding_id.clone(),
+            identity: identity.clone(),
+            observed_kind: ObservedContainerKind::Workspace,
+            canonical_cwd: Some(canonical_cwd),
+            readback: Some(NativeContainerReadback {
+                projection: ObservedContainerProjection::NativeChild,
+                visible_title: ExternalName::parse(&outcome.observed_title)
+                    .map_err(|error| self.refuse_domain(&error))?,
+                native_parent: Some(kontor_core::state::NativeRuntimeIdentity {
+                    runtime_kind: identity.runtime_kind.clone(),
+                    host: identity.host.clone(),
+                    generation: identity.generation,
+                    native_id: parent_native_id,
+                }),
+                topology_correlation: ExternalName::parse(
+                    &outcome.snapshot.correlation.label.to_string(),
+                )
+                .map_err(|error| self.refuse_domain(&error))?,
+            }),
+            bound_at: outcome.snapshot.binding.bound_at,
+            observed_at: recreation.requested_at,
+        });
+        Ok(Some(prepared))
     }
 
     /// Preflight every existing native container and persistent seat in one
@@ -12421,6 +12657,7 @@ impl Services {
                 .map(|seat| ConsultationSeatDto {
                     role_slot_id: seat.role_slot_id.as_str().to_owned(),
                     logical_role: seat.logical_role.as_str().to_owned(),
+                    committee_role: seat.committee_role.map(|role| role.as_str().to_owned()),
                     seat_binding_id: seat.seat_binding_id,
                     occupancy_generation: seat.occupancy_generation,
                     model_route: runtime_model_route_dto(&seat.model_rung),
@@ -13258,6 +13495,7 @@ impl Services {
                 .map(|seat| ConsultationSeatDto {
                     role_slot_id: seat.role_slot_id.as_str().to_owned(),
                     logical_role: seat.logical_role.as_str().to_owned(),
+                    committee_role: seat.committee_role.map(|role| role.as_str().to_owned()),
                     seat_binding_id: seat.seat_binding_id,
                     occupancy_generation: seat.occupancy_generation,
                     model_route: runtime_model_route_dto(&seat.model_rung),
@@ -18474,6 +18712,25 @@ impl Services {
 
 #[async_trait]
 impl ApplicationOperations for Services {
+    fn open_questions(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        actor: Option<kontor_api::open_questions::QuestionActor>,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.read_open_questions(project_id, epic_id, actor)
+    }
+    fn record_open_question(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        actor: kontor_api::open_questions::QuestionActor,
+        request: &kontor_api::open_questions::RecordQuestionRequest,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.write_open_question(key, project_id, epic_id, actor, request)
+    }
+
     async fn preview_publication(
         &self,
         project_id: ProjectId,
@@ -21906,7 +22163,16 @@ impl ApplicationOperations for Services {
                     "the stale-container recovery candidate changed since preview",
                 ));
             }
-            Some(prepared)
+            // The single create. It happens here and nowhere else: after the
+            // durable replay check above (so a settled key never reaches a
+            // runtime), after the preview digest matched (so placement is the
+            // one an operator read), and before the store CAS below.
+            //
+            // The adapter re-runs its own census first, so a create whose
+            // acknowledgement was lost is adopted rather than repeated. That is
+            // what bounds this to at most one native per subject across every
+            // retry that gets this far.
+            self.recreate_prepared_container(prepared).await?
         } else {
             None
         };
@@ -21938,6 +22204,8 @@ impl ApplicationOperations for Services {
         );
         let recovery = prepared.as_ref().map_or_else(
             || TopologyContainerRecovery {
+                // Ignored by durable replay, which returns the original row.
+                disposition: TopologyContainerRecoveryDisposition::AdoptExisting,
                 expected: current.clone(),
                 replacement: NewNativeContainerBinding {
                     topology_node_id,
@@ -21955,8 +22223,23 @@ impl ApplicationOperations for Services {
                     .expect("the replay marker is a valid external name"),
             },
             |prepared| TopologyContainerRecovery {
+                disposition: match prepared.preview.disposition {
+                    ContainerRecoveryDispositionDto::AdoptExisting => {
+                        TopologyContainerRecoveryDisposition::AdoptExisting
+                    }
+                    ContainerRecoveryDispositionDto::RecreateAbsent => {
+                        TopologyContainerRecoveryDisposition::RecreateAbsent
+                    }
+                },
                 expected: prepared.expected.clone(),
-                replacement: prepared.replacement.clone(),
+                // Always populated by this point: the adopt disposition carries
+                // its candidate from preview, and the recreate disposition has
+                // just read one back. A `None` here would mean a binding with
+                // no proved native, which the CAS must never be handed.
+                replacement: prepared
+                    .replacement
+                    .clone()
+                    .expect("apply binds only a replacement it read back"),
                 parent_native_id: prepared.preview.parent_native_id.clone(),
                 observed_title: ExternalName::parse(&prepared.preview.observed_title)
                     .expect("runtime titles were parsed by the recovery contract"),
@@ -21979,8 +22262,21 @@ impl ApplicationOperations for Services {
                 realm_id: state.realm_id(),
                 project_id,
                 topology_node_id,
+                // An applied result always names the disposition its prepared
+                // preview carried, and a replay reports the disposition the
+                // original apply committed under.
+                disposition: match evidence.disposition {
+                    TopologyContainerRecoveryDisposition::AdoptExisting => {
+                        ContainerRecoveryDispositionDto::AdoptExisting
+                    }
+                    TopologyContainerRecoveryDisposition::RecreateAbsent => {
+                        ContainerRecoveryDispositionDto::RecreateAbsent
+                    }
+                },
                 stale_native_id: evidence.prior_identity.native_id,
-                replacement_native_id: evidence.replacement_identity.native_id,
+                // Never absent on an applied result: the store returns the
+                // identity it bound.
+                replacement_native_id: Some(evidence.replacement_identity.native_id),
                 parent_native_id: evidence.parent_native_id,
                 canonical_cwd,
                 observed_title: evidence.observed_title.as_str().to_owned(),
@@ -22167,7 +22463,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &TeamDefinitionUpgradeApplyRequest,
     ) -> Result<AppliedTeamDefinitionUpgradeDto, ApiError> {
-        let _native_lifecycle = self.native_lifecycle_change()?;
+        let _native_lifecycle = self.native_migration_change().await?;
         let state = self.state()?;
         let project = self.project_at(project_id, request.upgrade.expected_revision)?;
         let aggregate = AggregateRef::MiniProject {
@@ -23639,6 +23935,7 @@ impl ApplicationOperations for Services {
                         cwd: cwd.clone(),
                         scope: scope.clone(),
                         prompt,
+                        role_prompt: self.role_persona(&seat.role.role_code),
                         credential: ConsultationCredential::new(
                             state
                                 .credentials()
@@ -24141,6 +24438,7 @@ impl ApplicationOperations for Services {
                     cwd,
                     scope,
                     prompt,
+                    role_prompt: self.role_persona(&plan.binding.role.role_code),
                     credential: ConsultationCredential::new(
                         state.credentials().seat_credential_for_generation(
                             plan.binding.id,
@@ -31414,6 +31712,18 @@ impl ApplicationOperations for Services {
                 .map(|(epoch, sequence)| TurnTimelinePositionDto { epoch, sequence }),
             applied: applied_dto(applied),
         })
+    }
+
+    async fn record_artifact(
+        &self,
+        key: &IdempotencyKey,
+        authority: kontor_api::auth::CallerCapability,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &kontor_api::artifacts::RecordArtifactRequest,
+    ) -> Result<kontor_api::artifacts::ArtifactSubmissionDto, ApiError> {
+        self.recover_artifact(key, authority, project_id, task_id, request)
+            .await
     }
 
     async fn settle_turn(
@@ -40769,6 +41079,50 @@ impl Services {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn a_native_migration_waits_for_inflight_work_without_admitting_new_readers() {
+        let directory = tempfile::tempdir().expect("isolated state");
+        let services = Services::new(
+            RealmId::generate(),
+            crate::DEFAULT_CAPACITY,
+            kontor_jira::JiraConnectors::read(directory.path()).expect("no connectors"),
+            directory.path().join("runtime-roots"),
+            crate::usage::UsagePoller::discover(directory.path()),
+            Vec::new(),
+            None,
+        )
+        .expect("services");
+        let existing = services.native_activity().expect("existing work started");
+        let migration = services.native_migration_change();
+        tokio::pin!(migration);
+        std::future::poll_fn(|context| {
+            assert!(
+                std::future::Future::poll(migration.as_mut(), context).is_pending(),
+                "a migration must queue behind in-flight work, not refuse immediately"
+            );
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert!(
+            services.native_activity().is_err(),
+            "new readers cannot starve the queued migration"
+        );
+        drop(existing);
+        let exclusive = tokio::time::timeout(std::time::Duration::from_secs(1), migration)
+            .await
+            .expect("migration resumes when existing work drains")
+            .expect("exclusive migration authority");
+        assert!(
+            services.native_activity().is_err(),
+            "native work stays fenced during migration"
+        );
+        drop(exclusive);
+        assert!(
+            services.native_activity().is_ok(),
+            "native work resumes after migration"
+        );
+    }
 
     /// After a valid same-external-ID rename, every write addresses the key
     /// Jira reports now — and the superseded key cannot be reached.

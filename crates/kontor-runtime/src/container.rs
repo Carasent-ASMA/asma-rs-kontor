@@ -739,6 +739,87 @@ pub struct ContainerRecoveryOutcome {
     pub observed_title: String,
 }
 
+/// Make the one native container a topology node lost exist again.
+///
+/// Not a separate operation. This is the `recreate_absent` *disposition* of the
+/// existing Admin container-recovery preview/apply flow, and it is reachable
+/// from nowhere else: the same operation that adopts a single exact candidate
+/// reaches this shape instead when its census proves that *nothing* stands at
+/// the node's canonical place — the persisted native absent from its exact
+/// parent, and no live container on its canonical path.
+///
+/// Keeping it a disposition rather than a capability is deliberate. A reusable
+/// "recreate a container" entry point would be callable by any recovery surface
+/// that happens to hold a stale child, and the set of those surfaces grows. The
+/// authority to build a native belongs to one operation, and this type is only
+/// the shape that operation takes on its second branch.
+///
+/// Every identity that survives is carried in, not derived: the topology node,
+/// the logical [`ContainerBindingId`], the canonical working directory, the
+/// exact native parent and the daemon-rendered title. An adapter that minted
+/// any of them would be creating a *new* place rather than restoring the one
+/// the node already owns, and the binding Kontor persists would stop naming
+/// what the operator asked about.
+///
+/// # The replay this request has to survive
+///
+/// The dangerous failure is not a refused creation, it is a *successful* one
+/// whose response never arrives. Kontor then holds no native id, so its
+/// durable receipt cannot answer the retry, and a naive adapter would run the
+/// same census, find zero candidates it recognises, and build a second native
+/// beside the live one.
+///
+/// So the census result is read as three distinct facts, not two. Zero
+/// candidates means create. Exactly one candidate carrying this exact title, at
+/// this exact path, below this exact parent, means *the previous attempt
+/// already created it* — adopt that one and report
+/// [`ContainerRecreationOutcome::created`] as `false`. More than one, or one
+/// whose title has drifted, is refused rather than guessed at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerRecreationRequest {
+    /// The logical topology node whose native child is gone.
+    pub topology_node_id: TopologyNodeId,
+    /// The stable logical container-binding identity to preserve.
+    pub container_binding_id: ContainerBindingId,
+    /// The complete persisted identity the census must prove absent.
+    pub absent_identity: NativeRuntimeIdentity,
+    /// The exact persisted native project ancestor to build below.
+    pub bound_project_native_id: ExternalId,
+    /// The canonical working directory the replacement must occupy.
+    pub canonical_cwd: WorkspaceRoot,
+    /// The title rendered from the epic's existing naming authority.
+    ///
+    /// Applied as exact bytes. The adapter owns no naming template here for the
+    /// same reason it owns none in [`RetitleContainerRequest`].
+    pub expected_title: ExternalName,
+    /// When the recreation census was requested.
+    pub requested_at: Timestamp,
+}
+
+impl ContainerRecreationRequest {
+    /// The label the runtime must plant on, and report back for, the container.
+    #[must_use]
+    pub const fn correlation(&self) -> ContainerLabel {
+        ContainerLabel::for_node(self.topology_node_id)
+    }
+}
+
+/// What one recreation census proved, and whether it built anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerRecreationOutcome {
+    /// A binding snapshot preserving the logical binding and the node.
+    pub snapshot: ContainerBindingSnapshot,
+    /// The runtime-reported title read back from the container.
+    pub observed_title: String,
+    /// Whether this call created the native, or adopted one a lost attempt did.
+    ///
+    /// `false` is not a failure and not a no-op: it is the answer that proves a
+    /// second native was *not* built. A caller that treated the two as
+    /// interchangeable would lose the only evidence distinguishing a clean
+    /// recreation from a recovered one.
+    pub created: bool,
+}
+
 /// A container binding together with the evidence quality it was created under.
 ///
 /// The capability snapshot is frozen exactly as it is for a session or workspace

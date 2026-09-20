@@ -17,8 +17,8 @@
 //!
 //! # Why it is not a socket
 //!
-//! TST-001: no test in this crate binds a socket, spawns a child process or runs
-//! the daemon binary. [`RouterTransport`] therefore implements the transport seam
+//! TST-001: no test here binds a socket or launches a native runtime/daemon.
+//! Git creates only committed content fixtures for real artifact verification. [`RouterTransport`] therefore implements the transport seam
 //! `kontor-mcp` is written against by driving the same `axum::Router` the binary
 //! serves, through `tower::ServiceExt::oneshot`. Everything above the seam — the
 //! registry, the authority gate, the schema validation, the one-request rule — is
@@ -432,6 +432,43 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     world.script(HISTORY_LIVE);
     world.daemon.reconcile().await;
     let (lead, transport) = lead_seat(&world);
+    let repository = world.directory.path().join("journey-repository");
+    std::fs::create_dir_all(&repository).expect("isolated artifact repository");
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(args)
+            .output()
+            .expect("Git content fixture");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("Git output")
+            .trim()
+            .to_owned()
+    };
+    git(&["init", "--quiet"]);
+    let content = b"MCP journey committed implementation and review evidence.\n";
+    std::fs::write(repository.join("evidence.md"), content).expect("committed fixture");
+    git(&["add", "evidence.md"]);
+    git(&[
+        "-c",
+        "user.name=Kontor test",
+        "-c",
+        "user.email=kontor-test@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        "MCP artifact fixture",
+    ]);
+    let artifact_commit = git(&["rev-parse", "HEAD"]);
+    let artifact_hash = ContentHash::of(content);
 
     // 1. Identity, then the catalogs a graph is chosen from. Nothing is seeded:
     //    every value below comes out of a tool answer.
@@ -462,7 +499,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         serde_json::json!({
             "idempotency_key": "journey-project-1",
             "name": "Kontor",
-            "root_path": "/tmp/kontor-mcp-journey",
+            "root_path": repository,
             "memory_origin": "kontor_native",
             "backlog_origin": "kontor_native",
         }),
@@ -481,7 +518,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         serde_json::json!({
             "idempotency_key": "journey-project-1",
             "name": "Kontor",
-            "root_path": "/tmp/kontor-mcp-journey",
+            "root_path": repository,
             "memory_origin": "kontor_native",
             "backlog_origin": "kontor_native",
         }),
@@ -792,6 +829,22 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         "twenty-one tool invocations made twenty-one requests: {routes:#?}"
     );
 
+    // Source accounts are real launch pins, selected through the public tool.
+    // Recovery must never fill an unknown producer with the operator's identity.
+    let pinned_tasks = ok(
+        &lead,
+        "kontor_epic_get",
+        serde_json::json!({"project_id":project, "epic_id":epic}),
+    )
+    .await;
+    for task in pinned_tasks["tasks"].as_array().expect("tasks to pin") {
+        ok(&lead, "kontor_account_select", serde_json::json!({
+            "project_id":project, "task_id":task["task_id"],
+            "expected_revision":task["revision"], "account_profile_id":account["account_profile_id"],
+            "reason":"Pin the actual producer account before launch", "idempotency_key":format!("journey-account-pin-{}", task["task_id"]),
+        })).await;
+    }
+
     // ---- 7. From the planning point to a closed epic, through the same seat ----
     //
     // The graph has two tasks and a dependency edge, so this is two admission
@@ -863,8 +916,8 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         );
 
         // 8. Every bounded role turn settles with exact runtime positions while
-        //    its persistent seat stays live. The role turn, not a later gate or
-        //    lifecycle request, is the durable producer of its artifacts.
+        //    its persistent seat stays live. The turn claims keys; a separate
+        //    verified locator gives each claim independently addressable bytes.
         let before_turns = ok(
             &lead,
             "kontor_epic_get",
@@ -896,6 +949,16 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
                 "the settlement answered about the seat it was asked about: {settled}"
             );
             assert_eq!(settled["seat_live"], true, "the persistent seat stays live");
+            for artifact in settled["artifacts"].as_array().expect("settled claims") {
+                let receipt = ok(&lead, "kontor_artifact_record", serde_json::json!({
+                    "project_id":project, "task_id":task, "role_turn_id":settled["turn_id"],
+                    "artifact_key":artifact, "expected_task_revision":task_revision,
+                    "repository":"project", "commit":artifact_commit, "path":"evidence.md",
+                    "sha256":artifact_hash.as_str(), "idempotency_key":format!("journey-artifact-{round}-{index}-{artifact}"),
+                })).await;
+                assert_eq!(receipt["provenance"], "operator_recovered_git_blob");
+                assert_eq!(receipt["producer_account"], account["account_profile_id"]);
+            }
         }
 
         // 9. The gates the pinned profile declares, discharged through the public

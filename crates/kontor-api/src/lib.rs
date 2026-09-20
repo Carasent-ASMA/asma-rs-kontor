@@ -36,12 +36,14 @@
 //! has nowhere to put.
 
 pub mod applications;
+pub mod artifacts;
 pub mod auth;
 pub mod body;
 pub mod control;
 pub mod dto;
 pub mod error;
 pub mod memory;
+pub mod open_questions;
 pub mod openapi;
 pub mod sessions;
 pub mod state;
@@ -291,6 +293,8 @@ pub fn router(state: ApiState) -> Router {
         ]);
 
     Router::new()
+        .route("/v1/projects/{project_id}/epics/{epic_id}/open-questions", get(open_questions::list_open_questions))
+        .route("/v1/projects/{project_id}/epics/{epic_id}/open-questions:record", post(open_questions::record_open_question))
         .route("/v1/health", get(control::health))
         .route("/v1/realm", get(control::realm))
         .route("/v1/projects/{project_id}/memory", get(memory::list))
@@ -896,6 +900,10 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
                 post(applications::abandon_run),
+            )
+            .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record",
+                post(artifacts::record_artifact),
             )
             // A *turn* is smaller than a run: settling one closes Kontor's bounded
             // piece of work and leaves the seat's native session live.

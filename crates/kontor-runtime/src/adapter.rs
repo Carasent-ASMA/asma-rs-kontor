@@ -530,6 +530,8 @@ pub struct HostedSeatLaunchRequest {
     pub scope: ExecutionScope,
     /// Initial leadership handoff.
     pub prompt: BoundedText,
+    /// Durable role persona, separate from the one-turn handoff in `prompt`.
+    pub role_prompt: Option<BoundedText>,
     /// Generation-fenced credential for seat-authored authority routes.
     pub credential: ScopedSeatCredential,
     /// Older native occupants already frozen in Kontor's append-only route
@@ -1467,6 +1469,63 @@ pub trait RuntimeAdapter: Send + Sync {
         &self,
         request: &ContainerRecoveryRequest,
     ) -> RuntimeResult<ContainerRecoveryOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::PrepareWorkspace,
+        })
+    }
+
+    /// Read what [`RuntimeAdapter::recreate_container`] would do, changing
+    /// nothing.
+    ///
+    /// Same census, same exact-parent and exact-path evidence, no native
+    /// effect. It reports whether the apply would create a native or adopt one
+    /// a lost attempt already created, which is the distinction an operator
+    /// previewing a recreation is actually asking about.
+    ///
+    /// The default refuses, so "this runtime will not build containers" stays
+    /// distinguishable from "this runtime found nothing to build".
+    async fn preview_container_recreation(
+        &self,
+        request: &crate::container::ContainerRecreationRequest,
+    ) -> RuntimeResult<crate::container::ContainerRecreationOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::PrepareWorkspace,
+        })
+    }
+
+    /// Make the one native container a topology node lost exist again.
+    ///
+    /// The only container operation permitted to create a native, and it is
+    /// reached only when the census proves nothing exists to adopt: the
+    /// persisted identity is absent from its exact parent and no live container
+    /// occupies its canonical path.
+    ///
+    /// Implementations must preserve every identity carried in — node, logical
+    /// binding, canonical working directory, exact native parent and rendered
+    /// title — and must apply the title as exact bytes. Nothing here authorises
+    /// a move, a rename, or a second native.
+    ///
+    /// # The rule that makes a lost acknowledgement safe
+    ///
+    /// A creation whose response is lost leaves a live native that Kontor has
+    /// no id for. The retry must therefore treat *exactly one* candidate at the
+    /// exact parent, exact canonical path and exact expected title as its own
+    /// prior creation and adopt it, reporting `created: false`. An
+    /// implementation that created unconditionally would leave two natives at
+    /// one path, and no later readback could say which one the node owns.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::UnsupportedCapability`] by default, and in an
+    /// implementation: [`RuntimeError::StaleBinding`] when the persisted native
+    /// is still present, and [`RuntimeError::WorkspaceMismatch`] for several
+    /// candidates at the canonical path, a candidate whose title has drifted,
+    /// an operation that may not create, or a foreign runtime host.
+    async fn recreate_container(
+        &self,
+        request: &crate::container::ContainerRecreationRequest,
+    ) -> RuntimeResult<crate::container::ContainerRecreationOutcome> {
         let _ = request;
         Err(RuntimeError::UnsupportedCapability {
             capability: RuntimeCapability::PrepareWorkspace,

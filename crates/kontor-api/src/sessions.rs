@@ -1077,9 +1077,12 @@ pub async fn send_message(
     // bounded observation needs, because one issuance does not mean one
     // occurrence — a runtime that echoes a message produces two, and a window
     // sees only the newer.
-    state
-        .record_message_delivery(message_id, acknowledged.position)
-        .map_err(after_delivery)?;
+    state.record_message_delivery_durably(
+        session.adapter.as_ref(),
+        session.snapshot.identity(),
+        message_id,
+        acknowledged.position,
+    )?;
     // Acceptance says only that the message effect landed. The runtime's fresh
     // readback decides whether the same native seat is running, waiting or in
     // another state, and the shared reducer advances its AgentRun and TeamRun

@@ -321,7 +321,7 @@ mod tests {
     }
 
     /// TEST-001: the worker profile at operator authority serves exactly the
-    /// profile's eighteen tools — no more, no fewer.
+    /// profile's tools — no more, no fewer.
     #[test]
     fn the_worker_profile_at_operator_serves_exactly_the_profile() {
         let served: BTreeSet<&str> = profiled(CallerTier::Operator, "worker")
@@ -339,7 +339,11 @@ mod tests {
             served, declared,
             "the served list is exactly the profile ∩ operator, which is the whole profile"
         );
-        assert_eq!(served.len(), 19, "worker v3 is nineteen tools");
+        assert_eq!(
+            served.len(),
+            22,
+            "the worker profile includes artifact recovery and OpenQuestion reads and reports"
+        );
     }
 
     /// A consultation native receives both family reads and the two
@@ -421,10 +425,11 @@ mod tests {
             served, observer_reads,
             "an observer server under the worker profile serves profile ∩ observer only"
         );
-        // Eleven since `kontor_turn_observe` joined: it is an Observer-tier read,
-        // so it widens the *reads* an observer sees without widening authority —
-        // which is the property the surrounding assertion exists to hold.
-        assert_eq!(served.len(), 11, "the worker profile holds eleven reads");
+        assert_eq!(
+            served.len(),
+            12,
+            "the worker profile includes OpenQuestion reads"
+        );
         assert!(
             !served.contains("kontor_ticket_claim"),
             "a profile entry above the tier is not served"

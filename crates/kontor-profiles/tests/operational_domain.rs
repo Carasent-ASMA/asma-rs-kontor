@@ -542,3 +542,83 @@ fn a_closer_code_the_catalog_does_not_declare_is_refused() {
         "a closer the catalog does not declare must be refused"
     );
 }
+
+#[test]
+fn the_seeded_persona_table_is_keyed_by_role_code_and_is_sparse() {
+    let domain = bundled_operational_domain().expect("the bundled domain validates");
+    let lsa = RoleCode::parse("LSA").expect("a valid role code");
+    let persona = domain
+        .role_prompt(&lsa)
+        .expect("the mandatory lead architect is opened under a persona")
+        .as_str();
+
+    assert!(
+        persona.contains("Lead Software Architect"),
+        "the delivered text does not name the role it is the persona of: {persona}"
+    );
+    assert!(
+        persona.contains("You are not its TPM"),
+        "the persona must carry the TPM boundary that is the whole reason the \
+         two seats are separate: {persona}"
+    );
+    assert!(
+        !persona.trim().is_empty() && persona.len() > 500,
+        "a persona this short is a placeholder, not a role definition"
+    );
+
+    let tpm = RoleCode::parse("TPM").expect("a valid role code");
+    assert!(
+        domain.role_prompt(&tpm).is_none(),
+        "TPM has no seeded persona yet, so the lookup must not fall through to \
+         LSA's"
+    );
+    let unseeded = RoleCode::parse("QA").expect("a valid role code");
+    assert!(domain.role_prompt(&unseeded).is_none());
+
+    let catalog = domain
+        .role_catalogs
+        .first()
+        .expect("a seeded catalog")
+        .clone();
+    for entry in &domain.role_prompts {
+        assert!(
+            catalog.role(&entry.role_code).is_some(),
+            "{} is not a role any seat can hold",
+            entry.role_code
+        );
+    }
+}
+
+#[test]
+fn malformed_persona_tables_are_refused() {
+    let cases = [
+        serde_json::json!([{"role_code": "NOPE", "prompt": "persona"}]),
+        serde_json::json!([
+            {"role_code": "LSA", "prompt": "first"},
+            {"role_code": "LSA", "prompt": "second"}
+        ]),
+        serde_json::json!([{"role_code": "LSA", "prompt": "   \n  "}]),
+    ];
+
+    for role_prompts in cases {
+        assert!(
+            mutate_bundled_domain(|domain| domain["role_prompts"] = role_prompts).is_err(),
+            "a malformed persona table was accepted"
+        );
+    }
+}
+
+fn mutate_bundled_domain(
+    edit: impl FnOnce(&mut serde_json::Value),
+) -> Result<kontor_profiles::OperationalDomainPack, kontor_core::DomainError> {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/operational-domain.json"),
+    )
+    .expect("the bundled domain document is readable");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&source).expect("the bundled domain document is JSON");
+    edit(&mut document);
+    kontor_profiles::parse_operational_domain_pack(
+        &serde_json::to_string(&document).expect("the edited document serializes"),
+    )
+}

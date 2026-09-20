@@ -1235,6 +1235,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Supersede one never-bound prepared Core Team launch intent. */
+        post: operations["supersede_core_team_launch_intent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply": {
         parameters: {
             query?: never;
@@ -1501,6 +1518,38 @@ export interface paths {
         put?: never;
         /** Preview every bound container and persistent seat name in one epic. */
         post: operations["preview_native_names"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/open-questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_open_questions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/open-questions:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["record_open_question"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2259,6 +2308,23 @@ export interface paths {
         put?: never;
         /** Correct one task's pinned provider account before a run snapshots it. */
         post: operations["select_account"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify and durably record one settled-turn artifact augmentation. */
+        post: operations["record_artifact"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3867,6 +3933,53 @@ export interface components {
             /** @description The tasks to arm. Empty arms the whole epic. */
             tasks?: string[];
         };
+        /** @description Immutable augmentation receipt. Attribution identifies the old claim, not byte authorship. */
+        ArtifactSubmissionDto: {
+            /** @description Source persistent agent run. */
+            agent_run_id: string;
+            /** @description Declared artifact key. */
+            artifact_key: string;
+            /** @description Exact commit locator. */
+            commit: string;
+            /** @description Artifact registry identity. */
+            evidence_id: string;
+            /** @description Persistent common Git directory, independent of a disposable worktree. */
+            git_dir: string;
+            /** @description Canonical locator digest. */
+            locator_hash: string;
+            /** @description Exact blob path. */
+            path: string;
+            /** @description Provider account derived from the source run; not the calling operator's identity. */
+            producer_account?: string | null;
+            producer_account_attribution?: null | components["schemas"]["ProducerAccountAttribution"];
+            /** @description Pinned producing phase. */
+            producer_phase: string;
+            /** @description Source role slot, derived from the settled turn. */
+            producer_role: string;
+            /** @description Always `operator_recovered_git_blob`, never inferred agent authorship. */
+            provenance: string;
+            /** @description Owning Realm. */
+            realm_id: string;
+            /** @description Verification/recording instant. */
+            recorded_at: string;
+            /** @description Credential tier that authorized the augmentation. */
+            recorded_by: string;
+            /** @description Source settled-turn receipt. */
+            role_turn_id: string;
+            /**
+             * Format: int32
+             * @description Envelope schema version.
+             */
+            schema_version: number;
+            /** @description Verified content digest. */
+            sha256: string;
+            /** @description Exact task and workflow. */
+            task_id: string;
+            /** @description Native-proof versus historical/attested source turn. */
+            turn_proof_class: string;
+            /** @description Pinned workflow whose declared artifact this satisfies. */
+            workflow_id: string;
+        };
         Attest: {
             /** Format: int64 */
             expected_revision: number;
@@ -4889,6 +5002,8 @@ export interface components {
         };
         /** @description One declared consultation seat and its exact runtime readback. */
         ConsultationSeatDto: {
+            /** @description Committee function frozen from its template; absent for Advisor seats. */
+            committee_role?: string | null;
             /** @description Logical role under the pinned policy. */
             logical_role: string;
             /**
@@ -4967,11 +5082,29 @@ export interface components {
             /** @description Hash returned by the recovery preview. */
             preview_hash: string;
         };
+        /**
+         * @description Which of the two dispositions one recovery census authorizes.
+         *
+         *     The operation has always had one answer — adopt the sole live candidate.
+         *     This names that answer so a second one can exist beside it without either
+         *     being inferred from the shape of the payload. An operator reading a preview
+         *     should not have to deduce "it is going to build one" from a missing field.
+         * @enum {string}
+         */
+        ContainerRecoveryDispositionDto: "adopt_existing" | "recreate_absent";
         /** @description Exact before/after identity proved by a read-only recovery census. */
         ContainerRecoveryPreviewDto: {
             /** @description Preserved canonical working directory. */
             canonical_cwd: string;
-            /** @description Runtime-reported candidate title. */
+            /** @description Which answer this census reached. */
+            disposition: components["schemas"]["ContainerRecoveryDispositionDto"];
+            /**
+             * @description Runtime-reported candidate title.
+             *
+             *     On a `recreate_absent` preview there is no candidate to report one from,
+             *     so this carries the exact title apply will write — the same bytes the
+             *     naming authority already rendered, never a title the caller chose.
+             */
             observed_title: string;
             /** @description Exact native parent in which the census ran. */
             parent_native_id: string;
@@ -4981,8 +5114,16 @@ export interface components {
             project_id: string;
             /** @description Realm that performed the census. */
             realm_id: string;
-            /** @description Sole live parent/path/title candidate. */
-            replacement_native_id: string;
+            /**
+             * @description Sole live parent/path/title candidate.
+             *
+             *     Absent exactly when the disposition is
+             *     [`ContainerRecoveryDispositionDto::RecreateAbsent`] and this is a
+             *     preview: there is no candidate yet, and naming one before apply has run
+             *     would be predicting an identity the runtime has not minted. Always
+             *     present on an applied result.
+             */
+            replacement_native_id?: string | null;
             /**
              * Format: int64
              * @description Snapshot position.
@@ -5161,6 +5302,61 @@ export interface components {
              * @description The position this read is consistent with.
              */
             snapshot_cursor: number;
+        };
+        /**
+         * @description Supersede one never-bound prepared launch intent with an approved route.
+         *
+         *     Every field is a fence. The operation applies to exactly one durable shape —
+         *     an intent prepared before a launch that never happened — and anything that
+         *     has since become a native, an occupancy or a recorded effect refuses.
+         */
+        CoreTeamLaunchIntentSupersedeRequest: {
+            /** @description The catalog-approved replacement route. */
+            desired_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description The exact inert route being superseded, compared verbatim. */
+            expected_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description The exact instant that inert intent was prepared, compared verbatim. */
+            expected_prepared_at: string;
+            /**
+             * Format: int64
+             * @description Epic revision the caller read.
+             */
+            expected_revision: number;
+            /**
+             * Format: int64
+             * @description The binding revision the caller read.
+             */
+            expected_seat_binding_revision: number;
+            /**
+             * Format: int64
+             * @description The occupancy generation whose inert intent is replaced.
+             */
+            occupancy_generation: number;
+            /** @description The logical seat, preserved exactly. */
+            seat_binding_id: string;
+        };
+        /** @description What one launch-intent supersession replaced, and what now stands. */
+        CoreTeamLaunchIntentSupersessionDto: {
+            /**
+             * Format: int64
+             * @description The occupancy generation whose intent was replaced; unchanged by this.
+             */
+            occupancy_generation: number;
+            /** @description Realm that recorded it. */
+            realm_id: string;
+            /** @description Audited mutation receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description The approved route that now stands. */
+            replacement_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description The preserved logical seat. Never retired, never replaced. */
+            seat_binding_id: string;
+            /**
+             * Format: int64
+             * @description Unchanged binding revision the swap was fenced on.
+             */
+            seat_binding_revision: number;
+            /** @description The inert route that was superseded, retained as evidence. */
+            superseded_model_route: components["schemas"]["RuntimeModelRouteRequest"];
         };
         /** @description Materialize the Core Team's seats for one epic. */
         CoreTeamMaterializeRequest: {
@@ -6587,6 +6783,42 @@ export interface components {
             /** @description The task it applies to, for the task-scoped actions. */
             task_id?: string | null;
         };
+        /**
+         * @description How much approved memory the resolved pack could carry.
+         *
+         *     Approved memory grows without bound while the canonical document may not
+         *     exceed its ceiling, so a large enough project eventually has more approved
+         *     memory than one pack can hold. When that happens the resolver narrows the set
+         *     rather than refusing, and this says so explicitly: a caller can see that the
+         *     pack is not the whole of approved memory, and exactly which revisions are
+         *     missing from it. Below the ceiling `omitted` is empty and `narrowed` is
+         *     false, which is the ordinary case and the one that must stay unchanged.
+         */
+        MemorySelectionDto: {
+            /**
+             * Format: int64
+             * @description The canonical byte ceiling the selection was made against.
+             */
+            ceiling_bytes: number;
+            /**
+             * Format: int32
+             * @description How many approved revisions the pack carries.
+             */
+            included: number;
+            /** @description Whether the set had to be narrowed at all. */
+            narrowed: boolean;
+            /**
+             * @description Every approved revision the pack could not carry, in the order the
+             *     resolver would have taken them.
+             */
+            omitted: components["schemas"]["OmittedMemoryRevisionDto"][];
+            /**
+             * Format: int32
+             * @description The selector that chose them, so a changed rule is visible as a changed
+             *     number rather than as an unexplained change of hash.
+             */
+            selector_version: number;
+        };
         /** @description The runtime's answer to one delivered message. */
         MessageAckDto: {
             /**
@@ -6847,6 +7079,18 @@ export interface components {
              */
             timeline_epoch: number;
         };
+        /**
+         * @description One approved memory revision a Context Pack could not carry.
+         *
+         *     It names the revision and never its content: the point is that a caller can
+         *     go and read what was left out, not that the pack leaks it by another route.
+         */
+        OmittedMemoryRevisionDto: {
+            /** @description The memory item. */
+            item_id: string;
+            /** @description The immutable approved revision of it. */
+            revision_id: string;
+        };
         /** @description Exact queued downstream run and already-created native a partial recovery adopts. */
         PartialAdmissionSeatDto: {
             /** @description The unique current replacement-chain leaf for its frozen role slot. */
@@ -6966,6 +7210,11 @@ export interface components {
             /** @description The exact selectable provider route to refresh. */
             provider: string;
         };
+        /**
+         * @description Account identity evidenced by the original producer, never the calling operator.
+         * @enum {string}
+         */
+        ProducerAccountAttribution: "original_run_pin" | "native_proved_unknown";
         /** @description Publish one revalidated definition as an immutable revision. */
         ProfileApplyRequest: {
             /** @description The complete definition to publish. */
@@ -7589,6 +7838,32 @@ export interface components {
         Purge: {
             by: string;
         };
+        QuestionAction: {
+            /** @enum {string} */
+            action: "raise";
+            attachment: Record<string, never>;
+            options: string[];
+            scope: string;
+            subject: string;
+            why_ambiguous: string;
+        } | {
+            /** @enum {string} */
+            action: "correct";
+            options: string[];
+            /** Format: int32 */
+            supersedes?: number | null;
+            why_ambiguous: string;
+        } | {
+            /** @enum {string} */
+            action: "dispose";
+            outcome: Record<string, never>;
+            /** Format: int32 */
+            supersedes?: number | null;
+        } | {
+            /** @enum {string} */
+            action: "fire_trigger";
+            trigger: string;
+        };
         /** @description The roles a Quick session may be opened against. */
         QuickRolesDto: {
             /** @description The project. */
@@ -7805,6 +8080,26 @@ export interface components {
              */
             updated_at: string;
         };
+        /** @description Attaches verified Git bytes to an existing claim; does not assert agent authorship. */
+        RecordArtifactRequest: {
+            /** @description Declared artifact key already claimed by that turn. */
+            artifact_key: string;
+            /** @description Full immutable Git commit object id (40 or 64 lower-case hexadecimal digits). */
+            commit: string;
+            /**
+             * Format: int64
+             * @description Current task revision.
+             */
+            expected_task_revision: number;
+            /** @description Repository-relative blob path, without parent traversal. */
+            path: string;
+            /** @description Registered repository root: `task` worktree or `project` checkout. */
+            repository: string;
+            /** @description Exact existing settled-turn receipt. */
+            role_turn_id: string;
+            /** @description Expected SHA-256 of the blob contents, verified by the daemon. */
+            sha256: string;
+        };
         /** @description Record one round of Committee findings. */
         RecordFindingsRequest: {
             /** @description Whether every evidence reference required by the finding is present. */
@@ -7901,6 +8196,20 @@ export interface components {
              *     provider offers *now*, and a merge would keep a window it has withdrawn.
              */
             windows?: components["schemas"]["QuotaWindowDto"][];
+        };
+        RecordQuestionRequest: {
+            action: components["schemas"]["QuestionAction"];
+            /**
+             * @description Ordinary Operator reporting names the active seat on whose behalf it
+             *     reports. Closing always requires that leadership seat's scoped bearer.
+             */
+            author_seat_binding_id?: string | null;
+            /**
+             * Format: int64
+             * @description Zero when raising; otherwise the exact question revision just read.
+             */
+            expected_revision: number;
+            question_id: string;
         };
         /** @description Closeout evidence retained from one earlier completion era. */
         RecordedCloseoutDto: {
@@ -8232,6 +8541,8 @@ export interface components {
             context_hash: string;
             /** @description The frozen pack, when this call snapshotted one. */
             context_pack_id?: string | null;
+            /** @description Which approved memory revisions the pack carries, and which it could not. */
+            memory_selection: components["schemas"]["MemorySelectionDto"];
             /** @description Where every resolved path came from. */
             provenance: components["schemas"]["ProvenanceDto"][];
             /** @description The Realm it was resolved in. */
@@ -8894,7 +9205,10 @@ export interface components {
          *     newer work after a resume or daemon restart.
          */
         SettleTurnRequest: {
-            /** @description The artifacts the turn produced. */
+            /**
+             * @description Declared artifact claims. Gate/phase evidence requires an addressable
+             *     record through `artifacts:record`; a label alone is not evidence.
+             */
             artifacts?: string[];
             /**
              * @description A server-generated challenge MessageId, mutually exclusive with
@@ -13657,6 +13971,80 @@ export interface operations {
             };
         };
     };
+    supersede_core_team_launch_intent: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoreTeamLaunchIntentSupersedeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamLaunchIntentSupersessionDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The runtime could not be reached */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     apply_core_team_route: {
         parameters: {
             query?: never;
@@ -14614,6 +15002,86 @@ export interface operations {
                 content?: never;
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_open_questions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_open_question: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordQuestionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16670,6 +17138,58 @@ export interface operations {
             };
             /** @description The runtime cannot prove a per-run account environment */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_artifact: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordArtifactRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactSubmissionDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

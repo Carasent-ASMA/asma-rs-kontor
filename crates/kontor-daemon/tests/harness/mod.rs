@@ -27,15 +27,15 @@ use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
     AgentRunId, BoundedText, ExternalId, ExternalName, MiniProjectId, ProjectId, RealmId,
     RoleSlotId, RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, TaskId, TeamRunId, Timestamp,
-    parse_utc_timestamp,
+    TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::repository::{
-    NewAgentRun, NewProject, NewTask, NewTeamRun, ProjectRepository, RunRepository, RuntimeBinding,
-    SpecRepository,
+    NewAgentRun, NewNativeContainerBinding, NewProject, NewSessionTopologyNode, NewTask,
+    NewTeamRun, ProjectRepository, RunRepository, RuntimeBinding, SpecRepository,
 };
 use kontor_core::repository::{TeamDefinitionRepository, TopologyRepository};
-use kontor_core::spec::TeamRunSnapshot;
-use kontor_core::state::{NativeRuntimeIdentity, TaskState};
+use kontor_core::spec::{TeamRunSnapshot, TopologySnapshot};
+use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind, TaskState};
 use kontor_daemon::usage::{ExactProviderUsageReporter, UsagePoller};
 use kontor_daemon::{DATABASE_FILE, DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_profiles::pack::{PackAvailability, resolve_profile};
@@ -178,6 +178,36 @@ pub(crate) struct World {
     pub(crate) project: ProjectId,
     pub(crate) task: TaskId,
     pub(crate) team_run: TeamRunId,
+}
+
+/// The exact title the bundled topology renders for a `QSW` node.
+///
+/// A literal in the pinned specification, so it needs no execution scope and no
+/// Team Definition to render. That is precisely why `QSW` is the kind this
+/// fixture uses: the title under test stays a fact about the specification
+/// rather than about whatever naming authority a test happened to seed.
+pub(crate) const NATIVE_CHILD_TITLE: &str = "Quick Session Workspace";
+
+/// One persisted `NativeChild` container binding and the identities around it.
+///
+/// This is the smallest durable shape the Admin container-recovery operation
+/// can act on: a native root bound as a project, one native child below it
+/// bound as a workspace, and a canonical working directory on the child. Every
+/// field here is read back out of the store by the daemon; nothing is passed
+/// in by a caller at request time.
+pub(crate) struct NativeChildFixture {
+    /// The `PSW` node, bound as the native project ancestor.
+    pub(crate) parent_node: TopologyNodeId,
+    /// The `QSW` node whose native child is the subject.
+    pub(crate) node: TopologyNodeId,
+    /// The preserved logical container-binding identity.
+    pub(crate) binding_id: ExternalId,
+    /// The persisted native identity a recovery proves absent.
+    pub(crate) stale_identity: NativeRuntimeIdentity,
+    /// The exact native project the child must be created below.
+    pub(crate) parent_native_id: ExternalId,
+    /// The canonical working directory the replacement must occupy.
+    pub(crate) canonical_cwd: ExternalName,
 }
 
 #[derive(Default)]
@@ -605,6 +635,155 @@ impl World {
         self.fake
             .load_script(&script, &[])
             .expect("the script loads");
+    }
+
+    /// Persist one `NativeChild` topology container binding and its ancestor.
+    ///
+    /// The shape mirrors what a live realm holds after a node's container was
+    /// bound and its native later vanished: the store still names the node, the
+    /// logical binding, the canonical path, the native parent and a native id
+    /// that no runtime answers to any more.
+    ///
+    /// Deliberately project-level (`PSW` -> `QSW`, no epic): it keeps the
+    /// fixture out of Team Definition rendering and execution scope, neither of
+    /// which the container-recovery contract depends on.
+    pub(crate) fn seed_native_child_container(&self) -> NativeChildFixture {
+        let parent_node = TopologyNodeId::generate();
+        let node = TopologyNodeId::generate();
+        // A canonical v7 UUID, because the recovery path parses this back into a
+        // `ContainerBindingId`. A readable slug would be refused by the type
+        // that makes a native container id unspellable as a binding id.
+        let binding_id = ExternalId::parse(
+            &kontor_runtime::container::ContainerBindingId::generate().to_string(),
+        )
+        .expect("a binding id");
+        let parent_native_id = ExternalId::parse("native-project-root").expect("a native id");
+        let canonical_cwd = name("/tmp/kontor-loopback/quick");
+        let stale_identity = NativeRuntimeIdentity {
+            runtime_kind: fake_family(),
+            host: name("fake-host"),
+            generation: self.fake.generation(),
+            native_id: ExternalId::parse("wks-vanished").expect("a native id"),
+        };
+        let created_at = at("2026-08-10T09:00:00Z");
+
+        let domain = kontor_profiles::bundled_operational_domain().expect("the domain loads");
+        let definition = domain
+            .team_definitions
+            .first()
+            .expect("a bundled Team Definition")
+            .clone();
+        let spec = domain
+            .topology_specs
+            .iter()
+            .find(|topology| {
+                topology.spec_id == definition.topology.spec_id
+                    && topology.version == definition.topology.version
+            })
+            .expect("its validator is bundled")
+            .clone();
+        // The published hash is a pure function of the specification, so it can
+        // be derived here rather than re-published. Publishing again would
+        // collide with the revision the world already seeded.
+        let canonical_hash = spec
+            .canonicalize()
+            .expect("the bundled topology canonicalizes")
+            .hash()
+            .clone();
+        let topology = TopologySnapshot {
+            spec_id: spec.spec_id,
+            version: spec.version,
+            canonical_hash,
+        };
+
+        self.daemon.state().with_store(|store| {
+            store
+                .create_topology_node(&NewSessionTopologyNode {
+                    id: parent_node,
+                    project_id: self.project,
+                    mini_project_id: None,
+                    topology: topology.clone(),
+                    kind: TopologyKindKey::parse("PSW").expect("a kind"),
+                    parent_id: None,
+                    task_id: None,
+                    created_at,
+                })
+                .expect("the project root node is created");
+            store
+                .create_topology_node(&NewSessionTopologyNode {
+                    id: node,
+                    project_id: self.project,
+                    mini_project_id: None,
+                    topology,
+                    kind: TopologyKindKey::parse("QSW").expect("a kind"),
+                    parent_id: Some(parent_node),
+                    task_id: None,
+                    created_at,
+                })
+                .expect("the native child node is created");
+            // The ancestor is bound as a *project*. This is what the recovery
+            // path walks the logical parents to find, and without it a child
+            // has no exact native parent to be recreated below.
+            store
+                .bind_topology_node_container(&NewNativeContainerBinding {
+                    topology_node_id: parent_node,
+                    project_id: self.project,
+                    container_binding_id: ExternalId::parse(
+                        &kontor_runtime::container::ContainerBindingId::generate().to_string(),
+                    )
+                    .expect("a binding id"),
+                    identity: NativeRuntimeIdentity {
+                        native_id: parent_native_id.clone(),
+                        ..stale_identity.clone()
+                    },
+                    observed_kind: ObservedContainerKind::Project,
+                    canonical_cwd: None,
+                    readback: None,
+                    bound_at: created_at,
+                    observed_at: created_at,
+                })
+                .expect("the native project ancestor is bound");
+            store
+                .bind_topology_node_container(&NewNativeContainerBinding {
+                    topology_node_id: node,
+                    project_id: self.project,
+                    container_binding_id: binding_id.clone(),
+                    identity: stale_identity.clone(),
+                    observed_kind: ObservedContainerKind::Workspace,
+                    canonical_cwd: Some(canonical_cwd.clone()),
+                    readback: None,
+                    bound_at: created_at,
+                    observed_at: created_at,
+                })
+                .expect("the native child is bound");
+        });
+
+        NativeChildFixture {
+            parent_node,
+            node,
+            binding_id,
+            stale_identity,
+            parent_native_id,
+            canonical_cwd,
+        }
+    }
+
+    /// How many natives this world's runtime actually built.
+    ///
+    /// Counts [`AdapterCall::CreateNativeContainer`] and nothing else, so an
+    /// adopt or a preview cannot inflate it. "exactly one" and "exactly zero"
+    /// in the frozen evidence items are both assertions about this number.
+    pub(crate) fn container_creates(&self) -> usize {
+        self.fake
+            .calls()
+            .into_iter()
+            .filter(|call| {
+                matches!(
+                    call,
+                    kontor_runtime::fake::AdapterCall::CreateNativeContainer(_)
+                )
+            })
+            .count()
     }
 
     /// This Realm's identity.

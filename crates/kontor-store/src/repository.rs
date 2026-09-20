@@ -87,6 +87,7 @@ use kontor_core::repository::{
     TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTarget,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyContainerRecovery,
+    TopologyContainerRecoveryDisposition,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, ModelRung, NodeProjectionCapability,
@@ -7681,25 +7682,10 @@ impl SqliteStore {
     /// this read in the position of deciding which of several records for one key
     /// counts — a decision the gate does not need and must not make twice.
     ///
-    /// Two producer-owned sources are unioned because an artifact leaves a
-    /// durable trace in two ordinary delivery paths:
-    ///
-    /// - `artifact_evidence` — the addressable record: a key plus a locator
-    ///   someone can follow. Nothing in the delivery path writes it today.
-    /// - `role_turns.artifacts` — the settling role's own declaration of what its
-    ///   turn produced.
-    ///
-    /// Gate evaluations are intentionally absent. Their `evidence` field cites
-    /// already-produced artifacts; admitting the citation as production would
-    /// let a gate request manufacture the evidence it is meant to inspect.
-    /// Evidence drawn from a producer turn is still gated independently by the
-    /// profile's required gate states.
-    ///
-    /// Unparseable entries are skipped rather than raised. `role_turns.artifacts`
-    /// is open data — turns legitimately cite commit shas, filenames and one-off
-    /// labels beside contract keys — and a value that is not a well-formed name
-    /// cannot satisfy a declared artifact anyway. Failing the whole read on one
-    /// such label would deny the gate the keys that *are* present.
+    /// Only addressable registry records qualify. A settled turn's labels and a
+    /// gate's citations are claims about artifacts, not independently addressable
+    /// evidence. Historical explicit registry entries remain supported; legacy
+    /// task closure certificates have their separate epic-only read below.
     ///
     /// # Errors
     /// Returns a backend or decoding error.
@@ -7711,21 +7697,12 @@ impl SqliteStore {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT DISTINCT artifact_key FROM (
-                     SELECT artifact_key
-                       FROM artifact_evidence
-                      WHERE project_id = ?1 AND task_id = ?2
-                     UNION
-                     SELECT entry.value AS artifact_key
-                       FROM role_turns AS turn
-                       JOIN json_each(
-                                CASE WHEN json_valid(turn.artifacts)
-                                     THEN turn.artifacts ELSE '[]' END
-                            ) AS entry
-                      WHERE turn.project_id = ?1 AND turn.task_id = ?2
-                        AND entry.type = 'text'
-                 )
-                 ORDER BY artifact_key",
+                "SELECT DISTINCT evidence.artifact_key FROM artifact_evidence evidence
+                 JOIN task_workflows workflow ON workflow.project_id = evidence.project_id
+                  AND workflow.task_id = evidence.task_id AND workflow.id = evidence.workflow_id
+                  AND workflow.active = 1
+                 WHERE evidence.project_id = ?1 AND evidence.task_id = ?2
+                 ORDER BY evidence.artifact_key",
             )
             .map_err(backend)?;
         let rows = statement
@@ -12418,7 +12395,7 @@ fn topology_container_recovery_by_receipt(
                     prior_runtime_kind, prior_host, prior_generation, prior_native_id,
                     next_runtime_kind, next_host, next_generation, next_native_id,
                     parent_native_id, observed_kind, canonical_cwd, observed_title,
-                    recovered_at
+                    recovered_at, disposition
              FROM topology_container_recoveries
              WHERE project_id = ?1 AND receipt_id = ?2",
             params![project_id.to_string(), receipt_id.to_string()],
@@ -12443,6 +12420,7 @@ fn topology_container_recovery_by_receipt(
                     row.get::<_, Option<String>>(14)?,
                     row.get::<_, String>(15)?,
                     row.get::<_, String>(16)?,
+                    row.get::<_, String>(17)?,
                 ))
             },
         )
@@ -12470,8 +12448,10 @@ fn topology_container_recovery_by_receipt(
                 canonical_cwd,
                 observed_title,
                 recovered_at,
+                disposition,
             )| {
                 Ok(StoredTopologyContainerRecovery {
+                    disposition: TopologyContainerRecoveryDisposition::parse(&disposition)?,
                     receipt_id: CommandReceiptId::parse(&receipt_id)?,
                     project_id: ProjectId::parse(&project_id)?,
                     topology_node_id: TopologyNodeId::parse(&topology_node_id)?,
@@ -13019,9 +12999,9 @@ impl SqliteStore {
                       prior_runtime_kind, prior_host, prior_generation, prior_native_id,
                       next_runtime_kind, next_host, next_generation, next_native_id,
                       parent_native_id, observed_kind, canonical_cwd, observed_title,
-                      recovered_at)
+                      recovered_at, disposition)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                         ?13, ?14, ?15, ?16, ?17)",
+                         ?13, ?14, ?15, ?16, ?17, ?18)",
                 params![
                     receipt.id.to_string(),
                     recovery.expected.project_id.to_string(),
@@ -13054,6 +13034,7 @@ impl SqliteStore {
                         .map(ExternalName::as_str),
                     recovery.observed_title.as_str(),
                     text(recovery.replacement.observed_at),
+                    recovery.disposition.as_str(),
                 ],
             )
             .map_err(backend)?;
@@ -20232,51 +20213,8 @@ impl OpenQuestionRepository for SqliteStore {
         project_id: ProjectId,
         question: &OpenQuestion,
     ) -> RepositoryResult<()> {
-        if question.project_id != project_id {
-            return Err(RepositoryError::Conflict {
-                subject: "OpenQuestion",
-                rule: "a question is raised in the project it names",
-            });
-        }
-        question.shareability.validate_for(OPEN_QUESTION_TIER)?;
-        let Some(first) = question.rounds.first() else {
-            return Err(DomainError::invalid(
-                "OpenQuestion",
-                "a raised question carries its first round",
-            )
-            .into());
-        };
         let transaction = self.begin()?;
-        transaction
-            .execute(
-                "INSERT INTO open_questions
-                     (question_id, project_id, mini_project_id, subject, scope, attachment,
-                      author_seat_id, shareability_class, shareability_classifier,
-                      shareability_provenance, created_at, revision)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                params![
-                    question.question_id.to_string(),
-                    project_id.to_string(),
-                    question.mini_project_id.to_string(),
-                    question.subject.as_str(),
-                    question.scope.as_str(),
-                    serde_json::to_string(&question.attachment).map_err(|_| {
-                        DomainError::invalid("OpenQuestion attachment", "does not serialize")
-                    })?,
-                    question.author.to_string(),
-                    question.shareability.class.as_str(),
-                    question
-                        .shareability
-                        .classifier
-                        .identity()
-                        .map(ExternalName::as_str),
-                    question.shareability.provenance.as_str(),
-                    text(question.created_at),
-                    i64::try_from(question.revision.get()).unwrap_or(i64::MAX),
-                ],
-            )
-            .map_err(backend)?;
-        insert_open_question_round(&transaction, project_id, question.question_id, first)?;
+        insert_question_in(&transaction, project_id, question)?;
         transaction.commit().map_err(backend)?;
         Ok(())
     }
@@ -20372,33 +20310,14 @@ impl OpenQuestionRepository for SqliteStore {
         expected: AggregateRevision,
         disposition: &Disposition,
     ) -> RepositoryResult<AggregateRevision> {
-        disposition.outcome.validate()?;
         let transaction = self.begin()?;
-        transaction
-            .execute(
-                "INSERT INTO open_question_dispositions
-                     (project_id, question_id, ordinal, author_seat_id, kind, trigger_key,
-                      payload, supersedes, recorded_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    project_id.to_string(),
-                    question_id.to_string(),
-                    i64::from(disposition.ordinal),
-                    disposition.author.to_string(),
-                    disposition.outcome.kind().as_str(),
-                    disposition
-                        .outcome
-                        .deferred_trigger()
-                        .map(|trigger| trigger.key.as_str()),
-                    serde_json::to_string(&disposition.outcome).map_err(|_| {
-                        DomainError::invalid("OpenQuestion disposition", "does not serialize")
-                    })?,
-                    disposition.supersedes.map(i64::from),
-                    text(disposition.recorded_at),
-                ],
-            )
-            .map_err(backend)?;
-        let revision = bump_open_question(&transaction, project_id, question_id, expected)?;
+        let revision = append_question_disposition_in(
+            &transaction,
+            project_id,
+            question_id,
+            expected,
+            disposition,
+        )?;
         transaction.commit().map_err(backend)?;
         Ok(revision)
     }
@@ -20411,46 +20330,331 @@ impl OpenQuestionRepository for SqliteStore {
         firing: &TriggerFiring,
     ) -> RepositoryResult<AggregateRevision> {
         let transaction = self.begin()?;
-        // The schema refuses a firing that names a trigger its deferral did not,
-        // and refuses a second firing against one deferral. What it cannot see is
-        // whether that deferral is still the *current* disposition, so that is
-        // checked here.
-        let current: Option<i64> = transaction
-            .query_row(
-                "SELECT MAX(ordinal) FROM open_question_dispositions
+        let revision =
+            fire_deferred_trigger_in(&transaction, project_id, question_id, expected, firing)?;
+        transaction.commit().map_err(backend)?;
+        Ok(revision)
+    }
+}
+
+fn insert_question_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    question: &OpenQuestion,
+) -> RepositoryResult<()> {
+    if question.project_id != project_id {
+        return Err(RepositoryError::Conflict {
+            subject: "OpenQuestion",
+            rule: "a question is raised in the project it names",
+        });
+    }
+    question.shareability.validate_for(OPEN_QUESTION_TIER)?;
+    let Some(first) = question.rounds.first() else {
+        return Err(DomainError::invalid(
+            "OpenQuestion",
+            "a raised question carries its first round",
+        )
+        .into());
+    };
+    transaction
+        .execute(
+            "INSERT INTO open_questions
+                     (question_id, project_id, mini_project_id, subject, scope, attachment,
+                      author_seat_id, shareability_class, shareability_classifier,
+                      shareability_provenance, created_at, revision)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                question.question_id.to_string(),
+                project_id.to_string(),
+                question.mini_project_id.to_string(),
+                question.subject.as_str(),
+                question.scope.as_str(),
+                serde_json::to_string(&question.attachment).map_err(|_| {
+                    DomainError::invalid("OpenQuestion attachment", "does not serialize")
+                })?,
+                question.author.to_string(),
+                question.shareability.class.as_str(),
+                question
+                    .shareability
+                    .classifier
+                    .identity()
+                    .map(ExternalName::as_str),
+                question.shareability.provenance.as_str(),
+                text(question.created_at),
+                i64::try_from(question.revision.get()).unwrap_or(i64::MAX),
+            ],
+        )
+        .map_err(backend)?;
+    insert_open_question_round(transaction, project_id, question.question_id, first)?;
+    Ok(())
+}
+
+fn append_question_disposition_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    question_id: OpenQuestionId,
+    expected: AggregateRevision,
+    disposition: &Disposition,
+) -> RepositoryResult<AggregateRevision> {
+    disposition.outcome.validate()?;
+    transaction
+        .execute(
+            "INSERT INTO open_question_dispositions
+                     (project_id, question_id, ordinal, author_seat_id, kind, trigger_key,
+                      payload, supersedes, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                project_id.to_string(),
+                question_id.to_string(),
+                i64::from(disposition.ordinal),
+                disposition.author.to_string(),
+                disposition.outcome.kind().as_str(),
+                disposition
+                    .outcome
+                    .deferred_trigger()
+                    .map(|trigger| trigger.key.as_str()),
+                serde_json::to_string(&disposition.outcome).map_err(|_| {
+                    DomainError::invalid("OpenQuestion disposition", "does not serialize")
+                })?,
+                disposition.supersedes.map(i64::from),
+                text(disposition.recorded_at),
+            ],
+        )
+        .map_err(backend)?;
+    let revision = bump_open_question(transaction, project_id, question_id, expected)?;
+    Ok(revision)
+}
+
+fn fire_deferred_trigger_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    question_id: OpenQuestionId,
+    expected: AggregateRevision,
+    firing: &TriggerFiring,
+) -> RepositoryResult<AggregateRevision> {
+    // The schema refuses a firing that names a trigger its deferral did not,
+    // and refuses a second firing against one deferral. What it cannot see is
+    // whether that deferral is still the *current* disposition, so that is
+    // checked here.
+    let current: Option<i64> = transaction
+        .query_row(
+            "SELECT MAX(ordinal) FROM open_question_dispositions
                  WHERE project_id = ?1 AND question_id = ?2",
-                params![project_id.to_string(), question_id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(backend)?
-            .flatten();
-        if current != Some(i64::from(firing.disposition_ordinal)) {
-            return Err(RepositoryError::Conflict {
-                subject: "OpenQuestion trigger",
-                rule: "only the question's current deferral can be reopened",
-            });
-        }
-        transaction
-            .execute(
-                "INSERT INTO open_question_trigger_firings
+            params![project_id.to_string(), question_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?
+        .flatten();
+    if current != Some(i64::from(firing.disposition_ordinal)) {
+        return Err(RepositoryError::Conflict {
+            subject: "OpenQuestion trigger",
+            rule: "only the question's current deferral can be reopened",
+        });
+    }
+    transaction
+        .execute(
+            "INSERT INTO open_question_trigger_firings
                      (project_id, question_id, ordinal, disposition_ordinal, trigger_key,
                       observed_by_seat_id, recorded_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    project_id.to_string(),
-                    question_id.to_string(),
-                    i64::from(firing.ordinal),
-                    i64::from(firing.disposition_ordinal),
-                    firing.trigger.as_str(),
-                    firing.observed_by.to_string(),
-                    text(firing.recorded_at),
-                ],
+            params![
+                project_id.to_string(),
+                question_id.to_string(),
+                i64::from(firing.ordinal),
+                i64::from(firing.disposition_ordinal),
+                firing.trigger.as_str(),
+                firing.observed_by.to_string(),
+                text(firing.recorded_at),
+            ],
+        )
+        .map_err(backend)?;
+    let revision = bump_open_question(transaction, project_id, question_id, expected)?;
+    Ok(revision)
+}
+
+impl SqliteStore {
+    /// Commit one validated question append and its immutable retry receipt atomically.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_open_question_command(
+        &self,
+        key: &IdempotencyKey,
+        intent: &CanonicalDocument,
+        question: &OpenQuestion,
+        expected_revision: u64,
+        actor: SeatBindingId,
+        actor_revision: AggregateRevision,
+        occupancy_generation: Option<u64>,
+    ) -> RepositoryResult<serde_json::Value> {
+        let transaction = self.begin()?;
+        if let Some((hash, result)) = transaction
+            .query_row(
+                "SELECT intent_hash, result FROM open_question_commands WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
-            .map_err(backend)?;
-        let revision = bump_open_question(&transaction, project_id, question_id, expected)?;
+            .optional()
+            .map_err(backend)?
+        {
+            if hash != intent.hash().as_str() {
+                return Err(conflict(
+                    "open question command",
+                    "an idempotency key cannot name another question command",
+                ));
+            }
+            return from_json(&result);
+        }
+        let active: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM seat_bindings s JOIN topology_nodes n ON n.id = s.topology_node_id
+             WHERE s.project_id = ?1 AND s.id = ?2 AND s.revision = ?3 AND s.lifecycle = 'active'
+               AND n.mini_project_id = ?4)",
+            params![question.project_id.to_string(), actor.to_string(), i64::try_from(actor_revision.get()).unwrap_or(i64::MAX), question.mini_project_id.to_string()],
+            |row| row.get(0),
+        ).map_err(backend)?;
+        if !active {
+            return Err(conflict(
+                "open question author",
+                "the author moved since its authority was resolved",
+            ));
+        }
+        if let Some(generation) = occupancy_generation {
+            let current: Option<i64> = transaction.query_row(
+                "SELECT 1 + (SELECT COUNT(*) FROM hosted_topology_seat_history h WHERE h.project_id = s.project_id AND h.seat_binding_id = s.seat_binding_id)
+                 FROM hosted_topology_seats s WHERE s.project_id = ?1 AND s.seat_binding_id = ?2",
+                params![question.project_id.to_string(), actor.to_string()], |row| row.get(0),
+            ).optional().map_err(backend)?;
+            if current != i64::try_from(generation).ok() {
+                return Err(conflict(
+                    "open question author",
+                    "the scoped seat occupancy was replaced",
+                ));
+            }
+        }
+        let row = transaction.query_row(
+            &format!("SELECT {OPEN_QUESTION_COLUMNS} FROM open_questions WHERE project_id = ?1 AND question_id = ?2"),
+            params![question.project_id.to_string(), question.question_id.to_string()], open_question_row,
+        ).optional().map_err(backend)?;
+        if let Some(row) = row {
+            let previous = read_open_question(&transaction, question.project_id, row)?;
+            if previous.revision.get() != expected_revision
+                || question.revision != previous.revision.next()?
+            {
+                return Err(conflict(
+                    "open question",
+                    "only its current revision may be appended to",
+                ));
+            }
+            let mut header = question.clone();
+            header.revision = previous.revision;
+            header.rounds.clone_from(&previous.rounds);
+            header.dispositions.clone_from(&previous.dispositions);
+            header.firings.clone_from(&previous.firings);
+            if header != previous
+                || !question.rounds.starts_with(&previous.rounds)
+                || !question.dispositions.starts_with(&previous.dispositions)
+                || !question.firings.starts_with(&previous.firings)
+            {
+                return Err(conflict(
+                    "open question",
+                    "question history and header are immutable",
+                ));
+            }
+            let added = (
+                question.rounds.len() - previous.rounds.len(),
+                question.dispositions.len() - previous.dispositions.len(),
+                question.firings.len() - previous.firings.len(),
+            );
+            match added {
+                (1, 0, 0) => {
+                    insert_open_question_round(
+                        &transaction,
+                        question.project_id,
+                        question.question_id,
+                        &question.rounds[previous.rounds.len()],
+                    )?;
+                    bump_open_question(
+                        &transaction,
+                        question.project_id,
+                        question.question_id,
+                        previous.revision,
+                    )?;
+                }
+                (0, 1, 0) => {
+                    append_question_disposition_in(
+                        &transaction,
+                        question.project_id,
+                        question.question_id,
+                        previous.revision,
+                        &question.dispositions[previous.dispositions.len()],
+                    )?;
+                }
+                (0, 0, 1) => {
+                    fire_deferred_trigger_in(
+                        &transaction,
+                        question.project_id,
+                        question.question_id,
+                        previous.revision,
+                        &question.firings[previous.firings.len()],
+                    )?;
+                }
+                _ => {
+                    return Err(conflict(
+                        "open question",
+                        "one command appends exactly one history item",
+                    ));
+                }
+            }
+        } else {
+            if expected_revision != 0
+                || question.revision != AggregateRevision::INITIAL
+                || question.rounds.len() != 1
+                || !question.dispositions.is_empty()
+                || !question.firings.is_empty()
+            {
+                return Err(conflict(
+                    "open question",
+                    "raising starts at revision zero with one initial round",
+                ));
+            }
+            insert_question_in(&transaction, question.project_id, question)?;
+        }
+        let receipt_id = CommandReceiptId::generate();
+        let result = serde_json::json!({"receipt_id":receipt_id,"question":question,"status":question.status()});
+        transaction.execute(
+            "INSERT INTO open_question_commands (idempotency_key, receipt_id, project_id, question_id, intent_hash, intent, result, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![key.as_str(),receipt_id.to_string(),question.project_id.to_string(),question.question_id.to_string(),intent.hash().as_str(),intent.json(),result.to_string(),text(Timestamp::now())],
+        ).map_err(backend)?;
         transaction.commit().map_err(backend)?;
-        Ok(revision)
+        Ok(result)
+    }
+
+    /// Read the exact original result for a matching command, including after restart.
+    pub fn replay_open_question_command(
+        &self,
+        key: &IdempotencyKey,
+        intent: &CanonicalDocument,
+    ) -> RepositoryResult<Option<serde_json::Value>> {
+        let found = self
+            .connection
+            .query_row(
+                "SELECT intent_hash, result FROM open_question_commands WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(hash, result)| {
+                if hash != intent.hash().as_str() {
+                    return Err(conflict(
+                        "open question command",
+                        "an idempotency key cannot name another question command",
+                    ));
+                }
+                from_json(&result)
+            })
+            .transpose()
     }
 }
 

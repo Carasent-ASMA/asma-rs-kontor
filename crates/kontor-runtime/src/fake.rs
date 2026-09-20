@@ -51,9 +51,11 @@ use crate::capability::{
     RuntimeCapability, RuntimeLimits, preflight,
 };
 use crate::container::{
-    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence,
+    ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerCorrelationEvidence,
     ContainerInspectRequest, ContainerInspection, ContainerOutcome, ContainerProjection,
-    ContainerRequest, ContainerWorkspaceKind, RetitleContainerOutcome, RetitleContainerRequest,
+    ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRecreationOutcome,
+    ContainerRecreationRequest, ContainerRequest, ContainerWorkspaceKind, RetitleContainerOutcome,
+    RetitleContainerRequest,
 };
 use crate::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -346,6 +348,17 @@ pub enum AdapterCall {
     RetitleContainer(TopologyNodeId),
     /// A container's title correction was previewed, and nothing was written.
     PreviewRetitleContainer(TopologyNodeId),
+    /// A native container was *built* by a recreation apply.
+    ///
+    /// Emitted only when a native is actually minted, never on the adopt or
+    /// preview paths. That is what makes counting these the create counter the
+    /// frozen evidence items are stated in: "exactly one" and "exactly zero"
+    /// are both assertions about this variant and nothing else.
+    CreateNativeContainer(TopologyNodeId),
+    /// A stale container binding's replacement census ran, changing nothing.
+    PreviewContainerRecovery(TopologyNodeId),
+    /// A recreation census ran, changing nothing.
+    PreviewContainerRecreation(TopologyNodeId),
     /// A persistent seat's visible title was corrected.
     RetitleSeat(ExternalId),
     /// A persistent seat's title correction was previewed, and nothing was written.
@@ -801,6 +814,7 @@ struct FakeState {
     /// Plane-wide default this runtime declares, as an operator may change it
     /// between one control operation and the next.
     declared_autonomy: Option<SeatAutonomy>,
+    hosted_role_prompts: BTreeMap<SeatBindingId, Option<BoundedText>>,
     /// Terminal hosted natives retained so retirement and recovery are replayable.
     archived_hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// Stable message ledger per exact hosted native. A logical seat may be
@@ -933,6 +947,67 @@ impl SeatFacts for FakeSeatFacts<'_> {
 }
 
 impl FakeState {
+    /// What a recreation census proves about one node's canonical place.
+    ///
+    /// Read-only. `created: true` means "nothing is there, a create is
+    /// authorized"; `created: false` carries the native a lost attempt already
+    /// built, which the caller adopts instead of building a second one.
+    fn recreation_census(
+        &self,
+        request: &ContainerRecreationRequest,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        let node = request.topology_node_id;
+        let Some(existing) = self.containers.get(&node).cloned() else {
+            let identity = self.identity(request.absent_identity.native_id.clone());
+            let correlation =
+                ContainerCorrelationEvidence::by_exact_id(node, identity.clone(), observed_at);
+            return Ok(ContainerRecreationOutcome {
+                snapshot: ContainerBindingSnapshot {
+                    binding: ContainerBinding {
+                        id: request.container_binding_id,
+                        topology_node_id: node,
+                        projection: ContainerProjection::NativeChild,
+                        identity,
+                        root: Some(request.canonical_cwd.clone()),
+                        bound_at: observed_at,
+                    },
+                    capabilities: self.capabilities.clone(),
+                    correlation,
+                },
+                observed_title: request.expected_title.as_str().to_owned(),
+                created: true,
+            });
+        };
+        // The persisted native is alive. Building beside it would duplicate a
+        // container the node still owns, wherever that native is parked.
+        if existing.binding.identity == request.absent_identity {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persisted native container still exists and cannot be recreated",
+            });
+        }
+        let title = self
+            .container_titles
+            .get(&node)
+            .cloned()
+            .unwrap_or_default();
+        if existing.binding.root.as_ref() != Some(&request.canonical_cwd) {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "a container at another path already stands for this node",
+            });
+        }
+        if title != request.expected_title.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "a differently titled container already occupies the canonical path",
+            });
+        }
+        Ok(ContainerRecreationOutcome {
+            snapshot: existing,
+            observed_title: title,
+            created: false,
+        })
+    }
+
     fn identity(&self, native_id: ExternalId) -> NativeRuntimeIdentity {
         NativeRuntimeIdentity {
             runtime_kind: self.runtime_kind.clone(),
@@ -1346,6 +1421,7 @@ impl ScriptedFakeRuntime {
                 hosted_autonomy: Vec::new(),
                 hosted_retire_placements: Vec::new(),
                 declared_autonomy: None,
+                hosted_role_prompts: BTreeMap::new(),
                 archived_hosted_seats: BTreeMap::new(),
                 hosted_messages: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
@@ -1502,6 +1578,37 @@ impl ScriptedFakeRuntime {
             "current turn request",
             observed_at,
         )?;
+        let response_position = session.append(
+            SessionEventKind::Message,
+            EventSubject::None,
+            "current turn response",
+            observed_at,
+        )?;
+        session.state = ObservedRunState::WaitingInput;
+        session.refusal = None;
+        Ok((message_position, response_position))
+    }
+
+    /// Finish a turn opened by `send`, without appending a second user message.
+    ///
+    /// # Errors
+    /// Refuses an unknown binding or a message absent from its native content.
+    pub fn observe_sent_turn_completion(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        message_id: MessageId,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<(TimelinePosition, TimelinePosition)> {
+        let mut state = self.lock();
+        let session = state.session(binding)?;
+        let message_position = session
+            .content
+            .iter()
+            .find(|event| event.subject == EventSubject::Message(message_id))
+            .map(|event| event.position)
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the sent message is absent from this session",
+            })?;
         let response_position = session.append(
             SessionEventKind::Message,
             EventSubject::None,
@@ -1766,6 +1873,44 @@ impl ScriptedFakeRuntime {
         kind: ContainerWorkspaceKind,
     ) {
         self.lock().container_kinds.insert(topology_node_id, kind);
+    }
+
+    /// Plant one native container as though a prior attempt had built it.
+    ///
+    /// The lost-acknowledgement fixture, and the only honest way to stage it:
+    /// the runtime holds a live container at the node's canonical path under
+    /// its exact title, while Kontor's durable binding still names the native
+    /// that vanished — because the create succeeded and its answer never
+    /// arrived. A retry must adopt this one rather than build a second.
+    pub fn seed_container(
+        &self,
+        topology_node_id: TopologyNodeId,
+        container_binding_id: ContainerBindingId,
+        native_id: ExternalId,
+        root: crate::workspace::WorkspaceRoot,
+        title: &str,
+        bound_at: Timestamp,
+    ) {
+        let mut state = self.lock();
+        let identity = state.identity(native_id);
+        let correlation =
+            ContainerCorrelationEvidence::by_exact_id(topology_node_id, identity.clone(), bound_at);
+        let snapshot = ContainerBindingSnapshot {
+            binding: ContainerBinding {
+                id: container_binding_id,
+                topology_node_id,
+                projection: ContainerProjection::NativeChild,
+                identity,
+                root: Some(root),
+                bound_at,
+            },
+            capabilities: state.capabilities.clone(),
+            correlation,
+        };
+        state.containers.insert(topology_node_id, snapshot);
+        state
+            .container_titles
+            .insert(topology_node_id, title.to_owned());
     }
 
     /// The capabilities the runtime currently declares.
@@ -2202,6 +2347,12 @@ impl ScriptedFakeRuntime {
         self.lock().launched_prompts.get(&run).cloned()
     }
 
+    /// The persona supplied to the last launch, including an explicit absence.
+    #[must_use]
+    pub fn hosted_role_prompt(&self, seat: SeatBindingId) -> Option<Option<BoundedText>> {
+        self.lock().hosted_role_prompts.get(&seat).cloned()
+    }
+
     /// The route a consultation seat was launched on.
     #[must_use]
     pub fn consultation_route(&self, seat: SeatBindingId) -> Option<ModelRung> {
@@ -2330,6 +2481,25 @@ impl ScriptedFakeRuntime {
         let mut state = self.lock();
         state.epoch_mappings.clear();
         state.undrained_epochs.clear();
+    }
+
+    /// Give a newly seated fixture a distinct native timeline before sending.
+    ///
+    /// # Errors
+    /// Refuses a binding this fake does not own. Callers must use this before
+    /// any delivery whose acknowledgement would refer to the previous epoch.
+    pub fn set_unread_timeline_epoch(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        epoch: u64,
+    ) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        let session = state.session(binding)?;
+        session.epoch = epoch;
+        for event in &mut session.content {
+            event.position.epoch = epoch;
+        }
+        Ok(())
     }
 
     /// The mappings allocated but not yet handed over for persistence.
@@ -3087,6 +3257,110 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         })
     }
 
+    async fn preview_container_recovery(
+        &self,
+        request: &ContainerRecoveryRequest,
+    ) -> RuntimeResult<ContainerRecoveryOutcome> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        state.calls.push(AdapterCall::PreviewContainerRecovery(
+            request.topology_node_id,
+        ));
+        let node = request.topology_node_id;
+        let Some(existing) = state.containers.get(&node).cloned() else {
+            // Zero candidates. The adoption disposition has nothing to adopt;
+            // whether anything may be *built* is a different question, asked by
+            // the recreation census.
+            return Err(RuntimeError::StaleBinding {
+                rule: "no live workspace occupies the stale container's exact parent and canonical path",
+            });
+        };
+        if existing.binding.identity == request.stale_identity {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persisted native container still exists and cannot be recovered as another identity",
+            });
+        }
+        let title = state
+            .container_titles
+            .get(&node)
+            .cloned()
+            .unwrap_or_default();
+        if existing.binding.root.as_ref() != Some(&request.canonical_cwd)
+            || title != request.expected_title.as_str()
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the sole parent/path candidate does not carry the current configuration-rendered title",
+            });
+        }
+        Ok(ContainerRecoveryOutcome {
+            snapshot: existing,
+            observed_title: title,
+        })
+    }
+
+    async fn preview_container_recreation(
+        &self,
+        request: &ContainerRecreationRequest,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        state.calls.push(AdapterCall::PreviewContainerRecreation(
+            request.topology_node_id,
+        ));
+        state.recreation_census(request, request.requested_at)
+    }
+
+    async fn recreate_container(
+        &self,
+        request: &ContainerRecreationRequest,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        let census = state.recreation_census(request, request.requested_at)?;
+        if !census.created {
+            // A prior attempt already built it and lost its answer. Adopting is
+            // the only correct move, and no create is recorded.
+            return Ok(census);
+        }
+        let node = request.topology_node_id;
+        state.minted += 1;
+        let native_id = ExternalId::parse(&format!("native-container-{}", state.minted))?;
+        let identity = state.identity(native_id);
+        let correlation = ContainerCorrelationEvidence::establish(
+            node,
+            &request.correlation().to_string(),
+            identity.clone(),
+            request.requested_at,
+        )?;
+        let snapshot = ContainerBindingSnapshot {
+            binding: ContainerBinding {
+                id: request.container_binding_id,
+                topology_node_id: node,
+                projection: ContainerProjection::NativeChild,
+                identity,
+                root: Some(request.canonical_cwd.clone()),
+                bound_at: request.requested_at,
+            },
+            capabilities: state.capabilities.clone(),
+            correlation,
+        };
+        state.containers.insert(node, snapshot.clone());
+        state
+            .container_parents
+            .insert(node, request.bound_project_native_id.clone());
+        state
+            .container_titles
+            .insert(node, request.expected_title.as_str().to_owned());
+        // Recorded last, and only here: this is the one line that means a
+        // native was actually built.
+        state.calls.push(AdapterCall::CreateNativeContainer(node));
+        Ok(ContainerRecreationOutcome {
+            snapshot,
+            observed_title: request.expected_title.as_str().to_owned(),
+            created: true,
+        })
+    }
+
     async fn inspect_container(
         &self,
         request: &ContainerInspectRequest,
@@ -3602,6 +3876,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             seat_binding_id: request.seat_binding_id,
             autonomy: request.autonomy,
         });
+        state
+            .hosted_role_prompts
+            .insert(request.seat_binding_id, request.role_prompt.clone());
         if let Some(existing) = state.hosted_seats.get(&request.seat_binding_id) {
             return Ok(existing.clone());
         }
@@ -4103,6 +4380,16 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             request.binding.binding_id(),
             request.message_id,
         ));
+
+        // Paseo's send reconciliation learns the native epoch before it can
+        // acknowledge a canonical position. Model that same persistence debt
+        // here, including an acknowledgement replay after a failed store write.
+        let epoch = state.session(&request.binding)?.epoch;
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
 
         let binding_id = request.binding.binding_id();
         let body_hash = request.body_hash();
