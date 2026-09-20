@@ -20,12 +20,12 @@ original startup-precedence defect, preserves the intended process-lifetime
 capacity model, and is converged in the live realm. No open audit finding or
 unevidenced assumption remains.
 
-This report does not record the audit gate. The current audit turn must first be
-settled and this exact blob registered as `high-audit-report`; the already
-settled exact scope blob must likewise be registered as `high-scope-record`.
-The later evaluator write must use the account pin returned by supported context,
-not infer one from provider or model. Current `kontor_run_get` readback exposes
-`account_profile_id: null`, so this report does not invent an evaluator account.
+This report does not record the audit gate. All three pre-audit evidence keys are
+registered; the current audit turn must now be settled and this exact blob
+registered as `high-audit-report`. The later evaluator write must use the account
+pin returned by supported context, not infer one from provider or model. Current
+`kontor_run_get` readback exposes `account_profile_id: null`, so this report does
+not invent an evaluator account.
 
 ## Audited lineage and preserved history
 
@@ -47,7 +47,12 @@ report at `37e9a014` verifies the coordinator's correction and records the
 separate PASS.
 
 Producer provenance is also preserved. Registered evidence
-`01a0c028-aab9-7021-bbe2-9ba3605c8cba` points to the exact
+`01a0c03a-6ebd-7363-a487-ef2254d0ead3` points to the exact
+`HIGH-SCOPE-RECORD.md` blob at `d21dc2de`, SHA-256
+`faa995a220d09362fa59b9794a02b7a2095af16b808e8c180ff89cdbfef0cb27`,
+from settled scope turn `01a0bfdc-9780-7200-adc9-3f8e490f33d5`. Its
+`producer_account` is **NULL**, with attribution `native_proved_unknown`.
+Registered evidence `01a0c028-aab9-7021-bbe2-9ba3605c8cba` points to the exact
 `HIGH-CHANGE-RECORD.md` blob at `d21dc2de`, SHA-256
 `1b7beba232c0c5eace23cb32d9b78421ff1ee69793f9c8516de47dddeeaaa24a`.
 Its `producer_account` is **NULL**, with attribution
@@ -131,8 +136,8 @@ None.
 
 ## Handoff
 
-Coordinator: settle this audit AgentRun's terminal turn, register this exact Git
-blob as `high-audit-report`, and register the exact settled scope blob as
-`high-scope-record`. After those durable producer records exist, return the
-fresh workflow revision and supported audit-seat account pin so the same audit
-seat can record `high-audit-gate: passed` with all four declared evidence keys.
+Coordinator: settle this audit AgentRun's terminal turn and register this exact
+Git blob as `high-audit-report`. Then return the fresh workflow revision and
+supported audit-seat account pin so the same audit seat can record
+`high-audit-gate: passed` with all four declared evidence keys. No other closure
+prerequisite is introduced by this audit.
