@@ -76,12 +76,8 @@ The whole PUB-01 domain suite was green after restore: `13 passed; 0 failed`.
 
 ## Residual, recorded rather than closed
 
-- **The project-scoped repository guard has no mutant.** `is_governed_publication_project`
-  and the root-plus-task-module narrowing in `kontor-daemon` are the other half
-  of ASMA-8102 and are still uncovered by any mutation. The ASMA-8115 ledger's
-  "treat every repository as approved" mutant kills only the base's
-  `repository_mismatch` check, not the scoping added in `bdf088b1`. This pass
-  was bounded to one mutant; that one is the next to seed.
+- ~~The project-scoped repository guard has no mutant.~~ Closed below, in
+  *Mutant 2*.
 - **Domain-level `binding_ambiguous` test: non-blocking.** TASK-001 lists an
   "ambiguity" test without naming a layer, and
   `a_branch_key_resolving_to_an_epic_and_task_is_refused_as_ambiguous` covers it
@@ -97,3 +93,104 @@ The whole PUB-01 domain suite was green after restore: `13 passed; 0 failed`.
 - **The governed project is a compiled constant** (`PUBLICATION_GOVERNED_PROJECT`).
   Portable across machines and realm replicas, but still code rather than data;
   a per-project governed-repository column would need a migration.
+
+
+# Mutant 2 — the governed-project guard
+
+Date: 2026-09-20
+Base: this ledger's own parent, `4d19761277575e35b6e4d789a373a8bf6fa0936f`,
+whose source tree is `cc33a870`'s unchanged.
+
+Closes the residual Mutant 1 recorded: the project-scoping half of ASMA-8102.
+
+## Mutant
+
+The guard decides whether a Kontor project carries the governed ASMA forge
+mapping at all. Disabling it restores the exact widening two review rounds
+rejected: every project in the realm authorizing `Carasent-ASMA/asma-modules`
+and `Carasent-ASMA/asma-rs-kontor` merely by holding a confirmed tracker key.
+
+File: `crates/kontor-daemon/src/applications.rs`.
+
+```diff
+ fn is_governed_publication_project(project_id: ProjectId) -> bool {
+-    ProjectId::parse(PUBLICATION_GOVERNED_PROJECT).is_ok_and(|governed| governed == project_id)
++    let _ = project_id;
++    true
+ }
+```
+
+## Digests
+
+| State | SHA-256 of `applications.rs` | Git blob |
+| --- | --- | --- |
+| Pristine | `1b5182ee0e1a4a7330ed65959823d04b92d4127ed84de876b8ec7b214c170833` | `163e3fd025511fda9ab09c6bc8e42eb110b2a579` |
+| Mutated | `8d4a0e3abe495f3509b2ccc59cf9f3e3a783b8820fe840fc4ca1a88fa7b6e5fe` | `fc42a0b5757c0df6d69da03c86820d3632bbc6cb` |
+| Restored | `1b5182ee0e1a4a7330ed65959823d04b92d4127ed84de876b8ec7b214c170833` | `163e3fd025511fda9ab09c6bc8e42eb110b2a579` |
+
+`cmp` reported the restored file byte-identical to the pristine copy and
+`git status --porcelain` reported no change. No mutant remains in the tree.
+
+## Reproduction
+
+```sh
+cd /private/tmp/asma-8102-mutation   # already at 4d197612
+cp crates/kontor-daemon/src/applications.rs /tmp/applications.rs.pristine
+
+# seed: make is_governed_publication_project return true unconditionally
+cargo test -p kontor-daemon --test loopback_api \
+  another_project_does_not_inherit_the_governed_repositories
+cargo test -p kontor-daemon --test loopback_api \
+  a_module_less_task_is_not_authorized_for_a_module_repository
+cargo test -p kontor-core --test publication_identity \
+  a_repository_outside_the_binding_is_refused
+
+cp /tmp/applications.rs.pristine crates/kontor-daemon/src/applications.rs
+cmp /tmp/applications.rs.pristine crates/kontor-daemon/src/applications.rs
+cargo test -p kontor-daemon --test loopback_api \
+  another_project_does_not_inherit_the_governed_repositories
+```
+
+## Result
+
+| Test | Layer | Under mutant | Restored |
+| --- | --- | --- | --- |
+| `another_project_does_not_inherit_the_governed_repositories` | daemon loopback route | `FAILED. 0 passed; 1 failed` | `ok. 1 passed` |
+| `a_module_less_task_is_not_authorized_for_a_module_repository` | daemon loopback route | `ok. 1 passed` — does not kill | `ok. 1 passed` |
+| `a_repository_outside_the_binding_is_refused` | domain | `ok. 1 passed` — does not kill | `ok. 1 passed` |
+
+The killing regression is exactly one test, and it is the cross-project
+isolation case. Its red is the assertion, not a malformed invocation:
+`loopback_api.rs:55795` recorded the served route answering
+`"project_id": "01a0bc5d-10fd-…"` (an ungoverned project),
+`"repository": "Carasent-ASMA/asma-modules"`, `"accepted": true`,
+`"reasons": []`, against an expected `["repository_mismatch"]`.
+
+Two tests deliberately stay green, and each records something:
+
+- `a_module_less_task_is_not_authorized_for_a_module_repository` covers the
+  root-plus-module narrowing, not project scoping. With the guard disabled the
+  derivation still runs, so a module-less task still receives only the root and
+  still refuses `asma-rs-kontor`. It is not a killing test for this mutant and
+  must not be cited as one.
+- `a_repository_outside_the_binding_is_refused` is a domain test over
+  `PublicationBinding.repositories` as given. The guard is a daemon-side
+  derivation of that field, so no domain-level test can kill this mutant. The
+  domain half of the repository rule is killed instead by the ASMA-8115 ledger's
+  "treat every repository as approved" mutant.
+
+Both suites were green after restore: loopback `393 passed; 0 failed`, PUB-01
+domain `13 passed; 0 failed`.
+
+A secondary signal worth recording: with the guard disabled, `rustc` emitted
+`dead_code` for the now-unused `PUBLICATION_GOVERNED_PROJECT` constant, so this
+mutant is additionally caught by the repository's `clippy -D warnings` gate.
+
+## Acceptance status after this pass
+
+TASK-001's "seed and kill a validator mutant" is satisfied for both ASMA-8102
+corrections: Mutant 1 for the mandatory pull-request title, Mutant 2 for the
+project-scoped repository guard. The deferred items recorded under Mutant 1 —
+`publication:merge` authorizing from optional GitHub App configuration, and the
+governed project being a compiled constant rather than a per-project column —
+are unchanged and remain outside PUB-01.
