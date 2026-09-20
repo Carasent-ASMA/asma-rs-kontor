@@ -26,6 +26,7 @@
 //! path can create the other's kind of session.
 
 mod artifact_submission;
+mod committee_evidence;
 mod open_questions;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -13153,7 +13154,7 @@ impl Services {
                  Governed re-review evidence reconstructed by Kontor: {} \
                  Submit this seat's own finding through the scoped Kontor MCP tools, which inherit authentication automatically. \
                  Context: project_id {}, committee_run_id {}, round {}, expected_revision {}, seat_binding_id {}. \
-                 Read this run to refresh its revision before submission. Never disclose credentials.",
+                 Read this run with kontor_committee_run_get: subject_evidence contains the pinned task contracts, gate evaluations, artifact locators and completion integration bodies. Cite its content_hash and refresh the run revision before submission. Never disclose credentials.",
                 authority,
                 template.charter.as_str(),
                 slot.behavior.as_str(),
@@ -13327,7 +13328,7 @@ impl Services {
              Question: {} Durable reviewer findings available to this seat: {} \
              Submit this seat's own finding through the scoped Kontor MCP tools, which inherit authentication automatically. \
              Context: project_id {}, committee_run_id {}, round {}, expected_revision {}, seat_binding_id {}. \
-             Read this run to refresh its revision before submission. Never disclose credentials.",
+             Read this run with kontor_committee_run_get: subject_evidence contains the pinned task contracts, gate evaluations, artifact locators and completion integration bodies. Cite its content_hash and refresh the run revision before submission. Never disclose credentials.",
             authority,
             template.charter.as_str(),
             slot.behavior.as_str(),
@@ -13486,6 +13487,10 @@ impl Services {
             realm_id: state.realm_id(),
             committee_run_id,
             epic_id: run.mini_project_id,
+            subject_evidence: run
+                .subject
+                .map(|_| self.committee_subject_evidence(run))
+                .transpose()?,
             template: consultation_revision_dto(&revision),
             topic: run.topic.clone(),
             container_name,
@@ -26034,6 +26039,21 @@ impl ApplicationOperations for Services {
         let run =
             self.consultation_run(project_id, ConsultationRunId::Committee(committee_run_id))?;
         self.committee_run_dto(&run, None, AppliedDto::Unchanged)
+    }
+
+    async fn committee_artifact(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        evidence_id: &str,
+        offset: u32,
+    ) -> Result<kontor_api::committee_evidence::CommitteeArtifactContentDto, ApiError> {
+        self.read_committee_artifact(project_id, committee_run_id, evidence_id, offset)
+            .await
+    }
+
+    async fn hydrate_committee_reports(&self, run: &mut CommitteeRunDto) -> Result<(), ApiError> {
+        self.hydrate_subject_reports(run).await
     }
 
     async fn inspect_consultation_permissions(

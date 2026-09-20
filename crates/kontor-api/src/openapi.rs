@@ -157,6 +157,7 @@ impl Modify for RealmBearer {
         crate::applications::apply_committee_template,
         crate::applications::invoke_committee_run,
         crate::applications::committee_run,
+        crate::committee_evidence::committee_artifact,
         crate::applications::inspect_consultation_permissions,
         crate::applications::respond_consultation_permission,
         crate::applications::recover_consultation_seat,

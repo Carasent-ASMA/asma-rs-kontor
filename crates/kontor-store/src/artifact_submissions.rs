@@ -29,6 +29,46 @@ pub struct NewArtifactSubmission {
     pub response: CanonicalDocument,
 }
 impl SqliteStore {
+    /// Read active-workflow artifact locators and their original augmentation receipts.
+    /// This does not promote a declared label or closure certificate into producer evidence.
+    pub fn task_artifact_evidence_documents(
+        &self,
+        project_id: ProjectId,
+        task_id: kontor_core::id::TaskId,
+    ) -> RepositoryResult<Vec<serde_json::Value>> {
+        let mut statement = self.connection.prepare(
+            "SELECT json_object('evidence_id', evidence.id,
+                'task_id', evidence.task_id, 'workflow_id', evidence.workflow_id,
+                'artifact_key', evidence.artifact_key, 'agent_run_id', evidence.agent_run_id,
+                'producer_role', evidence.producer_role, 'producer_account', evidence.producer_account,
+                'locator', json(evidence.locator), 'locator_hash', evidence.locator_hash,
+                'recorded_at', evidence.recorded_at, 'submission_receipt', json(submission.response))
+             FROM artifact_evidence evidence
+             JOIN task_workflows workflow ON workflow.project_id = evidence.project_id
+                AND workflow.task_id = evidence.task_id AND workflow.id = evidence.workflow_id
+                AND workflow.active = 1
+             LEFT JOIN artifact_producer_submissions submission ON submission.project_id = evidence.project_id
+                AND submission.task_id = evidence.task_id AND submission.evidence_id = evidence.id
+             WHERE evidence.project_id = ?1 AND evidence.task_id = ?2
+             ORDER BY evidence.artifact_key, evidence.recorded_at, evidence.id",
+        ).map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(backend)?;
+        rows.map(|row| {
+            serde_json::from_str(&row.map_err(backend)?).map_err(|_| {
+                RepositoryError::Domain(DomainError::invalid(
+                    "artifact evidence",
+                    "the stored locator or receipt is not valid JSON",
+                ))
+            })
+        })
+        .collect()
+    }
+
     /// Replay a previous submission without touching a native session or checkout.
     pub fn artifact_submission_replay(
         &self,

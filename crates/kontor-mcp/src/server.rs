@@ -362,12 +362,13 @@ mod tests {
                 "kontor_advisor_run_settle",
                 "kontor_committee_findings_record",
                 "kontor_committee_run_get",
+                "kontor_committee_artifact_get",
             ])
         );
     }
 
     /// The presentation profile still cannot turn an observer credential into
-    /// a finding author: only the two consultation reads remain visible.
+    /// a finding author: only consultation and subject-artifact reads remain visible.
     #[test]
     fn the_consultation_profile_never_widens_observer_authority() {
         let served: BTreeSet<&str> = profiled(CallerTier::Observer, "consultation")
@@ -377,7 +378,11 @@ mod tests {
             .collect();
         assert_eq!(
             served,
-            BTreeSet::from(["kontor_advisor_run_get", "kontor_committee_run_get"])
+            BTreeSet::from([
+                "kontor_advisor_run_get",
+                "kontor_committee_run_get",
+                "kontor_committee_artifact_get"
+            ])
         );
     }
 

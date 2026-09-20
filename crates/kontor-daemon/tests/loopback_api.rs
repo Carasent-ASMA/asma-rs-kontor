@@ -33,6 +33,9 @@
 #[allow(dead_code)]
 mod harness;
 
+#[path = "loopback/committee_evidence.rs"]
+mod committee_evidence;
+
 #[tokio::test]
 async fn open_question_commands_preserve_authority_history_and_completion_blockers() {
     use kontor_core::id::OpenQuestionId;

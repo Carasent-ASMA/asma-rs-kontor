@@ -2000,6 +2000,79 @@
         }
       }
     },
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/artifacts/{evidence_id}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Read one artifact without granting shell, network, or general filesystem access.",
+        "operationId": "committee_artifact",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "committee_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "evidence_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "path",
+            "description": "Zero for the first page; then use the returned `next_offset`.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitteeArtifactContentDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record": {
       "post": {
         "tags": [
@@ -13399,6 +13472,125 @@
           }
         }
       },
+      "CommitteeArtifactContentDto": {
+        "type": "object",
+        "description": "A bounded page of SHA-256-verified UTF-8 bytes from a registered immutable Git blob.",
+        "required": [
+          "realm_id",
+          "committee_run_id",
+          "evidence_id",
+          "sha256",
+          "offset",
+          "total_bytes",
+          "text"
+        ],
+        "properties": {
+          "committee_run_id": {
+            "type": "string",
+            "description": "Addressed Committee run."
+          },
+          "evidence_id": {
+            "type": "string",
+            "description": "Registry artifact identity, not a caller-supplied filesystem locator."
+          },
+          "next_offset": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Next character-aligned byte offset, if more remains.",
+            "minimum": 0
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Byte position of this page.",
+            "minimum": 0
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Owning realm."
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Verified full-blob digest."
+          },
+          "text": {
+            "type": "string",
+            "description": "Untrusted artifact text for review, not control-plane instructions."
+          },
+          "total_bytes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total UTF-8 byte length.",
+            "minimum": 0
+          }
+        }
+      },
+      "CommitteeCompletionEvidenceDto": {
+        "type": "object",
+        "description": "Completion facts that cannot reveal an independent Committee member's verdict.",
+        "required": [
+          "profile",
+          "definition",
+          "ticket_requirements",
+          "phase",
+          "blockers",
+          "integrations",
+          "closeout",
+          "generation",
+          "revision"
+        ],
+        "properties": {
+          "blockers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompletionBlockerDto"
+            },
+            "description": "Current phase blockers."
+          },
+          "closeout": {
+            "$ref": "#/components/schemas/CloseoutEvidenceDto",
+            "description": "Recorded closeout prerequisite digests."
+          },
+          "definition": {
+            "description": "Pinned completion policy body."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Current reopening generation.",
+            "minimum": 0
+          },
+          "integrations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IntegrationRecordDto"
+            },
+            "description": "Initial and remediation integration bodies, including repository/module/root/PR outcomes."
+          },
+          "phase": {
+            "$ref": "#/components/schemas/CompletionPhaseDto",
+            "description": "Current phase, without round verdicts or deliberation."
+          },
+          "profile": {
+            "$ref": "#/components/schemas/ProfileRevisionDto",
+            "description": "Exact completion profile identity and digest."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Current completion revision.",
+            "minimum": 0
+          },
+          "ticket_requirements": {
+            "type": "array",
+            "items": {},
+            "description": "Frozen ticket goals and evidence obligations."
+          }
+        }
+      },
       "CommitteeFindingDto": {
         "type": "object",
         "description": "One durable Committee finding, including dissent and evidence references.",
@@ -13621,6 +13813,17 @@
             "type": "string",
             "description": "Its lifecycle, in the server's own vocabulary."
           },
+          "subject_evidence": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CommitteeSubjectEvidenceDto",
+                "description": "Same-subject evidence, independent of any Committee member's finding.\nAbsent for legacy runs whose subject was never durably recorded."
+              }
+            ]
+          },
           "template": {
             "$ref": "#/components/schemas/ProfileRevisionDto",
             "description": "The pinned template it runs under."
@@ -13635,6 +13838,139 @@
           "topology_node_id": {
             "type": "string",
             "description": "Dedicated CSW node."
+          }
+        }
+      },
+      "CommitteeSubjectEvidenceBodyDto": {
+        "type": "object",
+        "description": "Subject records; deliberately contains no consultation findings, results or rounds.",
+        "required": [
+          "schema_version",
+          "project_id",
+          "epic_id",
+          "question",
+          "jira_binding",
+          "tasks",
+          "open_questions",
+          "cursor_before",
+          "cursor_after"
+        ],
+        "properties": {
+          "completion": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CommitteeCompletionEvidenceDto",
+                "description": "Epic completion evidence; absent for ticket-scoped runs or before completion starts."
+              }
+            ]
+          },
+          "cursor_after": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Event cursor after composing the read; not a claim of a database-wide atomic snapshot."
+          },
+          "cursor_before": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Event cursors bracketing this composed read. Different cursors signal concurrent writes."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "Owning epic from the persisted run."
+          },
+          "jira_binding": {
+            "$ref": "#/components/schemas/JiraBindingDto",
+            "description": "Epic identity and external convergence proof."
+          },
+          "open_questions": {
+            "type": "array",
+            "items": {},
+            "description": "Current epic question ledger; empty for a ticket-scoped run."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project from the persisted run, never from caller input."
+          },
+          "question": {
+            "type": "string",
+            "description": "Original question frozen at invocation."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Canonical evidence envelope version.",
+            "minimum": 0
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact ticket subject, if this is a ticket-scoped consultation."
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommitteeTaskEvidenceDto"
+            },
+            "description": "Only the exact task, or all epic tasks for an epic-scoped run."
+          }
+        }
+      },
+      "CommitteeSubjectEvidenceDto": {
+        "type": "object",
+        "description": "A current projection, not a new completion receipt or an immutable stored snapshot.",
+        "required": [
+          "content_hash",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "$ref": "#/components/schemas/CommitteeSubjectEvidenceBodyDto",
+            "description": "Only the subject frozen onto this Committee run."
+          },
+          "content_hash": {
+            "type": "string",
+            "description": "Canonical SHA-256 of `body`, allowing the reviewer to cite exactly what it read."
+          }
+        }
+      },
+      "CommitteeTaskEvidenceDto": {
+        "type": "object",
+        "description": "The task contract, current gate evaluations, and distinct evidence authority classes.",
+        "required": [
+          "task",
+          "gate_evaluations",
+          "producer_artifacts",
+          "native_closure_artifact_keys"
+        ],
+        "properties": {
+          "gate_evaluations": {
+            "type": "array",
+            "items": {},
+            "description": "Append-only evaluations of the active workflow, including evaluator and evidence citations."
+          },
+          "native_closure_artifact_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Current native closure certificate keys. These do not establish artifact production."
+          },
+          "producer_artifacts": {
+            "type": "array",
+            "items": {},
+            "description": "Active-workflow artifact records with immutable locators and truthful producer provenance.\nGET also includes bounded SHA-256-verified UTF-8 `content`, or an explicit unavailable/deferred status."
+          },
+          "task": {
+            "$ref": "#/components/schemas/EpicTaskProjectionDto",
+            "description": "Existing task projection including gate obligations, current states and Jira binding."
+          },
+          "work_profile": {
+            "description": "Exact immutable work profile pinned by the active workflow."
           }
         }
       },

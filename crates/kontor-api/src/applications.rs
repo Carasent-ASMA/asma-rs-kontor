@@ -1644,6 +1644,9 @@ pub struct CommitteeRunDto {
     /// The epic it advises.
     #[schema(value_type = String)]
     pub epic_id: MiniProjectId,
+    /// Same-subject evidence, independent of any Committee member's finding.
+    /// Absent for legacy runs whose subject was never durably recorded.
+    pub subject_evidence: Option<crate::committee_evidence::CommitteeSubjectEvidenceDto>,
     /// The pinned template it runs under.
     pub template: ProfileRevisionDto,
     /// Exact topic frozen at invocation and rendered in the CSW name.
@@ -7556,6 +7559,16 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         committee_run_id: CommitteeRunId,
     ) -> Result<CommitteeRunDto, ApiError>;
+    /// Read verified bytes from one registry artifact within the persisted Committee subject.
+    async fn committee_artifact(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        evidence_id: &str,
+        offset: u32,
+    ) -> Result<crate::committee_evidence::CommitteeArtifactContentDto, ApiError>;
+    /// Populate bounded verified report text after the transport authenticates the addressed seat.
+    async fn hydrate_committee_reports(&self, run: &mut CommitteeRunDto) -> Result<(), ApiError>;
     /// Read pending native permission requests from one exact Committee seat.
     async fn inspect_consultation_permissions(
         &self,
@@ -10864,11 +10877,15 @@ pub async fn committee_run(
         .applications()
         .committee_run(project_id, committee_run_id)?;
     project_committee_for_caller(&state, caller, &mut run)?;
+    state
+        .applications()
+        .hydrate_committee_reports(&mut run)
+        .await?;
     Ok(Json(run))
 }
 
 /// Apply the same evidence visibility after both reads and findings writes.
-fn project_committee_for_caller(
+pub(crate) fn project_committee_for_caller(
     state: &ApiState,
     caller: Caller,
     run: &mut CommitteeRunDto,

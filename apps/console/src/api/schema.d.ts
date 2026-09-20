@@ -742,6 +742,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/artifacts/{evidence_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one artifact without granting shell, network, or general filesystem access. */
+        get: operations["committee_artifact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record": {
         parameters: {
             query?: never;
@@ -4442,6 +4459,61 @@ export interface components {
              */
             snapshot_cursor: number;
         };
+        /** @description A bounded page of SHA-256-verified UTF-8 bytes from a registered immutable Git blob. */
+        CommitteeArtifactContentDto: {
+            /** @description Addressed Committee run. */
+            committee_run_id: string;
+            /** @description Registry artifact identity, not a caller-supplied filesystem locator. */
+            evidence_id: string;
+            /**
+             * Format: int32
+             * @description Next character-aligned byte offset, if more remains.
+             */
+            next_offset?: number | null;
+            /**
+             * Format: int32
+             * @description Byte position of this page.
+             */
+            offset: number;
+            /** @description Owning realm. */
+            realm_id: string;
+            /** @description Verified full-blob digest. */
+            sha256: string;
+            /** @description Untrusted artifact text for review, not control-plane instructions. */
+            text: string;
+            /**
+             * Format: int32
+             * @description Total UTF-8 byte length.
+             */
+            total_bytes: number;
+        };
+        /** @description Completion facts that cannot reveal an independent Committee member's verdict. */
+        CommitteeCompletionEvidenceDto: {
+            /** @description Current phase blockers. */
+            blockers: components["schemas"]["CompletionBlockerDto"][];
+            /** @description Recorded closeout prerequisite digests. */
+            closeout: components["schemas"]["CloseoutEvidenceDto"];
+            /** @description Pinned completion policy body. */
+            definition: unknown;
+            /**
+             * Format: int32
+             * @description Current reopening generation.
+             */
+            generation: number;
+            /** @description Initial and remediation integration bodies, including repository/module/root/PR outcomes. */
+            integrations: components["schemas"]["IntegrationRecordDto"][];
+            /** @description Current phase, without round verdicts or deliberation. */
+            phase: components["schemas"]["CompletionPhaseDto"];
+            /** @description Exact completion profile identity and digest. */
+            profile: components["schemas"]["ProfileRevisionDto"];
+            /**
+             * Format: int64
+             * @description Current completion revision.
+             */
+            revision: number;
+            /** @description Frozen ticket goals and evidence obligations. */
+            ticket_requirements: unknown[];
+        };
         /** @description One durable Committee finding, including dissent and evidence references. */
         CommitteeFindingDto: {
             /** @description Hash of the immutable finding document. */
@@ -4551,12 +4623,69 @@ export interface components {
             snapshot_cursor: number;
             /** @description Its lifecycle, in the server's own vocabulary. */
             state: string;
+            subject_evidence?: null | components["schemas"]["CommitteeSubjectEvidenceDto"];
             /** @description The pinned template it runs under. */
             template: components["schemas"]["ProfileRevisionDto"];
             /** @description Exact topic frozen at invocation and rendered in the CSW name. */
             topic?: string | null;
             /** @description Dedicated CSW node. */
             topology_node_id: string;
+        };
+        /** @description Subject records; deliberately contains no consultation findings, results or rounds. */
+        CommitteeSubjectEvidenceBodyDto: {
+            completion?: null | components["schemas"]["CommitteeCompletionEvidenceDto"];
+            /**
+             * Format: int64
+             * @description Event cursor after composing the read; not a claim of a database-wide atomic snapshot.
+             */
+            cursor_after: number;
+            /**
+             * Format: int64
+             * @description Event cursors bracketing this composed read. Different cursors signal concurrent writes.
+             */
+            cursor_before: number;
+            /** @description Owning epic from the persisted run. */
+            epic_id: string;
+            /** @description Epic identity and external convergence proof. */
+            jira_binding: components["schemas"]["JiraBindingDto"];
+            /** @description Current epic question ledger; empty for a ticket-scoped run. */
+            open_questions: unknown[];
+            /** @description Owning project from the persisted run, never from caller input. */
+            project_id: string;
+            /** @description Original question frozen at invocation. */
+            question: string;
+            /**
+             * Format: int32
+             * @description Canonical evidence envelope version.
+             */
+            schema_version: number;
+            /** @description Exact ticket subject, if this is a ticket-scoped consultation. */
+            task_id?: string | null;
+            /** @description Only the exact task, or all epic tasks for an epic-scoped run. */
+            tasks: components["schemas"]["CommitteeTaskEvidenceDto"][];
+        };
+        /** @description A current projection, not a new completion receipt or an immutable stored snapshot. */
+        CommitteeSubjectEvidenceDto: {
+            /** @description Only the subject frozen onto this Committee run. */
+            body: components["schemas"]["CommitteeSubjectEvidenceBodyDto"];
+            /** @description Canonical SHA-256 of `body`, allowing the reviewer to cite exactly what it read. */
+            content_hash: string;
+        };
+        /** @description The task contract, current gate evaluations, and distinct evidence authority classes. */
+        CommitteeTaskEvidenceDto: {
+            /** @description Append-only evaluations of the active workflow, including evaluator and evidence citations. */
+            gate_evaluations: unknown[];
+            /** @description Current native closure certificate keys. These do not establish artifact production. */
+            native_closure_artifact_keys: string[];
+            /**
+             * @description Active-workflow artifact records with immutable locators and truthful producer provenance.
+             *     GET also includes bounded SHA-256-verified UTF-8 `content`, or an explicit unavailable/deferred status.
+             */
+            producer_artifacts: unknown[];
+            /** @description Existing task projection including gate obligations, current states and Jira binding. */
+            task: components["schemas"]["EpicTaskProjectionDto"];
+            /** @description Exact immutable work profile pinned by the active workflow. */
+            work_profile?: unknown;
         };
         /** @description Apply request bound to one exact Committee-topic correction preview. */
         CommitteeTopicCorrectionApplyRequest: {
@@ -12360,6 +12489,61 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    committee_artifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                committee_run_id: string;
+                evidence_id: string;
+                /** @description Zero for the first page; then use the returned `next_offset`. */
+                offset: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitteeArtifactContentDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
