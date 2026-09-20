@@ -138,7 +138,8 @@ use kontor_api::applications::{
     WorktreeClaimCorrectionPreviewDto, WorktreeClaimCorrectionRequest,
 };
 use kontor_api::applications::{
-    FillTeamRunSeatRequest, FilledTeamRunSeatDto, TeamRunSeatDispatchDto,
+    FillTeamRunSeatRequest, FilledTeamRunSeatDto, MemorySelectionDto, OmittedMemoryRevisionDto,
+    TeamRunSeatDispatchDto,
 };
 use kontor_api::dto::JiraBindingDto;
 use kontor_api::error::{ApiError, ApiErrorCode};
@@ -5819,6 +5820,92 @@ impl Services {
 
     /// Canonicalize one intent document, refusing anything the domain will not
     /// store.
+    /// Choose the approved memory a Context Pack can actually carry.
+    ///
+    /// The whole approved set is tried first and is the answer whenever it fits,
+    /// so nothing changes for a project below the ceiling — same sources, same
+    /// bytes, same hash. Only when the canonical document would exceed
+    /// [`kontor_core::id::MAX_CANONICAL_BYTES`] is the set narrowed, and then to
+    /// the longest prefix of the store's own deterministic order that does fit.
+    ///
+    /// The prefix is found by canonicalizing candidate packs rather than by
+    /// estimating their size from the documents' own lengths: key names, JSON
+    /// escaping and one provenance entry per resolved leaf all land in the
+    /// canonical bytes, so an estimate would have to carry a safety margin and
+    /// would drop revisions that would have fitted. Each memory item occupies its
+    /// own `/memory/<item_id>` subtree and so can only add bytes, which makes the
+    /// fit monotonic in the prefix length and lets a binary search find the exact
+    /// boundary in a logarithmic number of attempts.
+    ///
+    /// Only the ceiling refusal is treated this way. Sensitive material, a
+    /// non-finite number or a missing `schema_version` are faults in a document
+    /// that no amount of narrowing can fix, and they still refuse.
+    fn select_memory_within_ceiling(
+        &self,
+        realm_id: kontor_core::id::RealmId,
+        task: &kontor_core::repository::Task,
+        workflow: &kontor_core::repository::TaskWorkflow,
+        memory: &[kontor_store::memory::MemoryRevision],
+    ) -> Result<MemorySelection, ApiError> {
+        let fits = |count: usize| -> Result<bool, ApiError> {
+            let sources = context_sources(realm_id, task, workflow, &memory[..count])?;
+            let references = kontor_context::model::ReferenceInputs::new();
+            let resolution = kontor_context::resolve::ResolutionRequest {
+                realm_id,
+                sources: &sources,
+                references: &references,
+            };
+            match kontor_context::resolve::preview(&resolution) {
+                Ok(_) => Ok(true),
+                Err(kontor_core::DomainError::Invalid { subject, rule })
+                    if subject == "CanonicalDocument"
+                        && rule == kontor_core::id::OVER_CANONICAL_CEILING =>
+                {
+                    Ok(false)
+                }
+                Err(error) => Err(self.refuse_domain(&error)),
+            }
+        };
+
+        if fits(memory.len())? {
+            return Ok(MemorySelection::whole(memory.len()));
+        }
+        // The base layers alone are over the ceiling, so no choice of memory
+        // rescues this. Refuse with the resolver's own error rather than return
+        // a pack that silently stands for something else.
+        if !fits(0)? {
+            let sources = context_sources(realm_id, task, workflow, &[])?;
+            let references = kontor_context::model::ReferenceInputs::new();
+            let resolution = kontor_context::resolve::ResolutionRequest {
+                realm_id,
+                sources: &sources,
+                references: &references,
+            };
+            let error = kontor_context::resolve::preview(&resolution)
+                .err()
+                .unwrap_or_else(|| {
+                    kontor_core::DomainError::invalid(
+                        "CanonicalDocument",
+                        kontor_core::id::OVER_CANONICAL_CEILING,
+                    )
+                });
+            return Err(self.refuse_domain(&error));
+        }
+        // Largest `included` in [0, len) that fits; `low` always fits and `high`
+        // never does, so the loop closes on the exact boundary.
+        let mut low = 0usize;
+        let mut high = memory.len();
+        while high - low > 1 {
+            let middle = low + (high - low) / 2;
+            if fits(middle)? {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        Ok(MemorySelection::narrowed(low))
+    }
+
     fn intent(&self, value: &serde_json::Value) -> Result<CanonicalDocument, ApiError> {
         CanonicalDocument::from_value(value).map_err(|error| self.refuse_domain(&error))
     }
@@ -13194,6 +13281,63 @@ fn seat_block(task_id: TaskId, refusal: &ApiError) -> BlockedTaskDto {
         code: refusal.code.as_str().to_owned(),
         action: refusal.action.to_owned(),
         evidence: vec![evidence],
+    }
+}
+
+/// Which approved memory revisions a Context Pack carries.
+///
+/// The store's order is the selection order, so `included` is a prefix length
+/// and the omitted revisions are exactly the tail. Keeping it as a length rather
+/// than a copied list is what makes the choice reproducible: the same store
+/// order and the same ceiling give the same prefix, and therefore the same pack
+/// bytes and the same hash, on every call and on a replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MemorySelection {
+    included: usize,
+    narrowed: bool,
+}
+
+impl MemorySelection {
+    /// The rule that chose the revisions. Bump this when the rule changes, so a
+    /// pack whose hash moved for that reason can be told from one whose inputs
+    /// moved.
+    const VERSION: u32 = 1;
+
+    const fn whole(included: usize) -> Self {
+        Self {
+            included,
+            narrowed: false,
+        }
+    }
+
+    const fn narrowed(included: usize) -> Self {
+        Self {
+            included,
+            narrowed: true,
+        }
+    }
+
+    fn included<'a>(
+        &self,
+        memory: &'a [kontor_store::memory::MemoryRevision],
+    ) -> &'a [kontor_store::memory::MemoryRevision] {
+        &memory[..self.included]
+    }
+
+    fn report(&self, memory: &[kontor_store::memory::MemoryRevision]) -> MemorySelectionDto {
+        MemorySelectionDto {
+            selector_version: Self::VERSION,
+            ceiling_bytes: kontor_core::id::MAX_CANONICAL_BYTES as u64,
+            included: u32::try_from(self.included).unwrap_or(u32::MAX),
+            narrowed: self.narrowed,
+            omitted: memory[self.included..]
+                .iter()
+                .map(|revision| OmittedMemoryRevisionDto {
+                    item_id: revision.item_id.clone(),
+                    revision_id: revision.revision_id.clone(),
+                })
+                .collect(),
+        }
     }
 }
 
@@ -29228,7 +29372,11 @@ impl ApplicationOperations for Services {
                     "approved project memory could not be read",
                 ),
             })?;
-        let sources = context_sources(realm_id, &task, &workflow, &memory)?;
+        // Approved memory grows without bound; the canonical pack does not. When
+        // the whole approved set no longer fits, resolving must still answer —
+        // with a pack that says exactly which revisions it left out.
+        let selection = self.select_memory_within_ceiling(realm_id, &task, &workflow, &memory)?;
+        let sources = context_sources(realm_id, &task, &workflow, selection.included(&memory))?;
         let references = kontor_context::model::ReferenceInputs::new();
         let resolution = kontor_context::resolve::ResolutionRequest {
             realm_id,
@@ -29317,6 +29465,7 @@ impl ApplicationOperations for Services {
                     reason: format!("{:?}", record.reason).to_lowercase(),
                 })
                 .collect(),
+            memory_selection: selection.report(&memory),
         })
     }
 
