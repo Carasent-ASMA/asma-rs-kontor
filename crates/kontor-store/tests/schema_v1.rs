@@ -100,6 +100,9 @@ const EXPECTED_TABLES: &[&str] = &[
     // written before the native call and consumed when the occupancy binds.
     "hosted_topology_seat_launch_intents",
     "hosted_seat_launch_intent_supersessions",
+    // Schema v116 (ASMA-8196): the role persona each launched occupancy was
+    // opened under, frozen before the native call and never re-derived.
+    "hosted_seat_role_personas",
     // Schema v7 (KON-MVP-21): which importer produced a holiday source revision,
     // what the request asked for, and the chain that makes one import current.
     "holiday_import_batches",
@@ -739,7 +742,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v112 makes question history and its retry receipt one atomic effect.
     // v114 preserves the authorized container-recovery disposition on replay.
     // v115 confirms atomic local effects and preserves their exact results.
-    assert_eq!(SCHEMA_VERSION, 115);
+    // v116 freezes, per launched occupancy, the role persona a hosted seat was
+    // opened under, so which persona a seat actually received survives restart
+    // and replacement rather than being re-derived from current configuration
+    // (ASMA-8196).
+    assert_eq!(SCHEMA_VERSION, 116);
 }
 
 #[test]

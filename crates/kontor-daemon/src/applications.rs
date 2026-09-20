@@ -74,18 +74,18 @@ use kontor_api::applications::{
     CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
     CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest,
     CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto, CoreTeamSeatClaimPreviewDto,
-    CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto, CoreTeamSeatRouteRequest,
-    CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto, DeliberationStepDto,
-    EnsureQuickSessionRequest, HostedSeatMessageDto, HostedSeatMessageRequestDto,
-    IntegrationRecordDto, InvokeAdvisorRequest, InvokeConsultationRequest, NeedsHumanDto,
-    PartialAdmissionSeatDto, ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto,
-    ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest,
-    PromotionPreviewDto, QuickRolesDto, QuickSessionDto, RecordFindingsRequest,
-    RecordedCloseoutDto, RecoverConsultationSeatRequest, RemediateCompletionRequest,
-    RemediationActionDto, RemediationAuthorityDto, RemediationAuthorizationDto,
-    RemediationRecordDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto,
-    RerouteUnmaterializedConsultationSeatRequest, RosterUpgradePreviewDto,
-    RosterUpgradePreviewRequest, SettleConsultationRequest,
+    CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto, CoreTeamSeatPersonaDto,
+    CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto,
+    DeliberationStepDto, EnsureQuickSessionRequest, HostedSeatMessageDto,
+    HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeAdvisorRequest,
+    InvokeConsultationRequest, NeedsHumanDto, PartialAdmissionSeatDto, ProfileApplyRequest,
+    ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto,
+    PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
+    RecordFindingsRequest, RecordedCloseoutDto, RecoverConsultationSeatRequest,
+    RemediateCompletionRequest, RemediationActionDto, RemediationAuthorityDto,
+    RemediationAuthorizationDto, RemediationRecordDto, RepositoryOutcomeDto,
+    RepositoryOutcomeInputDto, RerouteUnmaterializedConsultationSeatRequest,
+    RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
     UnmaterializedConsultationSeatRerouteDto,
 };
 use kontor_api::applications::{
@@ -6841,9 +6841,29 @@ impl Services {
             })
     }
 
-    /// The configured launch-time persona for one role.
-    fn role_persona(&self, role_code: &RoleCode) -> Option<BoundedText> {
-        self.domain.role_prompt(role_code).cloned()
+    /// Freeze the launch-time persona for one role, when that role seeds one.
+    ///
+    /// The snapshot is what gets persisted *and* what gets delivered, so the
+    /// bytes recorded as received and the bytes actually sent cannot drift
+    /// apart: there is one value, hashed once and used twice. A role with no
+    /// seeded persona yields `None` and is launched under no system prompt,
+    /// exactly as every role was before this table existed.
+    fn freeze_role_persona(
+        &self,
+        role_code: &RoleCode,
+    ) -> Result<Option<kontor_core::spec::RolePersonaSnapshot>, ApiError> {
+        let Some(prompt) = self.domain.role_prompt(role_code) else {
+            return Ok(None);
+        };
+        kontor_core::spec::RolePersonaSnapshot::freeze(
+            role_code.clone(),
+            prompt.clone(),
+            kontor_core::spec::RolePersonaDelivery::CreateOnlyNoReadback,
+            SCHEMA_VERSION,
+            kontor_api::now(),
+        )
+        .map(Some)
+        .map_err(|error| self.refuse_domain(&error))
     }
 
     /// The catalog revision this build publishes.
@@ -7988,6 +8008,24 @@ impl Services {
                     },
                     observed_at: native.observed_at,
                 });
+            // Read for the occupancy actually filling the seat, so a replaced
+            // seat reports the persona *its own* generation was launched under
+            // rather than inheriting the predecessor's.
+            seat.role_persona = match seat.seat_binding_id {
+                Some(seat_binding_id) => state
+                    .with_store(|store| {
+                        store.latest_hosted_seat_role_persona(project_id, seat_binding_id)
+                    })
+                    .map_err(|error| self.refuse(&error))?
+                    .map(|(occupancy_generation, persona)| CoreTeamSeatPersonaDto {
+                        role_code: persona.role_code,
+                        prompt_hash: persona.prompt_hash,
+                        delivery: persona.delivery.as_str().to_owned(),
+                        occupancy_generation,
+                        frozen_at: persona.frozen_at,
+                    }),
+                None => None,
+            };
         }
         Ok(CoreTeamDto {
             realm_id: state.realm_id(),
@@ -8674,6 +8712,7 @@ impl Services {
                     ad_hoc_allowed: seat.ad_hoc_allowed,
                     seat_binding_id: None,
                     native_seat: None,
+                    role_persona: None,
                 })
             })
             .collect()
@@ -23954,6 +23993,22 @@ impl ApplicationOperations for Services {
                         })
                     })
                     .map_err(|error| self.refuse(&error))?;
+                // Frozen before the native call for the same reason the intent is:
+                // a launch whose acknowledgement is lost must still leave behind
+                // which persona it was going to deliver.
+                let role_persona = self.freeze_role_persona(&seat.role.role_code)?;
+                if let Some(persona) = role_persona.as_ref() {
+                    state
+                        .with_store(|store| {
+                            store.record_hosted_seat_role_persona(
+                                project_id,
+                                seat_binding_id,
+                                FIRST_HOSTED_OCCUPANCY,
+                                persona,
+                            )
+                        })
+                        .map_err(|error| self.refuse(&error))?;
+                }
                 let outcome = adapter
                     .launch_hosted_seat(&HostedSeatLaunchRequest {
                         seat_binding_id,
@@ -23963,7 +24018,7 @@ impl ApplicationOperations for Services {
                         cwd: cwd.clone(),
                         scope: scope.clone(),
                         prompt,
-                        role_prompt: self.role_persona(&seat.role.role_code),
+                        role_prompt: role_persona.as_ref().map(|persona| persona.prompt.clone()),
                         credential: ConsultationCredential::new(
                             state
                                 .credentials()
@@ -24457,6 +24512,23 @@ impl ApplicationOperations for Services {
                     })
                 })
                 .map_err(|error| self.refuse(&error))?;
+            // A successor is its own occupancy, so it freezes its own persona.
+            // Reading the predecessor's would report a persona this native was
+            // never created under, which is the exact confusion a per-seat
+            // record would permit.
+            let role_persona = self.freeze_role_persona(&plan.binding.role.role_code)?;
+            if let Some(persona) = role_persona.as_ref() {
+                state
+                    .with_store(|store| {
+                        store.record_hosted_seat_role_persona(
+                            project_id,
+                            plan.binding.id,
+                            successor_occupancy_generation,
+                            persona,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+            }
             let outcome = adapter
                 .launch_hosted_seat(&HostedSeatLaunchRequest {
                     seat_binding_id: plan.binding.id,
@@ -24466,7 +24538,7 @@ impl ApplicationOperations for Services {
                     cwd,
                     scope,
                     prompt,
-                    role_prompt: self.role_persona(&plan.binding.role.role_code),
+                    role_prompt: role_persona.as_ref().map(|persona| persona.prompt.clone()),
                     credential: ConsultationCredential::new(
                         state.credentials().seat_credential_for_generation(
                             plan.binding.id,

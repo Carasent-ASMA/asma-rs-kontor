@@ -815,6 +815,10 @@ struct FakeState {
     /// between one control operation and the next.
     declared_autonomy: Option<SeatAutonomy>,
     hosted_role_prompts: BTreeMap<SeatBindingId, Option<BoundedText>>,
+    /// The bounded first handoff each hosted seat was launched with, recorded
+    /// beside the persona so a test can prove the two are different values
+    /// rather than one value written twice.
+    hosted_initial_prompts: BTreeMap<SeatBindingId, BoundedText>,
     /// Terminal hosted natives retained so retirement and recovery are replayable.
     archived_hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// Stable message ledger per exact hosted native. A logical seat may be
@@ -1435,6 +1439,7 @@ impl ScriptedFakeRuntime {
                 hosted_retire_placements: Vec::new(),
                 declared_autonomy: None,
                 hosted_role_prompts: BTreeMap::new(),
+                hosted_initial_prompts: BTreeMap::new(),
                 archived_hosted_seats: BTreeMap::new(),
                 hosted_messages: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
@@ -2383,6 +2388,12 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn hosted_role_prompt(&self, seat: SeatBindingId) -> Option<Option<BoundedText>> {
         self.lock().hosted_role_prompts.get(&seat).cloned()
+    }
+
+    /// The bounded first handoff one hosted seat was launched with.
+    #[must_use]
+    pub fn hosted_initial_prompt(&self, seat: SeatBindingId) -> Option<BoundedText> {
+        self.lock().hosted_initial_prompts.get(&seat).cloned()
     }
 
     /// The route a consultation seat was launched on.
@@ -3922,6 +3933,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .hosted_role_prompts
             .insert(request.seat_binding_id, request.role_prompt.clone());
+        state
+            .hosted_initial_prompts
+            .insert(request.seat_binding_id, request.prompt.clone());
         if let Some(existing) = state.hosted_seats.get(&request.seat_binding_id) {
             return Ok(existing.clone());
         }

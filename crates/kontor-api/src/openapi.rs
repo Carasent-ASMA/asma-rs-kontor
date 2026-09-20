@@ -370,6 +370,7 @@ impl Modify for RealmBearer {
         crate::applications::AppliedProfileDto,
         crate::applications::CoreTeamSeatDto,
         crate::applications::CoreTeamNativeSeatDto,
+        crate::applications::CoreTeamSeatPersonaDto,
         crate::applications::CoreTeamSeatSelectionDto,
         crate::applications::CoreTeamDto,
         crate::applications::CoreTeamPreviewRequest,

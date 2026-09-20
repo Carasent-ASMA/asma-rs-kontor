@@ -801,6 +801,38 @@ pub struct CoreTeamSeatDto {
     /// Exact native session filling this persistent seat, once launched.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_seat: Option<CoreTeamNativeSeatDto>,
+    /// The persona this seat's current occupancy was launched under.
+    ///
+    /// Always serialized, unlike `native_seat`: `null` here is a positive
+    /// statement that the role seeds no persona and the seat was opened under
+    /// no system prompt, which a reader has to be able to tell apart from a
+    /// field this projection simply did not fill in.
+    pub role_persona: Option<CoreTeamSeatPersonaDto>,
+}
+
+/// The persona one launched occupancy was opened under, as Kontor froze it.
+///
+/// Deliberately *not* a field of [`CoreTeamNativeSeatDto`], which reports what
+/// the runtime read back. Paseo's `config.systemPrompt` is creation-only, so no
+/// runtime here can attest the prompt a native is currently running under. This
+/// is evidence that Kontor froze this persona and delivered it at launch, and
+/// `delivery` says which of those two things it is in as many words, rather
+/// than leaving a reader to assume the stronger one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamSeatPersonaDto {
+    /// The catalog role whose persona was delivered.
+    #[schema(value_type = String)]
+    pub role_code: kontor_core::id::RoleCode,
+    /// Digest of the exact delivered text.
+    #[schema(value_type = String)]
+    pub prompt_hash: kontor_core::id::ContentHash,
+    /// What the runtime's acceptance of this persona actually proves.
+    pub delivery: String,
+    /// The occupancy generation this persona was frozen for.
+    pub occupancy_generation: u64,
+    /// When it was frozen, which is before the native call.
+    #[schema(value_type = String, format = DateTime)]
+    pub frozen_at: Timestamp,
 }
 
 /// Exact runtime readback filling one persistent Core Team seat.
