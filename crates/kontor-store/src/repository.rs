@@ -4346,6 +4346,157 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Freeze the role persona one launched occupancy is opened under.
+    ///
+    /// Written before the native call, beside the launch intent, so a launch
+    /// whose acknowledgement is lost still leaves behind what it was going to
+    /// deliver. A replay of the identical persona is the same act and converges;
+    /// a *different* persona for the same occupancy is a second answer to a
+    /// settled question and refuses rather than overwriting the first.
+    pub fn record_hosted_seat_role_persona(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+        snapshot: &kontor_core::spec::RolePersonaSnapshot,
+    ) -> RepositoryResult<Applied> {
+        // Re-verified before anything is written: a snapshot whose text and
+        // digest disagree is not a record of anything, and storing it would
+        // launder the disagreement into the audit trail.
+        snapshot.verify()?;
+        let generation =
+            i64::try_from(occupancy_generation).map_err(|_| RepositoryError::Backend {
+                detail: "a hosted-seat role persona generation is invalid".to_owned(),
+            })?;
+        let schema = i64::from(snapshot.schema_version.get());
+        if let Some(existing) =
+            self.get_hosted_seat_role_persona(project_id, seat_binding_id, occupancy_generation)?
+        {
+            if existing.prompt_hash != snapshot.prompt_hash {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted seat role persona",
+                    rule: "one occupancy generation cannot be launched under a second persona",
+                });
+            }
+            return Ok(Applied::Unchanged);
+        }
+        self.connection
+            .execute(
+                "INSERT INTO hosted_seat_role_personas
+                     (project_id, seat_binding_id, occupancy_generation, role_code,
+                      prompt, prompt_hash, delivery, schema_version, frozen_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    project_id.to_string(),
+                    seat_binding_id.to_string(),
+                    generation,
+                    snapshot.role_code.as_str(),
+                    snapshot.prompt.as_str(),
+                    snapshot.prompt_hash.as_str(),
+                    snapshot.delivery.as_str(),
+                    schema,
+                    text(snapshot.frozen_at),
+                ],
+            )
+            .map_err(backend)?;
+        Ok(Applied::Created)
+    }
+
+    /// The persona this seat's newest occupancy was opened under.
+    ///
+    /// Generations only increase and each hosted launch writes at most one row,
+    /// so the highest generation is the current occupancy. Asking for "the
+    /// newest" rather than being told a generation keeps a reader from having
+    /// to derive the occupancy from a runtime readback generation, which counts
+    /// something else entirely and would silently answer about the wrong launch.
+    pub fn latest_hosted_seat_role_persona(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> RepositoryResult<Option<(u64, kontor_core::spec::RolePersonaSnapshot)>> {
+        let generation: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT MAX(occupancy_generation) FROM hosted_seat_role_personas
+                 WHERE project_id = ?1 AND seat_binding_id = ?2",
+                params![project_id.to_string(), seat_binding_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .flatten();
+        let Some(generation) = generation else {
+            return Ok(None);
+        };
+        let generation = u64::try_from(generation).map_err(|_| RepositoryError::Backend {
+            detail: "a hosted-seat role persona generation is invalid".to_owned(),
+        })?;
+        Ok(self
+            .get_hosted_seat_role_persona(project_id, seat_binding_id, generation)?
+            .map(|persona| (generation, persona)))
+    }
+
+    /// Read the exact persona one occupancy generation was opened under.
+    ///
+    /// Absence is a real answer: a role with no seeded persona is launched under
+    /// none, and that is reported as `None` rather than as a missing record.
+    pub fn get_hosted_seat_role_persona(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+    ) -> RepositoryResult<Option<kontor_core::spec::RolePersonaSnapshot>> {
+        let generation =
+            i64::try_from(occupancy_generation).map_err(|_| RepositoryError::Backend {
+                detail: "a hosted-seat role persona generation is invalid".to_owned(),
+            })?;
+        let row: Option<(String, String, String, String, i64, String)> = self
+            .connection
+            .query_row(
+                "SELECT role_code, prompt, prompt_hash, delivery, schema_version, frozen_at
+                 FROM hosted_seat_role_personas
+                 WHERE project_id = ?1 AND seat_binding_id = ?2
+                   AND occupancy_generation = ?3",
+                params![
+                    project_id.to_string(),
+                    seat_binding_id.to_string(),
+                    generation,
+                ],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((role_code, prompt, prompt_hash, delivery, schema_version, frozen_at)) = row
+        else {
+            return Ok(None);
+        };
+        let schema_version =
+            u32::try_from(schema_version).map_err(|_| RepositoryError::Backend {
+                detail: "a hosted-seat role persona schema version is invalid".to_owned(),
+            })?;
+        let snapshot = kontor_core::spec::RolePersonaSnapshot {
+            schema_version: kontor_core::id::SchemaVersion::parse(schema_version)?,
+            role_code: RoleCode::parse(&role_code)?,
+            prompt: BoundedText::parse(&prompt)?,
+            prompt_hash: ContentHash::parse(&prompt_hash)?,
+            delivery: kontor_core::spec::RolePersonaDelivery::parse(&delivery)?,
+            frozen_at: parse_utc_timestamp(&frozen_at)?,
+        };
+        // The stored halves are checked on the way out as well as in: a row
+        // edited underneath Kontor must not be reported as evidence.
+        snapshot.verify()?;
+        Ok(Some(snapshot))
+    }
+
     /// Record what one hosted-seat launch resolved, before the native call.
     ///
     /// Idempotent for the same decision and refusing for a different one. A

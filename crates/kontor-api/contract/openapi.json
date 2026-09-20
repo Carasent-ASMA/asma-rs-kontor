@@ -15962,12 +15962,59 @@
             "$ref": "#/components/schemas/ResolvedRoleRefDto",
             "description": "The role, as the server resolved it."
           },
+          "role_persona": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CoreTeamSeatPersonaDto",
+                "description": "The persona this seat's current occupancy was launched under.\n\nAlways serialized, unlike `native_seat`: `null` here is a positive\nstatement that the role seeds no persona and the seat was opened under\nno system prompt, which a reader has to be able to tell apart from a\nfield this projection simply did not fill in."
+              }
+            ]
+          },
           "seat_binding_id": {
             "type": [
               "string",
               "null"
             ],
             "description": "The binding filling it, once one has been materialized."
+          }
+        }
+      },
+      "CoreTeamSeatPersonaDto": {
+        "type": "object",
+        "description": "The persona one launched occupancy was opened under, as Kontor froze it.\n\nDeliberately *not* a field of [`CoreTeamNativeSeatDto`], which reports what\nthe runtime read back. Paseo's `config.systemPrompt` is creation-only, so no\nruntime here can attest the prompt a native is currently running under. This\nis evidence that Kontor froze this persona and delivered it at launch, and\n`delivery` says which of those two things it is in as many words, rather\nthan leaving a reader to assume the stronger one.",
+        "required": [
+          "role_code",
+          "prompt_hash",
+          "delivery",
+          "occupancy_generation",
+          "frozen_at"
+        ],
+        "properties": {
+          "delivery": {
+            "type": "string",
+            "description": "What the runtime's acceptance of this persona actually proves."
+          },
+          "frozen_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was frozen, which is before the native call."
+          },
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The occupancy generation this persona was frozen for.",
+            "minimum": 0
+          },
+          "prompt_hash": {
+            "type": "string",
+            "description": "Digest of the exact delivered text."
+          },
+          "role_code": {
+            "type": "string",
+            "description": "The catalog role whose persona was delivered."
           }
         }
       },

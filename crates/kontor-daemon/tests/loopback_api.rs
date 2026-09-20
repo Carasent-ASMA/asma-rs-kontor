@@ -44278,6 +44278,68 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
          rather than under the architecture lead's"
     );
 
+    // TEST-007. Everything above reads the adapter's record of the request it
+    // was handed: that proves Kontor *composed* a persona, which is desired
+    // input, not evidence of anything durable. What follows is the evidence --
+    // the frozen occupancy record, and its projection on the supported seat
+    // contract. It is what a reader still gets after a restart, and it cannot
+    // be reconstructed from configuration, which is the whole point: an edit to
+    // the operational-domain pack after launch must not be able to change the
+    // answer to "which persona did this seat receive".
+    let lsa_persona_digest = ContentHash::of(lsa_persona.as_str().as_bytes());
+    assert_eq!(
+        native_lsa["role_persona"]["role_code"], "LSA",
+        "the LSA seat snapshot must name the role whose persona it received"
+    );
+    assert_eq!(
+        native_lsa["role_persona"]["prompt_hash"],
+        lsa_persona_digest.as_str(),
+        "the snapshot digest must be the digest of the exact delivered text"
+    );
+    assert_eq!(
+        native_lsa["role_persona"]["delivery"], "create_only_no_readback",
+        "Paseo's system prompt is creation-only, so the snapshot has to report \
+         delivery rather than imply the native confirmed what it is running under"
+    );
+    assert_eq!(
+        native_lsa["role_persona"]["occupancy_generation"], 1,
+        "the first occupancy froze the persona it was opened under"
+    );
+    assert!(
+        native_tpm["role_persona"].is_null(),
+        "TPM seeds no persona, so its seat snapshot must say so explicitly \
+         rather than omitting the field: {}",
+        native_tpm["role_persona"]
+    );
+
+    let stored_lsa_persona = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store
+                .get_hosted_seat_role_persona(project_id, lsa_binding_id, 1)
+                .expect("the frozen LSA persona reads")
+        })
+        .expect("the first LSA occupancy froze a persona");
+    assert_eq!(
+        stored_lsa_persona.prompt, lsa_persona,
+        "the frozen text and the delivered text are one value, not two"
+    );
+    assert_eq!(stored_lsa_persona.prompt_hash, lsa_persona_digest);
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store
+                    .get_hosted_seat_role_persona(project_id, tpm_binding_id, 1)
+                    .expect("the frozen TPM persona reads")
+            })
+            .is_none(),
+        "a role that seeds no persona must freeze no record at all, rather than \
+         freezing an empty one that later reads as a persona"
+    );
+
     // Reproduce the operational gap: several logical wakes predate a stale TPM
     // replacement and none received a hosted-native acknowledgement. The
     // current completion projection is revision nine, so revision eight stays
@@ -44482,6 +44544,7 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         corrected_tpm["native_seat"]["model_route"]["provider"],
         "opencode"
     );
+
     let route_calls = &world.fake.calls()[calls_before_apply..];
     assert!(
         route_calls.contains(&AdapterCall::RetireHostedSeat(tpm_binding_id)),
@@ -44812,6 +44875,135 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         again.body
     );
     assert_eq!(again.json()["receipt"]["applied"], "unchanged");
+
+    // MUT-8196-3. The route correction earlier in this regression replaces a TPM, and TPM seeds no
+    // persona -- so dropping the role prompt from the *successor* launch cannot
+    // change its outcome, which is exactly why a mutant that did that survived
+    // this regression. Re-routing a role that does have a configured persona is
+    // what makes the successor branch observable at all.
+    let lsa_before_reroute = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat(project_id, lsa_binding_id)
+            .expect("the hosted LSA reads")
+            .expect("the hosted LSA exists")
+    });
+    let lsa_route_native = lsa_before_reroute
+        .native_identity
+        .native_id
+        .as_str()
+        .to_owned();
+    let lsa_route_generation = lsa_before_reroute.native_identity.generation;
+    let lsa_route_request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": lsa_binding,
+        "expected_native_id": lsa_route_native,
+        "expected_generation": lsa_route_generation,
+        "desired_model_route": {
+            "provider": "opencode",
+            "model": "deepseek/deepseek-flash",
+            "effort": "high"
+        },
+    });
+    let lsa_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &lsa_route_request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(lsa_preview.status, 200, "{}", lsa_preview.body);
+    let mut lsa_route_body = lsa_route_request;
+    lsa_route_body["preview_hash"] = lsa_preview.json()["preview_hash"].clone();
+    let lsa_routed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &lsa_route_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("core-team-lsa-route-correction")
+    .send(world)
+    .await;
+    assert_eq!(lsa_routed.status, 200, "{}", lsa_routed.body);
+
+    // Two assertions, because either alone is satisfiable by the wrong thing: a
+    // successor launched with the handoff in both slots would pass the first,
+    // and one launched with no persona at all would pass the second.
+    let successor_persona = world
+        .fake
+        .hosted_role_prompt(lsa_binding_id)
+        .expect("the successor launch reached the runtime")
+        .expect("the successor was launched under a persona");
+    assert!(
+        successor_persona
+            .as_str()
+            .contains("Lead Software Architect"),
+        "the replaced LSA lost its persona on successor creation: {}",
+        successor_persona.as_str()
+    );
+    let successor_handoff = world
+        .fake
+        .hosted_initial_prompt(lsa_binding_id)
+        .expect("the successor launch carried a first handoff");
+    assert_ne!(
+        successor_handoff, successor_persona,
+        "the persona and the bounded first handoff must remain two values"
+    );
+    assert!(
+        !successor_handoff
+            .as_str()
+            .contains("Lead Software Architect"),
+        "the persona was supplied as the first handoff: {}",
+        successor_handoff.as_str()
+    );
+
+    let routed_lsa = lsa_routed.json()["core_team"]["seats"]
+        .as_array()
+        .expect("routed seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "LSA")
+        .expect("the routed LSA")
+        .clone();
+    assert_eq!(
+        routed_lsa["role_persona"]["prompt_hash"],
+        lsa_persona_digest.as_str(),
+        "the successor's snapshot must carry the exact persona it was opened under"
+    );
+    let successor_occupancy_generation = routed_lsa["role_persona"]["occupancy_generation"]
+        .as_u64()
+        .expect("the successor's occupancy generation");
+    assert!(
+        successor_occupancy_generation > 1,
+        "a successor freezes its own occupancy's persona rather than reusing \
+         the first occupancy's record: {successor_occupancy_generation}"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store
+                    .get_hosted_seat_role_persona(
+                        project_id,
+                        lsa_binding_id,
+                        successor_occupancy_generation,
+                    )
+                    .expect("the successor persona reads")
+            })
+            .is_some(),
+        "the successor occupancy must have frozen its own durable persona"
+    );
+    // The predecessor's record is still there, unchanged. A replacement that
+    // overwrote it would destroy the only evidence of what the retired native
+    // was actually created under.
+    let first_occupancy_persona = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store
+                .get_hosted_seat_role_persona(project_id, lsa_binding_id, 1)
+                .expect("the first occupancy persona reads")
+        })
+        .expect("the first occupancy's persona survives its replacement");
+    assert_eq!(first_occupancy_persona.prompt_hash, lsa_persona_digest);
 }
 
 /// A later project edit does not touch an epic already staffed.
