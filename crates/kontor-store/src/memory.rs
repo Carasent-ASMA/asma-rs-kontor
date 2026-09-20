@@ -294,7 +294,36 @@ impl SqliteStore {
         project_id: ProjectId,
         item_id: &str,
     ) -> Result<Vec<MemoryRevision>, MemoryError> {
-        let mut statement = self.connection.prepare("SELECT r.id,r.revision,r.document,r.content_hash,r.provenance,r.proposed_by,r.proposed_at,r.supersedes_id,a.revision_id IS NOT NULL,i.current_revision_id IS r.id,t.item_id IS NOT NULL FROM memory_revisions r JOIN memory_items i ON i.project_id=r.project_id AND i.id=r.item_id LEFT JOIN memory_approvals a ON a.project_id=r.project_id AND a.revision_id=r.id LEFT JOIN memory_tombstones t ON t.project_id=r.project_id AND t.item_id=r.item_id WHERE r.project_id=?1 AND r.item_id=?2 ORDER BY r.revision")?;
+        self.read_memory_revisions(project_id, item_id, false)
+    }
+
+    fn read_memory_revisions(
+        &self,
+        project_id: ProjectId,
+        item_id: &str,
+        current_only: bool,
+    ) -> Result<Vec<MemoryRevision>, MemoryError> {
+        // Current retrieval must not decode and revalidate an item's entire
+        // append-only history while the API's shared store mutex is held.
+        // The pointer selects the approved head, not the newest pending draft.
+        let current_filter = if current_only {
+            " AND r.id=i.current_revision_id"
+        } else {
+            ""
+        };
+        let query = format!(
+            "SELECT r.id,r.revision,r.document,r.content_hash,r.provenance,
+                    r.proposed_by,r.proposed_at,r.supersedes_id,
+                    a.revision_id IS NOT NULL,i.current_revision_id IS r.id,
+                    t.item_id IS NOT NULL
+             FROM memory_revisions r
+             JOIN memory_items i ON i.project_id=r.project_id AND i.id=r.item_id
+             LEFT JOIN memory_approvals a ON a.project_id=r.project_id AND a.revision_id=r.id
+             LEFT JOIN memory_tombstones t ON t.project_id=r.project_id AND t.item_id=r.item_id
+             WHERE r.project_id=?1 AND r.item_id=?2{current_filter}
+             ORDER BY r.revision"
+        );
+        let mut statement = self.connection.prepare(&query)?;
         let rows = statement.query_map(params![project_id.to_string(), item_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -360,7 +389,7 @@ impl SqliteStore {
         let mut revisions = Vec::with_capacity(ids.len());
         for id in ids {
             if let Some(revision) = self
-                .memory_history(project_id, &id)?
+                .read_memory_revisions(project_id, &id, true)?
                 .into_iter()
                 .find(|r| r.current && r.approved && !r.tombstoned)
             {
@@ -377,7 +406,7 @@ impl SqliteStore {
             .collect::<Result<Vec<_>, _>>()?;
         ids.into_iter()
             .map(|id| {
-                self.memory_history(project_id, &id)?
+                self.read_memory_revisions(project_id, &id, true)?
                     .into_iter()
                     .find(|r| r.current && r.approved)
                     .ok_or(MemoryError::NotFound)
@@ -924,6 +953,101 @@ mod tests {
         assert!(
             store.search_memory(a, "alpha", 10).unwrap().is_empty(),
             "a tombstone remains excluded even if its derived index is stale"
+        );
+    }
+
+    #[test]
+    fn current_retrieval_does_not_decode_superseded_history_or_unapproved_drafts() {
+        let (_dir, store, project, other_project) = fixture();
+        let (old, _) = store
+            .propose_memory_revision(
+                project,
+                "checkpoint",
+                0,
+                &document("superseded checkpoint"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        store
+            .approve_memory_revision(project, "checkpoint", &old.revision_id, 1, "reviewer")
+            .unwrap();
+        let (current, _) = store
+            .propose_memory_revision(
+                project,
+                "checkpoint",
+                2,
+                &document("current searchable checkpoint"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        store
+            .approve_memory_revision(project, "checkpoint", &current.revision_id, 3, "reviewer")
+            .unwrap();
+        let (draft, _) = store
+            .propose_memory_revision(
+                project,
+                "checkpoint",
+                4,
+                &document("unapproved draft"),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+
+        // A deterministic hydration guard: touching either non-current document
+        // fails its hash validation. This avoids a timing-based performance test.
+        // Only this disposable test database bypasses the append-only trigger.
+        store
+            .connection
+            .execute_batch("DROP TRIGGER memory_revisions_no_update")
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE memory_revisions SET document=?1 WHERE id IN (?2,?3)",
+                params![
+                    document("unreadable history sentinel").json(),
+                    old.revision_id,
+                    draft.revision_id
+                ],
+            )
+            .unwrap();
+        assert!(
+            store.memory_history(project, "checkpoint").is_err(),
+            "the explicit history surface still validates historical bytes"
+        );
+
+        let listed = store
+            .list_memory(project)
+            .expect("list decodes only the approved head");
+        let searched = store
+            .search_memory(project, "checkpoint", 10)
+            .expect("search decodes only the approved head");
+        for result in [&listed, &searched] {
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].revision_id, current.revision_id);
+            assert_eq!(result[0].document, current.document);
+            assert!(result[0].current && result[0].approved && !result[0].tombstoned);
+        }
+        assert!(
+            store
+                .search_memory(project, "checkpoint", 0)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .search_memory(project, "unapproved", 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .search_memory(other_project, "checkpoint", 10)
+                .unwrap()
+                .is_empty()
         );
     }
 
