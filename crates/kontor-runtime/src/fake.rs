@@ -1787,15 +1787,6 @@ impl ScriptedFakeRuntime {
         }
     }
 
-    /// Drop everything a rebuilt adapter loses, keeping what the runtime keeps.
-    ///
-    /// `compose_paseo` builds every adapter from `PaseoCheckpoint::fresh`, so a
-    /// daemon restart destroys the adapter's own ledgers — which bindings it
-    /// issued, and where each seat is placed — while the runtime it talks to
-    /// keeps running with its sessions intact. Modelling the restart *without*
-    /// this leaves those ledgers populated in-process, and a test then proves
-    /// only that the daemon's half recovered. That is precisely how a
-    /// reads-recover-but-writes-do-not split survived a green suite.
     /// Model a native runtime that does not deduplicate by client message id.
     ///
     /// This fake answers a resent id from the session's own ledger, which makes
@@ -1812,6 +1803,15 @@ impl ScriptedFakeRuntime {
         self.lock().native_deduplicates_messages = false;
     }
 
+    /// Drop everything a rebuilt adapter loses, keeping what the runtime keeps.
+    ///
+    /// `compose_paseo` builds every adapter from `PaseoCheckpoint::fresh`, so a
+    /// daemon restart destroys the adapter's own ledgers — which bindings it
+    /// issued, and where each seat is placed — while the runtime it talks to
+    /// keeps running with its sessions intact. Modelling the restart *without*
+    /// this leaves those ledgers populated in-process, and a test then proves
+    /// only that the daemon's half recovered. That is precisely how a
+    /// reads-recover-but-writes-do-not split survived a green suite.
     pub fn rebuild_adapter_state(&self) {
         let mut state = self.lock();
         state.bindings.clear();
