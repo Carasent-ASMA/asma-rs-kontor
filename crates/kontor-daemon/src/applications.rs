@@ -5198,12 +5198,22 @@ impl Services {
         // unambiguous without reading the whole transcript. The dispatch row
         // fixes the id across retries, so a replay recognises its own issuance
         // rather than writing a second one.
-        state.record_message_issuance(
+        let issuance = state.record_message_issuance(
             request.binding.identity(),
             request.binding.binding_id(),
             message_id,
             "handoff_dispatch",
             &message_id.to_string(),
+        )?;
+        // A derived dispatch is retried by reconciliation, which is precisely
+        // the path that crosses a restart: the row fixes the id, so a second
+        // arrival means an earlier attempt already reached the runtime, and a
+        // rebuilt adapter must reconcile rather than instruct the seat twice.
+        state.note_replayed_issuance(
+            adapter.as_ref(),
+            issuance,
+            message_id,
+            &request.body_hash(),
         )?;
         match adapter.send(&request).await {
             Ok(acknowledged) => {

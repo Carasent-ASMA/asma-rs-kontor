@@ -28710,6 +28710,230 @@ async fn check_delivery_epoch_barrier(derived: bool, fail_commit: bool) {
     assert_eq!(finished.status, 200, "{}", finished.body);
 }
 
+/// P1-POSTDELIVERY-FAILURE-RESTART-DUPLICATES.
+///
+/// The correction made the post-effect failure path truthful: the native send
+/// lands, the epoch commit fails, the delivery is not pinned, the adapter keeps
+/// the debt, and the API tells the operator to replay the original id rather
+/// than send a new one. Every one of those is right, and all of it lives in one
+/// process.
+///
+/// Production composes each Paseo adapter from `PaseoCheckpoint::fresh`, and
+/// startup restores bindings and committed epoch mappings but never the
+/// adapter-local delivery ledger. So a restart between the failure and the
+/// mandated replay erases the only record that this id may already have landed;
+/// the replay is admitted as a first attempt and puts the instruction in the
+/// session a second time. The advice the API gives is what triggers it.
+///
+/// The fake is told to stop deduplicating first. It normally answers a resent id
+/// from the session's own ledger, which would prevent the duplicate for the
+/// wrong reason and prove nothing about the adapter.
+async fn check_replay_after_restart_sends_once(derived: bool) {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    world.fake.accept_duplicate_native_message_ids();
+    let (project, epic, _account, seats) = seated_turns(&world, "postdelivery-restart").await;
+    let seats = seats.as_array().expect("seats");
+    let source = seats[0]["agent_run_id"]
+        .as_str()
+        .expect("source")
+        .to_owned();
+    let role = seats[0]["role_slot"].as_str().expect("role").to_owned();
+    let target = seats[1]["agent_run_id"]
+        .as_str()
+        .expect("target")
+        .to_owned();
+    let project_id = ProjectId::parse(&project).expect("project");
+    let target_run = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store.get_agent_run(project_id, AgentRunId::parse(&target).expect("run"))
+        })
+        .expect("run reads")
+        .expect("target exists");
+    let target_binding = world
+        .daemon
+        .state()
+        .sessions()
+        .get(target_run.binding.expect("bound").id)
+        .expect("held binding");
+    // A native epoch this realm has never mapped, so the delivery must allocate
+    // one and commit it — which is the write the injected failure refuses. With
+    // an already-committed mapping there is no insert to fail and the whole
+    // post-effect path is never entered.
+    world
+        .fake
+        .set_unread_timeline_epoch(&target_binding, 73)
+        .expect("fresh native epoch");
+    let proof = observe_current_turn(&world, &project, &source);
+    let history = Call::get(format!("/v1/sessions/{source}/timeline?limit=64"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    assert_eq!(history.status, 200, "{}", history.body);
+    let revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("revision");
+    let key = kontor_runtime::request::MessageId::generate();
+    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
+
+    // The post-effect failure: the native send lands, the epoch commit does not.
+    rusqlite::Connection::open(&database)
+        .expect("test database")
+        .execute_batch("CREATE TRIGGER refuse_delivery_epoch BEFORE INSERT ON runtime_timeline_epochs BEGIN SELECT RAISE(FAIL, 'injected epoch commit failure'); END;")
+        .expect("failure installed");
+    let request = |world: &World, revision: u64| {
+        if derived {
+            Call::post(
+                format!("/v1/projects/{project}/agent-runs/{source}/turns:settle"),
+                &serde_json::json!({"role_slot":role,"expected_task_revision":revision,
+                    "runtime_proof":proof,"artifacts":["change-set"]}),
+            )
+        } else {
+            Call::post(
+                format!("/v1/sessions/{target}/messages"),
+                &serde_json::json!({"body":"persist this delivery before acknowledging it"}),
+            )
+        }
+        .signed_as(world, "operator")
+        .with_key(key.to_string())
+    };
+    let first = request(&world, revision).send(&world).await;
+    assert!(
+        !first.status.is_success(),
+        "the commit failure is reported: {}",
+        first.body
+    );
+    let message_id = if derived {
+        kontor_runtime::request::MessageId::parse(
+            &world
+                .daemon
+                .state()
+                .with_store(|store| store.list_turn_dispatches(project_id))
+                .expect("dispatches")[0]
+                .message_id,
+        )
+        .expect("message")
+    } else {
+        key
+    };
+    let occurrences = |fake: &kontor_runtime::fake::ScriptedFakeRuntime| {
+        fake.content(&target_binding)
+            .into_iter()
+            .filter(|event| {
+                event.subject == kontor_runtime::timeline::EventSubject::Message(message_id)
+            })
+            .count()
+    };
+    assert_eq!(
+        occurrences(&world.fake),
+        1,
+        "the native effect landed exactly once before the restart"
+    );
+
+    // The process boundary. Bindings and committed epochs come back; the
+    // adapter-local delivery ledger does not, because nothing persists it.
+    let World {
+        directory,
+        daemon,
+        router,
+        fake,
+        project: world_project,
+        task,
+        team_run,
+    } = world;
+    daemon.state().signals().stop();
+    drop(router);
+    drop(daemon);
+    fake.rebuild_adapter_state();
+    let daemon = Daemon::start(
+        DaemonConfig::at(directory.path()).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same realm restarts");
+    assert_eq!(daemon.reconcile().await, BarrierState::Open);
+    let router = daemon.router();
+    let world = World {
+        directory,
+        daemon,
+        router,
+        fake,
+        project: world_project,
+        task,
+        team_run,
+    };
+
+    // The replay the API itself instructed, under the original key.
+    rusqlite::Connection::open(&database)
+        .expect("test database")
+        .execute_batch("DROP TRIGGER refuse_delivery_epoch;")
+        .expect("failure removed");
+    if derived {
+        assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    } else {
+        let revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await
+            .json()["tasks"][0]["revision"]
+            .as_u64()
+            .expect("revision");
+        let retry = request(&world, revision).send(&world).await;
+        assert_eq!(retry.status, 200, "{}", retry.body);
+    }
+
+    // The whole finding, in one number.
+    assert_eq!(
+        occurrences(&world.fake),
+        1,
+        "the replay reconciled the existing delivery instead of instructing the seat twice"
+    );
+
+    // And the replay is not merely quiet: it finished the job the first attempt
+    // could not, so the delivery is pinned and its epoch mapping is durable.
+    let delivery = world
+        .daemon
+        .state()
+        .message_issuance(message_id)
+        .expect("issuance reads")
+        .expect("issued before sending");
+    let position = delivery
+        .delivered_at
+        .expect("the replay pinned the delivery");
+    let mappings = world
+        .daemon
+        .state()
+        .with_store(|store| store.list_timeline_epochs(&delivery.runtime_kind, &delivery.host))
+        .expect("epochs");
+    assert!(
+        mappings.iter().any(|(_, epoch)| *epoch == position.0),
+        "a delivery cannot outlive its epoch mapping: {mappings:?}, {position:?}"
+    );
+    assert!(
+        world.fake.undrained_epochs().is_empty(),
+        "no debt survives a completed replay"
+    );
+}
+
+#[tokio::test]
+async fn direct_delivery_epoch_commit_failure_then_restart_does_not_resend() {
+    check_replay_after_restart_sends_once(false).await;
+}
+
+#[tokio::test]
+async fn derived_delivery_epoch_commit_failure_then_restart_does_not_resend() {
+    check_replay_after_restart_sends_once(true).await;
+}
+
 #[tokio::test]
 async fn direct_delivery_epoch_is_durable_before_acknowledgement() {
     check_delivery_epoch_barrier(false, false).await;
