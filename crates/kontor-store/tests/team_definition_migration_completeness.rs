@@ -413,6 +413,77 @@ fn migration(
 // ---------------------------------------------------------------------------
 
 #[test]
+fn an_empty_native_census_can_upgrade_and_replay_after_reopen() {
+    let w = world();
+    let epic = MiniProjectId::generate();
+    w.store
+        .create_mini_project(&NewMiniProject {
+            id: epic,
+            project_id: w.project_id,
+            name: name("Unmaterialized epic"),
+            created_at: at("2026-09-02T09:00:00Z"),
+        })
+        .expect("the unmaterialized epic exists");
+    w.store
+        .pin_mini_project_team_definition(&MiniProjectTeamDefinitionSnapshot {
+            project_id: w.project_id,
+            mini_project_id: epic,
+            definition: snapshot(&w.definition),
+            pinned_at: at("2026-09-02T09:00:00Z"),
+        })
+        .expect("the old definition is pinned");
+    let mut request = migration(&w, "empty-census-upgrade", Vec::new());
+    request.mini_project_id = epic;
+    let recorded = w
+        .store
+        .record_team_definition_migration(&request)
+        .expect("an empty live census needs no invented native target");
+    assert!(recorded.targets.is_empty());
+    let confirmed = w
+        .store
+        .confirm_team_definition_migration(w.project_id, recorded.id, at("2026-09-02T11:00:00Z"))
+        .expect("the empty census is re-proved at confirmation");
+    assert_eq!(confirmed.state, TeamDefinitionMigrationState::Confirmed);
+    drop(w.store);
+    let store = SqliteStore::open(&w.database).expect("the store reopens");
+    let replay = store
+        .record_team_definition_migration(&request)
+        .expect("the same request retains its confirmed migration");
+    assert_eq!(replay.id, recorded.id);
+    assert_eq!(replay.state, TeamDefinitionMigrationState::Confirmed);
+    assert_eq!(
+        store
+            .get_mini_project_team_definition(w.project_id, epic)
+            .expect("the pin reads")
+            .expect("the pin exists")
+            .definition,
+        snapshot(&w.second)
+    );
+}
+
+#[test]
+fn an_empty_requested_census_cannot_hide_existing_native_subjects() {
+    let w = world();
+    assert!(w.store.record_team_definition_migration(
+        &migration(&w, "empty-census-omits-live", Vec::new()),
+    ).is_err());
+    assert!(
+        w.store
+            .get_in_flight_team_definition_migration(w.project_id, w.mini_project_id)
+            .expect("the migration reads")
+            .is_none()
+    );
+    assert_eq!(
+        w.store
+            .get_mini_project_team_definition(w.project_id, w.mini_project_id)
+            .expect("the pin reads")
+            .expect("the pin exists")
+            .definition,
+        snapshot(&w.definition)
+    );
+}
+
+#[test]
 fn the_census_lists_every_live_native_bearing_subject_of_the_epic() {
     let w = world();
     let census = w

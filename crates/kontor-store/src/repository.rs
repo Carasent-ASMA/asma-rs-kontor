@@ -21746,12 +21746,9 @@ impl TeamDefinitionRepository for SqliteStore {
         &self,
         migration: &NewTeamDefinitionMigration,
     ) -> RepositoryResult<StoredTeamDefinitionMigration> {
-        if migration.targets.is_empty() {
-            return Err(conflict(
-                "team definition migration",
-                "a migration must enumerate at least one target",
-            ));
-        }
+        // An unmaterialized epic has an empty native census. The exact census
+        // proof below (and again at confirmation) still refuses an omitted
+        // live subject; a fabricated target must not be needed to move its pin.
         let mut subjects = BTreeMap::new();
         if !migration.targets.iter().all(|target| {
             subjects
