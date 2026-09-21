@@ -1,5 +1,66 @@
 # ASMA-8120 high-change record
 
+## Addendum 2026-09-21 — independent re-verification for QA re-check
+
+Added in response to a resume request framed against the BLOCKED QA report at
+`b0bf4001`. That request asked for migration completion, restart proof and
+count reconciliation. Current state of each, verified live in this turn:
+
+| QA blocker | State |
+|---|---|
+| 12 eligible epics unmigrated (Q-8120-QA-01) | **Closed.** All 13 are migrated and pinned, by root, not by this seat. Re-verified live below. |
+| Handoff count inconsistencies (Q-8120-QA-02) | **Closed** in `afae27e7`; corrections listed in the closeout section below. |
+| Missing restart evidence (Q-8120-QA-03) | **Still open.** Unchanged since the closeout: no restart has occurred since 2026-09-21T10:02:36Z. |
+
+**No migration, restart, topology mutation or any other Kontor write was
+performed in this turn.** The branch was already one commit past `b0bf4001`;
+the rollout this request asks for had already been completed by root before the
+request was issued, so re-running it would have re-applied completed work.
+
+### Live re-verification
+
+Independent supported read-only `kontor_native_names_preview` across all 13
+eligible epics at project revision 7, captured durably in
+[`REVERIFICATION-20260921.json`](REVERIFICATION-20260921.json) at snapshot
+cursor **4598**:
+
+- **13/13** epics read `200`
+- **89** targets, **0** pending changes, **0** titles carrying a legacy item
+  code, **3** `rename_pending` (the known ASMA-8188 consultation seats)
+- Target count moved 88 → 89 since cursor 4573: ASMA-8101 absorbed one
+  additional target, which reads converged with no pending change. Normal fleet
+  activity, not a regression.
+
+All 13 pins independently confirmed: each epic refuses a preview to its target
+revision with "the epic already pins that Team Definition revision" —
+ASMA-8109→v4; ASMA-7869, ASMA-8108, ASMA-8111→v5; ASMA-8049, ASMA-8101,
+ASMA-8113, ASMA-8155, ASMA-8186, ASMA-8188, ASMA-8190, ASMA-8208→v6;
+ASMA-8098→Recovery v3.
+
+Database at the same time: `PRAGMA integrity_check = ok`, **0** foreign-key
+violations, schema **118**.
+
+### The one remaining blocker, and why this seat did not clear it
+
+The newest deployment is still `ASMA-8188-20260921T100129Z-44663e10`, verified
+`2026-09-21T10:02:36.117472Z`. ASMA-8111 was pinned `2026-09-21T10:11:34.947969Z`.
+Twelve epics therefore have post-migration restart evidence and ASMA-8111 has
+none. Closing this requires an actual restart, which this seat did not perform:
+
+- root retains live deployment and topology ownership and the watchdog remains
+  stopped, per the authority governing the preceding turn, which directed that
+  no restart be performed;
+- that same deployment carries an **unexplained** launch-count anomaly
+  (`operator_restart_count: 1` against `observed_launch_delta: 2`) already
+  flagged for root-cause review. Restarting a live fleet whose restart
+  behaviour is the open question would risk compounding the very anomaly under
+  investigation, on a realm holding 466 agent runs and 646 seat bindings.
+
+No PASS is asserted. `OQ-8120-06` remains open and is root's to close with a
+coordinated restart followed by a readback covering all 13, ASMA-8111 included.
+
+---
+
 **Current section: 2026-09-21 evidence-only closeout.** Everything below the
 History divider is the earlier record, preserved verbatim including its
 refusals, partial outcomes and superseded counts. Where the earlier text is
