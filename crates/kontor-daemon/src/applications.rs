@@ -9731,6 +9731,112 @@ impl Services {
         ))
     }
 
+    /// Freeze the task's current claim alongside the complete old binding.
+    /// A changed directory is not authority to strand existing materialized
+    /// seats: every such predecessor must be released and positively archived.
+    async fn container_recovery_placement(
+        &self,
+        node: &SessionTopologyNode,
+        expected: &NativeContainerBinding,
+        adapter: &dyn RuntimeAdapter,
+    ) -> Result<(ExternalName, ContentHash), ApiError> {
+        let old_cwd = expected.canonical_cwd.as_ref().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the stale child binding has no canonical working directory",
+            )
+        })?;
+        let mut cwd = old_cwd.clone();
+        let mut task_proof = serde_json::Value::Null;
+        let mut predecessors = Vec::new();
+        if let Some(task_id) = node.task_id {
+            let state = self.state()?;
+            let task = self.task_row(node.project_id, task_id)?;
+            let claim = state
+                .with_store(|store| store.task_worktree(node.project_id, task_id))
+                .map_err(|error| self.refuse(&error))?;
+            cwd = ExternalName::parse(self.task_root(node.project_id, task_id)?.as_str())
+                .map_err(|error| self.refuse_domain(&error))?;
+            task_proof =
+                serde_json::json!({"task_id":task_id,"revision":task.revision,"claim":claim});
+            if &cwd != old_cwd {
+                let seats = state
+                    .with_store(|store| store.list_seat_bindings(node.project_id, node.id))
+                    .map_err(|error| self.refuse(&error))?;
+                for seat in seats {
+                    let Some(team_id) = seat.team_run_id else {
+                        return Err(self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "a moved task container has a seat outside a delivery team",
+                        ));
+                    };
+                    let team = state
+                        .with_store(|store| store.get_team_run(node.project_id, team_id))
+                        .map_err(|error| self.refuse(&error))?;
+                    if seat.task_id != Some(task_id)
+                        || team.is_none_or(|team| team.task_id != task_id)
+                    {
+                        return Err(self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the moved container's seat does not belong to its exact task",
+                        ));
+                    }
+                    let runs = state
+                        .with_store(|store| {
+                            store.list_agent_runs_for_team_run(node.project_id, team_id)
+                        })
+                        .map_err(|error| self.refuse(&error))?;
+                    for row in runs
+                        .into_iter()
+                        .filter(|row| row.role == *seat.role_slot_id.as_role_key())
+                    {
+                        let run = state
+                            .with_store(|store| {
+                                store.get_agent_run(node.project_id, row.agent_run_id)
+                            })
+                            .map_err(|error| self.refuse(&error))?
+                            .ok_or_else(|| {
+                                self.deny(
+                                    ApiErrorCode::StaleBinding,
+                                    "the container's materialized predecessor disappeared",
+                                )
+                            })?;
+                        let Some(binding) = run.binding else { continue };
+                        if seat.lifecycle == TopologyLifecycle::Active || seat.released_at.is_none()
+                        {
+                            return Err(self.deny(ApiErrorCode::PlacementBlocked,
+                                "a moved task container requires explicit release of every materialized predecessor"));
+                        }
+                        let inspection = adapter
+                            .inspect_persistent_seat(&RetitleSeatRequest {
+                                identity: binding.identity.clone(),
+                                provider_session_id: None,
+                                container_native_id: expected.identity.native_id.clone(),
+                                desired_title: seat.role.standard_title.clone(),
+                                requested_at: kontor_api::now(),
+                            })
+                            .await
+                            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                        if inspection.identity != binding.identity
+                            || inspection.state != PersistentSeatNativeState::Archived
+                        {
+                            return Err(self.deny(ApiErrorCode::PlacementBlocked,
+                                "a moved task container requires exact archived readback of every materialized predecessor"));
+                        }
+                        predecessors.push(serde_json::json!({"seat":seat,"agent_run_id":run.id,
+                            "agent_run_revision":run.revision,"binding":binding}));
+                    }
+                }
+            }
+        }
+        let proof = self.preview_hash(&serde_json::json!({
+            "schema_version":1,
+            "node":node,"old_binding":expected,"task":task_proof,
+            "canonical_cwd":cwd,"archived_predecessors":predecessors,
+        }))?;
+        Ok((cwd, proof))
+    }
+
     /// Build the complete read-only proof for replacing one stale child binding.
     async fn prepare_container_recovery(
         &self,
@@ -9756,14 +9862,6 @@ impl Services {
                     "this topology node holds no native container to recover",
                 )
             })?;
-        let canonical_cwd = expected.canonical_cwd.clone().ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the stale child binding has no canonical working directory",
-            )
-        })?;
-        let canonical_root = WorkspaceRoot::parse(canonical_cwd.as_str())
-            .map_err(|error| self.refuse_domain(&error))?;
         let parent_native_id = retitle.bound_project_native_id.clone().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::PlacementBlocked,
@@ -9779,6 +9877,11 @@ impl Services {
                     "no such topology node exists in this project",
                 )
             })?;
+        let (canonical_cwd, placement_proof) = self
+            .container_recovery_placement(&recovery_node, &expected, adapter.as_ref())
+            .await?;
+        let canonical_root = WorkspaceRoot::parse(canonical_cwd.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
         let recovery_request = ContainerRecoveryRequest {
             topology_node_id,
             container_binding_id: retitle.container_binding_id,
@@ -9819,11 +9922,11 @@ impl Services {
                     return Err(ApiError::from_runtime(state.realm_id(), &adopt_refusal));
                 }
                 return self.prepared_container_recreation(
-                    project_id,
                     expected_revision,
                     expected,
                     recreation_request,
                     adapter,
+                    &placement_proof,
                 );
             }
         };
@@ -9930,6 +10033,7 @@ impl Services {
             },
             "parent_native_id": parent_native_id.as_str(),
             "canonical_cwd": canonical_cwd.as_str(),
+            "placement_proof": placement_proof,
             "observed_title": outcome.observed_title,
         }))?;
         Ok(PreparedContainerRecovery {
@@ -9962,13 +10066,14 @@ impl Services {
     /// says apply is allowed to build at all.
     fn prepared_container_recreation(
         &self,
-        project_id: ProjectId,
         expected_revision: AggregateRevision,
         expected: NativeContainerBinding,
         recreation: ContainerRecreationRequest,
         adapter: Arc<dyn RuntimeAdapter>,
+        placement_proof: &ContentHash,
     ) -> Result<PreparedContainerRecovery, ApiError> {
         let state = self.state()?;
+        let project_id = expected.project_id;
         // Both are already inside the request the census froze, so taking them
         // as separate arguments would only create a way for them to disagree
         // with it.
@@ -9995,6 +10100,7 @@ impl Services {
             },
             "parent_native_id": parent_native_id.as_str(),
             "canonical_cwd": canonical_cwd.as_str(),
+            "placement_proof": placement_proof,
             "expected_title": recreation.expected_title.as_str(),
         }))?;
         Ok(PreparedContainerRecovery {
@@ -22279,6 +22385,9 @@ impl ApplicationOperations for Services {
         topology_node_id: TopologyNodeId,
         request: &ContainerRecoveryApplyRequest,
     ) -> Result<AppliedContainerRecoveryDto, ApiError> {
+        // Serialize native membership changes with the predecessor readback,
+        // creation and binding CAS. A fill cannot race this placement repair.
+        let _native_lifecycle = self.native_lifecycle_change().await?;
         let state = self.state()?;
         let project = self.project_at(project_id, request.expected_revision)?;
         let target = AggregateRef::Project { project_id };
