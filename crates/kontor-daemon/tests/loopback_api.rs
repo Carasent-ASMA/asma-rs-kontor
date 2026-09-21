@@ -45806,6 +45806,229 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         })
         .expect("the first occupancy's persona survives its replacement");
     assert_eq!(first_occupancy_persona.prompt_hash, lsa_persona_digest);
+
+    // ---------------------------------------------------------------------
+    // ASMA-8196: the same facts through *supported reads*. Everything above
+    // reached them either by mutating something or by reaching into the store.
+    // Live qualification can do neither, which is what left the persona
+    // unobservable in a deployed realm.
+    // ---------------------------------------------------------------------
+    let runtime_calls_before_reads = world.fake.calls().len();
+    // Captured through an unrelated supported read *before* the reads under
+    // test. Comparing the two reads against each other is not enough: a read
+    // that recorded a command under a fixed idempotency key would record once
+    // and then replay, leaving both answers carrying the same advanced cursor.
+    let cursor_before_reads = Call::get(format!("/v1/projects/{project}/core-team"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await
+        .json()["snapshot_cursor"]
+        .clone();
+
+    let roster_read = Call::get(format!("/v1/projects/{project}/epics/{epic}/core-team"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(roster_read.status, 200, "{}", roster_read.body);
+    let read_lsa = roster_read.json()["seats"]
+        .as_array()
+        .expect("the read roster's seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "LSA")
+        .expect("the LSA seat in the read roster")
+        .clone();
+    let read_tpm = roster_read.json()["seats"]
+        .as_array()
+        .expect("the read roster's seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "TPM")
+        .expect("the TPM seat in the read roster")
+        .clone();
+    assert_eq!(read_lsa["role_persona"]["role_code"], "LSA");
+    assert_eq!(
+        read_lsa["role_persona"]["prompt_hash"],
+        lsa_persona_digest.as_str()
+    );
+    assert_eq!(
+        read_lsa["role_persona"]["delivery"], "create_only_no_readback",
+        "the read must report frozen launch input, never a native readback"
+    );
+    assert_eq!(
+        read_lsa["role_persona"]["occupancy_generation"], successor_occupancy_generation,
+        "the roster read must report the occupancy filling the seat now"
+    );
+    assert!(
+        read_tpm["role_persona"].is_null(),
+        "a role that seeds no persona reads as null, not as an omitted field: {}",
+        read_tpm["role_persona"]
+    );
+
+    let chain_read = Call::get(format!(
+        "/v1/projects/{project}/epics/{epic}/core-team/seats/{lsa_binding}/occupancies"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(chain_read.status, 200, "{}", chain_read.body);
+    let occupancies = chain_read.json()["occupancies"]
+        .as_array()
+        .expect("the occupancy chain")
+        .clone();
+    assert!(
+        occupancies.len() >= 2,
+        "a replaced seat must retain its predecessor: {}",
+        chain_read.body
+    );
+    let generations: Vec<u64> = occupancies
+        .iter()
+        .map(|entry| {
+            entry["occupancy_generation"]
+                .as_u64()
+                .expect("an occupancy generation")
+        })
+        .collect();
+    let mut ordered = generations.clone();
+    ordered.sort_unstable();
+    assert_eq!(
+        generations, ordered,
+        "occupancies must be ordered deterministically, oldest first"
+    );
+    assert_eq!(
+        generations[0], 1,
+        "the chain must start at the first occupancy"
+    );
+    let first = &occupancies[0];
+    let last = occupancies.last().expect("a current occupancy");
+    assert_eq!(first["lifecycle"], "retired");
+    assert_eq!(last["lifecycle"], "current");
+    assert_eq!(
+        last["occupancy_generation"], successor_occupancy_generation,
+        "the last occupancy is the one filling the seat now"
+    );
+    assert_eq!(
+        first["role_persona"]["prompt_hash"],
+        lsa_persona_digest.as_str()
+    );
+    assert_eq!(
+        last["role_persona"]["prompt_hash"],
+        lsa_persona_digest.as_str()
+    );
+    assert_eq!(first["role_persona"]["delivery"], "create_only_no_readback");
+    assert_ne!(
+        first["native"]["native_id"], last["native"]["native_id"],
+        "a replacement is a different native, and the chain has to show both"
+    );
+    assert_eq!(chain_read.json()["seat_binding_id"], lsa_binding);
+    assert_eq!(chain_read.json()["role_code"], "LSA");
+    // A slice from the *middle* of the persona. Its opening phrase is the role's
+    // standard_title, which the roster legitimately carries, so asserting on
+    // that would fail on correct behaviour rather than on a disclosure.
+    let persona_body_fragment = &lsa_persona.as_str()[200..260];
+    assert!(
+        !chain_read.body.contains(persona_body_fragment),
+        "the chain read must never disclose persona prompt bytes: {}",
+        chain_read.body
+    );
+    assert!(
+        !roster_read.body.contains(persona_body_fragment),
+        "the roster read must never disclose persona prompt bytes"
+    );
+    assert!(
+        chain_read.json()["occupancies"][0]["role_persona"]
+            .get("prompt")
+            .is_none(),
+        "the persona projection carries a digest, never a prompt field"
+    );
+
+    // Purity. A read that recorded a command, moved the cursor or touched the
+    // runtime would be a write wearing a GET's clothes.
+    let repeat_roster = Call::get(format!("/v1/projects/{project}/epics/{epic}/core-team"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(repeat_roster.status, 200);
+    assert_eq!(
+        repeat_roster.json()["snapshot_cursor"],
+        roster_read.json()["snapshot_cursor"],
+        "an idempotent read must not advance the control-plane cursor"
+    );
+    assert_eq!(repeat_roster.body, roster_read.body);
+    assert_eq!(
+        world.fake.calls().len(),
+        runtime_calls_before_reads,
+        "a read must make no runtime call"
+    );
+    let cursor_after_reads = Call::get(format!("/v1/projects/{project}/core-team"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await
+        .json()["snapshot_cursor"]
+        .clone();
+    assert_eq!(
+        cursor_after_reads, cursor_before_reads,
+        "a read must append no durable event: the control-plane cursor moved \
+         across these GETs, which means one of them wrote something"
+    );
+
+    // A role with no seeded persona still has an occupancy chain; its persona
+    // is null rather than absent or invented.
+    let tpm_chain = Call::get(format!(
+        "/v1/projects/{project}/epics/{epic}/core-team/seats/{tpm_binding}/occupancies"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(tpm_chain.status, 200, "{}", tpm_chain.body);
+    for entry in tpm_chain.json()["occupancies"]
+        .as_array()
+        .expect("the TPM occupancy chain")
+    {
+        assert!(
+            entry["role_persona"].is_null(),
+            "TPM seeds no persona, so every occupancy reads null: {entry}"
+        );
+    }
+
+    // Isolation, fail closed. A seat is readable only through the epic whose
+    // control plane is proven to hold it.
+    // Well formed and certainly absent: the fence must refuse on membership,
+    // not on the id failing to parse.
+    let foreign_epic = "01a00000-0000-7000-8000-0000000e9c17";
+    let wrong_epic = Call::get(format!(
+        "/v1/projects/{project}/epics/{foreign_epic}/core-team/seats/{lsa_binding}/occupancies"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(
+        wrong_epic.status, 404,
+        "a seat must not be readable through an epic that does not hold it: {}",
+        wrong_epic.body
+    );
+    let foreign_seat = "01a00000-0000-7000-8000-00000005ea70";
+    let wrong_seat = Call::get(format!(
+        "/v1/projects/{project}/epics/{epic}/core-team/seats/{foreign_seat}/occupancies"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(
+        wrong_seat.status, 404,
+        "a non-member seat must be refused rather than answered with an empty chain: {}",
+        wrong_seat.body
+    );
+    let foreign_project = "01a00000-0000-7000-8000-0000000d0a10";
+    let wrong_project = Call::get(format!(
+        "/v1/projects/{foreign_project}/epics/{epic}/core-team"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(
+        wrong_project.status, 404,
+        "another project's epic must not be readable: {}",
+        wrong_project.body
+    );
 }
 
 /// A later project edit does not touch an epic already staffed.

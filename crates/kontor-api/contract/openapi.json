@@ -3949,6 +3949,60 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "One epic's materialized Core Team.",
+        "description": "Pure. It records no command, calls no runtime, and changes nothing; the\nmutating epic routes already return this projection and this route only\nstops a caller from having to mutate in order to see it.",
+        "operationId": "epic_core_team",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic whose control plane holds the seats",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoreTeamDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede": {
       "post": {
         "tags": [
@@ -4329,6 +4383,69 @@
           },
           "503": {
             "description": "The runtime could not be reached"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Every occupancy one hosted seat has had, oldest first.",
+        "description": "Pure, and deliberately a separate route from the roster: the roster answers\nwhat is true now, and carrying every seat's whole history inside it would\nmake the common read pay for the rare one.",
+        "operationId": "epic_hosted_seat_occupancies",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic whose control plane holds the seat",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seat_binding_id",
+            "in": "path",
+            "description": "The logical seat",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostedSeatOccupancyChainDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": "No such seat in this epic"
+          },
+          "503": {
+            "description": "The owning application service is not composed"
           }
         }
       }
@@ -18056,6 +18173,89 @@
           }
         },
         "additionalProperties": false
+      },
+      "HostedSeatOccupancyChainDto": {
+        "type": "object",
+        "description": "The immutable occupancy chain of one logical hosted seat inside one epic.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "epic_id",
+          "seat_binding_id",
+          "role_code",
+          "occupancies",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "epic_id": {
+            "type": "string",
+            "description": "The epic whose control plane owns the seat."
+          },
+          "occupancies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostedSeatOccupancyDto"
+            },
+            "description": "Every occupancy, oldest generation first."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "The project it serves."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was read in."
+          },
+          "role_code": {
+            "type": "string",
+            "description": "The standard role the seat is held under."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The logical seat whose occupancies these are."
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The position this read is consistent with."
+          }
+        }
+      },
+      "HostedSeatOccupancyDto": {
+        "type": "object",
+        "description": "One occupancy of a logical hosted seat: the native that filled it and the\npersona that occupancy was opened under.\n\nA seat outlives its natives. Reporting only the current one answers \"who is\nhere\" but not \"what was this seat ever opened under\", and the second question\nis the one a no-overwrite qualification has to ask.",
+        "required": [
+          "occupancy_generation",
+          "lifecycle",
+          "native"
+        ],
+        "properties": {
+          "lifecycle": {
+            "type": "string",
+            "description": "`current` for the occupancy filling the seat now, `retired` for one it\nsuperseded. Stated rather than inferred from position, so a reader does\nnot have to know the ordering rule to know which native is live."
+          },
+          "native": {
+            "$ref": "#/components/schemas/CoreTeamNativeSeatDto",
+            "description": "Exact native session that filled this occupancy."
+          },
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The occupancy generation this native filled.",
+            "minimum": 0
+          },
+          "role_persona": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CoreTeamSeatPersonaDto",
+                "description": "The persona this occupancy was opened under, when its role seeds one.\n\nNever carries the persona text. The digest is the identity a reader\nneeds in order to compare two occupancies; the bytes are launch input,\nand a read contract that disclosed them would be publishing a system\nprompt rather than evidencing one."
+              }
+            ]
+          }
+        }
       },
       "ImportBody": {
         "type": "object",
