@@ -13671,6 +13671,7 @@
           "profile",
           "definition",
           "ticket_requirements",
+          "historical_evidence",
           "phase",
           "blockers",
           "integrations",
@@ -13698,6 +13699,11 @@
             "format": "int32",
             "description": "Current reopening generation.",
             "minimum": 0
+          },
+          "historical_evidence": {
+            "type": "array",
+            "items": {},
+            "description": "Explicit historical gaps and committed current-source packets; never producer artifacts."
           },
           "integrations": {
             "type": "array",
@@ -14608,6 +14614,44 @@
         "oneOf": [
           {
             "type": "object",
+            "description": "Admin-only explicit completion disposition. Never writes producer evidence or gate verdicts.",
+            "required": [
+              "disposition",
+              "reason",
+              "packet",
+              "tasks",
+              "phase"
+            ],
+            "properties": {
+              "disposition": {
+                "$ref": "#/components/schemas/HistoricalEvidenceDispositionDto",
+                "description": "Acknowledges unavailable provenance without judging acceptance."
+              },
+              "packet": {
+                "$ref": "#/components/schemas/HistoricalEvidencePacketDto",
+                "description": "Immutable current-source verification packet the final Committee must discuss."
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "historical_evidence"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "description": "Why historical producer provenance is unavailable; no claim of original authorship."
+              },
+              "tasks": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/HistoricalTaskEvidenceDto"
+                },
+                "description": "Exact Done tasks and currently missing historical artifact keys."
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "Select one already-settled durable Committee result when more than one\nexact result matches the completion round. The selected run still has to\npass every normal template, provenance, reconstruction, and result check;\nthis carries no caller-authored verdict.",
             "required": [
               "committee_run_id",
@@ -14950,6 +14994,7 @@
           "closeout",
           "wakes",
           "closeout_history",
+          "historical_evidence",
           "generation",
           "revision",
           "snapshot_cursor"
@@ -14982,6 +15027,11 @@
             "format": "int32",
             "description": "Current reopening era.",
             "minimum": 0
+          },
+          "historical_evidence": {
+            "type": "array",
+            "items": {},
+            "description": "Append-only operator dispositions, including exact packet bodies and historical gaps."
           },
           "integrations": {
             "type": "array",
@@ -18008,6 +18058,83 @@
             "description": "The persisted schema generation."
           }
         }
+      },
+      "HistoricalEvidenceDispositionDto": {
+        "type": "string",
+        "description": "Explicit historical provenance disposition; cannot assert an acceptance pass.",
+        "enum": [
+          "provenance_unavailable"
+        ]
+      },
+      "HistoricalEvidencePacketDto": {
+        "type": "object",
+        "description": "Immutable committed verification packet in this project's registered Git root.",
+        "required": [
+          "commit",
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "commit": {
+            "type": "string",
+            "description": "Full commit id; mutable refs are refused."
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative UTF-8 packet path."
+          },
+          "sha256": {
+            "type": "string",
+            "description": "SHA-256 of the committed packet, at most 64 KiB."
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoricalTaskEvidenceDto": {
+        "type": "object",
+        "description": "Exact task/workflow fence for unavailable historical producer provenance.",
+        "required": [
+          "task_id",
+          "expected_task_revision",
+          "workflow_id",
+          "expected_workflow_revision",
+          "workflow_hash",
+          "artifact_keys"
+        ],
+        "properties": {
+          "artifact_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Nonempty distinct declared keys still lacking producer/closure evidence."
+          },
+          "expected_task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact Done revision.",
+            "minimum": 0
+          },
+          "expected_workflow_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact active workflow revision.",
+            "minimum": 0
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Task in this epic, already natively Done."
+          },
+          "workflow_hash": {
+            "type": "string",
+            "description": "Exact frozen workflow definition digest."
+          },
+          "workflow_id": {
+            "type": "string",
+            "description": "Exact active workflow identity."
+          }
+        },
+        "additionalProperties": false
       },
       "HostedSeatMessageDto": {
         "type": "object",

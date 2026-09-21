@@ -62113,3 +62113,6 @@ async fn an_inert_successor_intent_recovers_a_receipt_after_cas_commit_and_succe
         replay.json()["receipt"]["receipt_id"]
     );
 }
+
+#[path = "harness/completion_history.rs"]
+mod historical_completion_tests;

@@ -927,3 +927,160 @@ fn reopening_starts_a_new_attributed_era_and_archives_closeout() {
     );
     assert_eq!(reopened.closeout_history[0].evidence, finished.closeout);
 }
+
+fn historical_record(task: TaskId) -> kontor_scheduler::HistoricalCompletionEvidence {
+    kontor_scheduler::HistoricalCompletionEvidence {
+        disposition: kontor_scheduler::HistoricalEvidenceDisposition::ProvenanceUnavailable,
+        evidence_hash: digest("historical-disposition"),
+        generation: 1,
+        reason: "Old producer record unavailable; verify current source independently".to_owned(),
+        recorded_by: "admin".to_owned(),
+        git_dir: "/fixture/.git".to_owned(),
+        commit: "a".repeat(40),
+        path: "verification.md".to_owned(),
+        sha256: digest("Current source verification"),
+        packet: "Current source verification".to_owned(),
+        tasks: vec![kontor_scheduler::HistoricalTaskEvidence {
+            task_id: task,
+            expected_task_revision: kontor_core::id::AggregateRevision::INITIAL,
+            workflow_id: kontor_core::id::TaskWorkflowId::generate(),
+            expected_workflow_revision: kontor_core::id::AggregateRevision::INITIAL,
+            workflow_hash: digest("frozen-workflow"),
+            artifact_keys: BTreeSet::from([name("tests")]),
+        }],
+    }
+}
+
+#[test]
+fn historical_disposition_preserves_missing_producer_facts_and_the_normal_final_path() {
+    let compiled = compile(operational_default().unwrap()).unwrap();
+    let task = TaskId::generate();
+    let state = start(
+        &compiled,
+        SeatBindingId::generate(),
+        vec![requirement(task)],
+    )
+    .unwrap();
+    let actual = TicketEvidence {
+        task_id: task,
+        goals: BTreeSet::from([name("accepted")]),
+        evidence: BTreeSet::new(),
+    };
+    let signal = callback(
+        &state,
+        "historical-disposition",
+        CompletionObservation::HistoricalEvidenceRecorded {
+            record: historical_record(task),
+            evidence: vec![actual.clone()],
+        },
+    );
+    let (next, commands) = apply_and_restart(&compiled, &state, &signal);
+    assert_eq!(next.phase, CompletionPhase::Integration);
+    assert_eq!(
+        next.ticket_evidence,
+        vec![actual.clone()],
+        "no invented producer evidence"
+    );
+    assert_eq!(next.historical_evidence.len(), 1);
+    assert!(matches!(
+        commands[0],
+        CompletionCommand::StartIntegration { .. }
+    ));
+    let replay = advance(&compiled, &next, &signal).unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.state, next);
+    assert!(replay.commands.is_empty());
+    let (review, commands) = apply_and_restart(
+        &compiled,
+        &next,
+        &callback(
+            &next,
+            "historical-integration",
+            CompletionObservation::IntegrationCompleted(integration("historical")),
+        ),
+    );
+    assert_eq!(review.phase, CompletionPhase::Verdict(1));
+    assert!(matches!(
+        commands[0],
+        CompletionCommand::InvokeCommittee { round: 1, .. }
+    ));
+    let (reopened, _) = apply_and_restart(
+        &compiled,
+        &review,
+        &callback(
+            &review,
+            "historical-reopen",
+            CompletionObservation::TicketWorkReopened {
+                requirements: vec![requirement(task)],
+            },
+        ),
+    );
+    assert_eq!(reopened.generation, 2);
+    assert_eq!(reopened.historical_evidence, next.historical_evidence);
+    assert_eq!(
+        kontor_scheduler::completion_ticket_evidence(&reopened, std::slice::from_ref(&actual)),
+        vec![actual]
+    );
+    assert!(!blockers(&reopened).unwrap().is_empty());
+}
+
+#[test]
+fn historical_disposition_never_fills_goals_or_accepts_arbitrary_already_present_or_duplicate_keys()
+{
+    let compiled = compile(operational_default().unwrap()).unwrap();
+    let task = TaskId::generate();
+    let state = start(
+        &compiled,
+        SeatBindingId::generate(),
+        vec![requirement(task)],
+    )
+    .unwrap();
+    let empty = TicketEvidence {
+        task_id: task,
+        goals: BTreeSet::new(),
+        evidence: BTreeSet::new(),
+    };
+    let (pending, _) = apply_and_restart(
+        &compiled,
+        &state,
+        &callback(
+            &state,
+            "goals-still-open",
+            CompletionObservation::HistoricalEvidenceRecorded {
+                record: historical_record(task),
+                evidence: vec![empty.clone()],
+            },
+        ),
+    );
+    assert_eq!(pending.phase, CompletionPhase::Tickets);
+    assert!(pending.ticket_evidence[0].goals.is_empty());
+    for variant in 0..5 {
+        let mut record = historical_record(task);
+        let mut actual = empty.clone();
+        match variant {
+            0 => record.tasks[0].artifact_keys = BTreeSet::from([name("invented")]),
+            1 => {
+                actual.evidence.insert(name("tests"));
+            }
+            2 => record.tasks.push(record.tasks[0].clone()),
+            3 => record.generation = 2,
+            _ => record.recorded_by = "operator".to_owned(),
+        }
+        assert!(
+            advance(
+                &compiled,
+                &state,
+                &callback(
+                    &state,
+                    &format!("bad-history-{variant}"),
+                    CompletionObservation::HistoricalEvidenceRecorded {
+                        record,
+                        evidence: vec![actual]
+                    }
+                )
+            )
+            .is_err(),
+            "variant {variant}"
+        );
+    }
+}
