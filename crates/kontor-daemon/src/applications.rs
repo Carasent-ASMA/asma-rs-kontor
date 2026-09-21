@@ -16334,6 +16334,16 @@ impl Services {
                     })
                     .map_err(|error| self.refuse(&error))?,
             );
+            // A settled turn's claimed keys count only while that task is done
+            // and native. They do not pass a gate. A key nobody claimed, or a
+            // task that is still open, stays a ticket-gate blocker.
+            evidence.extend(
+                state
+                    .with_store(|store| {
+                        store.list_settled_turn_artifact_keys(project_id, requirement.task_id)
+                    })
+                    .map_err(|error| self.refuse(&error))?,
+            );
             recorded.push(TicketEvidence {
                 task_id: requirement.task_id,
                 goals,

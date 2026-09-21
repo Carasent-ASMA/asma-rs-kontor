@@ -10630,3 +10630,76 @@ fn a_recorded_proof_is_append_only() {
     let deleted = connection.execute("DELETE FROM retired_evaluator_attestations", []);
     assert!(deleted.is_err(), "a proof may not be deleted");
 }
+
+/// A settled turn's claimed keys become ticket evidence only after the task is
+/// done. An open task contributes nothing, and a key the turn never claimed
+/// stays absent so the ticket gate can still refuse it.
+#[test]
+fn a_done_tasks_settled_turn_claim_counts_and_a_missing_key_stays_absent() {
+    let fixture = fixture();
+    let team_run = with_team_run(&fixture, now());
+    let run = AgentRunId::generate();
+    fixture
+        .store
+        .create_agent_run(&NewAgentRun {
+            id: run,
+            project_id: fixture.project,
+            team_run_id: team_run,
+            parent_agent_run_id: None,
+            role: role("zz.maker"),
+            account_profile_id: Some(fixture.account),
+            binding: None,
+            created_at: now(),
+        })
+        .expect("the seat is created");
+    fixture
+        .store
+        .settle_role_turn(&kontor_store::NewRoleTurn {
+            id: kontor_core::id::RoleTurnId::generate(),
+            project_id: fixture.project,
+            task_id: fixture.task,
+            team_run_id: team_run,
+            agent_run_id: run,
+            role_slot_id: kontor_core::id::RoleSlotId::parse("zz.maker").expect("a slot"),
+            idempotency_key: "turn-settled-claim".to_owned(),
+            task_revision: AggregateRevision::INITIAL,
+            binding_generation: 1,
+            runtime_proof: Some(runtime_turn_proof()),
+            authority_tier: "operator",
+            account_profile: Some(fixture.account),
+            artifacts: [artifact("code-change"), artifact("qa-report")]
+                .into_iter()
+                .collect(),
+            evidence_hash: ContentHash::of(b"settled-claim"),
+            settled_at: now(),
+        })
+        .expect("the turn settles");
+
+    let open = fixture
+        .store
+        .list_settled_turn_artifact_keys(fixture.project, fixture.task)
+        .expect("the open task reads");
+    assert!(
+        open.is_empty(),
+        "an open task's settled claim does not satisfy the ticket gate"
+    );
+
+    let connection = rusqlite::Connection::open(&fixture.path).expect("the database opens");
+    connection
+        .execute(
+            "UPDATE tasks SET state = 'done' WHERE id = ?1",
+            rusqlite::params![fixture.task.to_string()],
+        )
+        .expect("the task is done");
+
+    let claimed = fixture
+        .store
+        .list_settled_turn_artifact_keys(fixture.project, fixture.task)
+        .expect("the done task reads");
+    assert!(claimed.contains(&name("code-change")));
+    assert!(claimed.contains(&name("qa-report")));
+    assert!(
+        !claimed.contains(&name("release-notes")),
+        "a key the turn never claimed stays a blocker"
+    );
+}
