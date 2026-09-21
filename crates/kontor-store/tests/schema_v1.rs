@@ -753,7 +753,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // so a delivery reconciliation can prove itself from a bounded suffix
     // instead of requiring the whole transcript — which is what refused every
     // send into a session past the scan's page budget (ASMA-8203).
-    assert_eq!(SCHEMA_VERSION, 118);
+    // v118 adds the bounded delivery-proof state and its immutable step
+    // receipts. v119 makes publication attestations structurally immutable at
+    // the SQLite boundary (ASMA-8102).
+    assert_eq!(SCHEMA_VERSION, 119);
 }
 
 #[test]
@@ -3531,6 +3534,100 @@ fn append_only_tables_reject_update_and_delete_from_direct_sql() {
                 [],
             )
             .is_err()
+    );
+}
+
+#[test]
+fn publication_attestations_reject_update_and_delete_from_direct_sql() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    connection
+        .execute_batch(
+            "INSERT INTO projects (id, name, root_path, revision, created_at)
+             VALUES ('0193f000-0000-7000-8000-000000000001', 'P', '/tmp/p', 1,
+                     '2026-09-21T09:00:00Z');
+             INSERT INTO publication_attestations
+                 (id, project_id, mini_project_id, task_id, repository, base_branch,
+                  head_branch, head_sha, pull_request, title, accepted, reasons,
+                  policy_revision, idempotency_key, recorded_at)
+             VALUES
+                 ('0193f000-0000-7000-8000-000000000091',
+                  '0193f000-0000-7000-8000-000000000001', NULL, NULL,
+                  'Carasent-ASMA/asma-modules', 'master', 'feat/ASMA-8102-immutable',
+                  '82c56f5043b436ba666962cf82a89e93e330a271', 246,
+                  'ASMA-8102 Make publication evidence immutable', 1, '[]', 4,
+                  'accepted-ASMA-8102', '2026-09-21T09:01:00Z'),
+                 ('0193f000-0000-7000-8000-000000000092',
+                  '0193f000-0000-7000-8000-000000000001', NULL, NULL,
+                  'WrongOrg/asma-modules', 'master', 'feat/ASMA-8102-immutable',
+                  '82c56f5043b436ba666962cf82a89e93e330a271', 246,
+                  'ASMA-8102 Make publication evidence immutable', 0,
+                  '[\"repository_mismatch\"]', 4, 'refused-ASMA-8102',
+                  '2026-09-21T09:02:00Z');",
+        )
+        .expect("representative accepted and refused attestations insert");
+
+    for id in [
+        "0193f000-0000-7000-8000-000000000091",
+        "0193f000-0000-7000-8000-000000000092",
+    ] {
+        let update = connection
+            .execute(
+                "UPDATE publication_attestations
+                 SET accepted = 0, reasons = '[\"forged_after_recording\"]',
+                     head_sha = '0000000000000000000000000000000000000000'
+                 WHERE id = ?1",
+                [id],
+            )
+            .expect_err("a recorded publication decision cannot be rewritten");
+        assert!(
+            update
+                .to_string()
+                .contains("a publication attestation is immutable"),
+            "the update trigger returns its stable refusal: {update}"
+        );
+
+        let delete = connection
+            .execute("DELETE FROM publication_attestations WHERE id = ?1", [id])
+            .expect_err("a recorded publication decision cannot be erased");
+        assert!(
+            delete
+                .to_string()
+                .contains("a publication attestation is immutable"),
+            "the delete trigger returns its stable refusal: {delete}"
+        );
+    }
+
+    let stored: Vec<(String, i64, String, String)> = connection
+        .prepare(
+            "SELECT id, accepted, reasons, head_sha
+             FROM publication_attestations ORDER BY id",
+        )
+        .expect("the attestation reader prepares")
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .expect("the attestations remain readable")
+        .map(|row| row.expect("an attestation row reads"))
+        .collect();
+    assert_eq!(
+        stored,
+        vec![
+            (
+                "0193f000-0000-7000-8000-000000000091".to_owned(),
+                1,
+                "[]".to_owned(),
+                "82c56f5043b436ba666962cf82a89e93e330a271".to_owned(),
+            ),
+            (
+                "0193f000-0000-7000-8000-000000000092".to_owned(),
+                0,
+                "[\"repository_mismatch\"]".to_owned(),
+                "82c56f5043b436ba666962cf82a89e93e330a271".to_owned(),
+            ),
+        ],
+        "both original decisions survive refused mutation attempts byte-for-byte"
     );
 }
 
