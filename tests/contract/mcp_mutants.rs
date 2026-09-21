@@ -89,8 +89,21 @@ fn no_tool_names_a_store_a_database_or_a_migration() {
             "kontor_publication_preview.repository",
             "kontor_publication_attest.repository",
             "kontor_publication_merge.repository",
+            // Artifact evidence selects one of two governed Git roots; it
+            // cannot name a persistence repository or caller-supplied path.
+            "kontor_artifact_record.repository",
         ],
     );
+    let artifact_repository = REGISTRY
+        .iter()
+        .find(|tool| tool.name == "kontor_artifact_record")
+        .expect("artifact record tool")
+        .args
+        .iter()
+        .find(|arg| arg.name == "repository")
+        .expect("governed Git root selector");
+    assert_eq!(artifact_repository.ty, ArgType::Enum(&["project", "task"]));
+    assert_eq!(artifact_repository.place, Place::Body);
     // `sql` and `store` are checked separately because they are substrings of
     // ordinary words; the rule is a whole-segment match rather than a blind
     // `contains`, so a future `restore_point` is not a false positive while a
