@@ -314,7 +314,7 @@ fn managed_worktree(
 ) -> (PaseoConfig, WorkspaceRoot, std::path::PathBuf) {
     let path = repository.path().join(".worktrees").join(branch);
     let mut runtime_config = config();
-    runtime_config.scope.project_root_cwd = WorkspaceRoot::parse(
+    runtime_config.project_root_cwd = WorkspaceRoot::parse(
         repository
             .path()
             .to_str()
@@ -323,7 +323,11 @@ fn managed_worktree(
     .expect("an absolute project root");
     let root = WorkspaceRoot::parse(path.to_str().expect("the temporary path is UTF-8"))
         .expect("an absolute task worktree");
-    runtime_config.scope.canonical_worktree_cwd = root.clone();
+    runtime_config
+        .scope
+        .as_mut()
+        .expect("legacy scope")
+        .canonical_worktree_cwd = root.clone();
     (runtime_config, root, path)
 }
 
@@ -391,7 +395,7 @@ fn managed_catalog_module_worktree(
     );
 
     let mut runtime_config = config();
-    runtime_config.scope.project_root_cwd = WorkspaceRoot::parse(
+    runtime_config.project_root_cwd = WorkspaceRoot::parse(
         repository
             .path()
             .to_str()
@@ -400,7 +404,11 @@ fn managed_catalog_module_worktree(
     .expect("an absolute project root");
     let root = WorkspaceRoot::parse(path.to_str().expect("the temporary path is UTF-8"))
         .expect("an absolute task worktree");
-    runtime_config.scope.canonical_worktree_cwd = root.clone();
+    runtime_config
+        .scope
+        .as_mut()
+        .expect("legacy scope")
+        .canonical_worktree_cwd = root.clone();
     (runtime_config, root, path)
 }
 
@@ -553,8 +561,9 @@ fn config() -> PaseoConfig {
     PaseoConfig {
         runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("a valid runtime key"),
         host_key: name(HOST_KEY),
-        mini_project_id: external(MINI_PROJECT),
-        scope: scope(),
+        mini_project_id: Some(external(MINI_PROJECT)),
+        project_root_cwd: scope().project_root_cwd.clone(),
+        scope: Some(scope()),
         max_concurrent_sessions: 8,
         unavailable_providers: BTreeSet::new(),
         provider_selects_account: false,
@@ -3291,7 +3300,7 @@ async fn preparation_refuses_a_foreign_repository_inside_the_catalog_worktree_di
         String::from_utf8_lossy(&cloned.stderr)
     );
     let mut runtime_config = config();
-    runtime_config.scope.project_root_cwd = WorkspaceRoot::parse(
+    runtime_config.project_root_cwd = WorkspaceRoot::parse(
         repository
             .path()
             .to_str()
@@ -3300,7 +3309,11 @@ async fn preparation_refuses_a_foreign_repository_inside_the_catalog_worktree_di
     .expect("an absolute project root");
     let worktree_root = WorkspaceRoot::parse(path.to_str().expect("the temporary path is UTF-8"))
         .expect("an absolute task worktree");
-    runtime_config.scope.canonical_worktree_cwd = worktree_root.clone();
+    runtime_config
+        .scope
+        .as_mut()
+        .expect("legacy scope")
+        .canonical_worktree_cwd = worktree_root.clone();
 
     let recorded = Arc::new(daemon());
     let adapter = PaseoAdapter::new(
@@ -11387,6 +11400,20 @@ async fn a_root_that_names_no_directory_is_refused_without_a_shared_checkout_fal
 /// compatibility map, and retain both project identities across restart.
 #[tokio::test]
 async fn two_epics_share_one_plane_without_sharing_a_project_or_static_task_scope() {
+    assert_two_epic_plane(false).await;
+}
+
+#[tokio::test]
+async fn a_neutral_plane_materializes_only_supplied_epics_and_preserves_them_across_restart() {
+    assert_two_epic_plane(true).await;
+}
+
+async fn assert_two_epic_plane(neutral: bool) {
+    let mut runtime_config = config();
+    if neutral {
+        runtime_config.mini_project_id = None;
+        runtime_config.scope = None;
+    }
     let project = |id: &str, display: &str, root: &str| {
         serde_json::json!({
             "projectId": id,
@@ -11447,7 +11474,7 @@ async fn two_epics_share_one_plane_without_sharing_a_project_or_static_task_scop
             .answering_rpc("fetch_workspaces_request", second_workspace),
     );
     let adapter = PaseoAdapter::new(
-        config(),
+        runtime_config.clone(),
         Box::new(Arc::clone(&recorded)),
         PaseoCheckpoint::fresh(1, name(HOST_KEY)),
     )
@@ -11549,17 +11576,25 @@ async fn two_epics_share_one_plane_without_sharing_a_project_or_static_task_scop
     );
 
     let checkpoint = adapter.checkpoint();
-    assert_eq!(
-        checkpoint
-            .project
-            .as_ref()
-            .expect("the legacy epic")
-            .project_id
-            .as_str(),
-        "prj_epic_a"
-    );
-    assert_eq!(checkpoint.projects.len(), 1);
-    assert_eq!(checkpoint.projects[0].project_id.as_str(), "prj_epic_b");
+    if neutral {
+        assert!(
+            checkpoint.project.is_none(),
+            "no invented legacy epic binding"
+        );
+        assert_eq!(checkpoint.projects.len(), 2);
+    } else {
+        assert_eq!(
+            checkpoint
+                .project
+                .as_ref()
+                .expect("legacy epic")
+                .project_id
+                .as_str(),
+            "prj_epic_a"
+        );
+        assert_eq!(checkpoint.projects.len(), 1);
+        assert_eq!(checkpoint.projects[0].project_id.as_str(), "prj_epic_b");
+    }
 
     let restarted_runtime = Arc::new(
         RecordedPaseo::new()
@@ -11568,7 +11603,7 @@ async fn two_epics_share_one_plane_without_sharing_a_project_or_static_task_scop
             .answering_rpc("project.list.request", projects),
     );
     let restarted = PaseoAdapter::new(
-        config(),
+        runtime_config.clone(),
         Box::new(Arc::clone(&restarted_runtime)),
         checkpoint,
     )
@@ -11854,7 +11889,7 @@ async fn a_dynamic_task_uses_its_durable_scope_without_a_static_task_entry() {
         .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
     // A plane serving several tickets, none of them the one asked for.
     let mut scoped = config();
-    scoped.scope.task_scopes = [(
+    scoped.scope.as_mut().expect("legacy scope").task_scopes = [(
         TaskId::parse("01890000-0000-7000-8000-0000000000c9").expect("a canonical TaskId"),
         PaseoTaskScope {
             plan_item_key: external("KON-MVP-12"),
