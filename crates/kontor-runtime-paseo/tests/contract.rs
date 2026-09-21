@@ -7874,6 +7874,16 @@ async fn security_an_oversized_frame_is_refused_at_every_acceptance_point() {
         .await
         .expect_err("an oversized answer is refused");
     assert_eq!(refused, bound);
+    let reads = plane.daemon.sent_messages("fetch_agent_timeline_request");
+    let limits: Vec<_> = reads
+        .iter()
+        .map(|read| read["limit"].as_u64().unwrap())
+        .collect();
+    assert_eq!(
+        limits,
+        [10, 5, 2, 1],
+        "one oversized entry remains refused after bounded read retries"
+    );
 
     // The pushed half: a subscription frame is bounded too, and refused before
     // the epoch registry or the timeline guard sees it.
@@ -10143,6 +10153,52 @@ async fn an_attached_hosted_seat_with_no_provider_thread_recovers_in_place() {
     );
     assert_eq!(plane.daemon.count("agent reload agt_implement"), 1);
     assert_eq!(plane.daemon.count("rpc create_agent_request"), 0);
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn an_oversized_hosted_history_is_reconciled_through_smaller_reads_without_resending() {
+    let seat_binding_id = SeatBindingId::generate();
+    let mut agent = v(AGENT);
+    agent["agent"]["labels"] = serde_json::json!({
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+    });
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("fetch_agent_request", agent)
+        .then_answering_rpc(
+            "fetch_agent_timeline_request",
+            serde_json::json!({
+                "filler": "x".repeat(MAX_FRAME_BYTES)
+            }),
+        )
+        .answering_rpc("fetch_agent_timeline_request", v(TIMELINE_MESSAGE_LANDED));
+    let plane = Plane::fresh(recorded);
+    let outcome = plane
+        .adapter
+        .message_hosted_seat(&HostedSeatMessageRequest {
+            seat_binding_id,
+            identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+                host: name(HOST_KEY),
+                generation: 1,
+                native_id: external(AGENT_ID),
+            },
+            message_id: MessageId::parse(MESSAGE).expect("message id"),
+            body: text("frozen completion wake"),
+            sent_at: at("2026-08-20T05:10:00Z"),
+        })
+        .await
+        .expect("smaller canonical pages retain the actual delivery proof");
+    assert_eq!(outcome.position.sequence, 1);
+    assert_eq!(plane.daemon.count("rpc fetch_agent_timeline_request"), 2);
+    let reads = plane.daemon.sent_messages("fetch_agent_timeline_request");
+    assert_eq!(reads[0]["limit"], 500);
+    assert_eq!(reads[1]["limit"], 250);
+    assert_eq!(reads[0]["cursor"], reads[1]["cursor"]);
+    assert_eq!(reads[0]["direction"], reads[1]["direction"]);
     assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
 }
 

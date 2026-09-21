@@ -3690,16 +3690,31 @@ impl PaseoAdapter {
         limit: u32,
         projection: PaseoProjection,
     ) -> RuntimeResult<PaseoTimelinePage> {
-        let request = PaseoRpc::timeline_fetch(
-            self.next_request_id(),
-            agent_id,
-            projection,
-            direction,
-            cursor,
-            limit,
-        );
-        let frame = self.transport.request(&request).await?;
-        let page: PaseoTimelinePage = frame.resolve(&request, "PaseoTimelinePage")?;
+        let mut page_limit = limit;
+        let page: PaseoTimelinePage = loop {
+            let request = PaseoRpc::timeline_fetch(
+                self.next_request_id(),
+                agent_id,
+                projection,
+                direction,
+                cursor,
+                page_limit,
+            );
+            let result = self
+                .transport
+                .request(&request)
+                .await
+                .and_then(|frame| frame.resolve(&request, "PaseoTimelinePage"));
+            match result {
+                // Entry count is not a byte bound: a few large tool outputs can
+                // exceed the wire limit. Retry the same read from the same
+                // cursor with fewer entries; never truncate or accept the frame.
+                Err(RuntimeError::Transport {
+                    rule: "frame exceeded the bounded frame size",
+                }) if page_limit > 1 => page_limit = (page_limit / 2).max(1),
+                other => break other?,
+            }
+        };
         if page.agent_id != agent_id {
             return Err(RuntimeError::CorrelationFailed);
         }
