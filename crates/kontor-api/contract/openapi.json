@@ -11068,6 +11068,93 @@
         }
       }
     },
+    "/v1/sessions/{agent_run_id}/messages/proof": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Read durable proof progress for the exact original issuance.",
+        "operationId": "message_proof",
+        "parameters": [
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "message_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{agent_run_id}/messages:reconcile": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Freeze or advance one read-only canonical proof page with durable replay.",
+        "operationId": "reconcile_message_delivery",
+        "parameters": [
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageReconcileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "409": {
+            "description": "Proof revision, identity or history refused"
+          }
+        }
+      }
+    },
     "/v1/sessions/{agent_run_id}/permissions/{request_id}": {
       "post": {
         "tags": [
@@ -18940,6 +19027,27 @@
             "minimum": 0
           }
         }
+      },
+      "MessageReconcileRequest": {
+        "type": "object",
+        "description": "One bounded reconciliation step. This never resumes or sends a native message.",
+        "required": [
+          "message_id",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Zero starts a proof; later calls name its returned revision.",
+            "minimum": 0
+          },
+          "message_id": {
+            "type": "string",
+            "description": "Exact previously issued client message id."
+          }
+        },
+        "additionalProperties": false
       },
       "MessageRequest": {
         "type": "object",

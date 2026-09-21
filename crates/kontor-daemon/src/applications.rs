@@ -5230,7 +5230,7 @@ impl Services {
             message_id,
             &request.body_hash(),
         )?;
-        match adapter.send(&request).await {
+        match state.send_issued_message(adapter.as_ref(), &request).await {
             Ok(acknowledged) => {
                 // The same delivery position the operator path records, for the
                 // same reason: a follow-up is a Kontor-minted id in a session,

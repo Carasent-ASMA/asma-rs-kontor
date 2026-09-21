@@ -3527,6 +3527,57 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Send one follow-up message into a run's session.",
     },
     ToolSpec {
+        name: "kontor_session_message_reconcile",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/sessions/{agent_run_id}/messages:reconcile",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "agent_run_id",
+                Place::Path,
+                ArgType::AgentRunId,
+                "The exact original run.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "message_id",
+                Place::Body,
+                ArgType::ExternalId,
+                "The exact previously issued message id; no message is sent.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::U64,
+                "Zero starts a proof; use its returned revision for each next page.",
+            ),
+        ],
+        about: "Read one bounded canonical page and record resumable delivery proof; never resend or resume the native session.",
+    },
+    ToolSpec {
+        name: "kontor_session_message_proof_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/sessions/{agent_run_id}/messages/proof",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "agent_run_id",
+                Place::Path,
+                ArgType::AgentRunId,
+                "The exact original run.",
+            ),
+            req(
+                "message_id",
+                Place::Query,
+                ArgType::ExternalId,
+                "The original issued message id.",
+            ),
+        ],
+        about: "Read persisted canonical delivery-proof progress without touching native state.",
+    },
+    ToolSpec {
         name: "kontor_topology_seat_message_send",
         tier: CallerTier::Operator,
         method: Method::Post,

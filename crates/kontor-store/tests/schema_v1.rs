@@ -186,6 +186,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "runtime_reconciliation_members",
     "runtime_reconciliation_results",
     "runtime_message_issuances",
+    "runtime_message_delivery_proofs",
+    "runtime_message_delivery_proof_steps",
     "runtime_replay_consumers",
     "runtime_timeline_epochs",
     "schedule_overrides",
@@ -751,7 +753,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // so a delivery reconciliation can prove itself from a bounded suffix
     // instead of requiring the whole transcript — which is what refused every
     // send into a session past the scan's page budget (ASMA-8203).
-    assert_eq!(SCHEMA_VERSION, 117);
+    assert_eq!(SCHEMA_VERSION, 118);
 }
 
 #[test]

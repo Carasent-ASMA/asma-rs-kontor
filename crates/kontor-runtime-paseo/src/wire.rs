@@ -1260,8 +1260,8 @@ pub struct PaseoTimelineItem {
     pub call_id: Option<String>,
     /// The item's own text, when Paseo carries one.
     ///
-    /// Deserialized for exactly one purpose: classifying whether a *quiescent*
-    /// session's last words were a provider quota refusal. It is deliberately
+    /// Used for quota-refusal classification and delivery-proof body digests.
+    /// The digest binds a replay without retaining transcript text. It is deliberately
     /// **not** placed into the canonical [`SessionEvent`] payload by
     /// [`normalize_entry`] — the durable event vocabulary stays closed and
     /// scalar, and this is the one place a transcript could otherwise
@@ -1553,6 +1553,10 @@ pub fn normalize_entry(entry: &PaseoTimelineEntry, epoch: u64) -> RuntimeResult<
     let payload = CanonicalDocument::from_value(&serde_json::json!({
         "schema_version": 1,
         "paseo_version": PASEO_APP_VERSION,
+        "message_body_hash": if entry.item.item_type == "user_message" {
+            entry.item.text.as_ref().map(|text| kontor_core::id::ContentHash::of(text.as_bytes()).to_string())
+        } else { None },
+        "entry_hash": kontor_core::id::ContentHash::of(serde_json::to_string(entry).map_err(|_| RuntimeError::Transport { rule: "canonical entry cannot be hashed" })?.as_bytes()).to_string(),
         "native": {
             "seq": entry.seq_start,
             "type": bounded(&entry.item.item_type),
@@ -1615,6 +1619,51 @@ pub fn body_digest(body: &str) -> ContentHash {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_message_proof_hashes_bind_native_content_without_disclosing_it() {
+        let mut original = entry(2, "user_message");
+        original.item.client_message_id = Some("01890000-0000-7000-8000-000000000011".to_owned());
+        original.item.text = Some("private original instruction".to_owned());
+        let normalized = normalize_entry(&original, 13).unwrap();
+        let payload: serde_json::Value = normalized.payload.deserialize().unwrap();
+        assert_eq!(
+            payload["message_body_hash"],
+            kontor_core::id::ContentHash::of(b"private original instruction").to_string()
+        );
+        assert_eq!(payload["entry_hash"].as_str().unwrap().len(), 64);
+        assert!(
+            !normalized
+                .payload
+                .json()
+                .contains("private original instruction")
+        );
+        let mut rewritten = original.clone();
+        rewritten.item.text = Some("different instruction".to_owned());
+        let changed = normalize_entry(&rewritten, 13).unwrap();
+        assert_ne!(
+            normalized.digest(),
+            changed.digest(),
+            "same-position native content rewrites must change proof digest"
+        );
+        rewritten = original.clone();
+        rewritten.item.message_id = Some("another-provider-event".to_owned());
+        assert_ne!(
+            normalized.digest(),
+            normalize_entry(&rewritten, 13).unwrap().digest(),
+            "native candidate identity must be in the digest"
+        );
+        original.item.text = None;
+        let missing: serde_json::Value = normalize_entry(&original, 13)
+            .unwrap()
+            .payload
+            .deserialize()
+            .unwrap();
+        assert!(
+            missing["message_body_hash"].is_null(),
+            "missing native text never becomes an invented empty body hash"
+        );
+    }
 
     fn entry(seq: u64, item_type: &str) -> PaseoTimelineEntry {
         PaseoTimelineEntry {

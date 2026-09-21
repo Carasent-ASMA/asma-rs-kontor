@@ -2580,6 +2580,22 @@ impl ScriptedFakeRuntime {
             .unwrap_or_default()
     }
 
+    /// Replace canonical fixture content to model retention gaps or rewrites.
+    ///
+    /// # Errors
+    /// Refuses a binding this fake does not own.
+    pub fn replace_recorded_history(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        content: Vec<SessionEvent>,
+    ) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        let session = state.session(binding)?;
+        session.history_len = content.len();
+        session.content = content;
+        Ok(())
+    }
+
     /// The permission requests the runtime is still waiting on.
     #[must_use]
     pub fn pending_permissions(&self) -> BTreeSet<ExternalId> {
@@ -2692,6 +2708,7 @@ fn payload(kind: SessionEventKind, sequence: u64, body: &str) -> RuntimeResult<C
         "kind": kind,
         "sequence": sequence,
         "body": body,
+        "message_body_hash": ContentHash::of(body.as_bytes()).to_string(),
     }))?)
 }
 

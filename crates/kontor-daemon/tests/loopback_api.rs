@@ -38,6 +38,9 @@ mod committee_evidence;
 #[path = "loopback/provider_refresh.rs"]
 mod provider_refresh;
 
+#[path = "loopback/message_delivery_proofs.rs"]
+mod message_delivery_proofs;
+
 #[tokio::test]
 async fn open_question_commands_preserve_authority_history_and_completion_blockers() {
     use kontor_core::id::OpenQuestionId;

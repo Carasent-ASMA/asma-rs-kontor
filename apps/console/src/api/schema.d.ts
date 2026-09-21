@@ -3267,6 +3267,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{agent_run_id}/messages/proof": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read durable proof progress for the exact original issuance. */
+        get: operations["message_proof"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{agent_run_id}/messages:reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Freeze or advance one read-only canonical proof page with durable replay. */
+        post: operations["reconcile_message_delivery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{agent_run_id}/permissions/{request_id}": {
         parameters: {
             query?: never;
@@ -7049,6 +7083,16 @@ export interface components {
              * @description Where it landed inside that epoch.
              */
             sequence: number;
+        };
+        /** @description One bounded reconciliation step. This never resumes or sends a native message. */
+        MessageReconcileRequest: {
+            /**
+             * Format: int64
+             * @description Zero starts a proof; later calls name its returned revision.
+             */
+            expected_revision: number;
+            /** @description Exact previously issued client message id. */
+            message_id: string;
         };
         /** @description What a caller sends into a session. */
         MessageRequest: {
@@ -20068,6 +20112,63 @@ export interface operations {
             };
             /** @description This runtime cannot take messages */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    message_proof: {
+        parameters: {
+            query: {
+                message_id: string;
+            };
+            header?: never;
+            path: {
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    reconcile_message_delivery: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                agent_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MessageReconcileRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Proof revision, identity or history refused */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
