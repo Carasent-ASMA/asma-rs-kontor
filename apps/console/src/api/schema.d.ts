@@ -12595,14 +12595,15 @@ export interface operations {
     };
     committee_artifact: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Zero for the first page; then use the returned `next_offset`. */
+                offset?: number;
+            };
             header?: never;
             path: {
                 project_id: string;
                 committee_run_id: string;
                 evidence_id: string;
-                /** @description Zero for the first page; then use the returned `next_offset`. */
-                offset: number;
             };
             cookie?: never;
         };

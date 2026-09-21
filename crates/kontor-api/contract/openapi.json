@@ -2034,12 +2034,13 @@
           },
           {
             "name": "offset",
-            "in": "path",
+            "in": "query",
             "description": "Zero for the first page; then use the returned `next_offset`.",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "integer",
               "format": "int32",
+              "default": 0,
               "minimum": 0
             }
           }

@@ -31,9 +31,11 @@ pub struct CommitteeArtifactContentDto {
 /// A byte offset into the verified text. Every page is at most 64 KiB.
 #[derive(Debug, Default, serde::Deserialize, utoipa::IntoParams)]
 #[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
 pub struct ArtifactContentQuery {
     /// Zero for the first page; then use the returned `next_offset`.
     #[serde(default)]
+    #[param(required = false, default = 0)]
     pub offset: u32,
 }
 
