@@ -7095,7 +7095,16 @@ pub static REGISTRY: &[ToolSpec] = &[
                  `{\"phase\":\"closeout\",\"merge\":…,\"release\":…,\
                  \"delivered_versions\":{module:revision},\"summary\":…,\
                  \"notification\":…,\"archive\":…}`; each statement is hashed into the \
-                 receipt that stands for it.",
+                 receipt that stands for it. Admins may disposition exact missing historical \
+                 provenance at the ticket gate with `{\"phase\":\"historical_evidence\",\
+                 \"disposition\":\"provenance_unavailable\",\"reason\":…,\
+                 \"packet\":{\"commit\":…,\"path\":…,\"sha256\":…},\
+                 \"tasks\":[{\"task_id\":…,\"expected_task_revision\":…,\
+                 \"workflow_id\":…,\"expected_workflow_revision\":…,\
+                 \"workflow_hash\":…,\"artifact_keys\":[…]}]}`. The committed UTF-8 \
+                 packet must be in the registered project repository and at most 64 KiB. \
+                 This writes separate completion evidence, never producer artifacts or an \
+                 acceptance pass; the existing final Committee judges actual obligations.",
             ),
         ],
         about: "Advance one epic's completion.",

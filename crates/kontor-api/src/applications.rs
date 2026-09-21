@@ -2322,6 +2322,8 @@ pub struct CompletionStateDto {
     pub needs_human: Option<NeedsHumanDto>,
     /// Closeouts archived from eras that later reopened.
     pub closeout_history: Vec<RecordedCloseoutDto>,
+    /// Append-only operator dispositions, including exact packet bodies and historical gaps.
+    pub historical_evidence: Vec<serde_json::Value>,
     /// Current reopening era.
     pub generation: u32,
     /// The revision a write must present.
@@ -2352,10 +2354,65 @@ pub struct AdvanceCompletionRequest {
     pub evidence: Option<CompletionEvidenceDto>,
 }
 
+/// Exact task/workflow fence for unavailable historical producer provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalTaskEvidenceDto {
+    /// Task in this epic, already natively Done.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// Exact Done revision.
+    #[schema(value_type = u64)]
+    pub expected_task_revision: AggregateRevision,
+    /// Exact active workflow identity.
+    #[schema(value_type = String)]
+    pub workflow_id: kontor_core::id::TaskWorkflowId,
+    /// Exact active workflow revision.
+    #[schema(value_type = u64)]
+    pub expected_workflow_revision: AggregateRevision,
+    /// Exact frozen workflow definition digest.
+    #[schema(value_type = String)]
+    pub workflow_hash: ContentHash,
+    /// Nonempty distinct declared keys still lacking producer/closure evidence.
+    pub artifact_keys: Vec<String>,
+}
+
+/// Immutable committed verification packet in this project's registered Git root.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalEvidencePacketDto {
+    /// Full commit id; mutable refs are refused.
+    pub commit: String,
+    /// Relative UTF-8 packet path.
+    pub path: String,
+    /// SHA-256 of the committed packet, at most 64 KiB.
+    #[schema(value_type = String)]
+    pub sha256: ContentHash,
+}
+
+/// Explicit historical provenance disposition; cannot assert an acceptance pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoricalEvidenceDispositionDto {
+    /// The original producer provenance is unavailable and remains visibly absent.
+    ProvenanceUnavailable,
+}
+
 /// One operator-asserted completion fact, tagged by the phase it answers.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CompletionEvidenceDto {
+    /// Admin-only explicit completion disposition. Never writes producer evidence or gate verdicts.
+    HistoricalEvidence {
+        /// Acknowledges unavailable provenance without judging acceptance.
+        disposition: HistoricalEvidenceDispositionDto,
+        /// Why historical producer provenance is unavailable; no claim of original authorship.
+        reason: String,
+        /// Immutable current-source verification packet the final Committee must discuss.
+        packet: HistoricalEvidencePacketDto,
+        /// Exact Done tasks and currently missing historical artifact keys.
+        tasks: Vec<HistoricalTaskEvidenceDto>,
+    },
     /// Select one already-settled durable Committee result when more than one
     /// exact result matches the completion round. The selected run still has to
     /// pass every normal template, provenance, reconstruction, and result check;
@@ -11384,7 +11441,17 @@ pub async fn advance_completion(
     headers: HeaderMap,
     Json(request): Json<AdvanceCompletionRequest>,
 ) -> Result<Json<CompletionOutcomeDto>, ApiError> {
-    caller.require(&state, CallerCapability::Operator)?;
+    caller.require(
+        &state,
+        if matches!(
+            request.evidence,
+            Some(CompletionEvidenceDto::HistoricalEvidence { .. })
+        ) {
+            CallerCapability::Admin
+        } else {
+            CallerCapability::Operator
+        },
+    )?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let epic_id = resolve_epic_selector(&state, project_id, &epic_id)?;
     let key = idempotency_key(&state, &headers)?;

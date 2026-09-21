@@ -126,6 +126,8 @@ pub struct CommitteeCompletionEvidenceDto {
     pub definition: serde_json::Value,
     /// Frozen ticket goals and evidence obligations.
     pub ticket_requirements: Vec<serde_json::Value>,
+    /// Explicit historical gaps and committed current-source packets; never producer artifacts.
+    pub historical_evidence: Vec<serde_json::Value>,
     /// Current phase, without round verdicts or deliberation.
     pub phase: CompletionPhaseDto,
     /// Current phase blockers.

@@ -344,7 +344,7 @@ impl Services {
 }
 
 /// Read immutable committed bytes. No shell, network, hooks or mutable ref resolution.
-async fn verified_git_blob(
+pub(super) async fn verified_git_blob(
     root: &str,
     commit: &str,
     path: &str,
