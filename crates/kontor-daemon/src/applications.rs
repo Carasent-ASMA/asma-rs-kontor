@@ -63,6 +63,10 @@ use kontor_api::applications::{
     ResolvedRoleRefDto, SeatBindingOutcomeDto, SeatBindingRequest, TopologySeatDto,
 };
 use kontor_api::applications::{
+    AdoptTeamRunAdmissionRequest, FillTeamRunSeatRequest, FilledTeamRunSeatDto, MemorySelectionDto,
+    OmittedMemoryRevisionDto, TeamRunAdmissionAdoptionDto, TeamRunSeatDispatchDto,
+};
+use kontor_api::applications::{
     AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CloseoutEvidenceDto,
     CloseoutRequirementDto, CommitteeFindingDto, CommitteeReReviewProvenance, CommitteeRunDto,
     CommitteeVerdictDto, CompletionBlockerDto, CompletionEvidenceDto, CompletionOutcomeDto,
@@ -141,10 +145,6 @@ use kontor_api::applications::{
     TicketReconcileAppliedDto, TicketReconcileApplyRequest, TicketReconcilePlanDto,
     WorktreeClaimCorrectionAppliedDto, WorktreeClaimCorrectionApplyRequest,
     WorktreeClaimCorrectionPreviewDto, WorktreeClaimCorrectionRequest,
-};
-use kontor_api::applications::{
-    FillTeamRunSeatRequest, FilledTeamRunSeatDto, MemorySelectionDto, OmittedMemoryRevisionDto,
-    TeamRunSeatDispatchDto,
 };
 use kontor_api::dto::JiraBindingDto;
 use kontor_api::error::{ApiError, ApiErrorCode};
@@ -29694,6 +29694,203 @@ impl ApplicationOperations for Services {
         })
     }
 
+    async fn adopt_team_run_admission(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        role_slot_id: &RoleSlotId,
+        request: &AdoptTeamRunAdmissionRequest,
+    ) -> Result<TeamRunAdmissionAdoptionDto, ApiError> {
+        let _native_activity = self.native_activity()?;
+        let _succession_guard = self.succession_guard.lock().await;
+        let state = self.state()?;
+        let team = state
+            .with_store(|store| store.get_team_run(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the TeamRun does not exist in this project",
+                )
+            })?;
+        let task = self.task_row(project_id, team.task_id)?;
+        let epic_id = task
+            .mini_project_id
+            .ok_or_else(|| self.deny(ApiErrorCode::PlacementBlocked, "the task has no epic"))?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1, "operation": "team_run_admission_adopt",
+            "project_id": project_id, "team_run_id": team_run_id,
+            "role_slot_id": role_slot_id, "request": {
+                "agent_run_id": request.agent_run_id,
+                "expected_task_revision": request.expected_task_revision,
+                "expected_agent_run_revision": request.expected_agent_run_revision,
+                "reason": request.reason,
+            },
+        }))?;
+        let replay = self.replayed(key, &intent, Some(&target))?;
+        let (adoption, receipt, applied) = if let Some(receipt) = replay {
+            let adoption = state
+                .with_store(|store| store.team_run_admission_adoption_by_receipt(receipt.id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the command receipt has no adoption",
+                    )
+                })?;
+            (adoption, receipt, Applied::Unchanged)
+        } else {
+            if !state.barrier().state().is_open() {
+                return Err(self.deny(
+                    ApiErrorCode::ReconciliationPending,
+                    "startup reconciliation has not finished",
+                ));
+            }
+            if task.revision != request.expected_task_revision {
+                return Err(self
+                    .deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the task changed before adoption",
+                    )
+                    .with_revision(Some(task.revision)));
+            }
+            let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
+                .map_err(|error| self.refuse_domain(&error))?;
+            if !template.slots.iter().any(|slot| &slot.id == role_slot_id) {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the frozen TeamRun snapshot does not declare this slot",
+                ));
+            }
+            let run = self
+                .current_delivery_role_leaf(project_id, team_run_id, role_slot_id.as_role_key())?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "this slot has no existing run to adopt",
+                    )
+                })?;
+            if run.id != request.agent_run_id
+                || run.revision != request.expected_agent_run_revision
+                || run.binding.is_some()
+                || run.terminal.is_some()
+                || run.projection.lifecycle != kontor_core::state::RunLifecycle::Queued
+                || run.projection.desired != kontor_core::state::DesiredRunState::RunRequested
+                || run.projection.observed != kontor_core::state::ObservedRunState::Unknown
+            {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "adoption requires the exact current queued, unbound slot leaf",
+                ));
+            }
+            let epic_id = task
+                .mini_project_id
+                .ok_or_else(|| self.deny(ApiErrorCode::PlacementBlocked, "the task has no epic"))?;
+            self.ensure_no_team_definition_migration(project_id, epic_id)?;
+            let node = state
+                .with_store(|store| store.get_task_topology_node(project_id, task.id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the task has no existing TSW node",
+                    )
+                })?;
+            self.preflight_delivery_slots(&node, std::slice::from_ref(role_slot_id))?;
+            let logical_seat = state
+                .with_store(|store| store.list_seat_bindings(project_id, node.id))
+                .map_err(|error| self.refuse(&error))?
+                .into_iter()
+                .any(|seat| {
+                    seat.team_run_id == Some(team_run_id)
+                        && seat.task_id == Some(task.id)
+                        && &seat.role_slot_id == role_slot_id
+                        && seat.is_non_terminal()
+                });
+            if !logical_seat {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the slot has no live SeatBinding on its TSW",
+                ));
+            }
+            self.prove_existing_bound_container(project_id, &node)
+                .await?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the TSW has no bound container",
+                    )
+                })?;
+            let now = kontor_api::now();
+            let receipt_id = CommandReceiptId::generate();
+            let adoption = kontor_core::repository::StoredTeamRunAdmissionAdoption {
+                id: ExternalId::parse(&CommandReceiptId::generate().to_string())
+                    .map_err(|error| self.refuse_domain(&error))?,
+                project_id,
+                task_id: task.id,
+                team_run_id,
+                role_slot_id: role_slot_id.clone(),
+                agent_run_id: run.id,
+                adopted_agent_run_revision: run.revision,
+                receipt_id,
+                adopted_at: now,
+            };
+            let envelope = ReceiptEnvelope::new(
+                state.realm_id(),
+                NewLocalCommand {
+                    project_id,
+                    receipt_id,
+                    idempotency_key: key.clone(),
+                    kind: CommandKind::StartScheduledWork,
+                    target,
+                    target_revision: epic.revision,
+                    intent,
+                    created_at: now,
+                },
+            );
+            state
+                .with_store(|store| {
+                    store.adopt_team_run_admission_with_intent(
+                        &adoption,
+                        request.expected_task_revision,
+                        &envelope,
+                    )
+                })
+                .map_err(|error| match &error {
+                    RepositoryError::Conflict {
+                        subject: "team-run admission adoption" | "admission adoption",
+                        rule,
+                    } => self.deny(ApiErrorCode::RevisionConflict, rule),
+                    _ => self.refuse(&error),
+                })?
+        };
+        state.signals().appended();
+        Ok(TeamRunAdmissionAdoptionDto {
+            adoption_id: adoption.id.as_str().to_owned(),
+            task_id: adoption.task_id,
+            team_run_id: adoption.team_run_id,
+            role_slot_id: adoption.role_slot_id,
+            agent_run_id: adoption.agent_run_id,
+            adopted_agent_run_revision: adoption.adopted_agent_run_revision,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt.id.to_string(),
+                applied: if applied == Applied::Created {
+                    AppliedDto::Created
+                } else {
+                    AppliedDto::Unchanged
+                },
+                revision: receipt.target_revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
     async fn fill_team_run_seat(
         &self,
         key: &IdempotencyKey,
@@ -29804,9 +30001,9 @@ impl ApplicationOperations for Services {
                 });
             // A slot can be owed a seat for a second, narrower reason: an
             // immutable adoption recorded that an already-created run belongs
-            // to it. A run admitted before its handoff existed has no dispatch
-            // and never will, so a dispatch-only reading leaves it permanently
-            // unattachable — which is the state verifier runs reach today.
+            // to it. A run created before its handoff exists has no dispatch
+            // yet. Adoption permits materialization in WAIT while the ordinary
+            // handoff conditions continue to govern delivery of actual work.
             //
             // The adoption is authority to fill, not a substitute for the
             // checks below: the run it names is re-proved here against the same
@@ -29827,7 +30024,17 @@ impl ApplicationOperations for Services {
                             "the adopted run named by this slot's adoption no longer exists",
                         )
                     })?;
-                if adopted.team_run_id != team_run_id
+                let current = self.current_delivery_role_leaf(
+                    project_id,
+                    team_run_id,
+                    slot.id.as_role_key(),
+                )?;
+                if current.as_ref().is_none_or(|run| run.id != adopted.id)
+                    || adopted.projection.lifecycle != kontor_core::state::RunLifecycle::Queued
+                    || adopted.projection.desired
+                        != kontor_core::state::DesiredRunState::RunRequested
+                    || adopted.projection.observed != kontor_core::state::ObservedRunState::Unknown
+                    || adopted.team_run_id != team_run_id
                     || adopted.role != *slot.id.as_role_key()
                     || adopted.revision != adoption.adopted_agent_run_revision
                     || adopted.binding.is_some()

@@ -33167,6 +33167,14 @@ async fn seat_fill_world(owed: bool) -> SeatFillWorld {
 }
 
 async fn seat_fill_world_with_tasks(owed: bool, task_count: usize) -> SeatFillWorld {
+    seat_fill_world_with_recovery(owed, task_count, true).await
+}
+
+async fn seat_fill_world_with_recovery(
+    owed: bool,
+    task_count: usize,
+    resume: bool,
+) -> SeatFillWorld {
     let world = World::open_empty_with_a_plane().await;
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
@@ -33325,6 +33333,9 @@ async fn seat_fill_world_with_tasks(owed: bool, task_count: usize) -> SeatFillWo
         .expect("verify");
     assert!(root.binding.is_some());
     assert!(verify.binding.is_none());
+    if !resume {
+        return fixture;
+    }
     // Runtime census evidence of the already-created verify native is the
     // supported exact partial-admission recovery input. This is a fake-runtime
     // observation, not an inserted control-plane run or handoff.
@@ -33377,6 +33388,254 @@ async fn seat_fill_world_with_tasks(owed: bool, task_count: usize) -> SeatFillWo
         assert_eq!(settled.json()["follow_ups"][0]["dispatched"], false);
     }
     fixture
+}
+
+fn adoption_body(fixture: &SeatFillWorld) -> serde_json::Value {
+    let run = fixture
+        .members()
+        .into_iter()
+        .find(|run| run.role.as_str() == "verify")
+        .unwrap();
+    serde_json::json!({
+        "agent_run_id":run.id, "expected_task_revision":fixture.task_revision(),
+        "expected_agent_run_revision":run.revision,
+        "reason":"Recover the existing verifier without inventing its required handoff",
+    })
+}
+
+async fn adopt_slot(
+    fixture: &SeatFillWorld,
+    slot: &str,
+    body: &serde_json::Value,
+    key: &str,
+    tier: &str,
+) -> Answer {
+    Call::post(
+        format!(
+            "/v1/projects/{}/team-runs/{}/role-slots/{slot}/admission:adopt",
+            fixture.project, fixture.team
+        ),
+        body,
+    )
+    .signed_as(&fixture.world, tier)
+    .with_key(key)
+    .send(&fixture.world)
+    .await
+}
+
+fn adoption_rows(fixture: &SeatFillWorld, key: &str) -> (i64, i64, i64) {
+    let db = rusqlite::Connection::open(fixture.world.directory.path().join("kontor.db")).unwrap();
+    (
+        db.query_row(
+            "SELECT count(*) FROM team_run_admission_adoptions",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap(),
+        db.query_row(
+            "SELECT count(*) FROM command_receipts WHERE idempotency_key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .unwrap(),
+        db.query_row("SELECT count(*) FROM turn_dispatches", [], |row| row.get(0))
+            .unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn admission_adoption_fills_the_existing_run_but_preserves_wait_and_missing_handoff() {
+    let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+    let before = fixture.members();
+    let body = adoption_body(&fixture);
+    let run = AgentRunId::parse(body["agent_run_id"].as_str().unwrap()).unwrap();
+    let before_calls = fixture.world.fake.calls().len();
+    let adopted = adopt_slot(&fixture, "verify", &body, "adopt-verifier", "operator").await;
+    assert_eq!(adopted.status, 200, "{}", adopted.body);
+    assert_eq!(adopted.json()["agent_run_id"], body["agent_run_id"]);
+    assert_eq!(adopted.json()["receipt"]["applied"], "created");
+    assert_eq!(fixture.members(), before, "adoption changes no run");
+    assert_eq!(adoption_rows(&fixture, "adopt-verifier"), (1, 1, 0));
+    assert!(
+        fixture.world.fake.calls()[before_calls..]
+            .iter()
+            .all(|call| matches!(
+                call,
+                AdapterCall::InspectContainer(_) | AdapterCall::DiscoverCapabilities
+            ))
+    );
+    let db = rusqlite::Connection::open(fixture.world.directory.path().join("kontor.db")).unwrap();
+    let receipt: (String, String, i64) = db.query_row(
+        "SELECT execution_mode, state, (SELECT count(*) FROM command_outbox WHERE receipt_id = command_receipts.id) FROM command_receipts WHERE idempotency_key = 'adopt-verifier'",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+    assert_eq!(receipt, ("local".to_owned(), "confirmed".to_owned(), 0));
+    fixture
+        .world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("verify").unwrap());
+    let filled = fixture
+        .fill("verify", fixture.task_revision(), "fill-adopted-verifier")
+        .await;
+    assert_eq!(filled.status, 200, "{}", filled.body);
+    assert_eq!(filled.json()["agent_run_id"], body["agent_run_id"]);
+    assert_eq!(filled.json()["dispatches"], serde_json::json!([]));
+    assert_eq!(fixture.members().len(), before.len(), "no duplicate run");
+    assert!(
+        fixture
+            .world
+            .fake
+            .launched_prompt(run)
+            .unwrap()
+            .as_str()
+            .starts_with("wait:")
+    );
+    assert!(
+        !fixture.world.fake.calls()[before_calls..]
+            .iter()
+            .any(|call| matches!(call, AdapterCall::Send(..)))
+    );
+    let effects = fixture.world.fake.calls();
+    let replay = adopt_slot(&fixture, "verify", &body, "adopt-verifier", "operator").await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["adoption_id"], adopted.json()["adoption_id"]);
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        fixture.world.fake.calls(),
+        effects,
+        "replay does not re-prove or launch"
+    );
+    let mut changed = body.clone();
+    changed["reason"] = serde_json::json!("changed intent");
+    let refused = adopt_slot(&fixture, "verify", &changed, "adopt-verifier", "operator").await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(adoption_rows(&fixture, "adopt-verifier"), (1, 1, 0));
+}
+
+#[tokio::test]
+async fn admission_adoption_refuses_wrong_authority_run_role_revision_and_unknown_evidence() {
+    let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+    let body = adoption_body(&fixture);
+    for (slot, field, value, tier, expected) in [
+        (
+            "verify",
+            "reason",
+            serde_json::json!("observer"),
+            "observer",
+            403,
+        ),
+        (
+            "verify",
+            "expected_task_revision",
+            serde_json::json!(99),
+            "operator",
+            409,
+        ),
+        (
+            "verify",
+            "expected_agent_run_revision",
+            serde_json::json!(99),
+            "operator",
+            409,
+        ),
+        (
+            "verify",
+            "agent_run_id",
+            serde_json::json!(AgentRunId::generate()),
+            "operator",
+            409,
+        ),
+        (
+            "unknown",
+            "reason",
+            serde_json::json!("wrong slot"),
+            "operator",
+            400,
+        ),
+        (
+            "scope",
+            "reason",
+            serde_json::json!("bound slot"),
+            "operator",
+            409,
+        ),
+        (
+            "verify",
+            "artifacts",
+            serde_json::json!(["invented evidence"]),
+            "operator",
+            400,
+        ),
+    ] {
+        let mut changed = body.clone();
+        changed[field] = value;
+        let before = fixture.world.fake.calls();
+        let refused = adopt_slot(&fixture, slot, &changed, "adopt-invalid", tier).await;
+        assert_eq!(refused.status, expected, "{slot}/{field}: {}", refused.body);
+        assert_eq!(fixture.world.fake.calls(), before);
+        assert_eq!(adoption_rows(&fixture, "adopt-invalid"), (0, 0, 0));
+    }
+    let bound = seat_fill_world(false).await;
+    let refused = adopt_slot(
+        &bound,
+        "verify",
+        &adoption_body(&bound),
+        "adopt-bound",
+        "operator",
+    )
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(adoption_rows(&bound, "adopt-bound"), (0, 0, 0));
+}
+
+#[tokio::test]
+async fn admission_adoption_refuses_native_container_drift_without_consuming_the_key() {
+    for drift in exact_container_drifts() {
+        let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+        fixture.world.fake.drift_container(fixture.node, drift);
+        let calls = fixture.world.fake.calls().len();
+        let refused = adopt_slot(
+            &fixture,
+            "verify",
+            &adoption_body(&fixture),
+            "adopt-drift",
+            "operator",
+        )
+        .await;
+        assert_eq!(refused.status, 409, "{}", refused.body);
+        assert_eq!(adoption_rows(&fixture, "adopt-drift"), (0, 0, 0));
+        assert!(
+            fixture.world.fake.calls()[calls..]
+                .iter()
+                .all(|call| matches!(
+                    call,
+                    AdapterCall::InspectContainer(_) | AdapterCall::DiscoverCapabilities
+                ))
+        );
+    }
+}
+
+#[tokio::test]
+async fn admission_adoption_fill_rechecks_the_recorded_run_before_any_effect() {
+    let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+    let body = adoption_body(&fixture);
+    let adopted = adopt_slot(&fixture, "verify", &body, "adopt-stale", "operator").await;
+    assert_eq!(adopted.status, 200, "{}", adopted.body);
+    // Model a concurrent legitimate revision change after authority was recorded.
+    // The adoption remains immutable; the fill must not spend stale authority.
+    let db = rusqlite::Connection::open(fixture.world.directory.path().join("kontor.db")).unwrap();
+    db.execute(
+        "UPDATE agent_runs SET revision = revision + 1 WHERE id = ?1",
+        [body["agent_run_id"].as_str().unwrap()],
+    )
+    .unwrap();
+    let calls = fixture.world.fake.calls();
+    let refused = fixture
+        .fill("verify", fixture.task_revision(), "fill-stale-adoption")
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert!(refused.body.contains("moved"), "{}", refused.body);
+    assert_eq!(fixture.world.fake.calls(), calls);
+    assert_eq!(adoption_rows(&fixture, "fill-stale-adoption"), (1, 0, 0));
 }
 
 #[tokio::test]

@@ -2777,6 +2777,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/admission:adopt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record bounded authority to materialize one existing queued role slot. */
+        post: operations["adopt_team_run_admission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat": {
         parameters: {
             query?: never;
@@ -3530,6 +3547,23 @@ export interface components {
             downstream?: null | components["schemas"]["PartialAdmissionSeatDto"];
             /** @description The preserved TeamRun envelope. */
             team_run_id: string;
+        };
+        /** @description Authorize materialization of one existing queued run without inventing a handoff. */
+        AdoptTeamRunAdmissionRequest: {
+            /** @description Exact existing, unbound AgentRun. */
+            agent_run_id: string;
+            /**
+             * Format: int64
+             * @description Revision of the exact queued run.
+             */
+            expected_agent_run_revision: number;
+            /**
+             * Format: int64
+             * @description Task revision observed before adoption.
+             */
+            expected_task_revision: number;
+            /** @description Operator's reason, retained in the immutable command intent. */
+            reason: string;
         };
         /** @description Advance one epic's completion. */
         AdvanceCompletionRequest: {
@@ -9826,6 +9860,26 @@ export interface components {
             id: string;
             /** @description The standard role this seat fills. */
             role: components["schemas"]["RoleSelectionDto"];
+        };
+        /** @description An adoption authorizes a later seat fill; it does not dispatch work. */
+        TeamRunAdmissionAdoptionDto: {
+            /**
+             * Format: int64
+             * @description Run revision proved by the adoption.
+             */
+            adopted_agent_run_revision: number;
+            /** @description Immutable adoption identity. */
+            adoption_id: string;
+            /** @description Exact run authorized for materialization. */
+            agent_run_id: string;
+            /** @description Confirmed local command; no native operation is queued. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Frozen slot identity, distinct from its catalog role. */
+            role_slot_id: string;
+            /** @description Owning task. */
+            task_id: string;
+            /** @description Existing admitted TeamRun. */
+            team_run_id: string;
         };
         /** @description One team run and its seats, as the epic projection reports them. */
         TeamRunProjectionDto: {
@@ -18617,6 +18671,71 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    adopt_team_run_admission: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                team_run_id: string;
+                role_slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdoptTeamRunAdmissionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamRunAdmissionAdoptionDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

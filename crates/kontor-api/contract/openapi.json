@@ -9412,6 +9412,89 @@
         }
       }
     },
+    "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/admission:adopt": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Record bounded authority to materialize one existing queued role slot.",
+        "operationId": "adopt_team_run_admission",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "role_slot_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdoptTeamRunAdmissionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamRunAdmissionAdoptionDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat": {
       "post": {
         "tags": [
@@ -11563,6 +11646,39 @@
           "team_run_id": {
             "type": "string",
             "description": "The preserved TeamRun envelope."
+          }
+        },
+        "additionalProperties": false
+      },
+      "AdoptTeamRunAdmissionRequest": {
+        "type": "object",
+        "description": "Authorize materialization of one existing queued run without inventing a handoff.",
+        "required": [
+          "agent_run_id",
+          "expected_task_revision",
+          "expected_agent_run_revision",
+          "reason"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "Exact existing, unbound AgentRun."
+          },
+          "expected_agent_run_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Revision of the exact queued run.",
+            "minimum": 0
+          },
+          "expected_task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Task revision observed before adoption.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "Operator's reason, retained in the immutable command intent."
           }
         },
         "additionalProperties": false
@@ -24699,6 +24815,51 @@
           }
         },
         "additionalProperties": false
+      },
+      "TeamRunAdmissionAdoptionDto": {
+        "type": "object",
+        "description": "An adoption authorizes a later seat fill; it does not dispatch work.",
+        "required": [
+          "adoption_id",
+          "task_id",
+          "team_run_id",
+          "role_slot_id",
+          "agent_run_id",
+          "adopted_agent_run_revision",
+          "receipt"
+        ],
+        "properties": {
+          "adopted_agent_run_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Run revision proved by the adoption.",
+            "minimum": 0
+          },
+          "adoption_id": {
+            "type": "string",
+            "description": "Immutable adoption identity."
+          },
+          "agent_run_id": {
+            "type": "string",
+            "description": "Exact run authorized for materialization."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Confirmed local command; no native operation is queued."
+          },
+          "role_slot_id": {
+            "type": "string",
+            "description": "Frozen slot identity, distinct from its catalog role."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Owning task."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "Existing admitted TeamRun."
+          }
+        }
       },
       "TeamRunProjectionDto": {
         "type": "object",
