@@ -45059,56 +45059,36 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
     let epic_id = MiniProjectId::parse(&epic).expect("an epic id");
 
     let lsa_binding_id = SeatBindingId::parse(&lsa_binding).expect("LSA binding id");
-    let lsa_persona = world
-        .fake
-        .hosted_role_prompt(lsa_binding_id)
-        .expect("the LSA seat launch reached the runtime")
-        .expect("the LSA seat was launched under a persona");
-    assert!(
-        lsa_persona.as_str().contains("Lead Software Architect"),
-        "the seat was not opened under its own role's persona: {}",
-        lsa_persona.as_str()
-    );
-    assert!(
-        !lsa_persona
-            .as_str()
-            .contains("Persistent LSA seat for epic"),
-        "the bounded handoff was supplied as the persona: {}",
-        lsa_persona.as_str()
+    // This LSA was *adopted*, not launched: a hand-started native claimed the
+    // empty SeatBinding and a takeover replaced it. Kontor freezes a persona
+    // only where it launches one -- materialization and route apply -- so an
+    // adopted occupancy carries none.
+    //
+    // Until ASMA-8196's rematerialization fix this read the other way round,
+    // and only because the same-route materialization above silently minted a
+    // *second* native for a seat that was already bound. That duplicate launch
+    // is what delivered a persona here. Reusing the bound occupancy is the
+    // correct behaviour, so the persona legitimately disappears, and
+    // adopted-seat persona coverage is recorded as its own gap rather than
+    // patched by keeping a duplicate native alive to satisfy this assertion.
+    assert_eq!(
+        world.fake.hosted_role_prompt(lsa_binding_id),
+        None,
+        "an adopted seat is never launched by Kontor, so no persona is delivered \
+         to it; a value here means a duplicate native was minted for a seat that \
+         was already bound"
     );
     assert_eq!(
         world.fake.hosted_role_prompt(tpm_binding_id),
         Some(None),
-        "TPM has no seeded persona, so its seat must be opened under none \
-         rather than under the architecture lead's"
+        "TPM is launched by this materialization and seeds no persona, so its \
+         seat must be opened under none rather than under the architecture lead's"
     );
-
-    // TEST-007. Everything above reads the adapter's record of the request it
-    // was handed: that proves Kontor *composed* a persona, which is desired
-    // input, not evidence of anything durable. What follows is the evidence --
-    // the frozen occupancy record, and its projection on the supported seat
-    // contract. It is what a reader still gets after a restart, and it cannot
-    // be reconstructed from configuration, which is the whole point: an edit to
-    // the operational-domain pack after launch must not be able to change the
-    // answer to "which persona did this seat receive".
-    let lsa_persona_digest = ContentHash::of(lsa_persona.as_str().as_bytes());
-    assert_eq!(
-        native_lsa["role_persona"]["role_code"], "LSA",
-        "the LSA seat snapshot must name the role whose persona it received"
-    );
-    assert_eq!(
-        native_lsa["role_persona"]["prompt_hash"],
-        lsa_persona_digest.as_str(),
-        "the snapshot digest must be the digest of the exact delivered text"
-    );
-    assert_eq!(
-        native_lsa["role_persona"]["delivery"], "create_only_no_readback",
-        "Paseo's system prompt is creation-only, so the snapshot has to report \
-         delivery rather than imply the native confirmed what it is running under"
-    );
-    assert_eq!(
-        native_lsa["role_persona"]["occupancy_generation"], 1,
-        "the first occupancy froze the persona it was opened under"
+    assert!(
+        native_lsa["role_persona"].is_null(),
+        "an adopted occupancy froze no persona, and the seat snapshot has to say \
+         so rather than inventing one: {}",
+        native_lsa["role_persona"]
     );
     assert!(
         native_tpm["role_persona"].is_null(),
@@ -45116,21 +45096,6 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
          rather than omitting the field: {}",
         native_tpm["role_persona"]
     );
-
-    let stored_lsa_persona = world
-        .daemon
-        .state()
-        .with_store(|store| {
-            store
-                .get_hosted_seat_role_persona(project_id, lsa_binding_id, 1)
-                .expect("the frozen LSA persona reads")
-        })
-        .expect("the first LSA occupancy froze a persona");
-    assert_eq!(
-        stored_lsa_persona.prompt, lsa_persona,
-        "the frozen text and the delivered text are one value, not two"
-    );
-    assert_eq!(stored_lsa_persona.prompt_hash, lsa_persona_digest);
     assert!(
         world
             .daemon
@@ -45759,6 +45724,9 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         "the persona was supplied as the first handoff: {}",
         successor_handoff.as_str()
     );
+    // The digest comes from the successor, because the successor is the first
+    // occupancy of this seat that Kontor actually launched.
+    let lsa_persona_digest = ContentHash::of(successor_persona.as_str().as_bytes());
 
     let routed_lsa = lsa_routed.json()["core_team"]["seats"]
         .as_array()
@@ -45796,19 +45764,22 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
             .is_some(),
         "the successor occupancy must have frozen its own durable persona"
     );
-    // The predecessor's record is still there, unchanged. A replacement that
-    // overwrote it would destroy the only evidence of what the retired native
-    // was actually created under.
-    let first_occupancy_persona = world
-        .daemon
-        .state()
-        .with_store(|store| {
-            store
-                .get_hosted_seat_role_persona(project_id, lsa_binding_id, 1)
-                .expect("the first occupancy persona reads")
-        })
-        .expect("the first occupancy's persona survives its replacement");
-    assert_eq!(first_occupancy_persona.prompt_hash, lsa_persona_digest);
+    // The adopted predecessor still froze nothing, and the successor's record
+    // did not backfill one for it. Per-occupancy records are independent: a
+    // replacement neither inherits its predecessor's persona nor invents one.
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store
+                    .get_hosted_seat_role_persona(project_id, lsa_binding_id, 1)
+                    .expect("the first occupancy persona reads")
+            })
+            .is_none(),
+        "the adopted first occupancy was never launched by Kontor, so it must \
+         still hold no persona after its successor froze one"
+    );
 }
 
 /// A later project edit does not touch an epic already staffed.
@@ -62114,5 +62085,254 @@ async fn an_inert_successor_intent_recovers_a_receipt_after_cas_commit_and_succe
     assert_eq!(
         recovered.json()["receipt"]["receipt_id"],
         replay.json()["receipt"]["receipt_id"]
+    );
+}
+
+/// ASMA-8196. Materialization is idempotent by contract, and for the logical
+/// half it already was. The native half assumed every seat it saw was new, so a
+/// materialization that reached a seat already bound at generation two -- the
+/// state a route replacement leaves -- asked the runtime for a second native
+/// and then refused at install, because generation one's intent already named
+/// the native it had actually produced. An operator could not re-materialize a
+/// team containing a replaced seat at all.
+#[tokio::test]
+async fn materializing_a_replaced_seat_reuses_its_current_occupancy() {
+    let composed = compose_realm("/tmp/kontor-remat-after-route").await;
+    let world = &composed.world;
+    let project = ProjectId::parse(&composed.project).expect("project");
+    let epic = MiniProjectId::parse(&composed.epic).expect("epic");
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({"target": {"scope": "epic_control", "epic_id": epic}, "expected_revision": composed.project_revision}),
+    )
+    .signed_as(world, "operator")
+    .with_key("remat-topology")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+
+    let codex = serde_json::json!({"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"});
+    let both_roles = serde_json::json!({
+        "expected_revision": 1,
+        "routes": [
+            {"role_code": "LSA", "model_route": codex},
+            {"role_code": "TPM", "model_route": codex},
+        ],
+    });
+    let first = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &both_roles,
+    )
+    .signed_as(world, "admin")
+    .with_key("remat-first")
+    .send(world)
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+
+    let control = world.daemon.state().with_store(|store| {
+        store
+            .list_topology_nodes(project, Some(epic))
+            .expect("nodes")
+            .into_iter()
+            .find(|node| node.kind.as_str() == "ECP")
+            .expect("the epic control plane")
+    });
+    let seat_of = |role: &str| {
+        world.daemon.state().with_store(|store| {
+            store
+                .list_seat_bindings(project, control.id)
+                .expect("seats")
+                .into_iter()
+                .find(|seat| seat.role.role_code.as_str() == role)
+                .unwrap_or_else(|| panic!("the {role} seat"))
+                .id
+        })
+    };
+    let lsa = seat_of("LSA");
+    let tpm = seat_of("TPM");
+    let occupancy_of = |seat| {
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.get_hosted_topology_seat(project, seat))
+            .expect("the occupancy reads")
+            .expect("a bound occupancy")
+    };
+    let generation_of = |seat| {
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.hosted_topology_seat_occupancy_generation(project, seat))
+            .expect("the generation reads")
+            .expect("a current generation")
+    };
+    let first_lsa_native = occupancy_of(lsa).native_identity.native_id.clone();
+    let tpm_native = occupancy_of(tpm).native_identity.native_id.clone();
+    assert_eq!(generation_of(lsa), 1);
+
+    // Replace the LSA's route. This retires generation one and opens
+    // generation two under a new native -- the exact state that used to make
+    // every later materialization refuse.
+    let route_request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": lsa,
+        "expected_native_id": first_lsa_native,
+        "expected_generation": occupancy_of(lsa).native_identity.generation,
+        "desired_model_route": {"provider": "opencode", "model": "deepseek/deepseek-flash", "effort": "high"},
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &route_request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    let mut apply_body = route_request;
+    apply_body["preview_hash"] = preview.json()["preview_hash"].clone();
+    let routed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &apply_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("remat-route-replace")
+    .send(world)
+    .await;
+    assert_eq!(routed.status, 200, "{}", routed.body);
+    let second_lsa_native = occupancy_of(lsa).native_identity.native_id.clone();
+    assert_ne!(second_lsa_native, first_lsa_native);
+    assert_eq!(
+        generation_of(lsa),
+        2,
+        "the replacement opened generation two"
+    );
+
+    // The repair: materializing the team again must converge on what is there.
+    let opencode = serde_json::json!({"provider": "opencode", "model": "deepseek/deepseek-flash", "effort": "high"});
+    let after_replacement = serde_json::json!({
+        "expected_revision": 1,
+        "routes": [
+            {"role_code": "LSA", "model_route": opencode},
+            {"role_code": "TPM", "model_route": codex},
+        ],
+    });
+    let minted_before = world.fake.minted_natives();
+    let remat = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &after_replacement,
+    )
+    .signed_as(world, "admin")
+    .with_key("remat-after-replacement")
+    .send(world)
+    .await;
+    assert_eq!(
+        remat.status, 200,
+        "re-materializing a team containing a replaced seat must converge: {}",
+        remat.body
+    );
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before,
+        "a converging materialization must mint no native"
+    );
+    assert_eq!(
+        occupancy_of(lsa).native_identity.native_id,
+        second_lsa_native,
+        "the current occupancy's native must be preserved exactly"
+    );
+    assert_eq!(
+        occupancy_of(tpm).native_identity.native_id,
+        tpm_native,
+        "the untouched seat must keep its native too"
+    );
+    assert_eq!(generation_of(lsa), 2, "no new generation was opened");
+
+    // Generation one is still exactly what it was: a replay must not rewrite
+    // the predecessor's installed intent or its persona.
+    let first_intent = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_hosted_seat_launch_intent(project, lsa, 1))
+        .expect("the first intent reads")
+        .expect("generation one keeps its intent");
+    assert_eq!(
+        first_intent.observed_native_id.as_ref(),
+        Some(&first_lsa_native),
+        "generation one must still name the native it actually produced"
+    );
+
+    // And the same call replays.
+    let replay = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &after_replacement,
+    )
+    .signed_as(world, "admin")
+    .with_key("remat-after-replacement")
+    .send(world)
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(world.fake.minted_natives(), minted_before);
+    assert_eq!(
+        occupancy_of(lsa).native_identity.native_id,
+        second_lsa_native
+    );
+
+    // A *changed* route is a replacement, and a replacement is the audited
+    // route path's authority. Asking for it through a roster call must refuse
+    // rather than archive a live seat as a side effect.
+    let changed_route = serde_json::json!({
+        "expected_revision": 1,
+        "routes": [
+            {"role_code": "LSA", "model_route": codex},
+            {"role_code": "TPM", "model_route": codex},
+        ],
+    });
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &changed_route,
+    )
+    .signed_as(world, "admin")
+    .with_key("remat-changed-route")
+    .send(world)
+    .await;
+    assert_ne!(
+        refused.status, 200,
+        "a route change through materialize must refuse: {}",
+        refused.body
+    );
+    assert_eq!(
+        occupancy_of(lsa).native_identity.native_id,
+        second_lsa_native,
+        "a refused materialization must leave the live seat exactly as it was"
+    );
+    assert_eq!(world.fake.minted_natives(), minted_before);
+
+    // A seat whose native is gone must not be reported as materialized on the
+    // strength of a durable row, and must not be quietly relaunched either:
+    // recovering it is the audited route path's job, and saying so is more
+    // useful than either silent outcome.
+    world.fake.archive_hosted_seat(&second_lsa_native);
+    let stale = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &after_replacement,
+    )
+    .signed_as(world, "admin")
+    .with_key("remat-stale-native")
+    .send(world)
+    .await;
+    assert_ne!(
+        stale.status, 200,
+        "a bound seat whose native is gone must refuse rather than converge: {}",
+        stale.body
+    );
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before,
+        "a refusal must not relaunch the seat"
+    );
+    assert_eq!(
+        occupancy_of(lsa).native_identity.native_id,
+        second_lsa_native,
+        "a refusal must leave the recorded occupancy untouched"
     );
 }
