@@ -1,5 +1,130 @@
 # ASMA-8120 open-question ledger
 
+**Current section: 2026-09-21 evidence-only closeout.** Everything below the
+History divider is the earlier ledger, preserved verbatim including dispositions
+now superseded. Corrections are made here, not by editing the history.
+
+Authored from AgentRun `01a0bb74-ee78-7aa3-b6bc-bd9c43733496` in the existing
+task worktree. This turn recorded no Kontor mutation and settled no question on
+its own authority; every disposition below cites an approved record.
+
+## Current standing
+
+| Entry | Standing | Authority |
+|---|---|---|
+| OQ-8120-01 | **Resolved**, option (a) | rev `01a0bbc7-8d72-7910-b4dc-accf4e0538a9` / receipt `01a0bbc8-0227-7160-bd18-10155b3ea87a` |
+| OQ-8120-02 | **Resolved**, option (b) | rev `01a0bbc7-afc9-7561-9551-33d1eeb9345a` / receipt `01a0bbc8-75d2-7c01-9ff2-227255a6f171`; memory `open-question-disposition-oq-8120-02-20260920` |
+| OQ-8120-03 | **Resolved**, option (a) | apply receipt `01a0bbf1-8f97-7012-a5a4-9bbf56ecf5c3`; success rev `01a0bbf7-25b5-7423-aad8-30e29f138ad8` |
+| OQ-8120-04 | **Resolved** | memory `asma-8120-rollout-dispositions-20260920-direct-repair` |
+| OQ-8120-05 | **Open** — source cause identified, root-owned repair in progress | same memory record |
+| OQ-8120-06 | **Open** — restart proof for the full 13 | this section |
+| OQ-8120-07 | **Open** — deployment launch-count anomaly | this section |
+| OQ-8120-08 | **Open** — unfinished NULL-subject consultation | this section |
+
+## OQ-8120-04 — resolved, and an earlier statement of it corrected
+
+Approved disposition: "A deterministic pre-effect preview refusal fences its
+exact epic. Uncertain apply/readback effects halt rollout globally until
+reconciled."
+
+This confirms the reading recorded before acting. **Correction:** the earlier
+entry's closing sentence referred to "the seven migrations recorded in the
+high-change record". No migration existed at that point — there were seven clean
+**previews** and zero successful applies from this seat, and both attempted
+applies were inert. The count in that entry and in the earlier high-change
+section ("remaining eleven") was also wrong: **twelve** remained, not eleven.
+Both are corrected in the current high-change section. All 13 are now migrated.
+
+## OQ-8120-05 — open; this seat's hypothesis was wrong
+
+Approved finding: "Services owns one `native_lifecycle_guard` RwLock across the
+fleet. `native_lifecycle_change` uses `try_write`; `native_activity` uses
+`try_read`. The refusal counts in-flight control-plane native operations, **not**
+the model's running/idle state and **not** per-epic activity. A caller with
+ongoing background readers may starve without a queued writer."
+Source: `crates/kontor-daemon/src/applications.rs:955-971` at `0f649824`.
+
+**Correction:** this seat's recorded option (a) — that the check counted its own
+live turn — is wrong. The guard is fleet-wide and counts control-plane
+operations; run lifecycle is irrelevant to it. Option (b), per-epic in-flight
+work, is also wrong.
+
+Disposition: "Root owns bounded lifecycle-guard repair and exact migration
+preview/apply; do not cancel, park, replace or archive live roles to clear the
+transient guard." Status `source_cause_identified_repair_in_progress`. **OPEN**
+until that repair lands.
+
+## OQ-8120-06 — restart persistence proof for all 13 epics
+
+- **Subject:** whether the migrated fleet survives a coordinated restart, for
+  the complete set of 13 rather than 12 of them.
+- **Attaches to:** deployment `ASMA-8188-20260921T100129Z-44663e10` (schema 118,
+  verified 2026-09-21T10:02:36.117472Z) and the ASMA-8111 apply receipt
+  `01a0c373-17a8-73e1-84cd-608247b938a4` (pinned 2026-09-21T10:11:34.947969Z).
+- **Why the state is ambiguous:** the restart **preceded** ASMA-8111's
+  migration by roughly nine minutes, so 12 of 13 epics carry post-migration
+  restart evidence and ASMA-8111 carries none. The cursor-4573 read shows all 88
+  targets converged, but a converged read is not a restart-persistence proof.
+- **Options seen:** (a) root's next coordinated restart plus full readback
+  closes it for all 13; (b) a narrower supported restart/readback scoped to
+  ASMA-8111 suffices; (c) the existing coverage is accepted with ASMA-8111
+  explicitly carved out and recorded.
+- **Disposition:** **OPEN.** No restart was performed by this turn and no PASS
+  is claimed from partial coverage. Awaiting root's next coordinated
+  restart/readback.
+
+## OQ-8120-07 — deployment launch-count anomaly
+
+- **Subject:** why the live deployment observed more launches than the operator
+  performed restarts.
+- **Attaches to:** `deployment.json` for
+  `ASMA-8188-20260921T100129Z-44663e10` — `operator_restart_count: 1`,
+  `observed_launch_delta: 2`, `launch_anomaly: "Unexpected automatic launch
+  count; see launchctl-after.txt; root-cause review required"`.
+- **Why the state is ambiguous:** the deployment is otherwise healthy
+  (`quick_check: ok`, 0 foreign-key violations, identities preserved, signatures
+  valid), so the extra launch is unexplained rather than obviously harmful. Its
+  cause is not established by any evidence read here.
+- **Options seen:** (a) a benign launchd re-launch explained by
+  `launchctl-after.txt`; (b) an unintended supervisor or watchdog path still
+  able to start the daemon while the watchdog is recorded as stopped; (c) a
+  deployment-script defect double-starting the service.
+- **Disposition:** **OPEN.** Explicitly retained rather than waived. The record
+  flags it for root-cause review and that review is outstanding.
+
+## OQ-8120-08 — unfinished NULL-subject consultation and pending seats
+
+- **Subject:** how the consultation with no durably recorded subject, and the
+  three `rename_pending` ASMA-8188 seats, are closed.
+- **Attaches to:** consultation `01a0298c-6284-7a83-8d35-158c9c4e82e4`
+  (`400 invalid_request`, subject `ModelRung`, "a value did not satisfy the
+  invariant of its type"); the three ASMA-8188 seats
+  `e5b2e5d7-fa35-4e14-99cc-49770a0faf08`,
+  `9156c0ce-5851-4371-b419-fdcd6569f4d1` and
+  `a805e24f-d2fe-4ded-a497-b4b59633d195`; and consultations
+  `01a02ba2-d1cd-7fc0-9bdb-1704dd4a544c`,
+  `01a02bb3-2614-7711-8a02-896d545a9292` (materializing) and
+  `01a02d6e-4db9-7372-b2b8-c8024f41f3e7` (running).
+- **Why the state is ambiguous:** these are pending rather than failing. They
+  carry no legacy item code and contribute zero pending naming changes, so they
+  do not affect the migration result — but they are unfinished, and the refusing
+  consultation cannot be read at all through the supported route.
+- **Options seen:** (a) let the in-flight consultations finish and the seats
+  bind naturally, then re-read; (b) a supported repair records the missing
+  subject for `01a0298c`; (c) governed historical classification for the
+  refusing consultation if it can never be completed.
+- **Disposition:** **OPEN.** No subject was inferred, repaired or settled here,
+  and no seat was bound, renamed or retired. Preserved as carried-forward state.
+
+---
+
+# History — preserved verbatim below this line
+
+The following is the earlier ledger exactly as written, including the OQ-8120-04
+and OQ-8120-05 text the current section corrects.
+
+# ASMA-8120 open-question ledger
+
 Date: 2026-09-19
 Task: Jira `ASMA-8120` / Kontor `01a07722-c3ed-7a63-94e6-cefd22e438ab`
 

@@ -1,3 +1,284 @@
+# ASMA-8120 high-change record
+
+**Current section: 2026-09-21 evidence-only closeout.** Everything below the
+History divider is the earlier record, preserved verbatim including its
+refusals, partial outcomes and superseded counts. Where the earlier text is
+wrong, it is corrected here rather than edited there.
+
+Task: Jira `ASMA-8120` / Kontor `01a07722-c3ed-7a63-94e6-cefd22e438ab`,
+InProgress r2, workflow high-verification r3.
+Project `01a0064a-e056-7603-9968-ef64fdaacb75`,
+realm `01a00649-9ee6-73e0-ba1b-6a6c35cfd065`.
+Authored from AgentRun `01a0bb74-ee78-7aa3-b6bc-bd9c43733496`
+(native `6426ec59-57d0-4001-922c-86fc0f2de258`) in the existing task worktree.
+Root retains live deployment and topology ownership; the watchdog remains
+stopped. This turn performed **no** Kontor mutation, migration, restart or
+topology change — it reads durable evidence and edits this report only.
+
+## Status: migration complete, restart proof for the full set still pending
+
+All 13 approved eligible epics are migrated and pinned. This is **not** a
+task-level PASS claim, and no PASS is asserted here: the coordinated restart
+proof covering all 13 is outstanding (see "Restart coverage" below).
+
+Independent supported read at snapshot cursor **4573**
+(`kontor_native_names_preview`, read-only, observed 2026-09-21T10:13:16.340Z),
+verified in this turn rather than taken on report:
+
+- **88** current targets across the 13 epics
+- **0** pending changes
+- **0** observed titles still carrying a legacy item code (`KBI-`,
+  `KGVCASWR-`, `KOP-`, `KCADR-`)
+- 85 targets `unchanged`; 3 `rename_pending` (recorded below)
+- single snapshot cursor 4573 across all 13 reads
+
+## Corrections to the earlier record
+
+The QA report [`QA-REPORT.md`](QA-REPORT.md) (verdict **BLOCKED**, candidate
+`19521d12164a8513c48328581bd7d5517cffee5d`) is preserved unmodified. Its
+evidence defects are corrected here:
+
+- **Q-8120-QA-01 / count.** The earlier section says "the remaining eleven
+  epics". That was wrong: neither attempted apply took effect, so **twelve**
+  remained unmigrated at that time, not eleven. All twelve have since been
+  migrated by root.
+- **Q-8120-QA-02 / OQ-8120-04 wording.** That entry said "the seven migrations
+  recorded in the high-change record". No migration had been recorded at that
+  point — there were seven clean **previews** and zero successful applies from
+  this seat. Corrected in the ledger.
+- **Q-8120-QA-02 / truncated hashes.** The earlier section stored preview
+  hashes as 8-character prefixes, which are not executable apply inputs. This
+  section carries full hashes only.
+- **Attribution.** Every migration, deployment and recovery below is attributed
+  to the actual root receipt that performed it. This turn's own durable actions
+  are limited to the four publications and the default selection.
+
+## Publication and default selection — this turn's receipts
+
+Published 2026-09-20 from this AgentRun against project revision 7. Each
+candidate validated against live published topology bytes with zero violations,
+and each `validation_hash` reproduced the hash ASMA-8117 recorded. Verified
+still live at closeout.
+
+| Target | Lineage | Ver | Canonical hash | Receipt | Idempotency key |
+|---|---|---|---|---|---|
+| Operational v4 | `01936f5a-2000-7000-8000-000000000001` | 4 | `d3775bd5fbebadeec06cc235793be23248de2fed23c4ef01e3a523fecc282284` | `01a0bbcd-7662-7c31-bd25-e43646e00e35` | `asma-8120-td-publish-operational-v4` |
+| Operational v5 | `01936f5a-2000-7000-8000-000000000001` | 5 | `10a0682b16786a3f94400d1d9562dfd9a8dd34379fef9c319a18a92a95989fc1` | `01a0bbcd-98d6-79b0-983a-0d89bda881a1` | `asma-8120-td-publish-operational-v5` |
+| Operational v6 | `01936f5a-2000-7000-8000-000000000001` | 6 | `24e2c5810060ef521e6af087e3430754bab86eaf138868fe125aa4fdd2904794` | `01a0bbcd-bd75-7462-a0c9-8be1871ab2e8` | `asma-8120-td-publish-operational-v6` |
+| Recovery v3 | `01a07400-1000-7000-8000-000000008098` | 3 | `c4c2f19a52258872dd0fb68ec8c648ad9d6ae2674ad0e014cce42a270644ae73` | `01a0bbcd-d675-7e23-a950-d819a20d0d0e` | `asma-8120-td-publish-recovery-v3` |
+
+**Default selection.** Operational v3 → v6, preview hash
+`132ab73ffc319d5ba068537f6964a21b67460bf16a9383f3c69bedb809e4779f`, applied
+`updated`, receipt `01a0bbce-43f4-7d62-bbaa-d0844d680340`, idempotency key
+`asma-8120-td-default-select-operational-v6`, expected revision 7. Readback:
+re-previewing the same target refuses `400 invalid_request`, "the project
+already selects that Team Definition revision".
+
+## All 13 identity tuples — before / apply / after / restart
+
+Before pin and apply receipt from
+`asma-8120-final-13epic-pin-receipts.json`; after state from the cursor-4573
+`asma-8120-final-13epic-naming-readback.json`. Per-target native ids, parents,
+cwds, seat bindings and titles for all 88 targets live in those two files,
+whose SHA256 are recorded under "Cited evidence" — they are the authoritative
+per-target detail and are not re-transcribed here.
+
+| Epic | Before pin | After pin | Apply receipt (root) | Pinned at (UTC) | Targets | Pending | Legacy | Restart-covered |
+|---|---|---|---|---|---|---|---|---|
+| ASMA-7869 | v2 | v5 | `01a0c348-7862-7122-925c-6f3a24e6957a` | 2026-09-21T09:25:01.651234Z | 5 | 0 | 0 | yes |
+| ASMA-8049 | v3 | v6 | `01a0bbf1-8f97-7012-a5a4-9bbf56ecf5c3` | 2026-09-19T23:12:45.454005Z | 12 | 0 | 0 | yes |
+| ASMA-8098 | v2 | v3 | `01a0c348-7eec-7691-aa57-595131b76fd5` | 2026-09-21T09:25:03.3362Z | 9 | 0 | 0 | yes |
+| ASMA-8101 | v3 | v6 | `01a0c349-9219-7da0-9618-c3a2b3d4a206` | 2026-09-21T09:26:13.777994Z | 11 | 0 | 0 | yes |
+| ASMA-8108 | v2 | v5 | `01a0c069-be98-7013-a280-de6017f80f68` | 2026-09-20T20:02:30.672724Z | 3 | 0 | 0 | yes |
+| ASMA-8109 | v1 | v4 | `01a0c06f-08f6-7a22-9fea-95a64e0f010f` | 2026-09-20T20:08:17.390911Z | 7 | 0 | 0 | yes |
+| ASMA-8111 | v2 | v5 | `01a0c373-17a8-73e1-84cd-608247b938a4` | 2026-09-21T10:11:34.947969Z | 3 | 0 | 0 | **no — migrated after restart** |
+| ASMA-8113 | v3 | v6 | `01a0c33f-c934-7fa1-a1ad-83b837ec51e1` | 2026-09-21T09:15:32.528189Z | 0 | 0 | 0 | yes |
+| ASMA-8155 | v3 | v6 | `01a0c33f-c9fa-7730-b738-c6ae0026ca56` | 2026-09-21T09:15:32.726053Z | 0 | 0 | 0 | yes |
+| ASMA-8186 | v3 | v6 | `01a0c33f-ccb3-7d71-bc05-84c2cf71deb8` | 2026-09-21T09:15:33.422662Z | 5 | 0 | 0 | yes |
+| ASMA-8188 | v3 | v6 | `01a0c061-4ef5-76b2-9841-84a37827cc9d` | 2026-09-20T19:53:17.803964Z | 9 | 0 | 0 | yes |
+| ASMA-8190 | v3 | v6 | `01a0c348-7c69-74e0-9fca-48e2d040ec4d` | 2026-09-21T09:25:02.691554Z | 24 | 0 | 0 | yes |
+| ASMA-8208 | v3 | v6 | `01a0c33f-cad7-7970-9309-60fbe48adbf3` | 2026-09-21T09:15:32.943454Z | 0 | 0 | 0 | yes |
+
+Only ASMA-8049 was migrated by this seat's preview; its apply receipt
+`01a0bbf1-8f97-7012-a5a4-9bbf56ecf5c3` belongs to the ASMA-8049 LSA seat
+`6301c2d4`, not to this turn. The other twelve are root's.
+
+### Restart coverage — incomplete, and not claimed otherwise
+
+The live deployment verified at **2026-09-21T10:02:36.117472Z**. ASMA-8111 was
+pinned at **10:11:34.947969Z**, i.e. **after** that restart. Twelve of thirteen
+epics therefore have post-migration restart evidence; ASMA-8111 does not.
+
+**Final all-13 restart persistence proof remains pending** until root's next
+coordinated restart and readback. No restart was performed by this turn and no
+PASS is manufactured from the partial coverage.
+
+## Live deployment in force
+
+`/Users/igor/.local/state/kontor/asma/deployments/ASMA-8188-20260921T100129Z-44663e10/deployment.json`
+
+- source commit `44663e10e063ad3d11c0c84ca6a87d680d75e835`, schema **118**, live
+- `quick_check: ok`, `foreign_key_violations: 0`, `identities_preserved: true`,
+  `signatures_valid: true`
+- identity counts: 18 mini-projects, 136 tasks, 466 agent runs, 646 seat
+  bindings, 393 runtime bindings, 21 hosted topology seats
+- installed hashes — `kontor`
+  `cef7ad90db3b30af4e10021cfe8141a977e6fb584ac6dbde0a6f507ef5b1fbe7`;
+  `kontor-daemon`
+  `d1d670f79486eda9b01e1be9fdb5e36708012dba6dd6730c0b3b1a727d741fce`;
+  `kontor-mcp`
+  `7d7210c84c472fbc835d8ab2bf5650c61e1836213a73e825ff963d4f1ee28316`
+- watchdog remains stopped
+
+**Launch-count anomaly retained, not closed.** The record carries
+`operator_restart_count: 1` against `observed_launch_delta: 2`, with
+`launch_anomaly: "Unexpected automatic launch count; see launchctl-after.txt;
+root-cause review required"`. That review is outstanding and is carried forward
+here rather than waived.
+
+## Four mutation-ineligible legacy epics (approved OQ-8120-02)
+
+Per approved memory `open-question-disposition-oq-8120-02-20260920` — bounded
+rollout option (b), evidence `approved_scope_revision`
+`01a0bb85-bb98-74b2-a83f-c18288050587`, source commit `1e11e4ab`. These four
+active legacy epics stay explicitly mutation-ineligible; no key, pin or
+topology was inferred for them, and they did not block the eligible rollout:
+
+1. QNR v2 Nonprod Delivery — no pin, no confirmed binding
+2. Kontor Operator Surface and Attention Channel — no pin, no confirmed binding
+3. Catalog workspace without gitlinks — no pin, no confirmed binding
+4. Repair stale-native Core Team seat succession — Operational v3 pin, no
+   confirmed Jira binding
+
+Each requires its own supported binding-and-pin repair or governed historical
+classification before it is eligible.
+
+## Approved OQ-8120-04 / OQ-8120-05 disposition
+
+From approved operator memory
+`asma-8120-rollout-dispositions-20260920-direct-repair` (approved, current;
+proposed by the Codex direct-repair coordinator 2026-09-20T18:02:14.813769Z,
+provenance source `operator`, source id `ASMA-8120`):
+
+- **OQ-8120-04 — resolved.** "A deterministic pre-effect preview refusal fences
+  its exact epic. Uncertain apply/readback effects halt rollout globally until
+  reconciled." This confirms the reading this seat recorded before acting, and
+  the distinction it turns on: the five refusals were pre-effect and wrote
+  nothing.
+- **OQ-8120-05 — source cause identified, repair owned by root.** The refusal
+  was **not** this seat's running/idle state, which is what this seat had
+  hypothesised. Actual cause: "Services owns one `native_lifecycle_guard`
+  RwLock across the fleet. `native_lifecycle_change` uses `try_write`;
+  `native_activity` uses `try_read`. The refusal counts in-flight control-plane
+  native operations, not the model's running/idle state and not per-epic
+  activity. A caller with ongoing background readers may starve without a
+  queued writer." Source: `crates/kontor-daemon/src/applications.rs:955-971` at
+  `0f649824`. Disposition: "Root owns bounded lifecycle-guard repair and exact
+  migration preview/apply; do not cancel, park, replace or archive live roles to
+  clear the transient guard."
+
+The same disposition records these census corrections, which this section
+honours: seven clean previews are not seven successful migrations; twelve
+remained, not eleven; the canary already had a success receipt; and truncated
+historical hashes are not executable apply inputs.
+
+## Unfinished NULL-subject consultation results — preserved, not resolved
+
+From `asma-8120-rollout-consultation-readback.json`, 10 consultation runs read:
+
+- **1 refuses**: `01a0298c-6284-7a83-8d35-158c9c4e82e4` →
+  `400 invalid_request`, subject `ModelRung`, rule "a value did not satisfy the
+  invariant of its type". This is the unfinished NULL-subject case and is
+  **carried forward unresolved**.
+- **3 unfinished, result `null`**: `01a02ba2-d1cd-7fc0-9bdb-1704dd4a544c`
+  (materializing), `01a02bb3-2614-7711-8a02-896d545a9292` (materializing),
+  `01a02d6e-4db9-7372-b2b8-c8024f41f3e7` (running).
+- **6 settled with durable results**, round 1, 3 findings each — compliant:
+  `01a0758b-ec8f-7271-a91f-ccd93c1b7202`,
+  `01a075bf-c12f-7140-8c19-380229a13ef2`; non-compliant:
+  `01a02bb5-fcf6-7ea0-9849-167564b9bdaf`,
+  `01a073e1-7d9e-7ce1-8100-12c4cc0ca35c`,
+  `01a078a6-3507-7020-a8ea-ab9100221c22`,
+  `01a0aaf0-1c89-7f31-989c-b6ff7b0d7b95`.
+
+No consultation subject was inferred, repaired or settled by this turn.
+
+The three `rename_pending` targets in the cursor-4573 readback are the seats of
+an unfinished consultation in ASMA-8188, each with a null observed title:
+`e5b2e5d7-fa35-4e14-99cc-49770a0faf08` (desired `SEAT A`, seat binding
+`01a0c02a-ca73-7b71-a70e-6fc8568761e3`),
+`9156c0ce-5851-4371-b419-fdcd6569f4d1` (`SEAT B`,
+`01a0c02a-ca73-7b71-a70e-6fd4afd42e6c`) and
+`a805e24f-d2fe-4ded-a497-b4b59633d195` (`JUDGE`,
+`01a0c02a-ca73-7b71-a70e-6fe4792346d3`). They are pending, not failing, and
+carry no legacy item code.
+
+## Logical retirement receipts (root)
+
+From `asma-8120-retirement-receipts.jsonl`, 108 records covering **12 logical
+node retirements** and **24 seat retirements**, each with a before-state, the
+retire receipt and an exact readback:
+
+- 12 × `before_node_retire` / `node_retire` / `node_readback`
+- 24 × `before_seat_retire` / `seat_retire` / `seat_readback`
+
+`asma-8120-retirement-final-readback.json` records 12 node readbacks and 9
+preservation checks, **all 9** reporting
+`state_result_revision_subject_unchanged: true`. Retirements are logical: tasks,
+terminal TeamRuns and retired seats remain as historical evidence and no
+workspace was recreated. These are root's receipts, not this turn's.
+
+## Cited evidence and integrity
+
+| Artifact | SHA256 |
+|---|---|
+| `asma-8120-final-13epic-naming-readback.json` | `79b250baa2f4f2ec7d0589ae6d253b5d4b45367920c4cb927ff6996fea9b42ae` |
+| `asma-8120-final-13epic-pin-receipts.json` | `71bdbab454e1556d933409a86d404ef73d88a1a363f94284de016e59f514317e` |
+| `asma-8120-retirement-receipts.jsonl` | `8dcb741e000d820e54db2a5ea1483b9ec48d5d27e4372e73c06b007df51d1c45` |
+| `asma-8120-rollout-consultation-readback.json` | `35b83858d1a6347a0bb83e2a2e662d1ce50c294fb0d93d9b33789229a734e71c` |
+| `deployment.json` (ASMA-8188-20260921T100129Z-44663e10) | `cdb7d6905d18316a5839be11d9786d88d074fbef678ecf301b1277b1ba42a41a` |
+
+All five live under
+`/Users/igor/.local/state/kontor/asma/repair-worktrees/20260921/` except the
+deployment record, which is under
+`/Users/igor/.local/state/kontor/asma/deployments/ASMA-8188-20260921T100129Z-44663e10/`.
+
+## Source regression repaired under this task
+
+`77148a4c` — `fix(kontor): Declare the worktree repair's legal target
+(ASMA-8120)`. PR #241 (`267c67a7`) legalized `CorrectTaskWorktree` against a
+task without declaring the pair in the `domain_state` expectation table,
+leaving `kontor-core` red from that commit onward including on `origin/master`
+`95bcf868`. Production behaviour unchanged. QA independently reproduced the
+causal baseline failure at `1e11e4ab` and its disappearance at `77148a4c`, and
+recorded `cargo fmt --all -- --check`, strict Clippy, 38/38 `domain_state` and
+324/324 across 17 `kontor-core` targets as passing.
+
+## Remaining evidence before a PASS can be sought
+
+1. Coordinated restart and post-restart readback covering **all 13** epics,
+   including ASMA-8111 — the single outstanding identity-tuple gap.
+2. Root-cause disposition of the deployment launch-count anomaly
+   (`operator_restart_count: 1` vs `observed_launch_delta: 2`).
+3. Closure or explicit governed carry-forward of the unfinished NULL-subject
+   consultation `01a0298c-6284-7a83-8d35-158c9c4e82e4` and the three
+   `rename_pending` ASMA-8188 seats.
+4. Completion of `OQ-8120-05`'s bounded `native_lifecycle_guard` repair, which
+   is root-owned and still `source_cause_identified_repair_in_progress`.
+5. Re-presentation to QA against this corrected record.
+
+The settled high-change claim `01a0bc11-f213-76c0-ad25-a8fc9ddfa837` is genuine.
+Root may register a verified Git blob with explicit
+`operator_recovered_git_blob` provenance once this content is complete. No
+workflow rollback or new TeamRun is required merely to update this evidence.
+
+---
+
+# History — preserved verbatim below this line
+
+The following is the earlier record exactly as written, including counts and
+conclusions now superseded above.
+
 # ASMA-8120 high-change record — PARTIAL, fleet fenced
 
 Date: 2026-09-20
