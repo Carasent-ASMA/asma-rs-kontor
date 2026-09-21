@@ -6721,7 +6721,7 @@ async fn message_a_confirmation_read_that_cannot_answer_is_unconfirmed_delivery(
 }
 
 #[tokio::test]
-async fn message_a_history_read_promotes_confirmation_unknown_to_a_replayable_ack() {
+async fn message_a_history_read_keeps_confirmation_unknown_until_a_complete_proof() {
     let (plane, binding) = launched().await;
     plane.daemon.lose_next_rpc("send_agent_message_request");
     let mut absent = v(TIMELINE_MESSAGE_LANDED);
@@ -6756,18 +6756,27 @@ async fn message_a_history_read_promotes_confirmation_unknown_to_a_replayable_ac
     assert_eq!(page.items[0].position.sequence, 1);
 
     let reads_before_replay = plane.daemon.count("rpc fetch_agent_timeline_request");
-    plane.daemon.refuse_next_rpc("fetch_agent_timeline_request");
+    plane.daemon.lose_next_rpc("fetch_agent_timeline_request");
     let replay = plane
         .adapter
         .send(&request)
         .await
-        .expect("the history read repaired the durable delivery ledger");
-    assert_eq!(replay.position.sequence, 1);
+        .expect_err("one history page cannot prove uniqueness across the transcript");
+    assert!(
+        matches!(replay, RuntimeError::Transport { .. }),
+        "{replay:?}"
+    );
     assert_eq!(
         plane.daemon.count("rpc fetch_agent_timeline_request"),
-        reads_before_replay,
-        "the acknowledged retry is answered before touching the runtime"
+        reads_before_replay + 1,
+        "an unconfirmed retry still owes its complete canonical proof"
     );
+    let proved = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("the subsequent complete scan proves one occurrence");
+    assert_eq!(proved.position.sequence, 1);
     assert_eq!(
         plane.daemon.count("rpc send_agent_message_request"),
         1,
@@ -13937,5 +13946,57 @@ async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery(
             plane.daemon.mutations().is_empty(),
             "{case} wrote to the runtime"
         );
+    }
+}
+
+#[tokio::test]
+async fn message_a_history_page_cannot_hide_a_duplicate_outside_that_page() {
+    for floor in [None, Some(suffix_floor(2500))] {
+        let first = if floor.is_some() { 2600 } else { 1 };
+        let second = if floor.is_some() { 2999 } else { 2 };
+        let tail = if floor.is_some() { 3000 } else { 2 };
+        let (plane, binding) = suffix_plane(
+            (1..=tail)
+                .map(|seq| {
+                    if seq == first || seq == second {
+                        user_entry(seq, MESSAGE)
+                    } else {
+                        assistant_entry(seq)
+                    }
+                })
+                .collect(),
+        )
+        .await;
+        plane.adapter.tail_window(&binding, 1, 1).await.unwrap();
+        let request = message(&binding, "uncertain");
+        plane
+            .adapter
+            .note_unconfirmed_delivery(request.message_id, &request.body_hash(), floor)
+            .unwrap();
+        let page = plane
+            .adapter
+            .history(&HistoryRequest {
+                binding: binding.clone(),
+                cursor: Some(HistoryCursor::issue(
+                    binding.binding_id(),
+                    suffix_floor(first - 1),
+                )),
+                page_size: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(
+            page.items[0].subject,
+            EventSubject::Message(request.message_id)
+        );
+        assert!(
+            matches!(
+                plane.adapter.send(&request).await,
+                Err(RuntimeError::DuplicateMessage { .. })
+            ),
+            "a single-page observation must not bypass duplicate detection: {floor:?}"
+        );
+        assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
     }
 }

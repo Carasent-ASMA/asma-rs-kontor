@@ -9703,64 +9703,32 @@ impl PaseoAdapter {
         state.deliveries.push((message_id, body_hash, delivery));
     }
 
-    /// Promote confirmation-unknown deliveries when an ordinary history read
-    /// encounters their exact native message id.
-    ///
-    /// A history page is canonical runtime evidence. Keeping an already-seen
-    /// message unknown would force a later retry to search backwards from a
-    /// moving tail and could turn an incomplete read into a second send. The
-    /// page therefore repairs the adapter ledger at the exact epoch/sequence it
-    /// returns to the caller.
+    /// An ordinary page can disprove a known acknowledgement, but cannot prove
+    /// uniqueness for an unknown delivery. Only the complete issuance suffix
+    /// (or complete legacy transcript) may promote an unknown acknowledgement.
     fn reconcile_deliveries_from_history(
         &self,
         binding_id: RuntimeBindingId,
         events: &[SessionEvent],
     ) -> RuntimeResult<()> {
-        let state = &mut *self.lock();
+        let state = self.lock();
         for event in events {
             let EventSubject::Message(message_id) = &event.subject else {
                 continue;
             };
-            let message_id = *message_id;
-            let mut acknowledged = false;
             for (_, _, delivery) in state
                 .deliveries
                 .iter()
-                .filter(|(id, _, _)| *id == message_id)
+                .filter(|(id, _, _)| id == message_id)
             {
-                if let PaseoDelivery::Acknowledged(receipt) = delivery {
-                    if receipt.position != event.position {
-                        return Err(RuntimeError::DuplicateMessage {
-                            rule: "appears more than once in this session's canonical content",
-                        });
-                    }
-                    acknowledged = true;
+                if let PaseoDelivery::Acknowledged(receipt) = delivery
+                    && (receipt.binding_id != binding_id || receipt.position != event.position)
+                {
+                    return Err(RuntimeError::DuplicateMessage {
+                        rule: "appears more than once in this session's canonical content",
+                    });
                 }
             }
-            if acknowledged {
-                continue;
-            }
-            let Some(body_hash) = state.deliveries.iter().find_map(|(id, hash, delivery)| {
-                (*id == message_id && matches!(delivery, PaseoDelivery::ConfirmationUnknown))
-                    .then(|| hash.clone())
-            }) else {
-                continue;
-            };
-            let receipt = MessageAck {
-                message_id,
-                binding_id,
-                position: event.position,
-                accepted_at: event.emitted_at,
-            };
-            state.deliveries.retain(|(id, _, _)| *id != message_id);
-            state.deliveries.push((
-                message_id,
-                body_hash.clone(),
-                PaseoDelivery::Acknowledged(receipt.clone()),
-            ));
-            state
-                .messages
-                .record(message_id, body_hash, PaseoDelivery::Acknowledged(receipt));
         }
         Ok(())
     }
