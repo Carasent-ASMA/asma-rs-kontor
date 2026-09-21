@@ -858,6 +858,56 @@ pub struct CoreTeamNativeSeatDto {
     pub observed_at: Timestamp,
 }
 
+/// One occupancy of a logical hosted seat: the native that filled it and the
+/// persona that occupancy was opened under.
+///
+/// A seat outlives its natives. Reporting only the current one answers "who is
+/// here" but not "what was this seat ever opened under", and the second question
+/// is the one a no-overwrite qualification has to ask.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct HostedSeatOccupancyDto {
+    /// The occupancy generation this native filled.
+    pub occupancy_generation: u64,
+    /// `current` for the occupancy filling the seat now, `retired` for one it
+    /// superseded. Stated rather than inferred from position, so a reader does
+    /// not have to know the ordering rule to know which native is live.
+    pub lifecycle: String,
+    /// Exact native session that filled this occupancy.
+    pub native: CoreTeamNativeSeatDto,
+    /// The persona this occupancy was opened under, when its role seeds one.
+    ///
+    /// Never carries the persona text. The digest is the identity a reader
+    /// needs in order to compare two occupancies; the bytes are launch input,
+    /// and a read contract that disclosed them would be publishing a system
+    /// prompt rather than evidencing one.
+    pub role_persona: Option<CoreTeamSeatPersonaDto>,
+}
+
+/// The immutable occupancy chain of one logical hosted seat inside one epic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct HostedSeatOccupancyChainDto {
+    /// The Realm it was read in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The project it serves.
+    #[schema(value_type = String)]
+    pub project_id: ProjectId,
+    /// The epic whose control plane owns the seat.
+    #[schema(value_type = String)]
+    pub epic_id: kontor_core::id::MiniProjectId,
+    /// The logical seat whose occupancies these are.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// The standard role the seat is held under.
+    #[schema(value_type = String)]
+    pub role_code: kontor_core::id::RoleCode,
+    /// Every occupancy, oldest generation first.
+    pub occupancies: Vec<HostedSeatOccupancyDto>,
+    /// The position this read is consistent with.
+    #[schema(value_type = i64)]
+    pub snapshot_cursor: kontor_core::id::EventCursor,
+}
+
 /// One project's Core Team.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CoreTeamDto {
@@ -7468,6 +7518,23 @@ pub trait ApplicationOperations: Send + Sync {
 
     /// One project's Core Team.
     fn core_team(&self, project_id: ProjectId) -> Result<CoreTeamDto, ApiError>;
+    /// One epic's materialized Core Team, as the server currently owns it.
+    ///
+    /// The same projection the mutating epic routes already return. Exposing it
+    /// as a read is the whole point: until now the only way to observe a seat's
+    /// native and persona was to change something.
+    fn epic_core_team(
+        &self,
+        project_id: ProjectId,
+        epic_id: kontor_core::id::MiniProjectId,
+    ) -> Result<CoreTeamDto, ApiError>;
+    /// The immutable occupancy chain of one hosted seat in one epic.
+    fn epic_hosted_seat_occupancies(
+        &self,
+        project_id: ProjectId,
+        epic_id: kontor_core::id::MiniProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> Result<HostedSeatOccupancyChainDto, ApiError>;
     /// What a Core Team change would do. Commits nothing.
     fn preview_core_team(
         &self,
@@ -10088,6 +10155,73 @@ pub async fn core_team(
     caller.require(&state, CallerCapability::Observer)?;
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     Ok(Json(state.applications().core_team(project_id)?))
+}
+
+/// One epic's materialized Core Team.
+///
+/// Pure. It records no command, calls no runtime, and changes nothing; the
+/// mutating epic routes already return this projection and this route only
+/// stops a caller from having to mutate in order to see it.
+#[utoipa::path(
+    get, path = "/v1/projects/{project_id}/epics/{epic_id}/core-team", tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose control plane holds the seats")
+    ),
+    responses(
+        (status = 200, body = CoreTeamDto),
+        (status = 401), (status = 403), (status = 404),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn epic_core_team(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id)): Path<(String, String)>,
+) -> Result<Json<CoreTeamDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, kontor_core::id::MiniProjectId::parse(&epic_id))?;
+    Ok(Json(
+        state.applications().epic_core_team(project_id, epic_id)?,
+    ))
+}
+
+/// Every occupancy one hosted seat has had, oldest first.
+///
+/// Pure, and deliberately a separate route from the roster: the roster answers
+/// what is true now, and carrying every seat's whole history inside it would
+/// make the common read pay for the rare one.
+#[utoipa::path(
+    get,
+    path = "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("epic_id" = String, Path, description = "The epic whose control plane holds the seat"),
+        ("seat_binding_id" = String, Path, description = "The logical seat")
+    ),
+    responses(
+        (status = 200, body = HostedSeatOccupancyChainDto),
+        (status = 401), (status = 403),
+        (status = 404, description = "No such seat in this epic"),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn epic_hosted_seat_occupancies(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, epic_id, seat_binding_id)): Path<(String, String, String)>,
+) -> Result<Json<HostedSeatOccupancyChainDto>, ApiError> {
+    caller.require(&state, CallerCapability::Observer)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let epic_id = parse_id(&state, kontor_core::id::MiniProjectId::parse(&epic_id))?;
+    let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
+    Ok(Json(state.applications().epic_hosted_seat_occupancies(
+        project_id,
+        epic_id,
+        seat_binding_id,
+    )?))
 }
 
 /// What a Core Team change would do. Commits nothing.
