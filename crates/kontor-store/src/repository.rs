@@ -6765,15 +6765,24 @@ impl SqliteStore {
         &self,
         adoption: &StoredTeamRunAdmissionAdoption,
     ) -> RepositoryResult<(StoredTeamRunAdmissionAdoption, AdoptionWrite)> {
+        let transaction = self.begin()?;
+        let result = Self::adopt_team_run_admission_in_transaction(&transaction, adoption)?;
+        transaction.commit().map_err(backend)?;
+        Ok(result)
+    }
+
+    fn adopt_team_run_admission_in_transaction(
+        transaction: &Transaction<'_>,
+        adoption: &StoredTeamRunAdmissionAdoption,
+    ) -> RepositoryResult<(StoredTeamRunAdmissionAdoption, AdoptionWrite)> {
         let conflict = |rule: &'static str| RepositoryError::Conflict {
             subject: "team-run admission adoption",
             rule,
         };
-        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
 
         // Exact-key replay first: the same command asking again is the common
         // case after a lost acknowledgement and must not be read as drift.
-        if let Some(existing) = Self::read_adoption_by_receipt(&transaction, adoption.receipt_id)? {
+        if let Some(existing) = Self::read_adoption_by_receipt(transaction, adoption.receipt_id)? {
             if existing == *adoption {
                 return Ok((existing, AdoptionWrite::Replayed));
             }
@@ -6822,16 +6831,18 @@ impl SqliteStore {
         let Some(task_state) = task_state else {
             return Err(conflict("the task does not exist in this project"));
         };
-        if matches!(task_state.as_str(), "done" | "cancelled" | "withdrawn") {
+        if matches!(
+            task_state.as_str(),
+            "done" | "failed" | "cancelled" | "withdrawn"
+        ) {
             return Err(conflict("a closed task cannot adopt a run"));
         }
 
-        // The slot is one the frozen snapshot declares, and it declares the
-        // role the run actually holds. A slot invented by the caller, or one
-        // whose role does not match, is not the place this run belongs.
-        let slot_role: Option<String> = transaction
+        // AgentRun.role_key is the slot identity, not its catalog role. The
+        // frozen declaration and the queued run must name that exact slot.
+        let declared_slot: Option<String> = transaction
             .query_row(
-                "SELECT json_extract(slot.value, '$.role')
+                "SELECT json_extract(slot.value, '$.id')
                    FROM team_runs AS team,
                         json_each(json_extract(team.snapshot, '$.definition.slots')) AS slot
                   WHERE team.project_id = ?1 AND team.id = ?2
@@ -6845,7 +6856,7 @@ impl SqliteStore {
             )
             .optional()
             .map_err(backend)?;
-        let Some(slot_role) = slot_role else {
+        let Some(declared_slot) = declared_slot else {
             return Err(conflict(
                 "the frozen TeamRun snapshot does not declare this slot",
             ));
@@ -6880,9 +6891,9 @@ impl SqliteStore {
         if run_team != adoption.team_run_id.to_string() {
             return Err(conflict("the run belongs to a different TeamRun"));
         }
-        if run_role != slot_role {
+        if run_role != declared_slot {
             return Err(conflict(
-                "the run does not hold the role this slot declares",
+                "the run does not hold the role slot this snapshot declares",
             ));
         }
         if revision != i64::try_from(adoption.adopted_agent_run_revision.get()).unwrap_or(i64::MAX)
@@ -6986,6 +6997,38 @@ impl SqliteStore {
             return Err(conflict("this run was already adopted"));
         }
 
+        let leaves: Vec<String> = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT candidate.id FROM agent_runs AS candidate
+                 WHERE candidate.project_id = ?1 AND candidate.team_run_id = ?2
+                   AND candidate.role_key = ?3
+                   AND NOT EXISTS (SELECT 1 FROM agent_runs AS child
+                     WHERE child.project_id = candidate.project_id
+                       AND child.team_run_id = candidate.team_run_id
+                       AND child.parent_agent_run_id = candidate.id)
+                   AND candidate.lifecycle NOT IN ('succeeded', 'failed', 'cancelled')",
+                )
+                .map_err(backend)?;
+            statement
+                .query_map(
+                    params![
+                        adoption.project_id.to_string(),
+                        adoption.team_run_id.to_string(),
+                        adoption.role_slot_id.as_str()
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?
+                .collect::<Result<_, _>>()
+                .map_err(backend)?
+        };
+        if leaves != [adoption.agent_run_id.to_string()] {
+            return Err(conflict(
+                "adoption requires the unique current queued slot leaf",
+            ));
+        }
+
         transaction
             .execute(
                 "INSERT INTO team_run_admission_adoptions
@@ -7005,8 +7048,106 @@ impl SqliteStore {
                 ],
             )
             .map_err(backend)?;
-        transaction.commit().map_err(backend)?;
         Ok((adoption.clone(), AdoptionWrite::Recorded))
+    }
+
+    /// Atomically record adoption and its confirmed local command. Every
+    /// refusal rolls back both; replay returns the original immutable row.
+    ///
+    /// # Errors
+    /// Refuses changed intent, stale revisions, or an ineligible run.
+    pub fn adopt_team_run_admission_with_intent(
+        &self,
+        adoption: &StoredTeamRunAdmissionAdoption,
+        expected_task_revision: AggregateRevision,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<(StoredTeamRunAdmissionAdoption, CommandReceipt, Applied)> {
+        let command = envelope.peek(self.realm_id())?;
+        if command.project_id != adoption.project_id
+            || command.kind != CommandKind::StartScheduledWork
+            || !matches!(command.target, AggregateRef::MiniProject { .. })
+        {
+            return Err(conflict(
+                "admission adoption",
+                "the command does not authorize this project admission",
+            ));
+        }
+        let transaction = self.begin()?;
+        if let Some(receipt) = command_receipt_by_key(&transaction, &command.idempotency_key)? {
+            ensure_atomic_local_replay(&receipt, command)?;
+            let original = Self::read_adoption_by_receipt(&transaction, receipt.id)?
+                .ok_or_else(|| conflict("admission adoption", "the receipt has no adoption"))?;
+            return Ok((original, receipt, Applied::Unchanged));
+        }
+        if command.receipt_id != adoption.receipt_id || command.created_at != adoption.adopted_at {
+            return Err(conflict(
+                "admission adoption",
+                "the command and adoption authority differ",
+            ));
+        }
+        let (task_revision, epic, epic_revision): (i64, Option<String>, Option<i64>) = transaction
+            .query_row(
+                "SELECT task.revision, task.mini_project_id, epic.revision FROM tasks AS task
+                 LEFT JOIN mini_projects AS epic ON epic.project_id = task.project_id AND epic.id = task.mini_project_id
+                 WHERE task.project_id = ?1 AND task.id = ?2",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.task_id.to_string()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(backend)?;
+        if task_revision != i64::try_from(expected_task_revision.get()).unwrap_or(i64::MAX) {
+            return Err(conflict(
+                "admission adoption",
+                "the task moved since adoption was authorized",
+            ));
+        }
+        let AggregateRef::MiniProject { mini_project_id } = command.target else {
+            unreachable!()
+        };
+        if epic.as_deref() != Some(mini_project_id.to_string().as_str())
+            || epic_revision
+                != Some(i64::try_from(command.target_revision.get()).unwrap_or(i64::MAX))
+        {
+            return Err(conflict(
+                "admission adoption",
+                "the task's epic or its authority revision changed",
+            ));
+        }
+        // The append-only adoption is this operation's durable result. The
+        // schema-115 result table intentionally belongs only to gate/lifecycle
+        // commands; do not widen it or fabricate a dispatch for this command.
+        if crate::commands::intent::insert_local_command(&transaction, command)?.is_some() {
+            return Err(conflict(
+                "admission adoption",
+                "the command key appeared during adoption",
+            ));
+        }
+        let (adopted, _) = Self::adopt_team_run_admission_in_transaction(&transaction, adoption)?;
+        crate::commands::receipts::append_transition(
+            &transaction,
+            command.project_id,
+            command.receipt_id,
+            2,
+            kontor_core::receipt::CommandReceiptState::Confirmed,
+            None,
+            None,
+            Some(&adopted.id),
+            command.created_at,
+        )?;
+        transaction.execute(
+            "UPDATE command_receipts SET state = 'confirmed', result_ref = ?3, updated_at = ?4
+             WHERE project_id = ?1 AND id = ?2 AND execution_mode = 'local' AND state = 'intent_persisted'",
+            params![command.project_id.to_string(), command.receipt_id.to_string(), adopted.id.as_str(), text(command.created_at)],
+        ).map_err(backend)?;
+        let receipt = command_receipt_by_key(&transaction, &command.idempotency_key)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "adoption command receipt",
+            },
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok((adopted, receipt, Applied::Created))
     }
 
     /// The adoption one command recorded, if it recorded one.

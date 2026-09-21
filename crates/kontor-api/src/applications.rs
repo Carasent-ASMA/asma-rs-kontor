@@ -5131,6 +5131,48 @@ pub struct SchedulerResumeDto {
     pub receipt: MutationReceiptDto,
 }
 
+/// Authorize materialization of one existing queued run without inventing a handoff.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AdoptTeamRunAdmissionRequest {
+    /// Exact existing, unbound AgentRun.
+    #[schema(value_type = String)]
+    pub agent_run_id: AgentRunId,
+    /// Task revision observed before adoption.
+    #[schema(value_type = u64)]
+    pub expected_task_revision: AggregateRevision,
+    /// Revision of the exact queued run.
+    #[schema(value_type = u64)]
+    pub expected_agent_run_revision: AggregateRevision,
+    /// Operator's reason, retained in the immutable command intent.
+    #[schema(value_type = String)]
+    pub reason: BoundedText,
+}
+
+/// An adoption authorizes a later seat fill; it does not dispatch work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TeamRunAdmissionAdoptionDto {
+    /// Immutable adoption identity.
+    pub adoption_id: String,
+    /// Owning task.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// Existing admitted TeamRun.
+    #[schema(value_type = String)]
+    pub team_run_id: TeamRunId,
+    /// Frozen slot identity, distinct from its catalog role.
+    #[schema(value_type = String)]
+    pub role_slot_id: RoleSlotId,
+    /// Exact run authorized for materialization.
+    #[schema(value_type = String)]
+    pub agent_run_id: AgentRunId,
+    /// Run revision proved by the adoption.
+    #[schema(value_type = u64)]
+    pub adopted_agent_run_revision: AggregateRevision,
+    /// Confirmed local command; no native operation is queued.
+    pub receipt: MutationReceiptDto,
+}
+
 /// Fill one frozen, unwaived role slot that is owed a durable follow-up.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -7821,6 +7863,16 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &ResumeAdmissionsRequest,
     ) -> Result<SchedulerResumeDto, ApiError>;
+
+    /// Adopt one exact queued run as authority to materialize its declared slot.
+    async fn adopt_team_run_admission(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        role_slot_id: &RoleSlotId,
+        request: &AdoptTeamRunAdmissionRequest,
+    ) -> Result<TeamRunAdmissionAdoptionDto, ApiError>;
 
     /// Materialize one declared slot inside an existing admission and retry its handoff.
     async fn fill_team_run_seat(
@@ -11663,6 +11715,39 @@ pub async fn resume_admissions(
         state
             .applications()
             .resume_admissions(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Record bounded authority to materialize one existing queued role slot.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/admission:adopt",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path), ("team_run_id" = String, Path),
+        ("role_slot_id" = String, Path), ("Idempotency-Key" = String, Header)
+    ),
+    request_body = AdoptTeamRunAdmissionRequest,
+    responses((status = 200, body = TeamRunAdmissionAdoptionDto),
+        (status = 400), (status = 401), (status = 403), (status = 404), (status = 409), (status = 503))
+)]
+pub async fn adopt_team_run_admission(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, team_run_id, role_slot_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<AdoptTeamRunAdmissionRequest>,
+) -> Result<Json<TeamRunAdmissionAdoptionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let team_run_id = parse_id(&state, TeamRunId::parse(&team_run_id))?;
+    let role_slot_id = parse_id(&state, RoleSlotId::parse(&role_slot_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .adopt_team_run_admission(&key, project_id, team_run_id, &role_slot_id, &request)
             .await?,
     ))
 }
