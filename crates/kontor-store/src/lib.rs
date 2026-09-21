@@ -40,7 +40,11 @@ mod graph;
 mod intake;
 mod jira;
 pub mod memory;
+mod message_delivery_proofs;
 mod migrations;
+pub use message_delivery_proofs::{
+    MessageDeliveryProof, MessageProofAnchor, message_issuance_digest,
+};
 mod policy;
 pub mod publication;
 pub mod query;

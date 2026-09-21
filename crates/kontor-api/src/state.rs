@@ -436,6 +436,17 @@ impl ApiState {
         message_id: kontor_runtime::request::MessageId,
         body_hash: &kontor_core::id::ContentHash,
     ) -> Result<(), crate::error::ApiError> {
+        // A durable proof owns replay decisions now. Do not first seed an
+        // adapter ledger with caller-supplied content: a contradictory retry
+        // could poison that ledger before the proof refuses its changed body.
+        if outcome == kontor_store::MessageIssuanceOutcome::Replayed
+            && self
+                .with_store(|store| store.message_delivery_proof(&message_id.to_string()))
+                .map_err(|error| crate::error::ApiError::from_repository(self.realm_id(), &error))?
+                .is_some()
+        {
+            return Ok(());
+        }
         // The floor is read from the row, never recaptured. Capturing a tail now
         // would place it *above* a delivery that already landed, and the scan
         // would then prove absence over a range the message was never in — which
@@ -462,6 +473,88 @@ impl ApiState {
         adapter
             .note_unconfirmed_delivery(message_id, body_hash, issued_after)
             .map_err(|error| crate::error::ApiError::from_runtime(self.realm_id(), &error))
+    }
+
+    /// Replay a completed durable history proof, or perform the usual adapter delivery.
+    ///
+    /// A proof in progress or with negative evidence never falls through to a send.
+    /// Confirmed replay must match the original native body digest and binding.
+    ///
+    /// # Errors
+    /// Refuses changed content/identity, incomplete proof, or the adapter's delivery error.
+    pub async fn send_issued_message(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        request: &kontor_runtime::request::SendMessageRequest,
+    ) -> Result<kontor_runtime::adapter::MessageAck, crate::error::ApiError> {
+        use crate::error::{ApiError, ApiErrorCode};
+        use kontor_runtime::timeline::TimelinePosition;
+        let realm = self.realm_id();
+        let held = self
+            .with_store(|store| store.message_delivery_proof(&request.message_id.to_string()))
+            .map_err(|error| ApiError::from_repository(realm, &error))?;
+        if let Some(proof) = held {
+            let issued = self.message_issuance(request.message_id)?.ok_or_else(|| {
+                ApiError::new(
+                    realm,
+                    ApiErrorCode::RevisionConflict,
+                    "the proved issuance no longer exists",
+                )
+            })?;
+            let identity = request.binding.identity();
+            let unchanged = proof.state == "confirmed"
+                && proof.runtime_generation == identity.generation
+                && issued.runtime_binding_id == request.binding.binding_id().to_string()
+                && issued.native_session_id == identity.native_id.as_str()
+                && issued.runtime_kind == identity.runtime_kind.as_str()
+                && issued.host == identity.host.as_str()
+                && issued.delivered_at
+                    == proof
+                        .candidate_sequence
+                        .map(|sequence| (proof.anchor.epoch, sequence))
+                && kontor_store::message_issuance_digest(&issued)
+                    .map_err(|error| ApiError::from_repository(realm, &error))?
+                    .as_str()
+                    == proof.issuance_hash
+                && proof.candidate_body_hash.as_deref() == Some(request.body_hash().as_str());
+            if !unchanged {
+                return Err(ApiError::new(
+                    realm,
+                    ApiErrorCode::RevisionConflict,
+                    "the original delivery proof does not authorize this replay",
+                )
+                .advising(
+                    "retain the original message and proof; never resend uncertain delivery",
+                ));
+            }
+            let sequence = proof.candidate_sequence.ok_or_else(|| {
+                ApiError::new(
+                    realm,
+                    ApiErrorCode::RevisionConflict,
+                    "the proof has no candidate position",
+                )
+            })?;
+            let accepted_at = proof.candidate_accepted_at.ok_or_else(|| {
+                ApiError::new(
+                    realm,
+                    ApiErrorCode::RevisionConflict,
+                    "the proof has no candidate timestamp",
+                )
+            })?;
+            return Ok(kontor_runtime::adapter::MessageAck {
+                message_id: request.message_id,
+                binding_id: request.binding.binding_id(),
+                position: TimelinePosition {
+                    epoch: proof.anchor.epoch,
+                    sequence,
+                },
+                accepted_at,
+            });
+        }
+        adapter
+            .send(request)
+            .await
+            .map_err(|error| ApiError::from_runtime(realm, &error))
     }
 
     /// The session's canonical tail right now, as a boundary to issue against.

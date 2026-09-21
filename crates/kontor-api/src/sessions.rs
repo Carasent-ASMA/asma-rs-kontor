@@ -1087,11 +1087,9 @@ pub async fn send_message(
         message_id,
         &request.body_hash(),
     )?;
-    let acknowledged = session
-        .adapter
-        .send(&request)
-        .await
-        .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+    let acknowledged = state
+        .send_issued_message(session.adapter.as_ref(), &request)
+        .await?;
     // Where it landed, recorded the moment the runtime says so. The issuance
     // row already proves Kontor sent this id once; this is the other half a
     // bounded observation needs, because one issuance does not mean one
@@ -1133,6 +1131,447 @@ pub async fn send_message(
     Ok(Json(ReceiptEnvelope::new(
         realm_id,
         MessageAckDto::from(&acknowledged),
+    )))
+}
+
+/// One bounded reconciliation step. This never resumes or sends a native message.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MessageReconcileRequest {
+    /// Exact previously issued client message id.
+    pub message_id: String,
+    /// Zero starts a proof; later calls name its returned revision.
+    pub expected_revision: u64,
+}
+
+/// Lookup of already recorded proof progress.
+#[derive(Debug, Deserialize)]
+pub struct MessageProofQuery {
+    /// Exact previously issued client message id.
+    pub message_id: String,
+}
+
+/// Read durable proof progress for the exact original issuance.
+#[utoipa::path(
+    get, path = "/v1/sessions/{agent_run_id}/messages/proof", tag = "sessions",
+    params(("agent_run_id" = String, Path), ("message_id" = String, Query)),
+    responses((status = 200, body = serde_json::Value))
+)]
+pub async fn message_proof(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(agent_run_id): Path<String>,
+    Query(query): Query<MessageProofQuery>,
+) -> Result<Json<ReceiptEnvelope<serde_json::Value>>, ApiError> {
+    let session = resolve(&state, &agent_run_id, CallerCapability::Observer, caller).await?;
+    let issuance = proof_issuance(&state, &session, &query.message_id)?;
+    let proof = state
+        .with_store(|store| store.message_delivery_proof(&issuance.message_id))
+        .map_err(|error| ApiError::from_repository(state.realm_id(), &error))?;
+    Ok(Json(ReceiptEnvelope::new(
+        state.realm_id(),
+        serde_json::json!(proof),
+    )))
+}
+
+fn proof_issuance(
+    state: &ApiState,
+    session: &Session,
+    id: &str,
+) -> Result<kontor_store::MessageIssuance, ApiError> {
+    let message_id =
+        MessageId::parse(id).map_err(|error| ApiError::from_domain(state.realm_id(), &error))?;
+    let issued = state.message_issuance(message_id)?.ok_or_else(|| {
+        ApiError::new(
+            state.realm_id(),
+            ApiErrorCode::NotFound,
+            "no original issuance exists for this message",
+        )
+    })?;
+    if issued.runtime_binding_id != session.snapshot.binding_id().to_string()
+        || issued.native_session_id != session.snapshot.identity().native_id.as_str()
+        || issued.runtime_kind != session.snapshot.identity().runtime_kind.as_str()
+        || issued.host != session.snapshot.identity().host.as_str()
+    {
+        return Err(ApiError::new(
+            state.realm_id(),
+            ApiErrorCode::StaleBinding,
+            "this issuance belongs to a different native binding",
+        ));
+    }
+    Ok(issued)
+}
+
+// Bind every event identity field, not only its payload digest.
+fn message_proof_event_hash(event: &kontor_runtime::timeline::SessionEvent) -> ContentHash {
+    let subject = match &event.subject {
+        EventSubject::None => serde_json::Value::Null,
+        EventSubject::Message(id) => serde_json::json!({"message": id.to_string()}),
+        EventSubject::Permission(id) => serde_json::json!({"permission": id.as_str()}),
+    };
+    ContentHash::of(
+        serde_json::json!({
+            "kind": event.kind, "position": event.position, "subject": subject,
+            "native_event_id": event.native_event_id, "emitted_at": event.emitted_at.to_string(),
+            "payload": event.payload.hash().as_str(),
+        })
+        .to_string()
+        .as_bytes(),
+    )
+}
+
+fn proof_gap(state: &ApiState, rule: &'static str) -> ApiError {
+    ApiError::new(
+        state.realm_id(),
+        ApiErrorCode::TimelineRefetchRequired,
+        rule,
+    )
+    .advising("retain the unknown acknowledgement; do not resend or replace its historical proof")
+}
+
+/// Freeze or advance one read-only canonical proof page with durable replay.
+#[utoipa::path(
+    post, path = "/v1/sessions/{agent_run_id}/messages:reconcile", tag = "sessions",
+    params(("agent_run_id" = String, Path), ("Idempotency-Key" = String, Header)),
+    request_body = MessageReconcileRequest,
+    responses((status = 200, body = serde_json::Value), (status = 409, description = "Proof revision, identity or history refused"))
+)]
+pub async fn reconcile_message_delivery(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(agent_run_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<MessageReconcileRequest>,
+) -> Result<Json<ReceiptEnvelope<serde_json::Value>>, ApiError> {
+    let session = resolve(&state, &agent_run_id, CallerCapability::Operator, caller).await?;
+    let realm = state.realm_id();
+    let issued = proof_issuance(&state, &session, &request.message_id)?;
+    let key = idempotency_key(&state, &headers)?;
+    let request_hash = ContentHash::of(
+        serde_json::json!([agent_run_id, request.message_id, request.expected_revision])
+            .to_string()
+            .as_bytes(),
+    );
+    if let Some(replay) = state
+        .with_store(|store| {
+            store.message_delivery_proof_replay(
+                &issued.message_id,
+                key.as_str(),
+                request_hash.as_str(),
+            )
+        })
+        .map_err(|error| ApiError::from_repository(realm, &error))?
+    {
+        return Ok(Json(ReceiptEnvelope::new(realm, serde_json::json!(replay))));
+    }
+    let held = state
+        .with_store(|store| store.message_delivery_proof(&issued.message_id))
+        .map_err(|error| ApiError::from_repository(realm, &error))?;
+    let revision = held.as_ref().map_or(0, |proof| proof.revision);
+    if request.expected_revision != revision {
+        return Err(ApiError::new(
+            realm,
+            ApiErrorCode::RevisionConflict,
+            "the proof has advanced; read its current revision",
+        )
+        .with_revision(kontor_core::id::AggregateRevision::parse(revision).ok()));
+    }
+    if let Some(proof) = held.as_ref()
+        && proof.state != "scanning"
+    {
+        return Ok(Json(ReceiptEnvelope::new(realm, serde_json::json!(proof))));
+    }
+    let size = session
+        .snapshot
+        .capabilities
+        .limits
+        .max_history_page
+        .min(500);
+    session.preflight(
+        realm,
+        RuntimeCapability::History,
+        Some(LimitDemand::HistoryPage(size)),
+    )?;
+    let starting = held.is_none();
+    let mut proof = match held {
+        Some(proof) => proof,
+        None => {
+            let anchor = state
+                .with_store(|store| store.message_delivery_proof_anchor(&issued))
+                .map_err(|error| ApiError::from_repository(realm, &error))?
+                .ok_or_else(|| {
+                    proof_gap(
+                        &state,
+                        "this binding has no earlier durable message or turn epoch anchor",
+                    )
+                })?;
+            let page = state
+                .tail_window_recovering_epoch_once(
+                    session.adapter.as_ref(),
+                    session.snapshot.identity(),
+                    &session.snapshot,
+                    1,
+                    1,
+                )
+                .await?;
+            let tail = page
+                .items
+                .last()
+                .ok_or_else(|| proof_gap(&state, "the anchored native history is missing"))?;
+            if page.epoch != anchor.epoch
+                || tail.position.epoch != anchor.epoch
+                || tail.position.sequence < anchor.sequence
+            {
+                return Err(proof_gap(
+                    &state,
+                    "the native history no longer agrees with its original durable epoch anchor",
+                ));
+            }
+            kontor_store::MessageDeliveryProof {
+                schema_version: 1,
+                message_id: issued.message_id.clone(),
+                issuance_hash: kontor_store::message_issuance_digest(&issued)
+                    .map_err(|error| ApiError::from_repository(realm, &error))?
+                    .to_string(),
+                runtime_generation: session.snapshot.identity().generation,
+                anchor,
+                upper_sequence: tail.position.sequence,
+                upper_hash: message_proof_event_hash(tail).to_string(),
+                through_sequence: 0,
+                occurrences: 0,
+                candidate_sequence: None,
+                candidate_hash: None,
+                candidate_body_hash: None,
+                candidate_accepted_at: None,
+                anchor_seen: false,
+                state: "scanning".to_owned(),
+                revision: 0,
+            }
+        }
+    };
+    if proof.runtime_generation != session.snapshot.identity().generation
+        || proof.issuance_hash
+            != kontor_store::message_issuance_digest(&issued)
+                .map_err(|error| ApiError::from_repository(realm, &error))?
+                .as_str()
+    {
+        return Err(proof_gap(&state, "the original proof identity changed"));
+    }
+    // Freeze the observed upper bound before the first historical page. The
+    // first receipt is replayable even if the following page cannot be read.
+    if starting {
+        proof.revision = 1;
+        let recorded = state
+            .with_store(|store| {
+                store.advance_message_delivery_proof(
+                    &issued,
+                    &proof,
+                    0,
+                    key.as_str(),
+                    request_hash.as_str(),
+                )
+            })
+            .map_err(|error| ApiError::from_repository(realm, &error))?;
+        return Ok(Json(ReceiptEnvelope::new(
+            realm,
+            serde_json::json!(recorded),
+        )));
+    }
+    let position = TimelinePosition {
+        epoch: proof.anchor.epoch,
+        sequence: proof.through_sequence,
+    };
+    // An explicit zero cursor is an origin read with one bounded forward page.
+    // A cursor-free read would instead walk the entire transcript to find its start.
+    let mut page = state
+        .history_with_durable_epochs(
+            session.adapter.as_ref(),
+            session.snapshot.identity(),
+            &HistoryRequest {
+                binding: session.snapshot.clone(),
+                cursor: Some(HistoryCursor::issue(
+                    session.snapshot.binding_id(),
+                    position,
+                )),
+                page_size: size,
+            },
+        )
+        .await?;
+    if page.items.is_empty()
+        || page
+            .items
+            .windows(2)
+            .any(|pair| pair[1].position.sequence != pair[0].position.sequence.saturating_add(1))
+        || page
+            .items
+            .iter()
+            .any(|item| item.position.sequence <= position.sequence)
+    {
+        return Err(proof_gap(
+            &state,
+            "a proof page is empty or overlaps earlier progress",
+        ));
+    }
+    let mut reader = HistoryReader::resuming(session.snapshot.binding_id(), position);
+    reader
+        .accept_page(&mut page)
+        .map_err(|error| ApiError::from_runtime(realm, &error))?;
+    if page.end != reader.anchor() {
+        return Err(proof_gap(
+            &state,
+            "the page end does not match its continuously read entries",
+        ));
+    }
+    let wanted = MessageId::parse(&issued.message_id)
+        .map_err(|error| ApiError::from_domain(realm, &error))?;
+    let anchor_message = MessageId::parse(&proof.anchor.message_id)
+        .map_err(|error| ApiError::from_domain(realm, &error))?;
+    for event in &page.items {
+        if event.position.sequence > proof.upper_sequence {
+            break;
+        }
+        if event.position.sequence == proof.anchor.sequence {
+            if event.subject != EventSubject::Message(anchor_message) {
+                return Err(proof_gap(
+                    &state,
+                    "the original canonical anchor occurrence was rewritten",
+                ));
+            }
+            proof.anchor_seen = true;
+        }
+        if event.position.sequence == proof.upper_sequence
+            && message_proof_event_hash(event).as_str() != proof.upper_hash
+        {
+            return Err(proof_gap(
+                &state,
+                "the proof's original upper-bound event was rewritten",
+            ));
+        }
+        if event.subject == EventSubject::Message(wanted) {
+            proof.occurrences = (proof.occurrences + 1).min(2);
+            if proof.candidate_sequence.is_none() {
+                proof.candidate_sequence = Some(event.position.sequence);
+                proof.candidate_hash = Some(message_proof_event_hash(event).to_string());
+                proof.candidate_accepted_at = Some(event.emitted_at);
+                proof.candidate_body_hash = event
+                    .payload
+                    .deserialize::<serde_json::Value>()
+                    .ok()
+                    .and_then(|payload| payload["message_body_hash"].as_str().map(str::to_owned));
+            }
+        }
+        proof.through_sequence = event.position.sequence;
+    }
+    if proof.occurrences >= 2 {
+        proof.state = "duplicate".to_owned();
+    } else if proof.through_sequence == proof.upper_sequence {
+        if !proof.anchor_seen {
+            return Err(proof_gap(
+                &state,
+                "the proof never observed its original anchor",
+            ));
+        }
+        proof.state = if proof.occurrences == 1 {
+            "confirmed"
+        } else {
+            "absent"
+        }
+        .to_owned();
+        // Revalidate the historical anchor at completion too; a prefix read in
+        // an earlier call must not conceal retention or a same-epoch rewrite.
+        let anchor_page = state
+            .history_with_durable_epochs(
+                session.adapter.as_ref(),
+                session.snapshot.identity(),
+                &HistoryRequest {
+                    binding: session.snapshot.clone(),
+                    cursor: Some(HistoryCursor::issue(
+                        session.snapshot.binding_id(),
+                        TimelinePosition {
+                            epoch: proof.anchor.epoch,
+                            sequence: proof.anchor.sequence - 1,
+                        },
+                    )),
+                    page_size: 1,
+                },
+            )
+            .await?;
+        if anchor_page.epoch != proof.anchor.epoch
+            || anchor_page.items.len() != 1
+            || anchor_page.items[0].position
+                != (TimelinePosition {
+                    epoch: proof.anchor.epoch,
+                    sequence: proof.anchor.sequence,
+                })
+            || anchor_page.items[0].subject != EventSubject::Message(anchor_message)
+        {
+            return Err(proof_gap(
+                &state,
+                "the original epoch anchor changed before confirmation",
+            ));
+        }
+        if let Some(candidate) = proof.candidate_sequence {
+            let verify = state
+                .history_with_durable_epochs(
+                    session.adapter.as_ref(),
+                    session.snapshot.identity(),
+                    &HistoryRequest {
+                        binding: session.snapshot.clone(),
+                        cursor: Some(HistoryCursor::issue(
+                            session.snapshot.binding_id(),
+                            TimelinePosition {
+                                epoch: proof.anchor.epoch,
+                                sequence: candidate - 1,
+                            },
+                        )),
+                        page_size: 1,
+                    },
+                )
+                .await?;
+            if verify.epoch != proof.anchor.epoch
+                || verify.items.len() != 1
+                || verify.items[0].position
+                    != (TimelinePosition {
+                        epoch: proof.anchor.epoch,
+                        sequence: candidate,
+                    })
+                || verify.items[0].subject != EventSubject::Message(wanted)
+                || Some(message_proof_event_hash(&verify.items[0]).as_str())
+                    != proof.candidate_hash.as_deref()
+            {
+                return Err(proof_gap(
+                    &state,
+                    "the exact candidate occurrence changed before confirmation",
+                ));
+            }
+        }
+    } else if page.next.is_none() {
+        return Err(proof_gap(
+            &state,
+            "history ended before the proof's immutable upper bound",
+        ));
+    }
+    proof.revision = request.expected_revision.checked_add(1).ok_or_else(|| {
+        ApiError::new(
+            realm,
+            ApiErrorCode::InvalidRequest,
+            "proof revision exhausted",
+        )
+    })?;
+    let recorded = state
+        .with_store(|store| {
+            store.advance_message_delivery_proof(
+                &issued,
+                &proof,
+                request.expected_revision,
+                key.as_str(),
+                request_hash.as_str(),
+            )
+        })
+        .map_err(|error| ApiError::from_repository(realm, &error))?;
+    Ok(Json(ReceiptEnvelope::new(
+        realm,
+        serde_json::json!(recorded),
     )))
 }
 

@@ -1045,6 +1045,8 @@ pub fn router(state: ApiState) -> Router {
             "/v1/sessions/{agent_run_id}/messages",
             post(sessions::send_message),
         )
+        .route("/v1/sessions/{agent_run_id}/messages:reconcile", post(sessions::reconcile_message_delivery))
+        .route("/v1/sessions/{agent_run_id}/messages/proof", get(sessions::message_proof))
         .route(
             "/v1/sessions/{agent_run_id}/permissions/{request_id}",
             post(sessions::respond_permission),
