@@ -857,6 +857,8 @@ struct FakeState {
     /// for: it survives nothing on its own and is handed back from durable
     /// state when a replay arrives.
     unconfirmed_deliveries: BTreeSet<MessageId>,
+    /// The canonical tail each message was registered as issued after.
+    issuance_floors: BTreeMap<MessageId, TimelinePosition>,
     /// Whether the modelled native runtime answers a resent client message id
     /// from its own ledger instead of appending a second entry.
     ///
@@ -1450,6 +1452,7 @@ impl ScriptedFakeRuntime {
                 lose_retitle_ack_once: BTreeSet::new(),
                 lose_next_send_ack: false,
                 unconfirmed_deliveries: BTreeSet::new(),
+                issuance_floors: BTreeMap::new(),
                 native_deduplicates_messages: true,
                 epoch_mappings: BTreeMap::new(),
                 undrained_epochs: Vec::new(),
@@ -1787,15 +1790,6 @@ impl ScriptedFakeRuntime {
         }
     }
 
-    /// Drop everything a rebuilt adapter loses, keeping what the runtime keeps.
-    ///
-    /// `compose_paseo` builds every adapter from `PaseoCheckpoint::fresh`, so a
-    /// daemon restart destroys the adapter's own ledgers — which bindings it
-    /// issued, and where each seat is placed — while the runtime it talks to
-    /// keeps running with its sessions intact. Modelling the restart *without*
-    /// this leaves those ledgers populated in-process, and a test then proves
-    /// only that the daemon's half recovered. That is precisely how a
-    /// reads-recover-but-writes-do-not split survived a green suite.
     /// Model a native runtime that does not deduplicate by client message id.
     ///
     /// This fake answers a resent id from the session's own ledger, which makes
@@ -1812,12 +1806,22 @@ impl ScriptedFakeRuntime {
         self.lock().native_deduplicates_messages = false;
     }
 
-    /// Rebuild process-local adapter state while retaining the native sessions.
+    /// Drop everything a rebuilt adapter loses, keeping what the runtime keeps.
+    ///
+    /// `compose_paseo` builds every adapter from `PaseoCheckpoint::fresh`, so a
+    /// daemon restart destroys the adapter's own ledgers — which bindings it
+    /// issued, and where each seat is placed — while the runtime it talks to
+    /// keeps running with its sessions intact. Modelling the restart *without*
+    /// this leaves those ledgers populated in-process, and a test then proves
+    /// only that the daemon's half recovered. That is precisely how a
+    /// reads-recover-but-writes-do-not split survived a green suite.
     pub fn rebuild_adapter_state(&self) {
         let mut state = self.lock();
         state.bindings.clear();
         state.placements.clear();
         state.admissions = AdmissionLedger::new();
+        state.unconfirmed_deliveries.clear();
+        state.issuance_floors.clear();
     }
 
     /// Forget that the plane was ever prepared.
@@ -2556,6 +2560,16 @@ impl ScriptedFakeRuntime {
         self.lock().undrained_epochs.clone()
     }
 
+    /// The boundary this message was registered as issued after, if any.
+    ///
+    /// The floor is what lets a reconciliation prove itself from a suffix, and
+    /// a first send that never registers one falls back to whole history — which
+    /// is the difference between acknowledging a long session and refusing it.
+    #[must_use]
+    pub fn issuance_floor(&self, message_id: MessageId) -> Option<TimelinePosition> {
+        self.lock().issuance_floors.get(&message_id).copied()
+    }
+
     /// Every recorded event of the session behind `binding`.
     #[must_use]
     pub fn content(&self, binding: &RuntimeBindingSnapshot) -> Vec<SessionEvent> {
@@ -2874,13 +2888,23 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .retain(|pending| !persisted.contains(pending));
     }
 
+    fn note_issuance_boundary(
+        &self,
+        message_id: MessageId,
+        issued_after: TimelinePosition,
+    ) -> RuntimeResult<()> {
+        self.lock().issuance_floors.insert(message_id, issued_after);
+        Ok(())
+    }
+
     /// Remember, at adapter level, that this message may already be out there.
     fn note_unconfirmed_delivery(
         &self,
         message_id: MessageId,
         body_hash: &ContentHash,
+        issued_after: Option<TimelinePosition>,
     ) -> RuntimeResult<()> {
-        let _ = body_hash;
+        let _ = (body_hash, issued_after);
         self.lock().unconfirmed_deliveries.insert(message_id);
         Ok(())
     }

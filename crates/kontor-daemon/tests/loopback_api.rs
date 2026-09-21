@@ -27036,6 +27036,7 @@ fn issue_message(
             message_id,
             "session_message_send",
             &message_id.to_string(),
+            None,
         )
         .expect("the issuance records");
 }
@@ -29279,6 +29280,7 @@ async fn observing_trusts_only_a_message_this_realm_issued_to_this_session() {
             elsewhere,
             "session_message_send",
             &elsewhere.to_string(),
+            None,
         )
         .expect("the issuance records against another binding");
     world
@@ -61330,4 +61332,103 @@ async fn artifact_recovery_preserves_unknown_accounts_only_with_exact_native_pro
             );
         }
     }
+}
+
+/// A *first* send registers its boundary, not only a replay.
+///
+/// The wiring this proves was missing. The boundary was captured and persisted
+/// before the effect, and the adapter was handed it only on the replay path —
+/// so a first send into a long session still reconciled against whole history,
+/// still exhausted the page budget, and still refused. The durable half looked
+/// correct while the live path kept the ceiling.
+///
+/// Both issuing paths are checked through the real API, because they capture
+/// and register independently.
+async fn check_first_send_registers_its_boundary(derived: bool) {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "first-send-boundary").await;
+    let seats = seats.as_array().expect("seats");
+    let source = seats[0]["agent_run_id"]
+        .as_str()
+        .expect("source")
+        .to_owned();
+    let role = seats[0]["role_slot"].as_str().expect("role").to_owned();
+    let target = seats[1]["agent_run_id"]
+        .as_str()
+        .expect("target")
+        .to_owned();
+    let project_id = ProjectId::parse(&project).expect("project");
+    let proof = observe_current_turn(&world, &project, &source);
+    let revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("revision");
+    let key = kontor_runtime::request::MessageId::generate();
+    let sent = if derived {
+        Call::post(
+            format!("/v1/projects/{project}/agent-runs/{source}/turns:settle"),
+            &serde_json::json!({"role_slot":role,"expected_task_revision":revision,
+                "runtime_proof":proof,"artifacts":["change-set"]}),
+        )
+    } else {
+        Call::post(
+            format!("/v1/sessions/{target}/messages"),
+            &serde_json::json!({"body":"a first send, never replayed"}),
+        )
+    }
+    .signed_as(&world, "operator")
+    .with_key(key.to_string())
+    .send(&world)
+    .await;
+    assert_eq!(sent.status, 200, "the first send succeeds: {}", sent.body);
+
+    let message_id = if derived {
+        kontor_runtime::request::MessageId::parse(
+            &world
+                .daemon
+                .state()
+                .with_store(|store| store.list_turn_dispatches(project_id))
+                .expect("dispatches")[0]
+                .message_id,
+        )
+        .expect("message")
+    } else {
+        key
+    };
+    let issuance = world
+        .daemon
+        .state()
+        .message_issuance(message_id)
+        .expect("issuance reads")
+        .expect("issued");
+
+    // Durable half: the pair is recorded, whole, before the effect.
+    let (epoch, sequence) = issuance.boundary_at.expect("a boundary was persisted");
+
+    // Live half, and the one that was missing: the adapter actually holds it, so
+    // this send's own reconciliation can be bounded rather than whole-history.
+    let registered = world
+        .fake
+        .issuance_floor(message_id)
+        .expect("the first send registered its boundary with the adapter");
+    assert_eq!(
+        (registered.epoch, registered.sequence),
+        (epoch, sequence),
+        "the adapter holds the boundary that was persisted, not a recaptured one"
+    );
+}
+
+#[tokio::test]
+async fn direct_first_send_registers_its_boundary() {
+    check_first_send_registers_its_boundary(false).await;
+}
+
+#[tokio::test]
+async fn derived_first_send_registers_its_boundary() {
+    check_first_send_registers_its_boundary(true).await;
 }

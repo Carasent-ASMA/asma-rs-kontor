@@ -5203,12 +5203,22 @@ impl Services {
         // unambiguous without reading the whole transcript. The dispatch row
         // fixes the id across retries, so a replay recognises its own issuance
         // rather than writing a second one.
+        // Same capture, same order, on the derived path: the tail before the
+        // dispatch is what bounds the reconciliation that a later retry runs.
+        let boundary = state
+            .canonical_tail_boundary(
+                adapter.as_ref(),
+                request.binding.identity(),
+                &request.binding,
+            )
+            .await?;
         let issuance = state.record_message_issuance(
             request.binding.identity(),
             request.binding.binding_id(),
             message_id,
             "handoff_dispatch",
             &message_id.to_string(),
+            boundary,
         )?;
         // A derived dispatch is retried by reconciliation, which is precisely
         // the path that crosses a restart: the row fixes the id, so a second
