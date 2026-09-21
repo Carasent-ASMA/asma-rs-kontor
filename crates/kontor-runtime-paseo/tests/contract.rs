@@ -9978,6 +9978,128 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
     );
 }
 
+/// Hosted Codex aliases and OpenCode cannot inherit a Claude cwd config. Their
+/// actual launch must carry the scoped MCP, with no secret in durable config.
+#[tokio::test]
+async fn hosted_leadership_injects_scoped_mcp_through_the_actual_launch() {
+    for (provider, model, mode) in [
+        ("codex", "gpt-5.6-sol", "full-access"),
+        ("codex-personal", "gpt-5.6-sol", "full-access"),
+        ("codex-work", "gpt-5.6-sol", "full-access"),
+        ("opencode", "deepseek/deepseek-flash", "build"),
+    ] {
+        for enabled in [true, false] {
+            let seat_binding_id = SeatBindingId::generate();
+            let mut workspace = v(WORKSPACE_ROOT_LOCAL);
+            workspace["entries"][0]["name"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+            workspace["entries"][0]["title"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+            let mut agent = v(AGENT);
+            agent["agent"]["provider"] = serde_json::json!(provider);
+            agent["agent"]["model"] = serde_json::json!(model);
+            agent["agent"]["currentModeId"] = serde_json::json!(mode);
+            agent["agent"]["labels"] = serde_json::json!({
+                "jira.epic": "ASMA-7744", "kontor.project_id": MINI_PROJECT,
+                "kontor.seat_binding_id": seat_binding_id.to_string(),
+                "kontor.hosted_seat": "true", "kontor.role": "lsa",
+                "kontor.role_slot_id": "lsa", "kontor.workspace_id": WORKSPACE_ID,
+                "kontor.worktree": CWD,
+            });
+            let recorded = RecordedPaseo::new()
+                .answering(&PaseoCommand::version(), VERSION)
+                .announcing(&v(SERVER_INFO))
+                .answering_rpc("project.list.request", v(PROJECT_LIST))
+                .answering_rpc("fetch_workspaces_request", workspace)
+                .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+                .answering_rpc(
+                    "create_agent_request",
+                    serde_json::json!({
+                        "status": "agent_created", "agent": {"id": AGENT_ID}
+                    }),
+                )
+                .answering_rpc("fetch_agent_request", agent);
+            let mut configured = config();
+            configured.seat_mcp = enabled.then(|| kontor_runtime_paseo::seat_mcp::SeatMcp {
+                command: "/realm/bin/kontor-mcp".to_owned(),
+                state_root: "/realm/state".into(),
+            });
+            let plane = Plane::build_with_config(
+                recorded,
+                PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+                configured,
+            );
+            plane
+                .adapter
+                .prepare_project("cmd-hosted-mcp", &project_name())
+                .await
+                .unwrap();
+            let container = plane
+                .adapter
+                .prepare_container(&ecp_request(node(NODE_A), bound_root(node(NODE_B))))
+                .await
+                .unwrap()
+                .snapshot;
+            let request = HostedSeatLaunchRequest {
+                seat_binding_id,
+                role_slot_id: slot("lsa"),
+                display_name: name("LSA"),
+                container,
+                cwd: root(),
+                scope: epic_execution_scope(),
+                prompt: text("continue governed leadership"),
+                role_prompt: None,
+                credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+                    "hosted-scope-secret".to_owned(),
+                ),
+                fenced_predecessor_native_ids: Vec::new(),
+                model_rung: ModelRung {
+                    provider: ProviderRef(provider.to_owned()),
+                    model: ModelRef(model.to_owned()),
+                    effort: None,
+                },
+                autonomy: SeatAutonomy::Bounded,
+                context_policy: standard_context_policy(),
+                requested_at: at("2026-08-16T09:10:00Z"),
+            };
+            let outcome = plane.adapter.launch_hosted_seat(&request).await.unwrap();
+            assert!(outcome.created);
+            let sent = plane.daemon.sent_messages("create_agent_request");
+            assert_eq!(sent.len(), 1);
+            let config = &sent[0]["config"];
+            assert_eq!(config["provider"], provider);
+            if enabled {
+                assert_eq!(
+                    config["mcpServers"]["kontor"]["args"],
+                    serde_json::json!([
+                        "--state-root",
+                        "/realm/state",
+                        "--credential-tier",
+                        "operator",
+                        "--serve-profile",
+                        "leadership"
+                    ]),
+                    "{provider} must receive its own leadership MCP"
+                );
+                assert_eq!(
+                    config["toolPolicy"]["preapproved"]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    6
+                );
+            } else {
+                assert!(config.get("mcpServers").is_none());
+                assert!(config.get("toolPolicy").is_none());
+            }
+            assert!(
+                !serde_json::to_string(&sent)
+                    .unwrap()
+                    .contains("hosted-scope-secret")
+            );
+            assert!(!format!("{:?}", plane.adapter.checkpoint()).contains("hosted-scope-secret"));
+        }
+    }
+}
+
 /// REQ-001: a leadership seat launches under the autonomy it was given, and the
 /// readback proves it rather than a config diff asserting it.
 ///
