@@ -390,6 +390,7 @@ impl ApiState {
         message_id: kontor_runtime::request::MessageId,
         provenance: &str,
         idempotency_key: &str,
+        boundary_at: Option<kontor_runtime::timeline::TimelinePosition>,
     ) -> Result<kontor_store::MessageIssuanceOutcome, crate::error::ApiError> {
         let issuance = kontor_store::MessageIssuance {
             message_id: message_id.to_string(),
@@ -404,6 +405,9 @@ impl ApiState {
             // there is no acknowledged position yet. It arrives, if it arrives,
             // through `record_message_delivery`.
             delivered_at: None,
+            // The tail this send is about to be appended after, written in the
+            // same statement as the issuance so the pair is never half-recorded.
+            boundary_at: boundary_at.map(|position| (position.epoch, position.sequence)),
         };
         self.with_store(|store| store.record_message_issuance(&issuance))
             .map_err(|error| crate::error::ApiError::from_repository(self.realm_id(), &error))
@@ -432,12 +436,76 @@ impl ApiState {
         message_id: kontor_runtime::request::MessageId,
         body_hash: &kontor_core::id::ContentHash,
     ) -> Result<(), crate::error::ApiError> {
+        // The floor is read from the row, never recaptured. Capturing a tail now
+        // would place it *above* a delivery that already landed, and the scan
+        // would then prove absence over a range the message was never in — which
+        // is exactly the evidence that authorizes a resend.
+        let issued_after = self
+            .message_issuance(message_id)?
+            .and_then(|issuance| issuance.boundary_at)
+            .map(
+                |(epoch, sequence)| kontor_runtime::timeline::TimelinePosition { epoch, sequence },
+            );
+        // Every send gets its boundary, including the first. A first attempt
+        // still has to bound its own reconciliation — that is the whole of the
+        // ceiling — and registering the tail says nothing about delivery.
+        if let Some(floor) = issued_after {
+            adapter
+                .note_issuance_boundary(message_id, floor)
+                .map_err(|error| crate::error::ApiError::from_runtime(self.realm_id(), &error))?;
+        }
+        // Only a *second* arrival declares the delivery unknown, because only
+        // then could an earlier attempt have reached the session.
         if outcome != kontor_store::MessageIssuanceOutcome::Replayed {
             return Ok(());
         }
         adapter
-            .note_unconfirmed_delivery(message_id, body_hash)
+            .note_unconfirmed_delivery(message_id, body_hash, issued_after)
             .map_err(|error| crate::error::ApiError::from_runtime(self.realm_id(), &error))
+    }
+
+    /// The session's canonical tail right now, as a boundary to issue against.
+    ///
+    /// One bounded tail read, never a walk: the boundary only has to name where
+    /// the transcript ends before this send, and that is the newest position the
+    /// runtime will report. An empty session yields sequence zero, which is a
+    /// real boundary — nothing precedes the send — rather than a missing one.
+    ///
+    /// A runtime that cannot answer yields `None`, and the issuance is recorded
+    /// without a floor: the send still happens, and its reconciliation falls
+    /// back to whole history exactly as it did before boundaries existed. That
+    /// is a slower proof, not a weaker one.
+    pub async fn canonical_tail_boundary(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        binding: &kontor_runtime::capability::RuntimeBindingSnapshot,
+    ) -> Result<Option<kontor_runtime::timeline::TimelinePosition>, crate::error::ApiError> {
+        // Through the durable barrier, not the raw adapter call. Reading the
+        // tail can *allocate* an epoch, and a boundary naming a number that
+        // exists only in this process is worthless to the restart it is meant to
+        // survive: the mapping has to be committed before the position is
+        // recorded or acted on.
+        match self
+            .tail_window_recovering_epoch_once(adapter, identity, binding, 1, 1)
+            .await
+        {
+            Ok(page) => Ok(Some(page.end)),
+            // The session's history is unreadable or has been renumbered.
+            // Turning that into "no boundary" and sending anyway would hide a
+            // break behind a slower proof, so it is reported.
+            Err(error) if error.code == crate::error::ApiErrorCode::TimelineRefetchRequired => {
+                Err(error)
+            }
+            // Everything else means this realm could not *obtain* a usable
+            // boundary: a runtime with no bounded tail read, or a mapping that
+            // could not be committed. Both are an explicit fallback to the
+            // whole-history proof, which is slower and still honest — and
+            // recording no boundary is the only safe outcome when the epoch
+            // behind it is not durable, because a floor naming an uncommitted
+            // number could not survive the restart it exists for.
+            Err(_) => Ok(None),
+        }
     }
 
     /// Make an acknowledged delivery durable before its position is exposed.

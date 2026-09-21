@@ -4284,8 +4284,9 @@ impl SqliteStore {
             .execute(
                 "INSERT INTO runtime_message_issuances
                      (message_id, runtime_kind, host, runtime_binding_id,
-                      native_session_id, idempotency_key, provenance, issued_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                      native_session_id, idempotency_key, provenance, issued_at,
+                      boundary_epoch, boundary_sequence)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT (message_id) DO NOTHING",
                 params![
                     issuance.message_id.as_str(),
@@ -4296,6 +4297,12 @@ impl SqliteStore {
                     issuance.idempotency_key.as_str(),
                     issuance.provenance.as_str(),
                     issuance.issued_at.to_string(),
+                    issuance
+                        .boundary_at
+                        .map(|(epoch, _)| i64::try_from(epoch).unwrap_or(i64::MAX)),
+                    issuance
+                        .boundary_at
+                        .map(|(_, sequence)| i64::try_from(sequence).unwrap_or(i64::MAX)),
                 ],
             )
             .map_err(backend)?;
@@ -4409,13 +4416,16 @@ impl SqliteStore {
             String,
             Option<i64>,
             Option<i64>,
+            Option<i64>,
+            Option<i64>,
         );
         let row: Option<IssuanceRow> = self
             .connection
             .query_row(
                 "SELECT message_id, runtime_kind, host, runtime_binding_id,
                         native_session_id, idempotency_key, provenance, issued_at,
-                        delivered_epoch, delivered_sequence
+                        delivered_epoch, delivered_sequence,
+                        boundary_epoch, boundary_sequence
                    FROM runtime_message_issuances WHERE message_id = ?1",
                 params![message_id],
                 |row| {
@@ -4430,6 +4440,8 @@ impl SqliteStore {
                         row.get(7)?,
                         row.get(8)?,
                         row.get(9)?,
+                        row.get(10)?,
+                        row.get(11)?,
                     ))
                 },
             )
@@ -4446,6 +4458,16 @@ impl SqliteStore {
                 provenance: row.6,
                 issued_at: read_timestamp(&row.7)?,
                 delivered_at: match (row.8, row.9) {
+                    (Some(epoch), Some(sequence)) => Some((
+                        u64::try_from(epoch).unwrap_or_default(),
+                        u64::try_from(sequence).unwrap_or_default(),
+                    )),
+                    _ => None,
+                },
+                // Both columns or neither. A half-written pair names no
+                // position, and reading one as a floor would bound a scan by a
+                // number the other half never agreed to.
+                boundary_at: match (row.10, row.11) {
                     (Some(epoch), Some(sequence)) => Some((
                         u64::try_from(epoch).unwrap_or_default(),
                         u64::try_from(sequence).unwrap_or_default(),
@@ -4602,6 +4624,13 @@ pub struct MessageIssuance {
     pub provenance: String,
     /// When it was recorded, before the runtime was asked to accept it.
     pub issued_at: Timestamp,
+    /// The session's canonical tail when this id was issued.
+    ///
+    /// Written in the same statement as the issuance, before the effect is
+    /// attempted, so the pair is never half-recorded. `None` for a row created
+    /// before boundaries were kept; such a row keeps the whole-history
+    /// requirement it was made under and is never given a guessed floor.
+    pub boundary_at: Option<(u64, u64)>,
     /// Where the runtime acknowledged it landing, once it did.
     ///
     /// `None` until a delivery is acknowledged, and permanently `None` for a

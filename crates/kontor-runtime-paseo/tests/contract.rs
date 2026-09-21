@@ -13375,3 +13375,401 @@ async fn native_root_removal_refuses_a_live_session_under_the_filesystem_root() 
         "no project may be removed while a session is live inside it"
     );
 }
+
+/// The acknowledgement ceiling: a long session could not confirm any send.
+///
+/// Reconciliation walks back from the tail under `RECONCILE_PAGE_BUDGET` pages
+/// of `MAX_HISTORY_PAGE`, and refuses unless it reached the beginning — because
+/// only a complete read can count occurrences across a whole transcript. The
+/// exact `clientMessageId` is found on the first page, near the tail, and then
+/// discarded. Past two thousand canonical entries every send is therefore
+/// refused as confirmation-unknown however healthy the runtime is, which is what
+/// stopped large seats acknowledging messages that had plainly landed.
+///
+/// Both halves are asserted from one fixture, so the second is not taking the
+/// first on trust: with no recorded boundary the scan still exhausts its budget
+/// and still refuses, and with the boundary this issuance was recorded against
+/// it proves itself from the suffix and acknowledges the delivery that is
+/// already there.
+#[tokio::test]
+async fn a_long_session_acknowledges_from_a_bounded_suffix() {
+    let mut entries: Vec<serde_json::Value> = (1..=2400)
+        .map(|seq| {
+            if seq == 2300 {
+                user_entry(seq, MESSAGE)
+            } else {
+                assistant_entry(seq)
+            }
+        })
+        .collect();
+    entries.push(assistant_entry(2401));
+    let recorded = daemon().journaling(AGENT_ID, EPOCH_RAW, entries);
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let binding = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the seat launches")
+        .snapshot;
+    let request = message(&binding, "reconcile this");
+    let wanted = MessageId::parse(MESSAGE).expect("pinned");
+
+    // Without a boundary: whole history is required, the budget runs out first,
+    // and the honest answer is that nothing is proven either way.
+    plane
+        .adapter
+        .note_unconfirmed_delivery(wanted, &request.body_hash(), None)
+        .expect("recorded as unconfirmed");
+    assert!(
+        matches!(
+            plane.adapter.send(&request).await,
+            Err(RuntimeError::DeliveryConfirmationUnknown { .. })
+        ),
+        "a transcript past the page budget cannot be proven whole, and must not resend"
+    );
+
+    // With the tail this message was issued after, the same scan reaches the
+    // floor inside the budget and acknowledges the delivery already present.
+    let floor = TimelinePosition {
+        epoch: 1,
+        sequence: 2299,
+    };
+    plane
+        .adapter
+        .note_unconfirmed_delivery(wanted, &request.body_hash(), Some(floor))
+        .expect("recorded with its issuance boundary");
+    let acknowledged = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("the suffix proves the delivery landed");
+    assert_eq!(acknowledged.message_id, wanted);
+    assert_eq!(
+        acknowledged.position,
+        TimelinePosition {
+            epoch: 1,
+            sequence: 2300
+        },
+        "it adopts the occurrence that is actually there, not a fresh send"
+    );
+}
+
+async fn suffix_plane(entries: Vec<serde_json::Value>) -> (Plane, RuntimeBindingSnapshot) {
+    let (plane, workspace) =
+        Plane::prepared(daemon().journaling(AGENT_ID, EPOCH_RAW, entries)).await;
+    let binding = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .unwrap()
+        .snapshot;
+    (plane, binding)
+}
+
+fn suffix_floor(sequence: u64) -> TimelinePosition {
+    TimelinePosition { epoch: 1, sequence }
+}
+
+#[tokio::test]
+async fn issuance_suffix_first_send_and_fresh_adapter_replay_keep_one_native_message() {
+    let (plane, binding) = suffix_plane((1..=2400).map(assistant_entry).collect()).await;
+    let boundary = plane.adapter.tail_window(&binding, 1, 1).await.unwrap().end;
+    assert_eq!(boundary.sequence, 2400);
+    let durable_epochs = plane.adapter.pending_timeline_epochs();
+    plane.adapter.ack_timeline_epochs(&durable_epochs);
+    let request = message(&binding, "one long-session instruction");
+    plane
+        .adapter
+        .note_issuance_boundary(request.message_id, boundary)
+        .unwrap();
+    let ack = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("first send acknowledges beyond four historical pages");
+    assert_eq!(ack.position.sequence, 2401);
+    let native = Arc::clone(&plane.daemon);
+    drop(plane);
+    native.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
+    let restarted = PaseoAdapter::new(
+        config(),
+        Box::new(Arc::clone(&native)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .unwrap();
+    restarted.restore_timeline_epochs(&durable_epochs).unwrap();
+    restarted
+        .restore_bindings(std::slice::from_ref(&binding))
+        .await
+        .unwrap();
+    restarted
+        .note_unconfirmed_delivery(request.message_id, &request.body_hash(), Some(boundary))
+        .unwrap();
+    let recovered = restarted
+        .send(&request)
+        .await
+        .expect("fresh adapter proves the original suffix without resending");
+    assert_eq!(recovered.position, ack.position);
+    assert_eq!(
+        native.count("rpc send_agent_message_request"),
+        1,
+        "the runtime's deduplication never gets a second request to hide"
+    );
+    assert_eq!(
+        native
+            .journal_client_message_ids(AGENT_ID)
+            .iter()
+            .filter(|id| id.as_deref() == Some(MESSAGE))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn issuance_suffix_duplicate_is_refused_without_a_send() {
+    let (plane, binding) = suffix_plane(
+        (1..=3000)
+            .map(|seq| {
+                if seq == 2600 || seq == 2999 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert!(matches!(
+        plane.adapter.send(&request).await,
+        Err(RuntimeError::DuplicateMessage { .. })
+    ));
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_excludes_preissuance_occurrences_in_the_boundary_page() {
+    let (plane, binding) = suffix_plane(
+        (1..=2700)
+            .map(|seq| {
+                if seq == 2400 || seq == 2500 || seq == 2600 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    let ack = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("only the occurrence after issuance is this delivery");
+    assert_eq!(ack.position.sequence, 2600);
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_changed_epoch_refuses_even_when_the_message_is_visible() {
+    let (plane, binding) = suffix_plane(
+        (1..=2700)
+            .map(|seq| {
+                if seq == 2600 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    plane
+        .adapter
+        .restore_timeline_epochs(&[(EPOCH_RAW.to_owned(), 2)])
+        .unwrap();
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert_eq!(
+        plane.adapter.send(&request).await.unwrap_err(),
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::EpochChanged
+        }
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_partial_absence_never_authorizes_a_send() {
+    let (plane, binding) = suffix_plane(
+        (1..=5000)
+            .map(|seq| {
+                if seq == 2500 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(1000)),
+        )
+        .unwrap();
+    assert!(matches!(
+        plane.adapter.send(&request).await,
+        Err(RuntimeError::DeliveryConfirmationUnknown { .. })
+    ));
+    assert_eq!(plane.daemon.count("rpc fetch_agent_timeline_request"), 4);
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_an_unrelated_message_is_not_adopted_as_delivery() {
+    let (plane, binding) = suffix_plane(
+        (1..=2400)
+            .map(|seq| {
+                if seq == 2300 {
+                    user_entry(seq, MESSAGE_ALT)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2200)),
+        )
+        .unwrap();
+    let ack = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("complete absence permits exactly one original effect");
+    assert_eq!(
+        ack.position.sequence, 2401,
+        "the unrelated occurrence at 2300 is not a delivery proof"
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 1);
+}
+
+#[tokio::test]
+async fn issuance_suffix_a_hole_inside_the_boundary_page_is_not_a_complete_proof() {
+    let (plane, binding) = suffix_plane(
+        (1..=2700)
+            .filter(|seq| *seq != 2501)
+            .map(|seq| {
+                if seq == 2600 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert_eq!(
+        plane.adapter.send(&request).await.unwrap_err(),
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::SequenceGap
+        }
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_a_hole_between_pages_is_not_a_complete_proof() {
+    let (plane, binding) = suffix_plane(
+        (1..=3500)
+            .filter(|seq| *seq != 3000)
+            .map(|seq| {
+                if seq == 3400 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert_eq!(
+        plane.adapter.send(&request).await.unwrap_err(),
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::SequenceGap
+        }
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_an_early_history_end_does_not_prove_absence() {
+    let (plane, binding) = suffix_plane((2502..=2700).map(assistant_entry).collect()).await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert_eq!(
+        plane.adapter.send(&request).await.unwrap_err(),
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::SequenceGap
+        }
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}

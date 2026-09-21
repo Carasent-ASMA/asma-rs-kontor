@@ -915,6 +915,15 @@ struct PaseoState {
     /// correlation chain nobody recorded.
     placements: BTreeMap<RuntimeBindingId, ExternalId>,
     messages: MessageLedger<PaseoDelivery>,
+    /// The canonical tail each message was issued after, as the control plane
+    /// recorded it.
+    ///
+    /// Adapter-local and deliberately not in the checkpoint: it is not this
+    /// process's knowledge to keep. The durable copy lives with the issuance,
+    /// and a rebuilt adapter is handed the original back — never a tail
+    /// recaptured now, which would be a floor above the delivery it is supposed
+    /// to bound.
+    issuance_floors: BTreeMap<MessageId, TimelinePosition>,
     deliveries: Vec<(MessageId, ContentHash, PaseoDelivery)>,
     permissions: PermissionLedger,
     /// The session that raised each request still awaiting an answer.
@@ -1276,6 +1285,7 @@ impl PaseoAdapter {
             mcp: None,
             state: Mutex::new(PaseoState {
                 generation: checkpoint.generation,
+                issuance_floors: BTreeMap::new(),
                 server: None,
                 projects: checkpoint_projects
                     .into_iter()
@@ -3835,9 +3845,30 @@ impl PaseoAdapter {
     /// "Read even once" includes this scan's own first page: a multi-page scan
     /// is one read, and its later pages have to continue the transcript its
     /// first page came from.
+    /// `floor` is the session's canonical tail at the moment this message was
+    /// issued, when the control plane recorded one. A send cannot have landed
+    /// before it was issued, so everything at or below that position belongs to
+    /// the transcript this delivery was appended *after* and cannot contain it.
+    /// Reaching the floor therefore completes the proof exactly as reaching the
+    /// beginning does, and the cost becomes how much the session grew since the
+    /// send rather than how long it has been alive — which is the difference
+    /// between a bounded read and a ceiling that refuses every large seat.
+    ///
+    /// It narrows the range, never the standard. Occurrences are still counted,
+    /// so a duplicate inside the suffix is still divergence; an occurrence below
+    /// the floor belongs to a different issuance, which the issuance key and its
+    /// recorded delivery position already tell apart. A floor from another
+    /// numbering is an epoch break and refuses. Running out of budget before
+    /// reaching it is still confirmation-unknown: a suffix that was not read to
+    /// its end proves nothing about absence, and absence is what authorizes a
+    /// resend.
+    ///
+    /// `None` keeps the whole-history requirement, which is what rows issued
+    /// before the boundary existed must fall back to.
     async fn scan_canonical<F>(
         &self,
         binding: &RuntimeBindingSnapshot,
+        floor: Option<TimelinePosition>,
         mut matches: F,
     ) -> RuntimeResult<Option<(TimelinePosition, usize)>>
     where
@@ -3878,11 +3909,61 @@ impl PaseoAdapter {
             // transcript is then reconciled as though it continued page one —
             // which is exactly the `no` that authorizes a resend.
             expected = Some(epoch);
-            for event in self.normalize_page(&page, epoch)? {
-                if matches(&event) {
+            // A floor issued under a different numbering cannot bound this
+            // transcript: the position it names is not a position here, and
+            // treating it as one would end the scan somewhere arbitrary.
+            if let Some(floor) = floor
+                && floor.epoch != epoch
+            {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::EpochChanged,
+                });
+            }
+            let items = self.normalize_page(&page, epoch)?;
+            let oldest = items.first().map(|event| event.position.sequence);
+            if let Some(floor) = floor {
+                // A floor limits the proof's range, never its continuity. A
+                // missing entry within that suffix could hide a second copy of
+                // the message; a missing page could hide the only copy.
+                let newest = items.last().map(|event| event.position.sequence);
+                let joins = before.as_ref().is_none_or(|before| {
+                    newest.and_then(|sequence| sequence.checked_add(1)) == Some(before.seq)
+                });
+                let contiguous = items.windows(2).all(|pair| {
+                    pair[1].position.sequence <= floor.sequence
+                        || pair[0].position.sequence.checked_add(1)
+                            == Some(pair[1].position.sequence)
+                });
+                let tail_covers_floor =
+                    before.is_some() || (!page.has_newer && newest.unwrap_or(0) >= floor.sequence);
+                if !joins || !contiguous || !tail_covers_floor {
+                    return Err(RuntimeError::TimelineRefetchRequired {
+                        reason: TimelineBreak::SequenceGap,
+                    });
+                }
+            }
+            for event in &items {
+                // Strictly after the frozen tail. The page that reaches the
+                // floor necessarily overshoots it, and an occurrence at or below
+                // it was there before this message was issued — so it belongs to
+                // some earlier issuance and is not evidence that this send
+                // landed. Counting it would both adopt the wrong position and
+                // invent a duplicate.
+                if floor.is_some_and(|floor| event.position.sequence <= floor.sequence) {
+                    continue;
+                }
+                if matches(event) {
                     hits += 1;
                     found.get_or_insert(event.position);
                 }
+            }
+            // Walked back to or past the issuance tail: the rest of the session
+            // predates this send and is not evidence about it.
+            if let Some(floor) = floor
+                && oldest.is_some_and(|oldest| oldest <= floor.sequence)
+            {
+                complete = true;
+                break;
             }
             // A reconciliation starts at the newest window because that is the
             // only cursor-free read Paseo exposes, then walks *backward*. A busy
@@ -3894,6 +3975,14 @@ impl PaseoAdapter {
             match (page.has_older, page.start_cursor) {
                 (true, Some(start)) => before = Some(start),
                 (false, _) => {
+                    if let Some(floor) = floor
+                        && !oldest.is_some_and(|oldest| oldest <= floor.sequence.saturating_add(1))
+                        && !(items.is_empty() && floor.sequence == 0)
+                    {
+                        return Err(RuntimeError::TimelineRefetchRequired {
+                            reason: TimelineBreak::SequenceGap,
+                        });
+                    }
                     complete = true;
                     break;
                 }
@@ -5958,10 +6047,20 @@ impl RuntimeAdapter for PaseoAdapter {
     /// An entry already here is left alone. An acknowledged delivery must not be
     /// downgraded to unknown, and `admit` still refuses a reused id whose body
     /// changed, so the contradiction check survives the restore.
+    fn note_issuance_boundary(
+        &self,
+        message_id: MessageId,
+        issued_after: TimelinePosition,
+    ) -> RuntimeResult<()> {
+        self.lock().issuance_floors.insert(message_id, issued_after);
+        Ok(())
+    }
+
     fn note_unconfirmed_delivery(
         &self,
         message_id: MessageId,
         body_hash: &ContentHash,
+        issued_after: Option<TimelinePosition>,
     ) -> RuntimeResult<()> {
         let state = &mut *self.lock();
         if matches!(
@@ -5973,6 +6072,14 @@ impl RuntimeAdapter for PaseoAdapter {
                 body_hash.clone(),
                 PaseoDelivery::ConfirmationUnknown,
             );
+        }
+        // The floor is whatever the durable issuance recorded, including
+        // nothing. `insert` rather than a conditional update is deliberate: the
+        // caller reads it from the row every time, so the value handed here is
+        // always the original one, and there is no path that raises a floor
+        // after the fact.
+        if let Some(floor) = issued_after {
+            state.issuance_floors.insert(message_id, floor);
         }
         Ok(())
     }
@@ -9573,8 +9680,13 @@ impl PaseoAdapter {
         request: &SendMessageRequest,
     ) -> RuntimeResult<Option<MessageAck>> {
         let wanted = request.message_id;
+        // The floor this exact issuance was recorded against, or nothing for a
+        // row written before boundaries were kept — which keeps the
+        // whole-history requirement it was created under rather than inventing
+        // a tail it never had.
+        let floor = self.lock().issuance_floors.get(&wanted).copied();
         let found = self
-            .scan_canonical(binding, |event| {
+            .scan_canonical(binding, floor, |event| {
                 event.subject == EventSubject::Message(wanted)
             })
             .await?;
