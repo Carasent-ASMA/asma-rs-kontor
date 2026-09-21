@@ -601,6 +601,17 @@ pub fn router(state: ApiState) -> Router {
                 "/v1/projects/{project_id}/core-team:apply",
                 post(applications::apply_core_team),
             )
+            // Pure reads of one epic's control plane. Until these existed the
+            // only way to observe a seat's native and persona was to call a
+            // route that changed something.
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/core-team",
+                get(applications::epic_core_team),
+            )
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies",
+                get(applications::epic_hosted_seat_occupancies),
+            )
             .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats:materialize",
                 post(applications::materialize_core_team),
