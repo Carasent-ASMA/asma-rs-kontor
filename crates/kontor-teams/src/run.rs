@@ -1318,6 +1318,38 @@ impl TeamRunSlots {
         })
     }
 
+    /// Retry an abandoned, never-bound child of the slot's latest closed holder.
+    /// The native replacement citation and depth fence still come from that
+    /// holder; the new logical parent remains the exact failed child.
+    ///
+    /// # Errors
+    /// Refuses a child outside this slot, an attempt that held a native, or any
+    /// closed-holder conflict rejected by [`Self::reserve_successor`].
+    pub fn reserve_after_unbound_successor(
+        &mut self,
+        closed: ClosedSlot,
+        abandoned: &AgentRun,
+        successor_agent_run_id: AgentRunId,
+    ) -> DomainResult<LaunchPermit> {
+        if !abandoned.is_operator_abandoned_unbound()
+            || abandoned.team_run_id != self.team_run_id()
+            || abandoned.role != *closed.slot.as_role_key()
+            || abandoned.parent_agent_run_id != Some(closed.agent_run_id)
+        {
+            return Err(DomainError::invalid(
+                "TeamRunSlots",
+                "the abandoned attempt is not the closed holder's exact never-bound child",
+            ));
+        }
+        let mut permit = self.reserve_successor(closed, successor_agent_run_id)?;
+        permit.parent = Some(abandoned.id);
+        self.state_mut(&permit.slot)?.head = SlotHead::Reserved {
+            agent_run_id: successor_agent_run_id,
+            parent: permit.parent,
+        };
+        Ok(permit)
+    }
+
     /// Reserve the next attempt at a slot whose previous attempt closed.
     ///
     /// # Errors

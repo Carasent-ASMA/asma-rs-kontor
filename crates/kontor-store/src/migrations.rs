@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 115;
+pub const SCHEMA_VERSION: i64 = 117;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -404,6 +404,12 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0113_artifact_unknown_producer_account.sql"),
     include_str!("../migrations/0114_container_recovery_disposition.sql"),
     include_str!("../migrations/0115_atomic_local_command_results.sql"),
+    include_str!("../migrations/0116_hosted_seat_role_personas.sql"),
+    // Schema v117. The canonical tail each message was issued after, so a
+    // delivery reconciliation proves itself from a bounded suffix instead of
+    // requiring the whole transcript — which is what put a ceiling on every
+    // session past two thousand entries.
+    include_str!("../migrations/0117_runtime_message_issuance_boundaries.sql"),
 ];
 
 const _: () = assert!(

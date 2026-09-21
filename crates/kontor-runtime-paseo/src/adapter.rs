@@ -915,6 +915,15 @@ struct PaseoState {
     /// correlation chain nobody recorded.
     placements: BTreeMap<RuntimeBindingId, ExternalId>,
     messages: MessageLedger<PaseoDelivery>,
+    /// The canonical tail each message was issued after, as the control plane
+    /// recorded it.
+    ///
+    /// Adapter-local and deliberately not in the checkpoint: it is not this
+    /// process's knowledge to keep. The durable copy lives with the issuance,
+    /// and a rebuilt adapter is handed the original back — never a tail
+    /// recaptured now, which would be a floor above the delivery it is supposed
+    /// to bound.
+    issuance_floors: BTreeMap<MessageId, TimelinePosition>,
     deliveries: Vec<(MessageId, ContentHash, PaseoDelivery)>,
     permissions: PermissionLedger,
     /// The session that raised each request still awaiting an answer.
@@ -1276,6 +1285,7 @@ impl PaseoAdapter {
             mcp: None,
             state: Mutex::new(PaseoState {
                 generation: checkpoint.generation,
+                issuance_floors: BTreeMap::new(),
                 server: None,
                 projects: checkpoint_projects
                     .into_iter()
@@ -1949,6 +1959,13 @@ impl PaseoAdapter {
         if workspace.visible_title() != request.expected_title.as_str() {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the recreated container does not carry the exact rendered title",
+            });
+        }
+        if !container_workspace_kind(workspace.workspace_kind)
+            .is_applicable_to(request.task_container)
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: ContainerWorkspaceKind::refusal(request.task_container),
             });
         }
         if workspace.id == request.absent_identity.native_id.as_str() {
@@ -3673,16 +3690,31 @@ impl PaseoAdapter {
         limit: u32,
         projection: PaseoProjection,
     ) -> RuntimeResult<PaseoTimelinePage> {
-        let request = PaseoRpc::timeline_fetch(
-            self.next_request_id(),
-            agent_id,
-            projection,
-            direction,
-            cursor,
-            limit,
-        );
-        let frame = self.transport.request(&request).await?;
-        let page: PaseoTimelinePage = frame.resolve(&request, "PaseoTimelinePage")?;
+        let mut page_limit = limit;
+        let page: PaseoTimelinePage = loop {
+            let request = PaseoRpc::timeline_fetch(
+                self.next_request_id(),
+                agent_id,
+                projection,
+                direction,
+                cursor,
+                page_limit,
+            );
+            let result = self
+                .transport
+                .request(&request)
+                .await
+                .and_then(|frame| frame.resolve(&request, "PaseoTimelinePage"));
+            match result {
+                // Entry count is not a byte bound: a few large tool outputs can
+                // exceed the wire limit. Retry the same read from the same
+                // cursor with fewer entries; never truncate or accept the frame.
+                Err(RuntimeError::Transport {
+                    rule: "frame exceeded the bounded frame size",
+                }) if page_limit > 1 => page_limit = (page_limit / 2).max(1),
+                other => break other?,
+            }
+        };
         if page.agent_id != agent_id {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -3828,9 +3860,30 @@ impl PaseoAdapter {
     /// "Read even once" includes this scan's own first page: a multi-page scan
     /// is one read, and its later pages have to continue the transcript its
     /// first page came from.
+    /// `floor` is the session's canonical tail at the moment this message was
+    /// issued, when the control plane recorded one. A send cannot have landed
+    /// before it was issued, so everything at or below that position belongs to
+    /// the transcript this delivery was appended *after* and cannot contain it.
+    /// Reaching the floor therefore completes the proof exactly as reaching the
+    /// beginning does, and the cost becomes how much the session grew since the
+    /// send rather than how long it has been alive — which is the difference
+    /// between a bounded read and a ceiling that refuses every large seat.
+    ///
+    /// It narrows the range, never the standard. Occurrences are still counted,
+    /// so a duplicate inside the suffix is still divergence; an occurrence below
+    /// the floor belongs to a different issuance, which the issuance key and its
+    /// recorded delivery position already tell apart. A floor from another
+    /// numbering is an epoch break and refuses. Running out of budget before
+    /// reaching it is still confirmation-unknown: a suffix that was not read to
+    /// its end proves nothing about absence, and absence is what authorizes a
+    /// resend.
+    ///
+    /// `None` keeps the whole-history requirement, which is what rows issued
+    /// before the boundary existed must fall back to.
     async fn scan_canonical<F>(
         &self,
         binding: &RuntimeBindingSnapshot,
+        floor: Option<TimelinePosition>,
         mut matches: F,
     ) -> RuntimeResult<Option<(TimelinePosition, usize)>>
     where
@@ -3871,11 +3924,61 @@ impl PaseoAdapter {
             // transcript is then reconciled as though it continued page one —
             // which is exactly the `no` that authorizes a resend.
             expected = Some(epoch);
-            for event in self.normalize_page(&page, epoch)? {
-                if matches(&event) {
+            // A floor issued under a different numbering cannot bound this
+            // transcript: the position it names is not a position here, and
+            // treating it as one would end the scan somewhere arbitrary.
+            if let Some(floor) = floor
+                && floor.epoch != epoch
+            {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::EpochChanged,
+                });
+            }
+            let items = self.normalize_page(&page, epoch)?;
+            let oldest = items.first().map(|event| event.position.sequence);
+            if let Some(floor) = floor {
+                // A floor limits the proof's range, never its continuity. A
+                // missing entry within that suffix could hide a second copy of
+                // the message; a missing page could hide the only copy.
+                let newest = items.last().map(|event| event.position.sequence);
+                let joins = before.as_ref().is_none_or(|before| {
+                    newest.and_then(|sequence| sequence.checked_add(1)) == Some(before.seq)
+                });
+                let contiguous = items.windows(2).all(|pair| {
+                    pair[1].position.sequence <= floor.sequence
+                        || pair[0].position.sequence.checked_add(1)
+                            == Some(pair[1].position.sequence)
+                });
+                let tail_covers_floor =
+                    before.is_some() || (!page.has_newer && newest.unwrap_or(0) >= floor.sequence);
+                if !joins || !contiguous || !tail_covers_floor {
+                    return Err(RuntimeError::TimelineRefetchRequired {
+                        reason: TimelineBreak::SequenceGap,
+                    });
+                }
+            }
+            for event in &items {
+                // Strictly after the frozen tail. The page that reaches the
+                // floor necessarily overshoots it, and an occurrence at or below
+                // it was there before this message was issued — so it belongs to
+                // some earlier issuance and is not evidence that this send
+                // landed. Counting it would both adopt the wrong position and
+                // invent a duplicate.
+                if floor.is_some_and(|floor| event.position.sequence <= floor.sequence) {
+                    continue;
+                }
+                if matches(event) {
                     hits += 1;
                     found.get_or_insert(event.position);
                 }
+            }
+            // Walked back to or past the issuance tail: the rest of the session
+            // predates this send and is not evidence about it.
+            if let Some(floor) = floor
+                && oldest.is_some_and(|oldest| oldest <= floor.sequence)
+            {
+                complete = true;
+                break;
             }
             // A reconciliation starts at the newest window because that is the
             // only cursor-free read Paseo exposes, then walks *backward*. A busy
@@ -3887,6 +3990,14 @@ impl PaseoAdapter {
             match (page.has_older, page.start_cursor) {
                 (true, Some(start)) => before = Some(start),
                 (false, _) => {
+                    if let Some(floor) = floor
+                        && !oldest.is_some_and(|oldest| oldest <= floor.sequence.saturating_add(1))
+                        && !(items.is_empty() && floor.sequence == 0)
+                    {
+                        return Err(RuntimeError::TimelineRefetchRequired {
+                            reason: TimelineBreak::SequenceGap,
+                        });
+                    }
                     complete = true;
                     break;
                 }
@@ -5951,10 +6062,20 @@ impl RuntimeAdapter for PaseoAdapter {
     /// An entry already here is left alone. An acknowledged delivery must not be
     /// downgraded to unknown, and `admit` still refuses a reused id whose body
     /// changed, so the contradiction check survives the restore.
+    fn note_issuance_boundary(
+        &self,
+        message_id: MessageId,
+        issued_after: TimelinePosition,
+    ) -> RuntimeResult<()> {
+        self.lock().issuance_floors.insert(message_id, issued_after);
+        Ok(())
+    }
+
     fn note_unconfirmed_delivery(
         &self,
         message_id: MessageId,
         body_hash: &ContentHash,
+        issued_after: Option<TimelinePosition>,
     ) -> RuntimeResult<()> {
         let state = &mut *self.lock();
         if matches!(
@@ -5966,6 +6087,14 @@ impl RuntimeAdapter for PaseoAdapter {
                 body_hash.clone(),
                 PaseoDelivery::ConfirmationUnknown,
             );
+        }
+        // The floor is whatever the durable issuance recorded, including
+        // nothing. `insert` rather than a conditional update is deliberate: the
+        // caller reads it from the row every time, so the value handed here is
+        // always the original one, and there is no path that raises a floor
+        // after the fact.
+        if let Some(floor) = issued_after {
+            state.issuance_floors.insert(message_id, floor);
         }
         Ok(())
     }
@@ -6612,6 +6741,88 @@ impl RuntimeAdapter for PaseoAdapter {
         })
     }
 
+    async fn prove_archived_hosted_seat(
+        &self,
+        request: &HostedSeatRetireRequest,
+        known_retired_native_ids: &[ExternalId],
+    ) -> RuntimeResult<HostedSeatRetireOutcome> {
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext::new(RuntimeCapability::Inspect),
+        )?;
+        let placement = request
+            .placement
+            .as_ref()
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let agent = self
+            .hosted_seat_agent(&HostedSeatInspectRequest {
+                seat_binding_id: request.seat_binding_id,
+                identity: request.identity.clone(),
+                model_rung: request.model_rung.clone(),
+                autonomy: request.autonomy,
+                requested_at: request.requested_at,
+            })
+            .await?
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        if !agent.is_archived() || !agent.pending_permissions.is_empty() {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "launch-intent supersession requires an archived predecessor without pending permissions",
+            });
+        }
+        if agent.workspace_id.as_deref() != Some(placement.workspace_native_id.as_str())
+            || WorkspaceRoot::parse(&agent.cwd)? != placement.canonical_cwd
+            || placement
+                .provider_session_id
+                .as_ref()
+                .is_some_and(|expected| agent.provider_session_id() != Some(expected.as_str()))
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the archived predecessor changed workspace, directory or provider conversation",
+            });
+        }
+        // A lost successor acknowledgement must not be mistaken for an inert
+        // intent. The global exact-label census also catches a moved successor.
+        let label_value = request.seat_binding_id.to_string();
+        let labels = BTreeMap::from([(label::SEAT_BINDING.to_owned(), label_value.clone())]);
+        let census = self.fetch_agents(&labels, true).await?;
+        let mut matching = census.iter().filter(|candidate| candidate.id == agent.id);
+        let confirmed = matching.next().ok_or(RuntimeError::CorrelationFailed)?;
+        if matching.next().is_some()
+            || confirmed.archived_at != agent.archived_at
+            || !confirmed.pending_permissions.is_empty()
+            || confirmed.workspace_id != agent.workspace_id
+            || WorkspaceRoot::parse(&confirmed.cwd)? != placement.canonical_cwd
+            || confirmed.provider_session_id() != agent.provider_session_id()
+            || confirmed.label(label::SEAT_BINDING) != Some(label_value.as_str())
+            || confirmed.label(label::HOSTED_SEAT) != Some("true")
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        if census.iter().any(|candidate| {
+            candidate.label(label::SEAT_BINDING) == Some(label_value.as_str())
+                && candidate.id != agent.id
+                && (!candidate.is_archived()
+                    || !known_retired_native_ids
+                        .iter()
+                        .any(|known| known.as_str() == candidate.id))
+        }) {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the logical seat has a live or unaccounted native successor",
+            });
+        }
+        Ok(HostedSeatRetireOutcome {
+            identity: request.identity.clone(),
+            archived_at: parse_wire_timestamp(
+                "hosted predecessor archive",
+                agent
+                    .archived_at
+                    .as_deref()
+                    .ok_or(RuntimeError::CorrelationFailed)?,
+            )?,
+        })
+    }
+
     async fn retire_hosted_seat(
         &self,
         request: &HostedSeatRetireRequest,
@@ -6950,6 +7161,14 @@ impl RuntimeAdapter for PaseoAdapter {
             generation: state.generation,
         };
         state.admissions.admit(request, &facts)
+    }
+
+    async fn release_unclaimed_admission(
+        &self,
+        slot: &RoleSlotKey,
+        agent_run_id: AgentRunId,
+    ) -> RuntimeResult<bool> {
+        Ok(self.lock().admissions.release_unclaimed(slot, agent_run_id))
     }
 
     /// Rename the bound workspace through the daemon's MCP facade, then read the
@@ -7527,6 +7746,13 @@ impl RuntimeAdapter for PaseoAdapter {
         if candidate.visible_title() != request.expected_title.as_str() {
             return Err(RuntimeError::WorkspaceMismatch {
                 rule: "the sole parent/path candidate does not carry the current configuration-rendered title",
+            });
+        }
+        if !container_workspace_kind(candidate.workspace_kind)
+            .is_applicable_to(request.task_container)
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: ContainerWorkspaceKind::refusal(request.task_container),
             });
         }
 
@@ -9477,64 +9703,32 @@ impl PaseoAdapter {
         state.deliveries.push((message_id, body_hash, delivery));
     }
 
-    /// Promote confirmation-unknown deliveries when an ordinary history read
-    /// encounters their exact native message id.
-    ///
-    /// A history page is canonical runtime evidence. Keeping an already-seen
-    /// message unknown would force a later retry to search backwards from a
-    /// moving tail and could turn an incomplete read into a second send. The
-    /// page therefore repairs the adapter ledger at the exact epoch/sequence it
-    /// returns to the caller.
+    /// An ordinary page can disprove a known acknowledgement, but cannot prove
+    /// uniqueness for an unknown delivery. Only the complete issuance suffix
+    /// (or complete legacy transcript) may promote an unknown acknowledgement.
     fn reconcile_deliveries_from_history(
         &self,
         binding_id: RuntimeBindingId,
         events: &[SessionEvent],
     ) -> RuntimeResult<()> {
-        let state = &mut *self.lock();
+        let state = self.lock();
         for event in events {
             let EventSubject::Message(message_id) = &event.subject else {
                 continue;
             };
-            let message_id = *message_id;
-            let mut acknowledged = false;
             for (_, _, delivery) in state
                 .deliveries
                 .iter()
-                .filter(|(id, _, _)| *id == message_id)
+                .filter(|(id, _, _)| id == message_id)
             {
-                if let PaseoDelivery::Acknowledged(receipt) = delivery {
-                    if receipt.position != event.position {
-                        return Err(RuntimeError::DuplicateMessage {
-                            rule: "appears more than once in this session's canonical content",
-                        });
-                    }
-                    acknowledged = true;
+                if let PaseoDelivery::Acknowledged(receipt) = delivery
+                    && (receipt.binding_id != binding_id || receipt.position != event.position)
+                {
+                    return Err(RuntimeError::DuplicateMessage {
+                        rule: "appears more than once in this session's canonical content",
+                    });
                 }
             }
-            if acknowledged {
-                continue;
-            }
-            let Some(body_hash) = state.deliveries.iter().find_map(|(id, hash, delivery)| {
-                (*id == message_id && matches!(delivery, PaseoDelivery::ConfirmationUnknown))
-                    .then(|| hash.clone())
-            }) else {
-                continue;
-            };
-            let receipt = MessageAck {
-                message_id,
-                binding_id,
-                position: event.position,
-                accepted_at: event.emitted_at,
-            };
-            state.deliveries.retain(|(id, _, _)| *id != message_id);
-            state.deliveries.push((
-                message_id,
-                body_hash.clone(),
-                PaseoDelivery::Acknowledged(receipt.clone()),
-            ));
-            state
-                .messages
-                .record(message_id, body_hash, PaseoDelivery::Acknowledged(receipt));
         }
         Ok(())
     }
@@ -9551,8 +9745,13 @@ impl PaseoAdapter {
         request: &SendMessageRequest,
     ) -> RuntimeResult<Option<MessageAck>> {
         let wanted = request.message_id;
+        // The floor this exact issuance was recorded against, or nothing for a
+        // row written before boundaries were kept — which keeps the
+        // whole-history requirement it was created under rather than inventing
+        // a tail it never had.
+        let floor = self.lock().issuance_floors.get(&wanted).copied();
         let found = self
-            .scan_canonical(binding, |event| {
+            .scan_canonical(binding, floor, |event| {
                 event.subject == EventSubject::Message(wanted)
             })
             .await?;

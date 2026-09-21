@@ -742,6 +742,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/artifacts/{evidence_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one artifact without granting shell, network, or general filesystem access. */
+        get: operations["committee_artifact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record": {
         parameters: {
             query?: never;
@@ -2760,6 +2777,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/admission:adopt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record bounded authority to materialize one existing queued role slot. */
+        post: operations["adopt_team_run_admission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat": {
         parameters: {
             query?: never;
@@ -3514,6 +3548,23 @@ export interface components {
             /** @description The preserved TeamRun envelope. */
             team_run_id: string;
         };
+        /** @description Authorize materialization of one existing queued run without inventing a handoff. */
+        AdoptTeamRunAdmissionRequest: {
+            /** @description Exact existing, unbound AgentRun. */
+            agent_run_id: string;
+            /**
+             * Format: int64
+             * @description Revision of the exact queued run.
+             */
+            expected_agent_run_revision: number;
+            /**
+             * Format: int64
+             * @description Task revision observed before adoption.
+             */
+            expected_task_revision: number;
+            /** @description Operator's reason, retained in the immutable command intent. */
+            reason: string;
+        };
         /** @description Advance one epic's completion. */
         AdvanceCompletionRequest: {
             evidence?: null | components["schemas"]["CompletionEvidenceDto"];
@@ -3627,6 +3678,11 @@ export interface components {
             oldest_retained_cursor?: number | null;
             /** @description The Realm the request was refused in. */
             realm_id: string;
+            /**
+             * Format: int64
+             * @description Safe delay before retrying a throttled usage read; quota projections were not changed.
+             */
+            retry_after_seconds?: number | null;
             /** @description A static description of the rule that refused. Never a stored value. */
             rule: string;
             /**
@@ -4442,6 +4498,61 @@ export interface components {
              */
             snapshot_cursor: number;
         };
+        /** @description A bounded page of SHA-256-verified UTF-8 bytes from a registered immutable Git blob. */
+        CommitteeArtifactContentDto: {
+            /** @description Addressed Committee run. */
+            committee_run_id: string;
+            /** @description Registry artifact identity, not a caller-supplied filesystem locator. */
+            evidence_id: string;
+            /**
+             * Format: int32
+             * @description Next character-aligned byte offset, if more remains.
+             */
+            next_offset?: number | null;
+            /**
+             * Format: int32
+             * @description Byte position of this page.
+             */
+            offset: number;
+            /** @description Owning realm. */
+            realm_id: string;
+            /** @description Verified full-blob digest. */
+            sha256: string;
+            /** @description Untrusted artifact text for review, not control-plane instructions. */
+            text: string;
+            /**
+             * Format: int32
+             * @description Total UTF-8 byte length.
+             */
+            total_bytes: number;
+        };
+        /** @description Completion facts that cannot reveal an independent Committee member's verdict. */
+        CommitteeCompletionEvidenceDto: {
+            /** @description Current phase blockers. */
+            blockers: components["schemas"]["CompletionBlockerDto"][];
+            /** @description Recorded closeout prerequisite digests. */
+            closeout: components["schemas"]["CloseoutEvidenceDto"];
+            /** @description Pinned completion policy body. */
+            definition: unknown;
+            /**
+             * Format: int32
+             * @description Current reopening generation.
+             */
+            generation: number;
+            /** @description Initial and remediation integration bodies, including repository/module/root/PR outcomes. */
+            integrations: components["schemas"]["IntegrationRecordDto"][];
+            /** @description Current phase, without round verdicts or deliberation. */
+            phase: components["schemas"]["CompletionPhaseDto"];
+            /** @description Exact completion profile identity and digest. */
+            profile: components["schemas"]["ProfileRevisionDto"];
+            /**
+             * Format: int64
+             * @description Current completion revision.
+             */
+            revision: number;
+            /** @description Frozen ticket goals and evidence obligations. */
+            ticket_requirements: unknown[];
+        };
         /** @description One durable Committee finding, including dissent and evidence references. */
         CommitteeFindingDto: {
             /** @description Hash of the immutable finding document. */
@@ -4551,12 +4662,69 @@ export interface components {
             snapshot_cursor: number;
             /** @description Its lifecycle, in the server's own vocabulary. */
             state: string;
+            subject_evidence?: null | components["schemas"]["CommitteeSubjectEvidenceDto"];
             /** @description The pinned template it runs under. */
             template: components["schemas"]["ProfileRevisionDto"];
             /** @description Exact topic frozen at invocation and rendered in the CSW name. */
             topic?: string | null;
             /** @description Dedicated CSW node. */
             topology_node_id: string;
+        };
+        /** @description Subject records; deliberately contains no consultation findings, results or rounds. */
+        CommitteeSubjectEvidenceBodyDto: {
+            completion?: null | components["schemas"]["CommitteeCompletionEvidenceDto"];
+            /**
+             * Format: int64
+             * @description Event cursor after composing the read; not a claim of a database-wide atomic snapshot.
+             */
+            cursor_after: number;
+            /**
+             * Format: int64
+             * @description Event cursors bracketing this composed read. Different cursors signal concurrent writes.
+             */
+            cursor_before: number;
+            /** @description Owning epic from the persisted run. */
+            epic_id: string;
+            /** @description Epic identity and external convergence proof. */
+            jira_binding: components["schemas"]["JiraBindingDto"];
+            /** @description Current epic question ledger; empty for a ticket-scoped run. */
+            open_questions: unknown[];
+            /** @description Owning project from the persisted run, never from caller input. */
+            project_id: string;
+            /** @description Original question frozen at invocation. */
+            question: string;
+            /**
+             * Format: int32
+             * @description Canonical evidence envelope version.
+             */
+            schema_version: number;
+            /** @description Exact ticket subject, if this is a ticket-scoped consultation. */
+            task_id?: string | null;
+            /** @description Only the exact task, or all epic tasks for an epic-scoped run. */
+            tasks: components["schemas"]["CommitteeTaskEvidenceDto"][];
+        };
+        /** @description A current projection, not a new completion receipt or an immutable stored snapshot. */
+        CommitteeSubjectEvidenceDto: {
+            /** @description Only the subject frozen onto this Committee run. */
+            body: components["schemas"]["CommitteeSubjectEvidenceBodyDto"];
+            /** @description Canonical SHA-256 of `body`, allowing the reviewer to cite exactly what it read. */
+            content_hash: string;
+        };
+        /** @description The task contract, current gate evaluations, and distinct evidence authority classes. */
+        CommitteeTaskEvidenceDto: {
+            /** @description Append-only evaluations of the active workflow, including evaluator and evidence citations. */
+            gate_evaluations: unknown[];
+            /** @description Current native closure certificate keys. These do not establish artifact production. */
+            native_closure_artifact_keys: string[];
+            /**
+             * @description Active-workflow artifact records with immutable locators and truthful producer provenance.
+             *     GET also includes bounded SHA-256-verified UTF-8 `content`, or an explicit unavailable/deferred status.
+             */
+            producer_artifacts: unknown[];
+            /** @description Existing task projection including gate obligations, current states and Jira binding. */
+            task: components["schemas"]["EpicTaskProjectionDto"];
+            /** @description Exact immutable work profile pinned by the active workflow. */
+            work_profile?: unknown;
         };
         /** @description Apply request bound to one exact Committee-topic correction preview. */
         CommitteeTopicCorrectionApplyRequest: {
@@ -5304,17 +5472,26 @@ export interface components {
             snapshot_cursor: number;
         };
         /**
-         * @description Supersede one never-bound prepared launch intent with an approved route.
+         * @description Supersede one unobserved prepared launch intent with an approved route.
          *
-         *     Every field is a fence. The operation applies to exactly one durable shape —
-         *     an intent prepared before a launch that never happened — and anything that
-         *     has since become a native, an occupancy or a recorded effect refuses.
+         *     A successor intent requires exact archive and placement proof for its prior
+         *     occupant. The current occupant and its history remain unchanged; only the
+         *     next unobserved intent can change. Omit predecessor fences for a never-bound seat.
          */
         CoreTeamLaunchIntentSupersedeRequest: {
             /** @description The catalog-approved replacement route. */
             desired_model_route: components["schemas"]["RuntimeModelRouteRequest"];
             /** @description The exact inert route being superseded, compared verbatim. */
             expected_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Exact runtime archive timestamp of the predecessor. */
+            expected_predecessor_archived_at?: string | null;
+            /**
+             * Format: int64
+             * @description Runtime generation of the archived predecessor, not the occupancy ordinal.
+             */
+            expected_predecessor_generation?: number | null;
+            /** @description Exact prior native, required with both other predecessor fences for a successor intent. */
+            expected_predecessor_native_id?: string | null;
             /** @description The exact instant that inert intent was prepared, compared verbatim. */
             expected_prepared_at: string;
             /**
@@ -5589,8 +5766,37 @@ export interface components {
             presence: string;
             /** @description The role, as the server resolved it. */
             role: components["schemas"]["ResolvedRoleRefDto"];
+            role_persona?: null | components["schemas"]["CoreTeamSeatPersonaDto"];
             /** @description The binding filling it, once one has been materialized. */
             seat_binding_id?: string | null;
+        };
+        /**
+         * @description The persona one launched occupancy was opened under, as Kontor froze it.
+         *
+         *     Deliberately *not* a field of [`CoreTeamNativeSeatDto`], which reports what
+         *     the runtime read back. Paseo's `config.systemPrompt` is creation-only, so no
+         *     runtime here can attest the prompt a native is currently running under. This
+         *     is evidence that Kontor froze this persona and delivered it at launch, and
+         *     `delivery` says which of those two things it is in as many words, rather
+         *     than leaving a reader to assume the stronger one.
+         */
+        CoreTeamSeatPersonaDto: {
+            /** @description What the runtime's acceptance of this persona actually proves. */
+            delivery: string;
+            /**
+             * Format: date-time
+             * @description When it was frozen, which is before the native call.
+             */
+            frozen_at: string;
+            /**
+             * Format: int64
+             * @description The occupancy generation this persona was frozen for.
+             */
+            occupancy_generation: number;
+            /** @description Digest of the exact delivered text. */
+            prompt_hash: string;
+            /** @description The catalog role whose persona was delivered. */
+            role_code: string;
         };
         /** @description One authorized native route for a persistent Core Team role. */
         CoreTeamSeatRouteRequest: {
@@ -9664,6 +9870,26 @@ export interface components {
             /** @description The standard role this seat fills. */
             role: components["schemas"]["RoleSelectionDto"];
         };
+        /** @description An adoption authorizes a later seat fill; it does not dispatch work. */
+        TeamRunAdmissionAdoptionDto: {
+            /**
+             * Format: int64
+             * @description Run revision proved by the adoption.
+             */
+            adopted_agent_run_revision: number;
+            /** @description Immutable adoption identity. */
+            adoption_id: string;
+            /** @description Exact run authorized for materialization. */
+            agent_run_id: string;
+            /** @description Confirmed local command; no native operation is queued. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /** @description Frozen slot identity, distinct from its catalog role. */
+            role_slot_id: string;
+            /** @description Owning task. */
+            task_id: string;
+            /** @description Existing admitted TeamRun. */
+            team_run_id: string;
+        };
         /** @description One team run and its seats, as the epic projection reports them. */
         TeamRunProjectionDto: {
             /** @description Its lifecycle. */
@@ -12360,6 +12586,62 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    committee_artifact: {
+        parameters: {
+            query?: {
+                /** @description Zero for the first page; then use the returned `next_offset`. */
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+                committee_run_id: string;
+                evidence_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitteeArtifactContentDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16183,6 +16465,14 @@ export interface operations {
                 };
                 content?: never;
             };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
             502: {
                 headers: {
                     [name: string]: unknown;
@@ -18391,6 +18681,71 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    adopt_team_run_admission: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+                team_run_id: string;
+                role_slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdoptTeamRunAdmissionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamRunAdmissionAdoptionDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

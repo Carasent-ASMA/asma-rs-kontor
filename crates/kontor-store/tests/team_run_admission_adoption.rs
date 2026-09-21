@@ -137,7 +137,7 @@ fn seed(harness: &Harness, label: &str) -> Fixture {
             "INSERT INTO agent_runs (id, project_id, team_run_id, role_key, lifecycle,
                                      desired_state, observed_state, derived_state, revision,
                                      created_at)
-             VALUES (?1, ?2, ?3, 'verifier', 'queued', 'run_requested', 'unknown',
+             VALUES (?1, ?2, ?3, 'verify', 'queued', 'run_requested', 'unknown',
                      'pending_confirmation', 3, ?4)",
             rusqlite::params![
                 agent_run.to_string(),
@@ -273,7 +273,7 @@ fn the_same_receipt_carrying_a_different_claim_is_refused() {
             "INSERT INTO agent_runs (id, project_id, team_run_id, role_key, lifecycle,
                                      desired_state, observed_state, derived_state, revision,
                                      created_at)
-             VALUES (?1, ?2, ?3, 'verifier', 'queued', 'run_requested', 'unknown',
+             VALUES (?1, ?2, ?3, 'verify', 'queued', 'run_requested', 'unknown',
                      'pending_confirmation', 3, ?4)",
             rusqlite::params![
                 other_run.to_string(),
@@ -378,7 +378,7 @@ fn a_run_from_another_team_or_holding_another_role_is_refused() {
         .expect_err("a wrong role is refused");
     assert_eq!(
         rule_of(&error),
-        "the run does not hold the role this slot declares"
+        "the run does not hold the role slot this snapshot declares"
     );
     assert_eq!(adoption_count(&harness), 0);
 }
@@ -608,7 +608,7 @@ fn one_slot_and_one_run_are_adopted_exactly_once() {
             "INSERT INTO agent_runs (id, project_id, team_run_id, role_key, lifecycle,
                                      desired_state, observed_state, derived_state, revision,
                                      created_at)
-             VALUES (?1, ?2, ?3, 'verifier', 'queued', 'run_requested', 'unknown',
+             VALUES (?1, ?2, ?3, 'verify', 'queued', 'run_requested', 'unknown',
                      'pending_confirmation', 3, ?4)",
             rusqlite::params![
                 other_run.to_string(),
@@ -647,4 +647,148 @@ fn an_adoption_can_be_neither_edited_nor_removed() {
     let deleted = connection.execute("DELETE FROM team_run_admission_adoptions", []);
     assert!(deleted.is_err(), "an adoption is not deletable");
     assert_eq!(adoption_count(&harness), 1);
+}
+
+fn local_adoption_command(
+    harness: &Harness,
+    adoption: &StoredTeamRunAdmissionAdoption,
+    key: &str,
+) -> kontor_core::realm::ReceiptEnvelope<kontor_core::repository::NewLocalCommand> {
+    use kontor_core::id::{CanonicalDocument, IdempotencyKey};
+    use kontor_core::receipt::{AggregateRef, CommandKind};
+    let db = harness.raw();
+    let existing: Option<String> = db
+        .query_row(
+            "SELECT mini_project_id FROM tasks WHERE id = ?1",
+            [adoption.task_id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let epic = if let Some(existing) = existing {
+        kontor_core::id::MiniProjectId::parse(&existing).unwrap()
+    } else {
+        let epic = kontor_core::id::MiniProjectId::generate();
+        db.execute("INSERT INTO mini_projects (id, project_id, name, revision, created_at) VALUES (?1, ?2, 'Adoption epic', 1, ?3)", rusqlite::params![epic.to_string(), adoption.project_id.to_string(), NOW]).unwrap();
+        db.execute(
+            "UPDATE tasks SET mini_project_id = ?1 WHERE id = ?2",
+            rusqlite::params![epic.to_string(), adoption.task_id.to_string()],
+        )
+        .unwrap();
+        epic
+    };
+    kontor_core::realm::ReceiptEnvelope::new(harness.store.realm_id(), kontor_core::repository::NewLocalCommand {
+        project_id: adoption.project_id, receipt_id: adoption.receipt_id,
+        idempotency_key: IdempotencyKey::parse(key).unwrap(), kind: CommandKind::StartScheduledWork,
+        target: AggregateRef::MiniProject { mini_project_id: epic }, target_revision: AggregateRevision::INITIAL,
+        intent: CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version":1, "operation":"team_run_admission_adopt", "run":adoption.agent_run_id,
+            "role_slot":adoption.role_slot_id, "revision":adoption.adopted_agent_run_revision,
+        })).unwrap(), created_at: adoption.adopted_at,
+    })
+}
+
+#[test]
+fn local_adoption_refusal_rolls_back_receipt_result_and_confirmation_then_same_key_succeeds() {
+    let harness = Harness::new();
+    let fixture = seed(&harness, "atomic-refusal");
+    let mut adoption = claim(&fixture);
+    adoption.receipt_id = CommandReceiptId::generate();
+    let command = local_adoption_command(&harness, &adoption, "atomic-adoption");
+    let db = harness.raw();
+    db.execute_batch("CREATE TRIGGER refuse_test_adoption BEFORE INSERT ON team_run_admission_adoptions BEGIN SELECT RAISE(ABORT, 'test storage refusal'); END;").unwrap();
+    harness
+        .store
+        .adopt_team_run_admission_with_intent(&adoption, AggregateRevision::INITIAL, &command)
+        .expect_err("storage refusal must roll the whole transaction back");
+    for table in [
+        "command_receipts",
+        "local_command_results",
+        "command_receipt_transitions",
+    ] {
+        let id = if table == "command_receipts" {
+            "id"
+        } else {
+            "receipt_id"
+        };
+        let count: i64 = db
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE {id} = ?1"),
+                [adoption.receipt_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "{table} must roll back");
+    }
+    assert_eq!(adoption_count(&harness), 0);
+    db.execute_batch("DROP TRIGGER refuse_test_adoption;")
+        .unwrap();
+    let (saved, receipt, applied) = harness
+        .store
+        .adopt_team_run_admission_with_intent(&adoption, AggregateRevision::INITIAL, &command)
+        .unwrap();
+    assert_eq!(saved, adoption);
+    assert_eq!(applied, kontor_store::Applied::Created);
+    assert_eq!(
+        receipt.state,
+        kontor_core::receipt::CommandReceiptState::Confirmed
+    );
+    let outbox: i64 = db
+        .query_row(
+            "SELECT count(*) FROM command_outbox WHERE receipt_id = ?1",
+            [receipt.id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(outbox, 0);
+    let replay = harness
+        .store
+        .adopt_team_run_admission_with_intent(&adoption, AggregateRevision::INITIAL, &command)
+        .unwrap();
+    assert_eq!(replay.0, saved);
+    assert_eq!(replay.1, receipt);
+    assert_eq!(replay.2, kontor_store::Applied::Unchanged);
+}
+
+#[test]
+fn local_adoption_replay_after_reopen_preserves_original_evidence_and_refuses_changed_intent() {
+    let harness = Harness::new();
+    let fixture = seed(&harness, "atomic-replay");
+    let mut adoption = claim(&fixture);
+    adoption.receipt_id = CommandReceiptId::generate();
+    let command = local_adoption_command(&harness, &adoption, "atomic-replay");
+    let original = harness
+        .store
+        .adopt_team_run_admission_with_intent(&adoption, AggregateRevision::INITIAL, &command)
+        .unwrap();
+    harness
+        .raw()
+        .execute(
+            "UPDATE agent_runs SET revision = 4 WHERE id = ?1",
+            [adoption.agent_run_id.to_string()],
+        )
+        .unwrap();
+    let Harness { directory, store } = harness;
+    drop(store);
+    let reopened = Harness {
+        store: SqliteStore::open(&directory.path().join("kontor.db")).unwrap(),
+        directory,
+    };
+    let replay = reopened
+        .store
+        .adopt_team_run_admission_with_intent(&adoption, AggregateRevision::INITIAL, &command)
+        .unwrap();
+    assert_eq!(replay.0, original.0);
+    assert_eq!(replay.1, original.1);
+    let mut changed = adoption.clone();
+    changed.adopted_agent_run_revision = AggregateRevision::parse(4).unwrap();
+    let changed_command = local_adoption_command(&reopened, &changed, "atomic-replay");
+    reopened
+        .store
+        .adopt_team_run_admission_with_intent(
+            &changed,
+            AggregateRevision::INITIAL,
+            &changed_command,
+        )
+        .expect_err("a new revision is a different intent even on the same run");
+    assert_eq!(adoption_count(&reopened), 1);
 }

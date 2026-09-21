@@ -100,6 +100,9 @@ const EXPECTED_TABLES: &[&str] = &[
     // written before the native call and consumed when the occupancy binds.
     "hosted_topology_seat_launch_intents",
     "hosted_seat_launch_intent_supersessions",
+    // Schema v116 (ASMA-8196): the role persona each launched occupancy was
+    // opened under, frozen before the native call and never re-derived.
+    "hosted_seat_role_personas",
     // Schema v7 (KON-MVP-21): which importer produced a holiday source revision,
     // what the request asked for, and the chain that makes one import current.
     "holiday_import_batches",
@@ -352,6 +355,7 @@ fn issuance(message_id: &str, binding: &str, session: &str) -> kontor_store::Mes
             .expect("a timestamp"),
         // Recorded before the send, so there is no acknowledged position yet.
         delivered_at: None,
+        boundary_at: None,
     }
 }
 
@@ -739,7 +743,15 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v112 makes question history and its retry receipt one atomic effect.
     // v114 preserves the authorized container-recovery disposition on replay.
     // v115 confirms atomic local effects and preserves their exact results.
-    assert_eq!(SCHEMA_VERSION, 115);
+    // v116 freezes, per launched occupancy, the role persona a hosted seat was
+    // opened under, so which persona a seat actually received survives restart
+    // and replacement rather than being re-derived from current configuration
+    // (ASMA-8196).
+    // v117 records, per issuance, the canonical tail a message was sent after,
+    // so a delivery reconciliation can prove itself from a bounded suffix
+    // instead of requiring the whole transcript — which is what refused every
+    // send into a session past the scan's page budget (ASMA-8203).
+    assert_eq!(SCHEMA_VERSION, 117);
 }
 
 #[test]
@@ -6040,5 +6052,50 @@ fn v113_preserves_known_artifacts_and_their_existing_references() {
             .execute(statement, [])
             .expect_err("evidence remains immutable");
         assert!(error.to_string().contains("artifact evidence is immutable"));
+    }
+}
+
+#[test]
+fn issuance_boundary_is_frozen_across_replay_and_reopen() {
+    let directory = temp();
+    let store = open(&directory);
+    for (id, boundary) in [
+        ("01a0b000-0000-7000-8000-00000000aaa1", Some((7, 2400))),
+        ("01a0b000-0000-7000-8000-00000000aaa2", Some((7, 0))),
+        ("01a0b000-0000-7000-8000-00000000aaa3", None),
+    ] {
+        let mut original = issuance(
+            id,
+            "01a0b000-0000-7000-8000-00000000bbbb",
+            "native-session-one",
+        );
+        original.boundary_at = boundary;
+        assert_eq!(
+            store.record_message_issuance(&original).unwrap(),
+            kontor_store::MessageIssuanceOutcome::Recorded
+        );
+        let mut retry = original.clone();
+        retry.boundary_at = Some((8, 9000));
+        assert_eq!(
+            store.record_message_issuance(&retry).unwrap(),
+            kontor_store::MessageIssuanceOutcome::Replayed
+        );
+        assert_eq!(
+            store.message_issuance(id).unwrap().unwrap().boundary_at,
+            boundary
+        );
+    }
+    drop(store);
+    let reopened = open(&directory);
+    for (id, boundary) in [
+        ("01a0b000-0000-7000-8000-00000000aaa1", Some((7, 2400))),
+        ("01a0b000-0000-7000-8000-00000000aaa2", Some((7, 0))),
+        ("01a0b000-0000-7000-8000-00000000aaa3", None),
+    ] {
+        assert_eq!(
+            reopened.message_issuance(id).unwrap().unwrap().boundary_at,
+            boundary,
+            "a retry must neither move an original boundary nor invent one for a legacy issuance"
+        );
     }
 }

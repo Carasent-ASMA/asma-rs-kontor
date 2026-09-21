@@ -801,6 +801,38 @@ pub struct CoreTeamSeatDto {
     /// Exact native session filling this persistent seat, once launched.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_seat: Option<CoreTeamNativeSeatDto>,
+    /// The persona this seat's current occupancy was launched under.
+    ///
+    /// Always serialized, unlike `native_seat`: `null` here is a positive
+    /// statement that the role seeds no persona and the seat was opened under
+    /// no system prompt, which a reader has to be able to tell apart from a
+    /// field this projection simply did not fill in.
+    pub role_persona: Option<CoreTeamSeatPersonaDto>,
+}
+
+/// The persona one launched occupancy was opened under, as Kontor froze it.
+///
+/// Deliberately *not* a field of [`CoreTeamNativeSeatDto`], which reports what
+/// the runtime read back. Paseo's `config.systemPrompt` is creation-only, so no
+/// runtime here can attest the prompt a native is currently running under. This
+/// is evidence that Kontor froze this persona and delivered it at launch, and
+/// `delivery` says which of those two things it is in as many words, rather
+/// than leaving a reader to assume the stronger one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CoreTeamSeatPersonaDto {
+    /// The catalog role whose persona was delivered.
+    #[schema(value_type = String)]
+    pub role_code: kontor_core::id::RoleCode,
+    /// Digest of the exact delivered text.
+    #[schema(value_type = String)]
+    pub prompt_hash: kontor_core::id::ContentHash,
+    /// What the runtime's acceptance of this persona actually proves.
+    pub delivery: String,
+    /// The occupancy generation this persona was frozen for.
+    pub occupancy_generation: u64,
+    /// When it was frozen, which is before the native call.
+    #[schema(value_type = String, format = DateTime)]
+    pub frozen_at: Timestamp,
 }
 
 /// Exact runtime readback filling one persistent Core Team seat.
@@ -1031,11 +1063,11 @@ pub struct CoreTeamRouteOutcomeDto {
     pub receipt: MutationReceiptDto,
 }
 
-/// Supersede one never-bound prepared launch intent with an approved route.
+/// Supersede one unobserved prepared launch intent with an approved route.
 ///
-/// Every field is a fence. The operation applies to exactly one durable shape —
-/// an intent prepared before a launch that never happened — and anything that
-/// has since become a native, an occupancy or a recorded effect refuses.
+/// A successor intent requires exact archive and placement proof for its prior
+/// occupant. The current occupant and its history remain unchanged; only the
+/// next unobserved intent can change. Omit predecessor fences for a never-bound seat.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamLaunchIntentSupersedeRequest {
@@ -1050,6 +1082,13 @@ pub struct CoreTeamLaunchIntentSupersedeRequest {
     pub expected_seat_binding_revision: AggregateRevision,
     /// The occupancy generation whose inert intent is replaced.
     pub occupancy_generation: u64,
+    /// Exact prior native, required with both other predecessor fences for a successor intent.
+    #[schema(value_type = Option<String>)]
+    pub expected_predecessor_native_id: Option<ExternalId>,
+    /// Runtime generation of the archived predecessor, not the occupancy ordinal.
+    pub expected_predecessor_generation: Option<u64>,
+    /// Exact runtime archive timestamp of the predecessor.
+    pub expected_predecessor_archived_at: Option<String>,
     /// The exact inert route being superseded, compared verbatim.
     pub expected_model_route: RuntimeModelRouteRequest,
     /// The exact instant that inert intent was prepared, compared verbatim.
@@ -1644,6 +1683,9 @@ pub struct CommitteeRunDto {
     /// The epic it advises.
     #[schema(value_type = String)]
     pub epic_id: MiniProjectId,
+    /// Same-subject evidence, independent of any Committee member's finding.
+    /// Absent for legacy runs whose subject was never durably recorded.
+    pub subject_evidence: Option<crate::committee_evidence::CommitteeSubjectEvidenceDto>,
     /// The pinned template it runs under.
     pub template: ProfileRevisionDto,
     /// Exact topic frozen at invocation and rendered in the CSW name.
@@ -5096,6 +5138,48 @@ pub struct SchedulerResumeDto {
     pub receipt: MutationReceiptDto,
 }
 
+/// Authorize materialization of one existing queued run without inventing a handoff.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AdoptTeamRunAdmissionRequest {
+    /// Exact existing, unbound AgentRun.
+    #[schema(value_type = String)]
+    pub agent_run_id: AgentRunId,
+    /// Task revision observed before adoption.
+    #[schema(value_type = u64)]
+    pub expected_task_revision: AggregateRevision,
+    /// Revision of the exact queued run.
+    #[schema(value_type = u64)]
+    pub expected_agent_run_revision: AggregateRevision,
+    /// Operator's reason, retained in the immutable command intent.
+    #[schema(value_type = String)]
+    pub reason: BoundedText,
+}
+
+/// An adoption authorizes a later seat fill; it does not dispatch work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct TeamRunAdmissionAdoptionDto {
+    /// Immutable adoption identity.
+    pub adoption_id: String,
+    /// Owning task.
+    #[schema(value_type = String)]
+    pub task_id: TaskId,
+    /// Existing admitted TeamRun.
+    #[schema(value_type = String)]
+    pub team_run_id: TeamRunId,
+    /// Frozen slot identity, distinct from its catalog role.
+    #[schema(value_type = String)]
+    pub role_slot_id: RoleSlotId,
+    /// Exact run authorized for materialization.
+    #[schema(value_type = String)]
+    pub agent_run_id: AgentRunId,
+    /// Run revision proved by the adoption.
+    #[schema(value_type = u64)]
+    pub adopted_agent_run_revision: AggregateRevision,
+    /// Confirmed local command; no native operation is queued.
+    pub receipt: MutationReceiptDto,
+}
+
 /// Fill one frozen, unwaived role slot that is owed a durable follow-up.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -7556,6 +7640,16 @@ pub trait ApplicationOperations: Send + Sync {
         project_id: ProjectId,
         committee_run_id: CommitteeRunId,
     ) -> Result<CommitteeRunDto, ApiError>;
+    /// Read verified bytes from one registry artifact within the persisted Committee subject.
+    async fn committee_artifact(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        evidence_id: &str,
+        offset: u32,
+    ) -> Result<crate::committee_evidence::CommitteeArtifactContentDto, ApiError>;
+    /// Populate bounded verified report text after the transport authenticates the addressed seat.
+    async fn hydrate_committee_reports(&self, run: &mut CommitteeRunDto) -> Result<(), ApiError>;
     /// Read pending native permission requests from one exact Committee seat.
     async fn inspect_consultation_permissions(
         &self,
@@ -7776,6 +7870,16 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &ResumeAdmissionsRequest,
     ) -> Result<SchedulerResumeDto, ApiError>;
+
+    /// Adopt one exact queued run as authority to materialize its declared slot.
+    async fn adopt_team_run_admission(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        role_slot_id: &RoleSlotId,
+        request: &AdoptTeamRunAdmissionRequest,
+    ) -> Result<TeamRunAdmissionAdoptionDto, ApiError>;
 
     /// Materialize one declared slot inside an existing admission and retry its handoff.
     async fn fill_team_run_seat(
@@ -8487,7 +8591,7 @@ pub async fn record_provider_quota(
     responses(
         (status = 200, body = ProviderUsageObservationDto),
         (status = 401), (status = 403), (status = 404), (status = 409),
-        (status = 422), (status = 502), (status = 503)
+        (status = 422), (status = 429, body = crate::error::ApiErrorBody), (status = 502), (status = 503)
     )
 )]
 pub async fn probe_provider_quota(
@@ -10864,11 +10968,15 @@ pub async fn committee_run(
         .applications()
         .committee_run(project_id, committee_run_id)?;
     project_committee_for_caller(&state, caller, &mut run)?;
+    state
+        .applications()
+        .hydrate_committee_reports(&mut run)
+        .await?;
     Ok(Json(run))
 }
 
 /// Apply the same evidence visibility after both reads and findings writes.
-fn project_committee_for_caller(
+pub(crate) fn project_committee_for_caller(
     state: &ApiState,
     caller: Caller,
     run: &mut CommitteeRunDto,
@@ -11614,6 +11722,39 @@ pub async fn resume_admissions(
         state
             .applications()
             .resume_admissions(&key, project_id, epic_id, &request)
+            .await?,
+    ))
+}
+
+/// Record bounded authority to materialize one existing queued role slot.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/admission:adopt",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path), ("team_run_id" = String, Path),
+        ("role_slot_id" = String, Path), ("Idempotency-Key" = String, Header)
+    ),
+    request_body = AdoptTeamRunAdmissionRequest,
+    responses((status = 200, body = TeamRunAdmissionAdoptionDto),
+        (status = 400), (status = 401), (status = 403), (status = 404), (status = 409), (status = 503))
+)]
+pub async fn adopt_team_run_admission(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, team_run_id, role_slot_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<AdoptTeamRunAdmissionRequest>,
+) -> Result<Json<TeamRunAdmissionAdoptionDto>, ApiError> {
+    caller.require(&state, CallerCapability::Operator)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let team_run_id = parse_id(&state, TeamRunId::parse(&team_run_id))?;
+    let role_slot_id = parse_id(&state, RoleSlotId::parse(&role_slot_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .adopt_team_run_admission(&key, project_id, team_run_id, &role_slot_id, &request)
             .await?,
     ))
 }

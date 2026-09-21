@@ -1101,6 +1101,19 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// Prove an exact archived predecessor and the absence of a live successor.
+    /// This is read-only: require placement, archive timestamp, matching conversation,
+    /// and no pending permission. A missing native is not archive evidence.
+    async fn prove_archived_hosted_seat(
+        &self,
+        _request: &HostedSeatRetireRequest,
+        _known_retired_native_ids: &[ExternalId],
+    ) -> RuntimeResult<HostedSeatRetireOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Inspect,
+        })
+    }
+
     /// Retire an idle persistent leadership session for an authorized route
     /// correction. This is not a generic idle-seat reaper.
     async fn retire_hosted_seat(
@@ -1309,6 +1322,30 @@ pub trait RuntimeAdapter: Send + Sync {
         Ok(())
     }
 
+    /// Register the canonical tail this message was issued after.
+    ///
+    /// Distinct from [`RuntimeAdapter::note_unconfirmed_delivery`] on purpose,
+    /// and the difference matters: this says only *where the transcript ended
+    /// when the id was minted*. It makes no claim that anything was delivered,
+    /// records no ledger entry, and never causes a send to be skipped. It exists
+    /// so a first attempt can bound its own reconciliation, which is the case a
+    /// replay-only hook cannot reach — and the case that made long sessions
+    /// unable to acknowledge anything at all.
+    ///
+    /// The value is always the one the durable issuance recorded, so a floor is
+    /// never raised after the fact.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when the adapter cannot accept the boundary.
+    fn note_issuance_boundary(
+        &self,
+        message_id: MessageId,
+        issued_after: TimelinePosition,
+    ) -> RuntimeResult<()> {
+        let _ = (message_id, issued_after);
+        Ok(())
+    }
+
     /// Declare that this message may already have been delivered, so a send of
     /// it must reconcile canonical history before reaching the wire.
     ///
@@ -1346,8 +1383,9 @@ pub trait RuntimeAdapter: Send + Sync {
         &self,
         message_id: MessageId,
         body_hash: &ContentHash,
+        issued_after: Option<TimelinePosition>,
     ) -> RuntimeResult<()> {
-        let _ = (message_id, body_hash);
+        let _ = (message_id, body_hash, issued_after);
         Ok(())
     }
 
@@ -1699,6 +1737,17 @@ pub trait RuntimeAdapter: Send + Sync {
         &self,
         request: &AdmissionRequest,
     ) -> RuntimeResult<crate::admission::AdmissionOutcome>;
+
+    /// Release an exact abandoned run's reservation only before launch claimed it.
+    /// No native effect or in-flight/unknown launch may be released. Adapters
+    /// without this bookkeeping surface conservatively leave it untouched.
+    async fn release_unclaimed_admission(
+        &self,
+        _slot: &crate::admission::RoleSlotKey,
+        _agent_run_id: kontor_core::id::AgentRunId,
+    ) -> RuntimeResult<bool> {
+        Ok(false)
+    }
 
     /// Start a new native session for an agent run.
     ///

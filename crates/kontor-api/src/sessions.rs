@@ -1055,12 +1055,22 @@ pub async fn send_message(
     // seen is already in it. Recording after a successful send would leave the
     // ids whose acknowledgement was lost — exactly the ones an operator has to
     // reason about — absent from the record that decides they are settleable.
+    // Captured before the issuance is written and before anything is sent, so
+    // the recorded pair names a tail this message cannot already be below.
+    let boundary = state
+        .canonical_tail_boundary(
+            session.adapter.as_ref(),
+            session.snapshot.identity(),
+            &session.snapshot,
+        )
+        .await?;
     let issuance = state.record_message_issuance(
         session.snapshot.identity(),
         session.snapshot.binding_id(),
         message_id,
         "session_message_send",
         idempotency_key(&state, &headers)?.as_str(),
+        boundary,
     )?;
     // A replay arriving at an adapter that was rebuilt since the first attempt
     // has to reconcile before it sends, and only this side still remembers that

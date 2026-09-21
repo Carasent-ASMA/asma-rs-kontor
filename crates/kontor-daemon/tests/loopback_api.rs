@@ -33,6 +33,11 @@
 #[allow(dead_code)]
 mod harness;
 
+#[path = "loopback/committee_evidence.rs"]
+mod committee_evidence;
+#[path = "loopback/provider_refresh.rs"]
+mod provider_refresh;
+
 #[tokio::test]
 async fn open_question_commands_preserve_authority_history_and_completion_blockers() {
     use kontor_core::id::OpenQuestionId;
@@ -24238,6 +24243,154 @@ async fn a_reachable_seat_that_cannot_be_driven_takes_the_linked_successor_path(
 }
 
 #[tokio::test]
+async fn a_never_bound_successor_keeps_its_original_terminal_parent_authority() {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) =
+        seated_turns_with_attribution(&world, "replace-abandoned", true).await;
+    let seat_list = seats.as_array().expect("the seated roster").clone();
+    let seat = seat_list[1].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let team_run = seat["team_run_id"].as_str().expect("the team run");
+
+    finish_natively(&world, predecessor).await;
+    let settled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/runtime:settle"),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("replace-abandoned-runtime-settle")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    assert_eq!(settled.json()["observed"], "cancelled");
+
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("a canonical run id");
+    let team_run_id = TeamRunId::parse(team_run).expect("a canonical team run id");
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let old_binding = before.binding.as_ref().expect("the predecessor was bound");
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+    let body = serde_json::json!({
+        "role_slot": role_slot,
+        "expected_predecessor_revision": before.revision,
+        "expected_task_revision": task_revision,
+        "binding_generation": old_binding.identity.generation,
+    });
+
+    world.script(r#"{"steps":[{"step":"transport_failure","operation":"discovery"}]}"#);
+    let failed = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &body,
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-abandoned-failed-launch")
+    .send(&world)
+    .await;
+    assert_eq!(failed.status, 503, "{}", failed.body);
+
+    let abandoned_run = world.daemon.state().with_store(|store| {
+        store
+            .list_agent_runs_for_team_run(project_id, team_run_id)
+            .expect("the team members read")
+            .into_iter()
+            .map(|seat| {
+                store
+                    .get_agent_run(project_id, seat.agent_run_id)
+                    .expect("the member reads")
+                    .expect("the member exists")
+            })
+            .find(|run| run.parent_agent_run_id == Some(predecessor_id))
+            .expect("the failed launch recorded one successor")
+    });
+    assert!(abandoned_run.binding.is_none());
+    assert!(abandoned_run.terminal.is_none());
+
+    let abandoned = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/runtime:abandon",
+            abandoned_run.id
+        ),
+        &serde_json::json!({
+            "expected_revision": abandoned_run.revision.get(),
+            "reason": "The replacement never bound a native session"
+        }),
+    )
+    .signed_as(&world, "operator")
+    .with_key("replace-abandoned-abandon")
+    .send(&world)
+    .await;
+    assert_eq!(abandoned.status, 200, "{}", abandoned.body);
+    assert_eq!(abandoned.json()["outcome"], "abandoned");
+
+    world.script(HISTORY_LIVE);
+    prepare_fake_provider_headroom(&world, &project).await;
+    let body = serde_json::json!({
+        "role_slot":role_slot,
+        "expected_predecessor_revision":abandoned.json()["revision"],
+        "expected_task_revision":task_revision,
+        "binding_generation":0,
+        "model_route":{"provider":"codex-personal","model":"gpt-5.6-sol","effort":"high"}
+    });
+    let path = format!(
+        "/v1/projects/{project}/agent-runs/{}/successors:replace",
+        abandoned_run.id
+    );
+    let replaced = Call::post(&path, &body)
+        .signed_as(&world, "admin")
+        .with_key("parent-recovery-child")
+        .send(&world)
+        .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    let successor_id =
+        AgentRunId::parse(replaced.json()["successor_agent_run_id"].as_str().unwrap()).unwrap();
+    world.daemon.state().with_store(|store| {
+        let next = store
+            .get_agent_run(project_id, successor_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(next.parent_agent_run_id, Some(abandoned_run.id));
+        assert!(next.binding.is_some());
+        assert_eq!(
+            store
+                .get_agent_run(project_id, predecessor_id)
+                .unwrap()
+                .unwrap(),
+            before
+        );
+        let retained = store
+            .get_agent_run(project_id, abandoned_run.id)
+            .unwrap()
+            .unwrap();
+        assert!(retained.is_operator_abandoned_unbound());
+        assert_eq!(retained.parent_agent_run_id, Some(predecessor_id));
+    });
+    let replay = Call::post(&path, &body)
+        .signed_as(&world, "admin")
+        .with_key("parent-recovery-child")
+        .send(&world)
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        replay.json()["successor_agent_run_id"],
+        successor_id.to_string()
+    );
+}
+
+#[tokio::test]
 async fn replacing_a_cancelled_seat_skips_an_operator_abandoned_unbound_successor() {
     let world = World::open_empty_with_a_plane().await;
     world.script(HISTORY_LIVE);
@@ -26883,6 +27036,7 @@ fn issue_message(
             message_id,
             "session_message_send",
             &message_id.to_string(),
+            None,
         )
         .expect("the issuance records");
 }
@@ -29126,6 +29280,7 @@ async fn observing_trusts_only_a_message_this_realm_issued_to_this_session() {
             elsewhere,
             "session_message_send",
             &elsewhere.to_string(),
+            None,
         )
         .expect("the issuance records against another binding");
     world
@@ -33012,6 +33167,14 @@ async fn seat_fill_world(owed: bool) -> SeatFillWorld {
 }
 
 async fn seat_fill_world_with_tasks(owed: bool, task_count: usize) -> SeatFillWorld {
+    seat_fill_world_with_recovery(owed, task_count, true).await
+}
+
+async fn seat_fill_world_with_recovery(
+    owed: bool,
+    task_count: usize,
+    resume: bool,
+) -> SeatFillWorld {
     let world = World::open_empty_with_a_plane().await;
     world.script(HISTORY_LIVE);
     assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
@@ -33170,6 +33333,9 @@ async fn seat_fill_world_with_tasks(owed: bool, task_count: usize) -> SeatFillWo
         .expect("verify");
     assert!(root.binding.is_some());
     assert!(verify.binding.is_none());
+    if !resume {
+        return fixture;
+    }
     // Runtime census evidence of the already-created verify native is the
     // supported exact partial-admission recovery input. This is a fake-runtime
     // observation, not an inserted control-plane run or handoff.
@@ -33222,6 +33388,357 @@ async fn seat_fill_world_with_tasks(owed: bool, task_count: usize) -> SeatFillWo
         assert_eq!(settled.json()["follow_ups"][0]["dispatched"], false);
     }
     fixture
+}
+
+fn adoption_body(fixture: &SeatFillWorld) -> serde_json::Value {
+    let run = fixture
+        .members()
+        .into_iter()
+        .find(|run| run.role.as_str() == "verify")
+        .unwrap();
+    serde_json::json!({
+        "agent_run_id":run.id, "expected_task_revision":fixture.task_revision(),
+        "expected_agent_run_revision":run.revision,
+        "reason":"Recover the existing verifier without inventing its required handoff",
+    })
+}
+
+async fn adopt_slot(
+    fixture: &SeatFillWorld,
+    slot: &str,
+    body: &serde_json::Value,
+    key: &str,
+    tier: &str,
+) -> Answer {
+    Call::post(
+        format!(
+            "/v1/projects/{}/team-runs/{}/role-slots/{slot}/admission:adopt",
+            fixture.project, fixture.team
+        ),
+        body,
+    )
+    .signed_as(&fixture.world, tier)
+    .with_key(key)
+    .send(&fixture.world)
+    .await
+}
+
+fn adoption_rows(fixture: &SeatFillWorld, key: &str) -> (i64, i64, i64) {
+    let db = rusqlite::Connection::open(fixture.world.directory.path().join("kontor.db")).unwrap();
+    (
+        db.query_row(
+            "SELECT count(*) FROM team_run_admission_adoptions",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap(),
+        db.query_row(
+            "SELECT count(*) FROM command_receipts WHERE idempotency_key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .unwrap(),
+        db.query_row("SELECT count(*) FROM turn_dispatches", [], |row| row.get(0))
+            .unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn admission_adoption_fills_the_existing_run_but_preserves_wait_and_missing_handoff() {
+    let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+    let before = fixture.members();
+    let body = adoption_body(&fixture);
+    let run = AgentRunId::parse(body["agent_run_id"].as_str().unwrap()).unwrap();
+    let before_calls = fixture.world.fake.calls().len();
+    let adopted = adopt_slot(&fixture, "verify", &body, "adopt-verifier", "operator").await;
+    assert_eq!(adopted.status, 200, "{}", adopted.body);
+    assert_eq!(adopted.json()["agent_run_id"], body["agent_run_id"]);
+    assert_eq!(adopted.json()["receipt"]["applied"], "created");
+    assert_eq!(fixture.members(), before, "adoption changes no run");
+    assert_eq!(adoption_rows(&fixture, "adopt-verifier"), (1, 1, 0));
+    assert!(
+        fixture.world.fake.calls()[before_calls..]
+            .iter()
+            .all(|call| matches!(
+                call,
+                AdapterCall::InspectContainer(_) | AdapterCall::DiscoverCapabilities
+            ))
+    );
+    let db = rusqlite::Connection::open(fixture.world.directory.path().join("kontor.db")).unwrap();
+    let receipt: (String, String, i64) = db.query_row(
+        "SELECT execution_mode, state, (SELECT count(*) FROM command_outbox WHERE receipt_id = command_receipts.id) FROM command_receipts WHERE idempotency_key = 'adopt-verifier'",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+    assert_eq!(receipt, ("local".to_owned(), "confirmed".to_owned(), 0));
+    fixture
+        .world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("verify").unwrap());
+    let filled = fixture
+        .fill("verify", fixture.task_revision(), "fill-adopted-verifier")
+        .await;
+    assert_eq!(filled.status, 200, "{}", filled.body);
+    assert_eq!(filled.json()["agent_run_id"], body["agent_run_id"]);
+    assert_eq!(filled.json()["dispatches"], serde_json::json!([]));
+    assert_eq!(fixture.members().len(), before.len(), "no duplicate run");
+    assert!(
+        fixture
+            .world
+            .fake
+            .launched_prompt(run)
+            .unwrap()
+            .as_str()
+            .starts_with("wait:")
+    );
+    assert!(
+        !fixture.world.fake.calls()[before_calls..]
+            .iter()
+            .any(|call| matches!(call, AdapterCall::Send(..)))
+    );
+    let effects = fixture.world.fake.calls();
+    let replay = adopt_slot(&fixture, "verify", &body, "adopt-verifier", "operator").await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["adoption_id"], adopted.json()["adoption_id"]);
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        fixture.world.fake.calls(),
+        effects,
+        "replay does not re-prove or launch"
+    );
+    let mut changed = body.clone();
+    changed["reason"] = serde_json::json!("changed intent");
+    let refused = adopt_slot(&fixture, "verify", &changed, "adopt-verifier", "operator").await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(adoption_rows(&fixture, "adopt-verifier"), (1, 1, 0));
+}
+
+#[tokio::test]
+async fn admission_adoption_refuses_wrong_authority_run_role_revision_and_unknown_evidence() {
+    let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+    let body = adoption_body(&fixture);
+    for (slot, field, value, tier, expected) in [
+        (
+            "verify",
+            "reason",
+            serde_json::json!("observer"),
+            "observer",
+            403,
+        ),
+        (
+            "verify",
+            "expected_task_revision",
+            serde_json::json!(99),
+            "operator",
+            409,
+        ),
+        (
+            "verify",
+            "expected_agent_run_revision",
+            serde_json::json!(99),
+            "operator",
+            409,
+        ),
+        (
+            "verify",
+            "agent_run_id",
+            serde_json::json!(AgentRunId::generate()),
+            "operator",
+            409,
+        ),
+        (
+            "unknown",
+            "reason",
+            serde_json::json!("wrong slot"),
+            "operator",
+            400,
+        ),
+        (
+            "scope",
+            "reason",
+            serde_json::json!("bound slot"),
+            "operator",
+            409,
+        ),
+        (
+            "verify",
+            "artifacts",
+            serde_json::json!(["invented evidence"]),
+            "operator",
+            400,
+        ),
+    ] {
+        let mut changed = body.clone();
+        changed[field] = value;
+        let before = fixture.world.fake.calls();
+        let refused = adopt_slot(&fixture, slot, &changed, "adopt-invalid", tier).await;
+        assert_eq!(refused.status, expected, "{slot}/{field}: {}", refused.body);
+        assert_eq!(fixture.world.fake.calls(), before);
+        assert_eq!(adoption_rows(&fixture, "adopt-invalid"), (0, 0, 0));
+    }
+    let bound = seat_fill_world(false).await;
+    let refused = adopt_slot(
+        &bound,
+        "verify",
+        &adoption_body(&bound),
+        "adopt-bound",
+        "operator",
+    )
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(adoption_rows(&bound, "adopt-bound"), (0, 0, 0));
+}
+
+#[tokio::test]
+async fn admission_adoption_refuses_native_container_drift_without_consuming_the_key() {
+    for drift in exact_container_drifts() {
+        let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+        fixture.world.fake.drift_container(fixture.node, drift);
+        let calls = fixture.world.fake.calls().len();
+        let refused = adopt_slot(
+            &fixture,
+            "verify",
+            &adoption_body(&fixture),
+            "adopt-drift",
+            "operator",
+        )
+        .await;
+        assert_eq!(refused.status, 409, "{}", refused.body);
+        assert_eq!(adoption_rows(&fixture, "adopt-drift"), (0, 0, 0));
+        assert!(
+            fixture.world.fake.calls()[calls..]
+                .iter()
+                .all(|call| matches!(
+                    call,
+                    AdapterCall::InspectContainer(_) | AdapterCall::DiscoverCapabilities
+                ))
+        );
+    }
+}
+
+#[tokio::test]
+async fn admission_adoption_fill_rechecks_the_recorded_run_before_any_effect() {
+    let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+    let body = adoption_body(&fixture);
+    let adopted = adopt_slot(&fixture, "verify", &body, "adopt-stale", "operator").await;
+    assert_eq!(adopted.status, 200, "{}", adopted.body);
+    // Model a concurrent legitimate revision change after authority was recorded.
+    // The adoption remains immutable; the fill must not spend stale authority.
+    let db = rusqlite::Connection::open(fixture.world.directory.path().join("kontor.db")).unwrap();
+    db.execute(
+        "UPDATE agent_runs SET revision = revision + 1 WHERE id = ?1",
+        [body["agent_run_id"].as_str().unwrap()],
+    )
+    .unwrap();
+    let calls = fixture.world.fake.calls();
+    let refused = fixture
+        .fill("verify", fixture.task_revision(), "fill-stale-adoption")
+        .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert!(refused.body.contains("moved"), "{}", refused.body);
+    assert_eq!(fixture.world.fake.calls(), calls);
+    assert_eq!(adoption_rows(&fixture, "fill-stale-adoption"), (1, 0, 0));
+}
+
+#[tokio::test]
+async fn seat_fill_quota_refusal_leaves_no_reservation_and_same_key_retry_converges() {
+    let fixture = seat_fill_world(true).await;
+    let prior = fixture.world.daemon.state().with_store(|store| {
+        let prior = store.list_provider_quota_states(fixture.project).unwrap();
+        for state in &prior {
+            store
+                .set_provider_quota_state(&NewProviderQuotaState {
+                    project_id: fixture.project,
+                    account_profile_id: state.account_profile_id,
+                    provider: state.provider.clone(),
+                    state: ProviderQuotaKind::Drained,
+                    resets_at: None,
+                    windows: Vec::new(),
+                    credit: None,
+                    evidence_hash: ContentHash::of(b"scripted exhausted test quota"),
+                    provenance: None,
+                    source: kontor_core::spec::ProviderQuotaSource::Operator,
+                    observed_at: kontor_api::now(),
+                    expected_revision: state.revision,
+                    updated_at: kontor_api::now(),
+                })
+                .unwrap();
+        }
+        prior
+    });
+    let revision = fixture.task_revision();
+    let refused = fixture.fill("audit", revision, "quota-refused-fill").await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert!(refused.body.contains("headroom"), "{}", refused.body);
+    let probe = kontor_runtime::admission::AdmissionRequest {
+        slot: kontor_runtime::admission::RoleSlotKey::new(
+            fixture.team,
+            RoleSlotId::parse("audit").unwrap(),
+        ),
+        agent_run_id: AgentRunId::generate(),
+        binding_id: RuntimeBindingId::generate(),
+        replaces: None,
+        requested_at: kontor_api::now(),
+    };
+    fixture
+        .world
+        .fake
+        .admit_launch(&probe)
+        .await
+        .expect("quota refusal must leave the native slot unreserved");
+    assert!(
+        fixture
+            .world
+            .fake
+            .release_unclaimed_admission(&probe.slot, probe.agent_run_id)
+            .await
+            .unwrap()
+    );
+    fixture.world.daemon.state().with_store(|store| {
+        let current = store.list_provider_quota_states(fixture.project).unwrap();
+        for state in prior {
+            let version = current
+                .iter()
+                .find(|row| {
+                    row.account_profile_id == state.account_profile_id
+                        && row.provider == state.provider
+                })
+                .unwrap()
+                .revision;
+            store
+                .set_provider_quota_state(&NewProviderQuotaState {
+                    project_id: fixture.project,
+                    account_profile_id: state.account_profile_id,
+                    provider: state.provider,
+                    state: state.state,
+                    resets_at: state.resets_at,
+                    windows: state.windows,
+                    credit: state.credit,
+                    evidence_hash: state.evidence_hash,
+                    provenance: None,
+                    source: state.source,
+                    observed_at: kontor_api::now(),
+                    expected_revision: version,
+                    updated_at: kontor_api::now(),
+                })
+                .unwrap();
+        }
+    });
+    let retried = fixture.fill("audit", revision, "quota-refused-fill").await;
+    assert_eq!(retried.status, 200, "{}", retried.body);
+    assert_eq!(
+        fixture
+            .members()
+            .iter()
+            .filter(|run| run.role.as_str() == "audit")
+            .count(),
+        1
+    );
+    let replay = fixture.fill("audit", revision, "quota-refused-fill").await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        replay.json()["agent_run_id"],
+        retried.json()["agent_run_id"]
+    );
+    assert_eq!(replay.json()["native_id"], retried.json()["native_id"]);
 }
 
 #[tokio::test]
@@ -34611,6 +35128,51 @@ async fn abandoned_before_its_handoff(slug: &'static str) -> (UnboundWorld, Agen
         .as_u64()
         .expect("the abandoned revision");
     (seeded, predecessor.id, revision)
+}
+
+#[tokio::test]
+async fn abandonment_replay_cleans_only_the_exact_unclaimed_runtime_reservation() {
+    let (seeded, run_id, revision) = abandoned_before_its_handoff("cleanup-reservation").await;
+    let slot = kontor_runtime::admission::RoleSlotKey::new(
+        TeamRunId::parse(&seeded.team_run).unwrap(),
+        RoleSlotId::parse("omega-k3").unwrap(),
+    );
+    let admission = kontor_runtime::admission::AdmissionRequest {
+        slot: slot.clone(),
+        agent_run_id: run_id,
+        binding_id: RuntimeBindingId::generate(),
+        replaces: None,
+        requested_at: kontor_api::now(),
+    };
+    // Reproduce a crash after durable abandonment but before cache cleanup.
+    seeded.world.fake.admit_launch(&admission).await.unwrap();
+    let replacement = kontor_runtime::admission::AdmissionRequest {
+        slot: slot.clone(),
+        agent_run_id: AgentRunId::generate(),
+        binding_id: RuntimeBindingId::generate(),
+        replaces: None,
+        requested_at: kontor_api::now(),
+    };
+    assert!(seeded.world.fake.admit_launch(&replacement).await.is_err());
+    let answer=Call::post(format!("/v1/projects/{}/agent-runs/{run_id}/runtime:abandon",seeded.project),&serde_json::json!({
+        "expected_revision":revision-1,"reason":"The downstream launch was refused before it bound a session"
+    })).signed_as(&seeded.world,"operator").with_key("cleanup-reservation-abandon").send(&seeded.world).await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(answer.json()["applied"], "unchanged");
+    seeded
+        .world
+        .fake
+        .admit_launch(&replacement)
+        .await
+        .expect("exact abandoned cache was released without a restart");
+    let replay=Call::post(format!("/v1/projects/{}/agent-runs/{run_id}/runtime:abandon",seeded.project),&serde_json::json!({
+        "expected_revision":revision-1,"reason":"The downstream launch was refused before it bound a session"
+    })).signed_as(&seeded.world,"operator").with_key("cleanup-reservation-abandon").send(&seeded.world).await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert!(
+        seeded.world.fake.admit_launch(&admission).await.is_err(),
+        "replay cannot release another run reservation"
+    );
 }
 
 /// Settle one bounded turn in the upstream `omega-k1` seat.
@@ -44518,6 +45080,68 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
          rather than under the architecture lead's"
     );
 
+    // TEST-007. Everything above reads the adapter's record of the request it
+    // was handed: that proves Kontor *composed* a persona, which is desired
+    // input, not evidence of anything durable. What follows is the evidence --
+    // the frozen occupancy record, and its projection on the supported seat
+    // contract. It is what a reader still gets after a restart, and it cannot
+    // be reconstructed from configuration, which is the whole point: an edit to
+    // the operational-domain pack after launch must not be able to change the
+    // answer to "which persona did this seat receive".
+    let lsa_persona_digest = ContentHash::of(lsa_persona.as_str().as_bytes());
+    assert_eq!(
+        native_lsa["role_persona"]["role_code"], "LSA",
+        "the LSA seat snapshot must name the role whose persona it received"
+    );
+    assert_eq!(
+        native_lsa["role_persona"]["prompt_hash"],
+        lsa_persona_digest.as_str(),
+        "the snapshot digest must be the digest of the exact delivered text"
+    );
+    assert_eq!(
+        native_lsa["role_persona"]["delivery"], "create_only_no_readback",
+        "Paseo's system prompt is creation-only, so the snapshot has to report \
+         delivery rather than imply the native confirmed what it is running under"
+    );
+    assert_eq!(
+        native_lsa["role_persona"]["occupancy_generation"], 1,
+        "the first occupancy froze the persona it was opened under"
+    );
+    assert!(
+        native_tpm["role_persona"].is_null(),
+        "TPM seeds no persona, so its seat snapshot must say so explicitly \
+         rather than omitting the field: {}",
+        native_tpm["role_persona"]
+    );
+
+    let stored_lsa_persona = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store
+                .get_hosted_seat_role_persona(project_id, lsa_binding_id, 1)
+                .expect("the frozen LSA persona reads")
+        })
+        .expect("the first LSA occupancy froze a persona");
+    assert_eq!(
+        stored_lsa_persona.prompt, lsa_persona,
+        "the frozen text and the delivered text are one value, not two"
+    );
+    assert_eq!(stored_lsa_persona.prompt_hash, lsa_persona_digest);
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store
+                    .get_hosted_seat_role_persona(project_id, tpm_binding_id, 1)
+                    .expect("the frozen TPM persona reads")
+            })
+            .is_none(),
+        "a role that seeds no persona must freeze no record at all, rather than \
+         freezing an empty one that later reads as a persona"
+    );
+
     // Reproduce the operational gap: several logical wakes predate a stale TPM
     // replacement and none received a hosted-native acknowledgement. The
     // current completion projection is revision nine, so revision eight stays
@@ -44722,6 +45346,7 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         corrected_tpm["native_seat"]["model_route"]["provider"],
         "opencode"
     );
+
     let route_calls = &world.fake.calls()[calls_before_apply..];
     assert!(
         route_calls.contains(&AdapterCall::RetireHostedSeat(tpm_binding_id)),
@@ -45052,6 +45677,135 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         again.body
     );
     assert_eq!(again.json()["receipt"]["applied"], "unchanged");
+
+    // MUT-8196-3. The route correction earlier in this regression replaces a TPM, and TPM seeds no
+    // persona -- so dropping the role prompt from the *successor* launch cannot
+    // change its outcome, which is exactly why a mutant that did that survived
+    // this regression. Re-routing a role that does have a configured persona is
+    // what makes the successor branch observable at all.
+    let lsa_before_reroute = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat(project_id, lsa_binding_id)
+            .expect("the hosted LSA reads")
+            .expect("the hosted LSA exists")
+    });
+    let lsa_route_native = lsa_before_reroute
+        .native_identity
+        .native_id
+        .as_str()
+        .to_owned();
+    let lsa_route_generation = lsa_before_reroute.native_identity.generation;
+    let lsa_route_request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": lsa_binding,
+        "expected_native_id": lsa_route_native,
+        "expected_generation": lsa_route_generation,
+        "desired_model_route": {
+            "provider": "opencode",
+            "model": "deepseek/deepseek-flash",
+            "effort": "high"
+        },
+    });
+    let lsa_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &lsa_route_request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(lsa_preview.status, 200, "{}", lsa_preview.body);
+    let mut lsa_route_body = lsa_route_request;
+    lsa_route_body["preview_hash"] = lsa_preview.json()["preview_hash"].clone();
+    let lsa_routed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &lsa_route_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("core-team-lsa-route-correction")
+    .send(world)
+    .await;
+    assert_eq!(lsa_routed.status, 200, "{}", lsa_routed.body);
+
+    // Two assertions, because either alone is satisfiable by the wrong thing: a
+    // successor launched with the handoff in both slots would pass the first,
+    // and one launched with no persona at all would pass the second.
+    let successor_persona = world
+        .fake
+        .hosted_role_prompt(lsa_binding_id)
+        .expect("the successor launch reached the runtime")
+        .expect("the successor was launched under a persona");
+    assert!(
+        successor_persona
+            .as_str()
+            .contains("Lead Software Architect"),
+        "the replaced LSA lost its persona on successor creation: {}",
+        successor_persona.as_str()
+    );
+    let successor_handoff = world
+        .fake
+        .hosted_initial_prompt(lsa_binding_id)
+        .expect("the successor launch carried a first handoff");
+    assert_ne!(
+        successor_handoff, successor_persona,
+        "the persona and the bounded first handoff must remain two values"
+    );
+    assert!(
+        !successor_handoff
+            .as_str()
+            .contains("Lead Software Architect"),
+        "the persona was supplied as the first handoff: {}",
+        successor_handoff.as_str()
+    );
+
+    let routed_lsa = lsa_routed.json()["core_team"]["seats"]
+        .as_array()
+        .expect("routed seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "LSA")
+        .expect("the routed LSA")
+        .clone();
+    assert_eq!(
+        routed_lsa["role_persona"]["prompt_hash"],
+        lsa_persona_digest.as_str(),
+        "the successor's snapshot must carry the exact persona it was opened under"
+    );
+    let successor_occupancy_generation = routed_lsa["role_persona"]["occupancy_generation"]
+        .as_u64()
+        .expect("the successor's occupancy generation");
+    assert!(
+        successor_occupancy_generation > 1,
+        "a successor freezes its own occupancy's persona rather than reusing \
+         the first occupancy's record: {successor_occupancy_generation}"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store
+                    .get_hosted_seat_role_persona(
+                        project_id,
+                        lsa_binding_id,
+                        successor_occupancy_generation,
+                    )
+                    .expect("the successor persona reads")
+            })
+            .is_some(),
+        "the successor occupancy must have frozen its own durable persona"
+    );
+    // The predecessor's record is still there, unchanged. A replacement that
+    // overwrote it would destroy the only evidence of what the retired native
+    // was actually created under.
+    let first_occupancy_persona = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store
+                .get_hosted_seat_role_persona(project_id, lsa_binding_id, 1)
+                .expect("the first occupancy persona reads")
+        })
+        .expect("the first occupancy's persona survives its replacement");
+    assert_eq!(first_occupancy_persona.prompt_hash, lsa_persona_digest);
 }
 
 /// A later project edit does not touch an epic already staffed.
@@ -60837,4 +61591,525 @@ async fn artifact_recovery_preserves_unknown_accounts_only_with_exact_native_pro
             );
         }
     }
+}
+
+/// A *first* send registers its boundary, not only a replay.
+///
+/// The wiring this proves was missing. The boundary was captured and persisted
+/// before the effect, and the adapter was handed it only on the replay path —
+/// so a first send into a long session still reconciled against whole history,
+/// still exhausted the page budget, and still refused. The durable half looked
+/// correct while the live path kept the ceiling.
+///
+/// Both issuing paths are checked through the real API, because they capture
+/// and register independently.
+async fn check_first_send_registers_its_boundary(derived: bool) {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "first-send-boundary").await;
+    let seats = seats.as_array().expect("seats");
+    let source = seats[0]["agent_run_id"]
+        .as_str()
+        .expect("source")
+        .to_owned();
+    let role = seats[0]["role_slot"].as_str().expect("role").to_owned();
+    let target = seats[1]["agent_run_id"]
+        .as_str()
+        .expect("target")
+        .to_owned();
+    let project_id = ProjectId::parse(&project).expect("project");
+    let proof = observe_current_turn(&world, &project, &source);
+    let revision = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await
+        .json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("revision");
+    let key = kontor_runtime::request::MessageId::generate();
+    let sent = if derived {
+        Call::post(
+            format!("/v1/projects/{project}/agent-runs/{source}/turns:settle"),
+            &serde_json::json!({"role_slot":role,"expected_task_revision":revision,
+                "runtime_proof":proof,"artifacts":["change-set"]}),
+        )
+    } else {
+        Call::post(
+            format!("/v1/sessions/{target}/messages"),
+            &serde_json::json!({"body":"a first send, never replayed"}),
+        )
+    }
+    .signed_as(&world, "operator")
+    .with_key(key.to_string())
+    .send(&world)
+    .await;
+    assert_eq!(sent.status, 200, "the first send succeeds: {}", sent.body);
+
+    let message_id = if derived {
+        kontor_runtime::request::MessageId::parse(
+            &world
+                .daemon
+                .state()
+                .with_store(|store| store.list_turn_dispatches(project_id))
+                .expect("dispatches")[0]
+                .message_id,
+        )
+        .expect("message")
+    } else {
+        key
+    };
+    let issuance = world
+        .daemon
+        .state()
+        .message_issuance(message_id)
+        .expect("issuance reads")
+        .expect("issued");
+
+    // Durable half: the pair is recorded, whole, before the effect.
+    let (epoch, sequence) = issuance.boundary_at.expect("a boundary was persisted");
+
+    // Live half, and the one that was missing: the adapter actually holds it, so
+    // this send's own reconciliation can be bounded rather than whole-history.
+    let registered = world
+        .fake
+        .issuance_floor(message_id)
+        .expect("the first send registered its boundary with the adapter");
+    assert_eq!(
+        (registered.epoch, registered.sequence),
+        (epoch, sequence),
+        "the adapter holds the boundary that was persisted, not a recaptured one"
+    );
+}
+
+#[tokio::test]
+async fn direct_first_send_registers_its_boundary() {
+    check_first_send_registers_its_boundary(false).await;
+}
+
+#[tokio::test]
+async fn derived_first_send_registers_its_boundary() {
+    check_first_send_registers_its_boundary(true).await;
+}
+
+// ASMA-8190: a replacement intent can remain inert while the prior occupancy
+// remains durably bound and is already archived at the runtime.
+async fn wedged_successor_launch_intent(archive: bool) -> (Composed, String, serde_json::Value) {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8190-inert-successor", "8190-inert-successor").await;
+    enable_provider_account(
+        &composed.world,
+        &composed.project,
+        "codex-personal",
+        "8190-approved",
+    )
+    .await;
+    let project_id = ProjectId::parse(&composed.project).unwrap();
+    let binding_id = SeatBindingId::parse(&binding).unwrap();
+    let (revision, archived_at) = composed.world.daemon.state().with_store(|store| {
+        (
+            store
+                .get_seat_binding(project_id, binding_id)
+                .unwrap()
+                .unwrap()
+                .revision,
+            store
+                .get_hosted_topology_seat(project_id, binding_id)
+                .unwrap()
+                .unwrap()
+                .observed_at,
+        )
+    });
+    if archive {
+        composed.world.fake.archive_hosted_seat(&native);
+    }
+    let prepared_at = kontor_api::now().to_string();
+    let connection = rusqlite::Connection::open(
+        composed
+            .world
+            .directory
+            .path()
+            .join(kontor_daemon::DATABASE_FILE),
+    )
+    .unwrap();
+    connection
+        .execute(
+            "INSERT INTO hosted_topology_seat_launch_intents
+        (project_id, seat_binding_id, occupancy_generation, autonomy, model_rung,
+         state, observed_native_id, prepared_at, installed_at)
+         VALUES (?1, ?2, 2, 'bounded',
+         json('{\"provider\":\"codex\",\"model\":\"gpt-5.6-sol\",\"effort\":\"xhigh\"}'),
+         'prepared', NULL, ?3, NULL)",
+            rusqlite::params![composed.project, binding, prepared_at],
+        )
+        .unwrap();
+    let mut body = supersede_body(&binding, revision);
+    body["occupancy_generation"] = serde_json::json!(2);
+    body["expected_model_route"] =
+        serde_json::json!({"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"});
+    body["desired_model_route"] = serde_json::json!({"provider": "codex-personal", "model": "gpt-5.6-sol", "effort": "xhigh"});
+    body["expected_prepared_at"] = serde_json::json!(prepared_at);
+    body["expected_predecessor_native_id"] = serde_json::json!(native);
+    body["expected_predecessor_generation"] = serde_json::json!(generation);
+    body["expected_predecessor_archived_at"] = serde_json::json!(archived_at.to_string());
+    (composed, binding, body)
+}
+
+#[tokio::test]
+async fn an_inert_successor_intent_can_supersede_an_archived_predecessor() {
+    let (composed, binding, body) = wedged_successor_launch_intent(true).await;
+    let project_id = ProjectId::parse(&composed.project).unwrap();
+    let binding_id = SeatBindingId::parse(&binding).unwrap();
+    let before = composed.world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat(project_id, binding_id)
+            .unwrap()
+    });
+    let minted = composed.world.fake.minted_natives();
+    let answer = supersede(
+        &composed.world,
+        &composed.project,
+        &composed.epic,
+        &body,
+        "8190-inert-successor-repair",
+    )
+    .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(answer.json()["occupancy_generation"], 2);
+    let replay = supersede(
+        &composed.world,
+        &composed.project,
+        &composed.epic,
+        &body,
+        "8190-inert-successor-repair",
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        answer.json()["receipt"]["receipt_id"],
+        replay.json()["receipt"]["receipt_id"]
+    );
+    assert_eq!(composed.world.fake.minted_natives(), minted);
+    composed.world.daemon.state().with_store(|store| {
+        assert_eq!(
+            before,
+            store
+                .get_hosted_topology_seat(project_id, binding_id)
+                .unwrap()
+        );
+        let intent = store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(intent.model_rung.provider.0, "codex-personal");
+        assert_eq!(intent.state, HostedSeatLaunchIntentState::Prepared);
+        assert!(intent.observed_native_id.is_none());
+    });
+}
+
+#[tokio::test]
+async fn an_inert_successor_intent_refuses_wrong_predecessor_and_occupancy() {
+    for case in [
+        "live",
+        "native",
+        "runtime-generation",
+        "archive-stamp",
+        "missing-fence",
+        "occupancy",
+        "seat-revision",
+        "installed",
+        "missing-native",
+        "conversation",
+        "ecp-root",
+    ] {
+        let (composed, binding, mut body) = wedged_successor_launch_intent(case != "live").await;
+        let project_id = ProjectId::parse(&composed.project).unwrap();
+        let binding_id = SeatBindingId::parse(&binding).unwrap();
+        let native =
+            ExternalId::parse(body["expected_predecessor_native_id"].as_str().unwrap()).unwrap();
+        let before = composed.world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+                .unwrap()
+        });
+        match case {
+            "native" => {
+                body["expected_predecessor_native_id"] = serde_json::json!("another-native")
+            }
+            "runtime-generation" => body["expected_predecessor_generation"] = serde_json::json!(99),
+            "archive-stamp" => {
+                body["expected_predecessor_archived_at"] = serde_json::json!("2020-01-01T00:00:00Z")
+            }
+            "missing-fence" => {
+                body.as_object_mut()
+                    .unwrap()
+                    .remove("expected_predecessor_archived_at");
+            }
+            "occupancy" => body["occupancy_generation"] = serde_json::json!(3),
+            "seat-revision" => body["expected_seat_binding_revision"] = serde_json::json!(99),
+            "installed" => {
+                let connection = rusqlite::Connection::open(
+                    composed
+                        .world
+                        .directory
+                        .path()
+                        .join(kontor_daemon::DATABASE_FILE),
+                )
+                .unwrap();
+                connection.execute("UPDATE hosted_topology_seat_launch_intents SET state = 'installed', installed_at = '2026-09-21T00:00:00Z', observed_native_id = 'successor' WHERE project_id = ?1 AND seat_binding_id = ?2 AND occupancy_generation = 2", rusqlite::params![composed.project, binding]).unwrap();
+            }
+            "missing-native" => composed.world.fake.forget_seat(&native),
+            "conversation" => composed.world.fake.set_seat_provider_session(
+                &native,
+                Some(ExternalId::parse("changed-conversation").unwrap()),
+            ),
+            "ecp-root" => {
+                let node = op4_seat_node(&composed.world, project_id, binding_id);
+                composed
+                    .world
+                    .fake
+                    .drift_container(node, exact_container_drifts()[1].clone());
+            }
+            _ => {}
+        }
+        let staged = composed.world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+                .unwrap()
+        });
+        let answer = supersede(
+            &composed.world,
+            &composed.project,
+            &composed.epic,
+            &body,
+            &format!("8190-refuse-{case}"),
+        )
+        .await;
+        assert_ne!(answer.status, 200, "{case}: {}", answer.body);
+        let after = composed.world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+                .unwrap()
+        });
+        assert_eq!(staged, after, "{case} changed the intent");
+        if case != "installed" {
+            assert_eq!(before, after);
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_inert_successor_intent_store_rechecks_the_proved_predecessor() {
+    let (composed, binding, body) = wedged_successor_launch_intent(true).await;
+    let project_id = ProjectId::parse(&composed.project).unwrap();
+    let binding_id = SeatBindingId::parse(&binding).unwrap();
+    let predecessor = composed.world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat(project_id, binding_id)
+            .unwrap()
+            .unwrap()
+    });
+    let before = composed.world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+            .unwrap()
+            .unwrap()
+    });
+    let mut proof = predecessor.clone();
+    proof.native_identity.generation += 1;
+    let request = kontor_core::repository::HostedSeatLaunchIntentSupersession {
+        idempotency_key: kontor_core::id::IdempotencyKey::parse("8190-store-stale-proof").unwrap(),
+        intent_hash: CanonicalDocument::from_value(
+            &serde_json::json!({"schema_version": 1, "proof": "stale"}),
+        )
+        .unwrap()
+        .hash()
+        .clone(),
+        project_id,
+        seat_binding_id: binding_id,
+        expected_seat_binding_revision: AggregateRevision::parse(
+            body["expected_seat_binding_revision"].as_u64().unwrap(),
+        )
+        .unwrap(),
+        occupancy_generation: 2,
+        archived_predecessor: Some(proof),
+        expected_model_rung: before.model_rung.clone(),
+        expected_prepared_at: before.prepared_at,
+        replacement_model_rung: serde_json::from_value(body["desired_model_route"].clone())
+            .unwrap(),
+        recorded_at: kontor_api::now(),
+    };
+    composed.world.daemon.state().with_store(|store| {
+        assert!(store.supersede_hosted_seat_launch_intent(&request).is_err());
+        assert_eq!(
+            before,
+            store
+                .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+                .unwrap()
+                .unwrap()
+        );
+        assert_eq!(
+            predecessor,
+            store
+                .get_hosted_topology_seat(project_id, binding_id)
+                .unwrap()
+                .unwrap()
+        );
+    });
+}
+
+#[tokio::test]
+async fn an_inert_successor_intent_replays_after_the_successor_is_installed() {
+    let (composed, binding, body) = wedged_successor_launch_intent(true).await;
+    let first = supersede(
+        &composed.world,
+        &composed.project,
+        &composed.epic,
+        &body,
+        "8190-future-intent-install",
+    )
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_native_id": body["expected_predecessor_native_id"],
+        "expected_generation": body["expected_predecessor_generation"],
+        "desired_model_route": body["desired_model_route"],
+    });
+    let apply_body = op4_preview(&composed.world, &composed.project, &composed.epic, request).await;
+    let apply = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/core-team/routes:apply",
+            composed.project, composed.epic
+        ),
+        &apply_body,
+    )
+    .signed_as(&composed.world, "admin")
+    .with_key("8190-future-route-install")
+    .send(&composed.world)
+    .await;
+    assert_eq!(apply.status, 200, "{}", apply.body);
+    let before_replay = composed.world.fake.minted_natives();
+    let replay = supersede(
+        &composed.world,
+        &composed.project,
+        &composed.epic,
+        &body,
+        "8190-future-intent-install",
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        first.json()["receipt"]["receipt_id"],
+        replay.json()["receipt"]["receipt_id"]
+    );
+    assert_eq!(composed.world.fake.minted_natives(), before_replay);
+}
+
+#[tokio::test]
+async fn an_inert_successor_intent_recovers_a_receipt_after_cas_commit_and_successor_install() {
+    let (composed, binding, body) = wedged_successor_launch_intent(true).await;
+    let project_id = ProjectId::parse(&composed.project).unwrap();
+    let binding_id = SeatBindingId::parse(&binding).unwrap();
+    let prepared_at =
+        kontor_core::id::parse_utc_timestamp(body["expected_prepared_at"].as_str().unwrap())
+            .unwrap();
+    let expected_model: kontor_core::spec::ModelRung =
+        serde_json::from_value(body["expected_model_route"].clone()).unwrap();
+    let replacement_model: kontor_core::spec::ModelRung =
+        serde_json::from_value(body["desired_model_route"].clone()).unwrap();
+    let intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "supersede_core_team_launch_intent",
+        "project": composed.project,
+        "epic": composed.epic,
+        "seat_binding": binding,
+        "seat_binding_revision": body["expected_seat_binding_revision"],
+        "occupancy_generation": 2,
+        "superseded": expected_model,
+        "superseded_prepared_at": prepared_at.to_string(),
+        "replacement": replacement_model,
+        "archived_predecessor": {
+            "native_id": body["expected_predecessor_native_id"],
+            "generation": body["expected_predecessor_generation"],
+            "archived_at": body["expected_predecessor_archived_at"],
+        },
+    }))
+    .unwrap();
+    let key = IdempotencyKey::parse("8190-committed-cas-missing-receipt").unwrap();
+    composed.world.daemon.state().with_store(|store| {
+        let predecessor = store
+            .get_hosted_topology_seat(project_id, binding_id)
+            .unwrap()
+            .unwrap();
+        store
+            .supersede_hosted_seat_launch_intent(
+                &kontor_core::repository::HostedSeatLaunchIntentSupersession {
+                    idempotency_key: key.clone(),
+                    intent_hash: intent.hash().clone(),
+                    project_id,
+                    seat_binding_id: binding_id,
+                    expected_seat_binding_revision: AggregateRevision::parse(
+                        body["expected_seat_binding_revision"].as_u64().unwrap(),
+                    )
+                    .unwrap(),
+                    occupancy_generation: 2,
+                    archived_predecessor: Some(predecessor),
+                    expected_model_rung: expected_model,
+                    expected_prepared_at: prepared_at,
+                    replacement_model_rung: replacement_model,
+                    recorded_at: kontor_api::now(),
+                },
+            )
+            .unwrap();
+        assert!(store.get_receipt_by_key(&key).unwrap().is_none());
+    });
+    // The process stopped after CAS. A subsequent normal recovery consumed the
+    // repaired intent before the original command could reconstruct its receipt.
+    let request = serde_json::json!({
+        "expected_revision": 1, "seat_binding_id": binding,
+        "expected_native_id": body["expected_predecessor_native_id"],
+        "expected_generation": body["expected_predecessor_generation"],
+        "desired_model_route": body["desired_model_route"],
+    });
+    let apply_body = op4_preview(&composed.world, &composed.project, &composed.epic, request).await;
+    let apply = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/core-team/routes:apply",
+            composed.project, composed.epic
+        ),
+        &apply_body,
+    )
+    .signed_as(&composed.world, "admin")
+    .with_key("8190-after-cas-route-install")
+    .send(&composed.world)
+    .await;
+    assert_eq!(apply.status, 200, "{}", apply.body);
+    let before = composed.world.fake.minted_natives();
+    let recovered = supersede(
+        &composed.world,
+        &composed.project,
+        &composed.epic,
+        &body,
+        key.as_str(),
+    )
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(composed.world.fake.minted_natives(), before);
+    let replay = supersede(
+        &composed.world,
+        &composed.project,
+        &composed.epic,
+        &body,
+        key.as_str(),
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        recovered.json()["receipt"]["receipt_id"],
+        replay.json()["receipt"]["receipt_id"]
+    );
 }

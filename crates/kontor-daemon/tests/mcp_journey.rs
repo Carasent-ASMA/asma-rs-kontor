@@ -653,11 +653,38 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             "label": "Primary",
             "harness": "fake.runtime",
             "credential_alias": "journey-alias",
+            "selectable_providers": ["claude", "claude-work", "claude-personal", "codex", "codex-work", "codex-personal", "opencode"],
             "enabled": true,
         }),
     )
     .await;
     assert!(account["account_profile_id"].is_string());
+
+    // The scripted runtime has no vendor quota endpoint. Its actual pinned
+    // account declares this limitation through the supported MCP surface.
+    for provider in [
+        "claude",
+        "claude-work",
+        "claude-personal",
+        "codex",
+        "codex-work",
+        "codex-personal",
+        "opencode",
+    ] {
+        ok(
+            &lead,
+            "kontor_provider_quota_record",
+            serde_json::json!({
+                "project_id": project,
+                "idempotency_key": format!("journey-quota-{provider}"),
+                "account_profile_id": account["account_profile_id"],
+                "provider": provider,
+                "state": "cannot_report",
+                "expected_revision": 1
+            }),
+        )
+        .await;
+    }
 
     // 4. The whole graph, applied atomically, with its dependency edge and its
     //    ticket link resolved inside `kontord`.
@@ -825,8 +852,8 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     );
     assert_eq!(
         transport.calls(),
-        21,
-        "twenty-one tool invocations made twenty-one requests: {routes:#?}"
+        28,
+        "twenty-eight tool invocations made twenty-eight requests: {routes:#?}"
     );
 
     // Source accounts are real launch pins, selected through the public tool.

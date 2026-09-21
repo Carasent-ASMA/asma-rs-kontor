@@ -6721,7 +6721,7 @@ async fn message_a_confirmation_read_that_cannot_answer_is_unconfirmed_delivery(
 }
 
 #[tokio::test]
-async fn message_a_history_read_promotes_confirmation_unknown_to_a_replayable_ack() {
+async fn message_a_history_read_keeps_confirmation_unknown_until_a_complete_proof() {
     let (plane, binding) = launched().await;
     plane.daemon.lose_next_rpc("send_agent_message_request");
     let mut absent = v(TIMELINE_MESSAGE_LANDED);
@@ -6756,18 +6756,27 @@ async fn message_a_history_read_promotes_confirmation_unknown_to_a_replayable_ac
     assert_eq!(page.items[0].position.sequence, 1);
 
     let reads_before_replay = plane.daemon.count("rpc fetch_agent_timeline_request");
-    plane.daemon.refuse_next_rpc("fetch_agent_timeline_request");
+    plane.daemon.lose_next_rpc("fetch_agent_timeline_request");
     let replay = plane
         .adapter
         .send(&request)
         .await
-        .expect("the history read repaired the durable delivery ledger");
-    assert_eq!(replay.position.sequence, 1);
+        .expect_err("one history page cannot prove uniqueness across the transcript");
+    assert!(
+        matches!(replay, RuntimeError::Transport { .. }),
+        "{replay:?}"
+    );
     assert_eq!(
         plane.daemon.count("rpc fetch_agent_timeline_request"),
-        reads_before_replay,
-        "the acknowledged retry is answered before touching the runtime"
+        reads_before_replay + 1,
+        "an unconfirmed retry still owes its complete canonical proof"
     );
+    let proved = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("the subsequent complete scan proves one occurrence");
+    assert_eq!(proved.position.sequence, 1);
     assert_eq!(
         plane.daemon.count("rpc send_agent_message_request"),
         1,
@@ -7874,6 +7883,16 @@ async fn security_an_oversized_frame_is_refused_at_every_acceptance_point() {
         .await
         .expect_err("an oversized answer is refused");
     assert_eq!(refused, bound);
+    let reads = plane.daemon.sent_messages("fetch_agent_timeline_request");
+    let limits: Vec<_> = reads
+        .iter()
+        .map(|read| read["limit"].as_u64().unwrap())
+        .collect();
+    assert_eq!(
+        limits,
+        [10, 5, 2, 1],
+        "one oversized entry remains refused after bounded read retries"
+    );
 
     // The pushed half: a subscription frame is bounded too, and refused before
     // the epoch registry or the timeline guard sees it.
@@ -9189,6 +9208,7 @@ fn stale_container_recovery(stale_native_id: &str) -> ContainerRecoveryRequest {
         },
         bound_project_native_id: external(PROJECT_ID),
         canonical_cwd: root(),
+        task_container: true,
         expected_title: name(CANONICAL_NODE_TITLE),
         requested_at: at("2026-09-04T08:00:00Z"),
     }
@@ -9202,6 +9222,7 @@ fn stale_container_recreation(stale_native_id: &str) -> ContainerRecreationReque
         absent_identity: recovery.stale_identity,
         bound_project_native_id: recovery.bound_project_native_id,
         canonical_cwd: recovery.canonical_cwd,
+        task_container: recovery.task_container,
         expected_title: recovery.expected_title,
         requested_at: recovery.requested_at,
     }
@@ -9211,6 +9232,94 @@ fn stale_container_recreation(stale_native_id: &str) -> ContainerRecreationReque
 /// record's evidence items are stated in terms of.
 fn creates(plane: &Plane) -> Vec<String> {
     plane.daemon.mutations()
+}
+
+#[tokio::test]
+async fn container_recreation_refuses_non_worktree_ticket_readback() {
+    for kind in ["local_checkout", "directory", "checkout", "unknown"] {
+        let mut wrong_kind = v(WORKSPACE_LIST_NODE);
+        wrong_kind["entries"][0]["workspaceKind"] = serde_json::json!(kind);
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", wrong_kind);
+        let plane = Plane::fresh(recorded);
+
+        let error = plane
+            .adapter
+            .recreate_container(&stale_container_recreation("wks_stale"))
+            .await
+            .expect_err(
+                "matching path and title cannot turn a local checkout into a ticket worktree",
+            );
+        assert!(
+            matches!(error, RuntimeError::StaleBinding { .. }),
+            "{kind}: {error:?}"
+        );
+        assert_eq!(
+            creates(&plane).len(),
+            1,
+            "a refused readback must not create again"
+        );
+    }
+}
+
+#[tokio::test]
+async fn container_recovery_and_lost_creation_adoption_validate_subject_kind() {
+    for (task_container, kind, accepted) in [
+        (true, "worktree", true),
+        (true, "local_checkout", false),
+        (true, "directory", false),
+        (true, "checkout", false),
+        (true, "unknown", false),
+        (false, "worktree", true),
+        (false, "local_checkout", true),
+        (false, "directory", true),
+        (false, "checkout", false),
+        (false, "unknown", false),
+    ] {
+        let mut listing = v(WORKSPACE_LIST_NODE);
+        listing["entries"][0]["workspaceKind"] = serde_json::json!(kind);
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", listing);
+        let plane = Plane::fresh(recorded);
+        let mut recovery = stale_container_recovery("wks_stale");
+        recovery.task_container = task_container;
+        let mut recreation = stale_container_recreation("wks_stale");
+        recreation.task_container = task_container;
+
+        let recovery_result = plane.adapter.preview_container_recovery(&recovery).await;
+        let preview_result = plane
+            .adapter
+            .preview_container_recreation(&recreation)
+            .await;
+        let apply_result = plane.adapter.recreate_container(&recreation).await;
+        assert_eq!(
+            recovery_result.is_ok(),
+            accepted,
+            "recovery task={task_container} kind={kind}: {recovery_result:?}"
+        );
+        assert_eq!(
+            preview_result.is_ok(),
+            accepted,
+            "preview task={task_container} kind={kind}: {preview_result:?}"
+        );
+        assert_eq!(
+            apply_result.is_ok(),
+            accepted,
+            "apply task={task_container} kind={kind}: {apply_result:?}"
+        );
+        for result in [preview_result, apply_result].into_iter().flatten() {
+            assert!(!result.created, "adoption cannot create another workspace");
+        }
+        assert!(creates(&plane).is_empty());
+    }
 }
 
 /// Evidence item 1 (runtime half): exact native absent plus zero candidates
@@ -10053,6 +10162,52 @@ async fn an_attached_hosted_seat_with_no_provider_thread_recovers_in_place() {
     );
     assert_eq!(plane.daemon.count("agent reload agt_implement"), 1);
     assert_eq!(plane.daemon.count("rpc create_agent_request"), 0);
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn an_oversized_hosted_history_is_reconciled_through_smaller_reads_without_resending() {
+    let seat_binding_id = SeatBindingId::generate();
+    let mut agent = v(AGENT);
+    agent["agent"]["labels"] = serde_json::json!({
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+    });
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("fetch_agent_request", agent)
+        .then_answering_rpc(
+            "fetch_agent_timeline_request",
+            serde_json::json!({
+                "filler": "x".repeat(MAX_FRAME_BYTES)
+            }),
+        )
+        .answering_rpc("fetch_agent_timeline_request", v(TIMELINE_MESSAGE_LANDED));
+    let plane = Plane::fresh(recorded);
+    let outcome = plane
+        .adapter
+        .message_hosted_seat(&HostedSeatMessageRequest {
+            seat_binding_id,
+            identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+                host: name(HOST_KEY),
+                generation: 1,
+                native_id: external(AGENT_ID),
+            },
+            message_id: MessageId::parse(MESSAGE).expect("message id"),
+            body: text("frozen completion wake"),
+            sent_at: at("2026-08-20T05:10:00Z"),
+        })
+        .await
+        .expect("smaller canonical pages retain the actual delivery proof");
+    assert_eq!(outcome.position.sequence, 1);
+    assert_eq!(plane.daemon.count("rpc fetch_agent_timeline_request"), 2);
+    let reads = plane.daemon.sent_messages("fetch_agent_timeline_request");
+    assert_eq!(reads[0]["limit"], 500);
+    assert_eq!(reads[1]["limit"], 250);
+    assert_eq!(reads[0]["cursor"], reads[1]["cursor"]);
+    assert_eq!(reads[0]["direction"], reads[1]["direction"]);
     assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
 }
 
@@ -13284,4 +13439,564 @@ async fn native_root_removal_refuses_a_live_session_under_the_filesystem_root() 
         plane.daemon.mutations().is_empty(),
         "no project may be removed while a session is live inside it"
     );
+}
+
+/// The acknowledgement ceiling: a long session could not confirm any send.
+///
+/// Reconciliation walks back from the tail under `RECONCILE_PAGE_BUDGET` pages
+/// of `MAX_HISTORY_PAGE`, and refuses unless it reached the beginning — because
+/// only a complete read can count occurrences across a whole transcript. The
+/// exact `clientMessageId` is found on the first page, near the tail, and then
+/// discarded. Past two thousand canonical entries every send is therefore
+/// refused as confirmation-unknown however healthy the runtime is, which is what
+/// stopped large seats acknowledging messages that had plainly landed.
+///
+/// Both halves are asserted from one fixture, so the second is not taking the
+/// first on trust: with no recorded boundary the scan still exhausts its budget
+/// and still refuses, and with the boundary this issuance was recorded against
+/// it proves itself from the suffix and acknowledges the delivery that is
+/// already there.
+#[tokio::test]
+async fn a_long_session_acknowledges_from_a_bounded_suffix() {
+    let mut entries: Vec<serde_json::Value> = (1..=2400)
+        .map(|seq| {
+            if seq == 2300 {
+                user_entry(seq, MESSAGE)
+            } else {
+                assistant_entry(seq)
+            }
+        })
+        .collect();
+    entries.push(assistant_entry(2401));
+    let recorded = daemon().journaling(AGENT_ID, EPOCH_RAW, entries);
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let binding = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the seat launches")
+        .snapshot;
+    let request = message(&binding, "reconcile this");
+    let wanted = MessageId::parse(MESSAGE).expect("pinned");
+
+    // Without a boundary: whole history is required, the budget runs out first,
+    // and the honest answer is that nothing is proven either way.
+    plane
+        .adapter
+        .note_unconfirmed_delivery(wanted, &request.body_hash(), None)
+        .expect("recorded as unconfirmed");
+    assert!(
+        matches!(
+            plane.adapter.send(&request).await,
+            Err(RuntimeError::DeliveryConfirmationUnknown { .. })
+        ),
+        "a transcript past the page budget cannot be proven whole, and must not resend"
+    );
+
+    // With the tail this message was issued after, the same scan reaches the
+    // floor inside the budget and acknowledges the delivery already present.
+    let floor = TimelinePosition {
+        epoch: 1,
+        sequence: 2299,
+    };
+    plane
+        .adapter
+        .note_unconfirmed_delivery(wanted, &request.body_hash(), Some(floor))
+        .expect("recorded with its issuance boundary");
+    let acknowledged = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("the suffix proves the delivery landed");
+    assert_eq!(acknowledged.message_id, wanted);
+    assert_eq!(
+        acknowledged.position,
+        TimelinePosition {
+            epoch: 1,
+            sequence: 2300
+        },
+        "it adopts the occurrence that is actually there, not a fresh send"
+    );
+}
+
+async fn suffix_plane(entries: Vec<serde_json::Value>) -> (Plane, RuntimeBindingSnapshot) {
+    let (plane, workspace) =
+        Plane::prepared(daemon().journaling(AGENT_ID, EPOCH_RAW, entries)).await;
+    let binding = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .unwrap()
+        .snapshot;
+    (plane, binding)
+}
+
+fn suffix_floor(sequence: u64) -> TimelinePosition {
+    TimelinePosition { epoch: 1, sequence }
+}
+
+#[tokio::test]
+async fn issuance_suffix_first_send_and_fresh_adapter_replay_keep_one_native_message() {
+    let (plane, binding) = suffix_plane((1..=2400).map(assistant_entry).collect()).await;
+    let boundary = plane.adapter.tail_window(&binding, 1, 1).await.unwrap().end;
+    assert_eq!(boundary.sequence, 2400);
+    let durable_epochs = plane.adapter.pending_timeline_epochs();
+    plane.adapter.ack_timeline_epochs(&durable_epochs);
+    let request = message(&binding, "one long-session instruction");
+    plane
+        .adapter
+        .note_issuance_boundary(request.message_id, boundary)
+        .unwrap();
+    let ack = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("first send acknowledges beyond four historical pages");
+    assert_eq!(ack.position.sequence, 2401);
+    let native = Arc::clone(&plane.daemon);
+    drop(plane);
+    native.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
+    let restarted = PaseoAdapter::new(
+        config(),
+        Box::new(Arc::clone(&native)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .unwrap();
+    restarted.restore_timeline_epochs(&durable_epochs).unwrap();
+    restarted
+        .restore_bindings(std::slice::from_ref(&binding))
+        .await
+        .unwrap();
+    restarted
+        .note_unconfirmed_delivery(request.message_id, &request.body_hash(), Some(boundary))
+        .unwrap();
+    let recovered = restarted
+        .send(&request)
+        .await
+        .expect("fresh adapter proves the original suffix without resending");
+    assert_eq!(recovered.position, ack.position);
+    assert_eq!(
+        native.count("rpc send_agent_message_request"),
+        1,
+        "the runtime's deduplication never gets a second request to hide"
+    );
+    assert_eq!(
+        native
+            .journal_client_message_ids(AGENT_ID)
+            .iter()
+            .filter(|id| id.as_deref() == Some(MESSAGE))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn issuance_suffix_duplicate_is_refused_without_a_send() {
+    let (plane, binding) = suffix_plane(
+        (1..=3000)
+            .map(|seq| {
+                if seq == 2600 || seq == 2999 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert!(matches!(
+        plane.adapter.send(&request).await,
+        Err(RuntimeError::DuplicateMessage { .. })
+    ));
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_excludes_preissuance_occurrences_in_the_boundary_page() {
+    let (plane, binding) = suffix_plane(
+        (1..=2700)
+            .map(|seq| {
+                if seq == 2400 || seq == 2500 || seq == 2600 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    let ack = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("only the occurrence after issuance is this delivery");
+    assert_eq!(ack.position.sequence, 2600);
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_changed_epoch_refuses_even_when_the_message_is_visible() {
+    let (plane, binding) = suffix_plane(
+        (1..=2700)
+            .map(|seq| {
+                if seq == 2600 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    plane
+        .adapter
+        .restore_timeline_epochs(&[(EPOCH_RAW.to_owned(), 2)])
+        .unwrap();
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert_eq!(
+        plane.adapter.send(&request).await.unwrap_err(),
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::EpochChanged
+        }
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_partial_absence_never_authorizes_a_send() {
+    let (plane, binding) = suffix_plane(
+        (1..=5000)
+            .map(|seq| {
+                if seq == 2500 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(1000)),
+        )
+        .unwrap();
+    assert!(matches!(
+        plane.adapter.send(&request).await,
+        Err(RuntimeError::DeliveryConfirmationUnknown { .. })
+    ));
+    assert_eq!(plane.daemon.count("rpc fetch_agent_timeline_request"), 4);
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_an_unrelated_message_is_not_adopted_as_delivery() {
+    let (plane, binding) = suffix_plane(
+        (1..=2400)
+            .map(|seq| {
+                if seq == 2300 {
+                    user_entry(seq, MESSAGE_ALT)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2200)),
+        )
+        .unwrap();
+    let ack = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("complete absence permits exactly one original effect");
+    assert_eq!(
+        ack.position.sequence, 2401,
+        "the unrelated occurrence at 2300 is not a delivery proof"
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 1);
+}
+
+#[tokio::test]
+async fn issuance_suffix_a_hole_inside_the_boundary_page_is_not_a_complete_proof() {
+    let (plane, binding) = suffix_plane(
+        (1..=2700)
+            .filter(|seq| *seq != 2501)
+            .map(|seq| {
+                if seq == 2600 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert_eq!(
+        plane.adapter.send(&request).await.unwrap_err(),
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::SequenceGap
+        }
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_a_hole_between_pages_is_not_a_complete_proof() {
+    let (plane, binding) = suffix_plane(
+        (1..=3500)
+            .filter(|seq| *seq != 3000)
+            .map(|seq| {
+                if seq == 3400 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert_eq!(
+        plane.adapter.send(&request).await.unwrap_err(),
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::SequenceGap
+        }
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_an_early_history_end_does_not_prove_absence() {
+    let (plane, binding) = suffix_plane((2502..=2700).map(assistant_entry).collect()).await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert_eq!(
+        plane.adapter.send(&request).await.unwrap_err(),
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::SequenceGap
+        }
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery() {
+    use kontor_core::state::NativeRuntimeIdentity;
+    use kontor_runtime::adapter::HostedSeatRetirePlacement;
+    for case in [
+        "valid",
+        "live",
+        "permission",
+        "workspace",
+        "cwd",
+        "conversation",
+        "generation",
+        "label",
+        "successor",
+        "archived-successor",
+        "known-history",
+        "census-omits-predecessor",
+        "census-drift",
+    ] {
+        let seat_binding_id = SeatBindingId::generate();
+        let mut agent = v(AGENT)["agent"].clone();
+        agent["labels"] = serde_json::json!({
+            "kontor.seat_binding_id": seat_binding_id.to_string(),
+            "kontor.hosted_seat": "true",
+        });
+        agent["archivedAt"] = serde_json::json!("2026-09-20T05:42:26.512Z");
+        let mut request = HostedSeatRetireRequest {
+            seat_binding_id,
+            identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
+                host: name(HOST_KEY),
+                generation: 1,
+                native_id: external(AGENT_ID),
+            },
+            model_rung: model_rung(),
+            autonomy: SeatAutonomy::standard(),
+            requested_at: at("2026-09-21T09:00:00Z"),
+            placement: Some(HostedSeatRetirePlacement {
+                workspace_native_id: external(WORKSPACE_ID),
+                canonical_cwd: WorkspaceRoot::parse(CWD).unwrap(),
+                provider_session_id: None,
+            }),
+        };
+        match case {
+            "live" => agent["archivedAt"] = serde_json::Value::Null,
+            "permission" => {
+                agent["pendingPermissions"] =
+                    v(AGENT_PERMISSION_OPEN)["agent"]["pendingPermissions"].clone()
+            }
+            "workspace" => agent["workspaceId"] = serde_json::json!("wks_another"),
+            "cwd" => agent["cwd"] = serde_json::json!("/another/directory"),
+            "conversation" => {
+                request.placement.as_mut().unwrap().provider_session_id =
+                    Some(external("different-conversation"))
+            }
+            "generation" => request.identity.generation = 99,
+            "label" => {
+                agent["labels"]["kontor.seat_binding_id"] =
+                    serde_json::json!(SeatBindingId::generate())
+            }
+            _ => {}
+        }
+        let mut census = v(AGENT_LIST_ARCHIVED_ONLY);
+        census["entries"][0]["agent"] = agent.clone();
+        if matches!(case, "successor" | "archived-successor" | "known-history") {
+            let mut successor = agent.clone();
+            successor["id"] = serde_json::json!("unacknowledged-successor");
+            if case == "successor" {
+                successor["archivedAt"] = serde_json::Value::Null;
+            }
+            let mut entry = census["entries"][0].clone();
+            entry["agent"] = successor;
+            census["entries"].as_array_mut().unwrap().push(entry);
+        }
+        let known_history = if case == "known-history" {
+            vec![external("unacknowledged-successor")]
+        } else {
+            vec![]
+        };
+        if case == "census-omits-predecessor" {
+            census["entries"] = serde_json::json!([]);
+        }
+        if case == "census-drift" {
+            census["entries"][0]["agent"]["archivedAt"] = serde_json::Value::Null;
+        }
+        let mut exact = v(AGENT);
+        exact["agent"] = agent;
+        let plane = Plane::fresh(
+            daemon()
+                .answering_rpc("fetch_agent_request", exact)
+                .answering_rpc("fetch_agents_request", census),
+        );
+        let outcome = plane
+            .adapter
+            .prove_archived_hosted_seat(&request, &known_history)
+            .await;
+        if matches!(case, "valid" | "known-history") {
+            let proof = outcome.expect("the exact archived predecessor is provable");
+            assert_eq!(proof.identity, request.identity);
+            assert_eq!(proof.archived_at, at("2026-09-20T05:42:26.512Z"));
+        } else {
+            assert!(outcome.is_err(), "{case} was accepted");
+        }
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "{case} wrote to the runtime"
+        );
+    }
+}
+
+#[tokio::test]
+async fn message_a_history_page_cannot_hide_a_duplicate_outside_that_page() {
+    for floor in [None, Some(suffix_floor(2500))] {
+        let first = if floor.is_some() { 2600 } else { 1 };
+        let second = if floor.is_some() { 2999 } else { 2 };
+        let tail = if floor.is_some() { 3000 } else { 2 };
+        let (plane, binding) = suffix_plane(
+            (1..=tail)
+                .map(|seq| {
+                    if seq == first || seq == second {
+                        user_entry(seq, MESSAGE)
+                    } else {
+                        assistant_entry(seq)
+                    }
+                })
+                .collect(),
+        )
+        .await;
+        plane.adapter.tail_window(&binding, 1, 1).await.unwrap();
+        let request = message(&binding, "uncertain");
+        plane
+            .adapter
+            .note_unconfirmed_delivery(request.message_id, &request.body_hash(), floor)
+            .unwrap();
+        let page = plane
+            .adapter
+            .history(&HistoryRequest {
+                binding: binding.clone(),
+                cursor: Some(HistoryCursor::issue(
+                    binding.binding_id(),
+                    suffix_floor(first - 1),
+                )),
+                page_size: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(
+            page.items[0].subject,
+            EventSubject::Message(request.message_id)
+        );
+        assert!(
+            matches!(
+                plane.adapter.send(&request).await,
+                Err(RuntimeError::DuplicateMessage { .. })
+            ),
+            "a single-page observation must not bypass duplicate detection: {floor:?}"
+        );
+        assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+    }
 }

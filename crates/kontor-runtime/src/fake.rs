@@ -815,6 +815,10 @@ struct FakeState {
     /// between one control operation and the next.
     declared_autonomy: Option<SeatAutonomy>,
     hosted_role_prompts: BTreeMap<SeatBindingId, Option<BoundedText>>,
+    /// The bounded first handoff each hosted seat was launched with, recorded
+    /// beside the persona so a test can prove the two are different values
+    /// rather than one value written twice.
+    hosted_initial_prompts: BTreeMap<SeatBindingId, BoundedText>,
     /// Terminal hosted natives retained so retirement and recovery are replayable.
     archived_hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// Stable message ledger per exact hosted native. A logical seat may be
@@ -853,6 +857,8 @@ struct FakeState {
     /// for: it survives nothing on its own and is handed back from durable
     /// state when a replay arrives.
     unconfirmed_deliveries: BTreeSet<MessageId>,
+    /// The canonical tail each message was registered as issued after.
+    issuance_floors: BTreeMap<MessageId, TimelinePosition>,
     /// Whether the modelled native runtime answers a resent client message id
     /// from its own ledger instead of appending a second entry.
     ///
@@ -1435,6 +1441,7 @@ impl ScriptedFakeRuntime {
                 hosted_retire_placements: Vec::new(),
                 declared_autonomy: None,
                 hosted_role_prompts: BTreeMap::new(),
+                hosted_initial_prompts: BTreeMap::new(),
                 archived_hosted_seats: BTreeMap::new(),
                 hosted_messages: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
@@ -1445,6 +1452,7 @@ impl ScriptedFakeRuntime {
                 lose_retitle_ack_once: BTreeSet::new(),
                 lose_next_send_ack: false,
                 unconfirmed_deliveries: BTreeSet::new(),
+                issuance_floors: BTreeMap::new(),
                 native_deduplicates_messages: true,
                 epoch_mappings: BTreeMap::new(),
                 undrained_epochs: Vec::new(),
@@ -1782,15 +1790,6 @@ impl ScriptedFakeRuntime {
         }
     }
 
-    /// Drop everything a rebuilt adapter loses, keeping what the runtime keeps.
-    ///
-    /// `compose_paseo` builds every adapter from `PaseoCheckpoint::fresh`, so a
-    /// daemon restart destroys the adapter's own ledgers — which bindings it
-    /// issued, and where each seat is placed — while the runtime it talks to
-    /// keeps running with its sessions intact. Modelling the restart *without*
-    /// this leaves those ledgers populated in-process, and a test then proves
-    /// only that the daemon's half recovered. That is precisely how a
-    /// reads-recover-but-writes-do-not split survived a green suite.
     /// Model a native runtime that does not deduplicate by client message id.
     ///
     /// This fake answers a resent id from the session's own ledger, which makes
@@ -1807,12 +1806,22 @@ impl ScriptedFakeRuntime {
         self.lock().native_deduplicates_messages = false;
     }
 
-    /// Rebuild process-local adapter state while retaining the native sessions.
+    /// Drop everything a rebuilt adapter loses, keeping what the runtime keeps.
+    ///
+    /// `compose_paseo` builds every adapter from `PaseoCheckpoint::fresh`, so a
+    /// daemon restart destroys the adapter's own ledgers — which bindings it
+    /// issued, and where each seat is placed — while the runtime it talks to
+    /// keeps running with its sessions intact. Modelling the restart *without*
+    /// this leaves those ledgers populated in-process, and a test then proves
+    /// only that the daemon's half recovered. That is precisely how a
+    /// reads-recover-but-writes-do-not split survived a green suite.
     pub fn rebuild_adapter_state(&self) {
         let mut state = self.lock();
         state.bindings.clear();
         state.placements.clear();
         state.admissions = AdmissionLedger::new();
+        state.unconfirmed_deliveries.clear();
+        state.issuance_floors.clear();
     }
 
     /// Forget that the plane was ever prepared.
@@ -2385,6 +2394,12 @@ impl ScriptedFakeRuntime {
         self.lock().hosted_role_prompts.get(&seat).cloned()
     }
 
+    /// The bounded first handoff one hosted seat was launched with.
+    #[must_use]
+    pub fn hosted_initial_prompt(&self, seat: SeatBindingId) -> Option<BoundedText> {
+        self.lock().hosted_initial_prompts.get(&seat).cloned()
+    }
+
     /// The route a consultation seat was launched on.
     #[must_use]
     pub fn consultation_route(&self, seat: SeatBindingId) -> Option<ModelRung> {
@@ -2543,6 +2558,16 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn undrained_epochs(&self) -> Vec<(String, u64)> {
         self.lock().undrained_epochs.clone()
+    }
+
+    /// The boundary this message was registered as issued after, if any.
+    ///
+    /// The floor is what lets a reconciliation prove itself from a suffix, and
+    /// a first send that never registers one falls back to whole history — which
+    /// is the difference between acknowledging a long session and refusing it.
+    #[must_use]
+    pub fn issuance_floor(&self, message_id: MessageId) -> Option<TimelinePosition> {
+        self.lock().issuance_floors.get(&message_id).copied()
     }
 
     /// Every recorded event of the session behind `binding`.
@@ -2863,13 +2888,23 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .retain(|pending| !persisted.contains(pending));
     }
 
+    fn note_issuance_boundary(
+        &self,
+        message_id: MessageId,
+        issued_after: TimelinePosition,
+    ) -> RuntimeResult<()> {
+        self.lock().issuance_floors.insert(message_id, issued_after);
+        Ok(())
+    }
+
     /// Remember, at adapter level, that this message may already be out there.
     fn note_unconfirmed_delivery(
         &self,
         message_id: MessageId,
         body_hash: &ContentHash,
+        issued_after: Option<TimelinePosition>,
     ) -> RuntimeResult<()> {
-        let _ = body_hash;
+        let _ = (body_hash, issued_after);
         self.lock().unconfirmed_deliveries.insert(message_id);
         Ok(())
     }
@@ -3608,6 +3643,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         self.lock().admit(request)
     }
 
+    async fn release_unclaimed_admission(
+        &self,
+        slot: &crate::admission::RoleSlotKey,
+        agent_run_id: kontor_core::id::AgentRunId,
+    ) -> RuntimeResult<bool> {
+        Ok(self.lock().admissions.release_unclaimed(slot, agent_run_id))
+    }
+
     async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
         let mut state = self.lock();
 
@@ -3922,6 +3965,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .hosted_role_prompts
             .insert(request.seat_binding_id, request.role_prompt.clone());
+        state
+            .hosted_initial_prompts
+            .insert(request.seat_binding_id, request.prompt.clone());
         if let Some(existing) = state.hosted_seats.get(&request.seat_binding_id) {
             return Ok(existing.clone());
         }
@@ -4276,6 +4322,41 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             .calls
             .push(AdapterCall::MessageHostedSeat(request.seat_binding_id));
         Ok(outcome)
+    }
+
+    async fn prove_archived_hosted_seat(
+        &self,
+        request: &HostedSeatRetireRequest,
+        _known_retired_native_ids: &[ExternalId],
+    ) -> RuntimeResult<HostedSeatRetireOutcome> {
+        let state = self.lock();
+        preflight(
+            &state.capabilities,
+            &OperationContext::new(RuntimeCapability::Inspect),
+        )?;
+        let placement = request
+            .placement
+            .as_ref()
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let held = state
+            .archived_hosted_seats
+            .get(&request.seat_binding_id)
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let (workspace, conversation, _) = state
+            .seat_titles
+            .get(&held.identity.native_id)
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        if held.identity != request.identity
+            || state.hosted_seats.contains_key(&request.seat_binding_id)
+            || workspace != &placement.workspace_native_id
+            || conversation != &placement.provider_session_id
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(HostedSeatRetireOutcome {
+            identity: held.identity.clone(),
+            archived_at: held.observed_at,
+        })
     }
 
     async fn retire_hosted_seat(

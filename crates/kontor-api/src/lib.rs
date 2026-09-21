@@ -39,6 +39,7 @@ pub mod applications;
 pub mod artifacts;
 pub mod auth;
 pub mod body;
+pub mod committee_evidence;
 pub mod control;
 pub mod dto;
 pub mod error;
@@ -697,6 +698,10 @@ pub fn router(state: ApiState) -> Router {
                 get(applications::committee_run),
             )
             .route(
+                "/v1/projects/{project_id}/committee-runs/{committee_run_id}/artifacts/{evidence_id}",
+                get(committee_evidence::committee_artifact),
+            )
+            .route(
                 "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions",
                 get(applications::inspect_consultation_permissions),
             )
@@ -827,6 +832,10 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/scheduler:resume",
                 post(applications::resume_admissions),
+            )
+            .route(
+                "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/admission:adopt",
+                post(applications::adopt_team_run_admission),
             )
             .route(
                 "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat",
