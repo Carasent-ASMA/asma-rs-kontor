@@ -125,9 +125,11 @@ stopped`.
    `launch_anomaly: "Unexpected automatic launch count; see launchctl-after.txt;
    root-cause review required"`. This release is deployed and healthy with that
    review outstanding. It is root's finding, not mine, and it is unresolved.
-2. **I did not re-run the suites.** Every test figure here is read from root's
-   qualification logs, not reproduced by me. My checks were source inspection,
-   commit/tree resolution and log reading.
+2. ~~**I did not re-run the suites.**~~ **Lifted** — see *Independent execution
+   at exact head* below. Figures for the P1 regressions, the loopback suite and
+   the Paseo suite are now mine; the remaining per-suite figures above
+   (schema118, store-recovery, mcp, cli, openapi) are still read from root's
+   logs and not reproduced by me.
 3. **Legacy acknowledgements remain UNKNOWN.** All Sep-20 issuances keep their
    exact original ids and epochs under
    `operational-gap-legacy-message-unknown-current-qualification-20260921`. I
@@ -142,6 +144,49 @@ stopped`.
 5. **The `native_child_archive` interaction is unexplained, not proven absent.**
    It passes here; I did not identify the mechanism, so I cannot rule out a
    timing-sensitive interaction resurfacing under different load.
+
+## Independent execution at exact head
+
+The audit finding `P1-POSTDELIVERY-FAILURE-RESTART-DUPLICATES`
+(`artifact-asma-8203-high-audit-report-24290153`, gate receipt `01a0c028-1ab6`)
+is corrected in the deployed source and needs no further implementation. What it
+did still need was someone other than the author of the qualification log to run
+it, so that is what this section is.
+
+Executed against the deployed source, in a clean worktree at `44663e10`:
+
+| Check | Result |
+|---|---|
+| `direct_delivery_epoch_commit_failure_then_restart_does_not_resend` | **ok** |
+| `derived_delivery_epoch_commit_failure_then_restart_does_not_resend` | **ok** |
+| `kontor-daemon --test loopback_api` | **457 passed, 0 failed, 1 ignored** |
+| `kontor-runtime-paseo` | 4 result blocks, **0 failures** |
+
+The loopback total reproduces root's `final-daemon.log` figure exactly.
+Receipt: `/tmp/p1-head-verify.log`,
+sha256 `5661c18e092eab350ae4a2623c0a018b5fc00f9f4248d09803a37a522310b0fc`.
+
+### Mutation — the regression is not vacuous
+
+A passing test proves nothing until the defect it names can make it fail, so the
+correction was removed at head and the same two tests re-run.
+
+**Mutant M-P1**: `note_replayed_issuance` no longer declares a replayed issuance
+unknown — the adapter is never handed back the durable fact a fresh process
+lost, which is precisely the audited defect.
+
+Both tests failed, reproducing the finding in the numbers the audit describes:
+
+```
+direct  ... the replay reconciled the existing delivery instead of instructing the seat twice
+          left: 2   right: 1
+derived ... the replay reconciled the existing delivery instead of instructing the seat twice
+          left: 3   right: 1
+```
+
+Two native effects on the direct path and three on the derived one, against one
+expected. The source was then restored byte-identically (`git status` clean) and
+re-verified green.
 
 ## Uncovered defects
 
