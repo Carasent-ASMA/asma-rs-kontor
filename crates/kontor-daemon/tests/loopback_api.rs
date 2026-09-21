@@ -61691,3 +61691,425 @@ async fn direct_first_send_registers_its_boundary() {
 async fn derived_first_send_registers_its_boundary() {
     check_first_send_registers_its_boundary(true).await;
 }
+
+// ASMA-8190: a replacement intent can remain inert while the prior occupancy
+// remains durably bound and is already archived at the runtime.
+async fn wedged_successor_launch_intent(archive: bool) -> (Composed, String, serde_json::Value) {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8190-inert-successor", "8190-inert-successor").await;
+    enable_provider_account(
+        &composed.world,
+        &composed.project,
+        "codex-personal",
+        "8190-approved",
+    )
+    .await;
+    let project_id = ProjectId::parse(&composed.project).unwrap();
+    let binding_id = SeatBindingId::parse(&binding).unwrap();
+    let (revision, archived_at) = composed.world.daemon.state().with_store(|store| {
+        (
+            store
+                .get_seat_binding(project_id, binding_id)
+                .unwrap()
+                .unwrap()
+                .revision,
+            store
+                .get_hosted_topology_seat(project_id, binding_id)
+                .unwrap()
+                .unwrap()
+                .observed_at,
+        )
+    });
+    if archive {
+        composed.world.fake.archive_hosted_seat(&native);
+    }
+    let prepared_at = kontor_api::now().to_string();
+    let connection = rusqlite::Connection::open(
+        composed
+            .world
+            .directory
+            .path()
+            .join(kontor_daemon::DATABASE_FILE),
+    )
+    .unwrap();
+    connection
+        .execute(
+            "INSERT INTO hosted_topology_seat_launch_intents
+        (project_id, seat_binding_id, occupancy_generation, autonomy, model_rung,
+         state, observed_native_id, prepared_at, installed_at)
+         VALUES (?1, ?2, 2, 'bounded',
+         json('{\"provider\":\"codex\",\"model\":\"gpt-5.6-sol\",\"effort\":\"xhigh\"}'),
+         'prepared', NULL, ?3, NULL)",
+            rusqlite::params![composed.project, binding, prepared_at],
+        )
+        .unwrap();
+    let mut body = supersede_body(&binding, revision);
+    body["occupancy_generation"] = serde_json::json!(2);
+    body["expected_model_route"] =
+        serde_json::json!({"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"});
+    body["desired_model_route"] = serde_json::json!({"provider": "codex-personal", "model": "gpt-5.6-sol", "effort": "xhigh"});
+    body["expected_prepared_at"] = serde_json::json!(prepared_at);
+    body["expected_predecessor_native_id"] = serde_json::json!(native);
+    body["expected_predecessor_generation"] = serde_json::json!(generation);
+    body["expected_predecessor_archived_at"] = serde_json::json!(archived_at.to_string());
+    (composed, binding, body)
+}
+
+#[tokio::test]
+async fn an_inert_successor_intent_can_supersede_an_archived_predecessor() {
+    let (composed, binding, body) = wedged_successor_launch_intent(true).await;
+    let project_id = ProjectId::parse(&composed.project).unwrap();
+    let binding_id = SeatBindingId::parse(&binding).unwrap();
+    let before = composed.world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat(project_id, binding_id)
+            .unwrap()
+    });
+    let minted = composed.world.fake.minted_natives();
+    let answer = supersede(
+        &composed.world,
+        &composed.project,
+        &composed.epic,
+        &body,
+        "8190-inert-successor-repair",
+    )
+    .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(answer.json()["occupancy_generation"], 2);
+    let replay = supersede(
+        &composed.world,
+        &composed.project,
+        &composed.epic,
+        &body,
+        "8190-inert-successor-repair",
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        answer.json()["receipt"]["receipt_id"],
+        replay.json()["receipt"]["receipt_id"]
+    );
+    assert_eq!(composed.world.fake.minted_natives(), minted);
+    composed.world.daemon.state().with_store(|store| {
+        assert_eq!(
+            before,
+            store
+                .get_hosted_topology_seat(project_id, binding_id)
+                .unwrap()
+        );
+        let intent = store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(intent.model_rung.provider.0, "codex-personal");
+        assert_eq!(intent.state, HostedSeatLaunchIntentState::Prepared);
+        assert!(intent.observed_native_id.is_none());
+    });
+}
+
+#[tokio::test]
+async fn an_inert_successor_intent_refuses_wrong_predecessor_and_occupancy() {
+    for case in [
+        "live",
+        "native",
+        "runtime-generation",
+        "archive-stamp",
+        "missing-fence",
+        "occupancy",
+        "seat-revision",
+        "installed",
+        "missing-native",
+        "conversation",
+        "ecp-root",
+    ] {
+        let (composed, binding, mut body) = wedged_successor_launch_intent(case != "live").await;
+        let project_id = ProjectId::parse(&composed.project).unwrap();
+        let binding_id = SeatBindingId::parse(&binding).unwrap();
+        let native =
+            ExternalId::parse(body["expected_predecessor_native_id"].as_str().unwrap()).unwrap();
+        let before = composed.world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+                .unwrap()
+        });
+        match case {
+            "native" => {
+                body["expected_predecessor_native_id"] = serde_json::json!("another-native")
+            }
+            "runtime-generation" => body["expected_predecessor_generation"] = serde_json::json!(99),
+            "archive-stamp" => {
+                body["expected_predecessor_archived_at"] = serde_json::json!("2020-01-01T00:00:00Z")
+            }
+            "missing-fence" => {
+                body.as_object_mut()
+                    .unwrap()
+                    .remove("expected_predecessor_archived_at");
+            }
+            "occupancy" => body["occupancy_generation"] = serde_json::json!(3),
+            "seat-revision" => body["expected_seat_binding_revision"] = serde_json::json!(99),
+            "installed" => {
+                let connection = rusqlite::Connection::open(
+                    composed
+                        .world
+                        .directory
+                        .path()
+                        .join(kontor_daemon::DATABASE_FILE),
+                )
+                .unwrap();
+                connection.execute("UPDATE hosted_topology_seat_launch_intents SET state = 'installed', installed_at = '2026-09-21T00:00:00Z', observed_native_id = 'successor' WHERE project_id = ?1 AND seat_binding_id = ?2 AND occupancy_generation = 2", rusqlite::params![composed.project, binding]).unwrap();
+            }
+            "missing-native" => composed.world.fake.forget_seat(&native),
+            "conversation" => composed.world.fake.set_seat_provider_session(
+                &native,
+                Some(ExternalId::parse("changed-conversation").unwrap()),
+            ),
+            "ecp-root" => {
+                let node = op4_seat_node(&composed.world, project_id, binding_id);
+                composed
+                    .world
+                    .fake
+                    .drift_container(node, exact_container_drifts()[1].clone());
+            }
+            _ => {}
+        }
+        let staged = composed.world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+                .unwrap()
+        });
+        let answer = supersede(
+            &composed.world,
+            &composed.project,
+            &composed.epic,
+            &body,
+            &format!("8190-refuse-{case}"),
+        )
+        .await;
+        assert_ne!(answer.status, 200, "{case}: {}", answer.body);
+        let after = composed.world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+                .unwrap()
+        });
+        assert_eq!(staged, after, "{case} changed the intent");
+        if case != "installed" {
+            assert_eq!(before, after);
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_inert_successor_intent_store_rechecks_the_proved_predecessor() {
+    let (composed, binding, body) = wedged_successor_launch_intent(true).await;
+    let project_id = ProjectId::parse(&composed.project).unwrap();
+    let binding_id = SeatBindingId::parse(&binding).unwrap();
+    let predecessor = composed.world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat(project_id, binding_id)
+            .unwrap()
+            .unwrap()
+    });
+    let before = composed.world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+            .unwrap()
+            .unwrap()
+    });
+    let mut proof = predecessor.clone();
+    proof.native_identity.generation += 1;
+    let request = kontor_core::repository::HostedSeatLaunchIntentSupersession {
+        idempotency_key: kontor_core::id::IdempotencyKey::parse("8190-store-stale-proof").unwrap(),
+        intent_hash: CanonicalDocument::from_value(
+            &serde_json::json!({"schema_version": 1, "proof": "stale"}),
+        )
+        .unwrap()
+        .hash()
+        .clone(),
+        project_id,
+        seat_binding_id: binding_id,
+        expected_seat_binding_revision: AggregateRevision::parse(
+            body["expected_seat_binding_revision"].as_u64().unwrap(),
+        )
+        .unwrap(),
+        occupancy_generation: 2,
+        archived_predecessor: Some(proof),
+        expected_model_rung: before.model_rung.clone(),
+        expected_prepared_at: before.prepared_at,
+        replacement_model_rung: serde_json::from_value(body["desired_model_route"].clone())
+            .unwrap(),
+        recorded_at: kontor_api::now(),
+    };
+    composed.world.daemon.state().with_store(|store| {
+        assert!(store.supersede_hosted_seat_launch_intent(&request).is_err());
+        assert_eq!(
+            before,
+            store
+                .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+                .unwrap()
+                .unwrap()
+        );
+        assert_eq!(
+            predecessor,
+            store
+                .get_hosted_topology_seat(project_id, binding_id)
+                .unwrap()
+                .unwrap()
+        );
+    });
+}
+
+#[tokio::test]
+async fn an_inert_successor_intent_replays_after_the_successor_is_installed() {
+    let (composed, binding, body) = wedged_successor_launch_intent(true).await;
+    let first = supersede(
+        &composed.world,
+        &composed.project,
+        &composed.epic,
+        &body,
+        "8190-future-intent-install",
+    )
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_native_id": body["expected_predecessor_native_id"],
+        "expected_generation": body["expected_predecessor_generation"],
+        "desired_model_route": body["desired_model_route"],
+    });
+    let apply_body = op4_preview(&composed.world, &composed.project, &composed.epic, request).await;
+    let apply = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/core-team/routes:apply",
+            composed.project, composed.epic
+        ),
+        &apply_body,
+    )
+    .signed_as(&composed.world, "admin")
+    .with_key("8190-future-route-install")
+    .send(&composed.world)
+    .await;
+    assert_eq!(apply.status, 200, "{}", apply.body);
+    let before_replay = composed.world.fake.minted_natives();
+    let replay = supersede(
+        &composed.world,
+        &composed.project,
+        &composed.epic,
+        &body,
+        "8190-future-intent-install",
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        first.json()["receipt"]["receipt_id"],
+        replay.json()["receipt"]["receipt_id"]
+    );
+    assert_eq!(composed.world.fake.minted_natives(), before_replay);
+}
+
+#[tokio::test]
+async fn an_inert_successor_intent_recovers_a_receipt_after_cas_commit_and_successor_install() {
+    let (composed, binding, body) = wedged_successor_launch_intent(true).await;
+    let project_id = ProjectId::parse(&composed.project).unwrap();
+    let binding_id = SeatBindingId::parse(&binding).unwrap();
+    let prepared_at =
+        kontor_core::id::parse_utc_timestamp(body["expected_prepared_at"].as_str().unwrap())
+            .unwrap();
+    let expected_model: kontor_core::spec::ModelRung =
+        serde_json::from_value(body["expected_model_route"].clone()).unwrap();
+    let replacement_model: kontor_core::spec::ModelRung =
+        serde_json::from_value(body["desired_model_route"].clone()).unwrap();
+    let intent = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "supersede_core_team_launch_intent",
+        "project": composed.project,
+        "epic": composed.epic,
+        "seat_binding": binding,
+        "seat_binding_revision": body["expected_seat_binding_revision"],
+        "occupancy_generation": 2,
+        "superseded": expected_model,
+        "superseded_prepared_at": prepared_at.to_string(),
+        "replacement": replacement_model,
+        "archived_predecessor": {
+            "native_id": body["expected_predecessor_native_id"],
+            "generation": body["expected_predecessor_generation"],
+            "archived_at": body["expected_predecessor_archived_at"],
+        },
+    }))
+    .unwrap();
+    let key = IdempotencyKey::parse("8190-committed-cas-missing-receipt").unwrap();
+    composed.world.daemon.state().with_store(|store| {
+        let predecessor = store
+            .get_hosted_topology_seat(project_id, binding_id)
+            .unwrap()
+            .unwrap();
+        store
+            .supersede_hosted_seat_launch_intent(
+                &kontor_core::repository::HostedSeatLaunchIntentSupersession {
+                    idempotency_key: key.clone(),
+                    intent_hash: intent.hash().clone(),
+                    project_id,
+                    seat_binding_id: binding_id,
+                    expected_seat_binding_revision: AggregateRevision::parse(
+                        body["expected_seat_binding_revision"].as_u64().unwrap(),
+                    )
+                    .unwrap(),
+                    occupancy_generation: 2,
+                    archived_predecessor: Some(predecessor),
+                    expected_model_rung: expected_model,
+                    expected_prepared_at: prepared_at,
+                    replacement_model_rung: replacement_model,
+                    recorded_at: kontor_api::now(),
+                },
+            )
+            .unwrap();
+        assert!(store.get_receipt_by_key(&key).unwrap().is_none());
+    });
+    // The process stopped after CAS. A subsequent normal recovery consumed the
+    // repaired intent before the original command could reconstruct its receipt.
+    let request = serde_json::json!({
+        "expected_revision": 1, "seat_binding_id": binding,
+        "expected_native_id": body["expected_predecessor_native_id"],
+        "expected_generation": body["expected_predecessor_generation"],
+        "desired_model_route": body["desired_model_route"],
+    });
+    let apply_body = op4_preview(&composed.world, &composed.project, &composed.epic, request).await;
+    let apply = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/core-team/routes:apply",
+            composed.project, composed.epic
+        ),
+        &apply_body,
+    )
+    .signed_as(&composed.world, "admin")
+    .with_key("8190-after-cas-route-install")
+    .send(&composed.world)
+    .await;
+    assert_eq!(apply.status, 200, "{}", apply.body);
+    let before = composed.world.fake.minted_natives();
+    let recovered = supersede(
+        &composed.world,
+        &composed.project,
+        &composed.epic,
+        &body,
+        key.as_str(),
+    )
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(composed.world.fake.minted_natives(), before);
+    let replay = supersede(
+        &composed.world,
+        &composed.project,
+        &composed.epic,
+        &body,
+        key.as_str(),
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(
+        recovered.json()["receipt"]["receipt_id"],
+        replay.json()["receipt"]["receipt_id"]
+    );
+}

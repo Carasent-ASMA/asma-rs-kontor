@@ -13829,3 +13829,113 @@ async fn issuance_suffix_an_early_history_end_does_not_prove_absence() {
     );
     assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
 }
+
+#[tokio::test]
+async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery() {
+    use kontor_core::state::NativeRuntimeIdentity;
+    use kontor_runtime::adapter::HostedSeatRetirePlacement;
+    for case in [
+        "valid",
+        "live",
+        "permission",
+        "workspace",
+        "cwd",
+        "conversation",
+        "generation",
+        "label",
+        "successor",
+        "archived-successor",
+        "known-history",
+        "census-omits-predecessor",
+        "census-drift",
+    ] {
+        let seat_binding_id = SeatBindingId::generate();
+        let mut agent = v(AGENT)["agent"].clone();
+        agent["labels"] = serde_json::json!({
+            "kontor.seat_binding_id": seat_binding_id.to_string(),
+            "kontor.hosted_seat": "true",
+        });
+        agent["archivedAt"] = serde_json::json!("2026-09-20T05:42:26.512Z");
+        let mut request = HostedSeatRetireRequest {
+            seat_binding_id,
+            identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
+                host: name(HOST_KEY),
+                generation: 1,
+                native_id: external(AGENT_ID),
+            },
+            model_rung: model_rung(),
+            autonomy: SeatAutonomy::standard(),
+            requested_at: at("2026-09-21T09:00:00Z"),
+            placement: Some(HostedSeatRetirePlacement {
+                workspace_native_id: external(WORKSPACE_ID),
+                canonical_cwd: WorkspaceRoot::parse(CWD).unwrap(),
+                provider_session_id: None,
+            }),
+        };
+        match case {
+            "live" => agent["archivedAt"] = serde_json::Value::Null,
+            "permission" => {
+                agent["pendingPermissions"] =
+                    v(AGENT_PERMISSION_OPEN)["agent"]["pendingPermissions"].clone()
+            }
+            "workspace" => agent["workspaceId"] = serde_json::json!("wks_another"),
+            "cwd" => agent["cwd"] = serde_json::json!("/another/directory"),
+            "conversation" => {
+                request.placement.as_mut().unwrap().provider_session_id =
+                    Some(external("different-conversation"))
+            }
+            "generation" => request.identity.generation = 99,
+            "label" => {
+                agent["labels"]["kontor.seat_binding_id"] =
+                    serde_json::json!(SeatBindingId::generate())
+            }
+            _ => {}
+        }
+        let mut census = v(AGENT_LIST_ARCHIVED_ONLY);
+        census["entries"][0]["agent"] = agent.clone();
+        if matches!(case, "successor" | "archived-successor" | "known-history") {
+            let mut successor = agent.clone();
+            successor["id"] = serde_json::json!("unacknowledged-successor");
+            if case == "successor" {
+                successor["archivedAt"] = serde_json::Value::Null;
+            }
+            let mut entry = census["entries"][0].clone();
+            entry["agent"] = successor;
+            census["entries"].as_array_mut().unwrap().push(entry);
+        }
+        let known_history = if case == "known-history" {
+            vec![external("unacknowledged-successor")]
+        } else {
+            vec![]
+        };
+        if case == "census-omits-predecessor" {
+            census["entries"] = serde_json::json!([]);
+        }
+        if case == "census-drift" {
+            census["entries"][0]["agent"]["archivedAt"] = serde_json::Value::Null;
+        }
+        let mut exact = v(AGENT);
+        exact["agent"] = agent;
+        let plane = Plane::fresh(
+            daemon()
+                .answering_rpc("fetch_agent_request", exact)
+                .answering_rpc("fetch_agents_request", census),
+        );
+        let outcome = plane
+            .adapter
+            .prove_archived_hosted_seat(&request, &known_history)
+            .await;
+        if matches!(case, "valid" | "known-history") {
+            let proof = outcome.expect("the exact archived predecessor is provable");
+            assert_eq!(proof.identity, request.identity);
+            assert_eq!(proof.archived_at, at("2026-09-20T05:42:26.512Z"));
+        } else {
+            assert!(outcome.is_err(), "{case} was accepted");
+        }
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "{case} wrote to the runtime"
+        );
+    }
+}

@@ -5472,17 +5472,26 @@ export interface components {
             snapshot_cursor: number;
         };
         /**
-         * @description Supersede one never-bound prepared launch intent with an approved route.
+         * @description Supersede one unobserved prepared launch intent with an approved route.
          *
-         *     Every field is a fence. The operation applies to exactly one durable shape —
-         *     an intent prepared before a launch that never happened — and anything that
-         *     has since become a native, an occupancy or a recorded effect refuses.
+         *     A successor intent requires exact archive and placement proof for its prior
+         *     occupant. The current occupant and its history remain unchanged; only the
+         *     next unobserved intent can change. Omit predecessor fences for a never-bound seat.
          */
         CoreTeamLaunchIntentSupersedeRequest: {
             /** @description The catalog-approved replacement route. */
             desired_model_route: components["schemas"]["RuntimeModelRouteRequest"];
             /** @description The exact inert route being superseded, compared verbatim. */
             expected_model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Exact runtime archive timestamp of the predecessor. */
+            expected_predecessor_archived_at?: string | null;
+            /**
+             * Format: int64
+             * @description Runtime generation of the archived predecessor, not the occupancy ordinal.
+             */
+            expected_predecessor_generation?: number | null;
+            /** @description Exact prior native, required with both other predecessor fences for a successor intent. */
+            expected_predecessor_native_id?: string | null;
             /** @description The exact instant that inert intent was prepared, compared verbatim. */
             expected_prepared_at: string;
             /**

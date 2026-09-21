@@ -687,14 +687,11 @@ pub enum HostedSeatLaunchIntentState {
 /// This row closes that window. It is written before the effect, carries the
 /// exact resolved autonomy, and is consumed when the occupancy binds. A replay
 /// inside the window reads it instead of the live default, so the launch intent
-/// Replace one never-bound prepared launch intent with an approved route.
+/// Replace one unobserved prepared launch intent with an approved route.
 ///
-/// Every field is a fence, not a parameter. The operation exists for exactly
-/// one durable shape — an intent prepared before an effect that never happened —
-/// and anything that has since become a native, an occupancy, or a recorded
-/// effect is a different shape and must refuse. The values here are what the
-/// store re-proves inside the transaction that performs the replacement, so a
-/// concurrent launch cannot slip between the check and the write (ASMA-7869).
+/// The store rechecks either complete absence of prior occupancy, or the exact
+/// prior occupancy whose archive the daemon proved. The next occupancy intent
+/// must remain prepared and unobserved. Identity and history never change here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostedSeatLaunchIntentSupersession {
     /// The apply key this supersession is admitted under; unique, exactly once.
@@ -709,6 +706,9 @@ pub struct HostedSeatLaunchIntentSupersession {
     pub expected_seat_binding_revision: AggregateRevision,
     /// The occupancy generation whose inert intent is being replaced.
     pub occupancy_generation: u64,
+    /// Exact unchanged prior occupancy, after the daemon proves its native archive.
+    /// Absent for the original never-bound recovery path.
+    pub archived_predecessor: Option<StoredHostedTopologySeat>,
     /// The exact inert route being superseded. Compared verbatim.
     pub expected_model_rung: crate::spec::ModelRung,
     /// The exact instant the inert intent was prepared. Compared verbatim, so a

@@ -1063,11 +1063,11 @@ pub struct CoreTeamRouteOutcomeDto {
     pub receipt: MutationReceiptDto,
 }
 
-/// Supersede one never-bound prepared launch intent with an approved route.
+/// Supersede one unobserved prepared launch intent with an approved route.
 ///
-/// Every field is a fence. The operation applies to exactly one durable shape —
-/// an intent prepared before a launch that never happened — and anything that
-/// has since become a native, an occupancy or a recorded effect refuses.
+/// A successor intent requires exact archive and placement proof for its prior
+/// occupant. The current occupant and its history remain unchanged; only the
+/// next unobserved intent can change. Omit predecessor fences for a never-bound seat.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamLaunchIntentSupersedeRequest {
@@ -1082,6 +1082,13 @@ pub struct CoreTeamLaunchIntentSupersedeRequest {
     pub expected_seat_binding_revision: AggregateRevision,
     /// The occupancy generation whose inert intent is replaced.
     pub occupancy_generation: u64,
+    /// Exact prior native, required with both other predecessor fences for a successor intent.
+    #[schema(value_type = Option<String>)]
+    pub expected_predecessor_native_id: Option<ExternalId>,
+    /// Runtime generation of the archived predecessor, not the occupancy ordinal.
+    pub expected_predecessor_generation: Option<u64>,
+    /// Exact runtime archive timestamp of the predecessor.
+    pub expected_predecessor_archived_at: Option<String>,
     /// The exact inert route being superseded, compared verbatim.
     pub expected_model_route: RuntimeModelRouteRequest,
     /// The exact instant that inert intent was prepared, compared verbatim.

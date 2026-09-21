@@ -24175,6 +24175,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &CoreTeamLaunchIntentSupersedeRequest,
     ) -> Result<CoreTeamLaunchIntentSupersessionDto, ApiError> {
+        let _native_lifecycle = self.native_lifecycle_change().await?;
         let state = self.state()?;
         let epic = self.epic_row(project_id, epic_id)?;
         if epic.revision != request.expected_revision {
@@ -24203,7 +24204,7 @@ impl ApplicationOperations for Services {
                     "the requested persistent Core Team SeatBinding is not active",
                 )
             })?;
-        state
+        let node = state
             .with_store(|store| store.get_topology_node(project_id, binding.topology_node_id))
             .map_err(|error| self.refuse(&error))?
             .filter(|node| {
@@ -24267,7 +24268,7 @@ impl ApplicationOperations for Services {
 
         let prepared_at = kontor_core::id::parse_utc_timestamp(&request.expected_prepared_at)
             .map_err(|error| self.refuse_domain(&error))?;
-        let intent = self.intent(&serde_json::json!({
+        let mut intent_body = serde_json::json!({
             "schema_version": 1,
             "operation": "supersede_core_team_launch_intent",
             "project": project_id.to_string(),
@@ -24278,9 +24279,130 @@ impl ApplicationOperations for Services {
             "superseded": superseded,
             "superseded_prepared_at": prepared_at.to_string(),
             "replacement": replacement,
-        }))?;
+        });
+        let predecessor_fence = match (
+            &request.expected_predecessor_native_id,
+            request.expected_predecessor_generation,
+            &request.expected_predecessor_archived_at,
+        ) {
+            (None, None, None) => None,
+            (Some(native), Some(generation), Some(archived_at)) => {
+                let archived_at = kontor_core::id::parse_utc_timestamp(archived_at)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                intent_body["archived_predecessor"] = serde_json::json!({
+                    "native_id": native, "generation": generation,
+                    "archived_at": archived_at.to_string(),
+                });
+                Some((native, generation, archived_at))
+            }
+            _ => {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "all three archived predecessor fences must be supplied together",
+                ));
+            }
+        };
+        let intent = self.intent(&intent_body)?;
         let target = AggregateRef::MiniProject {
             mini_project_id: epic_id,
+        };
+
+        let receipt_replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+        let recorded_hash = state
+            .with_store(|store| store.hosted_seat_launch_intent_supersession_hash(key))
+            .map_err(|error| self.refuse(&error))?;
+        if recorded_hash
+            .as_ref()
+            .is_some_and(|hash| hash != intent.hash())
+        {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the supersession key already records a different command",
+            ));
+        }
+        let replayed = receipt_replayed || recorded_hash.is_some();
+        let archived_predecessor = if replayed {
+            // The store's immutable supersession ledger answers before checking
+            // occupancy, so a replay still works after the successor is installed.
+            None
+        } else if let Some((native, generation, archived_at)) = predecessor_fence {
+            let predecessor = state
+                .with_store(|store| store.get_hosted_topology_seat(project_id, binding.id))
+                .map_err(|error| self.refuse(&error))?
+                .filter(|row| {
+                    row.native_identity.native_id == *native
+                        && row.native_identity.generation == generation
+                })
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "the archived predecessor no longer matches the current occupancy",
+                    )
+                })?;
+            self.hosted_seat_lineage(project_id, &node, &binding, &predecessor, true)
+                .await?;
+            let container = state
+                .with_store(|store| store.get_topology_node_container(project_id, node.id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the archived predecessor has no bound container",
+                    )
+                })?;
+            let predecessor_adapter = state
+                .runtimes()
+                .get(&predecessor.native_identity.runtime_kind)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the predecessor runtime is unavailable",
+                    )
+                })?;
+            let retired_native_ids = state
+                .with_store(|store| store.list_hosted_topology_seat_history(project_id, binding.id))
+                .map_err(|error| self.refuse(&error))?
+                .into_iter()
+                .map(|row| row.native_identity.native_id)
+                .collect::<Vec<_>>();
+            let proof = predecessor_adapter
+                .prove_archived_hosted_seat(
+                    &HostedSeatRetireRequest {
+                        seat_binding_id: binding.id,
+                        identity: predecessor.native_identity.clone(),
+                        model_rung: predecessor.model_rung.clone(),
+                        autonomy: predecessor.autonomy,
+                        requested_at: kontor_api::now(),
+                        placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
+                            workspace_native_id: container.identity.native_id,
+                            canonical_cwd: WorkspaceRoot::parse(
+                                container
+                                    .canonical_cwd
+                                    .ok_or_else(|| {
+                                        self.deny(
+                                            ApiErrorCode::PlacementBlocked,
+                                            "the predecessor container has no canonical root",
+                                        )
+                                    })?
+                                    .as_str(),
+                            )
+                            .map_err(|error| self.refuse_domain(&error))?,
+                            provider_session_id: predecessor.provider_session_id.clone(),
+                        }),
+                    },
+                    &retired_native_ids,
+                )
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            if proof.identity != predecessor.native_identity || proof.archived_at != archived_at {
+                return Err(self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the predecessor archive differs from the exact expected proof",
+                ));
+            }
+            Some(predecessor)
+        } else {
+            None
         };
 
         // The whole compare-and-swap, and every absence it rests on, is proved
@@ -24295,6 +24417,7 @@ impl ApplicationOperations for Services {
                     seat_binding_id: request.seat_binding_id,
                     expected_seat_binding_revision: request.expected_seat_binding_revision,
                     occupancy_generation: request.occupancy_generation,
+                    archived_predecessor,
                     expected_model_rung: superseded.clone(),
                     expected_prepared_at: prepared_at,
                     replacement_model_rung: replacement.clone(),

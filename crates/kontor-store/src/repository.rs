@@ -4711,6 +4711,19 @@ impl SqliteStore {
             .collect()
     }
 
+    /// Read the immutable supersession digest before reconstructing its receipt.
+    /// The CAS ledger can survive a crash before the command receipt is written.
+    pub fn hosted_seat_launch_intent_supersession_hash(
+        &self,
+        key: &kontor_core::id::IdempotencyKey,
+    ) -> RepositoryResult<Option<ContentHash>> {
+        let hash: Option<String> = self.connection.query_row(
+            "SELECT intent_hash FROM hosted_seat_launch_intent_supersessions WHERE idempotency_key = ?1",
+            params![key.as_str()], |row| row.get(0)).optional().map_err(backend)?;
+        hash.map(|hash| ContentHash::parse(&hash).map_err(Into::into))
+            .transpose()
+    }
+
     /// Reconcile one prepared intent against the native its launch produced.
     ///
     /// Repeating this after a crash with the same native is unchanged. Naming a
@@ -4795,37 +4808,109 @@ impl SqliteStore {
             });
         }
 
-        // Absence of every effect. Any one of these means the intent was not
-        // inert and this repair does not apply.
-        for (table, subject) in [
-            (
-                "hosted_topology_seats",
-                "the seat already has a native occupant",
-            ),
-            (
-                "hosted_topology_seat_history",
-                "the seat already has retirement history",
-            ),
-        ] {
-            let present: i64 = transaction
+        if let Some(predecessor) = &request.archived_predecessor {
+            if predecessor.project_id != request.project_id
+                || predecessor.seat_binding_id != request.seat_binding_id
+            {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted seat launch intent supersession",
+                    rule: "the archived predecessor belongs to another logical seat",
+                });
+            }
+            let history: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM hosted_topology_seat_history WHERE project_id = ?1 AND seat_binding_id = ?2",
+                params![project, binding], |row| row.get(0)).map_err(backend)?;
+            if generation != history + 2 {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted seat launch intent supersession",
+                    rule: "only the immediate unbound successor occupancy may be superseded",
+                });
+            }
+            let rung = serde_json::to_string(&predecessor.model_rung).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: error.to_string(),
+                }
+            })?;
+            let exact: i64 = transaction
                 .query_row(
-                    &format!(
-                        "SELECT COUNT(*) FROM {table}
-                          WHERE project_id = ?1 AND seat_binding_id = ?2"
-                    ),
-                    params![project, binding],
+                    "SELECT COUNT(*) FROM hosted_topology_seats
+                 WHERE project_id = ?1 AND seat_binding_id = ?2 AND model_rung = ?3
+                   AND runtime_kind = ?4 AND host = ?5 AND generation = ?6
+                   AND native_id = ?7 AND provider_session_id IS ?8
+                   AND observed_at = ?9 AND autonomy = ?10",
+                    params![
+                        project,
+                        binding,
+                        rung,
+                        predecessor.native_identity.runtime_kind.as_str(),
+                        predecessor.native_identity.host.as_str(),
+                        i64::try_from(predecessor.native_identity.generation).unwrap_or(i64::MAX),
+                        predecessor.native_identity.native_id.as_str(),
+                        predecessor
+                            .provider_session_id
+                            .as_ref()
+                            .map(ExternalId::as_str),
+                        text(predecessor.observed_at),
+                        predecessor.autonomy.as_str()
+                    ],
                     |row| row.get(0),
                 )
                 .map_err(backend)?;
-            if present != 0 {
+            if exact != 1 {
                 return Err(RepositoryError::Conflict {
                     subject: "hosted seat launch intent supersession",
-                    rule: subject,
+                    rule: "the current occupancy changed after its native archive was proved",
                 });
+            }
+            let later: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM hosted_topology_seat_launch_intents
+                 WHERE project_id = ?1 AND seat_binding_id = ?2 AND occupancy_generation > ?3",
+                    params![project, binding, generation],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if later != 0 {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted seat launch intent supersession",
+                    rule: "a later occupancy intent already exists",
+                });
+            }
+        } else {
+            // Absence of every effect. Any one of these means the intent was not
+            // inert and this repair does not apply.
+            for (table, subject) in [
+                (
+                    "hosted_topology_seats",
+                    "the seat already has a native occupant",
+                ),
+                (
+                    "hosted_topology_seat_history",
+                    "the seat already has retirement history",
+                ),
+            ] {
+                let present: i64 = transaction
+                    .query_row(
+                        &format!(
+                            "SELECT COUNT(*) FROM {table}
+                          WHERE project_id = ?1 AND seat_binding_id = ?2"
+                        ),
+                        params![project, binding],
+                        |row| row.get(0),
+                    )
+                    .map_err(backend)?;
+                if present != 0 {
+                    return Err(RepositoryError::Conflict {
+                        subject: "hosted seat launch intent supersession",
+                        rule: subject,
+                    });
+                }
             }
         }
 
-        // No launch or effect receipt has ever named this seat. `observe_seat`
+        // Never-bound recovery refuses any effect receipt. Successor recovery
+        // permits only historical effects preceding this exact prepared intent;
+        // later or ambiguous effects still refuse. `observe_seat`
         // is read-only and deliberately absent from the list; a consultation
         // this seat *asked* names it as the caller, not as a target, so it is
         // matched on the seat-binding field rather than on the whole document.
@@ -4837,8 +4922,16 @@ impl SqliteStore {
                                  'claim_core_team_seat', 'replace_seat', 'retire_seat',
                                  'launch_run')
                     AND (json_extract(intent, '$.seat_binding') = ?2
-                         OR json_extract(intent, '$.seat_binding_id') = ?2)",
-                params![project, binding],
+                         OR json_extract(intent, '$.seat_binding_id') = ?2)
+                    AND (?3 IS NULL OR julianday(created_at) >= julianday(?3))",
+                params![
+                    project,
+                    binding,
+                    request
+                        .archived_predecessor
+                        .as_ref()
+                        .map(|_| text(request.expected_prepared_at))
+                ],
                 |row| row.get(0),
             )
             .map_err(backend)?;

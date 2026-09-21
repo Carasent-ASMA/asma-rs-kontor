@@ -6741,6 +6741,88 @@ impl RuntimeAdapter for PaseoAdapter {
         })
     }
 
+    async fn prove_archived_hosted_seat(
+        &self,
+        request: &HostedSeatRetireRequest,
+        known_retired_native_ids: &[ExternalId],
+    ) -> RuntimeResult<HostedSeatRetireOutcome> {
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext::new(RuntimeCapability::Inspect),
+        )?;
+        let placement = request
+            .placement
+            .as_ref()
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let agent = self
+            .hosted_seat_agent(&HostedSeatInspectRequest {
+                seat_binding_id: request.seat_binding_id,
+                identity: request.identity.clone(),
+                model_rung: request.model_rung.clone(),
+                autonomy: request.autonomy,
+                requested_at: request.requested_at,
+            })
+            .await?
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        if !agent.is_archived() || !agent.pending_permissions.is_empty() {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "launch-intent supersession requires an archived predecessor without pending permissions",
+            });
+        }
+        if agent.workspace_id.as_deref() != Some(placement.workspace_native_id.as_str())
+            || WorkspaceRoot::parse(&agent.cwd)? != placement.canonical_cwd
+            || placement
+                .provider_session_id
+                .as_ref()
+                .is_some_and(|expected| agent.provider_session_id() != Some(expected.as_str()))
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the archived predecessor changed workspace, directory or provider conversation",
+            });
+        }
+        // A lost successor acknowledgement must not be mistaken for an inert
+        // intent. The global exact-label census also catches a moved successor.
+        let label_value = request.seat_binding_id.to_string();
+        let labels = BTreeMap::from([(label::SEAT_BINDING.to_owned(), label_value.clone())]);
+        let census = self.fetch_agents(&labels, true).await?;
+        let mut matching = census.iter().filter(|candidate| candidate.id == agent.id);
+        let confirmed = matching.next().ok_or(RuntimeError::CorrelationFailed)?;
+        if matching.next().is_some()
+            || confirmed.archived_at != agent.archived_at
+            || !confirmed.pending_permissions.is_empty()
+            || confirmed.workspace_id != agent.workspace_id
+            || WorkspaceRoot::parse(&confirmed.cwd)? != placement.canonical_cwd
+            || confirmed.provider_session_id() != agent.provider_session_id()
+            || confirmed.label(label::SEAT_BINDING) != Some(label_value.as_str())
+            || confirmed.label(label::HOSTED_SEAT) != Some("true")
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        if census.iter().any(|candidate| {
+            candidate.label(label::SEAT_BINDING) == Some(label_value.as_str())
+                && candidate.id != agent.id
+                && (!candidate.is_archived()
+                    || !known_retired_native_ids
+                        .iter()
+                        .any(|known| known.as_str() == candidate.id))
+        }) {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the logical seat has a live or unaccounted native successor",
+            });
+        }
+        Ok(HostedSeatRetireOutcome {
+            identity: request.identity.clone(),
+            archived_at: parse_wire_timestamp(
+                "hosted predecessor archive",
+                agent
+                    .archived_at
+                    .as_deref()
+                    .ok_or(RuntimeError::CorrelationFailed)?,
+            )?,
+        })
+    }
+
     async fn retire_hosted_seat(
         &self,
         request: &HostedSeatRetireRequest,

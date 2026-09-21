@@ -4324,6 +4324,41 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(outcome)
     }
 
+    async fn prove_archived_hosted_seat(
+        &self,
+        request: &HostedSeatRetireRequest,
+        _known_retired_native_ids: &[ExternalId],
+    ) -> RuntimeResult<HostedSeatRetireOutcome> {
+        let state = self.lock();
+        preflight(
+            &state.capabilities,
+            &OperationContext::new(RuntimeCapability::Inspect),
+        )?;
+        let placement = request
+            .placement
+            .as_ref()
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let held = state
+            .archived_hosted_seats
+            .get(&request.seat_binding_id)
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let (workspace, conversation, _) = state
+            .seat_titles
+            .get(&held.identity.native_id)
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        if held.identity != request.identity
+            || state.hosted_seats.contains_key(&request.seat_binding_id)
+            || workspace != &placement.workspace_native_id
+            || conversation != &placement.provider_session_id
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(HostedSeatRetireOutcome {
+            identity: held.identity.clone(),
+            archived_at: held.observed_at,
+        })
+    }
+
     async fn retire_hosted_seat(
         &self,
         request: &HostedSeatRetireRequest,

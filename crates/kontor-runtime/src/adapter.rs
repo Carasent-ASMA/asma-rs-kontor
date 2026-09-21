@@ -1101,6 +1101,19 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// Prove an exact archived predecessor and the absence of a live successor.
+    /// This is read-only: require placement, archive timestamp, matching conversation,
+    /// and no pending permission. A missing native is not archive evidence.
+    async fn prove_archived_hosted_seat(
+        &self,
+        _request: &HostedSeatRetireRequest,
+        _known_retired_native_ids: &[ExternalId],
+    ) -> RuntimeResult<HostedSeatRetireOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Inspect,
+        })
+    }
+
     /// Retire an idle persistent leadership session for an authorized route
     /// correction. This is not a generic idle-seat reaper.
     async fn retire_hosted_seat(

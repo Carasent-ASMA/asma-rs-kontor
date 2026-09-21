@@ -5888,6 +5888,24 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Text,
                 "The exact instant that inert intent was prepared, compared verbatim.",
             ),
+            opt(
+                "expected_predecessor_native_id",
+                Place::Body,
+                ArgType::Text,
+                "Exact archived predecessor native ID; supply all three predecessor fences.",
+            ),
+            opt(
+                "expected_predecessor_generation",
+                Place::Body,
+                ArgType::U64,
+                "Runtime generation of the exact archived predecessor.",
+            ),
+            opt(
+                "expected_predecessor_archived_at",
+                Place::Body,
+                ArgType::Text,
+                "Exact runtime archive timestamp of the predecessor.",
+            ),
             req(
                 "desired_model_route",
                 Place::Body,

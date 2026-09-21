@@ -15811,7 +15811,7 @@
       },
       "CoreTeamLaunchIntentSupersedeRequest": {
         "type": "object",
-        "description": "Supersede one never-bound prepared launch intent with an approved route.\n\nEvery field is a fence. The operation applies to exactly one durable shape —\nan intent prepared before a launch that never happened — and anything that\nhas since become a native, an occupancy or a recorded effect refuses.",
+        "description": "Supersede one unobserved prepared launch intent with an approved route.\n\nA successor intent requires exact archive and placement proof for its prior\noccupant. The current occupant and its history remain unchanged; only the\nnext unobserved intent can change. Omit predecessor fences for a never-bound seat.",
         "required": [
           "expected_revision",
           "seat_binding_id",
@@ -15829,6 +15829,29 @@
           "expected_model_route": {
             "$ref": "#/components/schemas/RuntimeModelRouteRequest",
             "description": "The exact inert route being superseded, compared verbatim."
+          },
+          "expected_predecessor_archived_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact runtime archive timestamp of the predecessor."
+          },
+          "expected_predecessor_generation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Runtime generation of the archived predecessor, not the occupancy ordinal.",
+            "minimum": 0
+          },
+          "expected_predecessor_native_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact prior native, required with both other predecessor fences for a successor intent."
           },
           "expected_prepared_at": {
             "type": "string",
