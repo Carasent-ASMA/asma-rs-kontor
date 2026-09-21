@@ -89,8 +89,24 @@ until that repair lands.
   `launchctl-after.txt`; (b) an unintended supervisor or watchdog path still
   able to start the daemon while the watchdog is recorded as stopped; (c) a
   deployment-script defect double-starting the service.
-- **Disposition:** **OPEN.** Explicitly retained rather than waived. The record
-  flags it for root-cause review and that review is outstanding.
+- **Disposition:** **OPEN, narrowed 2026-09-21** by
+  [`LAUNCH-ANOMALY-ANALYSIS.md`](LAUNCH-ANOMALY-ANALYSIS.md). Established:
+  **neither metric is wrong** — `operator_restart_count` is a literal 1 for one
+  intended restart, and `observed_launch_delta` correctly reports launchd's own
+  `runs` counter moving 3 → 5. A second spawn really occurred. Exactly one spawn
+  reached the program: `logging::install()` is the first statement of `main()`,
+  so any spawn entering the program logs even on failure, and the daemon log
+  holds a single `realm claimed` line with nothing whatsoever between
+  10:01:54.858610Z and 10:02:05.638511Z. The extra spawn therefore died at the
+  exec/load stage and `KeepAlive{SuccessfulExit=false}` recovered it. Three
+  hypotheses were tested under private throwaway launchd labels and **refuted**:
+  KeepAlive double-counting, slow graceful shutdown, and in-place binary
+  replacement. The shared fleet was never restarted — it still reads
+  `runs = 5`, `pid = 39728`. **Still open** on the narrower question: the precise
+  reason that one spawn failed to exec is unproven, because the process left no
+  output by construction and the launchd system log no longer covers the window.
+  No `kontor` source correction is warranted; the weakness is in root-owned
+  deploy tooling, and the safe next action is recorded in the analysis.
 
 ## OQ-8120-08 — unfinished NULL-subject consultation and pending seats
 
