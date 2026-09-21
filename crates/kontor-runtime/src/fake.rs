@@ -3423,6 +3423,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             correlation,
         };
         state.containers.insert(node, snapshot.clone());
+        state.container_kinds.insert(
+            node,
+            if request.task_container {
+                ContainerWorkspaceKind::Worktree
+            } else {
+                ContainerWorkspaceKind::Directory
+            },
+        );
         state
             .container_parents
             .insert(node, request.bound_project_native_id.clone());

@@ -35,6 +35,8 @@ mod harness;
 
 #[path = "loopback/committee_evidence.rs"]
 mod committee_evidence;
+#[path = "loopback/container_root_recovery.rs"]
+mod container_root_recovery;
 #[path = "loopback/provider_refresh.rs"]
 mod provider_refresh;
 
