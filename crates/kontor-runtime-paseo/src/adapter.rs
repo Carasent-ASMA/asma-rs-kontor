@@ -5873,7 +5873,7 @@ impl PaseoAdapter {
                         rule: "hosted seat MCP composition failed in the ECP",
                     }
                 })?;
-                let creation = PaseoRpc::hosted_seat_agent_create(
+                let mut creation = PaseoRpc::hosted_seat_agent_create(
                     self.next_request_id(),
                     &workspace_id,
                     request.cwd.as_str(),
@@ -5885,6 +5885,9 @@ impl PaseoAdapter {
                     request.credential.expose_secret(),
                     request.autonomy,
                 )?;
+                if let Some(seat_mcp) = self.config.seat_mcp.as_ref() {
+                    creation.with_leadership_mcp(seat_mcp);
+                }
                 let frame = self.transport.request(&creation).await?;
                 let status: serde_json::Value =
                     frame.resolve(&creation, "PaseoHostedSeatAgentCreated")?;
