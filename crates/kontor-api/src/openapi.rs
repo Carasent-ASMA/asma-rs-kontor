@@ -66,6 +66,8 @@ impl Modify for RealmBearer {
         crate::control::context_policy_preview,
         crate::sessions::compact,
         crate::sessions::send_message,
+        crate::sessions::reconcile_message_delivery,
+        crate::sessions::message_proof,
         crate::sessions::observe_current_turn,
         crate::sessions::respond_permission,
         crate::applications::projects,

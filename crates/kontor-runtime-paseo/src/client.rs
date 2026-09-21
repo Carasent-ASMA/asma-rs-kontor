@@ -1229,6 +1229,21 @@ impl PaseoRpc {
         ]});
     }
 
+    /// Inject the existing identity-scoped leadership profile for every hosted
+    /// provider. This contains no credential: the MCP child inherits the seat's
+    /// secret environment from the session frame, never shared configuration.
+    pub fn with_leadership_mcp(&mut self, seat: &crate::seat_mcp::SeatMcp) {
+        self.message["config"]["mcpServers"] = seat.server_config("leadership");
+        self.message["config"]["toolPolicy"] = serde_json::json!({"preapproved": [
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_completion_get"},
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_completion_remediate"},
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_open_questions_list"},
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_open_question_record"},
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_committee_permissions_inspect"},
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_committee_permission_respond"}
+        ]});
+    }
+
     /// `create_agent_request` for one persistent hosted leadership seat. The
     /// credential uses the same secret-only frame channel as consultation
     /// credentials.
@@ -2677,6 +2692,70 @@ mod tests {
                 request.envelope()["message"]["env"]["KONTOR_AUTH"],
                 "leadership-seat-secret"
             );
+        }
+    }
+
+    #[test]
+    fn hosted_leadership_mcp_has_exact_scope_and_keeps_credentials_out_of_config() {
+        for (provider, model) in [
+            ("claude", "claude-opus-5"),
+            ("claude-personal", "claude-opus-5"),
+            ("claude-work", "claude-opus-5"),
+            ("codex", "gpt-5.6-sol"),
+            ("codex-personal", "gpt-5.6-sol"),
+            ("codex-work", "gpt-5.6-sol"),
+            ("opencode", "deepseek/deepseek-flash"),
+        ] {
+            let mut request = PaseoRpc::hosted_seat_agent_create(
+                "request-1".to_owned(),
+                "wks_1",
+                "/w/epic",
+                &route(provider, model, None),
+                "LSA",
+                &labels(),
+                "continue governed leadership",
+                None,
+                "leadership-seat-secret",
+                SeatAutonomy::Bounded,
+            )
+            .unwrap();
+            request.with_leadership_mcp(&crate::seat_mcp::SeatMcp {
+                command: "/realm/bin/kontor-mcp".to_owned(),
+                state_root: "/realm/state".into(),
+            });
+            let config = &request.message["config"];
+            assert_eq!(config["provider"], provider);
+            assert_eq!(
+                config["mcpServers"],
+                serde_json::json!({"kontor": {
+                    "type": "stdio", "command": "/realm/bin/kontor-mcp",
+                    "args": ["--state-root", "/realm/state", "--credential-tier", "operator",
+                        "--serve-profile", "leadership"]
+                }})
+            );
+            assert_eq!(
+                config["toolPolicy"],
+                serde_json::json!({"preapproved": [
+                    {"kind":"mcp", "server":"kontor", "tool":"kontor_completion_get"},
+                    {"kind":"mcp", "server":"kontor", "tool":"kontor_completion_remediate"},
+                    {"kind":"mcp", "server":"kontor", "tool":"kontor_open_questions_list"},
+                    {"kind":"mcp", "server":"kontor", "tool":"kontor_open_question_record"},
+                    {"kind":"mcp", "server":"kontor", "tool":"kontor_committee_permissions_inspect"},
+                    {"kind":"mcp", "server":"kontor", "tool":"kontor_committee_permission_respond"}
+                ]})
+            );
+            assert!(
+                !request
+                    .message
+                    .to_string()
+                    .contains("leadership-seat-secret")
+            );
+            assert!(!format!("{request:?}").contains("leadership-seat-secret"));
+            assert_eq!(
+                request.envelope()["message"]["env"]["KONTOR_AUTH"],
+                "leadership-seat-secret"
+            );
+            assert!(request.envelope()["message"]["config"].get("env").is_none());
         }
     }
 
