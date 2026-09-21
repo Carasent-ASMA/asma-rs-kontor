@@ -735,6 +735,13 @@ struct FakeState {
     /// exist until that same call creates it, so a caller arming this failure
     /// cannot name it in advance.
     lose_hosted_launch_ack_once: bool,
+    /// Whether the next hosted launch is refused before any native is minted.
+    ///
+    /// Distinct from a lost acknowledgement: the predecessor may already have
+    /// been archived, a successor occupancy prepared, and then the provider
+    /// refused. Retry must still install that prepared generation rather than
+    /// leave the logical seat pointing at an archived native.
+    refuse_hosted_launch_once: bool,
     pause_hosted_retire_once: Option<FakeNativePause>,
     pause_send_once: Option<FakeNativePause>,
     /// Consultation seats keyed by their durable SeatBinding identity.
@@ -1287,6 +1294,7 @@ impl ScriptedFakeRuntime {
                 lose_archive_ack_once: BTreeSet::new(),
                 lose_hosted_retire_ack_once: BTreeSet::new(),
                 lose_hosted_launch_ack_once: false,
+                refuse_hosted_launch_once: false,
                 pause_hosted_retire_once: None,
                 pause_send_once: None,
                 consultations: BTreeMap::new(),
@@ -1917,6 +1925,16 @@ impl ScriptedFakeRuntime {
     /// intent exists to survive.
     pub fn lose_next_hosted_launch_ack(&self) {
         self.lock().lose_hosted_launch_ack_once = true;
+    }
+
+    /// Refuse the next hosted launch before minting a native.
+    ///
+    /// This is the live ASMA-8098 Core Team shape: the predecessor archive has
+    /// already taken effect, the successor occupancy is prepared, and the
+    /// provider then refuses. No successor native exists to recover by
+    /// correlation.
+    pub fn refuse_next_hosted_launch(&self) {
+        self.lock().refuse_hosted_launch_once = true;
     }
 
     /// Exact native currently filling one hosted seat, as the runtime holds it.
@@ -3337,6 +3355,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         });
         if let Some(existing) = state.hosted_seats.get(&request.seat_binding_id) {
             return Ok(existing.clone());
+        }
+        if std::mem::take(&mut state.refuse_hosted_launch_once) {
+            return Err(RuntimeError::ProviderUnavailable {
+                provider: request.model_rung.provider.0.clone(),
+            });
         }
         state.minted = state.minted.saturating_add(1);
         let outcome = ConsultationLaunchOutcome {

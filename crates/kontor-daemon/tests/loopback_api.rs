@@ -56048,6 +56048,136 @@ async fn a_lost_launch_acknowledgement_recovers_the_same_core_team_successor() {
     );
 }
 
+/// Live ASMA-8098 Core Team gap: apply archives the exact predecessor, prepares
+/// the successor occupancy, and the provider then refuses before any successor
+/// native exists. Retry must inspect that predecessor as already gone, reuse
+/// the prepared generation, and install exactly one successor.
+#[tokio::test]
+async fn a_provider_refusal_after_archive_still_installs_the_prepared_successor() {
+    let (composed, binding, native, generation) = hosted_tpm_seat(
+        "/tmp/kontor-8187-launch-refusal",
+        "asma-8187-launchrefusal-seats",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": binding,
+        "expected_native_id": native,
+        "expected_generation": generation,
+        "desired_model_route": {
+            "provider": "opencode", "model": "deepseek/deepseek-flash", "effort": "high"
+        },
+    });
+    let preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+        &request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(preview.status, 200, "{}", preview.body);
+    assert_eq!(preview.json()["would_replace_native"], true);
+    let mut body = request;
+    body["preview_hash"] = preview.json()["preview_hash"].clone();
+
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let minted_before = world.fake.minted_natives();
+    world.fake.refuse_next_hosted_launch();
+    let refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-launch-refusal")
+    .send(world)
+    .await;
+    assert_eq!(refused.status, 429, "{}", refused.body);
+    assert_eq!(refused.code(), "capacity_exhausted");
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before,
+        "a provider refusal must not mint a successor native"
+    );
+    assert!(
+        world.fake.hosted_seat_native_id(binding_id).is_none(),
+        "the predecessor must already be archived in the runtime"
+    );
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active, native.as_str(),
+        "a refused launch must not move the logical occupant"
+    );
+    assert!(
+        history.is_empty(),
+        "a refused launch must not retire the predecessor in Kontor"
+    );
+    assert_eq!(occupancy, 1);
+    let prepared = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+            .expect("the prepared successor intent reads")
+    });
+    assert!(
+        prepared.is_some(),
+        "the successor occupancy must remain prepared after the provider refusal"
+    );
+    assert!(
+        prepared
+            .as_ref()
+            .is_some_and(|intent| intent.observed_native_id.is_none()),
+        "a refused launch must not install a successor native"
+    );
+
+    let recovered = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma-8187-launch-refusal")
+    .send(world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    let successor = recovered.json()["successor_native_id"]
+        .as_str()
+        .expect("a successor")
+        .to_owned();
+    assert_ne!(successor, native.as_str());
+    assert_eq!(
+        world.fake.minted_natives(),
+        minted_before + 1,
+        "retry must mint exactly one successor"
+    );
+    let (active, history, occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        active, successor,
+        "the retry did not install the prepared successor"
+    );
+    assert_eq!(
+        history,
+        vec![native.as_str().to_owned()],
+        "recovery wrote more than one retirement for one succession"
+    );
+    assert_eq!(
+        occupancy, 2,
+        "one succession must add exactly one generation"
+    );
+    let installed = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_seat_launch_intent(project_id, binding_id, 2)
+            .expect("the successor intent reads")
+            .expect("the successor occupancy remains the prepared generation")
+    });
+    assert_eq!(
+        installed.observed_native_id.as_ref().map(ExternalId::as_str),
+        Some(successor.as_str()),
+        "retry must install the prepared occupancy rather than mint a later generation"
+    );
+}
+
 /// No second transition can reach a seat whose succession already committed.
 ///
 /// The scope names a lost acknowledgement between the store transition and the
