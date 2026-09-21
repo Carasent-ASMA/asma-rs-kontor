@@ -45898,7 +45898,7 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
     // A slice from the *middle* of the persona. Its opening phrase is the role's
     // standard_title, which the roster legitimately carries, so asserting on
     // that would fail on correct behaviour rather than on a disclosure.
-    let persona_body_fragment = &lsa_persona.as_str()[200..260];
+    let persona_body_fragment = &successor_persona.as_str()[200..260];
     assert!(
         !chain_read.body.contains(persona_body_fragment),
         "the chain read must never disclose persona prompt bytes: {}",
