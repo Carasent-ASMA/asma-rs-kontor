@@ -63,7 +63,7 @@ use kontor_runtime::request::{
 };
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{
-    EventSubject, HistoryCursor, HistoryReader, TimelineBreak, TimelinePosition,
+    EventSubject, HistoryCursor, HistoryReader, SessionEventKind, TimelineBreak, TimelinePosition,
 };
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
@@ -5536,14 +5536,15 @@ async fn timeline_cursor_free_read_restarts_from_a_fresh_tail_after_runtime_refe
 }
 
 #[tokio::test]
-async fn timeline_a_collapsed_projection_is_refused_rather_than_paged() {
+async fn timeline_a_collapsed_projection_expands_to_one_event_per_native_sequence() {
     let (plane, binding) = with_history().await;
-    // What a `projected` read looks like: one entry covering a range.
+    // Paseo 0.9 answers every read from its projection: one entry covering a
+    // tool lifecycle's two sequences.
     plane
         .daemon
         .set_answer_rpc("fetch_agent_timeline_request", v(TIMELINE_COLLAPSED));
 
-    let refused = plane
+    let page = plane
         .adapter
         .history(&HistoryRequest {
             binding,
@@ -5551,12 +5552,104 @@ async fn timeline_a_collapsed_projection_is_refused_rather_than_paged() {
             page_size: 10,
         })
         .await
-        .expect_err("a collapsed range is a hole a canonical cursor cannot page over");
+        .expect("a collapsed range is expanded rather than refused");
+    let read: Vec<(u64, SessionEventKind)> = page
+        .items
+        .iter()
+        .map(|event| (event.position.sequence, event.kind))
+        .collect();
     assert_eq!(
-        refused,
-        RuntimeError::TimelineRefetchRequired {
-            reason: TimelineBreak::SequenceGap
-        }
+        read,
+        [(2, SessionEventKind::Log), (3, SessionEventKind::ToolCall)],
+        "the absorbed sequence is a stand-in and the tool call sits at its seqEnd"
+    );
+}
+
+#[tokio::test]
+async fn timeline_an_older_page_folds_in_the_anchor_that_completes_inside_it() {
+    let (plane, binding) = with_history().await;
+    let epoch = "8f2b1c34-0000-4000-8000-000000000021";
+    let page = |direction: &str, start: u64, has_older: bool, entries: Vec<serde_json::Value>| {
+        serde_json::json!({
+            "requestId": "req-projected",
+            "agentId": AGENT_ID,
+            "agent": serde_json::Value::Null,
+            "direction": direction,
+            "projection": "canonical",
+            "epoch": epoch,
+            "reset": false,
+            "staleCursor": false,
+            "gap": false,
+            "window": { "minSeq": 1, "maxSeq": 7, "nextSeq": 8 },
+            "startCursor": { "epoch": epoch, "seq": start },
+            "endCursor": serde_json::Value::Null,
+            "hasOlder": has_older,
+            "hasNewer": false,
+            "entries": entries,
+            "error": serde_json::Value::Null,
+        })
+    };
+    // call_a starts at 2 and completes at 5; Paseo anchors it at 2, so the
+    // page selected by seqStart 3–4 has a hole at 5 that only the next older
+    // page can fill.
+    let mut straddling = tool_entry(2, "call_a");
+    straddling["seqEnd"] = serde_json::json!(5);
+    straddling["sourceSeqRanges"] =
+        serde_json::json!([{ "startSeq": 2, "endSeq": 2 }, { "startSeq": 5, "endSeq": 5 }]);
+    straddling["collapsed"] = serde_json::json!(["tool_lifecycle"]);
+    for answer in [
+        page(
+            "tail",
+            6,
+            true,
+            vec![tool_entry(6, "call_6"), tool_entry(7, "call_7")],
+        ),
+        page(
+            "before",
+            3,
+            true,
+            vec![tool_entry(3, "call_3"), tool_entry(4, "call_4")],
+        ),
+        page(
+            "before",
+            1,
+            false,
+            vec![user_entry(1, "msg_someone_else"), straddling],
+        ),
+    ] {
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_agent_timeline_request", answer);
+    }
+
+    let origin = plane
+        .adapter
+        .history(&HistoryRequest {
+            binding,
+            cursor: None,
+            page_size: 2,
+        })
+        .await
+        .expect("the hole is filled from the page holding its anchor");
+    let read: Vec<(u64, SessionEventKind)> = origin
+        .items
+        .iter()
+        .map(|event| (event.position.sequence, event.kind))
+        .collect();
+    assert_eq!(
+        read,
+        [
+            (1, SessionEventKind::Message),
+            (2, SessionEventKind::Log),
+            (3, SessionEventKind::ToolCall),
+            (4, SessionEventKind::ToolCall),
+            (5, SessionEventKind::ToolCall),
+        ]
+    );
+    assert_eq!(
+        plane.daemon.count("rpc fetch_agent_timeline_request"),
+        3,
+        "tail, the holed older page, then the page holding its anchor"
     );
 }
 
