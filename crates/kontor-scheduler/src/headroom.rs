@@ -232,16 +232,16 @@ fn quota_escalation(
 ) -> DomainResult<NeedsHumanPayload> {
     let recommendation = match earliest_reset {
         Some(instant) => format!(
-            "Every eligible account is out of quota on all {rungs} declared rungs, and the \
+            "No eligible account has admissible current headroom on the {rungs} declared rungs, and the \
              earliest reset is {instant}, which is beyond the declared escalation horizon. \
              Either widen the horizon and let the work park, register another account for one of \
              these rungs, or accept the delay deliberately."
         ),
         None => format!(
-            "Every eligible account is refused on all {rungs} declared rungs by a state no clock \
-             lifts — a drained balance, or a reserve that cannot be compared with its balance. \
-             Top up the balance, correct the reserve's currency, or register another account. \
-             Waiting will not clear this."
+            "No eligible account has admissible current headroom on the {rungs} declared rungs. \
+             Probe the exact configured accounts to obtain current quota evidence; inspect any \
+             provider refusal, balance or reserve mismatch. Missing or stale evidence does not \
+             establish that an account is out of quota."
         ),
     };
     NeedsHumanPayload::new(
@@ -297,6 +297,7 @@ pub struct EligibleAccount {
 /// # Errors
 /// Returns [`DomainError`] for an empty chain, which a validated
 /// [`kontor_core::spec::ModelChainPolicy`] cannot be.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve<F>(
     rungs: &[ModelRung],
     accounts: &[EligibleAccount],
@@ -304,6 +305,7 @@ pub fn resolve<F>(
     config: &HeadroomConfig,
     seat: SeatClass,
     now: Timestamp,
+    freshness: jiff::SignedDuration,
     provider_enabled: F,
 ) -> DomainResult<Placement>
 where
@@ -346,6 +348,7 @@ where
                 provider,
                 &thresholds,
                 now,
+                freshness,
             ) {
                 // Account before rung: the first account with room takes the
                 // launch, and no lower rung is consulted at all.
@@ -395,23 +398,34 @@ where
     }
 }
 
-/// One `(account, provider)` pair's standing, with absence permitting.
-///
-/// No row is not the same fact as
-/// [`kontor_core::spec::ProviderQuotaKind::Unknown`], which is an explicit
-/// refusal. Blocking on absence would stop every launch in a realm whose
-/// collector has never run, which is every realm before its first observation.
+/// New admission needs an exact current quota observation. A runtime capability
+/// probe does not establish provider headroom. Explicit `CannotReport` is a
+/// structural fact, distinct from an absent or stale report.
 fn headroom_of(
     states: &[ProviderQuotaState],
     account: AccountProfileId,
     provider: &str,
     thresholds: &HeadroomThresholds,
     now: Timestamp,
+    freshness: jiff::SignedDuration,
 ) -> ProviderHeadroom {
     states
         .iter()
         .find(|state| state.account_profile_id == account && state.provider == provider)
-        .map_or(ProviderHeadroom::Admissible, |state| {
+        .map_or(ProviderHeadroom::Unavailable, |state| {
+            // Keep actual refusals blocking, including a known future reset.
+            // An old positive report, however, cannot authorize a new seat.
+            if state.blocks_at(now)
+                || state.state == kontor_core::spec::ProviderQuotaKind::CannotReport
+            {
+                return state.headroom(thresholds, now);
+            }
+            if freshness <= jiff::SignedDuration::ZERO
+                || state.observed_at > now
+                || now.duration_since(state.observed_at) > freshness
+            {
+                return ProviderHeadroom::Unavailable;
+            }
             state.headroom(thresholds, now)
         })
 }
@@ -585,8 +599,17 @@ mod tests {
         states: &[ProviderQuotaState],
         seat: SeatClass,
     ) -> Placement {
-        resolve(&chain(), accounts, states, &config(), seat, now(), |_| true)
-            .expect("a non-empty chain")
+        resolve(
+            &chain(),
+            accounts,
+            states,
+            &config(),
+            seat,
+            now(),
+            jiff::SignedDuration::from_secs(60),
+            |_| true,
+        )
+        .expect("a non-empty chain")
     }
 
     // -----------------------------------------------------------------------
@@ -598,9 +621,12 @@ mod tests {
         // Account 1 is out of Codex; account 2 is not. Descending to Claude here
         // would pay a quality cost to avoid a move that costs nothing.
         let accounts = [account(1, &["codex", "claude"]), account(2, &["codex"])];
-        let states = [state(profile(1), "codex", ProviderQuotaKind::Exhausted)
-            .resets_at(NOW + 500_000)
-            .build()];
+        let states = [
+            state(profile(1), "codex", ProviderQuotaKind::Exhausted)
+                .resets_at(NOW + 500_000)
+                .build(),
+            state(profile(2), "codex", ProviderQuotaKind::Available).build(),
+        ];
         assert_eq!(
             place(&accounts, &states, SeatClass::Delivery),
             Placement::Admit {
@@ -621,6 +647,7 @@ mod tests {
             state(profile(2), "codex", ProviderQuotaKind::Exhausted)
                 .resets_at(NOW + 500_000)
                 .build(),
+            state(profile(1), "claude", ProviderQuotaKind::Available).build(),
         ];
         assert_eq!(
             place(&accounts, &states, SeatClass::Delivery),
@@ -634,13 +661,14 @@ mod tests {
     #[test]
     fn a_chain_declaring_four_rungs_can_reach_the_fourth() {
         let accounts = [account(1, &["codex", "claude", "openrouter", "deepseek"])];
-        let states = ["codex", "claude", "openrouter"]
+        let mut states = ["codex", "claude", "openrouter"]
             .map(|provider| {
                 state(profile(1), provider, ProviderQuotaKind::Exhausted)
                     .resets_at(NOW + 500_000)
                     .build()
             })
             .to_vec();
+        states.push(state(profile(1), "deepseek", ProviderQuotaKind::CannotReport).build());
         assert_eq!(
             place(&accounts, &states, SeatClass::Delivery),
             Placement::Admit {
@@ -653,7 +681,10 @@ mod tests {
 
     #[test]
     fn selection_is_deterministic_regardless_of_the_order_accounts_arrive_in() {
-        let states: [ProviderQuotaState; 0] = [];
+        let states = [
+            state(profile(1), "codex", ProviderQuotaKind::Available).build(),
+            state(profile(2), "codex", ProviderQuotaKind::Available).build(),
+        ];
         let ascending = [account(1, &["codex"]), account(2, &["codex"])];
         let descending = [account(2, &["codex"]), account(1, &["codex"])];
         assert_eq!(
@@ -768,16 +799,6 @@ mod tests {
         assert_needs_human(&place(&accounts, &states, SeatClass::Delivery), None);
     }
 
-    #[test]
-    fn no_recorded_state_at_all_permits_the_launch() {
-        let accounts = [account(1, &["codex"])];
-        let states: [ProviderQuotaState; 0] = [];
-        assert!(matches!(
-            place(&accounts, &states, SeatClass::Delivery),
-            Placement::Admit { .. }
-        ));
-    }
-
     // -----------------------------------------------------------------------
     // Waiting versus descending
     // -----------------------------------------------------------------------
@@ -801,9 +822,12 @@ mod tests {
     #[test]
     fn a_reset_beyond_the_short_horizon_descends_instead_of_waiting() {
         let accounts = [account(1, &["codex", "claude"])];
-        let states = [state(profile(1), "codex", ProviderQuotaKind::Exhausted)
-            .resets_at(NOW + 5_000)
-            .build()];
+        let states = [
+            state(profile(1), "codex", ProviderQuotaKind::Exhausted)
+                .resets_at(NOW + 5_000)
+                .build(),
+            state(profile(1), "claude", ProviderQuotaKind::Available).build(),
+        ];
         assert_eq!(
             place(&accounts, &states, SeatClass::Delivery),
             Placement::Admit {
@@ -916,7 +940,10 @@ mod tests {
     #[test]
     fn a_provider_the_deployment_disabled_is_skipped_whatever_the_rows_say() {
         let accounts = [account(1, &["codex", "claude"])];
-        let states: [ProviderQuotaState; 0] = [];
+        let states = [
+            state(profile(1), "codex", ProviderQuotaKind::Available).build(),
+            state(profile(1), "claude", ProviderQuotaKind::Available).build(),
+        ];
         let placement = resolve(
             &chain(),
             &accounts,
@@ -924,6 +951,7 @@ mod tests {
             &config(),
             SeatClass::Delivery,
             now(),
+            jiff::SignedDuration::from_secs(60),
             |provider| provider != "codex",
         )
         .expect("a non-empty chain");
@@ -1014,6 +1042,7 @@ mod tests {
                 &config(),
                 SeatClass::Delivery,
                 now(),
+                jiff::SignedDuration::from_secs(60),
                 |_| true,
             )
             .is_err()
@@ -1036,5 +1065,43 @@ mod tests {
         stretched.short_horizon_seconds = stretched.escalation_horizon_seconds + 1;
         assert!(stretched.validate().is_err());
         assert!(config().validate().is_ok(), "the fixture must be valid");
+    }
+
+    #[test]
+    fn provider_admission_refuses_absent_quota_evidence() {
+        let placement = place(&[account(1, &["claude"])], &[], SeatClass::Delivery);
+        assert_needs_human(&placement, None);
+    }
+
+    #[test]
+    fn provider_admission_refuses_stale_and_future_quota_evidence() {
+        for observed_at in [at(NOW - 61), at(NOW + 1)] {
+            let mut report = state(profile(1), "claude", ProviderQuotaKind::Available).build();
+            report.source = ProviderQuotaSource::ProviderReport;
+            report.observed_at = observed_at;
+            let placement = place(&[account(1, &["claude"])], &[report], SeatClass::Delivery);
+            assert_needs_human(&placement, None);
+        }
+    }
+
+    #[test]
+    fn provider_admission_accepts_fresh_exact_report_and_explicit_cannot_report() {
+        for kind in [
+            ProviderQuotaKind::Available,
+            ProviderQuotaKind::CannotReport,
+        ] {
+            let mut report = state(profile(1), "claude", kind).build();
+            report.source = ProviderQuotaSource::ProviderReport;
+            if kind == ProviderQuotaKind::CannotReport {
+                report.observed_at = at(NOW - 100_000);
+            }
+            assert_eq!(
+                place(&[account(1, &["claude"])], &[report], SeatClass::Delivery),
+                Placement::Admit {
+                    rung: chain()[1].clone(),
+                    account: profile(1)
+                }
+            );
+        }
     }
 }

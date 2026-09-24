@@ -1,0 +1,144 @@
+{
+  "acceptance_evidence": {
+    "catalog": {
+      "exact_effort_boundaries": {
+        "codex/gpt-5.6-luna": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "cursor/auto-smart": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "opencode/openrouter-nvidia-nemotron-3-ultra-550b-a55b-free": [
+          "medium",
+          "high"
+        ],
+        "opencode/openrouter-z-ai-glm-5.3-flash": [
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "live_read": "kontor_model_catalog_get at this scope turn",
+      "result": "satisfied",
+      "routes": [
+        "opencode/deepseek/deepseek-flash@max",
+        "codex/gpt-5.6-luna@xhigh",
+        "opencode/openrouter/z-ai/glm-5.3-flash@high",
+        "cursor/auto-smart@high",
+        "opencode/openrouter/nvidia/nemotron-3-ultra-550b-a55b:free@high"
+      ]
+    },
+    "policy": {
+      "approved_memory": [
+        "watchdog-1f9cedad-overnight-audit-corrections-20260919@01a0b99a-34ab-7e20-9d7a-eab2f8babedf",
+        "asma-8237-catalog-review-approval-20260919@01a0b78b-1da0-7171-84f2-5a9bf1d77f4a"
+      ],
+      "assertion": "jq exact ordered-chain check exited 0",
+      "config_path": "_docs/ai-orchestration/config/watchdogs/watchdog-1f9cedad.json",
+      "fallback_order": [
+        "codex/gpt-5.6-luna@xhigh",
+        "opencode/openrouter/z-ai/glm-5.3-flash@high",
+        "cursor/auto-smart@high",
+        "opencode/openrouter/nvidia/nemotron-3-ultra-550b-a55b:free@high"
+      ],
+      "primary": "opencode/deepseek/deepseek-flash@max",
+      "qualification": "Published policy/order is evidenced. Approved memory explicitly says automatic pre-start switching when no model firing can start remains unverified; this record does not promote that limitation into a pass claim.",
+      "result": "policy_published_watchdog_stopped_runtime_failover_not_claimed",
+      "stopped_readback": "config enabled=false"
+    },
+    "tests": {
+      "command": "cargo test --locked -p kontor-daemon --test loopback_api the_model_catalog_ -- --nocapture",
+      "covered": [
+        "Every route used by operational seats is advertised.",
+        "Luna, GLM-5.3-Flash, CursorAuto and Nemotron use exact provider-native IDs and effort ceilings.",
+        "Invented aliases glm-5.3-flash, nemotron-3-ultra:free and cursor-auto are absent.",
+        "One default per affected provider is preserved."
+      ],
+      "prior_approved_evidence": "asma-8237-catalog-effort-evidence-20260919@01a0b78a-66bd-76f3-b21c-29cd8df2fd19 records the same two tests plus a killed/restored invented Nemotron-max mutant",
+      "result": "2 passed; 0 failed; 343 filtered out"
+    }
+  },
+  "artifact": "high-scope-record",
+  "assumptions": [],
+  "delivered_change": {
+    "candidate_commit": "9f61c74ad4c0ca859e4e4f665cb9a72c37a30fd2",
+    "candidate_tree_scope": [
+      "crates/kontor-daemon/src/applications.rs",
+      "crates/kontor-daemon/tests/loopback_api.rs"
+    ],
+    "checkout_clean": true,
+    "master_relation": {
+      "direct_ancestry": false,
+      "evidence": "git cherry origin/master HEAD returned '- 9f61c74ad4c0ca859e4e4f665cb9a72c37a30fd2'",
+      "interpretation": "the patch is already present patch-equivalently on origin/master; no duplicate merge or implementation is required"
+    },
+    "origin_master": "e9184291c285addc2656b4e31d31473263fd11da"
+  },
+  "handoff": {
+    "agent_run_id": "01a0bfd6-e682-71e2-884f-d61846d3a7ca",
+    "instruction": "Do not duplicate commit 9f61c74a or start the watchdog. Resolve only the recorded refusal-evidence question: return the exact existing governed rejection evidence if catalog omission is the enforced boundary, otherwise add the minimum focused request-level refusal test. Preserve TeamRun 01a0bfd6-cb03-7160-a381-3d561b48e2bd and workspace wks_f4bc61a339794e3a.",
+    "native_id": "82b79f90-3097-4e74-9f31-0c92b97456e4",
+    "to_role_slot": "implement"
+  },
+  "identity_effects": "This scope turn writes only this evidence record and a message to the existing implement seat. It edits no repository file, starts no schedule, records no gate, creates no run, and changes no task/topology/runtime identity.",
+  "objective": "Qualify the existing delivered ASMA-8237 work without duplicating implementation, changing topology, starting the watchdog, or inferring any gate verdict.",
+  "observed_at": "2026-09-20T17:30:42.289Z",
+  "open_questions": [
+    {
+      "attaches_to": "ASMA-8237 acceptance item 3; commit 9f61c74a test the_model_catalog_preserves_watchdog_route_and_effort_boundaries; this high-scope record",
+      "disposition": "Unresolved here; no acceptance or gate verdict inferred. Existing implement seat must qualify with exact evidence or make the smallest focused test-only correction.",
+      "options_seen": [
+        "Treat exact non-advertisement in the governed catalog as the refusal boundary and return the existing validator evidence that consumes it.",
+        "Locate or add one focused request-level rejection test on the existing implement seat, without changing the catalog or watchdog policy."
+      ],
+      "subject": "What constitutes the required refusal test for a model the runtime does not list?",
+      "why_ambiguous": "The stored ticket says 'refusal for models the runtime does not list'. The delivered regression proves guessed/unlisted aliases are absent from the catalog, but the inspected evidence does not call a governed routing or request API and assert an explicit rejection."
+    }
+  ],
+  "producer": {
+    "agent_run_id": "01a0bfd6-cb04-7cb1-99ab-135d84a2231a",
+    "native_id": "4f6a00ab-9252-4c4a-a8dd-4378f61dd469",
+    "role_slot": "scope",
+    "runtime_binding_id": "01a0bfd6-cb04-7cb1-99ab-136bfc1b92c0",
+    "runtime_generation": 1,
+    "team_run_id": "01a0bfd6-cb03-7160-a381-3d561b48e2bd"
+  },
+  "schema_version": 1,
+  "scope_boundary": {
+    "excluded": [
+      "Any source or policy edit unless the existing implement seat proves one is required.",
+      "Starting or resuming watchdog 1f9cedad / schedule 809e6aec.",
+      "Gate verdicts, deployment, topology replacement, duplicate TeamRuns, or a second implementation lane.",
+      "Rerouting the never-bound verify attempt before it is owed its declared handoff."
+    ],
+    "included": [
+      "Confirm the clean owning checkout and delivered commit.",
+      "Confirm patch equivalence on origin/master.",
+      "Read the approved Kontor policy/catalog evidence and the live model catalog.",
+      "Run the bounded catalog tests and an exact chain-order assertion.",
+      "Record remaining evidence ambiguity and hand it to the existing implement seat."
+    ]
+  },
+  "status": "qualified_with_one_evidence_question",
+  "task": {
+    "branch": "feat/ASMA-8237-kontor-model-catalog-add-luna-glm-5-3-flash-cursorauto-nemotron-publish-approved-watchdog-chain-poli",
+    "jira_key": "ASMA-8237",
+    "module": "asma-rs-kontor",
+    "phase": "high-scope",
+    "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+    "state": "in_progress",
+    "task_id": "01a0b77d-110f-7401-ab3d-ca36da7ab5f7",
+    "task_revision": 2,
+    "workspace_id": "wks_f4bc61a339794e3a",
+    "worktree": "/Users/igor/carasent/asma-modules/.worktrees/asma-8237/asma-rs-kontor"
+  },
+  "title": "ASMA-8237 high-scope — qualify the delivered model catalog and stopped watchdog-chain policy",
+  "type": "high_scope_record"
+}

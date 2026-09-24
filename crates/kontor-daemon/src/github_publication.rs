@@ -917,6 +917,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_current_github_head_refuses_a_truly_stale_publication_sha() {
+        let current = PullRequestFacts {
+            number: 2985,
+            title: "ASMA-8101 publication identity enforcement".to_owned(),
+            head: RefFacts {
+                name: "feat/ASMA-8101-publication-identity-enforcement".to_owned(),
+                sha: "2222222222222222222222222222222222222222".to_owned(),
+            },
+            base: RefFacts {
+                name: "master".to_owned(),
+                sha: "1111111111111111111111111111111111111111".to_owned(),
+            },
+            draft: false,
+            state: "open".to_owned(),
+            merged: false,
+        };
+        let stale =
+            CommitSha::parse("0000000000000000000000000000000000000000").expect("a stale full SHA");
+        assert_eq!(
+            ensure_mergeable(&current, &stale),
+            Err(MergeRefusal::HeadMoved {
+                current: current.head.sha
+            })
+        );
+    }
+
     #[tokio::test]
     async fn the_gateway_exchanges_a_jwt_posts_checks_and_merges_by_head() {
         use wiremock::matchers::{body_partial_json, header, method, path};

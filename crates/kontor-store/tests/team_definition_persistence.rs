@@ -2,6 +2,8 @@
 //! resumable identity-preserving migration intent, and legacy-compatible
 //! consultation topic storage.
 
+mod support;
+
 use kontor_core::consultation::{
     ConsultationFamily, ConsultationRunId, ConsultationRunState, ConsultationSubject,
 };
@@ -25,7 +27,7 @@ use kontor_core::repository::{
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyRepository,
 };
 use kontor_core::spec::{
-    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, Shareability, ShareabilityTier,
+    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, SeatAutonomy, Shareability, ShareabilityTier,
     TeamDefinitionSnapshot, TeamDefinitionSpec, TopologySnapshot,
 };
 use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind};
@@ -65,7 +67,7 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let home = TempDir::new().expect("a temporary directory");
-    let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
+    let store = support::store_from_template(&home.path().join("kontor.db"));
     let project_id = ProjectId::generate();
     let mini_project_id = MiniProjectId::generate();
     let created_at = at("2026-09-01T12:00:00Z");
@@ -200,6 +202,8 @@ fn bind_container(
             identity: native.clone(),
             observed_kind,
             canonical_cwd: Some(name("/tmp/kontor")),
+            readback: None,
+            bound_at: f.created_at,
             observed_at: f.created_at,
         })
         .expect("the native container is bound before migration preflight");
@@ -256,6 +260,7 @@ fn bind_hosted_seats(
                 seat_binding_id: *seat_binding_id,
                 model_rung: rung.clone(),
                 native_identity: native_identity.clone(),
+                autonomy: SeatAutonomy::Supervised,
                 provider_session_id: None,
                 observed_at: f.created_at,
             })
@@ -326,7 +331,7 @@ fn a_published_team_definition_revision_cannot_be_replaced_even_with_the_same_by
 #[test]
 fn a_definition_naming_an_unpublished_topology_revision_is_refused() {
     let home = TempDir::new().expect("a temporary directory");
-    let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
+    let store = support::store_from_template(&home.path().join("kontor.db"));
     let project_id = ProjectId::generate();
     let created_at = at("2026-09-01T12:00:00Z");
     store

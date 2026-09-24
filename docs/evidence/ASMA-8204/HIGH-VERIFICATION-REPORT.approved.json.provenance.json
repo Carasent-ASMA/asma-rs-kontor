@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "exported_at": "2026-09-20",
+  "exported_by": "Codex direct repair coordinator",
+  "artifact": "high-verification-report",
+  "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+  "realm_id": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+  "item_id": "artifact-asma-8204-high-verification-report-81367993",
+  "revision_id": "01a0b622-5c9c-7ed0-9050-f1513d329993",
+  "memory_revision": 1,
+  "approved": true,
+  "current_at_export": true,
+  "proposed_at": "2026-09-18T20:08:20.380721Z",
+  "proposed_by": "ASMA-8204 fleet-verifier 01a0b318-4afd-7d72-84d1-fa83aed4d430",
+  "source_provenance": {
+    "history_unavailable": false,
+    "legacy_last_write_wins": false,
+    "source": "operator",
+    "source_id": "ASMA-8204"
+  },
+  "body_path": "docs/evidence/ASMA-8204/HIGH-VERIFICATION-REPORT.approved.json",
+  "serialization": "Exact parsed document returned by supported kontor_memory_history, serialized as UTF-8 JSON with 2-space indentation and one trailing newline. No document field added, removed or changed.",
+  "limitation": "Recovered approved-memory producer document, not a claim that the producer originally committed these file bytes. Registry association must cite the exact existing settled producer turn; export creates no verdict or runtime proof."
+}

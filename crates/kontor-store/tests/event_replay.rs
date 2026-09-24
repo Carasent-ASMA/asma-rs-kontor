@@ -12,6 +12,8 @@
 //!   lifecycle change, an outcome or a terminal run;
 //! * persisting transcript, message or token data in the durable log.
 
+mod support;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -142,7 +144,7 @@ impl Fixture {
 fn fixture() -> Fixture {
     let directory = TempDir::new().expect("a temporary directory");
     let path = directory.path().join("kontor.db");
-    let store = SqliteStore::open(&path).expect("the store opens");
+    let store = support::store_from_template(&path);
     Connection::open(&path)
         .expect("a raw connection opens")
         .execute_batch(FIXTURE_SQL)
