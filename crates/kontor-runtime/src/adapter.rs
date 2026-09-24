@@ -395,6 +395,17 @@ impl ConsultationRouteProvenance {
                 Some(ConsultationFallbackDisposition::OperatorAccepted)
             )
     }
+
+    /// Whether an operator accepted this route through any recovery profile,
+    /// as opposed to template data or an unaccepted fallback.
+    #[must_use]
+    pub const fn is_operator_accepted_recovery(&self) -> bool {
+        !matches!(self.source, ConsultationRouteSource::Template)
+            && matches!(
+                self.fallback_disposition,
+                Some(ConsultationFallbackDisposition::OperatorAccepted)
+            )
+    }
 }
 
 /// Launch one governed consultation seat in an already prepared ASW/CSW.

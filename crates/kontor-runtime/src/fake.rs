@@ -4551,14 +4551,19 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             let landed = session.content[..session.history_len]
                 .iter()
                 .find(|event| event.subject == EventSubject::Message(request.message_id))
-                .map(|event| event.position);
-            if let Some(position) = landed {
+                .map(|event| (event.position, event.emitted_at));
+            if let Some((position, accepted_at)) = landed {
                 state.unconfirmed_deliveries.remove(&request.message_id);
+                // The occurrence's own instant, never this retry's: adopting what
+                // already landed is a readback, and the real adapter reports the
+                // native entry's timestamp for exactly the same reason. A retry
+                // that answered with its own clock would make a byte-identical
+                // replay impossible to observe.
                 return Ok(MessageAck {
                     message_id: request.message_id,
                     binding_id,
                     position,
-                    accepted_at: request.sent_at,
+                    accepted_at,
                 });
             }
         }
@@ -4692,24 +4697,30 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                     && event.kind == SessionEventKind::Message
                     && payload_body_is(event, request.body.as_str())
             })
-            .map(|event| event.position)
+            .map(|event| (event.position, event.emitted_at))
             .collect::<Vec<_>>();
         if matches.len() > 1 {
             return Err(RuntimeError::DuplicateMessage {
                 rule: "the exact server correlation challenge appears more than once",
             });
         }
-        let position = if let Some(position) = matches.first().copied() {
-            position
+        // Adoption reports the occurrence already in the timeline, so its own
+        // instant travels with its position; only a fresh dispatch is stamped
+        // with this request's clock.
+        let (position, accepted_at) = if let Some((position, accepted_at)) =
+            matches.first().copied()
+        {
+            (position, accepted_at)
         } else if request.may_dispatch {
             // Deliberately omit EventSubject::Message: the challenge contract
             // proves the Paseo 0.8.0 case where native history loses that echo.
-            session.append(
+            let position = session.append(
                 SessionEventKind::Message,
                 EventSubject::None,
                 request.body.as_str(),
                 request.sent_at,
-            )?
+            )?;
+            (position, request.sent_at)
         } else {
             return Err(RuntimeError::DeliveryConfirmationUnknown {
                 rule: "the durably claimed correlation challenge is not yet present; retry may reconcile but must not resend",
@@ -4719,7 +4730,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             message_id: request.message_id,
             binding_id,
             position,
-            accepted_at: request.sent_at,
+            accepted_at,
         };
         if lose_ack {
             return Err(RuntimeError::Transport {
