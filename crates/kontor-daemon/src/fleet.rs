@@ -180,6 +180,18 @@ pub(crate) struct FleetRoute {
     pub(crate) vendor: String,
 }
 
+/// The rungs one delivery seat may walk, and the fleet binding they came from.
+///
+/// `fleet` is `Some` exactly when the rungs came from the live `fleet.yml`
+/// snapshot rather than the frozen template chain: it carries that snapshot and
+/// the binding key so an admitted placement can be recorded against the exact
+/// version that authorised it.
+#[derive(Debug)]
+pub(crate) struct DeclaredRungs {
+    pub(crate) rungs: Vec<ModelRung>,
+    pub(crate) fleet: Option<(Arc<FleetSnapshot>, String)>,
+}
+
 /// A validated, hashed view of one `fleet.yml` document.
 #[derive(Debug)]
 pub struct FleetSnapshot {

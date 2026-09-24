@@ -33987,6 +33987,595 @@ async fn an_admin_fills_an_owed_slot_on_a_named_route_and_an_operator_cannot() {
     );
 }
 
+/// Write one fleet configuration into the Realm state root.
+///
+/// Mode 0600 is load-bearing: the loader refuses a document group or others can
+/// write (F-02), so a test that skipped this would silently fall back to the
+/// frozen template chain.
+fn write_fleet(world: &World, yaml: &str) {
+    let path = world.directory.path().join("fleet.yml");
+    std::fs::write(&path, yaml).expect("the fleet configuration is written");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        .expect("the fleet configuration is owner-only");
+}
+
+/// The seat key the live fleet must bind to reach one slot of the fixture's
+/// frozen template.
+fn fleet_binding_key(fixture: &SeatFillWorld, slot: &str) -> String {
+    let template = fixture.world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(fixture.project, fixture.team)
+            .expect("team reads")
+            .expect("team exists")
+            .snapshot
+            .template_id
+    });
+    format!("team/{template}/{slot}")
+}
+
+/// One schema-version-1 fleet document binding every key to `fleet-chain`.
+///
+/// The domains are the account aliases `prepare_fake_provider_headroom_for`
+/// declares, and the models are ones the frozen `test/test` template chain
+/// never uses, so a launched route tells live fleet routing from the template.
+fn fleet_yaml(binding_keys: &[&str], steps: &str) -> String {
+    let bindings: String = binding_keys
+        .iter()
+        .map(|key| format!("  {key}: fleet-chain\n"))
+        .collect();
+    format!(
+        "schema_version: 1\n\
+         domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work] }}\n\
+         models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai }}\n\
+         chains:\n  fleet-chain:\n{steps}\
+         bindings:\n{bindings}"
+    )
+}
+
+/// Claude before Codex: step 1 walks both Claude logins, step 2 Codex.
+const CLAUDE_THEN_CODEX: &str = "    - [opus]\n    - [sol]\n";
+
+/// The same two domains with the steps swapped, so step 1 is Codex.
+const CODEX_THEN_CLAUDE: &str = "    - [sol]\n    - [opus]\n";
+
+/// The delivery member filling `slot`, as `seat_fill_world` left it.
+fn delivery_member(fixture: &SeatFillWorld, slot: &str) -> kontor_core::repository::AgentRun {
+    fixture
+        .members()
+        .into_iter()
+        .find(|run| run.role.as_str() == slot)
+        .expect("the role slot has a member")
+}
+
+/// The enabled account profile that declares `alias` as selectable.
+fn account_with_alias(fixture: &SeatFillWorld, alias: &str) -> AccountProfileId {
+    fixture.world.daemon.state().with_store(|store| {
+        store
+            .list_account_profiles(fixture.project)
+            .expect("profiles read")
+            .into_iter()
+            .find(|profile| {
+                kontor_accounts::selectable_providers(profile)
+                    .expect("routes read")
+                    .contains(alias)
+            })
+            .expect("an enabled account declares the alias")
+            .id
+    })
+}
+
+/// Retire one quota-blocked seat and return the answer naming its successor.
+///
+/// The evidence is the runtime's own reachable `Blocked` refusal, recorded
+/// against the predecessor's exact binding and account, exactly as
+/// `record_runtime_quota_refusal` builds it for the quota succession tests.
+async fn take_over_blocked_seat(
+    fixture: &SeatFillWorld,
+    predecessor: AgentRunId,
+    slot: &str,
+    key: &str,
+) -> Answer {
+    let run = fixture.world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(fixture.project, predecessor)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let binding = run.binding.clone().expect("the predecessor is bound");
+    let account = run
+        .account_profile_id
+        .expect("the predecessor owns the account the walk selected");
+    let provider = fixture
+        .world
+        .fake
+        .launched_model(predecessor)
+        .expect("the predecessor's launched route")
+        .provider
+        .0;
+    let (run, evidence) = record_runtime_quota_refusal(
+        &fixture.world,
+        fixture.project,
+        predecessor,
+        &binding,
+        account,
+        &provider,
+        at("2099-01-01T00:00:00Z"),
+    )
+    .await;
+    Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{predecessor}/successors:replace",
+            fixture.project
+        ),
+        &serde_json::json!({
+            "role_slot": slot,
+            "expected_predecessor_revision": run.revision,
+            "expected_task_revision": fixture.task_revision(),
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": evidence,
+        }),
+    )
+    .signed_as(&fixture.world, "admin")
+    .with_key(key)
+    .send(&fixture.world)
+    .await
+}
+
+/// The successor run a quota takeover named.
+fn replaced_successor(answer: &Answer) -> AgentRunId {
+    AgentRunId::parse(
+        answer.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the replacement names its successor"),
+    )
+    .expect("a canonical successor id")
+}
+
+/// The launched route one placement froze, as `(provider, model)`.
+fn launched_route(fixture: &SeatFillWorld, run: AgentRunId) -> (String, String) {
+    let launched = fixture
+        .world
+        .fake
+        .launched_model(run)
+        .expect("the seat launched natively");
+    (launched.provider.0, launched.model.0)
+}
+
+/// Every `fleet-decision` line this TeamRun has recorded, in order.
+fn fleet_decisions(fixture: &SeatFillWorld) -> Vec<serde_json::Value> {
+    let path = fixture
+        .world
+        .directory
+        .path()
+        .join("fleet-decisions")
+        .join(format!("{}.jsonl", fixture.team));
+    let text = std::fs::read_to_string(path).expect("the decision log exists");
+    text.lines()
+        .map(|line| serde_json::from_str(line).expect("every decision line is JSON"))
+        .collect()
+}
+
+/// Record one `(account, provider)` quota state through the supported operator
+/// operation, the way the account-routing tests prepare headroom.
+///
+/// Succession evidence leaves the predecessor's account spent; a test that then
+/// wants another route on that account has to say the operator cleared it, or
+/// spent it, exactly as an operator would.
+async fn record_fixture_quota(
+    fixture: &SeatFillWorld,
+    account: AccountProfileId,
+    provider: &str,
+    state: &str,
+    resets_at: Option<&str>,
+) {
+    let revision = fixture.world.daemon.state().with_store(|store| {
+        store
+            .list_provider_quota_states(fixture.project)
+            .expect("quota states read")
+            .into_iter()
+            .find(|row| row.account_profile_id == account && row.provider == provider)
+            .expect("the fixture recorded this account and provider")
+            .revision
+    });
+    let recorded = Call::post(
+        format!(
+            "/v1/projects/{}/provider-quota-states:record",
+            fixture.project
+        ),
+        &serde_json::json!({
+            "account_profile_id": account.to_string(),
+            "provider": provider,
+            "state": state,
+            "resets_at": resets_at,
+            "expected_revision": revision.get(),
+        }),
+    )
+    .signed_as(&fixture.world, "admin")
+    .with_key("fleet-fixture-quota")
+    .send(&fixture.world)
+    .await;
+    assert_eq!(recorded.status, 200, "{}", recorded.body);
+}
+
+/// The live fleet is read by the *next placement*: binding a slot to a chain
+/// the frozen template never carried routes its replacement seat onto the
+/// fleet's first account and model, with no daemon restart and no republish.
+#[tokio::test]
+async fn a_fleet_binding_routes_a_new_seat_without_restart() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    write_fleet(
+        &fixture.world,
+        &fleet_yaml(
+            &[&fleet_binding_key(&fixture, "implement")],
+            CLAUDE_THEN_CODEX,
+        ),
+    );
+    let predecessor = delivery_member(&fixture, "implement");
+    let replaced =
+        take_over_blocked_seat(&fixture, predecessor.id, "implement", "fleet-first-route").await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    let successor = replaced_successor(&replaced);
+    assert_eq!(
+        launched_route(&fixture, successor),
+        ("claude-personal".to_owned(), "claude-opus-5".to_owned()),
+        "the fleet chain's first route, not the frozen template chain"
+    );
+    assert_ne!(
+        launched_route(&fixture, successor),
+        ("test".to_owned(), "test".to_owned()),
+        "the template chain the slot was frozen with"
+    );
+}
+
+/// One operator edit changes the next placement: swapping the chain's steps in
+/// `fleet.yml` moves the following succession to the other domain, with no
+/// republish, no restart and no rebuild.
+#[tokio::test]
+async fn an_edit_to_fleet_yml_changes_the_next_placement() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    let binding = fleet_binding_key(&fixture, "implement");
+    write_fleet(&fixture.world, &fleet_yaml(&[&binding], CLAUDE_THEN_CODEX));
+    let predecessor = delivery_member(&fixture, "implement");
+    let first =
+        take_over_blocked_seat(&fixture, predecessor.id, "implement", "fleet-reorder-first").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_successor = replaced_successor(&first);
+    assert_eq!(
+        launched_route(&fixture, first_successor),
+        ("claude-personal".to_owned(), "claude-opus-5".to_owned())
+    );
+
+    write_fleet(&fixture.world, &fleet_yaml(&[&binding], CODEX_THEN_CLAUDE));
+    let second = take_over_blocked_seat(
+        &fixture,
+        first_successor,
+        "implement",
+        "fleet-reorder-second",
+    )
+    .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let second_successor = replaced_successor(&second);
+    assert_eq!(
+        launched_route(&fixture, second_successor),
+        ("codex-work".to_owned(), "gpt-5.6-sol".to_owned())
+    );
+    assert_ne!(
+        launched_route(&fixture, first_successor),
+        launched_route(&fixture, second_successor),
+        "the edited file moved the next placement to another domain"
+    );
+}
+
+/// An edit the loader refuses is not a routing change: the last accepted
+/// snapshot keeps authorising placements, and the rejection is reported in
+/// `fleet-status.json` rather than silently ignored.
+#[tokio::test]
+async fn an_invalid_edit_keeps_the_previous_fleet() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    let binding = fleet_binding_key(&fixture, "implement");
+    write_fleet(&fixture.world, &fleet_yaml(&[&binding], CLAUDE_THEN_CODEX));
+    let predecessor = delivery_member(&fixture, "implement");
+    let first =
+        take_over_blocked_seat(&fixture, predecessor.id, "implement", "fleet-invalid-first").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_successor = replaced_successor(&first);
+
+    write_fleet(&fixture.world, "schema_version: [1\n");
+    let second = take_over_blocked_seat(
+        &fixture,
+        first_successor,
+        "implement",
+        "fleet-invalid-second",
+    )
+    .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let second_successor = replaced_successor(&second);
+    assert_eq!(
+        launched_route(&fixture, second_successor),
+        ("claude-work".to_owned(), "claude-opus-5".to_owned()),
+        "the rejected edit leaves the previous chain authorising placements: \
+         the spent first login gives way inside step 1, not to the template chain"
+    );
+    let decisions = fleet_decisions(&fixture);
+    assert_eq!(
+        decisions.len(),
+        2,
+        "both placements were admitted: {decisions:?}"
+    );
+    assert_eq!(
+        decisions[0]["fleet_hash"], decisions[1]["fleet_hash"],
+        "the same accepted snapshot authorised both placements"
+    );
+    assert_eq!(decisions[0]["step"], 1);
+    assert_eq!(decisions[0]["sub_step"], 1);
+    assert_eq!(decisions[0]["provider"], "claude-personal");
+    assert_eq!(decisions[1]["step"], 1);
+    assert_eq!(decisions[1]["sub_step"], 2);
+    assert_eq!(decisions[1]["provider"], "claude-work");
+    let status: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture.world.directory.path().join("fleet-status.json"))
+            .expect("the status file is written"),
+    )
+    .expect("the status file is JSON");
+    assert!(
+        status["last_error"]
+            .as_str()
+            .is_some_and(|error| !error.is_empty()),
+        "the rejected edit is reported: {status}"
+    );
+}
+
+/// Deleting `fleet.yml` restores template routing for the next placement, and
+/// a template-routed placement is not a fleet placement: it writes no decision.
+#[tokio::test]
+async fn deleting_fleet_yml_restores_template_routing() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    write_fleet(
+        &fixture.world,
+        &fleet_yaml(
+            &[&fleet_binding_key(&fixture, "implement")],
+            CLAUDE_THEN_CODEX,
+        ),
+    );
+    let predecessor = delivery_member(&fixture, "implement");
+    let first =
+        take_over_blocked_seat(&fixture, predecessor.id, "implement", "fleet-delete-first").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_successor = replaced_successor(&first);
+    assert_eq!(
+        launched_route(&fixture, first_successor),
+        ("claude-personal".to_owned(), "claude-opus-5".to_owned())
+    );
+
+    // The takeover spent the fixture seat's own account. Clear that exhaustion
+    // through the operator record, so the template chain can place work on it
+    // once the fleet is gone -- the state change is fixture hygiene, not part
+    // of what the fleet edit decides.
+    record_fixture_quota(
+        &fixture,
+        predecessor
+            .account_profile_id
+            .expect("the fixture seat owns an account"),
+        &launched_route(&fixture, predecessor.id).0,
+        "cannot_report",
+        None,
+    )
+    .await;
+
+    std::fs::remove_file(fixture.world.directory.path().join("fleet.yml"))
+        .expect("fleet.yml is deleted");
+    let second = take_over_blocked_seat(
+        &fixture,
+        first_successor,
+        "implement",
+        "fleet-delete-second",
+    )
+    .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let second_successor = replaced_successor(&second);
+    assert_eq!(
+        launched_route(&fixture, second_successor),
+        ("test".to_owned(), "test".to_owned()),
+        "the frozen template chain, a route the fleet chain never contained"
+    );
+    assert_eq!(
+        fleet_decisions(&fixture).len(),
+        1,
+        "a template-routed placement records no fleet decision"
+    );
+}
+
+/// Account before rung: a blocked login walks to the next sub-step in the same
+/// step before the chain descends to the next domain.
+#[tokio::test]
+async fn a_quota_takeover_walks_sub_steps_before_the_next_domain() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    write_fleet(
+        &fixture.world,
+        &fleet_yaml(
+            &[
+                &fleet_binding_key(&fixture, "implement"),
+                &fleet_binding_key(&fixture, "scope"),
+            ],
+            CLAUDE_THEN_CODEX,
+        ),
+    );
+    let predecessor = delivery_member(&fixture, "implement");
+    let first =
+        take_over_blocked_seat(&fixture, predecessor.id, "implement", "fleet-walk-first").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_successor = replaced_successor(&first);
+    assert_eq!(
+        launched_route(&fixture, first_successor),
+        ("claude-personal".to_owned(), "claude-opus-5".to_owned()),
+        "the first placement lands on the first Claude sub-step"
+    );
+
+    let second =
+        take_over_blocked_seat(&fixture, first_successor, "implement", "fleet-walk-second").await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let second_successor = replaced_successor(&second);
+    assert_eq!(
+        launched_route(&fixture, second_successor),
+        ("claude-work".to_owned(), "claude-opus-5".to_owned()),
+        "the exhausted first login moves the placement inside step 1"
+    );
+
+    // The frozen template caps one slot's successor chain, so the third
+    // placement takes over another fleet-bound seat. Both Claude logins are
+    // spent: the first by the succession evidence above, the second by the
+    // operator record an exhausted login would produce.
+    record_fixture_quota(
+        &fixture,
+        account_with_alias(&fixture, "claude-work"),
+        "claude-work",
+        "exhausted",
+        Some("2099-01-01T00:00:00Z"),
+    )
+    .await;
+    let scope = delivery_member(&fixture, "scope");
+    let third = take_over_blocked_seat(&fixture, scope.id, "scope", "fleet-walk-third").await;
+    assert_eq!(third.status, 200, "{}", third.body);
+    let third_successor = replaced_successor(&third);
+    assert_eq!(
+        launched_route(&fixture, third_successor),
+        ("codex-work".to_owned(), "gpt-5.6-sol".to_owned()),
+        "both Claude logins spent, the chain descends to step 2"
+    );
+
+    let recorded: Vec<(String, u64, u64, String, String)> = fleet_decisions(&fixture)
+        .iter()
+        .map(|decision| {
+            (
+                decision["role_slot"]
+                    .as_str()
+                    .expect("a role slot")
+                    .to_owned(),
+                decision["step"].as_u64().expect("a step"),
+                decision["sub_step"].as_u64().expect("a sub-step"),
+                decision["provider"]
+                    .as_str()
+                    .expect("a provider")
+                    .to_owned(),
+                decision["model"].as_str().expect("a model").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        recorded,
+        vec![
+            (
+                "implement".to_owned(),
+                1,
+                1,
+                "claude-personal".to_owned(),
+                "claude-opus-5".to_owned()
+            ),
+            (
+                "implement".to_owned(),
+                1,
+                2,
+                "claude-work".to_owned(),
+                "claude-opus-5".to_owned()
+            ),
+            (
+                "scope".to_owned(),
+                2,
+                1,
+                "codex-work".to_owned(),
+                "gpt-5.6-sol".to_owned()
+            ),
+        ],
+        "each placement is recorded at the exact route the walk reached"
+    );
+}
+
+/// Every admitted fleet placement is recorded once, before the launch it
+/// authorises, against the exact binding and slot it routed.
+#[tokio::test]
+async fn every_admitted_fleet_placement_is_recorded() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    let binding = fleet_binding_key(&fixture, "implement");
+    write_fleet(&fixture.world, &fleet_yaml(&[&binding], CLAUDE_THEN_CODEX));
+    let predecessor = delivery_member(&fixture, "implement");
+    let first =
+        take_over_blocked_seat(&fixture, predecessor.id, "implement", "fleet-record-first").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_successor = replaced_successor(&first);
+    let second = take_over_blocked_seat(
+        &fixture,
+        first_successor,
+        "implement",
+        "fleet-record-second",
+    )
+    .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let second_successor = replaced_successor(&second);
+
+    let decisions = fleet_decisions(&fixture);
+    assert_eq!(
+        decisions.len(),
+        2,
+        "one line per admitted placement: {decisions:?}"
+    );
+    assert_eq!(decisions[0]["role_slot"], "implement");
+    assert_eq!(decisions[1]["role_slot"], "implement");
+    assert_eq!(decisions[0]["binding_key"], binding);
+    assert_eq!(decisions[1]["binding_key"], binding);
+    assert_eq!(decisions[0]["team_run_id"], fixture.team.to_string());
+    assert_eq!(decisions[1]["team_run_id"], fixture.team.to_string());
+    let recorded: Vec<(u64, u64, String, String)> = decisions
+        .iter()
+        .map(|decision| {
+            (
+                decision["step"].as_u64().expect("a step"),
+                decision["sub_step"].as_u64().expect("a sub-step"),
+                decision["provider"]
+                    .as_str()
+                    .expect("a provider")
+                    .to_owned(),
+                decision["model"].as_str().expect("a model").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        recorded,
+        vec![
+            (
+                1,
+                1,
+                "claude-personal".to_owned(),
+                "claude-opus-5".to_owned()
+            ),
+            (1, 2, "claude-work".to_owned(), "claude-opus-5".to_owned()),
+        ]
+    );
+    let launched: Vec<(String, String)> = [first_successor, second_successor]
+        .into_iter()
+        .map(|run| launched_route(&fixture, run))
+        .collect();
+    let decided: Vec<(String, String)> = recorded
+        .iter()
+        .map(|(_, _, provider, model)| (provider.clone(), model.clone()))
+        .collect();
+    assert_eq!(
+        launched, decided,
+        "the log names the exact route each launch was admitted on"
+    );
+}
+
 #[tokio::test]
 async fn a_declared_slot_never_seated_is_filled_and_its_durable_handoff_is_delivered_once() {
     let fixture = seat_fill_world(true).await;

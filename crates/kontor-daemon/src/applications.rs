@@ -14721,18 +14721,10 @@ fn has_fresh_provider_reported_headroom(
 
 fn freeze_seat_model_rung(
     adapter: &dyn RuntimeAdapter,
-    snapshot: &TeamRunSnapshot,
-    slot: &RoleSlotId,
+    declared: &[ModelRung],
     quota: &QuotaOutlook<'_>,
 ) -> kontor_core::DomainResult<(ModelRung, Option<AccountProfileId>)> {
-    let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?;
-    let chain = template
-        .slot(slot)
-        .and_then(|seat| seat.model_chain.as_ref())
-        .ok_or_else(|| {
-            kontor_core::DomainError::invalid("TeamRunSnapshot", "the role slot has no model route")
-        })?;
-    let effective_rungs = quota.effective_rungs(&chain.rungs)?;
+    let effective_rungs = quota.effective_rungs(declared)?;
     let placement = resolve_chain_placement(
         adapter,
         &effective_rungs,
@@ -33011,23 +33003,22 @@ impl ApplicationOperations for Services {
                 freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                 now,
             };
-            let declared = if let Some(route) = explicit_model_route.as_ref() {
-                vec![route.clone()]
+            let (declared, fleet_declared) = if let Some(route) = explicit_model_route.as_ref() {
+                (vec![route.clone()], None)
             } else {
-                let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
-                    .map_err(|error| self.refuse_domain(&error))?;
-                let chain = template
-                    .slot(&role_slot)
-                    .and_then(|seat| seat.model_chain.as_ref())
+                let declared = self
+                    .declared_delivery_rungs(predecessor.team_run_id, &team.snapshot, &role_slot)
+                    .map_err(|error| self.refuse_domain(&error))?
                     .ok_or_else(|| {
                         self.deny(
                             ApiErrorCode::UnsupportedCapability,
                             "the role slot has no declared successor route",
                         )
                     })?;
-                outlook
-                    .effective_rungs(&chain.rungs)
-                    .map_err(|error| self.refuse_domain(&error))?
+                let rungs = outlook
+                    .effective_rungs(&declared.rungs)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                (rungs, Some(declared))
             };
             match resolve_chain_placement(
                 adapter.as_ref(),
@@ -33038,7 +33029,7 @@ impl ApplicationOperations for Services {
             .map_err(|error| self.refuse_domain(&error))?
             {
                 kontor_scheduler::headroom::Placement::Admit { rung, account } => {
-                    Some((rung, Some(account)))
+                    Some((rung, Some(account), fleet_declared))
                 }
                 kontor_scheduler::headroom::Placement::Wait { .. } => {
                     return Err(self.deny(
@@ -33333,11 +33324,35 @@ impl ApplicationOperations for Services {
         };
         // Explicit routes were resolved before recording a successor. An
         // operator-selected alias is placement authority, never quota evidence.
-        let (model_rung, routed_account) = match quota_successor_route {
+        let (model_rung, routed_account, fleet_declared) = match quota_successor_route {
             Some(preplanned) => preplanned,
-            None => freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
-                .map_err(|error| self.refuse_domain(&error))?,
+            None => {
+                let declared = self
+                    .declared_delivery_rungs(predecessor.team_run_id, &team.snapshot, &role_slot)
+                    .map_err(|error| self.refuse_domain(&error))?
+                    .ok_or_else(|| {
+                        self.refuse_domain(&kontor_core::DomainError::invalid(
+                            "TeamRunSnapshot",
+                            "the role slot has no model route",
+                        ))
+                    })?;
+                let (rung, routed_account) =
+                    freeze_seat_model_rung(adapter.as_ref(), &declared.rungs, &outlook)
+                        .map_err(|error| self.refuse_domain(&error))?;
+                (rung, routed_account, Some(declared))
+            }
         };
+        if let Some(declared) = fleet_declared.as_ref() {
+            self.record_fleet_decision(
+                declared,
+                predecessor.team_run_id,
+                successor_agent_run_id,
+                &role_slot,
+                &model_rung,
+                routed_account,
+                now,
+            )?;
+        }
         let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -35406,26 +35421,28 @@ impl Services {
             freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
             now,
         };
-        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
-            .map_err(|error| self.refuse_domain(&error))?;
-        let chain = template
-            .slot(&role_slot)
-            .and_then(|seat| seat.model_chain.as_ref())
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::UnsupportedCapability,
-                    "the role slot has no declared successor route",
-                )
-            })?;
-        let declared = if let Some(route) = requested_route {
-            vec![
-                parse_runtime_model_route(route, self.fleet.current().as_deref())
-                    .map_err(|error| self.refuse_domain(&error))?,
-            ]
+        let (declared, fleet_declared) = if let Some(route) = requested_route {
+            (
+                vec![
+                    parse_runtime_model_route(route, self.fleet.current().as_deref())
+                        .map_err(|error| self.refuse_domain(&error))?,
+                ],
+                None,
+            )
         } else {
-            outlook
-                .effective_rungs(&chain.rungs)
+            let declared = self
+                .declared_delivery_rungs(predecessor.team_run_id, &team.snapshot, &role_slot)
                 .map_err(|error| self.refuse_domain(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::UnsupportedCapability,
+                        "the role slot has no declared successor route",
+                    )
+                })?;
+            let rungs = outlook
+                .effective_rungs(&declared.rungs)
+                .map_err(|error| self.refuse_domain(&error))?;
+            (rungs, Some(declared))
         };
         let placement = resolve_chain_placement(
             adapter.as_ref(),
@@ -35436,6 +35453,17 @@ impl Services {
         .map_err(|error| self.refuse_domain(&error))?;
         let (successor_model_rung, successor_account_profile_id, deferred_until) = match placement {
             kontor_scheduler::headroom::Placement::Admit { rung, account } => {
+                if let Some(declared) = fleet_declared.as_ref() {
+                    self.record_fleet_decision(
+                        declared,
+                        predecessor.team_run_id,
+                        agent_run_id,
+                        &role_slot,
+                        &rung,
+                        Some(account),
+                        now,
+                    )?;
+                }
                 (Some(rung), Some(account), None)
             }
             kontor_scheduler::headroom::Placement::Wait { until, .. } => (None, None, Some(until)),
@@ -35914,30 +35942,37 @@ impl Services {
             freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
             now,
         };
-        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
-            .map_err(|error| self.refuse_domain(&error))?;
         let role_slot = RoleSlotId::new(attempt.request.role.clone());
-        let chain = template
-            .slot(&role_slot)
-            .and_then(|seat| seat.model_chain.as_ref())
+        let declared = self
+            .declared_delivery_rungs(attempt.request.team_run_id, &team.snapshot, &role_slot)
+            .map_err(|error| self.refuse_domain(&error))?
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::UnsupportedCapability,
                     "the deferred role slot has no declared successor route",
                 )
             })?;
-        let declared = outlook
-            .effective_rungs(&chain.rungs)
+        let rungs = outlook
+            .effective_rungs(&declared.rungs)
             .map_err(|error| self.refuse_domain(&error))?;
         let placement = resolve_chain_placement(
             adapter.as_ref(),
-            &declared,
+            &rungs,
             kontor_scheduler::headroom::SeatClass::Delivery,
             &outlook,
         )
         .map_err(|error| self.refuse_domain(&error))?;
         let (successor_model_rung, successor_account_profile_id, deferred_until) = match placement {
             kontor_scheduler::headroom::Placement::Admit { rung, account } => {
+                self.record_fleet_decision(
+                    &declared,
+                    attempt.request.team_run_id,
+                    attempt.request.predecessor_agent_run_id,
+                    &role_slot,
+                    &rung,
+                    Some(account),
+                    now,
+                )?;
                 (Some(rung), Some(account), None)
             }
             kontor_scheduler::headroom::Placement::Wait { until, .. } => (None, None, Some(until)),
@@ -36996,6 +37031,101 @@ impl Services {
             .await
     }
 
+    /// The rungs one delivery seat walks: the live fleet chain when `fleet.yml`
+    /// binds the seat, the frozen template chain otherwise.
+    ///
+    /// A binding that exists never falls back to the template chain: a chain
+    /// that flattens to no admissible route is R-01, not a reason to use the
+    /// route the operator replaced.
+    ///
+    /// # Errors
+    /// Returns [`kontor_core::DomainError::MissingEvidence`] for R-01 and the
+    /// template snapshot's own refusal when it cannot be read.
+    fn declared_delivery_rungs(
+        &self,
+        _team_run_id: TeamRunId,
+        snapshot: &TeamRunSnapshot,
+        slot: &RoleSlotId,
+    ) -> kontor_core::DomainResult<Option<crate::fleet::DeclaredRungs>> {
+        let key = crate::fleet::team_key(&snapshot.template_id.to_string(), slot.as_str());
+        if let Some(fleet) = self.fleet.current()
+            && let Some(routes) = fleet.routes_for(&key)
+        {
+            if routes.is_empty() {
+                return Err(kontor_core::DomainError::MissingEvidence {
+                    subject: "FleetConfiguration",
+                    rule: "the fleet chain bound to this seat has no route left after the unavailable, calibration and vision rules",
+                });
+            }
+            return Ok(Some(crate::fleet::DeclaredRungs {
+                rungs: routes.into_iter().map(|route| route.rung).collect(),
+                fleet: Some((fleet, key)),
+            }));
+        }
+        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?;
+        Ok(template
+            .slot(slot)
+            .and_then(|seat| seat.model_chain.as_ref())
+            .map(|chain| crate::fleet::DeclaredRungs {
+                rungs: chain.rungs.clone(),
+                fleet: None,
+            }))
+    }
+
+    /// Append one admitted fleet placement to the run's decision log.
+    ///
+    /// Called before the launch it authorises: an unrecorded route would
+    /// silently break `rules.independent_of` (REQ-017). Rungs that came from the
+    /// frozen template chain are not fleet placements and write nothing.
+    ///
+    /// # Errors
+    /// Returns an `Unavailable` refusal when the decision cannot be recorded.
+    #[allow(clippy::too_many_arguments)]
+    fn record_fleet_decision(
+        &self,
+        declared: &crate::fleet::DeclaredRungs,
+        team_run_id: TeamRunId,
+        agent_run_id: AgentRunId,
+        slot: &RoleSlotId,
+        rung: &ModelRung,
+        account: Option<AccountProfileId>,
+        now: kontor_core::id::Timestamp,
+    ) -> Result<(), ApiError> {
+        let Some((snapshot, binding_key)) = declared.fleet.as_ref() else {
+            return Ok(());
+        };
+        let Some(route) = snapshot
+            .routes_for(binding_key)
+            .and_then(|routes| routes.into_iter().find(|route| route.rung == *rung))
+        else {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the admitted fleet route is not listed by the bound fleet chain",
+            ));
+        };
+        let decision = crate::fleet::FleetDecision {
+            team_run_id: team_run_id.to_string(),
+            agent_run_id: agent_run_id.to_string(),
+            binding_key: binding_key.clone(),
+            role_slot: slot.as_str().to_owned(),
+            fleet_hash: snapshot.hash().as_str().to_owned(),
+            step: route.step,
+            sub_step: route.sub_step,
+            provider: route.rung.provider.0.clone(),
+            model: route.rung.model.0.clone(),
+            effort: route.rung.effort.map(|effort| effort.as_str().to_owned()),
+            vendor: route.vendor,
+            account_profile_id: account.map(|id| id.to_string()),
+            decided_at: now.to_string(),
+        };
+        self.fleet.record_decision(&decision).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the fleet placement decision could not be recorded",
+            )
+        })
+    }
+
     /// Re-enter the admission path at one immutable launch address.
     ///
     /// Ordinary scheduler starts derive that address from their command key.
@@ -37312,11 +37442,19 @@ impl Services {
                 applied: AppliedDto::Unchanged,
             }
         } else {
+            let declared = self
+                .declared_delivery_rungs(team_run_id, &team_snapshot, &slot)
+                .map_err(|error| self.refuse_domain(&error))?
+                .ok_or_else(|| {
+                    self.refuse_domain(&kontor_core::DomainError::invalid(
+                        "TeamRunSnapshot",
+                        "the role slot has no model route",
+                    ))
+                })?;
             let quota_states = self.admission_quota_states(project_id)?;
             let (model_rung, routed_account) = freeze_seat_model_rung(
                 adapter.as_ref(),
-                &team_snapshot,
-                &slot,
+                &declared.rungs,
                 &QuotaOutlook {
                     states: &quota_states,
                     account: admitted.account_profile_id,
@@ -37327,6 +37465,16 @@ impl Services {
                 },
             )
             .map_err(|error| self.refuse_domain(&error))?;
+            let launch_account = admitted.account_profile_id.or(routed_account);
+            self.record_fleet_decision(
+                &declared,
+                team_run_id,
+                agent_run_id,
+                &slot,
+                &model_rung,
+                launch_account,
+                now,
+            )?;
             let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -37339,7 +37487,7 @@ impl Services {
             // `(project, account, provider)` and there is no other key.
             // Re-presenting the same account is a replay that writes nothing,
             // so a restarted launch does not pin twice.
-            if let Some(account) = admitted.account_profile_id.or(routed_account) {
+            if let Some(account) = launch_account {
                 state
                     .with_store(|store| {
                         store.pin_agent_run_account(project_id, agent_run_id, account)
@@ -37365,7 +37513,7 @@ impl Services {
                 // The task's own pin outranks the walk: a pinned run's walk
                 // can only ever answer with that pin, so `.or` is the
                 // no-pin case — the account the walk actually selected.
-                account_profile_id: admitted.account_profile_id.or(routed_account),
+                account_profile_id: launch_account,
                 prompt: slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
                 model_rung,
                 context_policy: context_policy.clone(),
@@ -40655,28 +40803,52 @@ impl Services {
         // The caller supplies the runtime's prepared container snapshot. Initial
         // seating prepares it once for all slots; bounded seat fill re-attests
         // the existing native container before reaching this shared path.
-        let (model_rung, account_profile_id) = if let Some((rung, account)) = route_override {
-            // The named route's account selects its provider alias; the
-            // admission's account belongs to the frozen chain it replaces.
-            (rung.clone(), Some(*account))
-        } else {
-            let quota_states = self.admission_quota_states(project_id)?;
-            let (rung, routed_account) = freeze_seat_model_rung(
-                adapter.as_ref(),
-                &team_snapshot,
+        let (model_rung, account_profile_id, fleet_declared) =
+            if let Some((rung, account)) = route_override {
+                // The named route's account selects its provider alias; the
+                // admission's account belongs to the frozen chain it replaces.
+                (rung.clone(), Some(*account), None)
+            } else {
+                let declared = self
+                    .declared_delivery_rungs(team_run_id, &team_snapshot, slot)
+                    .map_err(|error| self.refuse_domain(&error))?
+                    .ok_or_else(|| {
+                        self.refuse_domain(&kontor_core::DomainError::invalid(
+                            "TeamRunSnapshot",
+                            "the role slot has no model route",
+                        ))
+                    })?;
+                let quota_states = self.admission_quota_states(project_id)?;
+                let (rung, routed_account) = freeze_seat_model_rung(
+                    adapter.as_ref(),
+                    &declared.rungs,
+                    &QuotaOutlook {
+                        states: &quota_states,
+                        account: admitted.account_profile_id,
+                        accounts: &self.eligible_accounts(project_id)?,
+                        headroom: self.headroom_policy(),
+                        freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+                        now,
+                    },
+                )
+                .map_err(|error| self.refuse_domain(&error))?;
+                (
+                    rung,
+                    admitted.account_profile_id.or(routed_account),
+                    Some(declared),
+                )
+            };
+        if let Some(declared) = fleet_declared.as_ref() {
+            self.record_fleet_decision(
+                declared,
+                team_run_id,
+                agent_run_id,
                 slot,
-                &QuotaOutlook {
-                    states: &quota_states,
-                    account: admitted.account_profile_id,
-                    accounts: &self.eligible_accounts(project_id)?,
-                    headroom: self.headroom_policy(),
-                    freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
-                    now,
-                },
-            )
-            .map_err(|error| self.refuse_domain(&error))?;
-            (rung, admitted.account_profile_id.or(routed_account))
-        };
+                &model_rung,
+                account_profile_id,
+                now,
+            )?;
+        }
         let context_policy = freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
@@ -42292,8 +42464,16 @@ mod tests {
             },
         );
         let (snapshot, slot) = snapshot_declaring(None);
+        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&snapshot)
+            .expect("the snapshot's template reads");
+        let declared = template
+            .slot(&slot)
+            .and_then(|seat| seat.model_chain.as_ref())
+            .expect("the slot declares a chain")
+            .rungs
+            .clone();
         assert!(
-            super::freeze_seat_model_rung(&adapter, &snapshot, &slot, &outlook).is_err(),
+            super::freeze_seat_model_rung(&adapter, &declared, &outlook).is_err(),
             "a headroom refusal must not become an unpinned primary or fallback launch"
         );
     }
