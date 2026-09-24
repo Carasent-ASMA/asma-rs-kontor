@@ -87,6 +87,16 @@ pub struct ControlPlaneObservation {
     pub agent_run_id: AgentRunId,
     /// What happened to the channel.
     pub contact: RuntimeContact,
+    /// Whether this runtime can currently *drive* the session, not merely read
+    /// it.
+    ///
+    /// Reachability alone does not answer this. A seat restored for terminal
+    /// readback answers an exact inspection and refuses every driving
+    /// operation, so a caller deciding whether a predecessor can be reused has
+    /// to know which of the two it is looking at. `true` is the default at
+    /// construction because a runtime with no placement concept can drive
+    /// whatever it can reach; only an adapter that knows otherwise says so.
+    pub drivable: bool,
     /// What the runtime said about the work.
     pub state: ObservedRunState,
     /// Which native session reported it.
@@ -124,6 +134,17 @@ impl ControlPlaneObservation {
     #[must_use]
     pub fn with_refusal(mut self, refusal: Option<TransientRefusal>) -> Self {
         self.refusal = refusal;
+        self
+    }
+
+    /// State that this runtime cannot drive the session it just read.
+    ///
+    /// Separate from construction for the same reason as [`Self::with_refusal`]:
+    /// only an adapter that models placement can answer it, and every other
+    /// construction site would otherwise carry a field it never fills.
+    #[must_use]
+    pub fn with_drivability(mut self, drivable: bool) -> Self {
+        self.drivable = drivable;
         self
     }
 
@@ -540,6 +561,7 @@ mod tests {
         ControlPlaneObservation {
             agent_run_id,
             contact,
+            drivable: true,
             state,
             identity: identity(1),
             native_event_id: None,

@@ -15,6 +15,8 @@
 //! * mirroring one external comment twice, or losing an edit's provenance;
 //! * treating an absent calendar as closed.
 
+mod support;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use kontor_core::calendar::{
@@ -93,6 +95,7 @@ const MIGRATION_0097: &str =
     include_str!("../migrations/0097_legacy_local_command_confirmation.sql");
 const MIGRATION_0098: &str =
     include_str!("../migrations/0098_legacy_local_confirmation_provenance.sql");
+const MIGRATION_0115: &str = include_str!("../migrations/0115_atomic_local_command_results.sql");
 
 /// Put a fresh current-schema fixture back at the exact pre-v98 shape before
 /// replaying the compatibility pair. The production migration itself stays
@@ -119,6 +122,8 @@ const CENSUS_TABLES: &[&str] = &[
     "calendar_exceptions",
     "calendar_profiles",
     "command_outbox",
+    "local_command_results",
+    "legacy_dispatch_local_confirmation_provenance",
     "legacy_local_command_confirmation_provenance",
     "command_receipts",
     "command_targets",
@@ -410,7 +415,7 @@ struct Fixture {
 fn fixture() -> Fixture {
     let directory = TempDir::new().expect("a temporary directory");
     let path = directory.path().join("kontor.db");
-    let store = SqliteStore::open(&path).expect("the store opens");
+    let store = support::store_from_template(&path);
 
     let project = ProjectId::generate();
     let other_project = ProjectId::generate();
@@ -936,7 +941,7 @@ fn stale_atomic_withdrawal_leaves_no_receipt_and_preserves_the_moved_task() {
     let intent = document("withdraw task");
     let command = ReceiptEnvelope::new(
         fixture.store.realm(),
-        NewCommandIntent {
+        NewLocalCommand {
             project_id: fixture.project,
             receipt_id: CommandReceiptId::generate(),
             idempotency_key: key.clone(),
@@ -946,9 +951,6 @@ fn stale_atomic_withdrawal_leaves_no_receipt_and_preserves_the_moved_task() {
             },
             target_revision: AggregateRevision::INITIAL,
             intent: intent.clone(),
-            payload: intent,
-            desired: None,
-            not_before: now(),
             created_at: now(),
         },
     );
@@ -1130,7 +1132,7 @@ fn a_gate_verdict_and_its_exact_receipt_result_commit_or_roll_back_together() {
     let command = |receipt_id| {
         ReceiptEnvelope::new(
             fixture.store.realm(),
-            NewCommandIntent {
+            NewLocalCommand {
                 project_id: fixture.project,
                 receipt_id,
                 idempotency_key: key.clone(),
@@ -1140,9 +1142,6 @@ fn a_gate_verdict_and_its_exact_receipt_result_commit_or_roll_back_together() {
                 },
                 target_revision: AggregateRevision::INITIAL,
                 intent: intent.clone(),
-                payload: intent.clone(),
-                desired: None,
-                not_before: now(),
                 created_at: now(),
             },
         )
@@ -1173,6 +1172,7 @@ fn a_gate_verdict_and_its_exact_receipt_result_commit_or_roll_back_together() {
         )
         .expect("the same key remains usable after rollback");
     assert_eq!(sequence, 1);
+    assert_eq!(receipt.state, CommandReceiptState::Confirmed);
     assert_eq!(
         fixture
             .store
@@ -1330,7 +1330,7 @@ fn a_gate_rejection_route_and_exact_receipt_commit_or_roll_back_together() {
     let command = |receipt_id| {
         ReceiptEnvelope::new(
             fixture.store.realm(),
-            NewCommandIntent {
+            NewLocalCommand {
                 project_id: fixture.project,
                 receipt_id,
                 idempotency_key: key.clone(),
@@ -1340,9 +1340,6 @@ fn a_gate_rejection_route_and_exact_receipt_commit_or_roll_back_together() {
                 },
                 target_revision: AggregateRevision::INITIAL,
                 intent: intent.clone(),
-                payload: intent.clone(),
-                desired: None,
-                not_before: now(),
                 created_at: now(),
             },
         )
@@ -2560,6 +2557,565 @@ fn a_receipt_backed_native_closure_certifies_only_its_latest_passed_gate_artifac
             .expect("the stale certificate read succeeds")
             .is_empty(),
         "a later rejection fences an earlier passed certificate"
+    );
+}
+
+/// Exercise the historical dispatch writer and the corrected local writer over
+/// the same real gate and task mutations. No producer evidence is manufactured.
+fn receipted_native_closure(atomic: bool) -> (RunFixture, NewLocalCommand, NewLocalCommand) {
+    let run = with_run(false);
+    let fixture = &run.fixture;
+    let workflow = with_workflow(fixture);
+    let start = TaskTransitionRequest {
+        project_id: fixture.project,
+        task_id: fixture.task,
+        expected_revision: AggregateRevision::INITIAL,
+        to: TaskState::InProgress,
+        resume_receipt: None,
+        reopen: false,
+        run_outcome: None,
+        produced_artifacts: BTreeSet::new(),
+        completed_phases: BTreeSet::new(),
+        team_closure: TaskTeamClosure::NoTeam,
+        occurred_at: now(),
+    };
+    let started = fixture.store.transition_task(&start).expect("task starts");
+    let gate_at = at("2026-09-05T10:00:00Z");
+    let gate_command = NewLocalCommand {
+        project_id: fixture.project,
+        receipt_id: CommandReceiptId::generate(),
+        idempotency_key: IdempotencyKey::parse("atomic-local-gate").expect("key"),
+        kind: CommandKind::RecordGateVerdict,
+        target: AggregateRef::Task {
+            task_id: fixture.task,
+        },
+        target_revision: started.revision,
+        intent: CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1, "operation": "gate_record", "task_id": fixture.task.to_string(),
+            "gate": "zz.gate", "verdict": "passed", "evaluator_role": "zz.reviewer",
+            "evaluator_account": fixture.account.to_string(), "evidence": ["zz.output"],
+        }))
+        .expect("gate intent"),
+        created_at: gate_at,
+    };
+    let evaluation = NewGateEvaluation {
+        project_id: fixture.project,
+        workflow_id: workflow,
+        gate: GateKey::parse("zz.gate").expect("gate"),
+        verdict: GateVerdict::Passed,
+        evaluator_role: role("zz.reviewer"),
+        evaluator_account: fixture.account,
+        evidence: vec![artifact("zz.output")],
+        agent_run_id: Some(run.run),
+        session_evidence: None,
+        reviewer_principal: None,
+        policy_evaluation_id: None,
+        recorded_at: gate_at,
+    };
+    if atomic {
+        fixture
+            .store
+            .append_gate_evaluation_with_intent(
+                &evaluation,
+                AggregateRevision::INITIAL,
+                &ReceiptEnvelope::new(fixture.store.realm(), gate_command.clone()),
+            )
+            .expect("atomic gate");
+    } else {
+        fixture
+            .store
+            .append_gate_evaluation(&evaluation)
+            .expect("legacy gate");
+        record_legacy_atomic_intent(fixture, &gate_command);
+    }
+    let done_command = NewLocalCommand {
+        project_id: fixture.project,
+        receipt_id: CommandReceiptId::generate(),
+        idempotency_key: IdempotencyKey::parse("atomic-local-done").expect("key"),
+        kind: CommandKind::TransitionTask,
+        target: AggregateRef::Task {
+            task_id: fixture.task,
+        },
+        target_revision: started.revision,
+        intent: CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1, "operation": "lifecycle", "action": "complete_task",
+            "task_id": fixture.task.to_string(), "expected_revision": started.revision.get(),
+            "evidence": ["zz.output"],
+        }))
+        .expect("done intent"),
+        created_at: at("2026-09-05T11:00:00Z"),
+    };
+    let done = TaskTransitionRequest {
+        expected_revision: started.revision,
+        to: TaskState::Done,
+        produced_artifacts: [artifact("zz.output")].into_iter().collect(),
+        completed_phases: [phase("zz.one"), phase("zz.two"), phase("zz.three")]
+            .into_iter()
+            .collect(),
+        occurred_at: done_command.created_at,
+        ..start
+    };
+    if atomic {
+        let mut occupied = done_command.clone();
+        occupied.receipt_id = gate_command.receipt_id;
+        let before = census(fixture);
+        fixture
+            .store
+            .transition_task_with_intent(
+                &done,
+                &ReceiptEnvelope::new(fixture.store.realm(), occupied),
+            )
+            .expect_err("an occupied receipt rolls back the successful task mutation");
+        assert_unchanged(
+            &before,
+            &census(fixture),
+            "atomic lifecycle receipt refusal",
+        );
+        fixture
+            .store
+            .transition_task_with_intent(
+                &done,
+                &ReceiptEnvelope::new(fixture.store.realm(), done_command.clone()),
+            )
+            .expect("atomic done");
+    } else {
+        fixture.store.transition_task(&done).expect("legacy done");
+        record_legacy_atomic_intent(fixture, &done_command);
+    }
+    (run, gate_command, done_command)
+}
+
+fn record_legacy_atomic_intent(fixture: &Fixture, command: &NewLocalCommand) {
+    fixture
+        .store
+        .record_intent(&NewCommandIntent {
+            project_id: command.project_id,
+            receipt_id: command.receipt_id,
+            idempotency_key: command.idempotency_key.clone(),
+            kind: command.kind,
+            target: command.target,
+            target_revision: command.target_revision,
+            intent: command.intent.clone(),
+            payload: command.intent.clone(),
+            desired: None,
+            not_before: command.created_at,
+            created_at: command.created_at,
+        })
+        .expect("legacy dispatch intent");
+}
+
+fn assert_confirmed_local_result(fixture: &Fixture, command: &NewLocalCommand) {
+    let receipt = fixture
+        .store
+        .get_receipt_by_key(&command.idempotency_key)
+        .expect("receipt lookup")
+        .expect("receipt exists");
+    assert_eq!(receipt.state, CommandReceiptState::Confirmed);
+    assert!(receipt.native_identity.is_none());
+    assert!(receipt.correlation.is_none());
+    assert_eq!(receipt.attempts, 0);
+    let connection = Connection::open(&fixture.path).expect("independent reader");
+    let result: (String, String, String, i64) = connection
+        .query_row(
+            "SELECT r.execution_mode, result.payload_hash, latest.evidence_ref,
+                (SELECT count(*) FROM command_outbox o WHERE o.receipt_id = r.id)
+         FROM command_receipts r JOIN local_command_results result ON result.receipt_id = r.id
+         JOIN command_receipt_transitions latest ON latest.receipt_id = r.id AND latest.sequence = 2
+         WHERE r.id = ?1 AND latest.state = 'confirmed'",
+            [receipt.id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("confirmation and result committed atomically");
+    assert_eq!(result.0, "local");
+    assert_eq!(
+        Some(result.1.as_str()),
+        receipt.result_ref.as_ref().map(ExternalId::as_str)
+    );
+    assert_eq!(result.1, result.2);
+    assert_eq!(result.3, 0, "a local effect creates no dispatch obligation");
+}
+
+#[test]
+fn atomic_local_gate_and_done_survive_restart_and_replay_after_reopen() {
+    let (run, gate, done) = receipted_native_closure(true);
+    let fixture = &run.fixture;
+    assert_confirmed_local_result(fixture, &gate);
+    assert_confirmed_local_result(fixture, &done);
+    assert_eq!(
+        fixture
+            .store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("closure certificate"),
+        [name("zz.output")].into_iter().collect()
+    );
+    assert!(
+        fixture
+            .store
+            .list_task_artifact_keys(fixture.project, fixture.task)
+            .expect("producer registry")
+            .is_empty(),
+        "local confirmation never becomes producer evidence"
+    );
+    let store = SqliteStore::open(&fixture.path).expect("restart");
+    let receipt = store
+        .get_receipt_by_key(&done.idempotency_key)
+        .expect("lookup")
+        .expect("receipt");
+    let original = store
+        .task_transition_result(&receipt)
+        .expect("durable original result");
+    let request = TaskTransitionRequest {
+        project_id: fixture.project,
+        task_id: fixture.task,
+        expected_revision: original.revision,
+        to: TaskState::Ready,
+        resume_receipt: Some(CommandReceiptId::generate()),
+        reopen: true,
+        run_outcome: None,
+        produced_artifacts: BTreeSet::new(),
+        completed_phases: BTreeSet::new(),
+        team_closure: TaskTeamClosure::NoTeam,
+        occurred_at: at("2026-09-06T12:00:00Z"),
+    };
+    store.transition_task(&request).expect("later task reopen");
+    let replay_request = TaskTransitionRequest {
+        expected_revision: done.target_revision,
+        to: TaskState::Done,
+        resume_receipt: None,
+        reopen: false,
+        ..request
+    };
+    let (replayed, same, applied) = store
+        .transition_task_with_intent(&replay_request, &ReceiptEnvelope::new(store.realm(), done))
+        .expect("original result after later changes");
+    assert_eq!(replayed, original);
+    assert_eq!(same, receipt);
+    assert_eq!(applied, Applied::Unchanged);
+    assert!(
+        store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("reopened closure")
+            .is_empty()
+    );
+}
+
+/// Return the fixture to the exact schema v115 knew, then apply 0115 again.
+///
+/// The fixture is created at the current schema, so every generation after 0115
+/// has to be undone here: the reopen at the end of the v115 test replays them,
+/// and a table or column left behind turns that replay into a collision instead
+/// of a migration. 0116 adds one table, 0117 two columns and 0118 the two
+/// delivery-proof tables; a future migration that adds anything must undo it
+/// here too, and the replay is what notices when it does not.
+fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
+    let connection = Connection::open(&fixture.path).expect("migration connection");
+    connection
+        .execute_batch(
+            "DROP TABLE local_command_results;
+         DROP TABLE legacy_dispatch_local_confirmation_provenance;
+         DROP TABLE hosted_seat_role_personas;
+         ALTER TABLE runtime_message_issuances DROP COLUMN boundary_epoch;
+         ALTER TABLE runtime_message_issuances DROP COLUMN boundary_sequence;
+         DROP TABLE runtime_message_delivery_proof_steps;
+         DROP TABLE runtime_message_delivery_proofs;
+         PRAGMA user_version = 114;",
+        )
+        .expect("return empty v115 tables to exact prior schema");
+    connection
+        .execute_batch(&format!("BEGIN IMMEDIATE; {MIGRATION_0115} COMMIT;"))
+        .expect("real compatibility migration");
+}
+
+#[test]
+fn v115_confirms_exact_local_mutations_with_typed_provenance_and_preserves_history() {
+    let (run, gate, done) = receipted_native_closure(false);
+    let fixture = &run.fixture;
+    let workflow = fixture
+        .store
+        .get_active_task_workflow(fixture.project, fixture.task)
+        .expect("workflow lookup")
+        .expect("workflow");
+    let task = fixture
+        .store
+        .get_task(fixture.project, fixture.task)
+        .expect("task lookup")
+        .expect("task");
+    let connection = Connection::open(&fixture.path).expect("legacy result fixture");
+    let guard: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name='command_outbox_payload_immutable'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("guard");
+    connection
+        .execute("DROP TRIGGER command_outbox_payload_immutable", [])
+        .expect("fixture setup");
+    for (command, result) in [
+        (
+            &gate,
+            serde_json::json!({"intent_hash": gate.intent.hash().as_str(),
+            "workflow_id": workflow.id.to_string(), "gate_sequence": 1}),
+        ),
+        (
+            &done,
+            serde_json::json!({"intent_hash": done.intent.hash().as_str(),
+            "task_id": fixture.task.to_string(), "state": "done", "resulting_revision": task.revision.get()}),
+        ),
+    ] {
+        let mut payload: serde_json::Value =
+            serde_json::from_str(command.intent.json()).expect("intent");
+        payload["result"] = result;
+        let payload = CanonicalDocument::from_value(&payload).expect("legacy atomic result");
+        connection
+            .execute(
+                "UPDATE command_outbox SET payload=?1, payload_hash=?2 WHERE receipt_id=?3",
+                [
+                    payload.json(),
+                    payload.hash().as_str(),
+                    &command.receipt_id.to_string(),
+                ],
+            )
+            .expect("historical result envelope");
+    }
+    connection
+        .execute(&guard, [])
+        .expect("restore fixture guard");
+    let before = census(fixture);
+    assert!(
+        fixture
+            .store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("unconfirmed closure")
+            .is_empty()
+    );
+    apply_v115_to_legacy_fixture(fixture);
+    assert_eq!(
+        fixture
+            .store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("repaired closure"),
+        [name("zz.output")].into_iter().collect()
+    );
+    let connection = Connection::open(&fixture.path).expect("read repair");
+    for command in [gate, done] {
+        let receipt = fixture
+            .store
+            .get_receipt_by_key(&command.idempotency_key)
+            .expect("lookup")
+            .expect("receipt");
+        assert_eq!(receipt.state, CommandReceiptState::Confirmed);
+        let expected = format!("legacy-local-confirmation-v115:{}", receipt.id);
+        assert_eq!(
+            receipt.result_ref.as_ref().map(ExternalId::as_str),
+            Some(expected.as_str())
+        );
+        let history: Vec<String> = connection.prepare(
+            "SELECT state FROM command_receipt_transitions WHERE receipt_id = ?1 ORDER BY sequence"
+        ).expect("query").query_map([receipt.id.to_string()], |row| row.get(0))
+            .expect("history").collect::<Result<_, _>>().expect("rows");
+        assert_eq!(history, ["intent_persisted", "confirmed"]);
+        if receipt.kind == CommandKind::TransitionTask {
+            let original = fixture
+                .store
+                .task_transition_result(&receipt)
+                .expect("legacy result remains replayable");
+            assert_eq!(original.state, TaskState::Done);
+            assert_eq!(original.revision, task.revision);
+        } else {
+            assert_eq!(
+                fixture
+                    .store
+                    .gate_record_result(&receipt)
+                    .expect("legacy gate result"),
+                (workflow.id, 1)
+            );
+        }
+    }
+    assert_eq!(
+        before["command_outbox"],
+        census(fixture)["command_outbox"],
+        "historical payloads retained"
+    );
+    assert!(
+        connection
+            .execute(
+                "DELETE FROM legacy_dispatch_local_confirmation_provenance",
+                []
+            )
+            .is_err()
+    );
+    assert!(connection.execute("UPDATE legacy_dispatch_local_confirmation_provenance SET source='v115_atomic_local_reconstruction'", []).is_err());
+    assert!(
+        fixture
+            .store
+            .claim_outbox(fixture.project, now(), 100)
+            .expect("dispatch scan")
+            .is_empty()
+    );
+    SqliteStore::open(&fixture.path).expect("repaired store restarts without repeating migration");
+}
+
+#[test]
+fn v115_preserves_ambiguous_claimed_attempted_and_native_command_receipts() {
+    for scenario in [
+        "duplicate_done",
+        "duplicate_gate",
+        "claimed",
+        "attempted",
+        "native",
+        "native_identity",
+        "prior_transition",
+        "bad_result",
+    ] {
+        let (run, gate, done) = receipted_native_closure(false);
+        let fixture = &run.fixture;
+        let connection = Connection::open(&fixture.path).expect("fixture connection");
+        let refused = if scenario == "duplicate_gate" {
+            &gate
+        } else {
+            &done
+        };
+        match scenario {
+            "duplicate_done" | "duplicate_gate" => {
+                let mut peer = refused.clone();
+                peer.receipt_id = CommandReceiptId::generate();
+                peer.idempotency_key = IdempotencyKey::parse("ambiguous-peer").expect("key");
+                record_legacy_atomic_intent(fixture, &peer);
+            }
+            "claimed" => {
+                connection
+                    .execute(
+                        "UPDATE command_outbox SET claim_token='claimed', claimed_at='2026-09-05T12:00:00Z' WHERE receipt_id=?1",
+                        [done.receipt_id.to_string()],
+                    )
+                    .expect("claimed fixture");
+            }
+            "attempted" => {
+                connection
+                    .execute(
+                        "UPDATE command_outbox SET attempts=1 WHERE receipt_id=?1",
+                        [done.receipt_id.to_string()],
+                    )
+                    .expect("attempted fixture");
+            }
+            "native" => {
+                connection
+                    .execute(
+                        "UPDATE command_receipts SET correlation='native-dispatch' WHERE id=?1",
+                        [done.receipt_id.to_string()],
+                    )
+                    .expect("native correlation");
+            }
+            "native_identity" => {
+                connection
+                    .execute(
+                        "UPDATE command_receipts SET native_identity=?1 WHERE id=?2",
+                        [
+                            serde_json::to_string(&identity(1)).expect("native identity"),
+                            done.receipt_id.to_string(),
+                        ],
+                    )
+                    .expect("recorded native identity");
+            }
+            "prior_transition" => {
+                connection.execute(
+                "INSERT INTO command_receipt_transitions (project_id,receipt_id,sequence,state,recorded_at) VALUES (?1,?2,2,'confirmation_unknown','2026-09-05T12:00:00Z')",
+                [fixture.project.to_string(), done.receipt_id.to_string()]).expect("prior uncertainty");
+            }
+            "bad_result" => {
+                let guard: String = connection.query_row(
+                    "SELECT sql FROM sqlite_master WHERE name='command_outbox_payload_immutable'",
+                    [], |row| row.get(0),
+                ).expect("outbox guard");
+                connection
+                    .execute("DROP TRIGGER command_outbox_payload_immutable", [])
+                    .expect("test-only damage");
+                connection.execute(
+                "UPDATE command_outbox SET payload=json_set(payload,'$.result',json('null')) WHERE receipt_id=?1", [done.receipt_id.to_string()]).expect("malformed result");
+                connection
+                    .execute(&guard, [])
+                    .expect("restore fixture guard");
+            }
+            _ => unreachable!(),
+        }
+        let before = fixture
+            .store
+            .get_receipt_by_key(&refused.idempotency_key)
+            .expect("lookup")
+            .expect("receipt");
+        apply_v115_to_legacy_fixture(fixture);
+        let after = fixture
+            .store
+            .get_receipt_by_key(&refused.idempotency_key)
+            .expect("lookup")
+            .expect("receipt");
+        assert_eq!(after, before, "{scenario} must remain unchanged");
+        assert!(
+            fixture
+                .store
+                .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+                .expect("uncertified closure")
+                .is_empty(),
+            "{scenario} must not mint closure evidence"
+        );
+    }
+}
+
+#[test]
+fn v115_never_confirms_rejected_gates_or_revives_a_stale_pass() {
+    let (run, gate, _) = receipted_native_closure(false);
+    let fixture = &run.fixture;
+    let workflow = fixture
+        .store
+        .get_active_task_workflow(fixture.project, fixture.task)
+        .expect("workflow")
+        .expect("active");
+    let recorded_at = at("2026-09-05T12:00:00Z");
+    fixture
+        .store
+        .append_gate_evaluation(&NewGateEvaluation {
+            project_id: fixture.project,
+            workflow_id: workflow.id,
+            gate: GateKey::parse("zz.gate").expect("gate"),
+            verdict: GateVerdict::Rejected,
+            evaluator_role: role("zz.reviewer"),
+            evaluator_account: fixture.account,
+            evidence: vec![artifact("zz.output")],
+            agent_run_id: Some(run.run),
+            session_evidence: None,
+            reviewer_principal: None,
+            policy_evaluation_id: None,
+            recorded_at,
+        })
+        .expect("later rejection");
+    let mut rejected = gate;
+    rejected.receipt_id = CommandReceiptId::generate();
+    rejected.idempotency_key = IdempotencyKey::parse("legacy-rejected-gate").expect("key");
+    rejected.created_at = recorded_at;
+    let mut intent: serde_json::Value =
+        serde_json::from_str(rejected.intent.json()).expect("intent");
+    intent["verdict"] = serde_json::json!("rejected");
+    rejected.intent = CanonicalDocument::from_value(&intent).expect("rejected intent");
+    record_legacy_atomic_intent(fixture, &rejected);
+    let before = fixture
+        .store
+        .get_receipt_by_key(&rejected.idempotency_key)
+        .expect("lookup");
+    apply_v115_to_legacy_fixture(fixture);
+    assert_eq!(
+        fixture
+            .store
+            .get_receipt_by_key(&rejected.idempotency_key)
+            .expect("lookup"),
+        before
+    );
+    assert!(
+        fixture
+            .store
+            .list_current_task_closure_artifact_keys(fixture.project, fixture.task)
+            .expect("latest gate evidence")
+            .is_empty()
     );
 }
 
@@ -7882,7 +8438,7 @@ fn a_settled_turn_closure_missing_a_slots_turn_is_refused_by_the_store() {
 }
 
 #[test]
-fn a_settled_turns_declared_artifacts_are_evidence_for_the_ticket_gate() {
+fn a_settled_turns_labels_are_not_addressable_artifact_evidence() {
     let fixture = fixture();
 
     // A team run and one seat, so a turn has something to settle against.
@@ -8033,21 +8589,9 @@ fn a_settled_turns_declared_artifacts_are_evidence_for_the_ticket_gate() {
         .list_task_artifact_keys(fixture.project, fixture.task)
         .expect("the read succeeds");
 
-    // The declared contract key is evidence. Without this the completion ticket
-    // gate is unsatisfiable for every task closed through `turn-settle`.
     assert!(
-        keys.contains(&name("zz.output")),
-        "a settled turn's declared artifact is evidence: {keys:?}"
-    );
-    // The free-form labels are carried through rather than failing the read.
-    assert!(
-        keys.contains(&name("architecture.md")),
-        "a filename label does not break the read: {keys:?}"
-    );
-    assert_eq!(
-        keys.len(),
-        3,
-        "every declared label is reported once: {keys:?}"
+        keys.is_empty(),
+        "settled labels are not addressable producer evidence: {keys:?}"
     );
 }
 
@@ -9932,5 +10476,245 @@ fn orphaned_remediation_effects_without_claims_cannot_be_adopted() {
             .expect("the wakes read")
             .is_empty(),
         "the rejected recovery cannot leave a wake"
+    );
+}
+
+/// One attested retired evaluator, ready to record.
+fn attestation(
+    fixture: &Fixture,
+    receipt: CommandReceiptId,
+    proof: &str,
+) -> kontor_core::repository::StoredRetiredEvaluatorAttestation {
+    kontor_core::repository::StoredRetiredEvaluatorAttestation {
+        id: ExternalId::parse("01a0b619-6aea-78d1-9018-ef1f8b166eda").expect("an id"),
+        project_id: fixture.project,
+        receipt_id: receipt,
+        task_id: fixture.task,
+        workflow_revision: AggregateRevision::parse(4).expect("a revision"),
+        gate_key: GateKey::parse("high-audit-gate").expect("a gate"),
+        team_run_id: TeamRunId::parse("01a09f49-0bbd-7402-a0c8-4882dbdfedc3").expect("a team run"),
+        evaluator_role: RoleKey::parse("fleet-spec-auditor").expect("a role"),
+        role_slot_id: kontor_core::id::RoleSlotId::parse("audit").expect("a slot"),
+        agent_run_id: AgentRunId::parse("01a0b619-6aea-78d1-9018-ef1f8b166eda").expect("a run"),
+        seat_binding_id: SeatBindingId::parse("01a09f49-595e-7e50-962a-a2ee14ae76ad")
+            .expect("a seat"),
+        seat_revision: AggregateRevision::parse(7).expect("a revision"),
+        runtime_binding_id: ExternalId::parse("01a09f49-595e-7e50-962a-a2ee14ae76ae")
+            .expect("a binding"),
+        runtime_generation: 1,
+        native_id: ExternalId::parse("150d6ff3-1474-4200-9600-c39796efc1f7").expect("a native"),
+        artifact_key: ArtifactKey::parse("high-audit-report").expect("an artifact"),
+        artifact_checksum: ContentHash::of(b"the audit report"),
+        evidence_digest: ContentHash::parse(
+            "227f487700996eea037fcfa25d137e3a9c7bb81bc80254378dda983a0d907af3",
+        )
+        .expect("the authentic digest"),
+        proof_digest: ContentHash::of(proof.as_bytes()),
+        attested_at: now(),
+    }
+}
+
+fn attestation_receipt(fixture: &Fixture, key: &str) -> CommandReceiptId {
+    let receipt_id = CommandReceiptId::generate();
+    let task = fixture
+        .store
+        .get_task(fixture.project, fixture.task)
+        .expect("the task reads")
+        .expect("the task exists");
+    fixture
+        .store
+        .record_local_command(&NewLocalCommand {
+            project_id: fixture.project,
+            receipt_id,
+            idempotency_key: IdempotencyKey::parse(key).expect("a key"),
+            kind: CommandKind::AttestRetiredEvaluatorEvidence,
+            target: AggregateRef::Task {
+                task_id: fixture.task,
+            },
+            target_revision: task.revision,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "attest_retired_evaluator_evidence",
+            }))
+            .expect("a canonical intent"),
+            created_at: now(),
+        })
+        .expect("the attestation command records");
+    receipt_id
+}
+
+#[test]
+fn a_retired_evaluator_proof_replays_onto_exactly_one_row() {
+    let fixture = fixture();
+    let receipt = attestation_receipt(&fixture, "attest-retired-evaluator-1");
+    let proof = attestation(&fixture, receipt, "one exact claim");
+
+    let (recorded, first) = fixture
+        .store
+        .record_retired_evaluator_attestation(&proof)
+        .expect("the proof records");
+    assert_eq!(first, kontor_core::repository::AttestationWrite::Recorded);
+
+    // The lost acknowledgement: the caller never saw the answer and retries the
+    // identical claim. It must find its own proof, not mint a second.
+    let (replayed, second) = fixture
+        .store
+        .record_retired_evaluator_attestation(&proof)
+        .expect("the identical claim replays");
+    assert_eq!(second, kontor_core::repository::AttestationWrite::Replayed);
+    assert_eq!(
+        recorded, replayed,
+        "a replay returns the row already written"
+    );
+
+    let stored = fixture
+        .store
+        .retired_evaluator_attestation_by_digest(fixture.project, &proof.proof_digest)
+        .expect("the proof reads")
+        .expect("the proof exists");
+    assert_eq!(
+        stored, proof,
+        "every fenced fact round-trips, not just the digest"
+    );
+}
+
+#[test]
+fn a_changed_claim_under_the_same_receipt_is_refused() {
+    let fixture = fixture();
+    let receipt = attestation_receipt(&fixture, "attest-retired-evaluator-2");
+    let first = attestation(&fixture, receipt, "one exact claim");
+    fixture
+        .store
+        .record_retired_evaluator_attestation(&first)
+        .expect("the first proof records");
+
+    // Same receipt, different facts. Overwriting the first proof would be the
+    // one way this ledger could launder a verdict's provenance.
+    let drifted = attestation(&fixture, receipt, "a different claim entirely");
+    let refused = fixture
+        .store
+        .record_retired_evaluator_attestation(&drifted)
+        .expect_err("duplicate intent drift is refused");
+    // Named by the domain refusal, not by the storage constraint behind it.
+    // The UNIQUE(receipt_id) index would also refuse this, but as an anonymous
+    // `storage` conflict; asserting the subject is what proves the intended
+    // fence ran rather than the backstop catching it.
+    assert!(
+        matches!(
+            &refused,
+            RepositoryError::Conflict { subject, .. } if *subject == "retired-evaluator attestation"
+        ),
+        "expected the domain refusal, got {refused:?}"
+    );
+
+    assert!(
+        fixture
+            .store
+            .retired_evaluator_attestation_by_digest(fixture.project, &drifted.proof_digest)
+            .expect("the read succeeds")
+            .is_none(),
+        "a refused claim writes nothing"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .retired_evaluator_attestation_by_digest(fixture.project, &first.proof_digest)
+            .expect("the read succeeds")
+            .expect("the first proof survives"),
+        first,
+        "the first proof is untouched by the refusal"
+    );
+}
+
+#[test]
+fn a_recorded_proof_is_append_only() {
+    let fixture = fixture();
+    let receipt = attestation_receipt(&fixture, "attest-retired-evaluator-3");
+    let proof = attestation(&fixture, receipt, "one exact claim");
+    fixture
+        .store
+        .record_retired_evaluator_attestation(&proof)
+        .expect("the proof records");
+
+    let connection = rusqlite::Connection::open(&fixture.path).expect("the database opens");
+    let edited = connection.execute(
+        "UPDATE retired_evaluator_attestations SET evidence_digest = ?1",
+        rusqlite::params![ContentHash::of(b"a rewritten verdict").as_str()],
+    );
+    assert!(edited.is_err(), "a proof may not be edited");
+    let deleted = connection.execute("DELETE FROM retired_evaluator_attestations", []);
+    assert!(deleted.is_err(), "a proof may not be deleted");
+}
+
+/// A settled turn's claimed keys become ticket evidence only after the task is
+/// done. An open task contributes nothing, and a key the turn never claimed
+/// stays absent so the ticket gate can still refuse it.
+#[test]
+fn a_done_tasks_settled_turn_claim_counts_and_a_missing_key_stays_absent() {
+    let fixture = fixture();
+    let team_run = with_team_run(&fixture, now());
+    let run = AgentRunId::generate();
+    fixture
+        .store
+        .create_agent_run(&NewAgentRun {
+            id: run,
+            project_id: fixture.project,
+            team_run_id: team_run,
+            parent_agent_run_id: None,
+            role: role("zz.maker"),
+            account_profile_id: Some(fixture.account),
+            binding: None,
+            created_at: now(),
+        })
+        .expect("the seat is created");
+    fixture
+        .store
+        .settle_role_turn(&kontor_store::NewRoleTurn {
+            id: kontor_core::id::RoleTurnId::generate(),
+            project_id: fixture.project,
+            task_id: fixture.task,
+            team_run_id: team_run,
+            agent_run_id: run,
+            role_slot_id: kontor_core::id::RoleSlotId::parse("zz.maker").expect("a slot"),
+            idempotency_key: "turn-settled-claim".to_owned(),
+            task_revision: AggregateRevision::INITIAL,
+            binding_generation: 1,
+            runtime_proof: Some(runtime_turn_proof()),
+            authority_tier: "operator",
+            account_profile: Some(fixture.account),
+            artifacts: [artifact("code-change"), artifact("qa-report")]
+                .into_iter()
+                .collect(),
+            evidence_hash: ContentHash::of(b"settled-claim"),
+            settled_at: now(),
+        })
+        .expect("the turn settles");
+
+    let open = fixture
+        .store
+        .list_settled_turn_artifact_keys(fixture.project, fixture.task)
+        .expect("the open task reads");
+    assert!(
+        open.is_empty(),
+        "an open task's settled claim does not satisfy the ticket gate"
+    );
+
+    let connection = rusqlite::Connection::open(&fixture.path).expect("the database opens");
+    connection
+        .execute(
+            "UPDATE tasks SET state = 'done' WHERE id = ?1",
+            rusqlite::params![fixture.task.to_string()],
+        )
+        .expect("the task is done");
+
+    let claimed = fixture
+        .store
+        .list_settled_turn_artifact_keys(fixture.project, fixture.task)
+        .expect("the done task reads");
+    assert!(claimed.contains(&name("code-change")));
+    assert!(claimed.contains(&name("qa-report")));
+    assert!(
+        !claimed.contains(&name("release-notes")),
+        "a key the turn never claimed stays a blocker"
     );
 }

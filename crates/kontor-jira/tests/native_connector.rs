@@ -841,6 +841,7 @@ async fn create_is_marker_idempotent_and_credentials_are_resolved_per_request() 
         requested_key: None,
         marker: ExternalId::parse("kontor-epic-fixture").expect("marker"),
         require_marker: false,
+        update_description: false,
         summary: "Operational MVP".to_owned(),
         description: "Server derived".to_owned(),
         parent_key: None,
@@ -941,6 +942,7 @@ async fn task_create_includes_project_configured_required_fields() {
         requested_key: None,
         marker: ExternalId::parse("kontor-task-create-fixture").expect("marker"),
         require_marker: false,
+        update_description: false,
         summary: "KON-OP-22: Complete Jira convergence".to_owned(),
         description: "Created by Kontor".to_owned(),
         parent_key: Some(ExternalId::parse("ASMA-7869").expect("parent key")),
@@ -1016,6 +1018,7 @@ async fn explicit_link_confirms_level_zero_without_claiming_type_or_content() {
         requested_key: Some(ExternalId::parse("ASMA-8050").expect("issue key")),
         marker: ExternalId::parse("kontor-task-link-fixture").expect("marker"),
         require_marker: false,
+        update_description: false,
         summary: "Kontor-derived recovery summary".to_owned(),
         description: "Kontor-derived recovery description".to_owned(),
         parent_key: Some(ExternalId::parse("ASMA-8049").expect("parent key")),
@@ -1121,6 +1124,7 @@ async fn recovery_preserves_a_body_authored_since_creation() {
         requested_key: Some(ExternalId::parse("ASMA-8101").expect("key")),
         marker: ExternalId::parse("kontor-epic-recovery-fixture").expect("marker"),
         require_marker: true,
+        update_description: false,
         summary: "Publication identity enforcement".to_owned(),
         description:
             "Kontor epic 01a0721b-ea30-7fe3-88a5-4d33ca613414: Publication identity enforcement"
@@ -1153,6 +1157,91 @@ async fn recovery_preserves_a_body_authored_since_creation() {
 }
 
 #[tokio::test]
+async fn explicit_link_updates_only_description_and_reads_it_back() {
+    let server = MockServer::start().await;
+    let reads = Arc::new(AtomicUsize::new(0));
+    let served_reads = Arc::clone(&reads);
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ASMA-8050"))
+        .respond_with(move |_: &Request| {
+            let description = if served_reads.fetch_add(1, Ordering::SeqCst) == 0 {
+                "Old description"
+            } else {
+                "Approved description"
+            };
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "key": "ASMA-8050",
+                // Since schema v95 the readback carries Jira's immutable issue
+                // id beside the mutable key, so a key change on one issue is
+                // distinguishable from a rebind onto another (ASMA-8116).
+                "id": "908050",
+                "fields": {
+                    "project": {"key": "ASMA"},
+                    "issuetype": {"name": "User Story", "hierarchyLevel": 0, "subtask": false},
+                    "parent": {"key": "ASMA-8049"},
+                    "summary": "Operator-owned summary",
+                    "description": {"type":"doc","version":1,"content":[{
+                        "type":"paragraph","content":[{"type":"text","text":description}]
+                    }]},
+                    "labels": []
+                }
+            }))
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/rest/api/3/issue/ASMA-8050"))
+        .and(body_json(serde_json::json!({"fields": {"description": {
+            "type": "doc", "version": 1, "content": [{
+                "type": "paragraph", "content": [{"type": "text", "text": "Approved description"}]
+            }]
+        }}})))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let root = tempfile::tempdir().expect("a state root");
+    let project_id = ProjectId::generate();
+    std::fs::write(
+        root.path().join("jira.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{
+                "project_id": project_id.to_string(), "endpoint": server.uri(),
+                "project_key": "ASMA", "credential_alias": "work"
+            }]
+        }))
+        .expect("configuration serializes"),
+    )
+    .expect("configuration is written");
+    let connectors =
+        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
+            .expect("configuration loads");
+    let connector = connectors
+        .for_project(project_id)
+        .expect("project is configured");
+    let readback = connector
+        .materialize(&JiraIssuePlan {
+            kind: JiraIssueKind::Task,
+            requested_key: Some(ExternalId::parse("ASMA-8050").expect("issue key")),
+            marker: ExternalId::parse("kontor-task-link-fixture").expect("marker"),
+            require_marker: false,
+            update_description: true,
+            summary: "Kontor-derived summary is not authoritative".to_owned(),
+            description: "Approved description".to_owned(),
+            parent_key: Some(ExternalId::parse("ASMA-8049").expect("parent")),
+        })
+        .await
+        .expect("the exact linked issue updates and confirms one field");
+
+    assert_eq!(readback.issue_key.as_str(), "ASMA-8050");
+    assert_eq!(readback.description, "Approved description");
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn materialization_identifies_each_mismatch_without_mutating_jira() {
     let server = MockServer::start().await;
     let exact = serde_json::json!({
@@ -1176,7 +1265,7 @@ async fn materialization_identifies_each_mismatch_without_mutating_jira() {
         .respond_with(move |_: &Request| {
             ResponseTemplate::new(200).set_body_json(served.lock().expect("readback").clone())
         })
-        .expect(7)
+        .expect(8)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -1212,11 +1301,17 @@ async fn materialization_identifies_each_mismatch_without_mutating_jira() {
         requested_key: Some(ExternalId::parse("ASMA-8050").expect("key")),
         marker: ExternalId::parse("kontor-task-recovery-fixture").expect("marker"),
         require_marker: true,
+        update_description: false,
         summary: "Original creation summary".to_owned(),
         description: "Original description".to_owned(),
         parent_key: Some(ExternalId::parse("ASMA-8049").expect("parent")),
     };
     for (pointer, value, expected) in [
+        (
+            "/key",
+            serde_json::json!("ASMA-RENAMED"),
+            MaterializationConflict::IssueKeyMismatch,
+        ),
         (
             "/fields/project/key",
             serde_json::json!("FOREIGN"),
@@ -1284,7 +1379,7 @@ async fn materialization_identifies_each_mismatch_without_mutating_jira() {
         }
     ));
     let requests = server.received_requests().await.expect("requests");
-    assert_eq!(requests.len(), 8);
+    assert_eq!(requests.len(), 9);
     assert!(
         requests
             .iter()
@@ -1676,6 +1771,7 @@ fn immutable_id_plan() -> JiraIssuePlan {
         requested_key: Some(ExternalId::parse("ASMA-8060").expect("issue key")),
         marker: ExternalId::parse("kontor-task-immutable-id").expect("marker"),
         require_marker: false,
+        update_description: false,
         summary: "Immutable identity fixture".to_owned(),
         description: "Immutable identity fixture body".to_owned(),
         parent_key: Some(ExternalId::parse("ASMA-8049").expect("parent key")),
