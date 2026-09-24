@@ -7,6 +7,8 @@
 //! because the row is keyed by its subject and nothing deletes it — the subject
 //! is then stuck for good.
 
+mod support;
+
 use kontor_core::id::{
     AggregateRevision, BoundedText, CanonicalDocument, ContentHash, ExternalName, MiniProjectId,
     ProjectId, QuickSessionId, RoleCode, RoleSlotId, SeatBindingId, SpecVersion, Timestamp,
@@ -45,7 +47,7 @@ struct World {
 }
 
 fn world() -> World {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
     let project_id = ProjectId::generate();
     store

@@ -1,5 +1,7 @@
 //! OP-01 generic topology, seat, adaptive-state and export round trip.
 
+mod support;
+
 use kontor_core::id::{
     AggregateRevision, ExternalId, ExternalName, MiniProjectId, ProjectId, RoleCode, RoleSlotId,
     SeatBindingId, SpecVersion, Timestamp, TopologyKindKey, TopologyNodeId, TopologySpecId,
@@ -19,7 +21,6 @@ use kontor_core::state::TopologyLifecycle;
 use kontor_profiles::bundled_operational_domain;
 use kontor_store::SqliteStore;
 use kontor_store::backup::export_realm;
-use tempfile::TempDir;
 
 fn at(text: &str) -> Timestamp {
     parse_utc_timestamp(text).expect("a canonical instant")
@@ -36,7 +37,7 @@ fn default_stamp() -> Shareability {
 
 #[test]
 fn a_published_topology_revision_cannot_be_replaced_even_with_the_same_bytes() {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
     let project_id = ProjectId::generate();
     let created_at = at("2026-08-31T00:00:00Z");
@@ -68,7 +69,7 @@ fn a_published_topology_revision_cannot_be_replaced_even_with_the_same_bytes() {
 
 #[test]
 fn operational_state_survives_restart_and_typed_export() {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let database = home.path().join("kontor.db");
     let store = SqliteStore::open(&database).expect("the store opens");
     let project_id = ProjectId::generate();
@@ -289,7 +290,7 @@ fn operational_state_survives_restart_and_typed_export() {
 
 #[test]
 fn a_human_override_is_stored_whole_and_read_back() {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
     let project_id = ProjectId::generate();
     let created_at = at("2026-08-16T01:00:00Z");
@@ -330,7 +331,7 @@ fn a_human_override_is_stored_whole_and_read_back() {
 
 #[test]
 fn a_published_classification_cannot_be_revised_after_the_fact() {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let database = home.path().join("kontor.db");
     let store = SqliteStore::open(&database).expect("the store opens");
     let project_id = ProjectId::generate();
@@ -362,7 +363,7 @@ fn a_published_classification_cannot_be_revised_after_the_fact() {
 
 #[test]
 fn an_unattributed_override_is_refused_by_the_schema() {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let database = home.path().join("kontor.db");
     let store = SqliteStore::open(&database).expect("the store opens");
     let project_id = ProjectId::generate();
@@ -401,7 +402,7 @@ fn an_unattributed_override_is_refused_by_the_schema() {
 /// from the publish path.
 #[test]
 fn publishing_refuses_a_class_nobody_chose() {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
     let project_id = ProjectId::generate();
     let created_at = at("2026-08-16T01:00:00Z");
@@ -450,7 +451,7 @@ fn publishing_refuses_a_class_nobody_chose() {
 
 #[test]
 fn repinning_an_epic_migrates_compatible_nodes_without_changing_their_identities_or_revisions() {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let database = home.path().join("kontor.db");
     let store = SqliteStore::open(&database).expect("the store opens");
     let project_id = ProjectId::generate();
@@ -657,7 +658,7 @@ fn a_new_epic_can_share_its_lineages_historical_project_root() {
         "unscoped",
         "changed-root-rule",
     ] {
-        let home = TempDir::new().expect("temporary state");
+        let home = support::state_root();
         let database = home.path().join("kontor.db");
         let store = SqliteStore::open(&database).expect("store");
         let project = ProjectId::generate();
@@ -835,7 +836,7 @@ fn a_new_epic_can_share_its_lineages_historical_project_root() {
 /// recovery, migration — passes through this one transition.
 #[test]
 fn a_retired_but_unarchived_child_blocks_its_parents_archive() {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
     let project_id = ProjectId::generate();
     let mini_project_id = MiniProjectId::generate();

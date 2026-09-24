@@ -2,6 +2,8 @@
 //! resumable identity-preserving migration intent, and legacy-compatible
 //! consultation topic storage.
 
+mod support;
+
 use kontor_core::consultation::{
     ConsultationFamily, ConsultationRunId, ConsultationRunState, ConsultationSubject,
 };
@@ -65,7 +67,7 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let home = TempDir::new().expect("a temporary directory");
-    let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
+    let store = support::store_from_template(&home.path().join("kontor.db"));
     let project_id = ProjectId::generate();
     let mini_project_id = MiniProjectId::generate();
     let created_at = at("2026-09-01T12:00:00Z");
@@ -329,7 +331,7 @@ fn a_published_team_definition_revision_cannot_be_replaced_even_with_the_same_by
 #[test]
 fn a_definition_naming_an_unpublished_topology_revision_is_refused() {
     let home = TempDir::new().expect("a temporary directory");
-    let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
+    let store = support::store_from_template(&home.path().join("kontor.db"));
     let project_id = ProjectId::generate();
     let created_at = at("2026-09-01T12:00:00Z");
     store

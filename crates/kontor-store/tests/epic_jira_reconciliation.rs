@@ -1,5 +1,7 @@
 //! Durable epic Jira reconciliation authority, conflicts and restart recovery.
 
+mod support;
+
 use kontor_core::id::{
     AggregateRevision, CanonicalDocument, CommandReceiptId, ContentHash, ExternalId, ExternalName,
     IdempotencyKey, MiniProjectId, ProjectId, SemanticMilestoneKey, SpecVersion, StatusConflictId,
@@ -56,7 +58,7 @@ struct Fixture {
 fn fixture() -> Fixture {
     let directory = TempDir::new().expect("a temporary directory");
     let path = directory.path().join("kontor.db");
-    let store = SqliteStore::open(&path).expect("the store opens");
+    let store = support::store_from_template(&path);
     let project_id = ProjectId::generate();
     store
         .create_project(&NewProject {

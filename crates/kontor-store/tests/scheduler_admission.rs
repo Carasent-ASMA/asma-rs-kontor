@@ -25,6 +25,8 @@
 //! * a stale holder that can still renew or release after its token advanced;
 //! * a capacity ceiling trusted from the snapshot rather than recounted.
 
+mod support;
+
 use std::collections::BTreeSet;
 
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
@@ -139,7 +141,7 @@ struct Scope {
 
 impl Harness {
     fn new() -> Self {
-        let directory = TempDir::new().expect("a temporary directory");
+        let directory = support::state_root();
         let store =
             SqliteStore::open(&directory.path().join("kontor.db")).expect("the store opens");
         Self {

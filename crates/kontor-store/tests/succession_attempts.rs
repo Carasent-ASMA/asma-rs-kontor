@@ -1,5 +1,7 @@
 //! Durable quota-blocked seat succession: exact evidence, replay and restart.
 
+mod support;
+
 use kontor_core::id::{
     AccountProfileId, AgentRunId, AggregateRevision, CanonicalDocument, ContentHash,
     CredentialAlias, ExternalId, ExternalName, IdempotencyKey, ProjectId,
@@ -133,7 +135,7 @@ fn create_account(store: &SqliteStore, project_id: ProjectId, alias: &str) -> Ac
 fn fixture() -> Fixture {
     let directory = TempDir::new().expect("temporary directory");
     let path = directory.path().join("kontor.db");
-    let store = SqliteStore::open(&path).expect("store opens");
+    let store = support::store_from_template(&path);
     Connection::open(&path)
         .expect("raw fixture connection")
         .execute_batch(BASE_SQL)

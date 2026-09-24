@@ -1,6 +1,8 @@
 //! Schema v78: one Advisor Session Workspace holds one *or more* independently
 //! reporting seats, so advice is keyed by the seat that gave it.
 
+mod support;
+
 use kontor_core::consultation::{
     ConsultationFamily, ConsultationRunId, ConsultationRunState, ConsultationSubject,
 };
@@ -48,7 +50,7 @@ struct World {
 
 /// One Advisor run with two attested, independently reporting seats.
 fn world() -> World {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
     let project_id = ProjectId::generate();
     let mini_project_id = MiniProjectId::generate();
