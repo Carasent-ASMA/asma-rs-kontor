@@ -1412,6 +1412,7 @@ chains:
     - [grok-4.7@xhigh, grok-4.6@xhigh, composer]
 bindings:
   team/t/s: c
+  team/t/unlisted: c
 rules:
   calibration_required: [team/t/s]
   vision_required: [team/t/s]
@@ -1420,6 +1421,17 @@ rules:
         let routes = snapshot.routes_for("team/t/s").expect("bound");
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].rung.model.0, "grok-4.6");
+        // Both rules are scoped to the keys they list. A seat outside them keeps
+        // the uncalibrated and non-vision models, which is what tells a scoped
+        // rule from one applied to every key.
+        let unlisted = snapshot.routes_for("team/t/unlisted").expect("bound");
+        assert_eq!(
+            unlisted
+                .iter()
+                .map(|route| route.rung.model.0.as_str())
+                .collect::<Vec<_>>(),
+            ["grok-4.7", "grok-4.6", "composer-2.5"]
+        );
     }
 
     #[test]
