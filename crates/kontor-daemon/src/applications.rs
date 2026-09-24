@@ -37171,14 +37171,16 @@ impl Services {
     ///
     /// A binding that exists never falls back to the template chain: a chain
     /// that flattens to no admissible route is R-01, not a reason to use the
-    /// route the operator replaced.
+    /// route the operator replaced. A seat named in `rules.independent_of`
+    /// additionally drops every route whose vendor the seat it must differ from
+    /// already ran on in this team run (R-02).
     ///
     /// # Errors
-    /// Returns [`kontor_core::DomainError::MissingEvidence`] for R-01 and the
-    /// template snapshot's own refusal when it cannot be read.
+    /// Returns [`kontor_core::DomainError::MissingEvidence`] for R-01 and R-02,
+    /// and the template snapshot's own refusal when it cannot be read.
     fn declared_delivery_rungs(
         &self,
-        _team_run_id: TeamRunId,
+        team_run_id: TeamRunId,
         snapshot: &TeamRunSnapshot,
         slot: &RoleSlotId,
     ) -> kontor_core::DomainResult<Option<crate::fleet::DeclaredRungs>> {
@@ -37192,6 +37194,35 @@ impl Services {
                     rule: "the fleet chain bound to this seat has no route left after the unavailable, calibration and vision rules",
                 });
             }
+            let routes = if let Some(other_key) = fleet.independent_of(&key) {
+                match self.fleet.last_vendor(&team_run_id.to_string(), other_key) {
+                    Some(vendor) => {
+                        let remaining: Vec<crate::fleet::FleetRoute> = routes
+                            .into_iter()
+                            .filter(|route| route.vendor != vendor)
+                            .collect();
+                        if remaining.is_empty() {
+                            return Err(kontor_core::DomainError::MissingEvidence {
+                                subject: "FleetConfiguration",
+                                rule: "every fleet route left for this seat uses the vendor of the seat it must be independent of",
+                            });
+                        }
+                        remaining
+                    }
+                    // The other seat was placed before the fleet existed, so
+                    // its vendor was never recorded and cannot be avoided.
+                    None => {
+                        tracing::warn!(
+                            binding_key = %key,
+                            other_key = %other_key,
+                            "fleet.independence_unknown"
+                        );
+                        routes
+                    }
+                }
+            } else {
+                routes
+            };
             return Ok(Some(crate::fleet::DeclaredRungs {
                 rungs: routes.into_iter().map(|route| route.rung).collect(),
                 fleet: Some((fleet, key)),

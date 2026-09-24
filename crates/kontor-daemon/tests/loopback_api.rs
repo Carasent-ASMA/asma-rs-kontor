@@ -211,6 +211,7 @@ async fn open_question_commands_preserve_authority_history_and_completion_blocke
 }
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{
     Arc, Mutex,
@@ -265,7 +266,7 @@ use kontor_daemon::succession_supervision::{
     SuccessionSupervisionCoordinator, reconcile_once as reconcile_succession_once,
 };
 use kontor_daemon::usage::{ExactProviderUsageReporter, ProviderUsageProbeFailure};
-use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
+use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig, logging};
 use kontor_runtime::adapter::RuntimeAdapter as _;
 use kontor_runtime::capability::RuntimeCapability;
 use kontor_runtime::fake::{
@@ -35272,6 +35273,410 @@ async fn without_fleet_yml_committee_allocation_is_unchanged() {
     assert!(
         !world.directory.path().join("fleet-decisions").exists(),
         "a placement without a fleet wrote a fleet decision"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// LF-05 — a delivery seat keeps the vendor of the seat it must differ from.
+//
+// `rules.independent_of` makes a placement read the vendor this team run already
+// recorded for the other seat and drop every route that vendor could reach
+// (R-02). A vendor the run never recorded cannot be avoided: every route is
+// kept and the placement warns `fleet.independence_unknown` instead of silently
+// breaking the rule.
+// ---------------------------------------------------------------------------
+
+/// One LF-05 `fleet.yml`: both delivery seats open on the same DeepSeek vendor.
+///
+/// `deepseek-only` flattens to exactly the vendor an implementation seat records,
+/// so an independent verifier left with it has no route at all; the chains and
+/// the models are ones the frozen `test/test` template never carries, so a
+/// launched route says which policy the placement actually consulted.
+fn independence_fleet_yaml(implement_key: &str, verify_key: &str, verify_chain: &str) -> String {
+    format!(
+        "schema_version: 1\n\
+         domains:\n  deepseek: {{ provider: opencode, accounts: [opencode] }}\n  claude: {{ provider: claude, accounts: [claude-personal] }}\n\
+         models:\n  flash: {{ domain: deepseek, id: deepseek/deepseek-flash, vendor: deepseek }}\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic }}\n\
+         chains:\n  deepseek-only:\n    - [flash]\n  deepseek-then-claude:\n    - [flash]\n    - [opus]\n\
+         bindings:\n  {implement_key}: deepseek-only\n  {verify_key}: {verify_chain}\n\
+         rules:\n  independent_of:\n    {verify_key}: {implement_key}\n"
+    )
+}
+
+/// A writer the test can read back, so the assertion is over the bytes the sink
+/// really produced rather than over what a formatter was asked to do.
+///
+/// The same capture `recovery_security.rs` uses over `logging::subscriber`: the
+/// installed process subscriber is never asked, so a thread-local default is how
+/// an event emitted inside one request becomes an assertion.
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl Write for Captured {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("the buffer is not poisoned")
+            .extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for Captured {
+    type Writer = Self;
+
+    fn make_writer(&'writer self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Launch the fixture's queued `verify` run before any fleet exists.
+///
+/// `seat_fill_world_with_recovery(false, ..)` deliberately leaves `verify`
+/// unbound, so a quota takeover of it has no launch to replace. Adopting the
+/// queued run and filling the slot launches it on the frozen `test/test` chain:
+/// a template-routed placement, and therefore one that records no fleet
+/// decision, exactly as the implementer seated before `fleet.yml` did.
+async fn place_verify_before_the_fleet(fixture: &SeatFillWorld, key: &str) -> AgentRunId {
+    let body = adoption_body(fixture);
+    let adopted = adopt_slot(
+        fixture,
+        "verify",
+        &body,
+        &format!("{key}-adopt"),
+        "operator",
+    )
+    .await;
+    assert_eq!(adopted.status, 200, "{}", adopted.body);
+    fixture
+        .world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("verify").expect("a role slot"));
+    let filled = fixture
+        .fill("verify", fixture.task_revision(), &format!("{key}-fill"))
+        .await;
+    assert_eq!(filled.status, 200, "{}", filled.body);
+    AgentRunId::parse(
+        filled.json()["agent_run_id"]
+            .as_str()
+            .expect("the fill names its run"),
+    )
+    .expect("a canonical agent run id")
+}
+
+/// Take over one quota-blocked seat onto one explicit Admin-authorized route.
+///
+/// The evidence is [`take_over_blocked_seat`]'s; the named route is what a
+/// predecessor placed before `fleet.yml` existed uses. An explicit route is not
+/// a fleet placement, so this takeover records no fleet decision — the shape a
+/// seat predating the fleet leaves behind.
+async fn take_over_blocked_seat_on_route(
+    fixture: &SeatFillWorld,
+    predecessor: AgentRunId,
+    slot: &str,
+    route: &serde_json::Value,
+    key: &str,
+) -> Answer {
+    let run = fixture.world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(fixture.project, predecessor)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let binding = run.binding.clone().expect("the predecessor is bound");
+    let account = run
+        .account_profile_id
+        .expect("the predecessor owns the account the walk selected");
+    let provider = fixture
+        .world
+        .fake
+        .launched_model(predecessor)
+        .expect("the predecessor's launched route")
+        .provider
+        .0;
+    let (run, evidence) = record_runtime_quota_refusal(
+        &fixture.world,
+        fixture.project,
+        predecessor,
+        &binding,
+        account,
+        &provider,
+        at("2099-01-01T00:00:00Z"),
+    )
+    .await;
+    Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{predecessor}/successors:replace",
+            fixture.project
+        ),
+        &serde_json::json!({
+            "role_slot": slot,
+            "expected_predecessor_revision": run.revision,
+            "expected_task_revision": fixture.task_revision(),
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": evidence,
+            "model_route": route,
+        }),
+    )
+    .signed_as(&fixture.world, "admin")
+    .with_key(key)
+    .send(&fixture.world)
+    .await
+}
+
+/// LF-05: a verifier declared independent of the implementer drops the vendor
+/// the implementer was admitted on and takes the next one.
+///
+/// Both chains open on the same DeepSeek route, so a placement that ignored
+/// `rules.independent_of` would land the verifier on step 1 exactly as the
+/// implementer did. The exact provider and model are asserted so neither the
+/// success nor a wrong-vendor success can pass.
+#[tokio::test]
+async fn a_verifier_skips_the_implementers_vendor() {
+    let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    place_verify_before_the_fleet(&fixture, "lf05-skip-verify").await;
+    let implement_key = fleet_binding_key(&fixture, "implement");
+    let verify_key = fleet_binding_key(&fixture, "verify");
+    write_fleet(
+        &fixture.world,
+        &independence_fleet_yaml(&implement_key, &verify_key, "deepseek-then-claude"),
+    );
+
+    let implemented = take_over_blocked_seat(
+        &fixture,
+        delivery_member(&fixture, "implement").id,
+        "implement",
+        "lf05-skip-implement",
+    )
+    .await;
+    assert_eq!(implemented.status, 200, "{}", implemented.body);
+    let implementer = replaced_successor(&implemented);
+    assert_eq!(
+        launched_route(&fixture, implementer),
+        ("opencode".to_owned(), "deepseek/deepseek-flash".to_owned()),
+        "the implementer opens on the shared DeepSeek step: {}",
+        implemented.body
+    );
+
+    let verified = take_over_blocked_seat(
+        &fixture,
+        delivery_member(&fixture, "verify").id,
+        "verify",
+        "lf05-skip-verifier",
+    )
+    .await;
+    assert_eq!(verified.status, 200, "{}", verified.body);
+    let verifier = replaced_successor(&verified);
+    assert_eq!(
+        launched_route(&fixture, verifier),
+        ("claude-personal".to_owned(), "claude-opus-5".to_owned()),
+        "the independent verifier skips the implementer's recorded vendor: {}",
+        verified.body
+    );
+    assert_ne!(
+        launched_route(&fixture, verifier),
+        ("opencode".to_owned(), "deepseek/deepseek-flash".to_owned()),
+        "the verifier must not share the implementer's vendor"
+    );
+
+    let decisions = fleet_decisions(&fixture);
+    assert_eq!(
+        decisions.len(),
+        2,
+        "one line per admitted placement: {decisions:?}"
+    );
+    assert_eq!(decisions[0]["role_slot"], "implement");
+    assert_eq!(decisions[0]["binding_key"], implement_key);
+    assert_eq!(decisions[0]["vendor"], "deepseek");
+    assert_eq!(decisions[0]["step"], 1);
+    assert_eq!(decisions[0]["sub_step"], 1);
+    assert_eq!(decisions[1]["role_slot"], "verify");
+    assert_eq!(decisions[1]["binding_key"], verify_key);
+    assert_eq!(decisions[1]["vendor"], "anthropic");
+    assert_eq!(
+        decisions[1]["step"], 2,
+        "step 1 of the verifier's chain is the dropped vendor: {decisions:?}"
+    );
+    assert_eq!(decisions[1]["sub_step"], 1);
+    assert_eq!(decisions[1]["provider"], "claude-personal");
+    assert_eq!(decisions[1]["model"], "claude-opus-5");
+}
+
+/// LF-05: with only the implementer's vendor left, the independent verifier is
+/// refused rather than launched on it.
+///
+/// The recorded vendor is DeepSeek, the verifier's whole chain is DeepSeek, and
+/// the refusal is the exact `MissingEvidence` the rule raises; a version of the
+/// filter that dropped nothing would place the verifier and fail this test.
+#[tokio::test]
+async fn independence_fails_closed_when_only_the_implementers_vendor_is_left() {
+    let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    place_verify_before_the_fleet(&fixture, "lf05-closed-verify").await;
+    let implement_key = fleet_binding_key(&fixture, "implement");
+    let verify_key = fleet_binding_key(&fixture, "verify");
+    write_fleet(
+        &fixture.world,
+        &independence_fleet_yaml(&implement_key, &verify_key, "deepseek-only"),
+    );
+
+    let implemented = take_over_blocked_seat(
+        &fixture,
+        delivery_member(&fixture, "implement").id,
+        "implement",
+        "lf05-closed-implement",
+    )
+    .await;
+    assert_eq!(implemented.status, 200, "{}", implemented.body);
+    assert_eq!(
+        launched_route(&fixture, replaced_successor(&implemented)),
+        ("opencode".to_owned(), "deepseek/deepseek-flash".to_owned()),
+        "{}",
+        implemented.body
+    );
+
+    let members = fixture.members().len();
+    let calls = fixture.world.fake.calls().len();
+    let refused = take_over_blocked_seat(
+        &fixture,
+        delivery_member(&fixture, "verify").id,
+        "verify",
+        "lf05-closed-verifier",
+    )
+    .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "invalid_request");
+    // `ApiError::from_domain` maps `MissingEvidence` to that code and drops the
+    // domain's own rule text, keeping the subject that says which rule refused.
+    assert_eq!(refused.json()["subject"], "FleetConfiguration");
+    assert_eq!(
+        refused.json()["rule"],
+        "the operation requires evidence that has not been recorded"
+    );
+    assert_eq!(
+        fixture.members().len(),
+        members,
+        "a refused verifier placement creates no successor"
+    );
+    assert!(
+        !fixture.world.fake.calls()[calls..]
+            .iter()
+            .any(|call| matches!(call, AdapterCall::Launch(_))),
+        "a refused verifier placement launches nothing: {}",
+        refused.body
+    );
+    assert_eq!(
+        fleet_decisions(&fixture).len(),
+        1,
+        "the refused verifier is not a fleet placement"
+    );
+}
+
+/// LF-05: a seat placed before `fleet.yml` existed has no recorded vendor, so
+/// the rule cannot avoid one — the verifier keeps its whole chain and the
+/// placement warns instead.
+///
+/// An implementer seated before the fleet wrote no decision, so the verifier's
+/// takeover must keep every route, step 1 included, and say so through
+/// `fleet.independence_unknown`.
+#[tokio::test]
+async fn an_implementer_placed_before_fleet_yml_does_not_block_its_verifier() {
+    let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    place_verify_before_the_fleet(&fixture, "lf05-unknown-verify").await;
+
+    // A quota takeover cannot walk the frozen `test/test` chain here: its only
+    // route's account is the one the takeover evidence just marked exhausted.
+    // Admin names a compiled catalogued route instead. Still not a fleet
+    // placement, so still no decision — the property under test.
+    let implementer = take_over_blocked_seat_on_route(
+        &fixture,
+        delivery_member(&fixture, "implement").id,
+        "implement",
+        &serde_json::json!({"provider": "claude-personal", "model": "claude-opus-5"}),
+        "lf05-unknown-implement",
+    )
+    .await;
+    assert_eq!(implementer.status, 200, "{}", implementer.body);
+    assert_eq!(
+        launched_route(&fixture, replaced_successor(&implementer)),
+        ("claude-personal".to_owned(), "claude-opus-5".to_owned()),
+        "{}",
+        implementer.body
+    );
+    assert!(
+        !fixture
+            .world
+            .directory
+            .path()
+            .join("fleet-decisions")
+            .exists(),
+        "the pre-fleet implementer placement wrote a fleet decision"
+    );
+
+    let implement_key = fleet_binding_key(&fixture, "implement");
+    let verify_key = fleet_binding_key(&fixture, "verify");
+    write_fleet(
+        &fixture.world,
+        &independence_fleet_yaml(&implement_key, &verify_key, "deepseek-then-claude"),
+    );
+
+    // The handler runs in this task on this thread, so the thread-local default
+    // is the sink the warning inside the request is written to.
+    let captured = Captured::default();
+    let subscriber = logging::subscriber(captured.clone());
+    let verified = {
+        let _capture = tracing::subscriber::set_default(subscriber);
+        take_over_blocked_seat(
+            &fixture,
+            delivery_member(&fixture, "verify").id,
+            "verify",
+            "lf05-unknown-verifier",
+        )
+        .await
+    };
+    assert_eq!(verified.status, 200, "{}", verified.body);
+    assert_eq!(
+        launched_route(&fixture, replaced_successor(&verified)),
+        ("opencode".to_owned(), "deepseek/deepseek-flash".to_owned()),
+        "with no recorded implementer vendor every route is kept, step 1 included: {}",
+        verified.body
+    );
+
+    let decisions = fleet_decisions(&fixture);
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    assert_eq!(decisions[0]["role_slot"], "verify");
+    assert_eq!(decisions[0]["vendor"], "deepseek");
+    assert_eq!(decisions[0]["step"], 1);
+    assert_eq!(decisions[0]["sub_step"], 1);
+    assert!(
+        decisions
+            .iter()
+            .all(|decision| decision["role_slot"] != "implement"),
+        "the pre-fleet implementer placement recorded no decision: {decisions:?}"
+    );
+
+    let written = String::from_utf8(
+        captured
+            .0
+            .lock()
+            .expect("the buffer is not poisoned")
+            .clone(),
+    )
+    .expect("the log is UTF-8");
+    assert!(
+        written
+            .lines()
+            .any(|line| line.contains("WARN") && line.contains("fleet.independence_unknown")),
+        "the unknown-vendor branch is observable in the daemon log:\n{written}"
     );
 }
 
