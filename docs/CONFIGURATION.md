@@ -22,6 +22,7 @@ system behaviour instead of instructions somebody has to remember.
 | `<state-root>/runtimes.json` | Runtime family, plane endpoint, per-account provider aliases and the plane's default seat posture. Schema generation `5`; generation `4` is read as a `5` that declares no posture, which resolves to `ask`; generation `3` is refused rather than upgraded, because it can compose the right sessions under misleading names |
 | `<state-root>/supervision.yml` | Optional seat supervision policy. Schema v1 is validation/classification only; schema v2 can explicitly enable resident bounded succession (see below) |
 | `<state-root>/quota-signals.yml` | Vendor exhaustion wording, applied to a seat's own refusal text (optional; see below) |
+| `<state-root>/fleet.yml` | Live model routing — domains, accounts, models, chains and seat bindings, read at every placement (optional; see below) |
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600` |
 | `<state-root>/endpoint.json` | Where the realm listens, when not on the default loopback port |
 | `<state-root>/provider-homes/` | One credential home per provider account — `CODEX_HOME` for Codex, `CLAUDE_CONFIG_DIR` for Claude |
@@ -421,6 +422,123 @@ claimable rather than assumed.
 > verified against Paseo 0.6.1, neither `paseo agent run` nor `paseo agent update`
 > exposes a flag for it, and Kontor drives the CLI rather than the MCP surface
 > where it is settable. Recorded rather than implied.
+
+## Fleet configuration (`fleet.yml`)
+
+Copy [`config/examples/fleet.yml`](../config/examples/fleet.yml) to
+`<state-root>/fleet.yml` to let one live file, rather than published template
+revisions, own model routing. Kontor re-reads it on **every seat placement** —
+seat fill, seat replacement, quota takeover, succession refresh, Committee
+invoke, Committee seat recovery and Advisor invoke — so one edit changes the
+next placement with no rebuild, restart or template republish.
+
+The file lives in the state root, outside every git checkout, so a branch switch
+can never change routing.
+
+### File rules
+
+- `<state-root>/fleet.yml` must be a regular file, not a symlink, owned by the
+  same user as the state root, and not writable by group or others (`chmod 600`).
+- It is at most 256 KiB and must be UTF-8; unknown fields are rejected at every
+  level, and the shipped example is a parseable starting point.
+- It names accounts by alias only. It never holds credentials, tokens or
+  environment values, and Kontor never logs its contents — only the hash and the
+  name of the failing rule.
+
+### Schema
+
+```yaml
+schema_version: 1
+
+domains:
+  claude:     { provider: claude,   accounts: [claude-personal, claude-work] }
+  codex:      { provider: codex,    accounts: [codex-work] }
+  cursor:     { provider: cursor,   accounts: [cursor] }
+  openrouter: { provider: opencode, accounts: [opencode], model_prefix: "openrouter/" }
+
+unavailable:
+  domains: [openrouter]   # a provider that does not work at all
+  accounts: [claude-work] # one switched-off login
+
+models:
+  opus-5: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
+  sol:    { domain: codex,  id: gpt-5.6-sol,   vendor: openai,    efforts: [xhigh], vision: true, calibrated: true }
+
+chains:
+  claude-first:
+    - [opus-5@xhigh]
+    - [sol@xhigh]
+
+bindings:
+  team/<team_template_id>/implement: claude-first
+  committee/<committee_template_id>/reviewer-a: claude-first
+  advisor/<advisor_profile_id>: claude-first
+
+rules:
+  calibration_required: [team/<team_template_id>/verify]
+  vision_required: [team/<team_template_id>/browser-verify]
+  independent_of:
+    team/<team_template_id>/verify: team/<team_template_id>/implement
+```
+
+A **domain** is one failure domain: the accounts that go down together, for
+example one vendor plan. A **chain** is an ordered list of **steps**, each step
+written as one domain, and each step is walked in **sub-steps**: Kontor tries
+every listed model on every account of that domain before it descends to the
+next step. `[opus-5@xhigh]` followed by `[sol@xhigh]` therefore means: Opus on
+every Claude login, then Sol on every Codex login. Chain length has no fixed
+limit; the sanity ceiling is 16 steps and 64 flattened routes.
+
+A **binding** maps `team/<id>/<slot>`, `committee/<id>/<slot>` or `advisor/<id>`
+to one chain, and applies to every version of that template or profile. A
+binding wins over the frozen template chain; the template chain is used only for
+seats the file does not bind. A bound chain that flattens to no admissible route
+fails closed — it never falls back to the route the operator replaced.
+`core/<role_code>` keys are rejected in v1.
+
+### `unavailable`
+
+`unavailable.domains` switches off a whole domain and `unavailable.accounts` a
+single alias; matching routes are dropped while a chain is flattened, so the
+next placement skips them. Use it for a provider that does not work at all.
+Quota exhaustion needs no entry: Kontor's quota evidence already walks past an
+exhausted account. The `runtimes.json` `unavailable_providers` list still
+applies on top.
+
+### The three rules
+
+- `rules.calibration_required` — the listed verdict seats (verify, audit, QA,
+  Committee) skip every model not marked `calibrated: true`. Empty the list to
+  waive calibration.
+- `rules.vision_required` — the listed seats skip models with `vision: false`.
+- `rules.independent_of` — a seat's routes must avoid the **vendor** the named
+  seat last ran on in the same team run, for example
+  `team/<id>/verify: team/<id>/implement`. If the named seat has no recorded
+  route, placement proceeds and logs `fleet.independence_unknown`.
+
+### Readback and receipts
+
+After every load attempt Kontor rewrites `<state-root>/fleet-status.json`
+(`active_hash`, `loaded_at`, `last_error`), so an edit is confirmed or rejected
+at once. An invalid edit keeps the last valid snapshot, reports the failing rule
+there, and is never applied in part. Every accepted version is stored once under
+`<state-root>/fleet-history/<hash>.yml`, and each admitted fleet placement
+appends one JSON line, including its step and sub-step, to
+`<state-root>/fleet-decisions/<team_run_id>.jsonl`. Rollback is one copy from
+`fleet-history/`.
+
+### Turning it off, and removing a model safely
+
+Deleting `<state-root>/fleet.yml` is the supported way to turn the feature off:
+every placement then behaves exactly as if the file had never existed.
+
+To remove a model from a live file, **remove it from every `chains` entry
+first** — the validator rejects a file that deletes a model while a chain still
+names it. Delete it from `models` only once no live seat is frozen on it:
+explicit-route commands (bridge moves, `replace_seat` with a named route, and
+consultation seat recovery naming the frozen route) re-check that exact route
+against the catalog when they run. Automatic quota takeover walks the declared
+chain and is not affected.
 
 ## Provider quota signals
 

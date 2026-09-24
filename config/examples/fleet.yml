@@ -26,7 +26,7 @@ models:
   composer-2.5:   { domain: cursor,     id: composer-2.5,    vendor: cursor,                                                                vision: false, calibrated: false }
   cursor-auto:    { domain: cursor,     id: auto-smart,      vendor: unknown,                                                               vision: false, calibrated: false }   # listed for bridge moves only; V-25 keeps it out of independent seats
   glm-5.3-flash:  { domain: openrouter, id: openrouter/z-ai/glm-5.3-flash, vendor: zhipu,  efforts: [low, high, max],                       vision: true,  calibrated: true }
-  deepseek-flash: { domain: deepseek,   id: deepseek/deepseek-flash,       vendor: deepseek, efforts: [low, high, max],                     vision: false, calibrated: true }
+  deepseek-flash: { domain: deepseek,   id: deepseek/deepseek-flash,       vendor: deepseek, efforts: [low, high, max],                     vision: false, calibrated: false }   # DEC-017: until its calibration research verdict
 
 # A chain is a list of steps; each step is one domain; entries are `model@effort`.
 chains:
