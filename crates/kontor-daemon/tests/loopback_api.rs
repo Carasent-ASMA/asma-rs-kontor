@@ -34576,6 +34576,705 @@ async fn every_admitted_fleet_placement_is_recorded() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// LF-04 — Committee and Advisor seats take their chain from the live fleet.
+//
+// Each test writes a `fleet.yml` whose routes the pinned policy never names,
+// so a frozen or launched route is evidence of *which* policy the daemon
+// actually consulted, and the acceptance evidence is read back from the run's
+// immutable admission block rather than inferred from a successful request.
+// ---------------------------------------------------------------------------
+
+/// The seat key one Committee template slot is bound under in `fleet.yml`.
+fn committee_fleet_key(slot: &str) -> String {
+    format!("committee/{COMMITTEE_PRESET}/{slot}")
+}
+
+/// The key the live fleet binds the fixture Advisor profile under.
+fn advisor_fleet_key() -> String {
+    format!("advisor/{ADVISOR_PROFILE}")
+}
+
+/// One LF-04 `fleet.yml` over the fixture accounts' aliases.
+///
+/// The two `claude-then-*` chains deliberately open on the same vendor (step 1
+/// is the Claude domain) and diverge afterwards, so a reviewer that may not
+/// share its peer's vendor is visibly forced down to its next step.
+/// `cursor-grok` carries a single step, a vendor no template revision names.
+fn committee_fleet_yaml(bindings: &[(&str, &str)]) -> String {
+    let bindings: String = bindings
+        .iter()
+        .map(|(key, chain)| format!("  {key}: {chain}\n"))
+        .collect();
+    format!(
+        "schema_version: 1\n\
+         domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n\
+         models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai }}\n  grok: {{ domain: cursor, id: grok-4.7, vendor: xai }}\n\
+         chains:\n  claude-then-codex:\n    - [opus]\n    - [sol]\n  claude-then-grok:\n    - [opus]\n    - [grok]\n  cursor-grok:\n    - [grok]\n\
+         bindings:\n{bindings}"
+    )
+}
+
+/// Ensure one enabled fake-runtime account whose selectable alias is `provider`.
+async fn ensure_consultation_account(
+    world: &World,
+    project: &str,
+    label: &str,
+    credential: &str,
+    provider: &str,
+) {
+    let ensured = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": label,
+            "harness": "fake.runtime",
+            "credential_alias": credential,
+            "selectable_providers": [provider],
+            "enabled": true,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("lf04-account-{provider}"))
+    .send(world)
+    .await;
+    assert_eq!(ensured.status, 200, "{}", ensured.body);
+}
+
+/// A composed Realm with a promoted epic, materialized LSA/TPM control seats
+/// and fake provider headroom: everything a Committee or Advisor invocation
+/// needs from the public API.
+struct ConsultationRealm {
+    world: World,
+    project: String,
+    epic: String,
+    caller: String,
+}
+
+async fn consultation_realm(root: &str, extra_providers: &[(&str, &str)]) -> ConsultationRealm {
+    let composed = compose_realm(root).await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let (quick, preview_hash) =
+        quick_session_ready_to_promote(world, project, "Fleet consultation", "lf04-consult-quick")
+            .await;
+    let promoted = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{quick}/promotion:apply"),
+        &promotion_apply_body(&preview_hash),
+    )
+    .signed_as(world, "operator")
+    .with_key("lf04-consult-promote")
+    .send(world)
+    .await;
+    assert_eq!(promoted.status, 200, "{}", promoted.body);
+    let epic = promoted.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    confirm_promoted_epic_identity(world, project, &epic, "PROMO", "ASMA-9001");
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                {"role_code": "LSA", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }},
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }}
+            ]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("lf04-consult-control")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let caller = materialized.json()["core_team"]["seats"]
+        .as_array()
+        .expect("core seats")
+        .iter()
+        .find(|seat| seat["role"]["role_code"] == "LSA")
+        .and_then(|seat| seat["seat_binding_id"].as_str())
+        .expect("the LSA SeatBinding")
+        .to_owned();
+    // The explicit account makes `codex-work` the first Codex alias by profile
+    // id, so the template reviewer route is deterministic.
+    ensure_consultation_account(
+        world,
+        project,
+        "Codex Work",
+        "lf04-codex-work",
+        "codex-work",
+    )
+    .await;
+    for &(label, provider) in extra_providers {
+        ensure_consultation_account(world, project, label, &format!("lf04-{provider}"), provider)
+            .await;
+    }
+    prepare_fake_provider_headroom(world, project).await;
+    ConsultationRealm {
+        world: composed.world,
+        project: composed.project,
+        epic,
+        caller,
+    }
+}
+
+/// Invoke the pinned Independent-review Committee through the public API.
+async fn invoke_fleet_committee(realm: &ConsultationRealm, topic: &str, key: &str) -> Answer {
+    let world = &realm.world;
+    let project = &realm.project;
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{}", realm.epic))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(epic_read.status, 200, "{}", epic_read.body);
+    Call::post(
+        format!(
+            "/v1/projects/{project}/epics/{}/committee-runs:invoke",
+            realm.epic
+        ),
+        &serde_json::json!({
+            "profile": {"id": COMMITTEE_PRESET, "version": 1},
+            "topic": topic,
+            "question": format!("Does the {topic} evidence hold?"),
+            "caller_seat_binding_id": realm.caller,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(key)
+    .send(world)
+    .await
+}
+
+/// One Committee run as the public readback exposes it.
+async fn committee_readback(world: &World, project: &str, run: &str) -> serde_json::Value {
+    let read = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    read.json()
+}
+
+/// The immutable admission block one stored consultation run was frozen with.
+fn frozen_consultation_context(
+    world: &World,
+    project: &str,
+    run: ConsultationRunId,
+) -> serde_json::Value {
+    let project_id = ProjectId::parse(project).expect("a project id");
+    world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run(project_id, run)
+            .expect("the consultation run reads")
+            .expect("the consultation run exists")
+            .context
+    })
+}
+
+/// The frozen admission entry one Committee slot was placed on.
+fn admission_route_for_slot<'a>(
+    routes: &'a [serde_json::Value],
+    slot: &str,
+) -> &'a serde_json::Value {
+    routes
+        .iter()
+        .find(|route| route["role_slot_id"] == slot)
+        .unwrap_or_else(|| panic!("the admission block names the {slot} slot: {routes:?}"))
+}
+
+/// LF-04: with the fleet bound, the first reviewer keeps step 1 and the second
+/// descends its own chain until it reaches a vendor its peer does not hold.
+#[tokio::test]
+async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
+    let realm = consultation_realm(
+        "/tmp/kontor-lf04-committee-vendors",
+        &[("Cursor", "cursor")],
+    )
+    .await;
+    let world = &realm.world;
+    let fleet = committee_fleet_yaml(&[
+        (&committee_fleet_key("reviewer-a"), "claude-then-codex"),
+        (&committee_fleet_key("reviewer-b"), "claude-then-grok"),
+    ]);
+    write_fleet(world, &fleet);
+    let fleet_hash = ContentHash::of(fleet.as_bytes());
+
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Fleet reviewer vendor independence",
+        "lf04-vendors-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Committee(
+            kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+        ),
+    );
+    let routes = context["admission"]["routes"]
+        .as_array()
+        .expect("frozen admission routes");
+    let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
+    let reviewer_b = admission_route_for_slot(routes, "reviewer-b");
+
+    // Both chains open on step 1 of the Claude domain, so the first-ordered
+    // reviewer keeps that step -- a route the pinned template never declares,
+    // because the template starts reviewer-a at `claude-work`.
+    assert_eq!(
+        reviewer_a["model_route"]["provider"], "claude-personal",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(
+        reviewer_a["model_route"]["model"], "claude-opus-5",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(reviewer_a["rank"], 1, "{}", reviewer_a);
+    // The second reviewer may not hold the same vendor, so it must leave step 1
+    // for the next step of its own chain, whose vendor is xai.
+    assert_eq!(
+        reviewer_b["model_route"]["provider"], "cursor",
+        "the second reviewer did not descend its chain: {}",
+        reviewer_b
+    );
+    assert_eq!(
+        reviewer_b["model_route"]["model"], "grok-4.7",
+        "{}",
+        reviewer_b
+    );
+    assert_eq!(
+        reviewer_b["rank"], 3,
+        "the second reviewer kept a step-1 route: {}",
+        reviewer_b
+    );
+    assert_ne!(
+        reviewer_a["model_route"], reviewer_b["model_route"],
+        "both reviewers were seated on the same vendor"
+    );
+    for route in [reviewer_a, reviewer_b] {
+        assert_eq!(route["source"], "fleet_configuration", "{}", route);
+        assert_eq!(
+            route["profile_hash"],
+            fleet_hash.as_str(),
+            "the frozen route is not stamped with the accepted fleet snapshot: {route}"
+        );
+        assert_ne!(
+            route["profile_hash"], context["template_hash"],
+            "the frozen route is the pinned template revision: {route}"
+        );
+    }
+}
+
+/// LF-04: a fleet-listed Cursor route is the exact route the runtime is asked
+/// to launch.
+///
+/// The `plan` permission mode is a Paseo-adapter projection of the frozen
+/// `fleet_configuration` provenance (`consultation_route_permission_mode`),
+/// and is derived at native-launch time; the scripted fake runtime receives a
+/// `ConsultationLaunchRequest`, which carries the model rung and provenance but
+/// no mode field, and records the route it was asked to launch rather than a
+/// mode. The assertions below are therefore the strongest observable the
+/// harness provides: the provenance that selects `plan` for Cursor, and the
+/// exact route the launch was admitted on.
+#[tokio::test]
+async fn a_fleet_committee_route_launches_cursor_in_plan_mode() {
+    let realm =
+        consultation_realm("/tmp/kontor-lf04-committee-cursor", &[("Cursor", "cursor")]).await;
+    let world = &realm.world;
+    let fleet = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    write_fleet(world, &fleet);
+    let fleet_hash = ContentHash::of(fleet.as_bytes());
+
+    let invoked =
+        invoke_fleet_committee(&realm, "Fleet cursor reviewer route", "lf04-cursor-invoke").await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let invoked_json = invoked.json();
+    let run = invoked_json["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Committee(
+            kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+        ),
+    );
+    let routes = context["admission"]["routes"]
+        .as_array()
+        .expect("frozen admission routes");
+    let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
+    assert_eq!(
+        reviewer_a["model_route"]["provider"], "cursor",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(
+        reviewer_a["model_route"]["model"], "grok-4.7",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(
+        reviewer_a["source"], "fleet_configuration",
+        "Cursor's plan mode is derived from this provenance: {}",
+        reviewer_a
+    );
+    assert_eq!(
+        reviewer_a["profile_hash"],
+        fleet_hash.as_str(),
+        "{}",
+        reviewer_a
+    );
+
+    let reviewer_seat = invoked_json["seats"]
+        .as_array()
+        .expect("Committee seats")
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "reviewer-a")
+        .expect("the reviewer-a seat");
+    assert!(
+        reviewer_seat["observed_binding"].is_object(),
+        "the fleet-bound reviewer never launched: {}",
+        invoked.body
+    );
+    let binding = SeatBindingId::parse(
+        reviewer_seat["seat_binding_id"]
+            .as_str()
+            .expect("the reviewer-a SeatBinding"),
+    )
+    .expect("a SeatBinding");
+    assert!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::LaunchConsultation(seat) if *seat == binding)),
+        "the fleet-bound reviewer never reached the native runtime"
+    );
+    let launched = world
+        .fake
+        .consultation_route(binding)
+        .expect("the reviewer launched natively");
+    assert_eq!(
+        (launched.provider.0.as_str(), launched.model.0.as_str()),
+        ("cursor", "grok-4.7"),
+        "the runtime was asked for a route other than the fleet's"
+    );
+}
+
+/// LF-04: the Advisor's admission block and its launched route both come from
+/// the live fleet, and survive the materialization that rebuilds the
+/// provenance through `advisor_route_provenance`.
+#[tokio::test]
+async fn a_fleet_bound_advisor_keeps_its_fleet_provenance_through_materialization() {
+    let realm = consultation_realm("/tmp/kontor-lf04-advisor-fleet", &[("Cursor", "cursor")]).await;
+    let world = &realm.world;
+    let mut advisor = advisor_definition(ADVISOR_PROFILE, 1);
+    advisor["allowed_caller_roles"] = serde_json::json!(["lsa"]);
+    let previewed = Call::post(
+        format!("/v1/projects/{}/advisor-profiles:preview", realm.project),
+        &serde_json::json!({"definition": advisor}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let applied = Call::post(
+        format!("/v1/projects/{}/advisor-profiles:apply", realm.project),
+        &serde_json::json!({
+            "definition": advisor,
+            "preview_hash": previewed.json()["preview_hash"],
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("lf04-advisor-apply")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    let fleet = committee_fleet_yaml(&[(&advisor_fleet_key(), "cursor-grok")]);
+    write_fleet(world, &fleet);
+    let fleet_hash = ContentHash::of(fleet.as_bytes());
+    let epic_read = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        realm.project, realm.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic_read.status, 200, "{}", epic_read.body);
+    let invoked = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/advisor-runs:invoke",
+            realm.project, realm.epic
+        ),
+        &serde_json::json!({
+            "profile": {"id": ADVISOR_PROFILE, "version": 1},
+            "topic": "Fleet advisor provenance",
+            "question": "Which route did the live fleet freeze for this Advisor?",
+            "caller_seat_binding_id": realm.caller,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("lf04-advisor-invoke")
+    .send(world)
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let invoked_json = invoked.json();
+    let advisor_run = kontor_core::id::AdvisorRunId::parse(
+        invoked_json["advisor_run_id"]
+            .as_str()
+            .expect("an Advisor run"),
+    )
+    .expect("an Advisor run id");
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Advisor(advisor_run),
+    );
+    assert_eq!(
+        context["admission"]["source"], "fleet_configuration",
+        "the run context does not record the fleet as the route's policy: {context}"
+    );
+    assert_eq!(
+        context["admission"]["profile_hash"],
+        fleet_hash.as_str(),
+        "the admission block is not stamped with the accepted fleet snapshot: {context}"
+    );
+    assert_ne!(
+        context["admission"]["profile_hash"], context["profile_hash"],
+        "the admission hash is the template's, not the fleet's: {context}"
+    );
+
+    let seat = &invoked_json["seats"][0];
+    assert!(
+        seat["observed_binding"].is_object(),
+        "the Advisor seat was not launched: {}",
+        invoked.body
+    );
+    assert_eq!(seat["model_route"]["provider"], "cursor", "{seat}");
+    assert_eq!(seat["model_route"]["model"], "grok-4.7", "{seat}");
+    let binding = SeatBindingId::parse(
+        seat["seat_binding_id"]
+            .as_str()
+            .expect("an Advisor SeatBinding"),
+    )
+    .expect("a SeatBinding");
+    let launched = world
+        .fake
+        .consultation_route(binding)
+        .expect("the Advisor launched natively");
+    assert_eq!(
+        (launched.provider.0.as_str(), launched.model.0.as_str()),
+        ("cursor", "grok-4.7"),
+        "materialization launched a route other than the fleet's"
+    );
+}
+
+/// LF-04: an empty `provider_unavailable` recovery profile takes its candidate
+/// chain from the live fleet when the fleet binds the seat, not from the
+/// pinned template.
+#[tokio::test]
+async fn a_fleet_bound_reviewer_that_loses_its_provider_recovers_on_the_fleet_chain() {
+    let realm = consultation_realm(
+        "/tmp/kontor-lf04-committee-recovery",
+        &[("Cursor", "cursor")],
+    )
+    .await;
+    let world = &realm.world;
+    // The predecessor is placed from the pinned template; the fleet arrives
+    // only for the recovery, which is what makes the successor route evidence
+    // of the chain the recovery consulted.
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Fleet seat recovery provenance",
+        "lf04-recovery-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let readback = committee_readback(world, &realm.project, &run).await;
+    let reviewer_a = readback["seats"]
+        .as_array()
+        .expect("Committee seats")
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "reviewer-a")
+        .unwrap_or_else(|| panic!("the Committee has a reviewer-a seat: {readback}"))
+        .clone();
+    assert_eq!(
+        reviewer_a["model_route"]["provider"], "claude-work",
+        "the template placed reviewer-a before the fleet was written: {reviewer_a}"
+    );
+    let binding = SeatBindingId::parse(
+        reviewer_a["seat_binding_id"]
+            .as_str()
+            .expect("the reviewer-a SeatBinding"),
+    )
+    .expect("a SeatBinding");
+    let predecessor_native = ExternalId::parse(
+        reviewer_a["observed_binding"]["native_id"]
+            .as_str()
+            .expect("the launched reviewer-a native"),
+    )
+    .expect("a native id");
+
+    let fleet = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    write_fleet(world, &fleet);
+    let recovered = Call::post(
+        format!(
+            "/v1/projects/{}/committee-runs/{run}/seats/{binding}/recover",
+            realm.project
+        ),
+        &serde_json::json!({
+            "expected_revision": readback["revision"],
+            "expected_native_id": predecessor_native,
+            "reason": "provider_unavailable",
+            "recovery_profile": [],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("lf04-reviewer-recovery")
+    .send(world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(
+        recovered.json()["active_model_route"]["provider"],
+        "cursor",
+        "the successor did not take the fleet chain's route: {}",
+        recovered.body
+    );
+    assert_eq!(
+        recovered.json()["active_model_route"]["model"],
+        "grok-4.7",
+        "{}",
+        recovered.body
+    );
+    let launched = world
+        .fake
+        .consultation_route(binding)
+        .expect("the successor launched natively");
+    assert_eq!(
+        (launched.provider.0.as_str(), launched.model.0.as_str()),
+        ("cursor", "grok-4.7"),
+        "the recovery launched a route other than the fleet's"
+    );
+    assert_ne!(
+        (launched.provider.0.as_str(), launched.model.0.as_str()),
+        ("claude-personal", "claude-opus-5"),
+        "the recovery walked the pinned template chain"
+    );
+    let recorded = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_recovery_attempt(
+                ProjectId::parse(&realm.project).expect("the project"),
+                ConsultationRunId::Committee(
+                    kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+                ),
+                &RoleSlotId::parse("reviewer-a").expect("a role slot"),
+                &predecessor_native,
+            )
+            .expect("the recovery attempt reads")
+            .expect("the recovery attempt exists")
+            .recovery_profile
+    });
+    assert_eq!(
+        recorded["ordered_rungs"][0]["provider"], "cursor",
+        "the durable recovery policy is not the fleet chain: {recorded}"
+    );
+    assert_eq!(
+        recorded["ordered_rungs"][0]["model"], "grok-4.7",
+        "{}",
+        recorded
+    );
+}
+
+/// LF-04: with no `fleet.yml`, Committee allocation is exactly the pinned
+/// template's, and no placement records a fleet decision.
+#[tokio::test]
+async fn without_fleet_yml_committee_allocation_is_unchanged() {
+    let realm = consultation_realm("/tmp/kontor-lf04-committee-no-fleet", &[]).await;
+    let world = &realm.world;
+    let invoked =
+        invoke_fleet_committee(&realm, "Pinned template allocation", "lf04-no-fleet-invoke").await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Committee(
+            kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+        ),
+    );
+    let routes = context["admission"]["routes"]
+        .as_array()
+        .expect("frozen admission routes");
+    let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
+    assert_eq!(
+        reviewer_a["model_route"]["provider"], "claude-work",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(
+        reviewer_a["model_route"]["model"], "claude-opus-5",
+        "{}",
+        reviewer_a
+    );
+    let reviewer_b = admission_route_for_slot(routes, "reviewer-b");
+    assert_eq!(
+        reviewer_b["model_route"]["provider"], "codex-work",
+        "{}",
+        reviewer_b
+    );
+    assert_eq!(
+        reviewer_b["model_route"]["model"], "gpt-5.6-sol",
+        "{}",
+        reviewer_b
+    );
+    let judge = admission_route_for_slot(routes, "judge");
+    assert_eq!(judge["model_route"]["provider"], "claude-work", "{}", judge);
+    assert_eq!(judge["model_route"]["model"], "claude-opus-5", "{}", judge);
+    for route in [reviewer_a, reviewer_b, judge] {
+        assert_eq!(
+            route["source"], "template",
+            "a template-routed slot was stamped with another policy: {route}"
+        );
+        assert_eq!(
+            route["profile_hash"], context["template_hash"],
+            "the frozen route is not the pinned template revision: {route}"
+        );
+    }
+    assert!(
+        !world.directory.path().join("fleet-decisions").exists(),
+        "a placement without a fleet wrote a fleet decision"
+    );
+}
+
 #[tokio::test]
 async fn a_declared_slot_never_seated_is_filled_and_its_durable_handoff_is_delivered_once() {
     let fixture = seat_fill_world(true).await;
