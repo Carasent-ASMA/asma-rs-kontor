@@ -34616,6 +34616,26 @@ fn committee_fleet_yaml(bindings: &[(&str, &str)]) -> String {
     )
 }
 
+/// One LF-04 `fleet.yml` whose reviewers open on the same provider *family*
+/// (opencode) through two accounts of different vendors: `glm-5.3-flash` is
+/// `zhipu`, `deepseek-flash` is `deepseek`. Vendor independence must be decided
+/// by the vendor the fleet lists, not by the provider family; a family key
+/// collapses both step-1 routes into one and forces the second reviewer onto
+/// its step 2.
+fn committee_family_fleet_yaml(bindings: &[(&str, &str)]) -> String {
+    let bindings: String = bindings
+        .iter()
+        .map(|(key, chain)| format!("  {key}: {chain}\n"))
+        .collect();
+    format!(
+        "schema_version: 1\n\
+         domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work] }}\n  opencode-a: {{ provider: opencode, accounts: [opencode-a] }}\n  opencode-b: {{ provider: opencode, accounts: [opencode-b] }}\n\
+         models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai }}\n  glm: {{ domain: opencode-a, id: openrouter/z-ai/glm-5.3-flash, vendor: zhipu }}\n  deepseek: {{ domain: opencode-b, id: deepseek/deepseek-flash, vendor: deepseek }}\n\
+         chains:\n  opencode-a-then-codex:\n    - [glm]\n    - [sol]\n  opencode-b-then-claude:\n    - [deepseek]\n    - [opus]\n\
+         bindings:\n{bindings}"
+    )
+}
+
 /// Ensure one enabled fake-runtime account whose selectable alias is `provider`.
 async fn ensure_consultation_account(
     world: &World,
@@ -34800,7 +34820,11 @@ fn admission_route_for_slot<'a>(
 async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
     let realm = consultation_realm(
         "/tmp/kontor-lf04-committee-vendors",
-        &[("Cursor", "cursor")],
+        &[
+            ("Cursor", "cursor"),
+            ("OpenCode A", "opencode-a"),
+            ("OpenCode B", "opencode-b"),
+        ],
     )
     .await;
     let world = &realm.world;
@@ -34863,6 +34887,85 @@ async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
     );
     assert_eq!(
         reviewer_b["rank"], 3,
+        "the second reviewer kept a step-1 route: {}",
+        reviewer_b
+    );
+    assert_ne!(
+        reviewer_a["model_route"], reviewer_b["model_route"],
+        "both reviewers were seated on the same vendor"
+    );
+    for route in [reviewer_a, reviewer_b] {
+        assert_eq!(route["source"], "fleet_configuration", "{}", route);
+        assert_eq!(
+            route["profile_hash"],
+            fleet_hash.as_str(),
+            "the frozen route is not stamped with the accepted fleet snapshot: {route}"
+        );
+        assert_ne!(
+            route["profile_hash"], context["template_hash"],
+            "the frozen route is the pinned template revision: {route}"
+        );
+    }
+
+    // A second scenario separates the fleet's *vendor* from the provider
+    // *family*: both reviewers open on the opencode family, but on different
+    // vendors (`zhipu` for GLM, `deepseek` for DeepSeek). Independence must be
+    // decided by the vendor the fleet lists; a key that collapses to the family
+    // seats the second reviewer on its step 2 instead of letting it keep step 1.
+    let fleet = committee_family_fleet_yaml(&[
+        (&committee_fleet_key("reviewer-a"), "opencode-a-then-codex"),
+        (&committee_fleet_key("reviewer-b"), "opencode-b-then-claude"),
+    ]);
+    write_fleet(world, &fleet);
+    let fleet_hash = ContentHash::of(fleet.as_bytes());
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Family versus vendor independence",
+        "lf04-vendors-invoke-2",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Committee(
+            kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+        ),
+    );
+    let routes = context["admission"]["routes"]
+        .as_array()
+        .expect("frozen admission routes");
+    let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
+    let reviewer_b = admission_route_for_slot(routes, "reviewer-b");
+    // Both reviewers keep step 1: the vendors differ even though the provider
+    // family is the same, so neither descends its chain.
+    assert_eq!(
+        reviewer_a["model_route"]["provider"], "opencode-a",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(
+        reviewer_a["model_route"]["model"], "openrouter/z-ai/glm-5.3-flash",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(reviewer_a["rank"], 1, "{}", reviewer_a);
+    assert_eq!(
+        reviewer_b["model_route"]["provider"], "opencode-b",
+        "the second reviewer did not keep its step-1 vendor: {}",
+        reviewer_b
+    );
+    assert_eq!(
+        reviewer_b["model_route"]["model"], "deepseek/deepseek-flash",
+        "{}",
+        reviewer_b
+    );
+    assert_eq!(
+        reviewer_b["rank"], 1,
         "the second reviewer kept a step-1 route: {}",
         reviewer_b
     );
@@ -35089,6 +35192,11 @@ async fn a_fleet_bound_advisor_keeps_its_fleet_provenance_through_materializatio
         (launched.provider.0.as_str(), launched.model.0.as_str()),
         ("cursor", "grok-4.7"),
         "materialization launched a route other than the fleet's"
+    );
+    assert_eq!(
+        world.fake.consultation_route_provenance(binding),
+        Some("fleet_configuration"),
+        "materialization launched the seat without the fleet's provenance"
     );
 }
 

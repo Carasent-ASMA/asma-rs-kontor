@@ -756,6 +756,7 @@ struct FakeState {
     launched_accounts: BTreeMap<AgentRunId, AccountProfileId>,
     launched_prompts: BTreeMap<AgentRunId, BoundedText>,
     consultation_routes: BTreeMap<SeatBindingId, ModelRung>,
+    consultation_route_provenances: BTreeMap<SeatBindingId, &'static str>,
     retired_consultations: BTreeMap<ExternalId, ConsultationSeatRetireRequest>,
     unavailable_providers: BTreeSet<String>,
     provider_fallbacks: BTreeMap<String, ModelRung>,
@@ -1414,6 +1415,7 @@ impl ScriptedFakeRuntime {
                 launched_accounts: BTreeMap::new(),
                 launched_prompts: BTreeMap::new(),
                 consultation_routes: BTreeMap::new(),
+                consultation_route_provenances: BTreeMap::new(),
                 retired_consultations: BTreeMap::new(),
                 unavailable_providers: BTreeSet::new(),
                 provider_fallbacks: BTreeMap::new(),
@@ -2404,6 +2406,16 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn consultation_route(&self, seat: SeatBindingId) -> Option<ModelRung> {
         self.lock().consultation_routes.get(&seat).cloned()
+    }
+
+    /// The provenance source a consultation seat was launched with, as
+    /// `ConsultationRouteSource::as_str` renders it.
+    #[must_use]
+    pub fn consultation_route_provenance(&self, seat: SeatBindingId) -> Option<&'static str> {
+        self.lock()
+            .consultation_route_provenances
+            .get(&seat)
+            .copied()
     }
 
     /// Native identity still held for one active consultation filler.
@@ -3750,6 +3762,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .consultation_routes
             .insert(request.seat_binding_id, request.model_rung.clone());
+        state.consultation_route_provenances.insert(
+            request.seat_binding_id,
+            request.route_provenance.source.as_str(),
+        );
         if let Some(existing) = state.consultations.get(&request.seat_binding_id) {
             return Ok(existing.clone());
         }
