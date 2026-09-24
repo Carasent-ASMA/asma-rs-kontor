@@ -543,6 +543,7 @@ impl Daemon {
             usage_poller.clone(),
             quota_signals,
             github_publication.clone(),
+            Arc::new(crate::fleet::FleetSource::at(&config.state_root)),
         )
         .map_err(|source| StartupError::Applications { source })?;
 

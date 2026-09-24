@@ -399,6 +399,9 @@ fn consultation_route_provenance(
             evidence_hash,
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
         }),
+        "fleet_configuration" => Ok(ConsultationRouteProvenance::fleet_configuration(
+            evidence_hash,
+        )),
         _ => Err(kontor_core::DomainError::invalid(
             "consultation route provenance",
             "the frozen route source is not recognized by this build",
@@ -796,6 +799,12 @@ pub struct Services {
     /// filesystem I/O, and a document that changed mid-flight would classify
     /// two observations of one refusal differently.
     quota_signals: Vec<kontor_accounts::QuotaSignal>,
+    /// The live `fleet.yml` source every placement consults.
+    ///
+    /// A source rather than a snapshot: an operator edit takes effect at the
+    /// next placement with no restart or republish, and an invalid edit keeps
+    /// the last valid snapshot inside the source.
+    fleet: Arc<crate::fleet::FleetSource>,
 }
 
 struct CompletionCommit<'a> {
@@ -833,6 +842,7 @@ impl Services {
     /// ceilings are *not* judged here: [`crate::Daemon::start`] validates them
     /// before it claims a state root, so a refused set stops a start rather than
     /// failing a composition halfway through one.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         realm_id: kontor_core::id::RealmId,
         capacity: CapacityConfig,
@@ -841,6 +851,7 @@ impl Services {
         usage_poller: crate::usage::UsagePoller,
         quota_signals: Vec<kontor_accounts::QuotaSignal>,
         github: Option<Arc<crate::github_publication::GithubPublicationGateway>>,
+        fleet: Arc<crate::fleet::FleetSource>,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
             realm_id,
@@ -857,6 +868,7 @@ impl Services {
             succession_guard: tokio::sync::Mutex::new(()),
             native_lifecycle_guard: tokio::sync::RwLock::new(()),
             quota_signals,
+            fleet,
         }))
     }
 
@@ -8284,8 +8296,11 @@ impl Services {
                     "the logical Core Team seat has no exact native session to reroute",
                 )
             })?;
-        let desired = parse_runtime_model_route(&request.desired_model_route)
-            .map_err(|error| self.refuse_domain(&error))?;
+        let desired = parse_runtime_model_route(
+            &request.desired_model_route,
+            self.fleet.current().as_deref(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
         let (predecessor, successor) = if active.native_identity.native_id
             == request.expected_native_id
             && active.native_identity.generation == request.expected_generation
@@ -12219,11 +12234,11 @@ impl Services {
             let routes = profile
                 .ordered_routes
                 .iter()
-                .map(parse_runtime_model_route)
+                .map(|route| parse_runtime_model_route(route, self.fleet.current().as_deref()))
                 .collect::<kontor_core::DomainResult<Vec<_>>>()
                 .map_err(|error| self.refuse_domain(&error))?;
             for route in &routes {
-                if !model_route_is_catalogued(route) {
+                if !model_route_is_catalogued(route, self.fleet.current().as_deref()) {
                     return Err(self.deny(
                         ApiErrorCode::InvalidRequest,
                         "an initial Committee recovery route is absent from the governed model catalog",
@@ -13028,7 +13043,7 @@ impl Services {
                 serde_json::from_value::<kontor_api::applications::RuntimeModelRouteRequest>(value)
                     .ok()
             })
-            .map(|route| parse_runtime_model_route(&route))
+            .map(|route| parse_runtime_model_route(&route, self.fleet.current().as_deref()))
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?
             .ok_or_else(|| {
@@ -14513,12 +14528,24 @@ fn select_committee_allocation(
     .then_some(selected)
 }
 
-/// Whether one route is exposed by the governed Teams model catalog.
+/// Whether one route is exposed by the governed Teams model catalog or by the
+/// live fleet configuration.
 ///
-/// Explicit initial-admission recovery profiles pass through this same
-/// predicate. That prevents an Admin request from selecting a route omitted
-/// from `/v1/catalog` after quota routing failed.
-pub(crate) fn model_route_is_catalogued(rung: &ModelRung) -> bool {
+/// A route is catalogued when the compiled list accepts it or the current
+/// `fleet.yml` snapshot lists its account alias, model and effort. Explicit
+/// routes — initial-admission recovery profiles, the bridge's named-route
+/// moves, Committee seat recovery — pass through this same predicate, so a
+/// fleet-only model such as Opus 5.5 is nameable without a rebuild.
+/// `/v1/catalog` still advertises only the compiled list (DEF-004).
+pub(crate) fn model_route_is_catalogued(
+    rung: &ModelRung,
+    fleet: Option<&crate::fleet::FleetSnapshot>,
+) -> bool {
+    compiled_route_is_catalogued(rung) || fleet.is_some_and(|fleet| fleet.lists(rung))
+}
+
+/// Whether the compiled model list accepts one route, ignoring the live fleet.
+fn compiled_route_is_catalogued(rung: &ModelRung) -> bool {
     let effort = rung.effort.map(EffortLevel::as_str);
     let effort_is = |allowed: &[&str]| effort.is_none_or(|value| allowed.contains(&value));
     match (rung.provider.0.as_str(), rung.model.0.as_str()) {
@@ -14735,6 +14762,7 @@ fn freeze_seat_model_rung(
 
 fn parse_runtime_model_route(
     route: &RuntimeModelRouteRequest,
+    fleet: Option<&crate::fleet::FleetSnapshot>,
 ) -> kontor_core::DomainResult<ModelRung> {
     if route.provider.trim().is_empty() || route.model.trim().is_empty() {
         return Err(kontor_core::DomainError::invalid(
@@ -14749,7 +14777,7 @@ fn parse_runtime_model_route(
         effort,
     };
     rung.validate()?;
-    if !model_route_is_catalogued(&rung) {
+    if !model_route_is_catalogued(&rung, fleet) {
         return Err(kontor_core::DomainError::invalid(
             "RuntimeModelRouteRequest",
             "the model route is not in the governed catalog",
@@ -14815,7 +14843,7 @@ fn validate_team_draft_routes(request: &TeamDraftRequest) -> kontor_core::Domain
                 model: ModelRef(model.to_owned()),
                 effort,
             };
-            if !model_route_is_catalogued(&rung) {
+            if !model_route_is_catalogued(&rung, None) {
                 return Err(kontor_core::DomainError::invalid(
                     "TeamDraftRequest",
                     "a model rung must use a route in the governed catalog",
@@ -16967,10 +16995,12 @@ impl Services {
                 serde_json::from_str::<CommitteeTemplateSpec>(&revision.definition).is_ok_and(
                     |spec| {
                         spec.validate().is_ok()
-                            && spec
-                                .slots
-                                .iter()
-                                .all(|slot| slot.models.rungs.iter().all(model_route_is_catalogued))
+                            && spec.slots.iter().all(|slot| {
+                                slot.models
+                                    .rungs
+                                    .iter()
+                                    .all(|rung| model_route_is_catalogued(rung, None))
+                            })
                     },
                 )
             })
@@ -23872,7 +23902,7 @@ impl ApplicationOperations for Services {
             .map(|route: &CoreTeamSeatRouteRequest| {
                 Ok((
                     route.role_code.clone(),
-                    parse_runtime_model_route(&route.model_route)?,
+                    parse_runtime_model_route(&route.model_route, self.fleet.current().as_deref())?,
                 ))
             })
             .collect::<kontor_core::DomainResult<_>>()
@@ -24256,10 +24286,16 @@ impl ApplicationOperations for Services {
                 "the SeatBinding is not one of this epic's frozen Core Team roles",
             ));
         }
-        let superseded = parse_runtime_model_route(&request.expected_model_route)
-            .map_err(|error| self.refuse_domain(&error))?;
-        let replacement = parse_runtime_model_route(&request.desired_model_route)
-            .map_err(|error| self.refuse_domain(&error))?;
+        let superseded = parse_runtime_model_route(
+            &request.expected_model_route,
+            self.fleet.current().as_deref(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
+        let replacement = parse_runtime_model_route(
+            &request.desired_model_route,
+            self.fleet.current().as_deref(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
         // Never attempted, by contract rather than by configuration. The wedge
         // this repair exists for is an OpenCode route nothing can launch, and a
         // replacement that reached for it again would recreate the wedge under
@@ -26731,7 +26767,10 @@ impl ApplicationOperations for Services {
                             .recovery_profile
                             .iter()
                             .map(|route| {
-                                let rung = parse_runtime_model_route(route)?;
+                                let rung = parse_runtime_model_route(
+                                    route,
+                                    self.fleet.current().as_deref(),
+                                )?;
                                 if provider_family(&rung.provider.0) == rung.provider.0.as_str() {
                                     return Err(kontor_core::DomainError::invalid(
                                         "RecoverConsultationSeatRequest",
@@ -27063,8 +27102,11 @@ impl ApplicationOperations for Services {
                     "the Committee has no such logical consultation seat",
                 )
             })?;
-        let expected_rung = parse_runtime_model_route(&request.expected_model_route)
-            .map_err(|error| self.refuse_domain(&error))?;
+        let expected_rung = parse_runtime_model_route(
+            &request.expected_model_route,
+            self.fleet.current().as_deref(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
         if seat.occupancy_generation != request.expected_occupancy_generation
             || seat.model_rung != expected_rung
         {
@@ -27155,10 +27197,10 @@ impl ApplicationOperations for Services {
         .map_err(|error| self.refuse_domain(&error))?;
         let mut candidates = Vec::new();
         for route in &request.recovery_profile {
-            let rung =
-                parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?;
+            let rung = parse_runtime_model_route(route, self.fleet.current().as_deref())
+                .map_err(|error| self.refuse_domain(&error))?;
             if provider_family(&rung.provider.0) == rung.provider.0.as_str()
-                || !model_route_is_catalogued(&rung)
+                || !model_route_is_catalogued(&rung, self.fleet.current().as_deref())
             {
                 return Err(self.deny(ApiErrorCode::InvalidRequest,
                     "a materialization recovery profile must name exact catalogued governed aliases"));
@@ -30111,7 +30153,7 @@ impl ApplicationOperations for Services {
         let explicit_model_route = request
             .model_route
             .as_ref()
-            .map(parse_runtime_model_route)
+            .map(|route| parse_runtime_model_route(route, self.fleet.current().as_deref()))
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
         // As with exact admission recovery, the scheduling receipt witnesses
@@ -32919,7 +32961,7 @@ impl ApplicationOperations for Services {
         let explicit_model_route = request
             .model_route
             .as_ref()
-            .map(parse_runtime_model_route)
+            .map(|route| parse_runtime_model_route(route, self.fleet.current().as_deref()))
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
         if let (Some(evidence), Some(route)) = (
@@ -35376,7 +35418,10 @@ impl Services {
                 )
             })?;
         let declared = if let Some(route) = requested_route {
-            vec![parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?]
+            vec![
+                parse_runtime_model_route(route, self.fleet.current().as_deref())
+                    .map_err(|error| self.refuse_domain(&error))?,
+            ]
         } else {
             outlook
                 .effective_rungs(&chain.rungs)
@@ -41780,6 +41825,7 @@ mod tests {
             crate::usage::UsagePoller::discover(directory.path()),
             Vec::new(),
             None,
+            std::sync::Arc::new(crate::fleet::FleetSource::at(directory.path())),
         )
         .expect("services");
         let existing = services.native_activity().expect("existing work started");
@@ -41835,6 +41881,7 @@ mod tests {
             crate::usage::UsagePoller::discover(directory.path()),
             Vec::new(),
             None,
+            std::sync::Arc::new(crate::fleet::FleetSource::at(directory.path())),
         )
         .expect("services");
         let existing = services.native_activity().expect("existing work started");
@@ -42382,7 +42429,7 @@ mod tests {
             ("cursor", "cursor-auto"),
         ] {
             assert_eq!(
-                parse_runtime_model_route(&request(provider, model)),
+                parse_runtime_model_route(&request(provider, model), None),
                 Err(kontor_core::DomainError::invalid(
                     "RuntimeModelRouteRequest",
                     "the model route is not in the governed catalog",
@@ -42391,13 +42438,45 @@ mod tests {
             );
         }
         assert_eq!(
-            parse_runtime_model_route(&request("codex", "gpt-5.6-sol")),
+            parse_runtime_model_route(&request("codex", "gpt-5.6-sol"), None),
             Ok(ModelRung {
                 provider: ProviderRef("codex".to_owned()),
                 model: ModelRef("gpt-5.6-sol".to_owned()),
                 effort: None,
             }),
             "a listed route is still admitted"
+        );
+    }
+
+    /// REQ-010: a route only the live fleet lists — the compiled catalog does
+    /// not carry `claude-opus-5-5` — is nameable exactly while the current
+    /// snapshot lists it, so explicit routes can reach a fleet-only model.
+    #[test]
+    fn a_fleet_listed_route_is_catalogued_only_while_listed() {
+        let request = RuntimeModelRouteRequest {
+            provider: "claude-personal".to_owned(),
+            model: "claude-opus-5-5".to_owned(),
+            effort: Some("xhigh".to_owned()),
+        };
+        assert_eq!(
+            parse_runtime_model_route(&request, None),
+            Err(kontor_core::DomainError::invalid(
+                "RuntimeModelRouteRequest",
+                "the model route is not in the governed catalog",
+            )),
+            "without a fleet the compiled list does not carry the route"
+        );
+        let document = include_str!("../../../config/examples/fleet.yml");
+        let snapshot =
+            crate::fleet::FleetSnapshot::parse(document).expect("the shipped example parses");
+        assert_eq!(
+            parse_runtime_model_route(&request, Some(&snapshot)),
+            Ok(ModelRung {
+                provider: ProviderRef("claude-personal".to_owned()),
+                model: ModelRef("claude-opus-5-5".to_owned()),
+                effort: Some(EffortLevel::Xhigh),
+            }),
+            "a fleet-listed route is nameable while the snapshot lists it"
         );
     }
 
@@ -42433,7 +42512,7 @@ mod tests {
             ),
         ] {
             assert!(
-                parse_runtime_model_route(&route(provider, model, effort)).is_ok(),
+                parse_runtime_model_route(&route(provider, model, effort), None).is_ok(),
                 "approved chain route {provider}/{model}@{effort} is nameable"
             );
         }
@@ -42441,7 +42520,7 @@ mod tests {
         // credential home, never the model.
         for provider in ["codex", "codex-work", "codex-personal"] {
             assert!(
-                parse_runtime_model_route(&route(provider, "gpt-5.6-luna", "max")).is_ok(),
+                parse_runtime_model_route(&route(provider, "gpt-5.6-luna", "max"), None).is_ok(),
                 "{provider} reaches Luna at its ceiling"
             );
         }
@@ -42458,7 +42537,7 @@ mod tests {
             ("opencode", "openrouter/z-ai/glm-5.3-flash", "medium"),
         ] {
             assert_eq!(
-                parse_runtime_model_route(&route(provider, model, effort)),
+                parse_runtime_model_route(&route(provider, model, effort), None),
                 Err(kontor_core::DomainError::invalid(
                     "RuntimeModelRouteRequest",
                     "the model route is not in the governed catalog",

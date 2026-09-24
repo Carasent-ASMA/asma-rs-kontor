@@ -330,6 +330,8 @@ pub enum ConsultationRouteSource {
     MaterializationRecoveryProfile,
     /// Route selected while replacing an already-materialized native filler.
     SeatRecoveryProfile,
+    /// Route listed by the live `fleet.yml` read at placement time.
+    FleetConfiguration,
 }
 
 impl ConsultationRouteSource {
@@ -341,6 +343,7 @@ impl ConsultationRouteSource {
             Self::InitialRecoveryProfile => "initial_recovery_profile",
             Self::MaterializationRecoveryProfile => "materialization_recovery_profile",
             Self::SeatRecoveryProfile => "seat_recovery_profile",
+            Self::FleetConfiguration => "fleet_configuration",
         }
     }
 }
@@ -384,6 +387,22 @@ impl ConsultationRouteProvenance {
             evidence_hash,
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
         }
+    }
+
+    /// Provenance for one route the live fleet configuration selected.
+    #[must_use]
+    pub fn fleet_configuration(evidence_hash: ContentHash) -> Self {
+        Self {
+            source: ConsultationRouteSource::FleetConfiguration,
+            evidence_hash,
+            fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+        }
+    }
+
+    /// Whether the live fleet configuration supplied this route.
+    #[must_use]
+    pub const fn is_fleet_configuration(&self) -> bool {
+        matches!(self.source, ConsultationRouteSource::FleetConfiguration)
     }
 
     /// Whether this is the one risk-accepted initial fallback class.

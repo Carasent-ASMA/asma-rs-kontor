@@ -195,11 +195,21 @@ pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Opti
 /// route under an operator-accepted recovery profile is admitted, never a
 /// template route; the composed consultation MCP remains the only write path
 /// Kontor hands the seat.
+///
+/// A route whose source is the live fleet configuration runs Cursor and
+/// OpenCode in `plan` for any model the owner-only `fleet.yml` lists, except
+/// `cursor`/`auto-smart`, whose vendor is unknown and never eligible for a
+/// reviewer slot. Claude and Codex modes are unchanged. The file accepts the
+/// same risk as the two accepted fallbacks above: `plan` is behavioral
+/// guidance, not an OS-level boundary.
 pub(crate) fn consultation_route_permission_mode(
     rung: &ModelRung,
     provenance: &ConsultationRouteProvenance,
 ) -> RuntimeResult<Option<&'static str>> {
     if built_in_provider(&rung.provider.0) == "cursor" {
+        if provenance.is_fleet_configuration() && rung.model.0 != "auto-smart" {
+            return Ok(Some("plan"));
+        }
         let exact_route = rung.provider.0 == "cursor"
             && rung.model.0 == "gpt-5.6-sol"
             && rung.effort.is_some_and(|effort| effort.as_str() == "xhigh");
@@ -211,6 +221,9 @@ pub(crate) fn consultation_route_permission_mode(
         });
     }
     if rung.provider.0 == "opencode" {
+        if provenance.is_fleet_configuration() {
+            return Ok(Some("plan"));
+        }
         let exact_model = matches!(
             rung.model.0.as_str(),
             "deepseek/deepseek-v4-flash" | "deepseek/deepseek-flash"
@@ -2757,6 +2770,82 @@ mod tests {
             assert!(
                 matches!(error, RuntimeError::PermissionModeUnsupported { .. }),
                 "{case}: {error:?}"
+            );
+        }
+    }
+
+    /// REQ-016: a consultation route whose source is the live fleet
+    /// configuration runs Cursor and OpenCode in `plan` for any model the file
+    /// lists, while Cursor Auto, template routes and unlisted sources stay
+    /// refused and Claude and Codex keep their ordinary modes.
+    #[test]
+    fn a_fleet_route_runs_cursor_and_opencode_consultations_in_plan_mode() {
+        let fleet = ConsultationRouteProvenance::fleet_configuration(ContentHash::of(b"fleet"));
+        let create = |rung: &ModelRung, provenance: &ConsultationRouteProvenance| {
+            PaseoRpc::consultation_agent_create(
+                "request-fleet-route".to_owned(),
+                "wks_1",
+                "/w/epic",
+                rung,
+                provenance,
+                "Reviewer",
+                &labels(),
+                "review without mutation",
+                "seat-secret-value",
+            )
+        };
+        for (rung, case) in [
+            (
+                route("cursor", "grok-4.7", Some(EffortLevel::Xhigh)),
+                "a Cursor fleet route",
+            ),
+            (
+                route(
+                    "opencode",
+                    "openrouter/z-ai/glm-5.3-flash",
+                    Some(EffortLevel::Max),
+                ),
+                "an OpenCode fleet route",
+            ),
+        ] {
+            let request = create(&rung, &fleet).unwrap_or_else(|error| panic!("{case}: {error:?}"));
+            assert_eq!(request.message["config"]["modeId"], "plan", "{case}");
+            assert!(request.message.get("env").is_none());
+        }
+        for (rung, provenance, case) in [
+            (
+                route("cursor", "auto-smart", Some(EffortLevel::Xhigh)),
+                fleet.clone(),
+                "Cursor Auto has no vendor and is never eligible",
+            ),
+            (
+                route("cursor", "grok-4.7", Some(EffortLevel::Xhigh)),
+                template_provenance(),
+                "a template route keeps the fail-closed posture",
+            ),
+        ] {
+            let error = create(&rung, &provenance).expect_err(case);
+            assert!(
+                matches!(error, RuntimeError::PermissionModeUnsupported { .. }),
+                "{case}: {error:?}"
+            );
+        }
+        for (rung, expected) in [
+            (
+                route("claude", "claude-opus-5", Some(EffortLevel::Xhigh)),
+                "default",
+            ),
+            (
+                route("codex", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+                "auto-review",
+            ),
+        ] {
+            let request = create(&rung, &fleet)
+                .unwrap_or_else(|error| panic!("{}: {error:?}", rung.provider.0));
+            assert_eq!(
+                request.message["config"]["modeId"], expected,
+                "{} keeps its ordinary consultation mode under a fleet route",
+                rung.provider.0
             );
         }
     }
