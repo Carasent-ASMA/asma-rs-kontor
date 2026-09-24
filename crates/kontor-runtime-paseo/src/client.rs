@@ -188,10 +188,28 @@ pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Opti
 /// guidance, not OS-level containment; the qualified canary proved shell
 /// writes remain possible. Every other OpenCode provider alias, model,
 /// effort, template route and future recovery source remains refused.
+///
+/// Cursor carries the same class of risk acceptance (operator exception,
+/// 2026-09-23): its `plan` mode refuses direct file tools but, per the Grok 4.6
+/// canary, not shell writes. Only the exact `cursor`/`gpt-5.6-sol`/`xhigh`
+/// route under an operator-accepted recovery profile is admitted, never a
+/// template route; the composed consultation MCP remains the only write path
+/// Kontor hands the seat.
 pub(crate) fn consultation_route_permission_mode(
     rung: &ModelRung,
     provenance: &ConsultationRouteProvenance,
 ) -> RuntimeResult<Option<&'static str>> {
+    if built_in_provider(&rung.provider.0) == "cursor" {
+        let exact_route = rung.provider.0 == "cursor"
+            && rung.model.0 == "gpt-5.6-sol"
+            && rung.effort.is_some_and(|effort| effort.as_str() == "xhigh");
+        if exact_route && provenance.is_operator_accepted_recovery() {
+            return Ok(Some("plan"));
+        }
+        return Err(RuntimeError::PermissionModeUnsupported {
+            provider: rung.provider.0.clone(),
+        });
+    }
     if rung.provider.0 == "opencode" {
         let exact_model = matches!(
             rung.model.0.as_str(),
@@ -2648,6 +2666,99 @@ mod tests {
             error,
             RuntimeError::PermissionModeUnsupported { provider } if provider == "cursor"
         ));
+    }
+
+    /// The 2026-09-23 operator exception admits one exact Cursor route under any
+    /// operator-accepted recovery profile, in `plan`, with the scoped credential
+    /// in the frame only. Template data, other routes, aliases and unaccepted
+    /// fallbacks stay refused before an RPC exists.
+    #[test]
+    fn cursor_consultation_admits_only_the_exact_operator_accepted_recovery_route() {
+        let accepted = |source| ConsultationRouteProvenance {
+            source,
+            evidence_hash: ContentHash::of(b"recovery profile"),
+            fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+        };
+        let create = |rung: &ModelRung, provenance: &ConsultationRouteProvenance| {
+            PaseoRpc::consultation_agent_create(
+                "request-cursor-exception".to_owned(),
+                "wks_1",
+                "/w/epic",
+                rung,
+                provenance,
+                "Reviewer",
+                &labels(),
+                "review without mutation",
+                "seat-secret-value",
+            )
+        };
+        let exact = route("cursor", "gpt-5.6-sol", Some(EffortLevel::Xhigh));
+        for source in [
+            ConsultationRouteSource::InitialRecoveryProfile,
+            ConsultationRouteSource::MaterializationRecoveryProfile,
+            ConsultationRouteSource::SeatRecoveryProfile,
+        ] {
+            let request = create(&exact, &accepted(source))
+                .expect("the operator-accepted Cursor route is constructible");
+            assert_eq!(request.message["config"]["provider"], "cursor");
+            assert_eq!(request.message["config"]["model"], "gpt-5.6-sol");
+            assert_eq!(request.message["config"]["thinkingOptionId"], "xhigh");
+            assert_eq!(request.message["config"]["modeId"], "plan");
+            assert!(request.message.get("env").is_none());
+            assert!(!format!("{request:?}").contains("seat-secret-value"));
+            assert_eq!(
+                request.envelope()["message"]["env"]["KONTOR_AUTH"],
+                "seat-secret-value"
+            );
+        }
+
+        let recovery = accepted(ConsultationRouteSource::SeatRecoveryProfile);
+        let cases = [
+            (exact.clone(), template_provenance(), "template route"),
+            (
+                exact.clone(),
+                ConsultationRouteProvenance {
+                    fallback_disposition: Some(ConsultationFallbackDisposition::Rejected),
+                    ..recovery.clone()
+                },
+                "unaccepted fallback",
+            ),
+            (
+                exact.clone(),
+                ConsultationRouteProvenance {
+                    fallback_disposition: None,
+                    ..recovery.clone()
+                },
+                "missing disposition",
+            ),
+            (
+                route("cursor", "gpt-5.6-sol", Some(EffortLevel::High)),
+                recovery.clone(),
+                "other effort",
+            ),
+            (
+                route("cursor", "gpt-5.6-sol", None),
+                recovery.clone(),
+                "missing effort",
+            ),
+            (
+                route("cursor", "auto-smart", Some(EffortLevel::Xhigh)),
+                recovery.clone(),
+                "other model",
+            ),
+            (
+                route("cursor-work", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+                recovery,
+                "provider alias",
+            ),
+        ];
+        for (rung, provenance, case) in cases {
+            let error = create(&rung, &provenance).expect_err(case);
+            assert!(
+                matches!(error, RuntimeError::PermissionModeUnsupported { .. }),
+                "{case}: {error:?}"
+            );
+        }
     }
 
     /// A leadership seat launches under the autonomy it was *given*, and its

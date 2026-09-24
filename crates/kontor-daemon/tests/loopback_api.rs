@@ -26947,6 +26947,171 @@ async fn an_admin_retires_an_exact_never_dispatched_provider_blocked_seat() {
     assert_eq!(successor.parent_agent_run_id, Some(predecessor_id));
 }
 
+/// A seat that already ran on an account whose login expired is otherwise
+/// pinned to it: the runtime resumes its closed native in place, and the quota
+/// arm needs a usage-limit refusal it never produced. Outage evidence moves it
+/// only together with an explicit Admin route to another provider; either
+/// alone, or a route back onto the disabled provider, leaves it untouched.
+#[tokio::test]
+async fn an_admin_moves_a_seat_that_already_ran_off_a_disabled_provider_only_onto_an_explicit_route()
+ {
+    let world = World::open_empty_with_a_plane().await;
+    world.script(HISTORY_LIVE);
+    assert_eq!(world.daemon.reconcile().await, BarrierState::Open);
+    let (project, epic, _account, seats) = seated_turns(&world, "replace-ran-provider-seat").await;
+    let seat = seats.as_array().expect("the seated roster")[1].clone();
+    let predecessor = seat["agent_run_id"].as_str().expect("the run id");
+    let role_slot = seat["role_slot"].as_str().expect("the role slot");
+    let project_id = ProjectId::parse(&project).expect("a project id");
+    let predecessor_id = AgentRunId::parse(predecessor).expect("an agent run id");
+    let binding = world
+        .daemon
+        .state()
+        .with_store(|store| {
+            store
+                .get_agent_run(project_id, predecessor_id)
+                .expect("the run reads")
+                .expect("the run exists")
+        })
+        .binding
+        .expect("the seat is bound");
+    let run = record_runtime_state_without_quota(
+        &world,
+        project_id,
+        predecessor_id,
+        &binding,
+        ObservedRunState::WaitingInput,
+    );
+    assert_ne!(
+        run.projection.observed,
+        ObservedRunState::Launching,
+        "the seat ran past its launch"
+    );
+    let provider = world
+        .fake
+        .launched_model(predecessor_id)
+        .expect("the frozen model route")
+        .provider
+        .0;
+    world.fake.provider_outage(&provider, None);
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let task_revision = view.json()["tasks"][0]["revision"]
+        .as_u64()
+        .expect("the task revision");
+    let evidence = serde_json::json!({
+        "runtime_binding_id": binding.id,
+        "native_id": binding.identity.native_id,
+        "provider": provider,
+    });
+    let retired = |world: &World| {
+        world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::Retire(id) if *id == binding.id))
+    };
+
+    let without_route = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "unavailable_provider": evidence,
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-ran-provider-without-route")
+    .send(&world)
+    .await;
+    assert_eq!(
+        without_route.code(),
+        "unsupported_capability",
+        "{}",
+        without_route.body
+    );
+    assert!(!retired(&world), "outage evidence alone retires nothing");
+
+    let onto_disabled = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "unavailable_provider": evidence,
+            "model_route": {"provider": provider, "model": "claude-opus-5", "effort": "xhigh"},
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-ran-provider-onto-disabled")
+    .send(&world)
+    .await;
+    assert_eq!(
+        onto_disabled.code(),
+        "invalid_request",
+        "{}",
+        onto_disabled.body
+    );
+    assert!(
+        !retired(&world),
+        "a route back onto the outage retires nothing"
+    );
+
+    let replaced = Call::post(
+        format!("/v1/projects/{project}/agent-runs/{predecessor}/successors:replace"),
+        &serde_json::json!({
+            "role_slot": role_slot,
+            "expected_predecessor_revision": run.revision,
+            "expected_task_revision": task_revision,
+            "binding_generation": binding.identity.generation,
+            "unavailable_provider": evidence,
+            "model_route": {"provider": "claude-personal", "model": "claude-opus-5", "effort": "xhigh"},
+        }),
+    )
+    .signed_as(&world, "admin")
+    .with_key("replace-ran-provider-exact")
+    .send(&world)
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    let successor_id = AgentRunId::parse(
+        replaced.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the successor id"),
+    )
+    .expect("a successor id");
+    assert_eq!(
+        world
+            .fake
+            .launched_model(successor_id)
+            .expect("the successor route")
+            .provider
+            .0,
+        "claude-personal"
+    );
+    assert!(
+        retired(&world),
+        "the exact evidence and route retire the seat"
+    );
+    let predecessor_after = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(project_id, predecessor_id)
+            .expect("the predecessor reads")
+            .expect("the predecessor remains as evidence")
+    });
+    assert_eq!(
+        predecessor_after
+            .terminal
+            .expect("the retirement is durable")
+            .outcome,
+        TerminalOutcome::Cancelled
+    );
+}
+
 /// Label repair is an exact, idempotent mutation of one already-bound native
 /// session. It never invents a replacement run and a stale generation cannot
 /// retarget the operation after a runtime restart.
@@ -33742,6 +33907,84 @@ async fn seat_fill_quota_refusal_leaves_no_reservation_and_same_key_retry_conver
         retried.json()["agent_run_id"]
     );
     assert_eq!(replay.json()["native_id"], retried.json()["native_id"]);
+}
+
+/// A frozen chain whose only provider is exhausted for days leaves an owed
+/// slot unfillable. An Admin may name one catalogued route and its account
+/// instead; an operator may not, and a refused request launches nothing.
+#[tokio::test]
+async fn an_admin_fills_an_owed_slot_on_a_named_route_and_an_operator_cannot() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    let ensured = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": "Cursor", "harness": "fake.runtime", "credential_alias": "fill-cursor",
+            "selectable_providers": ["cursor"], "enabled": true
+        }),
+    )
+    .signed_as(&fixture.world, "admin")
+    .with_key("fill-cursor-account")
+    .send(&fixture.world)
+    .await;
+    assert_eq!(ensured.status, 200, "{}", ensured.body);
+    let cursor_account = AccountProfileId::parse(
+        ensured.json()["account_profile_id"]
+            .as_str()
+            .expect("the account id"),
+    )
+    .expect("an account id");
+    prepare_fake_provider_headroom(&fixture.world, &project).await;
+    let url = format!(
+        "/v1/projects/{}/team-runs/{}/role-slots/audit/seat",
+        fixture.project, fixture.team
+    );
+    let body = serde_json::json!({
+        "expected_task_revision": fixture.task_revision(),
+        "reason": "The frozen audit provider is exhausted; audit on the named route",
+        "model_route": {"provider": "cursor", "model": "gpt-5.6-sol", "effort": "xhigh"},
+    });
+    let calls = fixture.world.fake.calls();
+
+    let by_operator = Call::post(url.clone(), &body)
+        .signed_as(&fixture.world, "operator")
+        .with_key("fill-named-route-operator")
+        .send(&fixture.world)
+        .await;
+    assert_eq!(by_operator.status, 403, "{}", by_operator.body);
+    assert_eq!(
+        fixture.world.fake.calls(),
+        calls,
+        "a refused route launches nothing"
+    );
+
+    let filled = Call::post(url, &body)
+        .signed_as(&fixture.world, "admin")
+        .with_key("fill-named-route-admin")
+        .send(&fixture.world)
+        .await;
+    assert_eq!(filled.status, 200, "{}", filled.body);
+    let audit_id = AgentRunId::parse(filled.json()["agent_run_id"].as_str().expect("run id"))
+        .expect("an agent run id");
+    let launched = fixture
+        .world
+        .fake
+        .launched_model(audit_id)
+        .expect("the launched route");
+    assert_eq!(
+        (launched.provider.0.as_str(), launched.model.0.as_str()),
+        ("cursor", "gpt-5.6-sol")
+    );
+    let audit = fixture
+        .members()
+        .into_iter()
+        .find(|run| run.id == audit_id)
+        .expect("the audit run persisted");
+    assert_eq!(
+        audit.account_profile_id,
+        Some(cursor_account),
+        "the named route's account, not the admission's, is pinned"
+    );
 }
 
 #[tokio::test]

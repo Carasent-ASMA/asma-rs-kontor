@@ -6434,6 +6434,7 @@ export interface components {
              * @description The task revision observed before authorizing materialization.
              */
             expected_task_revision: number;
+            model_route?: null | components["schemas"]["RuntimeModelRouteRequest"];
             /** @description Why the operator is completing this admitted team's missing seat. */
             reason: string;
         };

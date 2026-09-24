@@ -17693,6 +17693,17 @@
             "description": "The task revision observed before authorizing materialization.",
             "minimum": 0
           },
+          "model_route": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+                "description": "Admin-authorized provider/model route for this seat, replacing the\nfrozen chain when none of its rungs can be placed. Absent resolves the\nfrozen chain."
+              }
+            ]
+          },
           "reason": {
             "type": "string",
             "description": "Why the operator is completing this admitted team's missing seat."
@@ -22328,7 +22339,7 @@
               },
               {
                 "$ref": "#/components/schemas/UnavailableProviderSeatRequest",
-                "description": "Exact evidence authorizing retirement of a never-dispatched seat whose\nprovider is temporarily unavailable. Absent preserves normal persistent\nidle-seat reuse."
+                "description": "Exact evidence authorizing retirement of a never-dispatched seat whose\nprovider is temporarily unavailable. A seat that already ran qualifies\nonly together with an explicit `model_route` naming another provider.\nAbsent preserves normal persistent idle-seat reuse."
               }
             ]
           }
