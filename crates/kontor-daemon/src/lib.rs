@@ -45,6 +45,7 @@
 pub mod applications;
 pub mod credentials;
 pub mod endpoint;
+pub mod fleet;
 pub mod github_publication;
 pub mod jira_sync;
 pub mod lock;

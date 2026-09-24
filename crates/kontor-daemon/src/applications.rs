@@ -14758,7 +14758,7 @@ fn parse_runtime_model_route(
     Ok(rung)
 }
 
-fn parse_effort(effort: &str) -> kontor_core::DomainResult<EffortLevel> {
+pub(crate) fn parse_effort(effort: &str) -> kontor_core::DomainResult<EffortLevel> {
     match effort {
         "off" => Ok(EffortLevel::Off),
         "low" => Ok(EffortLevel::Low),
