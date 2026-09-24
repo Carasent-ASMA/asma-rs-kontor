@@ -2797,12 +2797,25 @@ fn atomic_local_gate_and_done_survive_restart_and_replay_after_reopen() {
     );
 }
 
+/// Return the fixture to the exact schema v115 knew, then apply 0115 again.
+///
+/// The fixture is created at the current schema, so every generation after 0115
+/// has to be undone here: the reopen at the end of the v115 test replays them,
+/// and a table or column left behind turns that replay into a collision instead
+/// of a migration. 0116 adds one table, 0117 two columns and 0118 the two
+/// delivery-proof tables; a future migration that adds anything must undo it
+/// here too, and the replay is what notices when it does not.
 fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
     let connection = Connection::open(&fixture.path).expect("migration connection");
     connection
         .execute_batch(
             "DROP TABLE local_command_results;
          DROP TABLE legacy_dispatch_local_confirmation_provenance;
+         DROP TABLE hosted_seat_role_personas;
+         ALTER TABLE runtime_message_issuances DROP COLUMN boundary_epoch;
+         ALTER TABLE runtime_message_issuances DROP COLUMN boundary_sequence;
+         DROP TABLE runtime_message_delivery_proof_steps;
+         DROP TABLE runtime_message_delivery_proofs;
          PRAGMA user_version = 114;",
         )
         .expect("return empty v115 tables to exact prior schema");
