@@ -11,6 +11,8 @@
 //! admitted, and `admit_candidate` cannot produce one — it writes the admission
 //! event whose absence is the precondition.
 
+mod support;
+
 use kontor_core::id::{AgentRunId, CommandReceiptId, ExternalId, parse_utc_timestamp};
 use kontor_core::id::{AggregateRevision, ProjectId, RoleSlotId, TaskId, TeamRunId};
 use kontor_core::repository::{AdoptionWrite, RepositoryError, StoredTeamRunAdmissionAdoption};
@@ -28,7 +30,7 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
-        let directory = TempDir::new().expect("a temporary directory");
+        let directory = support::state_root();
         let store =
             SqliteStore::open(&directory.path().join("kontor.db")).expect("the store opens");
         Self { directory, store }

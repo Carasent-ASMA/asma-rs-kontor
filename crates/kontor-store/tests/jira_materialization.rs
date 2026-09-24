@@ -1,5 +1,7 @@
 //! Durable Jira materialization and activation behavior.
 
+mod support;
+
 use kontor_core::id::{
     AggregateRevision, CanonicalDocument, CommandReceiptId, ConnectorKey, ContentHash, ExternalId,
     IdempotencyKey, MiniProjectId, ProjectId, TaskId, TicketLinkId, Timestamp,
@@ -82,7 +84,7 @@ fn seed_named_graph(
 
 #[test]
 fn activation_requires_every_confirmed_binding_and_survives_readback() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -365,7 +367,7 @@ fn activation_requires_every_confirmed_binding_and_survives_readback() {
 
 #[test]
 fn confirmation_adopts_an_exact_existing_task_binding_after_transport_recovery() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let store = SqliteStore::open(&root.path().join("kontor.db")).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
     let batch_id = external(uuid::Uuid::now_v7().to_string());
@@ -446,7 +448,7 @@ fn confirmation_adopts_an_exact_existing_task_binding_after_transport_recovery()
 
 #[test]
 fn confirmation_adopts_a_migrated_legacy_jira_alias_binding() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -555,7 +557,7 @@ fn confirmation_adopts_a_migrated_legacy_jira_alias_binding() {
 
 #[test]
 fn a_confirmed_epic_binding_cannot_be_replaced_by_a_later_batch() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let store = SqliteStore::open(&root.path().join("kontor.db")).expect("store opens");
     let (project_id, epic_id, _, now) = seed_graph(&store);
 
@@ -656,7 +658,7 @@ fn a_confirmed_epic_binding_cannot_be_replaced_by_a_later_batch() {
 
 #[test]
 fn planning_refuses_a_non_exact_item_set_without_persisting_a_partial_batch() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -716,7 +718,7 @@ fn planning_refuses_a_non_exact_item_set_without_persisting_a_partial_batch() {
 
 #[test]
 fn link_recovery_adopts_the_original_pending_create_batch_in_place() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -942,7 +944,7 @@ fn link_recovery_adopts_the_original_pending_create_batch_in_place() {
 
 #[test]
 fn recovery_adopts_exact_non_overlapping_legacy_batch_fragments_without_rewriting_them() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, first_task_id, now) = seed_graph(&store);
@@ -1276,7 +1278,7 @@ fn recovery_adopts_exact_non_overlapping_legacy_batch_fragments_without_rewritin
 
 #[test]
 fn recovery_postcondition_failure_rolls_back_ledger_and_legacy_items() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, _task_id, now) = seed_graph(&store);
@@ -1397,7 +1399,7 @@ fn recovery_postcondition_failure_rolls_back_ledger_and_legacy_items() {
 
 #[test]
 fn a_safe_link_batch_can_recover_the_scope_of_an_unconfirmed_create_batch() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let store = SqliteStore::open(&root.path().join("kontor.db")).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
     let create_batch_id = external(uuid::Uuid::now_v7().to_string());
@@ -1699,7 +1701,7 @@ fn confirm_epic_and_task(
 
 #[test]
 fn a_same_issue_rename_moves_the_key_without_moving_the_subject() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -1808,7 +1810,7 @@ fn a_same_issue_rename_moves_the_key_without_moving_the_subject() {
 
 #[test]
 fn a_different_immutable_issue_cannot_take_over_a_confirmed_binding() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -1880,7 +1882,7 @@ fn a_different_immutable_issue_cannot_take_over_a_confirmed_binding() {
 
 #[test]
 fn a_binding_without_an_immutable_issue_stays_fail_closed_for_renames() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -1938,7 +1940,7 @@ fn a_binding_without_an_immutable_issue_stays_fail_closed_for_renames() {
 
 #[test]
 fn a_canonical_task_key_cannot_be_changed_by_direct_sql() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -2008,7 +2010,7 @@ fn a_canonical_task_key_cannot_be_changed_by_direct_sql() {
 
 #[test]
 fn two_direct_sql_updates_cannot_forge_the_tail_of_a_proven_rename() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -2073,7 +2075,7 @@ fn two_direct_sql_updates_cannot_forge_the_tail_of_a_proven_rename() {
 
 #[test]
 fn resolution_is_project_scoped_and_never_reaches_a_foreign_projects_binding() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -2113,7 +2115,7 @@ fn resolution_is_project_scoped_and_never_reaches_a_foreign_projects_binding() {
 
 #[test]
 fn an_ambiguous_cross_ledger_key_is_a_typed_conflict_rather_than_a_backend_error() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -2156,7 +2158,7 @@ fn an_ambiguous_cross_ledger_key_is_a_typed_conflict_rather_than_a_backend_error
 
 #[test]
 fn resolution_returns_the_immutable_kontor_uuid_and_reads_legacy_state_without_writing() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -2255,7 +2257,7 @@ fn binding_fingerprint(path: &std::path::Path, project_id: ProjectId) -> Vec<Str
 
 #[test]
 fn a_confirmed_binding_and_its_immutable_issue_survive_a_backup_and_restore() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -2319,7 +2321,7 @@ fn a_confirmed_binding_and_its_immutable_issue_survive_a_backup_and_restore() {
 
 #[test]
 fn two_issues_racing_for_one_key_settle_on_exactly_one_typed_winner() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -2443,7 +2445,7 @@ fn confirm_epic_only(
 
 #[test]
 fn a_uniqueness_violation_establishing_an_immutable_issue_is_a_typed_conflict() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, first_epic, _task_id, now) = seed_graph(&store);
@@ -2526,7 +2528,7 @@ fn a_uniqueness_violation_establishing_an_immutable_issue_is_a_typed_conflict() 
 #[test]
 fn a_legacy_exact_replay_cannot_claim_an_issue_already_bound_in_the_other_ledger() {
     for (legacy_subject, contested_from) in [("epic", "ASMA-2"), ("task", "ASMA-1")] {
-        let root = tempfile::tempdir().expect("state root");
+        let root = support::state_root();
         let path = root.path().join("kontor.db");
         let store = SqliteStore::open(&path).expect("store opens");
         let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -2607,7 +2609,7 @@ fn a_legacy_exact_replay_cannot_claim_an_issue_already_bound_in_the_other_ledger
 
 #[test]
 fn a_committed_rename_is_never_reported_as_a_failure_by_its_own_caller() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -2710,7 +2712,7 @@ fn a_committed_rename_is_never_reported_as_a_failure_by_its_own_caller() {
 
 #[test]
 fn a_rename_reports_what_it_committed_even_when_the_row_moves_underneath_it() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -2772,7 +2774,7 @@ fn a_rename_reports_what_it_committed_even_when_the_row_moves_underneath_it() {
 
 #[test]
 fn a_stale_task_rename_authority_cannot_restore_an_earlier_destination() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -2851,7 +2853,7 @@ fn a_stale_task_rename_authority_cannot_restore_an_earlier_destination() {
 
 #[test]
 fn a_stale_epic_rename_authority_cannot_restore_an_earlier_destination() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -2902,7 +2904,7 @@ fn a_stale_epic_rename_authority_cannot_restore_an_earlier_destination() {
 
 #[test]
 fn a_task_key_cycle_does_not_reactivate_the_authority_of_an_earlier_occurrence() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -2983,7 +2985,7 @@ fn a_task_key_cycle_does_not_reactivate_the_authority_of_an_earlier_occurrence()
 
 #[test]
 fn an_epic_key_cycle_does_not_reactivate_the_authority_of_an_earlier_occurrence() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -3026,7 +3028,7 @@ fn an_epic_key_cycle_does_not_reactivate_the_authority_of_an_earlier_occurrence(
 
 #[test]
 fn a_rewound_rename_sequence_cannot_reactivate_spent_task_authority() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);
@@ -3092,7 +3094,7 @@ fn a_rewound_rename_sequence_cannot_reactivate_spent_task_authority() {
 
 #[test]
 fn a_rewound_rename_sequence_cannot_reactivate_spent_epic_authority() {
-    let root = tempfile::tempdir().expect("state root");
+    let root = support::state_root();
     let path = root.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store opens");
     let (project_id, epic_id, task_id, now) = seed_graph(&store);

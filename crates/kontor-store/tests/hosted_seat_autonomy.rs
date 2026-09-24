@@ -14,6 +14,8 @@
 //! autonomy is re-resolved from configuration proves nothing about which is
 //! running, so each one moves the "plane default" after the seat exists.
 
+mod support;
+
 use kontor_core::id::{
     ExternalId, ExternalName, MiniProjectId, ProjectId, RoleCode, RoleSlotId, RuntimeKindKey,
     SeatBindingId, Timestamp, TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
@@ -70,7 +72,7 @@ struct Fixture {
 
 impl Fixture {
     fn build() -> Self {
-        let home = TempDir::new().expect("a temporary directory");
+        let home = support::state_root();
         let db_path = home.path().join("kontor.db");
         let store = SqliteStore::open(&db_path).expect("the store opens");
         let project_id = ProjectId::generate();
