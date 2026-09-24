@@ -410,6 +410,8 @@ fn check_value(
         ArgType::ProjectId
         | ArgType::MiniProjectId
         | ArgType::TaskId
+        | ArgType::EpicSelector
+        | ArgType::TaskSelector
         | ArgType::TeamRunId
         | ArgType::AgentRunId
         | ArgType::AccountProfileId
@@ -564,6 +566,12 @@ fn parse_domain(ty: ArgType, text: &str) -> Result<(), kontor_core::DomainError>
         ArgType::ProjectId => id::ProjectId::parse(text).map(drop),
         ArgType::MiniProjectId => id::MiniProjectId::parse(text).map(drop),
         ArgType::TaskId => id::TaskId::parse(text).map(drop),
+        // A selector is refused here for exactly the reason the note below
+        // gives: a malformed key must not travel to the daemon. Which
+        // subject a well-formed key names is the store's decision, not
+        // this layer's, so only the spelling is checked.
+        ArgType::EpicSelector => kontor_core::selector::EpicSelector::parse(text).map(drop),
+        ArgType::TaskSelector => kontor_core::selector::TaskSelector::parse(text).map(drop),
         ArgType::TeamRunId => id::TeamRunId::parse(text).map(drop),
         ArgType::AgentRunId => id::AgentRunId::parse(text).map(drop),
         ArgType::AccountProfileId => id::AccountProfileId::parse(text).map(drop),
@@ -627,6 +635,51 @@ mod tests {
     }
 
     #[test]
+    fn a_subject_selector_takes_either_spelling_and_nothing_else() {
+        // Both accepted spellings.
+        assert!(parse_domain(ArgType::TaskSelector, UUID).is_ok());
+        assert!(parse_domain(ArgType::TaskSelector, "ASMA-8119").is_ok());
+        assert!(parse_domain(ArgType::EpicSelector, UUID).is_ok());
+        assert!(parse_domain(ArgType::EpicSelector, "ASMA-8049").is_ok());
+        // Case is never repaired, and a bare project key is not a key.
+        assert!(parse_domain(ArgType::TaskSelector, "asma-8119").is_err());
+        assert!(parse_domain(ArgType::TaskSelector, "ASMA").is_err());
+        assert!(parse_domain(ArgType::TaskSelector, "ASMA-0").is_err());
+        assert!(parse_domain(ArgType::TaskSelector, "").is_err());
+        // Widening the subject must not have widened the plain id types.
+        assert!(parse_domain(ArgType::TaskId, "ASMA-8119").is_err());
+        assert!(parse_domain(ArgType::MiniProjectId, "ASMA-8049").is_err());
+    }
+
+    #[test]
+    fn a_confirmed_key_fills_the_same_route_as_a_uuid() {
+        // The point of the selector: one route, either spelling, no by-key twin.
+        let request = build(
+            spec("kontor_task_get"),
+            &serde_json::json!({ "project_id": UUID, "task_id": "ASMA-8119" }),
+        )
+        .expect("a confirmed key is a well-formed call");
+        assert_eq!(request.method, Method::Get);
+        assert_eq!(
+            request.path,
+            format!("/v1/projects/{UUID}/tasks/ASMA-8119"),
+            "the key is passed through for the server to resolve"
+        );
+    }
+
+    #[test]
+    fn a_malformed_key_never_reaches_the_daemon() {
+        let refusal = build(
+            spec("kontor_task_get"),
+            &serde_json::json!({ "project_id": UUID, "task_id": "asma-8119" }),
+        );
+        assert!(
+            refusal.is_err(),
+            "a lowercase key is refused before dispatch"
+        );
+    }
+
+    #[test]
     fn a_legacy_epic_code_is_bounded_without_weakening_the_replacement() {
         assert!(parse_domain(ArgType::LegacyEpicBacklogCode, "QNR-P1").is_ok());
         assert!(parse_domain(ArgType::LegacyEpicBacklogCode, "QNR P1").is_err());
@@ -666,6 +719,84 @@ mod tests {
         assert_eq!(request.path, format!("/v1/projects/{UUID}/tasks/{UUID}"));
         assert!(request.body.is_none(), "a read carries no body");
         assert!(request.idempotency_key.is_none());
+    }
+
+    /// The governed supersession is reachable, and reachable exactly once.
+    ///
+    /// A route that no tool maps is a route no Lead can reach through the only
+    /// surface they have, and the parity gate exists to catch that. This proves
+    /// the other half: that the mapping actually builds the request the daemon
+    /// serves — path substituted, idempotency key carried out of the body, and
+    /// every fence the operation refuses without present where the contract
+    /// puts it.
+    #[test]
+    fn a_launch_intent_supersession_is_reachable_through_the_mcp_route() {
+        let request = build(
+            spec("kontor_core_team_launch_intent_supersede"),
+            &serde_json::json!({
+                "project_id": UUID,
+                "epic_id": UUID,
+                "idempotency_key": "asma-7869-supersede-1",
+                "expected_revision": 1,
+                "seat_binding_id": UUID,
+                "expected_seat_binding_revision": 2,
+                "occupancy_generation": 1,
+                "expected_model_route": {
+                    "provider": "opencode", "model": "deepseek/deepseek-flash", "effort": "max"
+                },
+                "expected_prepared_at": "2026-09-18T20:50:33.373705Z",
+                "desired_model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }
+            }),
+        )
+        .expect("the supported MCP route accepts a governed supersession");
+        assert_eq!(
+            request.path,
+            format!("/v1/projects/{UUID}/epics/{UUID}/core-team/launch-intents:supersede")
+        );
+        // The key is an authority fence, not a body field: an exactly-once
+        // operation whose key travelled in the body would be re-executed by a
+        // retry that the daemon never recognized as one.
+        assert_eq!(
+            request.idempotency_key.as_deref(),
+            Some("asma-7869-supersede-1")
+        );
+        let body = request.body.as_ref().expect("a write carries its body");
+        assert!(body.get("idempotency_key").is_none());
+        for fence in [
+            "expected_revision",
+            "seat_binding_id",
+            "expected_seat_binding_revision",
+            "occupancy_generation",
+            "expected_model_route",
+            "expected_prepared_at",
+            "desired_model_route",
+        ] {
+            assert!(body.get(fence).is_some(), "{fence} did not reach the body");
+        }
+    }
+
+    /// Exactly one tool maps this operation.
+    ///
+    /// Two would make a Lead's reachable authority depend on which name they
+    /// happened to call, and the tier assertion would only hold for whichever
+    /// one the reviewer looked at.
+    #[test]
+    fn exactly_one_tool_maps_the_launch_intent_supersession() {
+        let mapped: Vec<&ToolSpec> = REGISTRY
+            .iter()
+            .filter(|tool| {
+                tool.path == "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede"
+            })
+            .collect();
+        assert_eq!(mapped.len(), 1, "the supersession must map exactly once");
+        assert_eq!(mapped[0].name, "kontor_core_team_launch_intent_supersede");
+        assert_eq!(mapped[0].tier, crate::CallerTier::Admin);
+        assert!(
+            !CLI_ONLY.contains(&mapped[0].name),
+            "a governed recovery operation must stay advertised, not CLI-only"
+        );
     }
 
     #[test]
@@ -984,6 +1115,71 @@ mod tests {
             "a settlement body would be a client naming how a run ended"
         );
         assert_eq!(request.idempotency_key.as_deref(), Some("settle-1"));
+    }
+
+    #[test]
+    fn correlation_challenge_preview_and_apply_route_exactly_once_through_the_generic_client() {
+        let evidence_hash = "a".repeat(64);
+        let report_checksum = "b".repeat(64);
+        let challenge = serde_json::json!({
+            "role_slot": "swe",
+            "expected_task_revision": 2,
+            "expected_run_revision": 6,
+            "artifact": "high-scope-record",
+            "evidence_revision_id": UUID,
+            "evidence_content_hash": evidence_hash,
+            "report_checksum": report_checksum
+        });
+        let preview = build(
+            spec("kontor_turn_correlation_challenge_preview"),
+            &serde_json::json!({
+                "project_id": UUID,
+                "agent_run_id": UUID,
+                "role_slot": challenge["role_slot"],
+                "expected_task_revision": challenge["expected_task_revision"],
+                "expected_run_revision": challenge["expected_run_revision"],
+                "artifact": challenge["artifact"],
+                "evidence_revision_id": challenge["evidence_revision_id"],
+                "evidence_content_hash": challenge["evidence_content_hash"],
+                "report_checksum": challenge["report_checksum"]
+            }),
+        )
+        .expect("the read-only preview builds");
+        assert_eq!(
+            preview.path,
+            format!("/v1/projects/{UUID}/agent-runs/{UUID}/turn-correlation:challenge-preview")
+        );
+        assert!(preview.idempotency_key.is_none());
+        assert!(
+            preview
+                .body
+                .as_ref()
+                .is_some_and(|body| body.get("message_position").is_none())
+        );
+
+        let apply = build(
+            spec("kontor_turn_correlation_challenge_apply"),
+            &serde_json::json!({
+                "project_id": UUID,
+                "agent_run_id": UUID,
+                "idempotency_key": "challenge-apply-once",
+                "challenge": challenge,
+                "preview_hash": "c".repeat(64)
+            }),
+        )
+        .expect("the preview-bound apply builds");
+        assert_eq!(
+            apply.path,
+            format!("/v1/projects/{UUID}/agent-runs/{UUID}/turn-correlation:challenge-apply")
+        );
+        assert_eq!(
+            apply.idempotency_key.as_deref(),
+            Some("challenge-apply-once")
+        );
+        assert_eq!(
+            apply.body.as_ref().and_then(|body| body.get("challenge")),
+            Some(&challenge)
+        );
     }
 
     #[test]

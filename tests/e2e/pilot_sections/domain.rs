@@ -2466,6 +2466,8 @@ fn read_response(
     holder: Option<&ExternalId>,
 ) -> JiraResponse {
     JiraResponse {
+        // A hand-built wire answer observed nothing of its own.
+        observed_identity: None,
         schema_version: WIRE_SCHEMA_VERSION,
         operation,
         effective_operation: operation,
@@ -2491,6 +2493,8 @@ fn read_response(
 fn write_response(target: &StatusSelector) -> JiraResponse {
     let holder = principal().account_id;
     JiraResponse {
+        // A hand-built wire answer observed nothing of its own.
+        observed_identity: None,
         operation: JiraOperation::Apply,
         effective_operation: JiraOperation::Apply,
         outcome: JiraOutcome::Applied,

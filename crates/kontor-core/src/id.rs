@@ -71,6 +71,15 @@ pub const MAX_EXTERNAL_ID_LEN: usize = 256;
 pub const MAX_TEXT_LEN: usize = 65_536;
 /// Maximum serialized size of a canonical document, in bytes.
 pub const MAX_CANONICAL_BYTES: usize = 1_048_576;
+
+/// The rule [`CanonicalDocument::from_value`] reports for a document over
+/// [`MAX_CANONICAL_BYTES`].
+///
+/// Named because a caller that must tell *this* refusal apart from the other
+/// `CanonicalDocument` invariants — sensitive material, a non-finite number, a
+/// missing `schema_version` — would otherwise have to match a duplicated string
+/// literal, and would silently stop matching the day the wording changed.
+pub const OVER_CANONICAL_CEILING: &str = "larger than 1 MiB once canonicalized";
 /// Maximum nesting depth of a canonical document.
 pub const MAX_CANONICAL_DEPTH: usize = 32;
 
@@ -1353,7 +1362,7 @@ impl CanonicalDocument {
         if json.len() > MAX_CANONICAL_BYTES {
             return Err(DomainError::invalid(
                 "CanonicalDocument",
-                "larger than 1 MiB once canonicalized",
+                OVER_CANONICAL_CEILING,
             ));
         }
         let hash = ContentHash::of(json.as_bytes());

@@ -56,6 +56,12 @@ fn sample(ty: ArgType, name: &str) -> serde_json::Value {
         ArgType::ProjectId
         | ArgType::MiniProjectId
         | ArgType::TaskId
+        // A selector is sampled as a UUID: these tests assert cardinality and
+        // routing, and the UUID spelling is the one that resolves without a
+        // seeded Jira binding. That it still works here is the compatibility
+        // guarantee ASMA-8119 owes every existing caller.
+        | ArgType::EpicSelector
+        | ArgType::TaskSelector
         | ArgType::TeamRunId
         | ArgType::AgentRunId
         | ArgType::AccountProfileId

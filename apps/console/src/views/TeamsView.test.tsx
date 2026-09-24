@@ -363,7 +363,7 @@ describe('<TeamsView>', () => {
     // Only that provider's routes are on offer, and the effort that was pinned
     // is not one this route exposes, so it moved to one that is.
     const offered = within(within(rung).getByLabelText('Model')).getAllByRole('option')
-    expect(offered.map((option) => option.textContent)).toEqual(['DeepSeek V4 Flash'])
+    expect(offered.map((option) => option.textContent)).toEqual(['DeepSeek V4.1 Flash'])
     // The live ladder for this route is low/high/max — `xhigh` is not on it, so
     // the pin moved to a level the route actually exposes.
     expect(within(rung).getByLabelText('Effort')).toHaveValue('low')
