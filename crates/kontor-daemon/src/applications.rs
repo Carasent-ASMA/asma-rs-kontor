@@ -14545,6 +14545,9 @@ pub(crate) fn model_route_is_catalogued(rung: &ModelRung) -> bool {
             effort_is(&["low", "medium", "high", "xhigh", "max"])
         }
         ("cursor", "auto-smart") => effort_is(&["low", "medium", "high", "xhigh"]),
+        // Operator exception 2026-09-23: Codex's model through the Cursor
+        // plan, for audit and review while Codex accounts are exhausted.
+        ("cursor", "gpt-5.6-sol") => effort_is(&["low", "medium", "high", "xhigh", "max"]),
         ("opencode", "openrouter/z-ai/glm-5.3-flash") => effort_is(&["low", "high", "max"]),
         ("opencode", "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free") => {
             effort_is(&["medium", "high"])
@@ -19369,6 +19372,21 @@ impl ApplicationOperations for Services {
                 "pricing": [], "degradedLane": false
             }));
         }
+        models.push(serde_json::json!({
+            "id": "gpt-5.6-sol", "label": "GPT-5.6 Sol via Cursor", "provider": "cursor",
+            "isDefault": false,
+            "contextWindow": { "value": null, "provenance": unverified },
+            "efforts": {
+                "value": ["low", "medium", "high", "xhigh", "max"],
+                "provenance": {
+                    "state": "live",
+                    "reviewRef": "operator-exception-2026-09-23",
+                    "citation": "Paseo list_models: cursor",
+                    "observedAt": "2026-09-23"
+                }
+            },
+            "pricing": [], "degradedLane": false
+        }));
         // Each Codex account alias serves the same routes as the family
         // provider: the alias changes the credential home, never the model.
         for alias in ["codex-work", "codex-personal"] {
@@ -30090,12 +30108,18 @@ impl ApplicationOperations for Services {
             )
         })?;
         let epic = self.epic_row(project_id, epic_id)?;
+        let explicit_model_route = request
+            .model_route
+            .as_ref()
+            .map(parse_runtime_model_route)
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?;
         // As with exact admission recovery, the scheduling receipt witnesses
         // the owning epic; its canonical intent narrows the effect to one slot.
         let target = AggregateRef::MiniProject {
             mini_project_id: epic_id,
         };
-        let intent = self.intent(&serde_json::json!({
+        let mut intent_document = serde_json::json!({
             "schema_version": 1,
             "operation": "team_run_seat_fill",
             "project_id": project_id,
@@ -30103,7 +30127,13 @@ impl ApplicationOperations for Services {
             "role_slot_id": slot.id,
             "expected_task_revision": request.expected_task_revision,
             "reason": request.reason,
-        }))?;
+        });
+        // Present only when named, so fills recorded before routes existed
+        // replay under their original intent.
+        if let Some(route) = request.model_route.as_ref() {
+            intent_document["model_route"] = serde_json::json!(route);
+        }
+        let intent = self.intent(&intent_document)?;
         self.replayed(key, &intent, Some(&target))?;
         let bound = self
             .current_delivery_role_leaf(project_id, team_run_id, slot.id.as_role_key())?
@@ -30291,6 +30321,22 @@ impl ApplicationOperations for Services {
                 })?;
             let scope =
                 self.execution_scope(project_id, epic_id, Some(task.id), adapter.as_ref())?;
+            let route_override = explicit_model_route
+                .map(|route| {
+                    self.place_explicit_route(project_id, task.id, route, adapter.as_ref())
+                })
+                .transpose()?;
+            if let Some((_, account)) = route_override.as_ref()
+                && self
+                    .current_delivery_role_leaf(project_id, team_run_id, slot.id.as_role_key())?
+                    .and_then(|run| run.account_profile_id)
+                    .is_some_and(|claimed| claimed != *account)
+            {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the slot's queued run already claims a different provider account",
+                ));
+            }
             // The placement is proved *before* the receipt exists.
             //
             // Recording first and proving afterwards leaves a durable receipt
@@ -30328,7 +30374,10 @@ impl ApplicationOperations for Services {
                 cwd: &task_root,
                 now: kontor_api::now(),
             };
-            applied = self.fill_slot(&seating, &slot.id, None).await?.applied;
+            applied = self
+                .fill_slot(&seating, &slot.id, None, route_override.as_ref())
+                .await?
+                .applied;
             self.retry_undelivered_dispatches().await?;
         }
         let run = self
@@ -32873,6 +32922,16 @@ impl ApplicationOperations for Services {
             .map(parse_runtime_model_route)
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
+        if let (Some(evidence), Some(route)) = (
+            request.unavailable_provider.as_ref(),
+            request.model_route.as_ref(),
+        ) && route.provider == evidence.provider
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the successor route names the provider evidenced as unavailable",
+            ));
+        }
 
         let runtime_kind = binding.as_ref().map_or_else(
             || self.node_runtime_kind(),
@@ -33024,7 +33083,10 @@ impl ApplicationOperations for Services {
                     project_id,
                     &predecessor,
                     binding,
-                    request.unavailable_provider.as_ref(),
+                    request
+                        .unavailable_provider
+                        .as_ref()
+                        .map(|evidence| (evidence, request.model_route.is_some())),
                     request
                         .quota_exhausted
                         .as_ref()
@@ -36499,7 +36561,10 @@ impl Services {
         project_id: ProjectId,
         predecessor: &kontor_core::repository::AgentRun,
         binding: &RuntimeBinding,
-        unavailable: Option<&kontor_api::applications::UnavailableProviderSeatRequest>,
+        unavailable: Option<(
+            &kontor_api::applications::UnavailableProviderSeatRequest,
+            bool,
+        )>,
         quota: Option<(&kontor_api::applications::QuotaExhaustedSeatRequest, bool)>,
         now: Timestamp,
     ) -> Result<kontor_core::repository::AgentRun, ApiError> {
@@ -36520,7 +36585,7 @@ impl Services {
                     "this daemon is not configured with the predecessor's runtime",
                 )
             })?;
-        if let Some(evidence) = unavailable {
+        if let Some((evidence, operator_rerouted)) = unavailable {
             if evidence.runtime_binding_id != binding.id.to_string()
                 || evidence.native_id != binding.identity.native_id.as_str()
             {
@@ -36530,15 +36595,20 @@ impl Services {
                 ));
             }
             ExternalId::parse(&evidence.provider).map_err(|error| self.refuse_domain(&error))?;
-            if predecessor.projection.lifecycle != kontor_core::state::RunLifecycle::Launching
-                || predecessor.projection.desired
-                    != kontor_core::state::DesiredRunState::RunRequested
-                || predecessor.projection.observed
-                    != kontor_core::state::ObservedRunState::Launching
-            {
+            let evidenced_only_at_launch = predecessor.projection.lifecycle
+                == kontor_core::state::RunLifecycle::Launching
+                && predecessor.projection.desired
+                    == kontor_core::state::DesiredRunState::RunRequested
+                && predecessor.projection.observed
+                    == kontor_core::state::ObservedRunState::Launching;
+            // A seat that already ran may leave an operator-disabled provider
+            // (an account whose login expired or was switched off) only onto an
+            // explicit Admin route. The runtime still proves the session idle
+            // with no pending permission before it archives anything.
+            if !evidenced_only_at_launch && !operator_rerouted {
                 return Err(self.deny(
                     ApiErrorCode::UnsupportedCapability,
-                    "provider-unavailable retirement is limited to a seat evidenced only at launch",
+                    "provider-unavailable retirement of a seat that already ran requires an explicit Admin model route",
                 ));
             }
             if adapter.provider_available(&evidence.provider) {
@@ -36585,7 +36655,7 @@ impl Services {
             // before persisting that readback. The fresh archive evidence is
             // sufficient; repeating the native effect is unnecessary.
             liveness
-        } else if let Some(evidence) = unavailable {
+        } else if let Some((evidence, _)) = unavailable {
             adapter
                 .retire_unavailable_provider(issued.snapshot(), &evidence.provider, now)
                 .await
@@ -37347,7 +37417,10 @@ impl Services {
             {
                 continue;
             }
-            filled.push(self.fill_slot(&seating, role, partial_recovery).await?);
+            filled.push(
+                self.fill_slot(&seating, role, partial_recovery, None)
+                    .await?,
+            );
         }
         Ok(filled)
     }
@@ -40399,11 +40472,56 @@ impl Services {
     }
 
     /// Fill one more declared slot inside a team run admission already committed.
+    /// Place one Admin-named route on an eligible account with admissible
+    /// headroom, or refuse without effect.
+    fn place_explicit_route(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        route: ModelRung,
+        adapter: &dyn RuntimeAdapter,
+    ) -> Result<(ModelRung, AccountProfileId), ApiError> {
+        let state = self.state()?;
+        let quota_states = self.admission_quota_states(project_id)?;
+        let eligible = self.eligible_accounts(project_id)?;
+        let task_pin = state
+            .with_store(|store| store.task_account_selection(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|(account_profile_id, _)| account_profile_id);
+        let outlook = QuotaOutlook {
+            states: &quota_states,
+            account: task_pin,
+            accounts: &eligible,
+            headroom: self.headroom_policy(),
+            freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+            now: kontor_api::now(),
+        };
+        match resolve_chain_placement(
+            adapter,
+            &[route],
+            kontor_scheduler::headroom::SeatClass::Delivery,
+            &outlook,
+        )
+        .map_err(|error| self.refuse_domain(&error))?
+        {
+            kontor_scheduler::headroom::Placement::Admit { rung, account } => Ok((rung, account)),
+            kontor_scheduler::headroom::Placement::Wait { .. } => Err(self.deny(
+                ApiErrorCode::CapacityExhausted,
+                "the named route is deferred until recorded headroom returns",
+            )),
+            kontor_scheduler::headroom::Placement::NeedsHuman { .. } => Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the named route has no eligible account with admissible headroom",
+            )),
+        }
+    }
+
     async fn fill_slot(
         &self,
         seating: &Seating<'_>,
         slot: &RoleSlotId,
         partial_recovery: Option<&PartialAdmissionSeatDto>,
+        route_override: Option<&(ModelRung, AccountProfileId)>,
     ) -> Result<StartedSeatDto, ApiError> {
         let _native_activity = self.native_activity()?;
         let Seating {
@@ -40464,7 +40582,9 @@ impl Services {
                         team_run_id,
                         parent_agent_run_id: None,
                         role: slot.clone().into_role_key(),
-                        account_profile_id: admitted.account_profile_id,
+                        account_profile_id: route_override
+                            .map(|(_, account)| *account)
+                            .or(admitted.account_profile_id),
                         binding: None,
                         created_at: now,
                     })
@@ -40490,21 +40610,28 @@ impl Services {
         // The caller supplies the runtime's prepared container snapshot. Initial
         // seating prepares it once for all slots; bounded seat fill re-attests
         // the existing native container before reaching this shared path.
-        let quota_states = self.admission_quota_states(project_id)?;
-        let (model_rung, routed_account) = freeze_seat_model_rung(
-            adapter.as_ref(),
-            &team_snapshot,
-            slot,
-            &QuotaOutlook {
-                states: &quota_states,
-                account: admitted.account_profile_id,
-                accounts: &self.eligible_accounts(project_id)?,
-                headroom: self.headroom_policy(),
-                freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
-                now,
-            },
-        )
-        .map_err(|error| self.refuse_domain(&error))?;
+        let (model_rung, account_profile_id) = if let Some((rung, account)) = route_override {
+            // The named route's account selects its provider alias; the
+            // admission's account belongs to the frozen chain it replaces.
+            (rung.clone(), Some(*account))
+        } else {
+            let quota_states = self.admission_quota_states(project_id)?;
+            let (rung, routed_account) = freeze_seat_model_rung(
+                adapter.as_ref(),
+                &team_snapshot,
+                slot,
+                &QuotaOutlook {
+                    states: &quota_states,
+                    account: admitted.account_profile_id,
+                    accounts: &self.eligible_accounts(project_id)?,
+                    headroom: self.headroom_policy(),
+                    freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+                    now,
+                },
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
+            (rung, admitted.account_profile_id.or(routed_account))
+        };
         let context_policy = freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
@@ -40513,7 +40640,7 @@ impl Services {
         // Durable before the first native effect, as in the admitted path: a
         // seat that reaches a provider unpinned cannot have its refusal
         // attributed or its replacement evidenced.
-        if let Some(account) = admitted.account_profile_id.or(routed_account) {
+        if let Some(account) = account_profile_id {
             state
                 .with_store(|store| store.pin_agent_run_account(project_id, agent_run_id, account))
                 .map_err(|error| self.refuse(&error))?;
@@ -40534,7 +40661,7 @@ impl Services {
             binding_id,
             placement: Some(LaunchPlacement::Container(container.clone())),
             cwd: cwd.clone(),
-            account_profile_id: admitted.account_profile_id.or(routed_account),
+            account_profile_id,
             prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,
             model_rung,
             context_policy: context_policy.clone(),
