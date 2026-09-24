@@ -1,0 +1,193 @@
+{
+  "affected_files": {
+    "core": [
+      "crates/kontor-core/src/spec.rs (RolePersonaSnapshot, RolePersonaDelivery)"
+    ],
+    "daemon": [
+      "crates/kontor-daemon/src/applications.rs (freeze_role_persona; both hosted launch sites persist and deliver one value; seat projection)",
+      "crates/kontor-daemon/tests/loopback_api.rs (TEST-007 assertions; LSA successor regression)"
+    ],
+    "dto_and_openapi": [
+      "crates/kontor-api/src/applications.rs (new CoreTeamSeatPersonaDto; new field CoreTeamSeatDto.role_persona, always serialized so null is a positive statement)",
+      "crates/kontor-api/src/openapi.rs (CoreTeamSeatPersonaDto registered)",
+      "crates/kontor-api/contract/openapi.json (regenerated, +47 lines; the 3 contract tests pass)"
+    ],
+    "schema": [
+      "crates/kontor-store/migrations/0116_hosted_seat_role_personas.sql (NEW; was 0111 at the qualified head)",
+      "crates/kontor-store/src/migrations.rs (include_str! registration + SCHEMA_VERSION 114 -> 116)"
+    ],
+    "store": [
+      "crates/kontor-store/src/repository.rs (record_hosted_seat_role_persona, get_hosted_seat_role_persona, latest_hosted_seat_role_persona)"
+    ],
+    "test_double": [
+      "crates/kontor-runtime/src/fake.rs (hosted_initial_prompts + hosted_initial_prompt accessor)"
+    ],
+    "totals": "10 files, +706 / -18"
+  },
+  "artifact": "high-change",
+  "checks": {
+    "at_0111_baseline_b91ac759": {
+      "core_profiles_runtime_paseo_store_api": {
+        "failed": 3,
+        "ignored": 6,
+        "passed": 1349,
+        "targets": 58
+      },
+      "failure_cause": "Expectation registries a new migration must update: the expected-table set lacked hosted_seat_role_personas and two assertions pinned the old schema number. Not defects in the persona behaviour; fixed on the integration head and reverified there.",
+      "honesty_note": "An earlier interim report of 1174 passed / 0 failed was a PARTIAL tally taken before the schema_v1 target had run. The complete figure is the one above.",
+      "kontor_daemon_full": {
+        "failed": 0,
+        "ignored": 1,
+        "passed": 542,
+        "targets": 9
+      },
+      "the_three_failures": [
+        "schema_v1::an_empty_database_migrates_to_the_current_schema_version",
+        "schema_v1::the_schema_contains_exactly_the_expected_tables_and_they_are_all_strict",
+        "schema_v1::v108_worktree_correction_evidence_is_append_only"
+      ]
+    },
+    "at_ready_commit_6c88c093": {
+      "daemon_persona_promotion": {
+        "failed": 0,
+        "passed": 1,
+        "result": "ok",
+        "test": "a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa"
+      },
+      "fmt": {
+        "command": "cargo fmt --all -- --check",
+        "result": "clean"
+      },
+      "kontor_api_openapi_contract": {
+        "failed": 0,
+        "passed": 3,
+        "result": "ok"
+      },
+      "kontor_store_schema_v1": {
+        "failed": 0,
+        "note": "the three expectation failures seen at the 0111 baseline are resolved here",
+        "passed": 63,
+        "result": "ok"
+      },
+      "mut_8196_3_rekill": {
+        "note": "applied at the exact successor line, rebuild confirmed by a Compiling kontor-daemon line; source restored byte-identical afterwards",
+        "result": "KILLED"
+      }
+    },
+    "not_rerun_at_ready_commit": "The broad kontor-daemon and cross-crate suites were not re-run at 6c88c093, per instruction not to duplicate broad passed tests. Only the schema, contract, persona-regression and mutant checks were repeated.",
+    "verification_kind": "producer_self_verification"
+  },
+  "findings_repaired": [
+    {
+      "honesty": "Paseo's config.systemPrompt is creation-only and no route reads it back. The record therefore says delivery = create_only_no_readback, and CoreTeamSeatPersonaDto is deliberately NOT a field of CoreTeamNativeSeatDto, which reports runtime readback. Request construction is not presented as readback.",
+      "id": "P1-1",
+      "repair": "New immutable per-occupancy table hosted_seat_role_personas, written BEFORE the native call beside the launch intent, so a launch whose acknowledgement is lost still leaves behind what it was going to deliver. Keyed by (project_id, seat_binding_id, occupancy_generation) so a replacement freezes its own row instead of overwriting the predecessor's. kontor_core::spec::RolePersonaSnapshot carries the exact delivered text plus a SHA-256 of those bytes; the same value is persisted and delivered, so recorded-as-received cannot drift from sent.",
+      "subject": "TEST-007's non-null run-snapshot persona contract",
+      "surface_interpretation": "TEST-007 says 'run snapshot'. The LSA is a hosted topology seat keyed by SeatBindingId and has no AgentRun, so a run snapshot is not a surface it has. Implemented on the seat snapshot, which the report's own wording ('run/seat snapshot contract') permits. Flagged for the re-verifier as the one interpretive decision taken."
+    },
+    {
+      "id": "P1-2",
+      "placement": "Added to the existing regression a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa as instructed, not as a disconnected mutant-only test.",
+      "repair": "The promotion regression previously replaced only a TPM, which seeds no persona, so dropping the successor's role prompt changed nothing observable. It now also re-routes the LSA, a role that does have a configured persona, and asserts the successor's system prompt separately from initialPrompt. A new hosted_initial_prompt accessor on the runtime fake makes the two values independently readable, so a successor launched with the handoff in both slots fails.",
+      "subject": "Surviving mutant on the replacement/successor role-prompt branch"
+    }
+  ],
+  "handback": {
+    "ask": "Independent re-verification of the two repaired findings at the ready commit, and integration by root/coordinator.",
+    "ready_commit": "6c88c09342484d5a11d1f17923ec7446cac1b48b",
+    "to_role_slot": "verify"
+  },
+  "heads": {
+    "ready_commit": {
+      "branch": "fix/ASMA-8196-persona-readback",
+      "commit": "6c88c09342484d5a11d1f17923ec7446cac1b48b",
+      "contiguity": "116 registered migrations against SCHEMA_VERSION 116; the const assert is satisfied",
+      "master_base": "9dae7f790552bc4746255cd01d8ad1160cab7211",
+      "migration": "0116_hosted_seat_role_personas.sql",
+      "parent": "84135efa6c6a830b7d8c00eacb75d4072fe0ad44",
+      "parent_meaning": "the master-based form of the ASMA-7869 atomic-receipt change that owns migration 0115",
+      "status": "compiles; integration checks below pass",
+      "worktree": "/private/tmp/kontor-8196-repair"
+    },
+    "superseded_working_heads": {
+      "279ffbfa0e07895a29d112c8ad1141c0d8745f26": "0116 on master before 0115 existed; did not compile.",
+      "7d7f679b4047485d230ccb3d5c74f4eccbdba378": "same, with schema expectations updated; did not compile.",
+      "b91ac759635432af9514391d6b07e9e5da50a696": "0111 baseline on candidate 07dd4c1b; retained as fix/ASMA-8196-persona-readback-prerebase. NOT the integration head."
+    }
+  },
+  "integration_checkpoint": {
+    "blocking": false,
+    "no_placeholder_created": "No placeholder 0115 was ever fabricated; the gap was reported and then filled by its real owner.",
+    "note": "origin/master has since advanced to 274341d0 and 84135efa is not yet merged into it; this commit is based on 84135efa as instructed.",
+    "ownership": "0115 ASMA-7869 atomic receipts (not mine), 0116 ASMA-8196 persona (mine), 0117 reserved for the ASMA-8203 owner.",
+    "previously_reported": "error[E0080]: evaluation panicked: every schema version needs exactly one migration script -- raised when 0116 was registered with 0115 absent.",
+    "resolved": "Migration 0115 (atomic local command results) is now present as the parent commit, so 0116 registers contiguously and kontor-store compiles."
+  },
+  "mutation_testing": {
+    "mutants": [
+      {
+        "id": "MUT-8196-3",
+        "mutant": "successor launch sends role_prompt: None",
+        "note": "This is the mutant the verification report recorded as SURVIVED.",
+        "result": "KILLED"
+      },
+      {
+        "id": "MUT-8196-4",
+        "mutant": "successor persona frozen under FIRST_HOSTED_OCCUPANCY instead of its own generation",
+        "result": "KILLED"
+      },
+      {
+        "id": "MUT-8196-5",
+        "mutant": "seat snapshot never projects a persona",
+        "result": "KILLED"
+      },
+      {
+        "id": "MUT-8196-6",
+        "mutant": "initial hosted-seat launch sends role_prompt: None",
+        "result": "KILLED"
+      }
+    ],
+    "protocol": "One mutant at a time at the qualified head b91ac759, each reverted before the next; applications.rs byte-compared against a pristine copy afterwards and confirmed identical.",
+    "score": "4/4 killed at the 0111 baseline; MUT-8196-3 re-confirmed KILLED at the ready commit"
+  },
+  "not_claimed": [
+    "This is NOT an independent PASS. No independent reviewer has verified this repair.",
+    "The broad suites were not re-run at the ready commit; their figures come from the 0111 baseline and are labelled as such.",
+    "No deployment, merge, publication attestation, release checkpoint or schema activation is claimed. Schema 116 is NOT live; deployed master runs schema 114.",
+    "No placeholder migration was created, no shared root was edited, no other agent's changes were modified, and 0115's implementation is preserved untouched.",
+    "No new topology, no duplicate implementation, no Jira or workflow transition."
+  ],
+  "producer": {
+    "agent_run_id": "01a0b033-5331-7bc2-919a-5e9c90fbfa2c",
+    "authority": "User-authorized direct repair; root integration owner allocated migration 0116 exclusively to ASMA-8196.",
+    "native_id": "ba4ded2e-4943-45d3-b267-7eca5ee5440f",
+    "role": "implement",
+    "seat_binding_id": "01a0b033-5331-7bc2-919a-5eaccef2f672",
+    "team_run_id": "01a0b032-fe68-70c2-8cd7-e5bcb76fb56d"
+  },
+  "qualification_scope": "source_only",
+  "responds_to": {
+    "gate_receipt": "01a0c00a-6b46-7ef3-8cf4-09f6acb59c58",
+    "item_id": "artifact-asma-8196-high-verification-report-07dd4c1b",
+    "revision": 1,
+    "revision_id": "01a0c00a-0471-79a3-b395-063f9d1cb197",
+    "verdict_responded_to": "REJECT"
+  },
+  "schema_version": 1,
+  "self_found_defect": {
+    "detail": "That field counts runtime readbacks, not occupancies, so it reported generation 1 for a successor. Caught by the new successor assertion. Fixed by adding Repository::latest_hosted_seat_role_persona so the store answers 'this seat's newest occupancy' directly instead of the caller deriving it from the wrong counter.",
+    "subject": "The projection first resolved the persona through native_identity.generation"
+  },
+  "subject": "ASMA-8196 persona repair: both blocking findings fixed, committed, and integrated as migration 0116 on top of 0115",
+  "supersedes": {
+    "item_id": "artifact-asma-8196-high-change-07dd4c1b",
+    "reason": "That artifact described candidate 07dd4c1b, which high-verification REJECTED.",
+    "revision_id": "01a0bfe2-eed6-7980-ad79-0c0c7498b156"
+  },
+  "task": {
+    "current_phase": "high-implementation",
+    "jira": "ASMA-8196",
+    "task_id": "01a0abdd-b855-7862-89e4-1921f4415733"
+  },
+  "type": "artifact"
+}

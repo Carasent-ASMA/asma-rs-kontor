@@ -24,7 +24,7 @@ use kontor_core::id::{
 };
 use kontor_core::repository::AgentRun;
 use kontor_core::spec::{
-    ContextPolicySource, ContextWindowClass, ContextWindowPolicy, RoleContextSeed,
+    ContextPolicySource, ContextWindowClass, ContextWindowPolicy, RoleContextSeed, SeatAutonomy,
     TeamContextPolicySeed, TeamRunSnapshot, TeamTemplateRevision,
 };
 use kontor_core::state::{
@@ -423,6 +423,73 @@ fn every_seed_template_round_trips_byte_and_hash_identically() {
         let snapshot = TeamRunSnapshot::from_revision(&revision, SCHEMA_VERSION);
         let frozen = TeamTemplateSpec::from_snapshot(&snapshot).expect("the run snapshot reads");
         assert_eq!(&frozen, template);
+    }
+}
+
+/// ASMA-8192. The autonomy floor is declared, and declared *additively*.
+///
+/// The pack is the configuration half of the floor: `freeze_seat_autonomy`
+/// reads the role slot first, so a slot that declares nothing can only reach
+/// the plane default. This proves the bundled pack now declares it, and proves
+/// the declaration arrived as a new revision rather than as an edit to the one
+/// already published — KON-OP-22 D7 recorded an in-place rewrite of this file's
+/// `"version": 1` as a defect, and a published revision is immutable in the
+/// store besides.
+///
+/// The successor check is the sharp one: rebuilding v2 from v1 through
+/// `revise_team_template` and demanding byte equality means v2 may differ from
+/// v1 in the autonomy fields and the version number and in nothing else. A
+/// model rung, a gate authority or a handoff edited into the new revision under
+/// cover of this change fails here.
+#[test]
+fn the_bundled_pack_declares_per_slot_autonomy_as_a_new_revision() {
+    let pack = bundled_teams().expect("the bundled team pack loads");
+    let second = SpecVersion::parse(2).expect("v2");
+
+    let published: Vec<&TeamTemplateSpec> = pack
+        .teams
+        .iter()
+        .filter(|team| team.version == SpecVersion::FIRST)
+        .collect();
+    assert!(
+        !published.is_empty(),
+        "the pack still ships the revisions already published"
+    );
+
+    for first in published {
+        assert!(
+            first.slots.iter().all(|slot| slot.autonomy.is_none()),
+            "the published revision {} declares no autonomy, exactly as it was published",
+            first.template_id
+        );
+
+        let shipped = pack
+            .teams
+            .iter()
+            .find(|team| team.template_id == first.template_id && team.version == second)
+            .unwrap_or_else(|| panic!("template {} ships a v2 revision", first.template_id));
+
+        for slot in &shipped.slots {
+            assert_eq!(
+                slot.autonomy,
+                Some(SeatAutonomy::Bounded),
+                "slot {} of {} acts within what Kontor authorized without asking again",
+                slot.id,
+                shipped.name
+            );
+        }
+
+        let successor = revise_team_template(first, |template| {
+            for slot in &mut template.slots {
+                slot.autonomy = Some(SeatAutonomy::Bounded);
+            }
+        })
+        .expect("declaring autonomy is a valid revision");
+        assert_eq!(
+            &successor, shipped,
+            "v2 of {} is v1 plus the autonomy declaration and nothing else",
+            first.template_id
+        );
     }
 }
 
@@ -877,6 +944,102 @@ async fn a_replacement_closes_the_old_session_before_the_successor_exists() {
         fresh.agent_run_id(),
         successor_run,
         "the new binding names the successor run"
+    );
+}
+
+#[tokio::test]
+async fn an_unbound_child_retry_preserves_native_depth_and_exact_parent_evidence() {
+    let template = parallel_seed();
+    let snapshot = snapshot_of(&template);
+    let team = TeamRunId::generate();
+    let runtime = Runtime::prepare(team).await;
+    let slot = template.slots[0].id.clone();
+    let mut slots = TeamRunSlots::open(lease(team), &snapshot).unwrap();
+    let original = occupy(&mut slots, &runtime, &slot, AgentRunId::generate()).await;
+    let old = closing_row(team, &slot, &original, None, RunLifecycle::Cancelled);
+    let occupied = slots.occupied(&slot).unwrap();
+    slots.close_completed(occupied, &old).unwrap();
+    let mut abandoned = run_row(
+        team,
+        &slot,
+        AgentRunId::generate(),
+        Some(old.id),
+        RunLifecycle::Parked,
+    );
+    abandoned.terminal = Some(TerminalEvidence {
+        outcome: TerminalOutcome::Abandoned,
+        source: TerminalEvidenceSource::OperatorAbandon {
+            receipt_id: kontor_core::id::CommandReceiptId::generate(),
+        },
+        evidence_hash: ContentHash::of(b"an explicit never-bound abandonment"),
+        closed_at: now(),
+    });
+    abandoned.closed_at = Some(now());
+    for mismatch in 0..5 {
+        let mut wrong = abandoned.clone();
+        match mismatch {
+            0 => wrong.parent_agent_run_id = Some(AgentRunId::generate()),
+            1 => wrong.team_run_id = TeamRunId::generate(),
+            2 => wrong.role = RoleKey::parse("another-slot").unwrap(),
+            3 => wrong.binding = old.binding.clone(),
+            _ => wrong.terminal = None,
+        }
+        let closed = slots.latest_closed(&slot).unwrap();
+        assert!(
+            slots
+                .reserve_after_unbound_successor(closed, &wrong, AgentRunId::generate())
+                .is_err()
+        );
+        assert_eq!(slots.latest_closed(&slot).unwrap().agent_run_id(), old.id);
+    }
+    let child = AgentRunId::generate();
+    let closed = slots.latest_closed(&slot).unwrap();
+    let permit = slots
+        .reserve_after_unbound_successor(closed, &abandoned, child)
+        .unwrap();
+    assert_eq!(permit.parent_agent_run_id(), Some(abandoned.id));
+    let admission = permit.admission_request(&runtime.launch_input());
+    assert_eq!(
+        admission.replaces,
+        Some(ReplacedBinding {
+            binding_id: original.binding_id(),
+            agent_run_id: old.id,
+            successor_agent_run_id: child,
+        })
+    );
+    let mut row = run_row(
+        team,
+        &slot,
+        child,
+        permit.parent_agent_run_id(),
+        RunLifecycle::Queued,
+    );
+    row.project_id = old.project_id;
+    drop(slots);
+    let recovered = TeamRunSlots::hydrate(
+        lease(team),
+        &snapshot,
+        &[old.clone(), abandoned.clone(), row],
+        &[],
+    )
+    .unwrap();
+    drop(recovered);
+
+    let mut no_successors = template.clone();
+    no_successors.max_successor_depth = 0;
+    let mut slots = TeamRunSlots::hydrate(
+        lease(team),
+        &snapshot_of(&no_successors),
+        &[old, abandoned.clone()],
+        &[],
+    )
+    .unwrap();
+    let closed = slots.latest_closed(&slot).unwrap();
+    assert!(
+        slots
+            .reserve_after_unbound_successor(closed, &abandoned, AgentRunId::generate())
+            .is_err(),
+        "never-bound recovery must not bypass the native successor limit"
     );
 }
 

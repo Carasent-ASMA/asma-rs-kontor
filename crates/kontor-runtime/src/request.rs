@@ -122,6 +122,43 @@ impl MessageId {
         parse_kontor_uuid("MessageId", text).map(Self)
     }
 
+    /// Derive a stable identifier from a caller's idempotency key.
+    ///
+    /// Every Kontor write takes a caller-chosen `idempotency_key`, and the
+    /// documented vocabulary for one is any non-empty, trimmed, control-free
+    /// string. Pushing into a session is the single exception: the message id
+    /// *is* the idempotency record, so the route needed a `MessageId` and got
+    /// one by parsing the header — which silently required a UUIDv7 of a
+    /// caller that had no reason to supply one, and refused everyone else
+    /// through a message naming no header and no field.
+    ///
+    /// Deriving closes that gap without weakening the contract the id exists
+    /// for. The same key always yields the same identifier, so a retry is
+    /// still answered from the ledger rather than by repeating the effect,
+    /// and a key that already *is* a canonical `MessageId` keeps parsing to
+    /// itself — so callers who were passing one are unaffected.
+    ///
+    /// The result is not time-ordered, which a generated v7 is. Nothing reads
+    /// a message id as a clock: it is stored as text and compared for
+    /// equality, and this crate already ships a fixed-prefix deterministic v7
+    /// for tests that the parser accepts exactly like a live one.
+    #[must_use]
+    pub fn derive(key: &str) -> Self {
+        let digest = ContentHash::of(key.as_bytes());
+        let hex = digest.as_str().as_bytes();
+        let mut bytes = [0u8; 16];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            let hi = (hex[index * 2] as char).to_digit(16).unwrap_or(0) as u8;
+            let lo = (hex[index * 2 + 1] as char).to_digit(16).unwrap_or(0) as u8;
+            *byte = (hi << 4) | lo;
+        }
+        // Stamp version 7 and the RFC 4122 variant so the value is a UUID of
+        // the one version `parse` admits.
+        bytes[6] = (bytes[6] & 0x0f) | 0x70;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        Self(Uuid::from_bytes(bytes))
+    }
+
     /// Borrow the underlying UUID.
     #[must_use]
     pub const fn as_uuid(&self) -> &Uuid {
@@ -792,6 +829,69 @@ pub struct PermissionResponseRequest {
     pub responded_at: Timestamp,
 }
 
+/// One server-generated correlation challenge delivered after a canonical
+/// history boundary.
+///
+/// This is intentionally narrower than an ordinary message. The stable id,
+/// exact body and pre-dispatch boundary are persisted by the control plane
+/// before an adapter may send. A runtime whose historical user messages carry
+/// no client id may therefore correlate this new effect by the unpredictable
+/// exact body strictly after that boundary without guessing which older turn a
+/// caller meant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorrelationChallengeRequest {
+    /// Exact issued seat binding.
+    pub binding: RuntimeBindingSnapshot,
+    /// Server-generated, retry-stable message identity.
+    pub message_id: MessageId,
+    /// Frozen challenge body, including its nonce and evidence checksum.
+    pub body: BoundedText,
+    /// Last canonical position observed before the durable intent was claimed.
+    pub after: TimelinePosition,
+    /// Runtime-owned spelling of the epoch containing `after`.
+    ///
+    /// Persisting this opaque identity is what lets a fresh adapter address the
+    /// same canonical transcript after its in-memory epoch map is gone.
+    pub native_epoch: ExternalId,
+    /// Whether this invocation owns the sole first-dispatch claim.
+    ///
+    /// A retry may reconcile and must never send again.
+    pub may_dispatch: bool,
+    /// When the durable challenge was created.
+    pub sent_at: Timestamp,
+}
+
+impl CorrelationChallengeRequest {
+    /// Digest of the exact frozen challenge body.
+    #[must_use]
+    pub fn body_hash(&self) -> ContentHash {
+        ContentHash::of(self.body.as_str().as_bytes())
+    }
+}
+
+/// Read-only proof request for the exact response to a server challenge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorrelationChallengeCompletionRequest {
+    /// Exact issued seat binding.
+    pub binding: RuntimeBindingSnapshot,
+    /// Server-generated message identity retained with the durable challenge.
+    pub message_id: MessageId,
+    /// Canonical user-message position established by challenge delivery.
+    pub message_position: TimelinePosition,
+    /// Last canonical position observed before the challenge was dispatched.
+    ///
+    /// The proof scans the whole suffix after this boundary so a duplicate
+    /// exact body cannot hide before or after the acknowledged position.
+    pub after: TimelinePosition,
+    /// Runtime-owned spelling of the exact epoch containing the challenge.
+    pub native_epoch: ExternalId,
+    /// Frozen challenge body, rechecked at the stored message position after a
+    /// daemon restart instead of relying on adapter memory.
+    pub body: BoundedText,
+    /// Exact response text the server generated from the frozen evidence.
+    pub expected_response: BoundedText,
+}
+
 impl PermissionResponseRequest {
     /// The stable spelling of the answer, as it is recorded in session content.
     #[must_use]
@@ -821,6 +921,41 @@ mod tests {
         let label = CorrelationLabel::for_run(run);
         let parsed = CorrelationLabel::parse(&label.to_string()).expect("a Kontor label parses");
         assert_eq!(parsed.agent_run_id(), run);
+    }
+
+    #[test]
+    fn a_derived_message_id_is_stable_and_parses_as_one() {
+        let derived = MessageId::derive("asma-8001-tpm-needs-human-lsa-handoff-r7-v1");
+        assert_eq!(
+            derived,
+            MessageId::derive("asma-8001-tpm-needs-human-lsa-handoff-r7-v1"),
+            "the same idempotency key must always answer with the same id"
+        );
+        assert_eq!(
+            MessageId::parse(&derived.to_string()).expect("a derived id is canonical"),
+            derived,
+            "a derived id must round-trip through the parser that guards the route"
+        );
+    }
+
+    #[test]
+    fn distinct_idempotency_keys_derive_distinct_message_ids() {
+        assert_ne!(
+            MessageId::derive("asma-8190-handoff-v1"),
+            MessageId::derive("asma-8190-handoff-v2"),
+            "a retry key and a new key must not collapse onto one message"
+        );
+    }
+
+    #[test]
+    fn a_key_that_is_already_a_message_id_parses_to_itself() {
+        let generated = MessageId::generate();
+        let text = generated.to_string();
+        assert_eq!(
+            MessageId::parse(&text).expect("a canonical v7 parses"),
+            generated,
+            "callers already passing a UUIDv7 keep the identifier they chose"
+        );
     }
 
     #[test]

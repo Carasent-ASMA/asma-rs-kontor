@@ -937,6 +937,7 @@ impl AoAdapter {
         let lifecycle = normalize_lifecycle(view);
         let observed_at = view.observed_at()?;
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id,
             contact: lifecycle.contact,
             state: lifecycle.state,
@@ -1634,6 +1635,7 @@ impl RuntimeAdapter for AoAdapter {
             "normalized": { "attention": AoAttention::Unknown.as_str() },
         }))?;
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id: binding.agent_run_id(),
             contact: RuntimeContact::Reachable,
             state: ObservedRunState::Cancelled,

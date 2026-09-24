@@ -1,5 +1,7 @@
 //! Production-path proof for persisted child-scope calendar windows.
 
+mod support;
+
 use kontor_core::calendar::{
     CalendarProfileSpec, ChildCalendarWindows, EffectiveCalendarState, HolidayMergePolicy,
     IanaTimeZone, Weekday, WeeklyWindow, WorkCalendarAssignment, WorkScope,
@@ -32,7 +34,7 @@ fn window(start: &str, end: &str) -> WeeklyWindow {
 
 fn fixture(child: WeeklyWindow) -> (tempfile::TempDir, SqliteStore, ProjectId, TaskId) {
     let directory = tempfile::TempDir::new().expect("a temporary directory");
-    let store = SqliteStore::open(&directory.path().join("kontor.db")).expect("the store opens");
+    let store = support::store_from_template(&directory.path().join("kontor.db"));
     let project = ProjectId::generate();
     let task = TaskId::generate();
     store

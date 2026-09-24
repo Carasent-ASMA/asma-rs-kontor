@@ -21,7 +21,7 @@
 //! true here and not only inside the adapter: the refusal happens in this process,
 //! before a request is built.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,14 +46,16 @@ use kontor_runtime::request::{
     HistoryRequest, InspectRequest, LiveSubscribeRequest, MessageId, PermissionResponseRequest,
     ResumeRequest, SendMessageRequest,
 };
-use kontor_runtime::timeline::{EventSubject, HistoryCursor, HistoryReader, SessionEventKind};
+use kontor_runtime::timeline::{
+    EventSubject, HistoryCursor, HistoryReader, SessionEventKind, TimelinePosition,
+};
 use serde::Deserialize;
 
 use crate::auth::CallerCapability;
 use crate::control::{idempotency_key, parse_id};
 use crate::dto::{
-    MessageAckDto, MessageRequest, PermissionAckDto, PermissionRequestBody, StreamFrameDto,
-    StreamRefusalDto, TimelineDto,
+    MessageAckDto, MessageRequest, ObservedTurnDto, PermissionAckDto, PermissionRequestBody,
+    StreamFrameDto, StreamRefusalDto, TimelineDto,
 };
 use crate::error::{ApiError, ApiErrorCode};
 use crate::state::ApiState;
@@ -245,15 +247,17 @@ pub async fn timeline(
         .transpose()
         .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
 
-    let mut page = session
-        .adapter
-        .history(&HistoryRequest {
-            binding: session.snapshot.clone(),
-            cursor,
-            page_size,
-        })
-        .await
-        .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+    let mut page = state
+        .history_with_durable_epochs(
+            session.adapter.as_ref(),
+            session.snapshot.identity(),
+            &HistoryRequest {
+                binding: session.snapshot.clone(),
+                cursor,
+                page_size,
+            },
+        )
+        .await?;
 
     let mut reader = match resume {
         None => HistoryReader::start(session.snapshot.binding_id(), page.epoch),
@@ -270,6 +274,315 @@ pub async fn timeline(
         &page,
         reader.anchor(),
     )))
+}
+
+/// How many canonical pages one observation will walk before giving up.
+///
+/// Bounded for the same reason settlement's scan is: a cursor-free read of a
+/// long-lived seat can outlive its own request. A caller that hits the budget is
+/// told so and hands back the anchor it reached, which is what `after` is for.
+const OBSERVE_PAGE_BUDGET: usize = 64;
+
+/// How many times `wanted` appears at or before `through`, read from the origin.
+///
+/// Exists only because `after` lets the main scan start late. It is the *same*
+/// canonical read, over the window that scan skipped, counting one id — not a
+/// second opinion about what the current turn is. Nothing here decides anything:
+/// it returns a count, and the caller refuses on it.
+///
+/// Fails closed. A prefix that cannot be read to `through` inside the budget
+/// leaves uniqueness unproven, and an unproven uniqueness must not be reported
+/// as a clean turn.
+async fn prefix_occurrences(
+    state: &ApiState,
+    session: &Session,
+    realm_id: RealmId,
+    page_size: u32,
+    through: TimelinePosition,
+    wanted: MessageId,
+) -> Result<usize, ApiError> {
+    let mut cursor = None;
+    let mut reader: Option<HistoryReader> = None;
+    let mut found = 0usize;
+    for _ in 0..OBSERVE_PAGE_BUDGET {
+        let mut page = state
+            .history_recovering_epoch_once(
+                session.adapter.as_ref(),
+                session.snapshot.identity(),
+                &HistoryRequest {
+                    binding: session.snapshot.clone(),
+                    cursor,
+                    page_size,
+                },
+            )
+            .await
+            .map_err(unobservable_epoch)?;
+        let reader = reader
+            .get_or_insert_with(|| HistoryReader::start(session.snapshot.binding_id(), page.epoch));
+        reader
+            .accept_page(&mut page)
+            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+        for event in &page.items {
+            if event.position.sequence > through.sequence {
+                break;
+            }
+            if let EventSubject::Message(id) = event.subject
+                && id == wanted
+            {
+                found += 1;
+            }
+        }
+        if reader.anchor().sequence >= through.sequence {
+            return Ok(found);
+        }
+        match page.next {
+            Some(next) => cursor = Some(next),
+            None => return Ok(found),
+        }
+    }
+    Err(ApiError::new(
+        realm_id,
+        ApiErrorCode::Unavailable,
+        "the prefix before the supplied cursor could not be read, so this message id's uniqueness is unproven",
+    )
+    .advising("observe again without `after` so the whole canonical history is read"))
+}
+
+/// Where an observation resumes from.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ObserveQuery {
+    /// A previous observation's anchor, or a timeline anchor. Absent reads from
+    /// the start of the retained epoch.
+    pub after: Option<String>,
+    /// Maximum items per page.
+    pub limit: Option<u32>,
+}
+
+/// Observe the exact current turn, without asserting anything about it.
+///
+/// This exists because a delivery seat cannot settle itself: it has no way to
+/// name the canonical position of a response it has not returned yet. A
+/// post-turn control caller can, and until now it had to hand-derive the tuple
+/// from a timeline read. Hand-derivation is exactly where a wrong position comes
+/// from, and a wrong position is what settlement's guard then has to catch.
+///
+/// Read-only by construction. It runs the same canonical history path
+/// `/timeline` does — same cursor, same `HistoryReader` validation, so a gap, a
+/// redelivery or an epoch change is refused here too — and it writes nothing,
+/// attests nothing and settles nothing. `turns:settle` re-derives all of it and
+/// remains the only validator: an observation is a convenience for the caller,
+/// never evidence on its own.
+///
+/// The turn it reports is the *last complete* one: the final canonically
+/// addressed Kontor message, and the terminal provider response that closed it.
+/// A seat still working has no such pair and is reported as unfinished rather
+/// than as a turn whose end has not arrived.
+#[utoipa::path(
+    get, path = "/v1/sessions/{agent_run_id}/turns/current", tag = "sessions",
+    params(
+        ("agent_run_id" = String, Path, description = "The Kontor agent run"),
+        ("after" = Option<String>, Query, description = "Resume from a previous anchor"),
+        ("limit" = Option<u32>, Query, description = "Maximum items per page")
+    ),
+    responses(
+        (status = 200, body = ObservedTurnDto, description = "The exact current turn"),
+        (status = 404, description = "No completed turn is visible in the scanned window"),
+        (status = 409, description = "The seat is still working, or the history broke"),
+        (status = 422, description = "This runtime cannot replay content")
+    )
+)]
+pub async fn observe_current_turn(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(agent_run_id): Path<String>,
+    Query(query): Query<ObserveQuery>,
+) -> Result<Json<ObservedTurnDto>, ApiError> {
+    let session = resolve(&state, &agent_run_id, CallerCapability::Observer, caller).await?;
+    let realm_id = state.realm_id();
+    let page_size = query.limit.unwrap_or(DEFAULT_PAGE);
+    session.preflight(
+        realm_id,
+        RuntimeCapability::History,
+        Some(LimitDemand::HistoryPage(page_size)),
+    )?;
+    session.preflight(realm_id, RuntimeCapability::Inspect, None)?;
+
+    // A turn that has not ended has no terminal response, and reporting the
+    // newest message with whatever follows it would be inventing one. The fresh
+    // inspect is what distinguishes "finished" from "quiet for a moment", and it
+    // is a read: nothing about it is persisted here.
+    let observation = session
+        .adapter
+        .inspect(&InspectRequest {
+            binding: session.snapshot.clone(),
+            requested_at: now(),
+        })
+        .await
+        .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+    if observation.state != kontor_core::state::ObservedRunState::WaitingInput {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "this seat is not waiting after a finished turn, so it has no current turn to observe",
+        )
+        .advising("observe again once the seat reports waiting for input"));
+    }
+
+    let mut cursor = query.after.as_deref().map(HistoryCursor::from_text);
+    let resume = cursor
+        .as_ref()
+        .map(|cursor| cursor.resolve(session.snapshot.binding_id()))
+        .transpose()
+        .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+    let mut reader: Option<HistoryReader> = None;
+
+    // What the scan is looking for, carried across pages.
+    let mut message: Option<(MessageId, TimelinePosition)> = None;
+    let mut seen: BTreeMap<MessageId, usize> = BTreeMap::new();
+    let mut response: Option<TimelinePosition> = None;
+    let mut last_turn: Option<TimelinePosition> = None;
+    let mut anchor = resume;
+    let mut exhausted = false;
+
+    // With no resume cursor the scan is seeded from the tail, not the origin.
+    // The current turn is the newest thing in the session by definition, so the
+    // transcript in front of it is not evidence about it — and reading that
+    // transcript is what made a three-event turn on a long-lived seat cost the
+    // whole session and time out. The window is bounded and fails closed; it
+    // never widens towards the origin.
+    if resume.is_none() {
+        return observe_from_tail(&state, &session, realm_id, page_size).await;
+    }
+
+    for _ in 0..OBSERVE_PAGE_BUDGET {
+        let mut page = state
+            .history_recovering_epoch_once(
+                session.adapter.as_ref(),
+                session.snapshot.identity(),
+                &HistoryRequest {
+                    binding: session.snapshot.clone(),
+                    cursor: cursor.clone(),
+                    page_size,
+                },
+            )
+            .await
+            .map_err(unobservable_epoch)?;
+
+        // The same exactly-once validation `/timeline` applies. A gap, a
+        // redelivered position or a changed epoch is refused rather than
+        // silently producing a tuple assembled from two transcripts.
+        let reader = reader.get_or_insert_with(|| match resume {
+            None => HistoryReader::start(session.snapshot.binding_id(), page.epoch),
+            Some(position) => HistoryReader::resuming(session.snapshot.binding_id(), position),
+        });
+        reader
+            .accept_page(&mut page)
+            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+
+        for event in &page.items {
+            if let EventSubject::Message(id) = &event.subject {
+                let id = *id;
+                // A new addressed message opens a new turn and retires whatever
+                // response was collected for the previous one.
+                *seen.entry(id).or_insert(0) += 1;
+                message = Some((id, event.position));
+                response = None;
+            } else if event.kind == SessionEventKind::Message && message.is_some() {
+                response = Some(event.position);
+            }
+            if !matches!(
+                event.kind,
+                SessionEventKind::StateChange | SessionEventKind::Log
+            ) {
+                last_turn = Some(event.position);
+            }
+        }
+        anchor = Some(reader.anchor());
+        match page.next {
+            Some(next) => cursor = Some(next),
+            None => {
+                exhausted = true;
+                break;
+            }
+        }
+    }
+
+    if !exhausted {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::Unavailable,
+            "the canonical scan reached its page budget before the end of this session",
+        )
+        .advising("observe again with `after` set to the anchor this read returned"));
+    }
+
+    let (message_id, message_position) = message.ok_or_else(|| {
+        ApiError::new(
+            realm_id,
+            ApiErrorCode::NotFound,
+            "no canonically addressed Kontor message appears in the scanned window",
+        )
+        .advising("widen the window by observing without `after`, or send the turn first")
+    })?;
+    // One id, one turn. The same id twice is divergence and is worth strictly
+    // less than no answer: a caller cannot tell which of them it is settling.
+    //
+    // `seen` only covers what this scan walked, so with an `after` cursor it
+    // covers only the suffix. That is not enough, and nothing downstream closes
+    // the gap: settlement's own scan starts immediately before the occurrence it
+    // is handed, and the store refuses an id that already *settled*, not one
+    // that merely already *appeared*. A first occurrence sitting in the skipped
+    // prefix would therefore be invisible to every layer. So when a cursor was
+    // used, the prefix is read for this exact id before the tuple is reported.
+    let occurrences = seen.get(&message_id).copied().unwrap_or_default()
+        + match resume {
+            None => 0,
+            Some(resume_at) => {
+                prefix_occurrences(&state, &session, realm_id, page_size, resume_at, message_id)
+                    .await?
+            }
+        };
+    if occurrences > 1 {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "this message id appears more than once in the session's canonical content",
+        ));
+    }
+    let response_position = response.ok_or_else(|| {
+        ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "the current message has no terminal provider response yet",
+        )
+        .advising("observe again once the seat has answered")
+    })?;
+    // The response has to be the tail, for the same reason settlement requires
+    // it: anything after it means the turn being described is not the current
+    // one. State changes and logs are not turn content and do not count.
+    if last_turn != Some(response_position) {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "the newest turn's response is not the last canonical turn event",
+        ));
+    }
+
+    Ok(Json(ObservedTurnDto {
+        realm_id,
+        agent_run_id: session.agent_run_id,
+        message_id: message_id.to_string(),
+        timeline_epoch: message_position.epoch,
+        message_sequence: message_position.sequence,
+        response_sequence: response_position.sequence,
+        anchor: anchor
+            .map(|position| {
+                HistoryCursor::issue(session.snapshot.binding_id(), position)
+                    .as_str()
+                    .to_owned()
+            })
+            .unwrap_or_default(),
+    }))
 }
 
 /// Where a live subscription must start.
@@ -434,6 +747,257 @@ pub async fn stream(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+/// How many pages of the newest content a tail-seeded observation may read.
+///
+/// The bound that replaces "until the session starts". A current turn is a
+/// message, whatever the seat did while answering, and the response — generous
+/// at this width, and a turn that genuinely exceeds it is reported as beyond the
+/// window rather than chased backwards.
+const TAIL_WINDOW_PAGES: usize = 8;
+
+/// Observe the current turn from a bounded window of the session's tail.
+///
+/// Seeded by one canonical tail read and never widened towards the origin. What
+/// the window has to prove is small: the newest addressed message, the terminal
+/// response after it, and that nothing followed. What it deliberately does *not*
+/// prove is that the message id is unique — that is not a fact about the
+/// transcript at all, it is a fact about what Kontor issued, and it is answered
+/// by the issuance ledger in one lookup.
+///
+/// Every refusal here is closed and typed. An ambiguous window, a
+/// non-advancing one, a missing terminal response and a message Kontor cannot
+/// vouch for are all reported as themselves, because the alternative — guessing
+/// across messages, or reading further back until something fits — is how a
+/// settlement ends up attributing a seat's newest work to an older message.
+async fn observe_from_tail(
+    state: &ApiState,
+    session: &Session,
+    realm_id: RealmId,
+    page_size: u32,
+) -> Result<Json<ObservedTurnDto>, ApiError> {
+    let window = state
+        .tail_window_recovering_epoch_once(
+            session.adapter.as_ref(),
+            session.snapshot.identity(),
+            &session.snapshot,
+            page_size,
+            TAIL_WINDOW_PAGES,
+        )
+        .await
+        .map_err(unobservable_epoch)?;
+
+    // Strictly ascending, single epoch. A runtime that repeats or reverses a
+    // position inside one window is not one this can reason about, and picking
+    // a turn out of it would be picking arbitrarily.
+    let mut previous: Option<TimelinePosition> = None;
+    for event in &window.items {
+        if event.position.epoch != window.epoch {
+            return Err(ApiError::new(
+                realm_id,
+                ApiErrorCode::TimelineRefetchRequired,
+                "the tail window spans more than one timeline epoch",
+            )
+            .advising("observe again; the session was renumbered while it was being read"));
+        }
+        // Adjacent, not merely ascending. `HistoryReader` held this for the
+        // origin-seeded read and it is the invariant a bounded window is most
+        // tempting to drop: N then N+2 is monotonic, so an ascending check waves
+        // it through, and the event that went missing is exactly the kind this
+        // scan reasons about — another addressed message, or the response that
+        // decides terminality. A window with a hole in it cannot say which turn
+        // it is describing, so it is refused rather than interpreted.
+        //
+        // The *first* sequence is unconstrained on purpose. A tail window starts
+        // wherever the budget reached, not at the beginning of the session, so
+        // requiring it to be 1 would be requiring the origin walk back.
+        if previous.is_some_and(|last| event.position.sequence != last.sequence + 1) {
+            return Err(ApiError::new(
+                realm_id,
+                ApiErrorCode::RevisionConflict,
+                "the runtime's tail window is not continuous",
+            )
+            .advising(
+                "observe again; a window that repeats or skips a position cannot name one turn",
+            ));
+        }
+        previous = Some(event.position);
+    }
+
+    // The newest addressed message, and what followed it. Everything before the
+    // last message belongs to an older turn and is not consulted.
+    let mut message: Option<(MessageId, TimelinePosition)> = None;
+    let mut occurrences = 0usize;
+    let mut response: Option<TimelinePosition> = None;
+    let mut last_turn: Option<TimelinePosition> = None;
+    for event in &window.items {
+        if let EventSubject::Message(id) = &event.subject {
+            message = Some((*id, event.position));
+            occurrences = 1;
+            response = None;
+        } else if event.kind == SessionEventKind::Message && message.is_some() {
+            response = Some(event.position);
+        }
+        if !matches!(
+            event.kind,
+            SessionEventKind::StateChange | SessionEventKind::Log
+        ) {
+            last_turn = Some(event.position);
+        }
+    }
+    // A second occurrence of the *same* id inside the window is divergence the
+    // ledger cannot see, because the ledger records what Kontor issued and this
+    // is the runtime having repeated it.
+    if let Some((id, _)) = message {
+        occurrences = window
+            .items
+            .iter()
+            .filter(|event| event.subject == EventSubject::Message(id))
+            .count();
+    }
+
+    let (message_id, message_position) = message.ok_or_else(|| {
+        ApiError::new(
+            realm_id,
+            ApiErrorCode::NotFound,
+            "no canonically addressed Kontor message appears in the bounded tail window",
+        )
+        .advising(
+            "the current turn is older than the window this reads; send the seat a new message rather than widening the read",
+        )
+    })?;
+    if occurrences > 1 {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "this message id appears more than once in the session's canonical content",
+        ));
+    }
+
+    // Uniqueness, answered where it is actually known. A row means this realm
+    // minted the id and issued it exactly once, to exactly one binding — the
+    // primary key says so — which is a stronger statement than counting
+    // occurrences in content the realm does not control.
+    let issuance = state.message_issuance(message_id)?.ok_or_else(|| {
+        ApiError::new(
+            realm_id,
+            ApiErrorCode::NotFound,
+            "this realm holds no issuance record for the message naming the current turn",
+        )
+        .advising(
+            "send this seat one new Kontor message and observe the turn it opens; ids issued before the issuance ledger existed cannot be proven unambiguous and are never assumed to be",
+        )
+    })?;
+    if issuance.runtime_binding_id != session.snapshot.binding_id().to_string()
+        || issuance.native_session_id != session.snapshot.identity().native_id.as_str()
+    {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "the message naming the current turn was issued to a different session",
+        ));
+    }
+    // One issuance is not one occurrence. The ledger proves Kontor sent this id
+    // exactly once; it says nothing about how many times the runtime's canonical
+    // content mentions it, and a window bounded to the tail sees only the newest
+    // of several. Counting the rest would be the scan the bound removed — so the
+    // question is turned around: the occurrence being reported must be the one
+    // the delivery was acknowledged at. An earlier duplicate then cannot be
+    // reported, because it is not at that position, and a later echo cannot
+    // either.
+    let Some((delivered_epoch, delivered_sequence)) = issuance.delivered_at else {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::NotFound,
+            "this realm holds no acknowledged delivery position for the message naming the current turn",
+        )
+        .advising(
+            "send this seat one new Kontor message and observe the turn it opens; a delivery whose acknowledgement was lost cannot say which occurrence it meant and is never assumed",
+        ));
+    };
+    if message_position.epoch != delivered_epoch || message_position.sequence != delivered_sequence
+    {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "the message naming the current turn is not at the position its delivery was acknowledged at",
+        )
+        .advising(
+            "this id appears in the session's canonical content somewhere other than where Kontor delivered it; settle nothing on it and send a new message",
+        ));
+    }
+
+    let response_position = response.ok_or_else(|| {
+        ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "the current message has no terminal provider response yet",
+        )
+        .advising("observe again once the seat has answered")
+    })?;
+    if last_turn != Some(response_position) {
+        return Err(ApiError::new(
+            realm_id,
+            ApiErrorCode::RevisionConflict,
+            "the newest turn's response is not the last canonical turn event",
+        ));
+    }
+
+    Ok(Json(ObservedTurnDto {
+        realm_id,
+        agent_run_id: session.agent_run_id,
+        message_id: message_id.to_string(),
+        timeline_epoch: message_position.epoch,
+        message_sequence: message_position.sequence,
+        response_sequence: response_position.sequence,
+        anchor: HistoryCursor::issue(session.snapshot.binding_id(), window.end)
+            .as_str()
+            .to_owned(),
+    }))
+}
+
+/// Re-state a refetch refusal an observation could not recover from.
+///
+/// The code is kept: this really is a conflict about which numbering the caller
+/// is addressing, and 409 is what a client branches on. What is replaced is the
+/// advice. `/timeline`'s "read the session timeline again from the runtime" is
+/// right for a streaming consumer, which can restart its own read; an observer
+/// has *already* re-read the epoch at the tail and been refused a second time,
+/// so repeating the read is the one thing that cannot help. The positions being
+/// resumed from name a numbering this runtime no longer maps, and the way
+/// forward is a fresh observation with no resume cursor at all.
+///
+/// Anything that is not that signal passes through untouched.
+fn unobservable_epoch(error: ApiError) -> ApiError {
+    if error.code != ApiErrorCode::TimelineRefetchRequired {
+        return error;
+    }
+    ApiError::new(
+        error.realm_id,
+        ApiErrorCode::TimelineRefetchRequired,
+        "the resume cursor names a timeline epoch this runtime no longer maps, and re-reading the epoch did not recover it",
+    )
+    .advising("observe this turn again without a resume cursor; the epoch numbering it was issued under is gone")
+}
+
+/// Re-state a refusal that happened *after* the message was delivered.
+///
+/// The code is kept — whatever went wrong with the readback really did go
+/// wrong, and a caller's backoff for it is still right. What is replaced is the
+/// claim the caller would otherwise act on. An ordinary channel refusal advises
+/// "nothing was changed"; here the most important thing in the world did
+/// change, and a caller who resends under a fresh idempotency key puts a second
+/// copy of one instruction into a live seat's transcript.
+fn after_delivery(error: ApiError) -> ApiError {
+    ApiError::new(
+        error.realm_id,
+        error.code,
+        "the message was delivered and acknowledged, but the session readback that follows it did not answer",
+    )
+    .advising(
+        "replay this exact idempotency key: it returns the original acknowledgement and repairs the session projection. Never resend under a new one",
+    )
+}
+
 /// Deliver one message into a session.
 ///
 /// The `Idempotency-Key` *is* the stable client message id: it must parse as one,
@@ -485,22 +1049,68 @@ pub async fn send_message(
         })
         .await
         .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
-    let acknowledged = session
-        .adapter
-        .send(&SendMessageRequest {
-            binding: session.snapshot.clone(),
-            message_id,
-            body,
-            sent_at: now(),
-        })
-        .await
-        .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+    // Before the runtime is asked to accept it, never after. This ledger is what
+    // lets observation prove the id unambiguous without reading the session's
+    // whole content, and it can only do that if every id the runtime might have
+    // seen is already in it. Recording after a successful send would leave the
+    // ids whose acknowledgement was lost — exactly the ones an operator has to
+    // reason about — absent from the record that decides they are settleable.
+    // Captured before the issuance is written and before anything is sent, so
+    // the recorded pair names a tail this message cannot already be below.
+    let boundary = state
+        .canonical_tail_boundary(
+            session.adapter.as_ref(),
+            session.snapshot.identity(),
+            &session.snapshot,
+        )
+        .await?;
+    let issuance = state.record_message_issuance(
+        session.snapshot.identity(),
+        session.snapshot.binding_id(),
+        message_id,
+        "session_message_send",
+        idempotency_key(&state, &headers)?.as_str(),
+        boundary,
+    )?;
+    // A replay arriving at an adapter that was rebuilt since the first attempt
+    // has to reconcile before it sends, and only this side still remembers that
+    // there *was* a first attempt.
+    let request = SendMessageRequest {
+        binding: session.snapshot.clone(),
+        message_id,
+        body,
+        sent_at: now(),
+    };
+    state.note_replayed_issuance(
+        session.adapter.as_ref(),
+        issuance,
+        message_id,
+        &request.body_hash(),
+    )?;
+    let acknowledged = state
+        .send_issued_message(session.adapter.as_ref(), &request)
+        .await?;
+    // Where it landed, recorded the moment the runtime says so. The issuance
+    // row already proves Kontor sent this id once; this is the other half a
+    // bounded observation needs, because one issuance does not mean one
+    // occurrence — a runtime that echoes a message produces two, and a window
+    // sees only the newer.
+    state.record_message_delivery_durably(
+        session.adapter.as_ref(),
+        session.snapshot.identity(),
+        message_id,
+        acknowledged.position,
+    )?;
     // Acceptance says only that the message effect landed. The runtime's fresh
     // readback decides whether the same native seat is running, waiting or in
     // another state, and the shared reducer advances its AgentRun and TeamRun
     // together. A replay follows this same path, repairing a projection left
     // stale when an earlier acknowledgement or post-send inspect was lost.
     let reduced_at = now();
+    // Past this line the message is delivered and its acknowledgement is in
+    // hand. Everything that remains is *projection*, and a projection fault
+    // must never be reported as a failed delivery: the readback is how Kontor
+    // learns what the seat is now doing, not how the seat learns what to do.
     let observation = session
         .adapter
         .inspect(&InspectRequest {
@@ -508,16 +1118,460 @@ pub async fn send_message(
             requested_at: reduced_at,
         })
         .await
-        .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
-    state.applications().persist_session_observation(
-        session.project_id,
-        session.agent_run_id,
-        &observation,
-        reduced_at,
-    )?;
+        .map_err(|error| after_delivery(ApiError::from_runtime(realm_id, &error)))?;
+    state
+        .applications()
+        .persist_session_observation(
+            session.project_id,
+            session.agent_run_id,
+            &observation,
+            reduced_at,
+        )
+        .map_err(after_delivery)?;
     Ok(Json(ReceiptEnvelope::new(
         realm_id,
         MessageAckDto::from(&acknowledged),
+    )))
+}
+
+/// One bounded reconciliation step. This never resumes or sends a native message.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MessageReconcileRequest {
+    /// Exact previously issued client message id.
+    pub message_id: String,
+    /// Zero starts a proof; later calls name its returned revision.
+    pub expected_revision: u64,
+}
+
+/// Lookup of already recorded proof progress.
+#[derive(Debug, Deserialize)]
+pub struct MessageProofQuery {
+    /// Exact previously issued client message id.
+    pub message_id: String,
+}
+
+/// Read durable proof progress for the exact original issuance.
+#[utoipa::path(
+    get, path = "/v1/sessions/{agent_run_id}/messages/proof", tag = "sessions",
+    params(("agent_run_id" = String, Path), ("message_id" = String, Query)),
+    responses((status = 200, body = serde_json::Value))
+)]
+pub async fn message_proof(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(agent_run_id): Path<String>,
+    Query(query): Query<MessageProofQuery>,
+) -> Result<Json<ReceiptEnvelope<serde_json::Value>>, ApiError> {
+    let session = resolve(&state, &agent_run_id, CallerCapability::Observer, caller).await?;
+    let issuance = proof_issuance(&state, &session, &query.message_id)?;
+    let proof = state
+        .with_store(|store| store.message_delivery_proof(&issuance.message_id))
+        .map_err(|error| ApiError::from_repository(state.realm_id(), &error))?;
+    Ok(Json(ReceiptEnvelope::new(
+        state.realm_id(),
+        serde_json::json!(proof),
+    )))
+}
+
+fn proof_issuance(
+    state: &ApiState,
+    session: &Session,
+    id: &str,
+) -> Result<kontor_store::MessageIssuance, ApiError> {
+    let message_id =
+        MessageId::parse(id).map_err(|error| ApiError::from_domain(state.realm_id(), &error))?;
+    let issued = state.message_issuance(message_id)?.ok_or_else(|| {
+        ApiError::new(
+            state.realm_id(),
+            ApiErrorCode::NotFound,
+            "no original issuance exists for this message",
+        )
+    })?;
+    if issued.runtime_binding_id != session.snapshot.binding_id().to_string()
+        || issued.native_session_id != session.snapshot.identity().native_id.as_str()
+        || issued.runtime_kind != session.snapshot.identity().runtime_kind.as_str()
+        || issued.host != session.snapshot.identity().host.as_str()
+    {
+        return Err(ApiError::new(
+            state.realm_id(),
+            ApiErrorCode::StaleBinding,
+            "this issuance belongs to a different native binding",
+        ));
+    }
+    Ok(issued)
+}
+
+// Bind every event identity field, not only its payload digest.
+fn message_proof_event_hash(event: &kontor_runtime::timeline::SessionEvent) -> ContentHash {
+    let subject = match &event.subject {
+        EventSubject::None => serde_json::Value::Null,
+        EventSubject::Message(id) => serde_json::json!({"message": id.to_string()}),
+        EventSubject::Permission(id) => serde_json::json!({"permission": id.as_str()}),
+    };
+    ContentHash::of(
+        serde_json::json!({
+            "kind": event.kind, "position": event.position, "subject": subject,
+            "native_event_id": event.native_event_id, "emitted_at": event.emitted_at.to_string(),
+            "payload": event.payload.hash().as_str(),
+        })
+        .to_string()
+        .as_bytes(),
+    )
+}
+
+fn proof_gap(state: &ApiState, rule: &'static str) -> ApiError {
+    ApiError::new(
+        state.realm_id(),
+        ApiErrorCode::TimelineRefetchRequired,
+        rule,
+    )
+    .advising("retain the unknown acknowledgement; do not resend or replace its historical proof")
+}
+
+/// Freeze or advance one read-only canonical proof page with durable replay.
+#[utoipa::path(
+    post, path = "/v1/sessions/{agent_run_id}/messages:reconcile", tag = "sessions",
+    params(("agent_run_id" = String, Path), ("Idempotency-Key" = String, Header)),
+    request_body = MessageReconcileRequest,
+    responses((status = 200, body = serde_json::Value), (status = 409, description = "Proof revision, identity or history refused"))
+)]
+pub async fn reconcile_message_delivery(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path(agent_run_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<MessageReconcileRequest>,
+) -> Result<Json<ReceiptEnvelope<serde_json::Value>>, ApiError> {
+    let session = resolve(&state, &agent_run_id, CallerCapability::Operator, caller).await?;
+    let realm = state.realm_id();
+    let issued = proof_issuance(&state, &session, &request.message_id)?;
+    let key = idempotency_key(&state, &headers)?;
+    let request_hash = ContentHash::of(
+        serde_json::json!([agent_run_id, request.message_id, request.expected_revision])
+            .to_string()
+            .as_bytes(),
+    );
+    if let Some(replay) = state
+        .with_store(|store| {
+            store.message_delivery_proof_replay(
+                &issued.message_id,
+                key.as_str(),
+                request_hash.as_str(),
+            )
+        })
+        .map_err(|error| ApiError::from_repository(realm, &error))?
+    {
+        return Ok(Json(ReceiptEnvelope::new(realm, serde_json::json!(replay))));
+    }
+    let held = state
+        .with_store(|store| store.message_delivery_proof(&issued.message_id))
+        .map_err(|error| ApiError::from_repository(realm, &error))?;
+    let revision = held.as_ref().map_or(0, |proof| proof.revision);
+    if request.expected_revision != revision {
+        return Err(ApiError::new(
+            realm,
+            ApiErrorCode::RevisionConflict,
+            "the proof has advanced; read its current revision",
+        )
+        .with_revision(kontor_core::id::AggregateRevision::parse(revision).ok()));
+    }
+    if let Some(proof) = held.as_ref()
+        && proof.state != "scanning"
+    {
+        return Ok(Json(ReceiptEnvelope::new(realm, serde_json::json!(proof))));
+    }
+    let size = session
+        .snapshot
+        .capabilities
+        .limits
+        .max_history_page
+        .min(500);
+    session.preflight(
+        realm,
+        RuntimeCapability::History,
+        Some(LimitDemand::HistoryPage(size)),
+    )?;
+    let starting = held.is_none();
+    let mut proof = match held {
+        Some(proof) => proof,
+        None => {
+            let anchor = state
+                .with_store(|store| store.message_delivery_proof_anchor(&issued))
+                .map_err(|error| ApiError::from_repository(realm, &error))?
+                .ok_or_else(|| {
+                    proof_gap(
+                        &state,
+                        "this binding has no earlier durable message or turn epoch anchor",
+                    )
+                })?;
+            let page = state
+                .tail_window_recovering_epoch_once(
+                    session.adapter.as_ref(),
+                    session.snapshot.identity(),
+                    &session.snapshot,
+                    1,
+                    1,
+                )
+                .await?;
+            let tail = page
+                .items
+                .last()
+                .ok_or_else(|| proof_gap(&state, "the anchored native history is missing"))?;
+            if page.epoch != anchor.epoch
+                || tail.position.epoch != anchor.epoch
+                || tail.position.sequence < anchor.sequence
+            {
+                return Err(proof_gap(
+                    &state,
+                    "the native history no longer agrees with its original durable epoch anchor",
+                ));
+            }
+            kontor_store::MessageDeliveryProof {
+                schema_version: 1,
+                message_id: issued.message_id.clone(),
+                issuance_hash: kontor_store::message_issuance_digest(&issued)
+                    .map_err(|error| ApiError::from_repository(realm, &error))?
+                    .to_string(),
+                runtime_generation: session.snapshot.identity().generation,
+                anchor,
+                upper_sequence: tail.position.sequence,
+                upper_hash: message_proof_event_hash(tail).to_string(),
+                through_sequence: 0,
+                occurrences: 0,
+                candidate_sequence: None,
+                candidate_hash: None,
+                candidate_body_hash: None,
+                candidate_accepted_at: None,
+                anchor_seen: false,
+                state: "scanning".to_owned(),
+                revision: 0,
+            }
+        }
+    };
+    if proof.runtime_generation != session.snapshot.identity().generation
+        || proof.issuance_hash
+            != kontor_store::message_issuance_digest(&issued)
+                .map_err(|error| ApiError::from_repository(realm, &error))?
+                .as_str()
+    {
+        return Err(proof_gap(&state, "the original proof identity changed"));
+    }
+    // Freeze the observed upper bound before the first historical page. The
+    // first receipt is replayable even if the following page cannot be read.
+    if starting {
+        proof.revision = 1;
+        let recorded = state
+            .with_store(|store| {
+                store.advance_message_delivery_proof(
+                    &issued,
+                    &proof,
+                    0,
+                    key.as_str(),
+                    request_hash.as_str(),
+                )
+            })
+            .map_err(|error| ApiError::from_repository(realm, &error))?;
+        return Ok(Json(ReceiptEnvelope::new(
+            realm,
+            serde_json::json!(recorded),
+        )));
+    }
+    let position = TimelinePosition {
+        epoch: proof.anchor.epoch,
+        sequence: proof.through_sequence,
+    };
+    // An explicit zero cursor is an origin read with one bounded forward page.
+    // A cursor-free read would instead walk the entire transcript to find its start.
+    let mut page = state
+        .history_with_durable_epochs(
+            session.adapter.as_ref(),
+            session.snapshot.identity(),
+            &HistoryRequest {
+                binding: session.snapshot.clone(),
+                cursor: Some(HistoryCursor::issue(
+                    session.snapshot.binding_id(),
+                    position,
+                )),
+                page_size: size,
+            },
+        )
+        .await?;
+    if page.items.is_empty()
+        || page
+            .items
+            .windows(2)
+            .any(|pair| pair[1].position.sequence != pair[0].position.sequence.saturating_add(1))
+        || page
+            .items
+            .iter()
+            .any(|item| item.position.sequence <= position.sequence)
+    {
+        return Err(proof_gap(
+            &state,
+            "a proof page is empty or overlaps earlier progress",
+        ));
+    }
+    let mut reader = HistoryReader::resuming(session.snapshot.binding_id(), position);
+    reader
+        .accept_page(&mut page)
+        .map_err(|error| ApiError::from_runtime(realm, &error))?;
+    if page.end != reader.anchor() {
+        return Err(proof_gap(
+            &state,
+            "the page end does not match its continuously read entries",
+        ));
+    }
+    let wanted = MessageId::parse(&issued.message_id)
+        .map_err(|error| ApiError::from_domain(realm, &error))?;
+    let anchor_message = MessageId::parse(&proof.anchor.message_id)
+        .map_err(|error| ApiError::from_domain(realm, &error))?;
+    for event in &page.items {
+        if event.position.sequence > proof.upper_sequence {
+            break;
+        }
+        if event.position.sequence == proof.anchor.sequence {
+            if event.subject != EventSubject::Message(anchor_message) {
+                return Err(proof_gap(
+                    &state,
+                    "the original canonical anchor occurrence was rewritten",
+                ));
+            }
+            proof.anchor_seen = true;
+        }
+        if event.position.sequence == proof.upper_sequence
+            && message_proof_event_hash(event).as_str() != proof.upper_hash
+        {
+            return Err(proof_gap(
+                &state,
+                "the proof's original upper-bound event was rewritten",
+            ));
+        }
+        if event.subject == EventSubject::Message(wanted) {
+            proof.occurrences = (proof.occurrences + 1).min(2);
+            if proof.candidate_sequence.is_none() {
+                proof.candidate_sequence = Some(event.position.sequence);
+                proof.candidate_hash = Some(message_proof_event_hash(event).to_string());
+                proof.candidate_accepted_at = Some(event.emitted_at);
+                proof.candidate_body_hash = event
+                    .payload
+                    .deserialize::<serde_json::Value>()
+                    .ok()
+                    .and_then(|payload| payload["message_body_hash"].as_str().map(str::to_owned));
+            }
+        }
+        proof.through_sequence = event.position.sequence;
+    }
+    if proof.occurrences >= 2 {
+        proof.state = "duplicate".to_owned();
+    } else if proof.through_sequence == proof.upper_sequence {
+        if !proof.anchor_seen {
+            return Err(proof_gap(
+                &state,
+                "the proof never observed its original anchor",
+            ));
+        }
+        proof.state = if proof.occurrences == 1 {
+            "confirmed"
+        } else {
+            "absent"
+        }
+        .to_owned();
+        // Revalidate the historical anchor at completion too; a prefix read in
+        // an earlier call must not conceal retention or a same-epoch rewrite.
+        let anchor_page = state
+            .history_with_durable_epochs(
+                session.adapter.as_ref(),
+                session.snapshot.identity(),
+                &HistoryRequest {
+                    binding: session.snapshot.clone(),
+                    cursor: Some(HistoryCursor::issue(
+                        session.snapshot.binding_id(),
+                        TimelinePosition {
+                            epoch: proof.anchor.epoch,
+                            sequence: proof.anchor.sequence - 1,
+                        },
+                    )),
+                    page_size: 1,
+                },
+            )
+            .await?;
+        if anchor_page.epoch != proof.anchor.epoch
+            || anchor_page.items.len() != 1
+            || anchor_page.items[0].position
+                != (TimelinePosition {
+                    epoch: proof.anchor.epoch,
+                    sequence: proof.anchor.sequence,
+                })
+            || anchor_page.items[0].subject != EventSubject::Message(anchor_message)
+        {
+            return Err(proof_gap(
+                &state,
+                "the original epoch anchor changed before confirmation",
+            ));
+        }
+        if let Some(candidate) = proof.candidate_sequence {
+            let verify = state
+                .history_with_durable_epochs(
+                    session.adapter.as_ref(),
+                    session.snapshot.identity(),
+                    &HistoryRequest {
+                        binding: session.snapshot.clone(),
+                        cursor: Some(HistoryCursor::issue(
+                            session.snapshot.binding_id(),
+                            TimelinePosition {
+                                epoch: proof.anchor.epoch,
+                                sequence: candidate - 1,
+                            },
+                        )),
+                        page_size: 1,
+                    },
+                )
+                .await?;
+            if verify.epoch != proof.anchor.epoch
+                || verify.items.len() != 1
+                || verify.items[0].position
+                    != (TimelinePosition {
+                        epoch: proof.anchor.epoch,
+                        sequence: candidate,
+                    })
+                || verify.items[0].subject != EventSubject::Message(wanted)
+                || Some(message_proof_event_hash(&verify.items[0]).as_str())
+                    != proof.candidate_hash.as_deref()
+            {
+                return Err(proof_gap(
+                    &state,
+                    "the exact candidate occurrence changed before confirmation",
+                ));
+            }
+        }
+    } else if page.next.is_none() {
+        return Err(proof_gap(
+            &state,
+            "history ended before the proof's immutable upper bound",
+        ));
+    }
+    proof.revision = request.expected_revision.checked_add(1).ok_or_else(|| {
+        ApiError::new(
+            realm,
+            ApiErrorCode::InvalidRequest,
+            "proof revision exhausted",
+        )
+    })?;
+    let recorded = state
+        .with_store(|store| {
+            store.advance_message_delivery_proof(
+                &issued,
+                &proof,
+                request.expected_revision,
+                key.as_str(),
+                request_hash.as_str(),
+            )
+        })
+        .map_err(|error| ApiError::from_repository(realm, &error))?;
+    Ok(Json(ReceiptEnvelope::new(
+        realm,
+        serde_json::json!(recorded),
     )))
 }
 
@@ -587,7 +1641,23 @@ pub async fn respond_permission(
 /// acknowledgement and a contradictory one is owed a typed conflict, and a check
 /// that refused everything already resolved would turn both of those into "no
 /// such request".
+///
+/// The scan is held to the realm's derived-read deadline for the same reason
+/// settlement and observation are: it pages until the runtime says there is no
+/// more, and against a session that never answers, every page costs the runtime
+/// client's full per-request deadline. Bounding the requests is not bounding the
+/// read.
 async fn ensure_raised_here(
+    state: &ApiState,
+    session: &Session,
+    permission_id: &ExternalId,
+) -> Result<(), ApiError> {
+    state
+        .within_derived_read_deadline(ensure_raised_here_unbounded(state, session, permission_id))
+        .await
+}
+
+async fn ensure_raised_here_unbounded(
     state: &ApiState,
     session: &Session,
     permission_id: &ExternalId,
@@ -596,15 +1666,17 @@ async fn ensure_raised_here(
     let mut cursor: Option<HistoryCursor> = None;
     let mut raised = BTreeSet::new();
     loop {
-        let page = session
-            .adapter
-            .history(&HistoryRequest {
-                binding: session.snapshot.clone(),
-                cursor: cursor.clone(),
-                page_size: DEFAULT_PAGE,
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+        let page = state
+            .history_with_durable_epochs(
+                session.adapter.as_ref(),
+                session.snapshot.identity(),
+                &HistoryRequest {
+                    binding: session.snapshot.clone(),
+                    cursor: cursor.clone(),
+                    page_size: DEFAULT_PAGE,
+                },
+            )
+            .await?;
         raised.extend(
             page.items
                 .iter()
@@ -631,14 +1703,16 @@ async fn ensure_raised_here(
 }
 
 /// The `Idempotency-Key`, read as the Kontor message identifier it has to be.
+///
+/// The identity has to come from the caller's key, because on these routes the
+/// message id *is* the idempotency record: generating one per call would send
+/// the message twice on a retry. It does not have to be spelled as a UUIDv7.
+/// Requiring that made these routes the only writes in Kontor that refuse the
+/// key vocabulary the contract documents, and ASMA-8191 records what that cost
+/// on the one route whose refusal also named no field.
 fn message_identifier(state: &ApiState, headers: &HeaderMap) -> Result<MessageId, ApiError> {
     let key = idempotency_key(state, headers)?;
-    MessageId::parse(key.as_str()).map_err(|_| {
-        state.refuse(
-            ApiErrorCode::InvalidRequest,
-            "a session Idempotency-Key is the client's stable message id: a canonical UUID v7",
-        )
-    })
+    Ok(MessageId::parse(key.as_str()).unwrap_or_else(|_| MessageId::derive(key.as_str())))
 }
 
 /// The `Idempotency-Key` a compaction is keyed on, which *is* the receipt id.

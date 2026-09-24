@@ -8,14 +8,16 @@
 //!   binary serves, so what is exercised is the real middleware, the real
 //!   extractors and the real handlers — but nothing listens anywhere.
 //! * **A real state root.** Each world gets its own `TempDir`, so the lock, the
-//!   credential file and the database are the real ones and two worlds are two
-//!   genuinely separate Realms.
+//!   credential file and the database are the real ones. The schema is migrated
+//!   once per process and cloned from there, so worlds share the template's Realm
+//!   identity — see `open_created_realm` for the tests that compare identities.
 //! * **A real runtime contract.** Every session in these tests comes out of
 //!   `ScriptedFakeRuntime` as a real `RuntimeBindingSnapshot`, through admission
 //!   and launch. Nothing here fabricates a binding, because a fabricated one is
 //!   exactly what the API is supposed to refuse.
 
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use axum::Router;
 use axum::body::Body;
@@ -25,17 +27,17 @@ use kontor_api::state::RuntimeRegistry;
 use kontor_core::id::{
     AgentRunId, BoundedText, ExternalId, ExternalName, MiniProjectId, ProjectId, RealmId,
     RoleSlotId, RuntimeBindingId, RuntimeKindKey, SCHEMA_VERSION, TaskId, TeamRunId, Timestamp,
-    parse_utc_timestamp,
+    TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::repository::{
-    NewAgentRun, NewProject, NewTask, NewTeamRun, ProjectRepository, RunRepository, RuntimeBinding,
-    SpecRepository,
+    NewAgentRun, NewNativeContainerBinding, NewProject, NewSessionTopologyNode, NewTask,
+    NewTeamRun, ProjectRepository, RunRepository, RuntimeBinding, SpecRepository,
 };
 use kontor_core::repository::{TeamDefinitionRepository, TopologyRepository};
-use kontor_core::spec::TeamRunSnapshot;
-use kontor_core::state::{NativeRuntimeIdentity, TaskState};
+use kontor_core::spec::{TeamRunSnapshot, TopologySnapshot};
+use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind, TaskState};
 use kontor_daemon::usage::{ExactProviderUsageReporter, UsagePoller};
-use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
+use kontor_daemon::{DATABASE_FILE, DEFAULT_CAPACITY, Daemon, DaemonConfig};
 use kontor_profiles::pack::{PackAvailability, resolve_profile};
 use kontor_profiles::seeds::bundled_pack;
 use kontor_runtime::adapter::RuntimeAdapter;
@@ -48,6 +50,7 @@ use kontor_runtime::request::{LaunchParts, LaunchPlacement};
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::workspace::{WorkspaceBindingId, WorkspacePrepareRequest, WorkspaceRoot};
 use kontor_scheduler::model::CapacityConfig;
+use kontor_store::SqliteStore;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -102,6 +105,18 @@ pub(crate) fn every_capability() -> RuntimeCapabilities {
     }
 }
 
+/// The same declaration with a narrower history page.
+///
+/// A settlement proves terminality by reading to the end of the session, so its
+/// cost is the distance from the claimed message to the tail divided by the
+/// page size. Shrinking the page is how a test reaches the scan's page budget
+/// without building a session of thousands of events.
+pub(crate) fn capabilities_with_history_page(page: u32) -> RuntimeCapabilities {
+    let mut declared = every_capability();
+    declared.limits.max_history_page = page;
+    declared
+}
+
 /// The same declaration, minus the named capabilities.
 pub(crate) fn capabilities_without(missing: &[RuntimeCapability]) -> RuntimeCapabilities {
     let mut declared = every_capability();
@@ -109,6 +124,48 @@ pub(crate) fn capabilities_without(missing: &[RuntimeCapability]) -> RuntimeCapa
         declared.supported.remove(capability);
     }
     declared
+}
+
+/// A state root already at the current schema version, migrated once per process
+/// and cloned into every world.
+///
+/// A world is a real state root, but the schema inside it is a constant of the
+/// build: replaying all 96 generations costs about a second and a half of SQLite
+/// work for every fresh file, which is more than the test it sets up and is paid
+/// again by every `World::open` in the binary. The migrated file is cloned
+/// instead — and it is a genuinely migrated realm, so nothing about the open
+/// path is faked.
+///
+/// The Realm identity inside it is therefore *shared* by every clone. That is not
+/// a shortcut around the schema but a consequence of it: a realm row may not be
+/// updated or deleted, so a copy cannot be re-identified. A test that is about
+/// the identity itself starts from [`World::open_created_realm`] instead.
+fn migrated_state_root() -> &'static TempDir {
+    static TEMPLATE: OnceLock<TempDir> = OnceLock::new();
+    TEMPLATE.get_or_init(|| {
+        let root = TempDir::new().expect("a template state root");
+        SqliteStore::open(&root.path().join(DATABASE_FILE)).expect("the template realm migrates");
+        // Closing the store above checkpoints the write-ahead log and truncates
+        // it, so the database file is complete on its own — which is the whole
+        // reason a plain copy of it is a whole realm. Frames left in the log
+        // would mean the copy silently lost committed schema, so this is a
+        // failure and not a warning.
+        let log = root.path().join(format!("{DATABASE_FILE}-wal"));
+        assert!(
+            log.metadata().map_or(true, |metadata| metadata.len() == 0),
+            "the template's write-ahead log still holds frames"
+        );
+        root
+    })
+}
+
+/// Give one world its own copy of the migrated template.
+fn install_migrated_database(directory: &Path) {
+    std::fs::copy(
+        migrated_state_root().path().join(DATABASE_FILE),
+        directory.join(DATABASE_FILE),
+    )
+    .expect("the migrated template is cloned");
 }
 
 /// One started Realm, its router and the runtime behind it.
@@ -123,17 +180,72 @@ pub(crate) struct World {
     pub(crate) team_run: TeamRunId,
 }
 
+/// The exact title the bundled topology renders for a `QSW` node.
+///
+/// A literal in the pinned specification, so it needs no execution scope and no
+/// Team Definition to render. That is precisely why `QSW` is the kind this
+/// fixture uses: the title under test stays a fact about the specification
+/// rather than about whatever naming authority a test happened to seed.
+pub(crate) const NATIVE_CHILD_TITLE: &str = "Quick Session Workspace";
+
+/// One persisted `NativeChild` container binding and the identities around it.
+///
+/// This is the smallest durable shape the Admin container-recovery operation
+/// can act on: a native root bound as a project, one native child below it
+/// bound as a workspace, and a canonical working directory on the child. Every
+/// field here is read back out of the store by the daemon; nothing is passed
+/// in by a caller at request time.
+pub(crate) struct NativeChildFixture {
+    /// The `PSW` node, bound as the native project ancestor.
+    pub(crate) parent_node: TopologyNodeId,
+    /// The `QSW` node whose native child is the subject.
+    pub(crate) node: TopologyNodeId,
+    /// The preserved logical container-binding identity.
+    pub(crate) binding_id: ExternalId,
+    /// The persisted native identity a recovery proves absent.
+    pub(crate) stale_identity: NativeRuntimeIdentity,
+    /// The exact native project the child must be created below.
+    pub(crate) parent_native_id: ExternalId,
+    /// The canonical working directory the replacement must occupy.
+    pub(crate) canonical_cwd: ExternalName,
+}
+
 #[derive(Default)]
 struct WorldComposition {
     usage_reporter: Option<Arc<dyn ExactProviderUsageReporter>>,
     jira_connectors: Option<kontor_jira::JiraConnectors>,
     quota_signals: Option<String>,
+    /// Start from an empty state root and let the daemon create the Realm.
+    created_realm: bool,
 }
 
 impl World {
     /// Start a Realm whose runtime declares everything.
     pub(crate) async fn open() -> Self {
         Self::open_with(every_capability()).await
+    }
+
+    /// Start a Realm the daemon *creates*, so its identity is its own.
+    ///
+    /// Every other constructor clones a state root whose schema was migrated once
+    /// per process, and a clone cannot be re-identified: the schema refuses to
+    /// update or delete a realm row. So worlds cloned from one template share its
+    /// Realm identity, which is invisible to a test that treats a world as an
+    /// isolated state root — but not to one that compares identities. That test
+    /// starts here, and pays the full migration chain for the answer.
+    pub(crate) async fn open_created_realm() -> Self {
+        Self::compose_with_connector(
+            every_capability(),
+            true,
+            true,
+            false,
+            DEFAULT_CAPACITY,
+            WorldComposition {
+                created_realm: true,
+                ..WorldComposition::default()
+            },
+        )
+        .await
     }
 
     /// Start a Realm with a configured fleet and *nothing else*.
@@ -326,6 +438,9 @@ impl World {
         composition: WorldComposition,
     ) -> Self {
         let directory = TempDir::new().expect("a temporary directory");
+        if !composition.created_realm {
+            install_migrated_database(directory.path());
+        }
         if let Some(document) = composition.quota_signals.as_deref() {
             std::fs::write(
                 directory.path().join(kontor_accounts::QUOTA_SIGNALS_FILE),
@@ -345,7 +460,12 @@ impl World {
         };
         let mut config = DaemonConfig::at(directory.path())
             .with_port(0)
-            .with_capacity(capacity);
+            .with_capacity(capacity)
+            // The production deadline is twenty seconds, which is the right
+            // number for a realm and the wrong one for a suite: a test that
+            // proves an unanswerable session is refused *by the deadline* has
+            // to wait it out, and the property is identical at one second.
+            .with_derived_read_deadline_seconds(1);
         if let Some(connectors) = composition.jira_connectors {
             config = config.with_jira_connectors(connectors);
         }
@@ -515,6 +635,155 @@ impl World {
         self.fake
             .load_script(&script, &[])
             .expect("the script loads");
+    }
+
+    /// Persist one `NativeChild` topology container binding and its ancestor.
+    ///
+    /// The shape mirrors what a live realm holds after a node's container was
+    /// bound and its native later vanished: the store still names the node, the
+    /// logical binding, the canonical path, the native parent and a native id
+    /// that no runtime answers to any more.
+    ///
+    /// Deliberately project-level (`PSW` -> `QSW`, no epic): it keeps the
+    /// fixture out of Team Definition rendering and execution scope, neither of
+    /// which the container-recovery contract depends on.
+    pub(crate) fn seed_native_child_container(&self) -> NativeChildFixture {
+        let parent_node = TopologyNodeId::generate();
+        let node = TopologyNodeId::generate();
+        // A canonical v7 UUID, because the recovery path parses this back into a
+        // `ContainerBindingId`. A readable slug would be refused by the type
+        // that makes a native container id unspellable as a binding id.
+        let binding_id = ExternalId::parse(
+            &kontor_runtime::container::ContainerBindingId::generate().to_string(),
+        )
+        .expect("a binding id");
+        let parent_native_id = ExternalId::parse("native-project-root").expect("a native id");
+        let canonical_cwd = name("/tmp/kontor-loopback/quick");
+        let stale_identity = NativeRuntimeIdentity {
+            runtime_kind: fake_family(),
+            host: name("fake-host"),
+            generation: self.fake.generation(),
+            native_id: ExternalId::parse("wks-vanished").expect("a native id"),
+        };
+        let created_at = at("2026-08-10T09:00:00Z");
+
+        let domain = kontor_profiles::bundled_operational_domain().expect("the domain loads");
+        let definition = domain
+            .team_definitions
+            .first()
+            .expect("a bundled Team Definition")
+            .clone();
+        let spec = domain
+            .topology_specs
+            .iter()
+            .find(|topology| {
+                topology.spec_id == definition.topology.spec_id
+                    && topology.version == definition.topology.version
+            })
+            .expect("its validator is bundled")
+            .clone();
+        // The published hash is a pure function of the specification, so it can
+        // be derived here rather than re-published. Publishing again would
+        // collide with the revision the world already seeded.
+        let canonical_hash = spec
+            .canonicalize()
+            .expect("the bundled topology canonicalizes")
+            .hash()
+            .clone();
+        let topology = TopologySnapshot {
+            spec_id: spec.spec_id,
+            version: spec.version,
+            canonical_hash,
+        };
+
+        self.daemon.state().with_store(|store| {
+            store
+                .create_topology_node(&NewSessionTopologyNode {
+                    id: parent_node,
+                    project_id: self.project,
+                    mini_project_id: None,
+                    topology: topology.clone(),
+                    kind: TopologyKindKey::parse("PSW").expect("a kind"),
+                    parent_id: None,
+                    task_id: None,
+                    created_at,
+                })
+                .expect("the project root node is created");
+            store
+                .create_topology_node(&NewSessionTopologyNode {
+                    id: node,
+                    project_id: self.project,
+                    mini_project_id: None,
+                    topology,
+                    kind: TopologyKindKey::parse("QSW").expect("a kind"),
+                    parent_id: Some(parent_node),
+                    task_id: None,
+                    created_at,
+                })
+                .expect("the native child node is created");
+            // The ancestor is bound as a *project*. This is what the recovery
+            // path walks the logical parents to find, and without it a child
+            // has no exact native parent to be recreated below.
+            store
+                .bind_topology_node_container(&NewNativeContainerBinding {
+                    topology_node_id: parent_node,
+                    project_id: self.project,
+                    container_binding_id: ExternalId::parse(
+                        &kontor_runtime::container::ContainerBindingId::generate().to_string(),
+                    )
+                    .expect("a binding id"),
+                    identity: NativeRuntimeIdentity {
+                        native_id: parent_native_id.clone(),
+                        ..stale_identity.clone()
+                    },
+                    observed_kind: ObservedContainerKind::Project,
+                    canonical_cwd: None,
+                    readback: None,
+                    bound_at: created_at,
+                    observed_at: created_at,
+                })
+                .expect("the native project ancestor is bound");
+            store
+                .bind_topology_node_container(&NewNativeContainerBinding {
+                    topology_node_id: node,
+                    project_id: self.project,
+                    container_binding_id: binding_id.clone(),
+                    identity: stale_identity.clone(),
+                    observed_kind: ObservedContainerKind::Workspace,
+                    canonical_cwd: Some(canonical_cwd.clone()),
+                    readback: None,
+                    bound_at: created_at,
+                    observed_at: created_at,
+                })
+                .expect("the native child is bound");
+        });
+
+        NativeChildFixture {
+            parent_node,
+            node,
+            binding_id,
+            stale_identity,
+            parent_native_id,
+            canonical_cwd,
+        }
+    }
+
+    /// How many natives this world's runtime actually built.
+    ///
+    /// Counts [`AdapterCall::CreateNativeContainer`] and nothing else, so an
+    /// adopt or a preview cannot inflate it. "exactly one" and "exactly zero"
+    /// in the frozen evidence items are both assertions about this number.
+    pub(crate) fn container_creates(&self) -> usize {
+        self.fake
+            .calls()
+            .into_iter()
+            .filter(|call| {
+                matches!(
+                    call,
+                    kontor_runtime::fake::AdapterCall::CreateNativeContainer(_)
+                )
+            })
+            .count()
     }
 
     /// This Realm's identity.

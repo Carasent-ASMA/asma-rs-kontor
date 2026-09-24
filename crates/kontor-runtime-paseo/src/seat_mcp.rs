@@ -48,9 +48,10 @@
 //! the whole process — the daemon resolves it once at fleet composition and
 //! hands the adapter `None`. That withdraws the MCP files **and nothing else**:
 //! a declared permission posture is a safety boundary rather than part of this
-//! surface, so it is composed either way. Providers other than Claude and
-//! opencode are a no-op for MCP: only the
-//! Claude harness reads `.mcp.json` from its cwd (codex/opencode are follow-up).
+//! surface, so it is composed either way. Only Claude reads `.mcp.json` from
+//! its cwd. Hosted leadership also receives the scoped MCP and exact tool
+//! policy in its creation frame for every provider, including Codex and
+//! OpenCode; their MCP surface must not depend on Claude's local files.
 //! Account-qualified Claude provider ids such as `claude-work` and
 //! `claude-personal` are the same harness boundary and are composed too.
 
@@ -245,8 +246,9 @@ pub fn compose_for_seat(
 }
 
 /// Compose the identity-bound leadership surface for a hosted LSA/TPM seat.
-/// It shares the same credential transport and provider boundary as
-/// consultation composition but presents only completion read/remediate tools.
+/// This is only Claude's cwd configuration. Every provider also receives the
+/// leadership MCP in its creation frame via `PaseoRpc::with_leadership_mcp`;
+/// the scoped credential remains exclusively in that frame's secret channel.
 pub fn compose_for_hosted_seat(
     seat: Option<&SeatMcp>,
     provider: &str,
