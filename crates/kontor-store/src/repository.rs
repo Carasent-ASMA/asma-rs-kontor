@@ -8303,6 +8303,53 @@ impl SqliteStore {
         Ok(keys)
     }
 
+    /// Artifact keys a settled role turn claimed for a task that is still done.
+    ///
+    /// Epic completion may treat those claims as ticket evidence. They are not
+    /// producer evidence: a gate still has to pass on its own record. An open,
+    /// imported, or reopened task contributes nothing, and a key the turn never
+    /// claimed stays absent.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn list_settled_turn_artifact_keys(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<BTreeSet<ExternalName>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT DISTINCT claimed.value
+                   FROM role_turns AS turn
+                   JOIN tasks AS task
+                     ON task.project_id = turn.project_id
+                    AND task.id = turn.task_id
+                   JOIN json_each(turn.artifacts) AS claimed
+                     ON claimed.type = 'text'
+                  WHERE turn.project_id = ?1
+                    AND turn.task_id = ?2
+                    AND turn.settled_at IS NOT NULL
+                    AND task.state = 'done'
+                    AND task.imported_state IS NULL
+                  ORDER BY claimed.value",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(backend)?;
+        let mut keys = BTreeSet::new();
+        for row in rows {
+            if let Ok(key) = ExternalName::parse(&row.map_err(backend)?) {
+                keys.insert(key);
+            }
+        }
+        Ok(keys)
+    }
+
     /// Check a proposal's existing replay authority before semantic validation.
     ///
     /// This ordering matters for a used key whose caller changes only the failed

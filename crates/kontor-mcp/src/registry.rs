@@ -2031,8 +2031,14 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::Text,
                 "Why the operator is filling this owed slot.",
             ),
+            opt(
+                "model_route",
+                Place::Body,
+                ArgType::Object(RUNTIME_MODEL_ROUTE),
+                "The Admin-authorized provider/model route replacing the frozen chain for this seat.",
+            ),
         ],
-        about: "Fill exactly one declared, unwaived slot inside an existing TeamRun when it is owed an undelivered handoff. Reuses the admitted placement and frozen model route; an already-bound slot is unchanged.",
+        about: "Fill exactly one declared, unwaived slot inside an existing TeamRun when it is owed an undelivered handoff. Reuses the admitted placement and frozen model route unless an Admin names one; an already-bound slot is unchanged.",
     },
     ToolSpec {
         name: "kontor_lifecycle_transition",
@@ -2632,7 +2638,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "unavailable_provider",
                 Place::Body,
                 ArgType::Object(UNAVAILABLE_PROVIDER_SEAT),
-                "Exact evidence authorizing retirement of a never-dispatched provider-blocked seat.",
+                "Exact evidence authorizing retirement of a provider-blocked seat; one that already ran also needs a model_route naming another provider.",
             ),
             opt(
                 "quota_exhausted",

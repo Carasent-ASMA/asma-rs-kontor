@@ -5,6 +5,8 @@
 //! implementation and the defect it replaces give *different* answers: a test
 //! that passes under both proves nothing about which one is running.
 
+mod support;
+
 use kontor_core::id::{
     AggregateRevision, BoundedText, ContentHash, ExternalId, ExternalName, MiniProjectId,
     ProjectId, RoleCode, RoleSlotId, RuntimeKindKey, SeatBindingId, Timestamp, TopologyKindKey,
@@ -54,7 +56,7 @@ struct Fixture {
 
 impl Fixture {
     fn build() -> Self {
-        let home = TempDir::new().expect("a temporary directory");
+        let home = support::state_root();
         let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
         let project_id = ProjectId::generate();
         let mini_project_id = MiniProjectId::generate();

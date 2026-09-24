@@ -813,11 +813,11 @@ pub struct CoreTeamSeatDto {
 /// The persona one launched occupancy was opened under, as Kontor froze it.
 ///
 /// Deliberately *not* a field of [`CoreTeamNativeSeatDto`], which reports what
-/// the runtime read back. Paseo's `config.systemPrompt` is creation-only, so no
-/// runtime here can attest the prompt a native is currently running under. This
-/// is evidence that Kontor froze this persona and delivered it at launch, and
-/// `delivery` says which of those two things it is in as many words, rather
-/// than leaving a reader to assume the stronger one.
+/// the runtime read back. The runtime's `config.systemPrompt` is creation-only,
+/// so no runtime here can attest the prompt a native is currently running
+/// under. This is evidence that Kontor froze this persona and delivered it at
+/// launch, and `delivery` says which of those two things it is in as many
+/// words, rather than leaving a reader to assume the stronger one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CoreTeamSeatPersonaDto {
     /// The catalog role whose persona was delivered.
@@ -5190,6 +5190,11 @@ pub struct FillTeamRunSeatRequest {
     /// Why the operator is completing this admitted team's missing seat.
     #[schema(value_type = String)]
     pub reason: BoundedText,
+    /// Admin-authorized provider/model route for this seat, replacing the
+    /// frozen chain when none of its rungs can be placed. Absent resolves the
+    /// frozen chain.
+    #[serde(default)]
+    pub model_route: Option<RuntimeModelRouteRequest>,
 }
 
 /// Readback of one durable handoff to the requested slot.
@@ -6294,8 +6299,9 @@ pub struct ReplaceSeatRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_route: Option<RuntimeModelRouteRequest>,
     /// Exact evidence authorizing retirement of a never-dispatched seat whose
-    /// provider is temporarily unavailable. Absent preserves normal persistent
-    /// idle-seat reuse.
+    /// provider is temporarily unavailable. A seat that already ran qualifies
+    /// only together with an explicit `model_route` naming another provider.
+    /// Absent preserves normal persistent idle-seat reuse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable_provider: Option<UnavailableProviderSeatRequest>,
     /// Exact evidence authorizing succession of a seat that ran and then hit a
@@ -11787,6 +11793,9 @@ pub async fn fill_team_run_seat(
     Json(request): Json<FillTeamRunSeatRequest>,
 ) -> Result<Json<FilledTeamRunSeatDto>, ApiError> {
     caller.require(&state, CallerCapability::Operator)?;
+    if request.model_route.is_some() {
+        caller.require(&state, CallerCapability::Admin)?;
+    }
     let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
     let team_run_id = parse_id(&state, TeamRunId::parse(&team_run_id))?;
     let role_slot_id = parse_id(&state, RoleSlotId::parse(&role_slot_id))?;
