@@ -5808,11 +5808,11 @@ export interface components {
          * @description The persona one launched occupancy was opened under, as Kontor froze it.
          *
          *     Deliberately *not* a field of [`CoreTeamNativeSeatDto`], which reports what
-         *     the runtime read back. Paseo's `config.systemPrompt` is creation-only, so no
-         *     runtime here can attest the prompt a native is currently running under. This
-         *     is evidence that Kontor froze this persona and delivered it at launch, and
-         *     `delivery` says which of those two things it is in as many words, rather
-         *     than leaving a reader to assume the stronger one.
+         *     the runtime read back. The runtime's `config.systemPrompt` is creation-only,
+         *     so no runtime here can attest the prompt a native is currently running
+         *     under. This is evidence that Kontor froze this persona and delivered it at
+         *     launch, and `delivery` says which of those two things it is in as many
+         *     words, rather than leaving a reader to assume the stronger one.
          */
         CoreTeamSeatPersonaDto: {
             /** @description What the runtime's acceptance of this persona actually proves. */

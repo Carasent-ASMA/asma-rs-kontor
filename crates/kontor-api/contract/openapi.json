@@ -16566,7 +16566,7 @@
       },
       "CoreTeamSeatPersonaDto": {
         "type": "object",
-        "description": "The persona one launched occupancy was opened under, as Kontor froze it.\n\nDeliberately *not* a field of [`CoreTeamNativeSeatDto`], which reports what\nthe runtime read back. Paseo's `config.systemPrompt` is creation-only, so no\nruntime here can attest the prompt a native is currently running under. This\nis evidence that Kontor froze this persona and delivered it at launch, and\n`delivery` says which of those two things it is in as many words, rather\nthan leaving a reader to assume the stronger one.",
+        "description": "The persona one launched occupancy was opened under, as Kontor froze it.\n\nDeliberately *not* a field of [`CoreTeamNativeSeatDto`], which reports what\nthe runtime read back. The runtime's `config.systemPrompt` is creation-only,\nso no runtime here can attest the prompt a native is currently running\nunder. This is evidence that Kontor froze this persona and delivered it at\nlaunch, and `delivery` says which of those two things it is in as many\nwords, rather than leaving a reader to assume the stronger one.",
         "required": [
           "role_code",
           "prompt_hash",
