@@ -564,14 +564,14 @@
     {
       "package": "kontor-store",
       "target": "unittests src/lib.rs",
-      "seconds": 48.74,
+      "seconds": 45.0,
       "passed": 16,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/advisor_multi_seat_advice.rs",
-      "seconds": 12.94,
+      "seconds": 1.75,
       "passed": 3,
       "failed": 0
     },
@@ -585,210 +585,210 @@
     {
       "package": "kontor-store",
       "target": "tests/backup_export.rs",
-      "seconds": 166.14,
+      "seconds": 155.09,
       "passed": 18,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/backup_snapshot.rs",
-      "seconds": 71.67,
+      "seconds": 68.68,
       "passed": 12,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/calendar_imports.rs",
-      "seconds": 45.22,
+      "seconds": 2.48,
       "passed": 10,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/child_calendar_windows.rs",
-      "seconds": 5.18,
+      "seconds": 1.77,
       "passed": 2,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/command_recovery.rs",
-      "seconds": 129.72,
+      "seconds": 5.56,
       "passed": 20,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/consultation_profiles.rs",
-      "seconds": 41.58,
+      "seconds": 1.95,
       "passed": 9,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/consultation_subject.rs",
-      "seconds": 51.28,
+      "seconds": 2.34,
       "passed": 13,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/crash_reopen.rs",
-      "seconds": 5.07,
+      "seconds": 5.05,
       "passed": 5,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/epic_jira_reconciliation.rs",
-      "seconds": 17.51,
+      "seconds": 1.83,
       "passed": 4,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/event_replay.rs",
-      "seconds": 264.55,
+      "seconds": 10.44,
       "passed": 47,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/hosted_seat_autonomy.rs",
-      "seconds": 71.21,
+      "seconds": 2.31,
       "passed": 16,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/intake_lineage.rs",
-      "seconds": 59.91,
+      "seconds": 3.03,
       "passed": 14,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/jira_link_ledger.rs",
-      "seconds": 28.79,
+      "seconds": 2.11,
       "passed": 5,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/jira_materialization.rs",
-      "seconds": 140.76,
+      "seconds": 4.04,
       "passed": 30,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/legacy_naming_recovery.rs",
-      "seconds": 5.5,
+      "seconds": 2.02,
       "passed": 2,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/native_capacity.rs",
-      "seconds": 76.74,
+      "seconds": 2.23,
       "passed": 16,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/open_questions.rs",
-      "seconds": 58.49,
+      "seconds": 4.49,
       "passed": 12,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/operational_liveness.rs",
-      "seconds": 46.87,
+      "seconds": 2.22,
       "passed": 11,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/operational_promotion.rs",
-      "seconds": 12.42,
+      "seconds": 1.81,
       "passed": 3,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/operational_topology.rs",
-      "seconds": 51.4,
+      "seconds": 2.47,
       "passed": 9,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/policy_evidence.rs",
-      "seconds": 97.4,
+      "seconds": 3.49,
       "passed": 22,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/reconciliation.rs",
-      "seconds": 77.28,
+      "seconds": 3.35,
       "passed": 16,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/repository_roundtrip.rs",
-      "seconds": 412.01,
+      "seconds": 33.11,
       "passed": 89,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/scheduler_admission.rs",
-      "seconds": 135.29,
+      "seconds": 3.4,
       "passed": 32,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/schema_v1.rs",
-      "seconds": 266.49,
+      "seconds": 232.42,
       "passed": 64,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/succession_attempts.rs",
-      "seconds": 41.74,
+      "seconds": 4.59,
       "passed": 8,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/team_definition_backup_contract.rs",
-      "seconds": 5.46,
+      "seconds": 5.22,
       "passed": 2,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/team_definition_migration_completeness.rs",
-      "seconds": 96.84,
+      "seconds": 88.08,
       "passed": 20,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/team_definition_persistence.rs",
-      "seconds": 144.73,
+      "seconds": 2.87,
       "passed": 31,
       "failed": 0
     },
     {
       "package": "kontor-store",
       "target": "tests/team_run_admission_adoption.rs",
-      "seconds": 82.23,
+      "seconds": 4.24,
       "passed": 18,
       "failed": 0
     },
