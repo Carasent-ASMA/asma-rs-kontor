@@ -1290,6 +1290,21 @@ impl Services {
             return self.deny(ApiErrorCode::PlacementBlocked, rule)
                 .advising("probe the exact configured provider account and retry after current quota evidence permits admission");
         }
+        // REQ-008: a fleet binding that resolves to no admissible route is a
+        // placement refusal, and the Appendix B rule is the whole answer — the
+        // generic `MissingEvidence` text would hide which fleet rule refused.
+        if let kontor_core::DomainError::MissingEvidence {
+            subject: "FleetConfiguration",
+            rule,
+        } = error
+        {
+            return self
+                .deny(ApiErrorCode::PlacementBlocked, rule)
+                .about("FleetConfiguration")
+                .advising(
+                    "edit fleet.yml so the bound chain keeps an admissible route, then retry",
+                );
+        }
         ApiError::from_domain(self.realm_id, error)
     }
 

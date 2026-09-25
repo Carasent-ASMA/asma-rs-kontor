@@ -35659,14 +35659,14 @@ async fn independence_fails_closed_when_only_the_implementers_vendor_is_left() {
         "lf05-closed-verifier",
     )
     .await;
-    assert_eq!(refused.status, 400, "{}", refused.body);
-    assert_eq!(refused.code(), "invalid_request");
-    // `ApiError::from_domain` maps `MissingEvidence` to that code and drops the
-    // domain's own rule text, keeping the subject that says which rule refused.
+    // REQ-008: the refusal is a placement block carrying Appendix B's R-02 text
+    // verbatim, so the operator can tell which fleet rule refused.
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked");
     assert_eq!(refused.json()["subject"], "FleetConfiguration");
     assert_eq!(
         refused.json()["rule"],
-        "the operation requires evidence that has not been recorded"
+        "every fleet route left for this seat uses the vendor of the seat it must be independent of"
     );
     assert_eq!(
         fixture.members().len(),

@@ -13,11 +13,6 @@
 //! The binding contract is Appendix B of the live-fleet plan: every rule text
 //! below is copied verbatim from that table, and rules are checked in table
 //! order so the first refusal is deterministic.
-//!
-//! LF-01 defines the whole surface before any call site exists, so the dead-code
-//! lint is waived for this phase only. Remove this allow once LF-02 through
-//! LF-05 wire every item into `Services`.
-#![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
@@ -311,7 +306,7 @@ impl FleetSnapshot {
             return false;
         };
         if model.efforts.is_empty() {
-            return true;
+            return rung.effort.is_none();
         }
         rung.effort
             .is_some_and(|effort| model.efforts.iter().any(|listed| listed == effort.as_str()))
@@ -1450,6 +1445,24 @@ rules:
         };
         assert_eq!(snapshot.vendor_of(&rung), Some("unknown"));
         assert_eq!(independence_key(&rung, Some(&snapshot)), None);
+    }
+
+    #[test]
+    fn a_listed_route_must_match_the_models_efforts() {
+        use kontor_core::spec::EffortLevel;
+        let snapshot = FleetSnapshot::parse(EXAMPLE).expect("valid document");
+        let route = |model: &str, effort: Option<EffortLevel>| ModelRung {
+            provider: ProviderRef("cursor".to_owned()),
+            model: ModelRef(model.to_owned()),
+            effort,
+        };
+        // `composer-2.5` declares no efforts, so only an effort-less route is it.
+        assert!(snapshot.lists(&route("composer-2.5", None)));
+        assert!(!snapshot.lists(&route("composer-2.5", Some(EffortLevel::High))));
+        // `grok-4.7` declares efforts, so a route must name one of them.
+        assert!(snapshot.lists(&route("grok-4.7", Some(EffortLevel::Xhigh))));
+        assert!(!snapshot.lists(&route("grok-4.7", Some(EffortLevel::Max))));
+        assert!(!snapshot.lists(&route("grok-4.7", None)));
     }
 
     #[test]
