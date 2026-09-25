@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "pack_id": "fleet-pack",
+  "version": 1,
+  "manifest": [
+    {
+      "category": "fleet-cat",
+      "label": "Fleet high-stakes",
+      "availability": "seeded",
+      "profile": "fleet-profile",
+      "profile_version": 1
+    }
+  ],
+  "roles": [
+    { "role": "fleet-scoper", "version": 1, "label": "Fleet scoper" },
+    { "role": "fleet-implementer", "version": 1, "label": "Fleet implementer" },
+    { "role": "fleet-reviewer", "version": 1, "label": "Fleet reviewer" }
+  ],
+  "skills": [{ "skill": "fleet-s1", "version": 1, "label": "Fleet skill one" }],
+  "contexts": [],
+  "teams": [
+    {
+      "schema_version": 1,
+      "template_id": "01936f5a-0000-7000-8000-00000000000f",
+      "version": 1,
+      "name": "Fleet team",
+      "roles": [
+        { "role": { "role": "fleet-scoper", "version": 1 }, "min_slots": 1, "max_slots": 1 },
+        { "role": { "role": "fleet-implementer", "version": 1 }, "min_slots": 1, "max_slots": 1 },
+        { "role": { "role": "fleet-reviewer", "version": 1 }, "min_slots": 2, "max_slots": 2 }
+      ],
+      "slots": [
+        {
+          "id": "scope",
+          "role": { "role": "fleet-scoper", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
+          "skills": [{ "skill": "fleet-s1", "version": 1 }],
+          "context": null,
+          "may_evaluate": [],
+          "may_waive": [],
+          "waiver_policy": null
+        },
+        {
+          "id": "implement",
+          "role": { "role": "fleet-implementer", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
+          "skills": [{ "skill": "fleet-s1", "version": 1 }],
+          "context": null,
+          "may_evaluate": [],
+          "may_waive": [],
+          "waiver_policy": null
+        },
+        {
+          "id": "review",
+          "role": { "role": "fleet-reviewer", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
+          "skills": [],
+          "context": null,
+          "may_evaluate": ["fleet-verification-gate"],
+          "may_waive": [],
+          "waiver_policy": null
+        },
+        {
+          "id": "fleet-implementer",
+          "role": { "role": "fleet-reviewer", "version": 1 },
+          "model_chain": { "rungs": [{ "provider": "test", "model": "test" }] },
+          "skills": [],
+          "context": null,
+          "may_evaluate": [],
+          "may_waive": [],
+          "waiver_policy": null
+        }
+      ],
+      "handoffs": [
+        {
+          "from_slot": "scope",
+          "to_slot": "implement",
+          "after_phase": "high-scope",
+          "required_artifacts": ["high-scope-record"]
+        },
+        {
+          "from_slot": "implement",
+          "to_slot": "review",
+          "after_phase": "high-implementation",
+          "required_artifacts": ["high-change"]
+        }
+      ],
+      "max_successor_depth": 2,
+      "max_handoff_depth": 4
+    }
+  ],
+  "profiles": [
+    {
+      "schema_version": 1,
+      "id": "fleet-profile",
+      "version": 1,
+      "name": "Fleet high-stakes profile",
+      "phases": [
+        {
+          "id": "high-scope",
+          "label": "High scope",
+          "required_artifacts": ["high-scope-record"],
+          "gates": [],
+          "rejection_route": null
+        },
+        {
+          "id": "high-implementation",
+          "label": "High implementation",
+          "required_artifacts": ["high-change"],
+          "gates": [],
+          "rejection_route": null
+        },
+        {
+          "id": "high-verification",
+          "label": "High verification",
+          "required_artifacts": ["high-verification-report"],
+          "gates": ["fleet-verification-gate"],
+          "rejection_route": "high-implementation"
+        }
+      ],
+      "edges": [
+        { "from": "high-scope", "to": "high-implementation", "handoff_role": "fleet-implementer" },
+        { "from": "high-implementation", "to": "high-verification", "handoff_role": "fleet-reviewer" }
+      ],
+      "entry_phase": "high-scope",
+      "terminal_phases": ["high-verification"],
+      "roles": [
+        { "role": "fleet-scoper", "version": 1 },
+        { "role": "fleet-implementer", "version": 1 },
+        { "role": "fleet-reviewer", "version": 1 }
+      ],
+      "skills": [{ "skill": "fleet-s1", "version": 1 }],
+      "team_template": { "template_id": "01936f5a-0000-7000-8000-00000000000f", "version": 1 },
+      "artifacts": [
+        {
+          "key": "high-scope-record",
+          "label": "High scope record",
+          "producer_phase": "high-scope",
+          "content_type": "document",
+          "evidence_required": true
+        },
+        {
+          "key": "high-change",
+          "label": "High change record",
+          "producer_phase": "high-implementation",
+          "content_type": "report",
+          "evidence_required": true
+        },
+        {
+          "key": "high-verification-report",
+          "label": "High verification report",
+          "producer_phase": "high-verification",
+          "content_type": "report",
+          "evidence_required": true
+        }
+      ],
+      "gates": [
+        {
+          "id": "fleet-verification-gate",
+          "phase": "high-verification",
+          "evaluator_roles": ["fleet-reviewer"],
+          "required_evidence": ["high-change", "high-verification-report"],
+          "rejection_target": "high-implementation",
+          "waiver_allowed": false,
+          "waiver_roles": []
+        }
+      ],
+      "runtime_routing": { "runtime_kind": "fleet-runtime", "version": 1 },
+      "budget_defaults": {
+        "max_tokens": 1000,
+        "max_commands": 10,
+        "max_duration_seconds": 600,
+        "max_cost": { "minor_units": 100, "currency": "EUR" }
+      },
+      "calendar_policy": null,
+      "external_workflow": null
+    }
+  ],
+  "personas": []
+}

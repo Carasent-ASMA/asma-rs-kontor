@@ -48,8 +48,8 @@ use kontor_core::state::{DesiredRunState, ObservedRunState, RunLifecycle};
 use kontor_core::ticket::ObservedBody;
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AuthorizationEvidence, CalendarAdmission, Candidate,
-    ExternalWorkEvidence, IntakeLineage, RosterGovernance, RuntimeAdmissionEvidence, TaskOrigin,
-    covering_authority,
+    ExternalWorkEvidence, IntakeLineage, PlacementAdmission, RosterGovernance,
+    RuntimeAdmissionEvidence, TaskOrigin, covering_authority,
 };
 use rusqlite::{Row, params};
 
@@ -831,6 +831,10 @@ impl SqliteStore {
                 // seats is a Team Definition question the application layer
                 // answers, and it sets this on every candidate before the pass.
                 delivery_slots_registered: true,
+                // This lower-level projection has no native readback context.
+                // Callers must replace the refusal with a fresh attestation;
+                // defaulting it to confirmed would fabricate evidence.
+                placement: PlacementAdmission::NativeTopologyUnconfirmed,
                 state: task.state,
                 revision: task.revision,
                 created_at: task.created_at,

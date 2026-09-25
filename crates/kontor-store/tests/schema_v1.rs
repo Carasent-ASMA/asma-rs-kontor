@@ -31,6 +31,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "agent_runs",
     "approval_receipts",
     "artifact_evidence",
+    "artifact_producer_submissions",
     "availability_overrides",
     "calendar_exceptions",
     "calendar_profiles",
@@ -39,6 +40,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "capacity_observations",
     "child_calendar_windows",
     "command_outbox",
+    "local_command_results",
+    "legacy_dispatch_local_confirmation_provenance",
     "command_receipt_transitions",
     "command_receipts",
     "command_targets",
@@ -82,6 +85,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "execution_authorization_revocations",
     "execution_authorization_tasks",
     "execution_authorizations",
+    "execution_hold_conditions",
     "external_comments",
     "external_ticket_observations",
     "external_workflow_specs",
@@ -92,6 +96,13 @@ const EXPECTED_TABLES: &[&str] = &[
     // topology seats.
     "hosted_topology_seats",
     "hosted_topology_seat_history",
+    // Schema v100 (ASMA-8193): the authority one hosted launch resolved,
+    // written before the native call and consumed when the occupancy binds.
+    "hosted_topology_seat_launch_intents",
+    "hosted_seat_launch_intent_supersessions",
+    // Schema v116 (ASMA-8196): the role persona each launched occupancy was
+    // opened under, frozen before the native call and never re-derived.
+    "hosted_seat_role_personas",
     // Schema v7 (KON-MVP-21): which importer produced a holiday source revision,
     // what the request asked for, and the chain that makes one import current.
     "holiday_import_batches",
@@ -135,6 +146,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "mini_project_team_definition_snapshots",
     "mini_project_topology_snapshots",
     "open_questions",
+    "open_question_commands",
     "open_question_dispositions",
     "open_question_rounds",
     "open_question_trigger_firings",
@@ -161,6 +173,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "resource_leases",
     "role_slot_waivers",
     "role_catalog_revisions",
+    "retired_evaluator_attestations",
     "role_turns",
     "run_context_policies",
     "run_park_closures",
@@ -172,7 +185,11 @@ const EXPECTED_TABLES: &[&str] = &[
     "runtime_reconciliation_epochs",
     "runtime_reconciliation_members",
     "runtime_reconciliation_results",
+    "runtime_message_issuances",
+    "runtime_message_delivery_proofs",
+    "runtime_message_delivery_proof_steps",
     "runtime_replay_consumers",
+    "runtime_timeline_epochs",
     "schedule_overrides",
     "scheduler_admission_events",
     "source_events",
@@ -192,6 +209,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "task_persona_snapshots",
     "task_workflows",
     "task_short_codes",
+    "task_worktree_corrections",
     "task_worktrees",
     "tasks",
     "team_command_replays",
@@ -202,6 +220,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "team_definition_migration_targets",
     "team_drafts",
     "team_revisions",
+    // Schema v110 (ASMA-8234): which existing AgentRun was adopted into which
+    // declared TeamRun slot, at the revision the caller proved it had read.
+    "team_run_admission_adoptions",
     "team_runs",
     "team_templates",
     "teams_projection",
@@ -320,6 +341,134 @@ VALUES ('0193f000-0000-7000-8000-000000000040', '0193f000-0000-7000-8000-0000000
 
 fn temp() -> TempDir {
     TempDir::new().expect("a temporary directory")
+}
+
+fn issuance(message_id: &str, binding: &str, session: &str) -> kontor_store::MessageIssuance {
+    kontor_store::MessageIssuance {
+        message_id: message_id.to_owned(),
+        runtime_kind: "fake.agent".to_owned(),
+        host: "fixture-host".to_owned(),
+        runtime_binding_id: binding.to_owned(),
+        native_session_id: session.to_owned(),
+        idempotency_key: message_id.to_owned(),
+        provenance: "session_message_send".to_owned(),
+        issued_at: "2026-09-17T00:00:00Z"
+            .parse::<kontor_core::id::Timestamp>()
+            .expect("a timestamp"),
+        // Recorded before the send, so there is no acknowledged position yet.
+        delivered_at: None,
+        boundary_at: None,
+    }
+}
+
+/// The ledger that makes a bounded observation safe: one id, one issuance, one
+/// binding — enforced by the key rather than checked after the fact.
+///
+/// A replay has to be recognised, because the retry of a send whose
+/// acknowledgement was lost presents the same id again and must not be refused.
+/// A *different* session presenting an already-issued id is the thing that must
+/// never be true, and it is refused inside the transaction.
+#[test]
+fn a_message_issuance_is_unique_per_id_and_recognises_its_own_replay() {
+    let directory = temp();
+    let store = open(&directory);
+    let first = "01a0b000-0000-7000-8000-00000000aaaa";
+    let binding = "01a0b000-0000-7000-8000-00000000bbbb";
+    let session = "native-session-one";
+
+    assert_eq!(
+        store
+            .record_message_issuance(&issuance(first, binding, session))
+            .expect("a first issuance records"),
+        kontor_store::MessageIssuanceOutcome::Recorded
+    );
+    // The same id, binding, session and key: a retry, not a second issuance.
+    assert_eq!(
+        store
+            .record_message_issuance(&issuance(first, binding, session))
+            .expect("a replay is recognised"),
+        kontor_store::MessageIssuanceOutcome::Replayed
+    );
+
+    // The same id claimed by a different session. This is what the bounded
+    // observation trusts the ledger about, so it is refused, not recorded.
+    let elsewhere = store.record_message_issuance(&issuance(
+        first,
+        "01a0b000-0000-7000-8000-00000000cccc",
+        "native-session-two",
+    ));
+    assert!(
+        elsewhere.is_err(),
+        "an issued id may not be claimed by another session: {elsewhere:?}"
+    );
+
+    let held = store
+        .message_issuance(first)
+        .expect("the issuance reads")
+        .expect("it is there");
+    assert_eq!(
+        held.runtime_binding_id, binding,
+        "the first issuance stands"
+    );
+    assert_eq!(held.native_session_id, session);
+
+    // And an id this realm never issued is absent rather than invented.
+    assert!(
+        store
+            .message_issuance("01a0b000-0000-7000-8000-00000000dddd")
+            .expect("the lookup runs")
+            .is_none()
+    );
+
+    // A delivery position arrives later, from the acknowledgement, and once it
+    // is recorded it is the answer. Re-recording the same one is the retry of a
+    // delivery whose acknowledgement was lost and must be accepted; a different
+    // one is the runtime saying the message landed twice, which is the whole
+    // reason the position is kept and is refused rather than overwritten.
+    assert!(
+        store
+            .message_issuance(first)
+            .expect("reads")
+            .expect("there")
+            .delivered_at
+            .is_none(),
+        "an issuance carries no position until a delivery is acknowledged"
+    );
+    store
+        .record_message_delivery(first, 1, 42)
+        .expect("the acknowledged position records");
+    store
+        .record_message_delivery(first, 1, 42)
+        .expect("the same position again is the lost-acknowledgement retry");
+    assert_eq!(
+        store
+            .message_issuance(first)
+            .expect("reads")
+            .expect("there")
+            .delivered_at,
+        Some((1, 42))
+    );
+    let moved = store.record_message_delivery(first, 1, 99);
+    assert!(
+        moved.is_err(),
+        "an id already delivered may not claim a second position: {moved:?}"
+    );
+    assert_eq!(
+        store
+            .message_issuance(first)
+            .expect("reads")
+            .expect("there")
+            .delivered_at,
+        Some((1, 42)),
+        "and the refusal changed nothing"
+    );
+
+    // A delivery for an id this realm never issued is not a row to repair.
+    let unissued = store.record_message_delivery("01a0b000-0000-7000-8000-00000000dddd", 1, 7);
+    assert!(
+        unissued.is_err(),
+        "a delivery with no issuance is refused: {unissued:?}"
+    );
 }
 
 fn open(directory: &TempDir) -> SqliteStore {
@@ -557,7 +706,180 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // accepted only when one receipt maps to one mutation. v99 adds the
     // immutable future-turn correlation challenge; no historical runtime
     // position can enter that ledger.
-    assert_eq!(SCHEMA_VERSION, 99);
+    //
+    // The ASMA-8190 integration then lands four lane migrations in one head, so
+    // their numbers are assigned here rather than in the lanes that wrote them.
+    // v100 makes Kontor's timeline-epoch numbering durable, so the same raw
+    // runtime epoch resolves to the same number across a restart (ASMA-8203).
+    // v101 records what would end a kickoff hold beside the revocation that is
+    // the hold, so a hold can state its own terms instead of only its prose
+    // reason, and an absent row still means `manual` (ASMA-8194).
+    // v102 freezes a hosted leadership seat's autonomy beside its occupancy
+    // generation, in both the active and the historical row, and backfills every
+    // pre-feature row to the only launch mode any of them can have had. v103
+    // records that authority *before* the native call and consumes it when the
+    // occupancy binds, so a created native whose acknowledgement was lost is
+    // never left with no durable statement of what it was launched under
+    // (both ASMA-8193). v104 records every client message id Kontor issues
+    // against the exact binding it was issued to, so proving one unambiguous is
+    // a key lookup instead of a walk of the session's whole canonical content —
+    // which is what let observation become bounded (ASMA-8203).
+    // v105 adds the position each issued message was acknowledged at, so a
+    // bounded observation can ask whether an occurrence is *the* delivery rather
+    // than whether it is the *only* one — the second needs a scan (ASMA-8203).
+    // v106 persists the complete exact-id native container readback and
+    // leaves every pre-v106 row's shape, title, ancestry and correlation
+    // unknown rather than reconstructed (ASMA-8115).
+    // v107 adds the retired-evaluator proof ledger and the command kind that
+    // records one, so a gate whose evaluator seat was retired has a supported
+    // evidence path that is not the live-seat challenge (ASMA-8119).
+    // v108 adds exact-old/revision-fenced worktree-claim repair and immutable
+    // before/after evidence without changing the task aggregate (ASMA-8120).
+    // v109 lets an inert launch intent -- prepared before a launch that never
+    // happened -- have its route and prepared instant superseded exactly once,
+    // on recorded evidence, without the intent losing its identity (ASMA-7869).
+    // v110 records which already-created AgentRun was adopted into which
+    // declared TeamRun slot, and at which revision of that run, so a slot with
+    // no owed dispatch has a supported authority that is not a second run
+    // (ASMA-8234).
+    // v112 makes question history and its retry receipt one atomic effect.
+    // v114 preserves the authorized container-recovery disposition on replay.
+    // v115 confirms atomic local effects and preserves their exact results.
+    // v116 freezes, per launched occupancy, the role persona a hosted seat was
+    // opened under, so which persona a seat actually received survives restart
+    // and replacement rather than being re-derived from current configuration
+    // (ASMA-8196).
+    // v117 records, per issuance, the canonical tail a message was sent after,
+    // so a delivery reconciliation can prove itself from a bounded suffix
+    // instead of requiring the whole transcript — which is what refused every
+    // send into a session past the scan's page budget (ASMA-8203).
+    assert_eq!(SCHEMA_VERSION, 118);
+}
+
+#[test]
+fn v108_worktree_correction_evidence_is_append_only() {
+    let directory = temp();
+    let store = open(&directory);
+    // The current version, not the one this feature landed at: the table under
+    // test is unchanged by later migrations, and pinning 108 here would make
+    // every subsequent migration fail a test about worktree corrections.
+    assert_eq!(
+        store.schema_version().expect("the version reads"),
+        SCHEMA_VERSION
+    );
+    drop(store);
+    let connection =
+        Connection::open(directory.path().join("kontor.db")).expect("the migrated database opens");
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("the isolated trigger fixture disables foreign keys");
+    connection
+        .execute(
+            "INSERT INTO task_worktree_corrections
+                 (project_id, receipt_id, task_id, task_revision, old_worktree,
+                  new_worktree, module_key, branch_name, preview_hash, corrected_at)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                "project-1",
+                "receipt-1",
+                "task-1",
+                "/old/worktree",
+                "/new/worktree",
+                "_tools/asma-rs-kontor",
+                "feat/ASMA-8120-deploy-jira-key-runtime-and-migrate-current-native-containers",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "2026-09-19T19:23:28Z",
+            ],
+        )
+        .expect("one historical correction can be recorded");
+    assert!(
+        connection
+            .execute(
+                "UPDATE task_worktree_corrections
+                 SET new_worktree = '/somewhere/else'
+                 WHERE receipt_id = 'receipt-1'",
+                [],
+            )
+            .is_err(),
+        "an audit row cannot be rewritten"
+    );
+    assert!(
+        connection
+            .execute(
+                "DELETE FROM task_worktree_corrections WHERE receipt_id = 'receipt-1'",
+                [],
+            )
+            .is_err(),
+        "an audit row cannot be deleted"
+    );
+}
+
+#[test]
+fn v106_preserves_legacy_container_identity_and_leaves_new_readback_unknown() {
+    let connection = Connection::open_in_memory().expect("the v105 fixture opens");
+    connection
+        .execute_batch(
+            "CREATE TABLE topology_node_containers (
+                 topology_node_id TEXT PRIMARY KEY NOT NULL,
+                 project_id TEXT NOT NULL,
+                 container_binding_id TEXT NOT NULL,
+                 runtime_kind TEXT NOT NULL,
+                 host TEXT NOT NULL,
+                 generation INTEGER NOT NULL,
+                 native_id TEXT NOT NULL,
+                 observed_kind TEXT NOT NULL,
+                 canonical_cwd TEXT,
+                 bound_at TEXT NOT NULL,
+                 last_readback_at TEXT NOT NULL,
+                 revision INTEGER NOT NULL
+             ) STRICT;
+             INSERT INTO topology_node_containers VALUES (
+                 'node-1', 'project-1', 'binding-1', 'paseo.agent', 'host-1', 7,
+                 'prj_01890000-0000-7000-8000-0000000000ff', 'project', '/work',
+                 '2026-09-06T12:00:00Z', '2026-09-06T12:00:00Z', 4
+             );
+             PRAGMA user_version = 105;",
+        )
+        .expect("the legacy row is seeded");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0106_container_native_readback.sql"
+        ))
+        .expect("v106 migrates the row");
+
+    let preserved: (String, String, i64, String) = connection
+        .query_row(
+            "SELECT container_binding_id, host, generation, native_id
+               FROM topology_node_containers WHERE topology_node_id = 'node-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("the legacy identity reads");
+    assert_eq!(
+        preserved,
+        (
+            "binding-1".to_owned(),
+            "host-1".to_owned(),
+            7,
+            "prj_01890000-0000-7000-8000-0000000000ff".to_owned(),
+        )
+    );
+    let unknown: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM topology_node_containers
+              WHERE observed_projection IS NULL AND visible_title IS NULL
+                AND parent_runtime_kind IS NULL AND parent_host IS NULL
+                AND parent_generation IS NULL AND parent_native_id IS NULL
+                AND topology_correlation IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the nullable readback columns are readable");
+    assert_eq!(unknown, 1, "legacy readback is unknown, never fabricated");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the schema version reads");
+    assert_eq!(version, 106);
 }
 
 #[test]
@@ -2758,6 +3080,81 @@ fn the_schema_contains_exactly_the_expected_tables_and_they_are_all_strict() {
     assert!(lax.is_empty(), "every table must be STRICT, found {lax:?}");
 }
 
+/// A recorded hold condition is evidence: it cannot be edited, and it cannot be
+/// withdrawn.
+///
+/// Both halves matter, and the delete half is the quiet one. The read path
+/// treats an absent row as `manual`, so removing the row leaves no gap to
+/// notice — it converts a hold that would have lifted itself into one that
+/// waits for a human forever, and nothing in the projection says so. The closed
+/// vocabulary is checked here too, because a value the domain cannot parse is a
+/// hold that never lifts and never explains why (ASMA-8194).
+#[test]
+fn v99_records_a_hold_lift_condition_that_can_neither_be_edited_nor_withdrawn() {
+    let directory = temp();
+    let _store = open(&directory);
+    let connection = raw(&directory);
+    // The condition's only foreign key is to the revocation that makes an
+    // authorization a hold. This test is about the table's own rules, so the
+    // surrounding graph is deliberately not built.
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("foreign keys can be disabled");
+
+    let hold = "0193f000-0000-7000-8000-000000000099";
+    connection
+        .execute(
+            "INSERT INTO execution_hold_conditions
+                 (project_id, authorization_id, condition, recorded_at)
+             VALUES ('0193f000-0000-7000-8000-000000000001', ?1, 'kickoff_ready',
+                     '2026-09-17T09:00:00Z')",
+            [hold],
+        )
+        .expect("a hold may record what would end it");
+
+    assert!(
+        connection
+            .execute(
+                "UPDATE execution_hold_conditions SET condition = 'manual'
+                 WHERE authorization_id = ?1",
+                [hold],
+            )
+            .is_err(),
+        "the terms of a hold must not move while it holds"
+    );
+    assert!(
+        connection
+            .execute(
+                "DELETE FROM execution_hold_conditions WHERE authorization_id = ?1",
+                [hold],
+            )
+            .is_err(),
+        "deleting the row would silently demote a self-lifting hold to manual"
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO execution_hold_conditions
+                     (project_id, authorization_id, condition, recorded_at)
+                 VALUES ('0193f000-0000-7000-8000-000000000001',
+                         '0193f000-0000-7000-8000-000000000098', 'whenever',
+                         '2026-09-17T09:00:00Z')",
+                [],
+            )
+            .is_err(),
+        "a condition outside the closed vocabulary is a hold nothing can evaluate"
+    );
+
+    let stored: String = connection
+        .query_row(
+            "SELECT condition FROM execution_hold_conditions WHERE authorization_id = ?1",
+            [hold],
+            |row| row.get(0),
+        )
+        .expect("the original condition is still readable");
+    assert_eq!(stored, "kickoff_ready");
+}
+
 #[test]
 fn the_schema_has_no_outbound_comment_representation() {
     let directory = temp();
@@ -4660,6 +5057,18 @@ fn all_logical_relationships_are_project_scoped_and_fk_backed() {
             "command_receipts",
             &["project_id", "id"],
         ),
+        (
+            "local_command_results",
+            &["project_id", "receipt_id"],
+            "command_receipts",
+            &["project_id", "id"],
+        ),
+        (
+            "legacy_dispatch_local_confirmation_provenance",
+            &["project_id", "receipt_id"],
+            "command_receipts",
+            &["project_id", "id"],
+        ),
         // --- runtime consistency ---------------------------------------------
         (
             "runtime_control_gaps",
@@ -5581,4 +5990,114 @@ fn read_rows(connection: &Connection, sql: &str) -> Vec<String> {
         .expect("the query runs")
         .collect::<Result<Vec<_>, _>>()
         .expect("every row reads")
+}
+
+/// The nullable extension preserves existing identities and references; it does
+/// not recast known accounts or remove immutable evidence protection.
+#[test]
+fn v113_preserves_known_artifacts_and_their_existing_references() {
+    let connection = Connection::open_in_memory().expect("legacy database");
+    // Match the migration runner's temporary rebuild mode. This focused fixture
+    // contains the evidence table and its child reference, not every parent.
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("migration rebuild mode");
+    let original = include_str!("../migrations/0003_guardrails_and_recovery.sql");
+    let start = original
+        .find("CREATE TABLE artifact_evidence (")
+        .expect("original table");
+    let end = original[start..].find(") STRICT;").expect("table end") + start + ") STRICT;".len();
+    connection
+        .execute_batch(&original[start..end])
+        .expect("the deployed non-null schema");
+    connection.execute_batch(r#"
+        INSERT INTO artifact_evidence VALUES (
+            '01890000-0000-7000-8000-000000000001', 'project', 'task', 'workflow', NULL,
+            'output', '{"schema_version":1,"kind":"legacy_explicit_locator"}',
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'maker', 'recorded-account', '2026-09-19T00:00:00Z'
+        );
+        CREATE TABLE existing_reference (id TEXT PRIMARY KEY, artifact_id TEXT REFERENCES artifact_evidence(id));
+        INSERT INTO existing_reference VALUES ('receipt', '01890000-0000-7000-8000-000000000001');
+        PRAGMA user_version=112;
+    "#).expect("known legacy evidence and its existing receipt");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0113_artifact_unknown_producer_account.sql"
+        ))
+        .expect("the migration applies");
+    let observed: (String, String) = connection.query_row(
+        "SELECT e.producer_account, e.locator FROM artifact_evidence e JOIN existing_reference r ON r.artifact_id=e.id WHERE r.id='receipt'", [], |r| Ok((r.get(0)?,r.get(1)?))
+    ).expect("the original receipt still addresses its evidence");
+    assert_eq!(
+        observed,
+        (
+            "recorded-account".to_owned(),
+            r#"{"schema_version":1,"kind":"legacy_explicit_locator"}"#.to_owned()
+        )
+    );
+    let referenced_table: String = connection
+        .query_row(
+            "SELECT [table] FROM pragma_foreign_key_list('existing_reference')",
+            [],
+            |r| r.get(0),
+        )
+        .expect("reference target");
+    assert_eq!(referenced_table, "artifact_evidence");
+    let required: i64 = connection.query_row("SELECT [notnull] FROM pragma_table_info('artifact_evidence') WHERE name='producer_account'", [], |r| r.get(0)).expect("account nullability");
+    assert_eq!(required, 0);
+    for statement in [
+        "UPDATE artifact_evidence SET producer_account='invented'",
+        "DELETE FROM artifact_evidence",
+    ] {
+        let error = connection
+            .execute(statement, [])
+            .expect_err("evidence remains immutable");
+        assert!(error.to_string().contains("artifact evidence is immutable"));
+    }
+}
+
+#[test]
+fn issuance_boundary_is_frozen_across_replay_and_reopen() {
+    let directory = temp();
+    let store = open(&directory);
+    for (id, boundary) in [
+        ("01a0b000-0000-7000-8000-00000000aaa1", Some((7, 2400))),
+        ("01a0b000-0000-7000-8000-00000000aaa2", Some((7, 0))),
+        ("01a0b000-0000-7000-8000-00000000aaa3", None),
+    ] {
+        let mut original = issuance(
+            id,
+            "01a0b000-0000-7000-8000-00000000bbbb",
+            "native-session-one",
+        );
+        original.boundary_at = boundary;
+        assert_eq!(
+            store.record_message_issuance(&original).unwrap(),
+            kontor_store::MessageIssuanceOutcome::Recorded
+        );
+        let mut retry = original.clone();
+        retry.boundary_at = Some((8, 9000));
+        assert_eq!(
+            store.record_message_issuance(&retry).unwrap(),
+            kontor_store::MessageIssuanceOutcome::Replayed
+        );
+        assert_eq!(
+            store.message_issuance(id).unwrap().unwrap().boundary_at,
+            boundary
+        );
+    }
+    drop(store);
+    let reopened = open(&directory);
+    for (id, boundary) in [
+        ("01a0b000-0000-7000-8000-00000000aaa1", Some((7, 2400))),
+        ("01a0b000-0000-7000-8000-00000000aaa2", Some((7, 0))),
+        ("01a0b000-0000-7000-8000-00000000aaa3", None),
+    ] {
+        assert_eq!(
+            reopened.message_issuance(id).unwrap().unwrap().boundary_at,
+            boundary,
+            "a retry must neither move an original boundary nor invent one for a legacy issuance"
+        );
+    }
 }

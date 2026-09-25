@@ -48,6 +48,11 @@ closed_enum! {
         /// it — and, worse, would make a recovery indistinguishable from a
         /// second verdict in the very history the recovery exists to preserve.
         RecoverGateRejection => "recover_gate_rejection",
+        /// Attest that an exact retired evaluator seat already rendered its
+        /// verdict. Deliberately distinct from [`CommandKind::RecordGateVerdict`]
+        /// and from [`CommandKind::RecoverGateRejection`]: this records evidence
+        /// that a verdict existed, never a verdict, and advances no workflow.
+        AttestRetiredEvaluatorEvidence => "attest_retired_evaluator_evidence",
         /// Approve an intake proposal.
         ApproveIntake => "approve_intake",
         /// Write a projection to an external ticket.
@@ -111,6 +116,12 @@ closed_enum! {
         SelectTaskTeam => "select_task_team",
         /// Correct the provider account a task will run under.
         SelectTaskAccount => "select_task_account",
+        /// Correct one task's pre-run worktree claim under exact compare-and-swap.
+        ///
+        /// Distinct from [`CommandKind::ApplyEpicGraph`]: graph application may
+        /// create many subjects, while this repair is allowed to change exactly
+        /// one already-declared placement and nothing else on the task.
+        CorrectTaskWorktree => "correct_task_worktree",
         /// Converge a task's external tickets towards its own milestone.
         ReconcileTicket => "reconcile_ticket",
         /// Materialize or verify one epic's complete Jira binding set.
@@ -477,9 +488,12 @@ impl CommandKind {
             // Recovering a rejection witnesses the task for the same reason
             // recording the verdict does: the workflow it routes is not an
             // aggregate a command may name, and the task is the one it has.
-            Self::ResumeTask | Self::RecordGateVerdict | Self::RecoverGateRejection => {
-                witness(matches!(target, A::Task))
-            }
+            // Attesting a retired evaluator witnesses the task for the same
+            // reason: it names that task's gate, and changes no run state.
+            Self::ResumeTask
+            | Self::RecordGateVerdict
+            | Self::RecoverGateRejection
+            | Self::AttestRetiredEvaluatorEvidence => witness(matches!(target, A::Task)),
             // A project is a legal target because an intake proposal is decided
             // *before* the work it proposes exists: at that moment there is no
             // goal and no task to name, and a receipt cannot target a row that
@@ -533,6 +547,7 @@ impl CommandKind {
             | Self::SelectTaskProfile
             | Self::SelectTaskTeam
             | Self::SelectTaskAccount
+            | Self::CorrectTaskWorktree
             | Self::ReconcileTicket
             | Self::PublishTicketDescription
             // Pulling comments and claiming ownership both cover *every* link a

@@ -11,6 +11,8 @@
 //! * rewriting or deleting an applied import through direct SQL;
 //! * an offline resolution that disagrees with the state just applied.
 
+mod support;
+
 use jiff::civil;
 use kontor_calendar::import::{ImportRequest, ImportTarget, plan, preview};
 use kontor_calendar::resolve::{ResolutionRequest, resolve};
@@ -69,7 +71,7 @@ fn date(text: &str) -> civil::Date {
 fn fixture() -> Fixture {
     let directory = TempDir::new().expect("a temporary directory");
     let path = directory.path().join("kontor.db");
-    let store = SqliteStore::open(&path).expect("the store opens");
+    let store = support::store_from_template(&path);
 
     let project = ProjectId::generate();
     store

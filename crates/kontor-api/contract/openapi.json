@@ -2000,6 +2000,80 @@
         }
       }
     },
+    "/v1/projects/{project_id}/committee-runs/{committee_run_id}/artifacts/{evidence_id}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Read one artifact without granting shell, network, or general filesystem access.",
+        "operationId": "committee_artifact",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "committee_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "evidence_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Zero for the first page; then use the returned `next_offset`.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 0,
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitteeArtifactContentDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/committee-runs/{committee_run_id}/findings:record": {
       "post": {
         "tags": [
@@ -3875,6 +3949,87 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Supersede one never-bound prepared Core Team launch intent.",
+        "operationId": "supersede_core_team_launch_intent",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoreTeamLaunchIntentSupersedeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoreTeamLaunchIntentSupersessionDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "503": {
+            "description": "The runtime could not be reached"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/routes:apply": {
       "post": {
         "tags": [
@@ -5018,6 +5173,115 @@
             "description": ""
           },
           "422": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/open-questions": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "operationId": "list_open_questions",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/epics/{epic_id}/open-questions:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "operationId": "record_open_question",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordQuestionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
             "description": ""
           }
         }
@@ -6434,6 +6698,16 @@
           "422": {
             "description": ""
           },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "502": {
             "description": ""
           },
@@ -7587,6 +7861,75 @@
         }
       }
     },
+    "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Verify and durably record one settled-turn artifact augmentation.",
+        "operationId": "record_artifact",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordArtifactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactSubmissionDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/tasks/{task_id}/context:resolve": {
       "post": {
         "tags": [
@@ -8536,6 +8879,207 @@
         }
       }
     },
+    "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Catch a stalled workflow up to the phase its own durable evidence proves.",
+        "description": "The advance is normally computed as a side effect of recording a gate or\nsettling a turn. When that moment is missed — ASMA-8205 passed its\n`high-verification-gate` at sequence 2 and the stored phase never moved —\nnothing re-derives it afterwards, and the workflow stalls with complete and\nunambiguous evidence sitting in front of it.\n\nThis is that missing surface and nothing more. It records no verdict,\nappends no evaluation, replays no turn and chooses no phase: it runs the\nsame deterministic projection the ordinary paths run, over evidence that is\nalready durable. A workflow already at its evidence phase is left exactly\nas it is, which is what makes running it twice a no-op rather than a second\nadvance.",
+        "operationId": "recover_workflow_phase",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "The task",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowPhaseRecoveryDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": "The task has no active workflow"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Apply one exact task worktree-claim correction under CAS.",
+        "operationId": "apply_worktree_claim_correction",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "The task whose claim is repaired",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorktreeClaimCorrectionApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorktreeClaimCorrectionAppliedDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Validate one exact task worktree-claim correction without writing.",
+        "operationId": "preview_worktree_claim_correction",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "The task whose claim is repaired",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorktreeClaimCorrectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorktreeClaimCorrectionPreviewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/team-definition-selection:apply": {
       "post": {
         "tags": [
@@ -8864,6 +9408,89 @@
             "description": ""
           },
           "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/admission:adopt": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Record bounded authority to materialize one existing queued role slot.",
+        "operationId": "adopt_team_run_admission",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "role_slot_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdoptTeamRunAdmissionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamRunAdmissionAdoptionDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
             "description": ""
           }
         }
@@ -10441,6 +11068,93 @@
         }
       }
     },
+    "/v1/sessions/{agent_run_id}/messages/proof": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Read durable proof progress for the exact original issuance.",
+        "operationId": "message_proof",
+        "parameters": [
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "message_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{agent_run_id}/messages:reconcile": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Freeze or advance one read-only canonical proof page with durable replay.",
+        "operationId": "reconcile_message_delivery",
+        "parameters": [
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageReconcileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "409": {
+            "description": "Proof revision, identity or history refused"
+          }
+        }
+      }
+    },
     "/v1/sessions/{agent_run_id}/permissions/{request_id}": {
       "post": {
         "tags": [
@@ -11024,6 +11738,39 @@
         },
         "additionalProperties": false
       },
+      "AdoptTeamRunAdmissionRequest": {
+        "type": "object",
+        "description": "Authorize materialization of one existing queued run without inventing a handoff.",
+        "required": [
+          "agent_run_id",
+          "expected_task_revision",
+          "expected_agent_run_revision",
+          "reason"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "Exact existing, unbound AgentRun."
+          },
+          "expected_agent_run_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Revision of the exact queued run.",
+            "minimum": 0
+          },
+          "expected_task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Task revision observed before adoption.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "Operator's reason, retained in the immutable command intent."
+          }
+        },
+        "additionalProperties": false
+      },
       "AdvanceCompletionRequest": {
         "type": "object",
         "description": "Advance one epic's completion.",
@@ -11038,7 +11785,7 @@
               },
               {
                 "$ref": "#/components/schemas/CompletionEvidenceDto",
-                "description": "The typed operator receipt for a phase this build cannot observe.\n\nAbsent for every phase the runtime derives for itself — the ticket gate\nand the Committee verdict. Present only where the pinned profile waits on\nan external effect that no connector reports here, which the Operational\nplan admits as \"a native connector **or a typed operator receipt**\".\nSupplying one for a phase that does not want it is refused rather than\nignored, so a caller cannot believe it recorded something it did not."
+                "description": "The typed operator receipt for a phase this build cannot observe.\n\nAbsent for every phase the runtime can resolve unambiguously from durable\nstate. A verdict selector may name one exact durable Committee result\nwhen duplicate matching runs make automatic selection ambiguous. Other\nevidence is present only where the pinned profile waits on an external\neffect that no connector reports here, which the Operational plan admits\nas \"a native connector **or a typed operator receipt**\". Supplying one for\na phase that does not want it is refused rather than ignored."
               }
             ]
           },
@@ -11241,6 +11988,15 @@
           "realm_id": {
             "type": "string",
             "description": "The Realm the request was refused in."
+          },
+          "retry_after_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Safe delay before retrying a throttled usage read; quota projections were not changed.",
+            "minimum": 0
           },
           "rule": {
             "type": "string",
@@ -11936,6 +12692,129 @@
           }
         }
       },
+      "ArtifactSubmissionDto": {
+        "type": "object",
+        "description": "Immutable augmentation receipt. Attribution identifies the old claim, not byte authorship.",
+        "required": [
+          "schema_version",
+          "realm_id",
+          "evidence_id",
+          "task_id",
+          "workflow_id",
+          "role_turn_id",
+          "agent_run_id",
+          "producer_role",
+          "artifact_key",
+          "producer_phase",
+          "provenance",
+          "turn_proof_class",
+          "recorded_by",
+          "git_dir",
+          "commit",
+          "path",
+          "sha256",
+          "locator_hash",
+          "recorded_at"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string",
+            "description": "Source persistent agent run."
+          },
+          "artifact_key": {
+            "type": "string",
+            "description": "Declared artifact key."
+          },
+          "commit": {
+            "type": "string",
+            "description": "Exact commit locator."
+          },
+          "evidence_id": {
+            "type": "string",
+            "description": "Artifact registry identity."
+          },
+          "git_dir": {
+            "type": "string",
+            "description": "Persistent common Git directory, independent of a disposable worktree."
+          },
+          "locator_hash": {
+            "type": "string",
+            "description": "Canonical locator digest."
+          },
+          "path": {
+            "type": "string",
+            "description": "Exact blob path."
+          },
+          "producer_account": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Provider account derived from the source run; not the calling operator's identity."
+          },
+          "producer_account_attribution": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProducerAccountAttribution",
+                "description": "Explicit account provenance. Absent only on receipts written before schema113."
+              }
+            ]
+          },
+          "producer_phase": {
+            "type": "string",
+            "description": "Pinned producing phase."
+          },
+          "producer_role": {
+            "type": "string",
+            "description": "Source role slot, derived from the settled turn."
+          },
+          "provenance": {
+            "type": "string",
+            "description": "Always `operator_recovered_git_blob`, never inferred agent authorship."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Owning Realm."
+          },
+          "recorded_at": {
+            "type": "string",
+            "description": "Verification/recording instant."
+          },
+          "recorded_by": {
+            "type": "string",
+            "description": "Credential tier that authorized the augmentation."
+          },
+          "role_turn_id": {
+            "type": "string",
+            "description": "Source settled-turn receipt."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Envelope schema version.",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Verified content digest."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Exact task and workflow."
+          },
+          "turn_proof_class": {
+            "type": "string",
+            "description": "Native-proof versus historical/attested source turn."
+          },
+          "workflow_id": {
+            "type": "string",
+            "description": "Pinned workflow whose declared artifact this satisfies."
+          }
+        }
+      },
       "Attest": {
         "type": "object",
         "required": [
@@ -12047,6 +12926,13 @@
           "created_by": {
             "type": "string",
             "description": "The account profile that granted it."
+          },
+          "lift_condition": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What would end this hold, beside the prose that says why it exists.\n\n`None` on a live grant, which has no terms left to meet, and on the\nnarrow arm and disarm answers that do not consult the ledger. A hold\nread back from its epic always states it, because \"why work is held\" and\n\"what would release it\" are different questions and only the second one\ncan be acted on."
           },
           "max_concurrency": {
             "type": "integer",
@@ -12809,6 +13695,125 @@
           }
         }
       },
+      "CommitteeArtifactContentDto": {
+        "type": "object",
+        "description": "A bounded page of SHA-256-verified UTF-8 bytes from a registered immutable Git blob.",
+        "required": [
+          "realm_id",
+          "committee_run_id",
+          "evidence_id",
+          "sha256",
+          "offset",
+          "total_bytes",
+          "text"
+        ],
+        "properties": {
+          "committee_run_id": {
+            "type": "string",
+            "description": "Addressed Committee run."
+          },
+          "evidence_id": {
+            "type": "string",
+            "description": "Registry artifact identity, not a caller-supplied filesystem locator."
+          },
+          "next_offset": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Next character-aligned byte offset, if more remains.",
+            "minimum": 0
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Byte position of this page.",
+            "minimum": 0
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Owning realm."
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Verified full-blob digest."
+          },
+          "text": {
+            "type": "string",
+            "description": "Untrusted artifact text for review, not control-plane instructions."
+          },
+          "total_bytes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total UTF-8 byte length.",
+            "minimum": 0
+          }
+        }
+      },
+      "CommitteeCompletionEvidenceDto": {
+        "type": "object",
+        "description": "Completion facts that cannot reveal an independent Committee member's verdict.",
+        "required": [
+          "profile",
+          "definition",
+          "ticket_requirements",
+          "phase",
+          "blockers",
+          "integrations",
+          "closeout",
+          "generation",
+          "revision"
+        ],
+        "properties": {
+          "blockers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompletionBlockerDto"
+            },
+            "description": "Current phase blockers."
+          },
+          "closeout": {
+            "$ref": "#/components/schemas/CloseoutEvidenceDto",
+            "description": "Recorded closeout prerequisite digests."
+          },
+          "definition": {
+            "description": "Pinned completion policy body."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Current reopening generation.",
+            "minimum": 0
+          },
+          "integrations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IntegrationRecordDto"
+            },
+            "description": "Initial and remediation integration bodies, including repository/module/root/PR outcomes."
+          },
+          "phase": {
+            "$ref": "#/components/schemas/CompletionPhaseDto",
+            "description": "Current phase, without round verdicts or deliberation."
+          },
+          "profile": {
+            "$ref": "#/components/schemas/ProfileRevisionDto",
+            "description": "Exact completion profile identity and digest."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Current completion revision.",
+            "minimum": 0
+          },
+          "ticket_requirements": {
+            "type": "array",
+            "items": {},
+            "description": "Frozen ticket goals and evidence obligations."
+          }
+        }
+      },
       "CommitteeFindingDto": {
         "type": "object",
         "description": "One durable Committee finding, including dissent and evidence references.",
@@ -13031,6 +14036,17 @@
             "type": "string",
             "description": "Its lifecycle, in the server's own vocabulary."
           },
+          "subject_evidence": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CommitteeSubjectEvidenceDto",
+                "description": "Same-subject evidence, independent of any Committee member's finding.\nAbsent for legacy runs whose subject was never durably recorded."
+              }
+            ]
+          },
           "template": {
             "$ref": "#/components/schemas/ProfileRevisionDto",
             "description": "The pinned template it runs under."
@@ -13045,6 +14061,139 @@
           "topology_node_id": {
             "type": "string",
             "description": "Dedicated CSW node."
+          }
+        }
+      },
+      "CommitteeSubjectEvidenceBodyDto": {
+        "type": "object",
+        "description": "Subject records; deliberately contains no consultation findings, results or rounds.",
+        "required": [
+          "schema_version",
+          "project_id",
+          "epic_id",
+          "question",
+          "jira_binding",
+          "tasks",
+          "open_questions",
+          "cursor_before",
+          "cursor_after"
+        ],
+        "properties": {
+          "completion": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CommitteeCompletionEvidenceDto",
+                "description": "Epic completion evidence; absent for ticket-scoped runs or before completion starts."
+              }
+            ]
+          },
+          "cursor_after": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Event cursor after composing the read; not a claim of a database-wide atomic snapshot."
+          },
+          "cursor_before": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Event cursors bracketing this composed read. Different cursors signal concurrent writes."
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "Owning epic from the persisted run."
+          },
+          "jira_binding": {
+            "$ref": "#/components/schemas/JiraBindingDto",
+            "description": "Epic identity and external convergence proof."
+          },
+          "open_questions": {
+            "type": "array",
+            "items": {},
+            "description": "Current epic question ledger; empty for a ticket-scoped run."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project from the persisted run, never from caller input."
+          },
+          "question": {
+            "type": "string",
+            "description": "Original question frozen at invocation."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Canonical evidence envelope version.",
+            "minimum": 0
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact ticket subject, if this is a ticket-scoped consultation."
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommitteeTaskEvidenceDto"
+            },
+            "description": "Only the exact task, or all epic tasks for an epic-scoped run."
+          }
+        }
+      },
+      "CommitteeSubjectEvidenceDto": {
+        "type": "object",
+        "description": "A current projection, not a new completion receipt or an immutable stored snapshot.",
+        "required": [
+          "content_hash",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "$ref": "#/components/schemas/CommitteeSubjectEvidenceBodyDto",
+            "description": "Only the subject frozen onto this Committee run."
+          },
+          "content_hash": {
+            "type": "string",
+            "description": "Canonical SHA-256 of `body`, allowing the reviewer to cite exactly what it read."
+          }
+        }
+      },
+      "CommitteeTaskEvidenceDto": {
+        "type": "object",
+        "description": "The task contract, current gate evaluations, and distinct evidence authority classes.",
+        "required": [
+          "task",
+          "gate_evaluations",
+          "producer_artifacts",
+          "native_closure_artifact_keys"
+        ],
+        "properties": {
+          "gate_evaluations": {
+            "type": "array",
+            "items": {},
+            "description": "Append-only evaluations of the active workflow, including evaluator and evidence citations."
+          },
+          "native_closure_artifact_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Current native closure certificate keys. These do not establish artifact production."
+          },
+          "producer_artifacts": {
+            "type": "array",
+            "items": {},
+            "description": "Active-workflow artifact records with immutable locators and truthful producer provenance.\nGET also includes bounded SHA-256-verified UTF-8 `content`, or an explicit unavailable/deferred status."
+          },
+          "task": {
+            "$ref": "#/components/schemas/EpicTaskProjectionDto",
+            "description": "Existing task projection including gate obligations, current states and Jira binding."
+          },
+          "work_profile": {
+            "description": "Exact immutable work profile pinned by the active workflow."
           }
         }
       },
@@ -13544,6 +14693,26 @@
       },
       "CompletionEvidenceDto": {
         "oneOf": [
+          {
+            "type": "object",
+            "description": "Select one already-settled durable Committee result when more than one\nexact result matches the completion round. The selected run still has to\npass every normal template, provenance, reconstruction, and result check;\nthis carries no caller-authored verdict.",
+            "required": [
+              "committee_run_id",
+              "phase"
+            ],
+            "properties": {
+              "committee_run_id": {
+                "type": "string",
+                "description": "The immutable Committee run whose stored result completion consumes."
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "verdict"
+                ]
+              }
+            }
+          },
           {
             "type": "object",
             "description": "What integration actually produced, per repository.\n\nPolyrepo by construction: the plan models integration as recorded\nPR/module/root-pointer outcomes rather than one assumed branch.",
@@ -14145,6 +15314,13 @@
           "model_route"
         ],
         "properties": {
+          "committee_role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Committee function frozen from its template; absent for Advisor seats."
+          },
           "logical_role": {
             "type": "string",
             "description": "Logical role under the pinned policy."
@@ -14234,6 +15410,64 @@
           "non_compliant"
         ]
       },
+      "ContainerReadbackDto": {
+        "type": "object",
+        "description": "Complete exact-id readback of one native topology container.",
+        "required": [
+          "host",
+          "generation",
+          "projection",
+          "native_kind",
+          "visible_title",
+          "topology_correlation"
+        ],
+        "properties": {
+          "canonical_cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact canonical working directory."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Runtime generation in which the native id is meaningful.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "Runtime host that owns the native generation."
+          },
+          "native_kind": {
+            "type": "string",
+            "description": "Runtime-reported kind."
+          },
+          "native_parent": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/NativeContainerParentDto",
+                "description": "Exact native parent for a child; absent for a root."
+              }
+            ]
+          },
+          "projection": {
+            "type": "string",
+            "description": "Native projection read back for the container."
+          },
+          "topology_correlation": {
+            "type": "string",
+            "description": "Exact topology correlation reported for this native id."
+          },
+          "visible_title": {
+            "type": "string",
+            "description": "Exact runtime-visible title."
+          }
+        }
+      },
       "ContainerRecoveryApplyRequest": {
         "type": "object",
         "description": "Apply request bound to an exact stale-container preview.",
@@ -14255,6 +15489,14 @@
         },
         "additionalProperties": false
       },
+      "ContainerRecoveryDispositionDto": {
+        "type": "string",
+        "description": "Which of the two dispositions one recovery census authorizes.\n\nThe operation has always had one answer — adopt the sole live candidate.\nThis names that answer so a second one can exist beside it without either\nbeing inferred from the shape of the payload. An operator reading a preview\nshould not have to deduce \"it is going to build one\" from a missing field.",
+        "enum": [
+          "adopt_existing",
+          "recreate_absent"
+        ]
+      },
       "ContainerRecoveryPreviewDto": {
         "type": "object",
         "description": "Exact before/after identity proved by a read-only recovery census.",
@@ -14262,8 +15504,8 @@
           "realm_id",
           "project_id",
           "topology_node_id",
+          "disposition",
           "stale_native_id",
-          "replacement_native_id",
           "parent_native_id",
           "canonical_cwd",
           "observed_title",
@@ -14275,9 +15517,13 @@
             "type": "string",
             "description": "Preserved canonical working directory."
           },
+          "disposition": {
+            "$ref": "#/components/schemas/ContainerRecoveryDispositionDto",
+            "description": "Which answer this census reached."
+          },
           "observed_title": {
             "type": "string",
-            "description": "Runtime-reported candidate title."
+            "description": "Runtime-reported candidate title.\n\nOn a `recreate_absent` preview there is no candidate to report one from,\nso this carries the exact title apply will write — the same bytes the\nnaming authority already rendered, never a title the caller chose."
           },
           "parent_native_id": {
             "type": "string",
@@ -14296,8 +15542,11 @@
             "description": "Realm that performed the census."
           },
           "replacement_native_id": {
-            "type": "string",
-            "description": "Sole live parent/path/title candidate."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sole live parent/path/title candidate.\n\nAbsent exactly when the disposition is\n[`ContainerRecoveryDispositionDto::RecreateAbsent`] and this is a\npreview: there is no candidate yet, and naming one before apply has run\nwould be predicting an identity the runtime has not minted. Always\npresent on an applied result."
           },
           "snapshot_cursor": {
             "type": "integer",
@@ -14645,6 +15894,126 @@
             "type": "integer",
             "format": "int64",
             "description": "The position this read is consistent with."
+          }
+        }
+      },
+      "CoreTeamLaunchIntentSupersedeRequest": {
+        "type": "object",
+        "description": "Supersede one unobserved prepared launch intent with an approved route.\n\nA successor intent requires exact archive and placement proof for its prior\noccupant. The current occupant and its history remain unchanged; only the\nnext unobserved intent can change. Omit predecessor fences for a never-bound seat.",
+        "required": [
+          "expected_revision",
+          "seat_binding_id",
+          "expected_seat_binding_revision",
+          "occupancy_generation",
+          "expected_model_route",
+          "expected_prepared_at",
+          "desired_model_route"
+        ],
+        "properties": {
+          "desired_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "The catalog-approved replacement route."
+          },
+          "expected_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "The exact inert route being superseded, compared verbatim."
+          },
+          "expected_predecessor_archived_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact runtime archive timestamp of the predecessor."
+          },
+          "expected_predecessor_generation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Runtime generation of the archived predecessor, not the occupancy ordinal.",
+            "minimum": 0
+          },
+          "expected_predecessor_native_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact prior native, required with both other predecessor fences for a successor intent."
+          },
+          "expected_prepared_at": {
+            "type": "string",
+            "description": "The exact instant that inert intent was prepared, compared verbatim."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epic revision the caller read.",
+            "minimum": 0
+          },
+          "expected_seat_binding_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The binding revision the caller read.",
+            "minimum": 0
+          },
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The occupancy generation whose inert intent is replaced.",
+            "minimum": 0
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The logical seat, preserved exactly."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CoreTeamLaunchIntentSupersessionDto": {
+        "type": "object",
+        "description": "What one launch-intent supersession replaced, and what now stands.",
+        "required": [
+          "realm_id",
+          "seat_binding_id",
+          "seat_binding_revision",
+          "occupancy_generation",
+          "superseded_model_route",
+          "replacement_model_route",
+          "receipt"
+        ],
+        "properties": {
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The occupancy generation whose intent was replaced; unchanged by this.",
+            "minimum": 0
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm that recorded it."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Audited mutation receipt."
+          },
+          "replacement_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "The approved route that now stands."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The preserved logical seat. Never retired, never replaced."
+          },
+          "seat_binding_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unchanged binding revision the swap was fenced on.",
+            "minimum": 0
+          },
+          "superseded_model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "The inert route that was superseded, retained as evidence."
           }
         }
       },
@@ -15175,12 +16544,59 @@
             "$ref": "#/components/schemas/ResolvedRoleRefDto",
             "description": "The role, as the server resolved it."
           },
+          "role_persona": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CoreTeamSeatPersonaDto",
+                "description": "The persona this seat's current occupancy was launched under.\n\nAlways serialized, unlike `native_seat`: `null` here is a positive\nstatement that the role seeds no persona and the seat was opened under\nno system prompt, which a reader has to be able to tell apart from a\nfield this projection simply did not fill in."
+              }
+            ]
+          },
           "seat_binding_id": {
             "type": [
               "string",
               "null"
             ],
             "description": "The binding filling it, once one has been materialized."
+          }
+        }
+      },
+      "CoreTeamSeatPersonaDto": {
+        "type": "object",
+        "description": "The persona one launched occupancy was opened under, as Kontor froze it.\n\nDeliberately *not* a field of [`CoreTeamNativeSeatDto`], which reports what\nthe runtime read back. The runtime's `config.systemPrompt` is creation-only,\nso no runtime here can attest the prompt a native is currently running\nunder. This is evidence that Kontor froze this persona and delivered it at\nlaunch, and `delivery` says which of those two things it is in as many\nwords, rather than leaving a reader to assume the stronger one.",
+        "required": [
+          "role_code",
+          "prompt_hash",
+          "delivery",
+          "occupancy_generation",
+          "frozen_at"
+        ],
+        "properties": {
+          "delivery": {
+            "type": "string",
+            "description": "What the runtime's acceptance of this persona actually proves."
+          },
+          "frozen_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was frozen, which is before the native call."
+          },
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The occupancy generation this persona was frozen for.",
+            "minimum": 0
+          },
+          "prompt_hash": {
+            "type": "string",
+            "description": "Digest of the exact delivered text."
+          },
+          "role_code": {
+            "type": "string",
+            "description": "The catalog role whose persona was delivered."
           }
         }
       },
@@ -16277,6 +17693,17 @@
             "description": "The task revision observed before authorizing materialization.",
             "minimum": 0
           },
+          "model_route": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+                "description": "Admin-authorized provider/model route for this seat, replacing the\nfrozen chain when none of its rungs can be placed. Absent resolves the\nfrozen chain."
+              }
+            ]
+          },
           "reason": {
             "type": "string",
             "description": "Why the operator is completing this admitted team's missing seat."
@@ -16785,12 +18212,17 @@
           "scope",
           "state",
           "held_by",
-          "reason"
+          "reason",
+          "lift_condition"
         ],
         "properties": {
           "held_by": {
             "type": "string",
-            "description": "The account profile that will record the hold."
+            "description": "The account profile that will record the hold. Its owner."
+          },
+          "lift_condition": {
+            "type": "string",
+            "description": "The machine-checkable condition apply will record, resolved — so a\ncaller that named none sees `manual` here rather than an absence it has\nto interpret."
           },
           "reason": {
             "type": "string",
@@ -16816,7 +18248,14 @@
         "properties": {
           "held_by": {
             "type": "string",
-            "description": "The account profile recording the kickoff hold."
+            "description": "The account profile recording the kickoff hold. Its owner."
+          },
+          "lift_condition": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What would end the hold, as something Kontor can evaluate.\n\n`reason` is prose: it reads well and decides nothing, so before this\nfield the only thing that ever lifted a hold was a human calling\n`execution-arm`, and an epic whose stated condition had been true for\ndays sat idle because nobody was asked to look.\n\nAbsent means [`HoldLiftCondition::Manual`], which is what every hold\nrecorded before this field existed actually meant. A caller that says\nnothing gets exactly the behaviour it already had."
           },
           "reason": {
             "type": "string",
@@ -17203,6 +18642,13 @@
           "mode"
         ],
         "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact Jira description body. On create it replaces the generated body;\non link it explicitly authorizes an in-place description-only update."
+          },
           "issue_key": {
             "type": [
               "string",
@@ -17225,12 +18671,26 @@
           "mode"
         ],
         "properties": {
+          "confirmed_description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Exact description read back after apply."
+          },
           "confirmed_key": {
             "type": [
               "string",
               "null"
             ],
             "description": "The confirmed Jira key after apply."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Description the preview will create or explicitly update."
           },
           "item_kind": {
             "type": "string",
@@ -17499,6 +18959,48 @@
           }
         }
       },
+      "MemorySelectionDto": {
+        "type": "object",
+        "description": "How much approved memory the resolved pack could carry.\n\nApproved memory grows without bound while the canonical document may not\nexceed its ceiling, so a large enough project eventually has more approved\nmemory than one pack can hold. When that happens the resolver narrows the set\nrather than refusing, and this says so explicitly: a caller can see that the\npack is not the whole of approved memory, and exactly which revisions are\nmissing from it. Below the ceiling `omitted` is empty and `narrowed` is\nfalse, which is the ordinary case and the one that must stay unchanged.",
+        "required": [
+          "selector_version",
+          "ceiling_bytes",
+          "included",
+          "narrowed",
+          "omitted"
+        ],
+        "properties": {
+          "ceiling_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The canonical byte ceiling the selection was made against.",
+            "minimum": 0
+          },
+          "included": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many approved revisions the pack carries.",
+            "minimum": 0
+          },
+          "narrowed": {
+            "type": "boolean",
+            "description": "Whether the set had to be narrowed at all."
+          },
+          "omitted": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OmittedMemoryRevisionDto"
+            },
+            "description": "Every approved revision the pack could not carry, in the order the\nresolver would have taken them."
+          },
+          "selector_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The selector that chose them, so a changed rule is visible as a changed\nnumber rather than as an unexplained change of hash.",
+            "minimum": 0
+          }
+        }
+      },
       "MessageAckDto": {
         "type": "object",
         "description": "The runtime's answer to one delivered message.",
@@ -17536,6 +19038,27 @@
             "minimum": 0
           }
         }
+      },
+      "MessageReconcileRequest": {
+        "type": "object",
+        "description": "One bounded reconciliation step. This never resumes or sends a native message.",
+        "required": [
+          "message_id",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Zero starts a proof; later calls name its returned revision.",
+            "minimum": 0
+          },
+          "message_id": {
+            "type": "string",
+            "description": "Exact previously issued client message id."
+          }
+        },
+        "additionalProperties": false
       },
       "MessageRequest": {
         "type": "object",
@@ -17618,6 +19141,36 @@
             "type": "integer",
             "format": "int64",
             "description": "The control-plane position the answer is consistent with."
+          }
+        }
+      },
+      "NativeContainerParentDto": {
+        "type": "object",
+        "description": "Complete native parent identity reported for a child container.",
+        "required": [
+          "runtime_kind",
+          "host",
+          "generation",
+          "native_id"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Runtime generation.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "Runtime host."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "Native parent id."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "Runtime family."
           }
         }
       },
@@ -17865,6 +19418,17 @@
           "observed_at"
         ],
         "properties": {
+          "container_readback": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ContainerReadbackDto",
+                "description": "Complete container-only readback. `None` for sessions and legacy rows."
+              }
+            ]
+          },
           "cwd": {
             "type": [
               "string",
@@ -17940,6 +19504,24 @@
             "format": "int64",
             "description": "The canonical epoch both positions belong to.",
             "minimum": 0
+          }
+        }
+      },
+      "OmittedMemoryRevisionDto": {
+        "type": "object",
+        "description": "One approved memory revision a Context Pack could not carry.\n\nIt names the revision and never its content: the point is that a caller can\ngo and read what was left out, not that the pack leaks it by another route.",
+        "required": [
+          "item_id",
+          "revision_id"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "description": "The memory item."
+          },
+          "revision_id": {
+            "type": "string",
+            "description": "The immutable approved revision of it."
           }
         }
       },
@@ -18227,6 +19809,14 @@
           }
         },
         "additionalProperties": false
+      },
+      "ProducerAccountAttribution": {
+        "type": "string",
+        "description": "Account identity evidenced by the original producer, never the calling operator.",
+        "enum": [
+          "original_run_pin",
+          "native_proved_unknown"
+        ]
       },
       "ProfileApplyRequest": {
         "type": "object",
@@ -19618,6 +21208,124 @@
           }
         }
       },
+      "QuestionAction": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "subject",
+              "scope",
+              "attachment",
+              "why_ambiguous",
+              "options",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "raise"
+                ]
+              },
+              "attachment": {
+                "type": "object"
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "scope": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              },
+              "why_ambiguous": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "why_ambiguous",
+              "options",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "correct"
+                ]
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "supersedes": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              },
+              "why_ambiguous": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "dispose"
+                ]
+              },
+              "outcome": {
+                "type": "object"
+              },
+              "supersedes": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "trigger",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "fire_trigger"
+                ]
+              },
+              "trigger": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
       "QuickRolesDto": {
         "type": "object",
         "description": "The roles a Quick session may be opened against.",
@@ -20008,6 +21716,52 @@
           }
         }
       },
+      "RecordArtifactRequest": {
+        "type": "object",
+        "description": "Attaches verified Git bytes to an existing claim; does not assert agent authorship.",
+        "required": [
+          "role_turn_id",
+          "artifact_key",
+          "expected_task_revision",
+          "repository",
+          "commit",
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "artifact_key": {
+            "type": "string",
+            "description": "Declared artifact key already claimed by that turn."
+          },
+          "commit": {
+            "type": "string",
+            "description": "Full immutable Git commit object id (40 or 64 lower-case hexadecimal digits)."
+          },
+          "expected_task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Current task revision.",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string",
+            "description": "Repository-relative blob path, without parent traversal."
+          },
+          "repository": {
+            "type": "string",
+            "description": "Registered repository root: `task` worktree or `project` checkout."
+          },
+          "role_turn_id": {
+            "type": "string",
+            "description": "Exact existing settled-turn receipt."
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Expected SHA-256 of the blob contents, verified by the daemon."
+          }
+        },
+        "additionalProperties": false
+      },
       "RecordFindingsRequest": {
         "type": "object",
         "description": "Record one round of Committee findings.",
@@ -20163,6 +21917,36 @@
               "$ref": "#/components/schemas/QuotaWindowDto"
             },
             "description": "Every concurrent window this pair holds. Replaces the stored set\nwholesale rather than merging into it: a collector reports what the\nprovider offers *now*, and a merge would keep a window it has withdrawn."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RecordQuestionRequest": {
+        "type": "object",
+        "required": [
+          "question_id",
+          "expected_revision",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/QuestionAction"
+          },
+          "author_seat_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Ordinary Operator reporting names the active seat on whose behalf it\nreports. Closing always requires that leadership seat's scoped bearer."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Zero when raising; otherwise the exact question revision just read.",
+            "minimum": 0
+          },
+          "question_id": {
+            "type": "string"
           }
         },
         "additionalProperties": false
@@ -20555,7 +22339,7 @@
               },
               {
                 "$ref": "#/components/schemas/UnavailableProviderSeatRequest",
-                "description": "Exact evidence authorizing retirement of a never-dispatched seat whose\nprovider is temporarily unavailable. Absent preserves normal persistent\nidle-seat reuse."
+                "description": "Exact evidence authorizing retirement of a never-dispatched seat whose\nprovider is temporarily unavailable. A seat that already ran qualifies\nonly together with an explicit `model_route` naming another provider.\nAbsent preserves normal persistent idle-seat reuse."
               }
             ]
           }
@@ -20745,7 +22529,8 @@
           "task_id",
           "context_hash",
           "provenance",
-          "redactions"
+          "redactions",
+          "memory_selection"
         ],
         "properties": {
           "agent_run_id": {
@@ -20765,6 +22550,10 @@
               "null"
             ],
             "description": "The frozen pack, when this call snapshotted one."
+          },
+          "memory_selection": {
+            "$ref": "#/components/schemas/MemorySelectionDto",
+            "description": "Which approved memory revisions the pack carries, and which it could not."
           },
           "provenance": {
             "type": "array",
@@ -21357,7 +23146,7 @@
       },
       "SchedulerPlanDto": {
         "type": "object",
-        "description": "What the planner decided, and what it decided against.\n\nA plan is a dry run in the strongest sense available: it reads rows, it calls\nno runtime, and it writes nothing. `plan_hash` is what `scheduler:start`\napplies, so a caller starts the plan it was shown rather than whatever the\nworld looks like by the time it decides.",
+        "description": "What the planner decided, and what it decided against.\n\nA plan is a dry run in the strongest sense available: it reads rows, performs\nread-only exact runtime inspection, and writes nothing. `plan_hash` is what `scheduler:start`\napplies, so a caller starts the plan it was shown rather than whatever the\nworld looks like by the time it decides.",
         "required": [
           "realm_id",
           "plan_hash",
@@ -22230,7 +24019,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The artifacts the turn produced."
+            "description": "Declared artifact claims. Gate/phase evidence requires an addressable\nrecord through `artifacts:record`; a label alone is not evidence."
           },
           "correlation_challenge_message_id": {
             "type": [
@@ -23169,6 +24958,51 @@
           }
         },
         "additionalProperties": false
+      },
+      "TeamRunAdmissionAdoptionDto": {
+        "type": "object",
+        "description": "An adoption authorizes a later seat fill; it does not dispatch work.",
+        "required": [
+          "adoption_id",
+          "task_id",
+          "team_run_id",
+          "role_slot_id",
+          "agent_run_id",
+          "adopted_agent_run_revision",
+          "receipt"
+        ],
+        "properties": {
+          "adopted_agent_run_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Run revision proved by the adoption.",
+            "minimum": 0
+          },
+          "adoption_id": {
+            "type": "string",
+            "description": "Immutable adoption identity."
+          },
+          "agent_run_id": {
+            "type": "string",
+            "description": "Exact run authorized for materialization."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "Confirmed local command; no native operation is queued."
+          },
+          "role_slot_id": {
+            "type": "string",
+            "description": "Frozen slot identity, distinct from its catalog role."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Owning task."
+          },
+          "team_run_id": {
+            "type": "string",
+            "description": "Existing admitted TeamRun."
+          }
+        }
       },
       "TeamRunProjectionDto": {
         "type": "object",
@@ -24799,6 +26633,234 @@
             "description": "The phases it may terminate at."
           }
         }
+      },
+      "WorkflowPhaseRecoveryDto": {
+        "type": "object",
+        "description": "What re-deriving a stalled workflow's phase from durable evidence did.\n\nReports the phase before and after, so a caller can see whether anything\nmoved. `advanced: false` is the ordinary answer for a workflow already where\nits evidence puts it — which is exactly what makes this safe to run twice.",
+        "required": [
+          "realm_id",
+          "task_id",
+          "previous_phase",
+          "current_phase",
+          "revision",
+          "advanced"
+        ],
+        "properties": {
+          "advanced": {
+            "type": "boolean",
+            "description": "Whether the stored phase actually moved."
+          },
+          "current_phase": {
+            "type": "string",
+            "description": "The phase its durable evidence puts it at."
+          },
+          "previous_phase": {
+            "type": "string",
+            "description": "The phase the workflow stood at before."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm the task belongs to."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The workflow revision after the projection caught up.",
+            "minimum": 0
+          },
+          "task_id": {
+            "type": "string",
+            "description": "The task whose workflow was re-derived."
+          }
+        }
+      },
+      "WorktreeClaimCorrectionAppliedDto": {
+        "type": "object",
+        "description": "Durable result of one task-scoped worktree-claim correction.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "task_id",
+          "task_revision",
+          "old_worktree",
+          "new_worktree",
+          "module",
+          "branch",
+          "applied",
+          "receipt_id",
+          "preview_hash",
+          "corrected_at"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this invocation committed or replayed the correction."
+          },
+          "branch": {
+            "type": "string",
+            "description": "Jira-key publication branch the supported materializer must create."
+          },
+          "corrected_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Commit instant recorded in the immutable audit row."
+          },
+          "module": {
+            "type": "string",
+            "description": "Catalog module whose repository the target names."
+          },
+          "new_worktree": {
+            "type": "string",
+            "description": "Exact replacement claim read from immutable evidence."
+          },
+          "old_worktree": {
+            "type": "string",
+            "description": "Exact replaced claim."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Digest of the preview that authorized the correction."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm in which the correction committed."
+          },
+          "receipt_id": {
+            "type": "string",
+            "description": "Immutable local command receipt."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Preserved task identity."
+          },
+          "task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Preserved task revision used as the CAS fence.",
+            "minimum": 0
+          }
+        }
+      },
+      "WorktreeClaimCorrectionApplyRequest": {
+        "type": "object",
+        "description": "Apply one exact worktree-claim preview.",
+        "required": [
+          "expected_revision",
+          "old_worktree",
+          "new_worktree",
+          "preview_hash"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact task revision the preview inspected.",
+            "minimum": 0
+          },
+          "new_worktree": {
+            "type": "string",
+            "description": "Exact deterministic replacement."
+          },
+          "old_worktree": {
+            "type": "string",
+            "description": "Exact currently stored claim."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Digest returned by the matching preview."
+          }
+        },
+        "additionalProperties": false
+      },
+      "WorktreeClaimCorrectionPreviewDto": {
+        "type": "object",
+        "description": "One no-write, identity-bound worktree-claim correction decision.",
+        "required": [
+          "realm_id",
+          "project_id",
+          "task_id",
+          "task_revision",
+          "old_worktree",
+          "new_worktree",
+          "module",
+          "branch",
+          "writes",
+          "preview_hash"
+        ],
+        "properties": {
+          "branch": {
+            "type": "string",
+            "description": "Jira-key publication branch the supported materializer must create."
+          },
+          "module": {
+            "type": "string",
+            "description": "Catalog module whose repository the target names."
+          },
+          "new_worktree": {
+            "type": "string",
+            "description": "Exact derived replacement."
+          },
+          "old_worktree": {
+            "type": "string",
+            "description": "Exact claim apply may replace."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "Digest binding the full preview and required by apply."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Owning project."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "Realm in which the preview was decided."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Preserved task identity."
+          },
+          "task_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Task revision fenced by apply.",
+            "minimum": 0
+          },
+          "writes": {
+            "type": "boolean",
+            "description": "A valid correction always writes exactly one claim."
+          }
+        }
+      },
+      "WorktreeClaimCorrectionRequest": {
+        "type": "object",
+        "description": "What a caller asks one task-scoped worktree-claim preview to repair.",
+        "required": [
+          "expected_revision",
+          "old_worktree",
+          "new_worktree"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact task revision the caller inspected.",
+            "minimum": 0
+          },
+          "new_worktree": {
+            "type": "string",
+            "description": "Exact deterministic ASMA catalog-module target."
+          },
+          "old_worktree": {
+            "type": "string",
+            "description": "Exact currently stored claim; a mismatch refuses rather than overwrites."
+          }
+        },
+        "additionalProperties": false
       }
     },
     "securitySchemes": {

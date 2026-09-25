@@ -46,7 +46,44 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 9;
+pub const EXPORT_SCHEMA_VERSION: u32 = 12;
+
+/// The database generation that introduced the launch-intent supersession ledger.
+const LAUNCH_INTENT_SUPERSESSION_SCHEMA_VERSION: i64 = 109;
+
+/// The export generation that first carried it.
+const LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION: u32 = 11;
+
+/// The record array introduced in generation 11.
+const LAUNCH_INTENT_SUPERSESSION_RECORD_FIELDS: [&str; 1] =
+    ["hosted_seat_launch_intent_supersessions"];
+
+/// The database generation that introduced the retired-evaluator proof ledger.
+const RETIRED_EVALUATOR_ATTESTATION_SCHEMA_VERSION: i64 = 107;
+
+/// The export generation that first carried it.
+///
+/// Named for the same reason as the constants below: adding this generation
+/// must not silently reclassify an older document as unable to prove what it
+/// does in fact carry.
+const RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION: u32 = 10;
+
+/// The record array introduced in generation 10.
+const RETIRED_EVALUATOR_ATTESTATION_RECORD_FIELDS: [&str; 1] = ["retired_evaluator_attestations"];
+
+/// The database generation that introduced the TeamRun admission-adoption
+/// ledger.
+const TEAM_RUN_ADMISSION_ADOPTION_SCHEMA_VERSION: i64 = 110;
+
+/// The export generation that first carried it.
+///
+/// Named for the same reason as the constants around it: adding this generation
+/// must not silently reclassify an older document as unable to prove what it
+/// does in fact carry.
+const TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION: u32 = 12;
+
+/// The record array introduced in generation 12.
+const TEAM_RUN_ADMISSION_ADOPTION_RECORD_FIELDS: [&str; 1] = ["team_run_admission_adoptions"];
 
 /// The oldest export generation this build can read without inventing state.
 const MIN_SUPPORTED_EXPORT_SCHEMA_VERSION: u32 = 2;
@@ -432,6 +469,58 @@ impl KontorExportV1 {
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation cannot prove succession completeness",
+            });
+        }
+        // The same rule again: a document written before generation 10 has no
+        // field for a retired-evaluator proof, so against a database old enough
+        // to hold one it cannot tell "there were none" from "this generation
+        // could not see them".
+        // The same rule once more: a document written before generation 11 has
+        // no field for a supersession, so against a database old enough to hold
+        // one it cannot tell absence from blindness.
+        if self.schema_version < LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION
+            && self.database_schema_version >= LAUNCH_INTENT_SUPERSESSION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove launch-intent supersession completeness",
+            });
+        }
+        if self.schema_version < LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION
+            && !self
+                .records
+                .hosted_seat_launch_intent_supersessions
+                .is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries launch-intent supersessions it did not define",
+            });
+        }
+        if self.schema_version < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION
+            && self.database_schema_version >= RETIRED_EVALUATOR_ATTESTATION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove retired-evaluator attestation completeness",
+            });
+        }
+        if self.schema_version < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION
+            && !self.records.retired_evaluator_attestations.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries retired-evaluator attestations it did not define",
+            });
+        }
+        if self.schema_version < TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION
+            && self.database_schema_version >= TEAM_RUN_ADMISSION_ADOPTION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove admission-adoption completeness",
+            });
+        }
+        if self.schema_version < TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION
+            && !self.records.team_run_admission_adoptions.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries admission adoptions it did not define",
             });
         }
         if self.schema_version < SUCCESSION_EXPORT_VERSION
@@ -889,6 +978,45 @@ impl KontorExportV1 {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
             }
         }
+        if found < LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in LAUNCH_INTENT_SUPERSESSION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in RETIRED_EVALUATOR_ATTESTATION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in TEAM_RUN_ADMISSION_ADOPTION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
         let export: Self =
             serde_json::from_value(value).map_err(|_| BackupError::Verification {
                 detail: "the export is not a document of this generation",
@@ -1107,7 +1235,7 @@ fn redaction_summary() -> RedactionSummary {
         ),
         (
             "hosted_topology_seats",
-            "native leadership-session identity is runtime-local placement authority; a verified same-Realm snapshot preserves it byte-for-byte",
+            "native leadership-session identity and the autonomy its occupancy generation runs under are runtime-local placement authority; a verified same-Realm snapshot preserves them byte-for-byte",
         ),
         (
             "turn_correlation_challenges",
@@ -1519,6 +1647,13 @@ exported_tables! {
         bound_at: String,
         last_readback_at: String,
         revision: i64,
+        observed_projection: Option<String>,
+        visible_title: Option<String>,
+        parent_runtime_kind: Option<String>,
+        parent_host: Option<String>,
+        parent_generation: Option<i64>,
+        parent_native_id: Option<String>,
+        topology_correlation: Option<String>,
     }
     topology_container_recoveries: TopologyContainerRecoveriesRow from "topology_container_recoveries" key(receipt_id) {
         receipt_id: String,
@@ -1654,6 +1789,52 @@ exported_tables! {
         reviewer_principal: Option<String>,
         policy_evaluation_id: Option<String>,
     }
+    hosted_seat_launch_intent_supersessions: HostedSeatLaunchIntentSupersessionsRow from "hosted_seat_launch_intent_supersessions" key(idempotency_key) {
+        idempotency_key: String,
+        intent_hash: String,
+        project_id: String,
+        seat_binding_id: String,
+        occupancy_generation: i64,
+        seat_binding_revision: i64,
+        superseded_model_rung: String,
+        superseded_prepared_at: String,
+        replacement_model_rung: String,
+        receipt_id: Option<String>,
+        recorded_at: String,
+    }
+    retired_evaluator_attestations: RetiredEvaluatorAttestationsRow from "retired_evaluator_attestations" key(id) {
+        id: String,
+        project_id: String,
+        receipt_id: String,
+        task_id: String,
+        workflow_revision: i64,
+        gate_key: String,
+        team_run_id: String,
+        evaluator_role: String,
+        role_slot_id: String,
+        agent_run_id: String,
+        seat_binding_id: String,
+        seat_revision: i64,
+        runtime_binding_id: String,
+        runtime_generation: i64,
+        native_id: String,
+        artifact_key: String,
+        artifact_checksum: String,
+        evidence_digest: String,
+        proof_digest: String,
+        attested_at: String,
+    }
+    team_run_admission_adoptions: TeamRunAdmissionAdoptionsRow from "team_run_admission_adoptions" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        team_run_id: String,
+        role_slot_id: String,
+        agent_run_id: String,
+        adopted_agent_run_revision: i64,
+        receipt_id: String,
+        adopted_at: String,
+    }
     artifact_evidence: ArtifactEvidenceRow from "artifact_evidence" key(id) {
         id: String,
         project_id: String,
@@ -1664,7 +1845,7 @@ exported_tables! {
         locator: String,
         locator_hash: String,
         producer_role: String,
-        producer_account: String,
+        producer_account: Option<String>,
         recorded_at: String,
     }
     gate_waivers: GateWaiversRow from "gate_waivers" key(id) {

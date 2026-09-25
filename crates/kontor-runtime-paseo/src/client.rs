@@ -188,10 +188,28 @@ pub(crate) fn consultation_permission_mode(provider: &str) -> RuntimeResult<Opti
 /// guidance, not OS-level containment; the qualified canary proved shell
 /// writes remain possible. Every other OpenCode provider alias, model,
 /// effort, template route and future recovery source remains refused.
+///
+/// Cursor carries the same class of risk acceptance (operator exception,
+/// 2026-09-23): its `plan` mode refuses direct file tools but, per the Grok 4.6
+/// canary, not shell writes. Only the exact `cursor`/`gpt-5.6-sol`/`xhigh`
+/// route under an operator-accepted recovery profile is admitted, never a
+/// template route; the composed consultation MCP remains the only write path
+/// Kontor hands the seat.
 pub(crate) fn consultation_route_permission_mode(
     rung: &ModelRung,
     provenance: &ConsultationRouteProvenance,
 ) -> RuntimeResult<Option<&'static str>> {
+    if built_in_provider(&rung.provider.0) == "cursor" {
+        let exact_route = rung.provider.0 == "cursor"
+            && rung.model.0 == "gpt-5.6-sol"
+            && rung.effort.is_some_and(|effort| effort.as_str() == "xhigh");
+        if exact_route && provenance.is_operator_accepted_recovery() {
+            return Ok(Some("plan"));
+        }
+        return Err(RuntimeError::PermissionModeUnsupported {
+            provider: rung.provider.0.clone(),
+        });
+    }
     if rung.provider.0 == "opencode" {
         let exact_model = matches!(
             rung.model.0.as_str(),
@@ -956,6 +974,26 @@ impl PaseoRpc {
         )
     }
 
+    /// `project.remove.request`, addressed by exact durable project id.
+    ///
+    /// The id and nothing else. Paseo will remove a project selected by a
+    /// display name or a path just as willingly, and both are values several
+    /// projects on one host can share — which is precisely the mistake this
+    /// shape exists to make unrepresentable.
+    ///
+    /// Available only when the exact connection advertises
+    /// [`crate::wire::PaseoFeature::ProjectRemove`]; the caller checks, because
+    /// a command shape cannot refuse.
+    #[must_use]
+    pub fn project_remove(request_id: String, project_id: &str) -> Self {
+        Self::mutate(
+            "project.remove.request",
+            "project.remove.response",
+            request_id,
+            serde_json::json!({ "projectId": project_id }),
+        )
+    }
+
     /// `fetch_workspaces_request`, narrowed to one project and one bounded page.
     ///
     /// Paseo has no fetch-one-workspace request; the authoritative readback of a
@@ -1209,9 +1247,38 @@ impl PaseoRpc {
         ]});
     }
 
+    /// Inject the existing identity-scoped leadership profile for every hosted
+    /// provider. This contains no credential: the MCP child inherits the seat's
+    /// secret environment from the session frame, never shared configuration.
+    pub fn with_leadership_mcp(&mut self, seat: &crate::seat_mcp::SeatMcp) {
+        self.message["config"]["mcpServers"] = seat.server_config("leadership");
+        self.message["config"]["toolPolicy"] = serde_json::json!({"preapproved": [
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_completion_get"},
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_completion_remediate"},
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_open_questions_list"},
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_open_question_record"},
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_committee_permissions_inspect"},
+            {"kind":"mcp", "server":"kontor", "tool":"kontor_committee_permission_respond"}
+        ]});
+    }
+
     /// `create_agent_request` for one persistent hosted leadership seat. The
     /// credential uses the same secret-only frame channel as consultation
-    /// credentials, while the seat retains its supervised provider mode.
+    /// credentials.
+    /// The durable persona uses Paseo's creation-only `config.systemPrompt`;
+    /// `initialPrompt` remains the first bounded handoff.
+    ///
+    /// The posture is *rendered*, not just spelled as a mode. Until ASMA-8193
+    /// this called [`paseo_mode`] with a hardcoded
+    /// [`SeatAutonomy::Supervised`], which had two consequences: a leadership
+    /// seat could not be configured at all, and — because only
+    /// [`render_posture`](crate::posture::render_posture) emits the
+    /// `permission` block — an OpenCode LSA was created with **no**
+    /// `DESTRUCTIVE_BASH_DENIES` floor, since the block is the only place that
+    /// floor is written. Going through the same renderer the delivery path uses
+    /// gives a leadership seat both halves at once, and means a seat's `--mode`
+    /// and its permission block are two uses of one evaluation rather than two
+    /// evaluations that must be kept in step.
     #[allow(clippy::too_many_arguments)]
     pub fn hosted_seat_agent_create(
         request_id: String,
@@ -1221,10 +1288,16 @@ impl PaseoRpc {
         title: &str,
         labels: &BTreeMap<String, String>,
         prompt: &str,
+        role_prompt: Option<&str>,
         credential: &str,
+        autonomy: SeatAutonomy,
     ) -> RuntimeResult<Self> {
-        let mode = paseo_mode(model_rung.provider.0.as_str(), SeatAutonomy::Supervised)?;
-        Self::scoped_seat_agent_create(
+        // No allowances: a bounded relaxation of the floor is a per-task
+        // operator declaration, and a persistent leadership seat is not scoped
+        // to one task. The floor applies to it whole.
+        let posture =
+            crate::posture::render_posture(model_rung.provider.0.as_str(), autonomy, &[])?;
+        let mut request = Self::scoped_seat_agent_create(
             request_id,
             workspace_id,
             canonical_cwd,
@@ -1233,8 +1306,16 @@ impl PaseoRpc {
             labels,
             prompt,
             credential,
-            mode,
-        )
+            posture.mode,
+        )?;
+        if let Some(permission) = posture.permission {
+            request.message["config"]["providerOptions"] =
+                serde_json::json!({ "permission": permission });
+        }
+        if let Some(role_prompt) = role_prompt {
+            request.message["config"]["systemPrompt"] = serde_json::json!(role_prompt);
+        }
+        Ok(request)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1585,7 +1666,7 @@ pub trait PaseoTransport: Send + Sync + fmt::Debug {
 #[derive(Debug, Default)]
 struct Multiplex {
     /// Answers still owed, by correlation id.
-    pending: std::sync::Mutex<HashMap<String, oneshot::Sender<PaseoFrame>>>,
+    pending: std::sync::Mutex<HashMap<String, oneshot::Sender<RuntimeResult<PaseoFrame>>>>,
     /// Unsolicited frames, by agent.
     streams: std::sync::Mutex<BTreeMap<String, StreamBuffer>>,
 }
@@ -1599,6 +1680,19 @@ struct StreamBuffer {
 }
 
 impl Multiplex {
+    /// A rejected frame cannot be correlated without parsing beyond the bound.
+    /// Fail this connection's requests explicitly and let the next call reconnect.
+    fn fail_pending(&self, error: &RuntimeError) {
+        for (_, waiting) in self
+            .pending
+            .lock()
+            .expect("the transport lock is intact")
+            .drain()
+        {
+            let _ = waiting.send(Err(error.clone()));
+        }
+    }
+
     fn drain_stream(&self, agent_id: &str) -> Vec<serde_json::Value> {
         let Some(buffer) = self
             .streams
@@ -1670,7 +1764,7 @@ impl Multiplex {
             };
             // A receiver that has already given up is not an error here: the
             // request timed out, and its slot is gone.
-            let _ = waiting.send(frame);
+            let _ = waiting.send(Ok(frame));
         }
     }
 }
@@ -1857,10 +1951,22 @@ impl PaseoLiveTransport {
         let routed = Arc::clone(&multiplex);
         let reader = tokio::spawn(async move {
             while let Some(Ok(message)) = readable.next().await {
+                if message.len() > MAX_FRAME_BYTES {
+                    // Silently dropping a correlated reply makes a reachable
+                    // runtime appear hung. Do not parse or truncate it: retire
+                    // this connection and return the bounded refusal now.
+                    routed.fail_pending(&RuntimeError::Transport {
+                        rule: "frame exceeded the bounded frame size",
+                    });
+                    return;
+                }
                 if let Some(decoded) = decode_session_frame(&message) {
                     routed.route(&decoded);
                 }
             }
+            routed.fail_pending(&RuntimeError::Transport {
+                rule: "channel failed before the runtime answered",
+            });
         });
         Ok(LiveConnection {
             writer,
@@ -1878,6 +1984,11 @@ impl PaseoLiveTransport {
             let message = message.map_err(|_| RuntimeError::Transport {
                 rule: "channel failed before the runtime announced itself",
             })?;
+            if message.len() > MAX_FRAME_BYTES {
+                return Err(RuntimeError::Transport {
+                    rule: "frame exceeded the bounded frame size",
+                });
+            }
             let Some(decoded) = decode_session_frame(&message) else {
                 continue;
             };
@@ -1909,8 +2020,8 @@ impl PaseoLiveTransport {
 /// Decode one WebSocket message into the session message it carries.
 ///
 /// Binary frames, oversized frames, malformed JSON and unknown outer envelopes
-/// all decode to `None` — they are not answers and they are not content, so the
-/// only safe thing to do with them is nothing.
+/// all decode to `None`. Live callers reject an oversized frame before this
+/// decoder so pending requests receive a refusal rather than waiting forever.
 fn decode_session_frame(message: &Message) -> Option<serde_json::Value> {
     let Message::Text(text) = message else {
         return None;
@@ -2013,7 +2124,7 @@ impl PaseoTransport for PaseoLiveTransport {
             }
         }
         match tokio::time::timeout(deadline, waiting).await {
-            Ok(Ok(frame)) => Ok(frame),
+            Ok(Ok(frame)) => frame,
             // The sender was dropped, which means the reader task ended: the
             // socket died with this request in flight.
             Ok(Err(_)) => Err(RuntimeError::Transport {
@@ -2557,26 +2668,240 @@ mod tests {
         ));
     }
 
+    /// The 2026-09-23 operator exception admits one exact Cursor route under any
+    /// operator-accepted recovery profile, in `plan`, with the scoped credential
+    /// in the frame only. Template data, other routes, aliases and unaccepted
+    /// fallbacks stay refused before an RPC exists.
     #[test]
-    fn hosted_leadership_uses_supervised_mode_and_the_same_secret_only_frame() {
+    fn cursor_consultation_admits_only_the_exact_operator_accepted_recovery_route() {
+        let accepted = |source| ConsultationRouteProvenance {
+            source,
+            evidence_hash: ContentHash::of(b"recovery profile"),
+            fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+        };
+        let create = |rung: &ModelRung, provenance: &ConsultationRouteProvenance| {
+            PaseoRpc::consultation_agent_create(
+                "request-cursor-exception".to_owned(),
+                "wks_1",
+                "/w/epic",
+                rung,
+                provenance,
+                "Reviewer",
+                &labels(),
+                "review without mutation",
+                "seat-secret-value",
+            )
+        };
+        let exact = route("cursor", "gpt-5.6-sol", Some(EffortLevel::Xhigh));
+        for source in [
+            ConsultationRouteSource::InitialRecoveryProfile,
+            ConsultationRouteSource::MaterializationRecoveryProfile,
+            ConsultationRouteSource::SeatRecoveryProfile,
+        ] {
+            let request = create(&exact, &accepted(source))
+                .expect("the operator-accepted Cursor route is constructible");
+            assert_eq!(request.message["config"]["provider"], "cursor");
+            assert_eq!(request.message["config"]["model"], "gpt-5.6-sol");
+            assert_eq!(request.message["config"]["thinkingOptionId"], "xhigh");
+            assert_eq!(request.message["config"]["modeId"], "plan");
+            assert!(request.message.get("env").is_none());
+            assert!(!format!("{request:?}").contains("seat-secret-value"));
+            assert_eq!(
+                request.envelope()["message"]["env"]["KONTOR_AUTH"],
+                "seat-secret-value"
+            );
+        }
+
+        let recovery = accepted(ConsultationRouteSource::SeatRecoveryProfile);
+        let cases = [
+            (exact.clone(), template_provenance(), "template route"),
+            (
+                exact.clone(),
+                ConsultationRouteProvenance {
+                    fallback_disposition: Some(ConsultationFallbackDisposition::Rejected),
+                    ..recovery.clone()
+                },
+                "unaccepted fallback",
+            ),
+            (
+                exact.clone(),
+                ConsultationRouteProvenance {
+                    fallback_disposition: None,
+                    ..recovery.clone()
+                },
+                "missing disposition",
+            ),
+            (
+                route("cursor", "gpt-5.6-sol", Some(EffortLevel::High)),
+                recovery.clone(),
+                "other effort",
+            ),
+            (
+                route("cursor", "gpt-5.6-sol", None),
+                recovery.clone(),
+                "missing effort",
+            ),
+            (
+                route("cursor", "auto-smart", Some(EffortLevel::Xhigh)),
+                recovery.clone(),
+                "other model",
+            ),
+            (
+                route("cursor-work", "gpt-5.6-sol", Some(EffortLevel::Xhigh)),
+                recovery,
+                "provider alias",
+            ),
+        ];
+        for (rung, provenance, case) in cases {
+            let error = create(&rung, &provenance).expect_err(case);
+            assert!(
+                matches!(error, RuntimeError::PermissionModeUnsupported { .. }),
+                "{case}: {error:?}"
+            );
+        }
+    }
+
+    /// A leadership seat launches under the autonomy it was *given*, and its
+    /// credential still travels only in the frame.
+    ///
+    /// The mode assertion is ASMA-8193. This create used to call
+    /// [`paseo_mode`] with a hardcoded [`SeatAutonomy::Supervised`], so an LSA
+    /// seat launched `auto` — asking the operator per guarded call — no matter
+    /// what `runtimes.json` declared. The epic's own architect was the one seat
+    /// configuration could not reach.
+    ///
+    /// Both arms are asserted from one table rather than one arm being pinned:
+    /// a mutant that ignores the argument and returns the old constant passes a
+    /// single-value test whenever that value is the one chosen.
+    #[test]
+    fn hosted_leadership_launches_under_its_declared_autonomy() {
+        for (autonomy, expected) in [
+            (SeatAutonomy::Supervised, "auto"),
+            (SeatAutonomy::Bounded, "bypassPermissions"),
+            (SeatAutonomy::Advisory, "plan"),
+        ] {
+            let request = PaseoRpc::hosted_seat_agent_create(
+                "request-1".to_owned(),
+                "wks_1",
+                "/w/epic",
+                &route("claude-personal", "claude-opus-5", None),
+                "LSA",
+                &labels(),
+                "continue governed leadership",
+                None,
+                "leadership-seat-secret",
+                autonomy,
+            )
+            .expect("a hosted Claude account route");
+            assert_eq!(
+                request.message["config"]["modeId"], expected,
+                "a {autonomy} leadership seat must launch {expected}"
+            );
+            assert!(request.message.get("env").is_none());
+            assert!(!format!("{request:?}").contains("leadership-seat-secret"));
+            assert_eq!(
+                request.envelope()["message"]["env"]["KONTOR_AUTH"],
+                "leadership-seat-secret"
+            );
+        }
+    }
+
+    #[test]
+    fn hosted_leadership_mcp_has_exact_scope_and_keeps_credentials_out_of_config() {
+        for (provider, model) in [
+            ("claude", "claude-opus-5"),
+            ("claude-personal", "claude-opus-5"),
+            ("claude-work", "claude-opus-5"),
+            ("codex", "gpt-5.6-sol"),
+            ("codex-personal", "gpt-5.6-sol"),
+            ("codex-work", "gpt-5.6-sol"),
+            ("opencode", "deepseek/deepseek-flash"),
+        ] {
+            let mut request = PaseoRpc::hosted_seat_agent_create(
+                "request-1".to_owned(),
+                "wks_1",
+                "/w/epic",
+                &route(provider, model, None),
+                "LSA",
+                &labels(),
+                "continue governed leadership",
+                None,
+                "leadership-seat-secret",
+                SeatAutonomy::Bounded,
+            )
+            .unwrap();
+            request.with_leadership_mcp(&crate::seat_mcp::SeatMcp {
+                command: "/realm/bin/kontor-mcp".to_owned(),
+                state_root: "/realm/state".into(),
+            });
+            let config = &request.message["config"];
+            assert_eq!(config["provider"], provider);
+            assert_eq!(
+                config["mcpServers"],
+                serde_json::json!({"kontor": {
+                    "type": "stdio", "command": "/realm/bin/kontor-mcp",
+                    "args": ["--state-root", "/realm/state", "--credential-tier", "operator",
+                        "--serve-profile", "leadership"]
+                }})
+            );
+            assert_eq!(
+                config["toolPolicy"],
+                serde_json::json!({"preapproved": [
+                    {"kind":"mcp", "server":"kontor", "tool":"kontor_completion_get"},
+                    {"kind":"mcp", "server":"kontor", "tool":"kontor_completion_remediate"},
+                    {"kind":"mcp", "server":"kontor", "tool":"kontor_open_questions_list"},
+                    {"kind":"mcp", "server":"kontor", "tool":"kontor_open_question_record"},
+                    {"kind":"mcp", "server":"kontor", "tool":"kontor_committee_permissions_inspect"},
+                    {"kind":"mcp", "server":"kontor", "tool":"kontor_committee_permission_respond"}
+                ]})
+            );
+            assert!(
+                !request
+                    .message
+                    .to_string()
+                    .contains("leadership-seat-secret")
+            );
+            assert!(!format!("{request:?}").contains("leadership-seat-secret"));
+            assert_eq!(
+                request.envelope()["message"]["env"]["KONTOR_AUTH"],
+                "leadership-seat-secret"
+            );
+            assert!(request.envelope()["message"]["config"].get("env").is_none());
+        }
+    }
+
+    /// The destructive floor reaches a leadership seat, on the one harness that
+    /// reads a block rather than a mode.
+    ///
+    /// This is the half of ASMA-8193 that is a security fix rather than a
+    /// configuration one. The hosted create called [`paseo_mode`] directly, and
+    /// only [`render_posture`](crate::posture::render_posture) emits the
+    /// `permission` block that carries [`DESTRUCTIVE_BASH_DENIES`] — so an
+    /// OpenCode LSA was created with no floor at all. Every pattern is asserted,
+    /// because a block naming only some of them leaves the rest to whatever an
+    /// operator's global config said.
+    #[test]
+    fn a_leadership_seat_carries_the_destructive_floor() {
         let request = PaseoRpc::hosted_seat_agent_create(
             "request-1".to_owned(),
             "wks_1",
             "/w/epic",
-            &route("claude-personal", "claude-opus-5", None),
+            &route("opencode", "deepseek/deepseek-v4-flash", None),
             "LSA",
             &labels(),
             "continue governed leadership",
+            None,
             "leadership-seat-secret",
+            SeatAutonomy::Bounded,
         )
-        .expect("a hosted Claude account route");
-        assert_eq!(request.message["config"]["modeId"], "auto");
-        assert!(request.message.get("env").is_none());
-        assert!(!format!("{request:?}").contains("leadership-seat-secret"));
-        assert_eq!(
-            request.envelope()["message"]["env"]["KONTOR_AUTH"],
-            "leadership-seat-secret"
-        );
+        .expect("a hosted OpenCode route");
+        let bash = &request.message["config"]["providerOptions"]["permission"]["bash"];
+        for pattern in crate::posture::DESTRUCTIVE_BASH_DENIES {
+            assert_eq!(
+                bash[*pattern], "deny",
+                "a bounded leadership seat must still refuse `{pattern}`"
+            );
+        }
     }
 
     /// Every launch states the authority it runs under, and the three intents
@@ -2930,6 +3255,113 @@ mod tests {
         assert!(!printed.contains("u:p@host"), "got {printed}");
     }
 
+    /// A real socket is necessary here: the recorded transport never passes
+    /// through the live reader's frame bound or its pending-request routing.
+    async fn read_canonical_socket_answer(output_bytes: usize) -> RuntimeResult<PaseoFrame> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let address = listener.local_addr().expect("loopback address");
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("client connection");
+            let mut socket = tokio_tungstenite::accept_async(socket)
+                .await
+                .expect("WebSocket handshake");
+            socket.next().await.expect("hello").expect("hello frame");
+            let info: serde_json::Value = serde_json::from_str(include_str!(
+                "../tests/fixtures/paseo-0.8.0/protocol/server-info.json"
+            ))
+            .expect("server identity fixture");
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "session",
+                        "message": { "type": "status", "payload": info },
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .expect("server identity");
+            let request = socket
+                .next()
+                .await
+                .expect("request")
+                .expect("request frame");
+            let request: serde_json::Value =
+                serde_json::from_str(request.to_text().expect("text request"))
+                    .expect("request JSON");
+            assert_eq!(request["message"]["projection"], "canonical");
+            socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "session",
+                        "message": {
+                            "type": "fetch_agent_timeline_response",
+                            "payload": {
+                                "requestId": request["message"]["requestId"],
+                                "entries": [{ "item": { "type": "tool_call", "output": "x".repeat(output_bytes) } }],
+                            },
+                        },
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .expect("canonical answer");
+            // Keep the connection open: an ignored reply must not look like a
+            // fast disconnect. Production stayed connected and waited forever.
+            let _ = socket.next().await;
+        });
+        let transport = PaseoLiveTransport::new(
+            "paseo",
+            SecretString::from(address.to_string()),
+            &format!("ws://{address}/ws"),
+            "canonical-frame-test",
+            30,
+        )
+        .expect("test transport");
+        let request = PaseoRpc::timeline_fetch(
+            "canonical-frame-request".to_owned(),
+            "agt_1",
+            PaseoProjection::Canonical,
+            PaseoDirection::Tail,
+            None,
+            1,
+        );
+        let answer =
+            tokio::time::timeout(Duration::from_secs(2), transport.request(&request)).await;
+        server.abort();
+        answer.expect("a reply or explicit refusal must arrive before the request deadline")
+    }
+
+    #[tokio::test]
+    async fn a_canonical_tool_output_over_one_megabyte_is_read_without_truncation() {
+        // Live ASMA-8189 evidence contained a 1,146,605-byte tool event. Page
+        // size 1 cannot make that event fit beneath the former 1 MiB ceiling.
+        let output_bytes = 1_146_605;
+        let answer = read_canonical_socket_answer(output_bytes)
+            .await
+            .expect("the canonical tool result is within the supported bound");
+        let payload = answer.payload.expect("canonical payload");
+        assert_eq!(
+            payload["entries"][0]["item"]["output"].as_str(),
+            Some("x".repeat(output_bytes).as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_canonical_socket_answer_fails_without_waiting_for_timeout() {
+        assert_eq!(
+            read_canonical_socket_answer(MAX_FRAME_BYTES + 1)
+                .await
+                .expect_err("a frame beyond the bound remains refused"),
+            RuntimeError::Transport {
+                rule: "frame exceeded the bounded frame size",
+            }
+        );
+    }
+
     #[test]
     fn the_reader_routes_answers_by_id_and_streams_by_agent() {
         let multiplex = Multiplex::default();
@@ -2955,7 +3387,10 @@ mod tests {
             "type": "fetch_agent_response",
             "payload": { "requestId": "req-1", "agent": null },
         }));
-        let frame = receiver.try_recv().expect("the answer arrives");
+        let frame = receiver
+            .try_recv()
+            .expect("the answer arrives")
+            .expect("the frame is within the bound");
         assert_eq!(frame.response_type, "fetch_agent_response");
         assert_eq!(frame.request_id, "req-1");
 
@@ -3042,7 +3477,10 @@ mod tests {
             "type": "rpc_error",
             "payload": { "requestId": "req-1", "error": "/Users/someone/secret" },
         }));
-        let frame = receiver.try_recv().expect("a refusal is delivered");
+        let frame = receiver
+            .try_recv()
+            .expect("a refusal is delivered")
+            .expect("the RPC refusal is a valid frame");
         assert!(frame.payload.is_none());
         assert!(!format!("{frame:?}").contains("secret"));
     }
@@ -3095,7 +3533,9 @@ mod tests {
             "Lead",
             &labels,
             "go",
+            None,
             "secret",
+            SeatAutonomy::Supervised,
         )
         .expect("the evidenced create builds");
 

@@ -17,8 +17,8 @@
 //!
 //! # Why it is not a socket
 //!
-//! TST-001: no test in this crate binds a socket, spawns a child process or runs
-//! the daemon binary. [`RouterTransport`] therefore implements the transport seam
+//! TST-001: no test here binds a socket or launches a native runtime/daemon.
+//! Git creates only committed content fixtures for real artifact verification. [`RouterTransport`] therefore implements the transport seam
 //! `kontor-mcp` is written against by driving the same `axum::Router` the binary
 //! serves, through `tower::ServiceExt::oneshot`. Everything above the seam — the
 //! registry, the authority gate, the schema validation, the one-request rule — is
@@ -291,6 +291,11 @@ fn confirm_jira_identity(world: &World, project: &str, epic: &str, task_jira_key
     let epic_id = MiniProjectId::parse(epic).expect("an epic id");
     world.daemon.state().with_store(|store| {
         let now = at("2026-08-10T09:20:00Z");
+        // Placement reads the epic's immutable backlog code, so the fixture has
+        // to give it one before anything can be materialized under it.
+        store
+            .assign_epic_backlog_code(project_id, epic_id, None, now)
+            .expect("the journey epic gets an immutable backlog code");
         let batch_id = ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("a batch id");
         let mut items = vec![NewJiraMaterializationItem {
             id: ExternalId::parse(&uuid::Uuid::now_v7().to_string()).expect("an item id"),
@@ -427,6 +432,43 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     world.script(HISTORY_LIVE);
     world.daemon.reconcile().await;
     let (lead, transport) = lead_seat(&world);
+    let repository = world.directory.path().join("journey-repository");
+    std::fs::create_dir_all(&repository).expect("isolated artifact repository");
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(args)
+            .output()
+            .expect("Git content fixture");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("Git output")
+            .trim()
+            .to_owned()
+    };
+    git(&["init", "--quiet"]);
+    let content = b"MCP journey committed implementation and review evidence.\n";
+    std::fs::write(repository.join("evidence.md"), content).expect("committed fixture");
+    git(&["add", "evidence.md"]);
+    git(&[
+        "-c",
+        "user.name=Kontor test",
+        "-c",
+        "user.email=kontor-test@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        "MCP artifact fixture",
+    ]);
+    let artifact_commit = git(&["rev-parse", "HEAD"]);
+    let artifact_hash = ContentHash::of(content);
 
     // 1. Identity, then the catalogs a graph is chosen from. Nothing is seeded:
     //    every value below comes out of a tool answer.
@@ -457,7 +499,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         serde_json::json!({
             "idempotency_key": "journey-project-1",
             "name": "Kontor",
-            "root_path": "/tmp/kontor-mcp-journey",
+            "root_path": repository,
             "memory_origin": "kontor_native",
             "backlog_origin": "kontor_native",
         }),
@@ -476,7 +518,7 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         serde_json::json!({
             "idempotency_key": "journey-project-1",
             "name": "Kontor",
-            "root_path": "/tmp/kontor-mcp-journey",
+            "root_path": repository,
             "memory_origin": "kontor_native",
             "backlog_origin": "kontor_native",
         }),
@@ -611,14 +653,51 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             "label": "Primary",
             "harness": "fake.runtime",
             "credential_alias": "journey-alias",
+            "selectable_providers": ["claude", "claude-work", "claude-personal", "codex", "codex-work", "codex-personal", "opencode"],
             "enabled": true,
         }),
     )
     .await;
     assert!(account["account_profile_id"].is_string());
 
+    // The scripted runtime has no vendor quota endpoint. Its actual pinned
+    // account declares this limitation through the supported MCP surface.
+    for provider in [
+        "claude",
+        "claude-work",
+        "claude-personal",
+        "codex",
+        "codex-work",
+        "codex-personal",
+        "opencode",
+    ] {
+        ok(
+            &lead,
+            "kontor_provider_quota_record",
+            serde_json::json!({
+                "project_id": project,
+                "idempotency_key": format!("journey-quota-{provider}"),
+                "account_profile_id": account["account_profile_id"],
+                "provider": provider,
+                "state": "cannot_report",
+                "expected_revision": 1
+            }),
+        )
+        .await;
+    }
+
     // 4. The whole graph, applied atomically, with its dependency edge and its
     //    ticket link resolved inside `kontord`.
+    let journey_worktrees: Vec<String> = (0..2)
+        .map(|index| {
+            let root = world.directory.path().join(format!("journey-{index}"));
+            std::fs::create_dir_all(root.join(".git")).expect("a journey worktree");
+            std::fs::canonicalize(&root)
+                .expect("a canonical journey worktree")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
     let applied = ok(
         &lead,
         "kontor_epic_apply",
@@ -627,6 +706,12 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             "idempotency_key": "journey-epic-1",
             "expected_revision": revision,
             "name": "Bootstrap epic",
+            // The runtime-facing scope code below places the epic; this is the
+            // separate supported field that persists the active immutable
+            // namespace. Seating derives its display item code from the
+            // persisted one, so a journey that declares only the scope has an
+            // epic nothing can be named under.
+            "epic_backlog_code": "JOURNEY",
             "execution_scope": {
                 "external_epic_key": "ASMA-8000",
                 "short_title": "Bootstrap epic",
@@ -638,16 +723,18 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
             // A task with no declared worktree cannot be seated — there is
             // nowhere to prepare its workspace — and the two differ so the
             // scheduler is refusing on the dependency edge rather than on a
-            // worktree collision.
+            // worktree collision. Admission proves the declared path rather
+            // than taking the declaration for it, so these are real checkouts
+            // under the world's own directory (ASMA-8115).
             "tasks": [
                 {"title": "Design the thing", "short_code": "JOURNEY-01",
                  "ai_short_name": "Design Thing",
-                 "worktree": "/w/journey/0", "ticket_links": [
+                 "worktree": journey_worktrees[0], "ticket_links": [
                     {"connector": "jira", "external_issue_key": "ASMA-1"}
                 ]},
                 {"title": "Build the thing", "short_code": "JOURNEY-02",
                  "ai_short_name": "Build Thing",
-                 "worktree": "/w/journey/1",
+                 "worktree": journey_worktrees[1],
                  "depends_on": ["Design the thing"], "ticket_links": [
                     {"connector": "jira", "external_issue_key": "ASMA-2"}
                  ]}
@@ -680,6 +767,41 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         .as_u64()
         .or_else(|| applied["revision"].as_u64())
         .unwrap_or(1);
+
+    // Admission proves the exact ESW/ECP/TSW readback before it commits a
+    // TeamRun, so the journey places its own work through the same tool
+    // surface it uses for everything else (ASMA-8115). Both tickets are placed,
+    // so the second task is refused on its dependency edge — the thing this
+    // journey is about — rather than on a placement it was never given.
+    let project_view = ok(
+        &lead,
+        "kontor_project_get",
+        serde_json::json!({ "project_id": project }),
+    )
+    .await;
+    let project_revision = project_view["revision"]
+        .as_u64()
+        .expect("a project revision");
+    for (index, target) in [
+        serde_json::json!({"scope": "epic_control", "epic_id": epic}),
+        serde_json::json!({"scope": "ticket", "task_id": applied["tasks"][0]["task_id"]}),
+        serde_json::json!({"scope": "ticket", "task_id": applied["tasks"][1]["task_id"]}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        ok(
+            &lead,
+            "kontor_topology_materialize",
+            serde_json::json!({
+                "project_id": project,
+                "idempotency_key": format!("journey-materialize-{index}"),
+                "target": target,
+                "expected_revision": project_revision,
+            }),
+        )
+        .await;
+    }
 
     // 6. Arming, then the plan it makes possible. A plan commits nothing, which is
     //    why it takes no key.
@@ -730,9 +852,25 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
     );
     assert_eq!(
         transport.calls(),
-        17,
-        "seventeen tool invocations made seventeen requests: {routes:#?}"
+        28,
+        "twenty-eight tool invocations made twenty-eight requests: {routes:#?}"
     );
+
+    // Source accounts are real launch pins, selected through the public tool.
+    // Recovery must never fill an unknown producer with the operator's identity.
+    let pinned_tasks = ok(
+        &lead,
+        "kontor_epic_get",
+        serde_json::json!({"project_id":project, "epic_id":epic}),
+    )
+    .await;
+    for task in pinned_tasks["tasks"].as_array().expect("tasks to pin") {
+        ok(&lead, "kontor_account_select", serde_json::json!({
+            "project_id":project, "task_id":task["task_id"],
+            "expected_revision":task["revision"], "account_profile_id":account["account_profile_id"],
+            "reason":"Pin the actual producer account before launch", "idempotency_key":format!("journey-account-pin-{}", task["task_id"]),
+        })).await;
+    }
 
     // ---- 7. From the planning point to a closed epic, through the same seat ----
     //
@@ -805,8 +943,8 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
         );
 
         // 8. Every bounded role turn settles with exact runtime positions while
-        //    its persistent seat stays live. The role turn, not a later gate or
-        //    lifecycle request, is the durable producer of its artifacts.
+        //    its persistent seat stays live. The turn claims keys; a separate
+        //    verified locator gives each claim independently addressable bytes.
         let before_turns = ok(
             &lead,
             "kontor_epic_get",
@@ -838,6 +976,16 @@ async fn an_empty_realm_is_bootstrapped_through_mcp_tools_alone() {
                 "the settlement answered about the seat it was asked about: {settled}"
             );
             assert_eq!(settled["seat_live"], true, "the persistent seat stays live");
+            for artifact in settled["artifacts"].as_array().expect("settled claims") {
+                let receipt = ok(&lead, "kontor_artifact_record", serde_json::json!({
+                    "project_id":project, "task_id":task, "role_turn_id":settled["turn_id"],
+                    "artifact_key":artifact, "expected_task_revision":task_revision,
+                    "repository":"project", "commit":artifact_commit, "path":"evidence.md",
+                    "sha256":artifact_hash.as_str(), "idempotency_key":format!("journey-artifact-{round}-{index}-{artifact}"),
+                })).await;
+                assert_eq!(receipt["provenance"], "operator_recovered_git_blob");
+                assert_eq!(receipt["producer_account"], account["account_profile_id"]);
+            }
         }
 
         // 9. The gates the pinned profile declares, discharged through the public

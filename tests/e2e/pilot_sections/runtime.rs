@@ -55,8 +55,9 @@ use kontor_runtime::workspace::{
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdaptiveWindowConfig, AuthorizationEvidence,
     CalendarAdmission, Candidate, CandidateDecision, CapacityConfig, CapacityUsage,
-    ExternalWorkEvidence, ReconciliationEvidence, ReconciliationScope, RejectionCode,
-    RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
+    ExternalWorkEvidence, PlacementAdmission, ReconciliationEvidence, ReconciliationScope,
+    RejectionCode, RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot,
+    TaskOrigin,
 };
 use kontor_scheduler::ready::{minimum_launch_capabilities, plan};
 use kontor_tests_contract::{SESSION_KINDS, closes, drain_history, sequences, text};
@@ -167,9 +168,7 @@ async fn ambiguous_command(bundle: &mut Bundle) {
 
     let lost = matches!(
         ambiguous,
-        Err(RuntimeError::Transport {
-            rule: "acknowledgement was lost after the message was committed"
-        })
+        Err(RuntimeError::DeliveryConfirmationUnknown { .. })
     );
     let replayed = reconciled
         .as_ref()
@@ -1622,6 +1621,9 @@ fn dispatch_decision(open_replay_gap: bool) -> (usize, Option<String>) {
         mini_project_id: None,
         workflow_id: TaskWorkflowId::generate(),
         delivery_slots_registered: true,
+        placement: PlacementAdmission::Confirmed {
+            attestation_digest: ContentHash::of(b"pilot-placement"),
+        },
         state: TaskState::Ready,
         revision: AggregateRevision::INITIAL,
         created_at: taken_at,

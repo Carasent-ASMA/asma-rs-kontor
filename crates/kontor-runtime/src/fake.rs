@@ -25,8 +25,10 @@ use kontor_core::id::{
     Timestamp, TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::repository::RuntimeBinding;
-use kontor_core::spec::ModelRung;
-use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
+use kontor_core::spec::{ModelRung, SeatAutonomy};
+use kontor_core::state::{
+    NativeRuntimeIdentity, ObservedContainerKind, ObservedRunState, RuntimeContact,
+};
 use serde::Deserialize;
 
 use crate::adapter::{
@@ -49,8 +51,11 @@ use crate::capability::{
     RuntimeCapability, RuntimeLimits, preflight,
 };
 use crate::container::{
-    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerOutcome,
-    ContainerProjection, ContainerRequest, RetitleContainerOutcome, RetitleContainerRequest,
+    ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerCorrelationEvidence,
+    ContainerInspectRequest, ContainerInspection, ContainerOutcome, ContainerProjection,
+    ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRecreationOutcome,
+    ContainerRecreationRequest, ContainerRequest, ContainerWorkspaceKind, RetitleContainerOutcome,
+    RetitleContainerRequest,
 };
 use crate::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -282,6 +287,50 @@ pub struct RuntimeScript {
     pub steps: Vec<ScriptStep>,
 }
 
+/// Which hosted-seat control operation an autonomy observation came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedSeatOperation {
+    /// A new occupancy generation is being created.
+    Launch,
+    /// A live native is being read back.
+    Inspect,
+    /// A generation is being ended.
+    Retire,
+}
+
+/// One hosted-seat control operation and the authority it named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostedAutonomyObservation {
+    /// Which control operation.
+    pub operation: HostedSeatOperation,
+    /// The logical seat it addressed.
+    pub seat_binding_id: SeatBindingId,
+    /// The authority the caller actually supplied.
+    pub autonomy: SeatAutonomy,
+}
+
+/// What placement a retirement actually named.
+///
+/// A retirement that passed `None` and one that passed a proved native child
+/// are indistinguishable in the call log, which records only the seat. The
+/// difference is the whole contract under test, so it is observed here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedRetirePlacementObservation {
+    /// The logical seat it addressed.
+    pub seat_binding_id: SeatBindingId,
+    /// The placement the caller supplied, exactly as supplied.
+    pub placement: Option<crate::adapter::HostedSeatRetirePlacement>,
+}
+
+/// Native container drift that preserves the logical node and its membership.
+#[derive(Debug, Clone)]
+pub enum FakeContainerDrift {
+    /// Another native workspace now occupies the node.
+    NativeId(ExternalId),
+    /// The same native workspace now works in another directory.
+    Root(WorkspaceRoot),
+}
+
 /// What the fake was asked to do, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdapterCall {
@@ -291,12 +340,25 @@ pub enum AdapterCall {
     PrepareWorkspace(TeamRunId),
     /// A topology node's native container was prepared.
     PrepareContainer(TopologyNodeId),
+    /// A topology node's exact native container was inspected.
+    InspectContainer(TopologyNodeId),
     /// A retired native child was archived.
     ArchiveContainer(TopologyNodeId),
     /// A container's visible title was corrected.
     RetitleContainer(TopologyNodeId),
     /// A container's title correction was previewed, and nothing was written.
     PreviewRetitleContainer(TopologyNodeId),
+    /// A native container was *built* by a recreation apply.
+    ///
+    /// Emitted only when a native is actually minted, never on the adopt or
+    /// preview paths. That is what makes counting these the create counter the
+    /// frozen evidence items are stated in: "exactly one" and "exactly zero"
+    /// are both assertions about this variant and nothing else.
+    CreateNativeContainer(TopologyNodeId),
+    /// A stale container binding's replacement census ran, changing nothing.
+    PreviewContainerRecovery(TopologyNodeId),
+    /// A recreation census ran, changing nothing.
+    PreviewContainerRecreation(TopologyNodeId),
     /// A persistent seat's visible title was corrected.
     RetitleSeat(ExternalId),
     /// A persistent seat's title correction was previewed, and nothing was written.
@@ -345,6 +407,10 @@ pub enum AdapterCall {
     DiscoverSessions,
     /// A history page was read.
     History(RuntimeBindingId),
+    /// The session's current timeline epoch was re-read, without its content.
+    RefreshTimelineEpoch(RuntimeBindingId),
+    /// A bounded window of the session's newest content was read.
+    TailWindow(RuntimeBindingId),
     /// A live subscription was opened.
     SubscribeLive(RuntimeBindingId),
     /// A permission request was answered.
@@ -356,6 +422,20 @@ pub enum AdapterCall {
 }
 
 impl FakeState {
+    fn drift_container(&mut self, node: TopologyNodeId, drift: FakeContainerDrift) {
+        let held = self
+            .containers
+            .get_mut(&node)
+            .expect("the container exists");
+        match drift {
+            FakeContainerDrift::NativeId(native_id) => {
+                held.binding.identity.native_id = native_id.clone();
+                held.correlation.native.native_id = native_id;
+            }
+            FakeContainerDrift::Root(root) => held.binding.root = Some(root),
+        }
+    }
+
     /// Adopt the one scripted native named by an adoption-only launch.
     ///
     /// Discovery is the only runtime contact on this path. An empty, ambiguous,
@@ -697,17 +777,48 @@ struct FakeState {
     /// the container too would make "re-find it by its stored native id"
     /// untestable, and that path is the whole of the restart contract.
     containers: BTreeMap<TopologyNodeId, ContainerBindingSnapshot>,
+    container_drift_after_inspection: BTreeMap<TopologyNodeId, FakeContainerDrift>,
     container_parents: BTreeMap<TopologyNodeId, ExternalId>,
     archived_containers: BTreeSet<TopologyNodeId>,
     lose_archive_ack_once: BTreeSet<TopologyNodeId>,
     lose_hosted_retire_ack_once: BTreeSet<SeatBindingId>,
+    /// Whether the next hosted *launch* lands natively and then loses its
+    /// answer. The window this reproduces is the one where a native exists and
+    /// nothing durable yet says what authority it was created under.
+    ///
+    /// Unkeyed on purpose: the seat binding a materialization launches does not
+    /// exist until that same call creates it, so a caller arming this failure
+    /// cannot name it in advance.
+    lose_hosted_launch_ack_once: bool,
+    /// One exact `StaleBinding` rule every hosted-seat inspection answers with.
+    hosted_inspect_stale_rule: Option<&'static str>,
+    /// The seat is restored for terminal readback only: no placement, so it
+    /// answers an inspection and refuses every driving operation.
+    readback_only: bool,
     pause_hosted_retire_once: Option<FakeNativePause>,
+    pause_send_once: Option<FakeNativePause>,
     /// Consultation seats keyed by their durable SeatBinding identity.
     consultations: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     consultation_runs: BTreeMap<SeatBindingId, ConsultationRunId>,
     consultation_permissions: BTreeMap<SeatBindingId, BTreeSet<ExternalId>>,
     consultation_permission_acks: BTreeMap<(SeatBindingId, ExternalId), ConsultationPermissionAck>,
     hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
+    /// Every authority a hosted-seat control operation was actually asked for.
+    ///
+    /// ASMA-8193: the defect this exists to observe is not a wrong *stored*
+    /// value, it is a control operation that recomputes one. Nothing else in
+    /// the fake records the autonomy a call carried, so re-resolving the plane
+    /// default at inspect or retire was invisible to every test.
+    hosted_autonomy: Vec<HostedAutonomyObservation>,
+    hosted_retire_placements: Vec<HostedRetirePlacementObservation>,
+    /// Plane-wide default this runtime declares, as an operator may change it
+    /// between one control operation and the next.
+    declared_autonomy: Option<SeatAutonomy>,
+    hosted_role_prompts: BTreeMap<SeatBindingId, Option<BoundedText>>,
+    /// The bounded first handoff each hosted seat was launched with, recorded
+    /// beside the persona so a test can prove the two are different values
+    /// rather than one value written twice.
+    hosted_initial_prompts: BTreeMap<SeatBindingId, BoundedText>,
     /// Terminal hosted natives retained so retirement and recovery are replayable.
     archived_hosted_seats: BTreeMap<SeatBindingId, ConsultationLaunchOutcome>,
     /// Stable message ledger per exact hosted native. A logical seat may be
@@ -726,6 +837,13 @@ struct FakeState {
     /// container that may change without the binding changing — which is the
     /// whole point of a retitle, and the reason it can be read back.
     container_titles: BTreeMap<TopologyNodeId, String>,
+    /// The native workspace shape this runtime holds for each container.
+    ///
+    /// The minimum needed to implement the shared bound-container contract in
+    /// lockstep with a wire plane. A container created here takes the shape its
+    /// own semantics require, so the default is always applicable and only a
+    /// test that deliberately plants a wrong shape can make it refuse.
+    container_kinds: BTreeMap<TopologyNodeId, ContainerWorkspaceKind>,
     /// Container retitles whose native effect succeeds but acknowledgement is
     /// deliberately dropped once, modelling a transport loss after commit.
     lose_retitle_ack_once: BTreeSet<TopologyNodeId>,
@@ -733,6 +851,42 @@ struct FakeState {
     /// Separate from the strict script queue so read-only proof calls may
     /// legitimately precede that send.
     lose_next_send_ack: bool,
+    /// Messages the control plane has declared may already have been delivered.
+    ///
+    /// Adapter-level, not session-level, exactly like the ledger it stands in
+    /// for: it survives nothing on its own and is handed back from durable
+    /// state when a replay arrives.
+    unconfirmed_deliveries: BTreeSet<MessageId>,
+    /// The canonical tail each message was registered as issued after.
+    issuance_floors: BTreeMap<MessageId, TimelinePosition>,
+    /// Whether the modelled native runtime answers a resent client message id
+    /// from its own ledger instead of appending a second entry.
+    ///
+    /// True by default, which is the forgiving case. A test proving the
+    /// *adapter* prevents duplicates must turn it off, or the fake prevents
+    /// them first and the test proves nothing.
+    native_deduplicates_messages: bool,
+    /// Raw->Kontor timeline epoch mappings this fake has allocated, and the
+    /// ones not yet handed to the control plane for persistence. The fake
+    /// models the same boundary a native adapter does, so the persist-before-
+    /// expose barrier can be exercised without a live runtime.
+    epoch_mappings: BTreeMap<String, u64>,
+    undrained_epochs: Vec<(String, u64)>,
+    /// Whether an anchored read must declare a refetch until the epoch is
+    /// re-read.
+    ///
+    /// The transient half of the refetch signal: the cursor names an epoch this
+    /// runtime still holds, but the page it addresses cannot be served until the
+    /// reader has re-established which epoch the session is in. Cleared by
+    /// [`RuntimeAdapter::refresh_timeline_epoch`] and by nothing else, so a test
+    /// that never refreshes never gets past it.
+    refetch_until_epoch_refresh: bool,
+    /// Whether the next tail window should repeat one of its own positions.
+    repeat_next_tail_position: bool,
+    /// Which event the next tail window should omit, counted from its newest.
+    skip_next_tail_event: Option<usize>,
+    /// Whether every session read should simply never answer.
+    never_answer_session_reads: bool,
     /// Whether the next inspect should fail at the transport.
     ///
     /// Off the strict queue for the same reason as `lose_next_send_ack`, and a
@@ -812,6 +966,67 @@ impl SeatFacts for FakeSeatFacts<'_> {
 }
 
 impl FakeState {
+    /// What a recreation census proves about one node's canonical place.
+    ///
+    /// Read-only. `created: true` means "nothing is there, a create is
+    /// authorized"; `created: false` carries the native a lost attempt already
+    /// built, which the caller adopts instead of building a second one.
+    fn recreation_census(
+        &self,
+        request: &ContainerRecreationRequest,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        let node = request.topology_node_id;
+        let Some(existing) = self.containers.get(&node).cloned() else {
+            let identity = self.identity(request.absent_identity.native_id.clone());
+            let correlation =
+                ContainerCorrelationEvidence::by_exact_id(node, identity.clone(), observed_at);
+            return Ok(ContainerRecreationOutcome {
+                snapshot: ContainerBindingSnapshot {
+                    binding: ContainerBinding {
+                        id: request.container_binding_id,
+                        topology_node_id: node,
+                        projection: ContainerProjection::NativeChild,
+                        identity,
+                        root: Some(request.canonical_cwd.clone()),
+                        bound_at: observed_at,
+                    },
+                    capabilities: self.capabilities.clone(),
+                    correlation,
+                },
+                observed_title: request.expected_title.as_str().to_owned(),
+                created: true,
+            });
+        };
+        // The persisted native is alive. Building beside it would duplicate a
+        // container the node still owns, wherever that native is parked.
+        if existing.binding.identity == request.absent_identity {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persisted native container still exists and cannot be recreated",
+            });
+        }
+        let title = self
+            .container_titles
+            .get(&node)
+            .cloned()
+            .unwrap_or_default();
+        if existing.binding.root.as_ref() != Some(&request.canonical_cwd) {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "a container at another path already stands for this node",
+            });
+        }
+        if title != request.expected_title.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "a differently titled container already occupies the canonical path",
+            });
+        }
+        Ok(ContainerRecreationOutcome {
+            snapshot: existing,
+            observed_title: title,
+            created: false,
+        })
+    }
+
     fn identity(&self, native_id: ExternalId) -> NativeRuntimeIdentity {
         NativeRuntimeIdentity {
             runtime_kind: self.runtime_kind.clone(),
@@ -1207,24 +1422,44 @@ impl ScriptedFakeRuntime {
                     .expect("valid runtime root"),
                 workspaces: BTreeMap::new(),
                 containers: BTreeMap::new(),
+                container_drift_after_inspection: BTreeMap::new(),
                 container_parents: BTreeMap::new(),
                 archived_containers: BTreeSet::new(),
                 lose_archive_ack_once: BTreeSet::new(),
                 lose_hosted_retire_ack_once: BTreeSet::new(),
+                lose_hosted_launch_ack_once: false,
+                hosted_inspect_stale_rule: None,
+                readback_only: false,
                 pause_hosted_retire_once: None,
+                pause_send_once: None,
                 consultations: BTreeMap::new(),
                 consultation_runs: BTreeMap::new(),
                 consultation_permissions: BTreeMap::new(),
                 consultation_permission_acks: BTreeMap::new(),
                 hosted_seats: BTreeMap::new(),
+                hosted_autonomy: Vec::new(),
+                hosted_retire_placements: Vec::new(),
+                declared_autonomy: None,
+                hosted_role_prompts: BTreeMap::new(),
+                hosted_initial_prompts: BTreeMap::new(),
                 archived_hosted_seats: BTreeMap::new(),
                 hosted_messages: BTreeMap::new(),
                 hosted_claim_routes: BTreeMap::new(),
                 seat_titles: BTreeMap::new(),
                 archived_seats: BTreeSet::new(),
                 container_titles: BTreeMap::new(),
+                container_kinds: BTreeMap::new(),
                 lose_retitle_ack_once: BTreeSet::new(),
                 lose_next_send_ack: false,
+                unconfirmed_deliveries: BTreeSet::new(),
+                issuance_floors: BTreeMap::new(),
+                native_deduplicates_messages: true,
+                epoch_mappings: BTreeMap::new(),
+                undrained_epochs: Vec::new(),
+                refetch_until_epoch_refresh: false,
+                repeat_next_tail_position: false,
+                skip_next_tail_event: None,
+                never_answer_session_reads: false,
                 fail_next_inspect: false,
                 ignore_retitle_once: BTreeSet::new(),
                 task_title_scopes: BTreeMap::new(),
@@ -1257,7 +1492,14 @@ impl ScriptedFakeRuntime {
     /// The default fake accepts anything, which is exactly why a control plane
     /// could synthesize a placeholder path and no in-process test noticed.
     pub fn verifying_placement_at(&self, root: WorkspaceRoot) {
-        self.lock().canonical_root = Some(root);
+        let canonical = std::fs::canonicalize(root.as_str())
+            .ok()
+            .and_then(|path| {
+                path.to_str()
+                    .and_then(|path| WorkspaceRoot::parse(path).ok())
+            })
+            .unwrap_or(root);
+        self.lock().canonical_root = Some(canonical);
     }
 
     /// Refuse to launch one declared role slot, as a real runtime with no
@@ -1359,6 +1601,37 @@ impl ScriptedFakeRuntime {
             "current turn request",
             observed_at,
         )?;
+        let response_position = session.append(
+            SessionEventKind::Message,
+            EventSubject::None,
+            "current turn response",
+            observed_at,
+        )?;
+        session.state = ObservedRunState::WaitingInput;
+        session.refusal = None;
+        Ok((message_position, response_position))
+    }
+
+    /// Finish a turn opened by `send`, without appending a second user message.
+    ///
+    /// # Errors
+    /// Refuses an unknown binding or a message absent from its native content.
+    pub fn observe_sent_turn_completion(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        message_id: MessageId,
+        observed_at: Timestamp,
+    ) -> RuntimeResult<(TimelinePosition, TimelinePosition)> {
+        let mut state = self.lock();
+        let session = state.session(binding)?;
+        let message_position = session
+            .content
+            .iter()
+            .find(|event| event.subject == EventSubject::Message(message_id))
+            .map(|event| event.position)
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the sent message is absent from this session",
+            })?;
         let response_position = session.append(
             SessionEventKind::Message,
             EventSubject::None,
@@ -1517,6 +1790,22 @@ impl ScriptedFakeRuntime {
         }
     }
 
+    /// Model a native runtime that does not deduplicate by client message id.
+    ///
+    /// This fake answers a resent id from the session's own ledger, which makes
+    /// it a *kinder* runtime than the one Kontor actually talks to. Paseo
+    /// records the caller's `messageId` on the resulting user message — enough
+    /// to ask "did it land?" afterwards — but that is detection, not prevention,
+    /// and preventing the duplicate is the adapter's job: its delivery ledger,
+    /// and the canonical reconciliation it forces before resending anything it
+    /// is unsure about.
+    ///
+    /// So a test that wants to prove the adapter prevents a duplicate has to
+    /// stop the fake from silently preventing it first, or it proves the fake.
+    pub fn accept_duplicate_native_message_ids(&self) {
+        self.lock().native_deduplicates_messages = false;
+    }
+
     /// Drop everything a rebuilt adapter loses, keeping what the runtime keeps.
     ///
     /// `compose_paseo` builds every adapter from `PaseoCheckpoint::fresh`, so a
@@ -1531,6 +1820,8 @@ impl ScriptedFakeRuntime {
         state.bindings.clear();
         state.placements.clear();
         state.admissions = AdmissionLedger::new();
+        state.unconfirmed_deliveries.clear();
+        state.issuance_floors.clear();
     }
 
     /// Forget that the plane was ever prepared.
@@ -1577,6 +1868,90 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.lock().generation
+    }
+
+    /// Make this runtime stop holding one node's native container.
+    ///
+    /// What a moved, destroyed or unreachable container looks like from
+    /// Kontor's side: the durable binding still names it and the runtime no
+    /// longer answers for it. The same shape `forget_seat` stages for seats,
+    /// and the only way to test an effect ordering whose whole purpose is to
+    /// refuse before writing anything.
+    pub fn forget_container(&self, topology_node_id: TopologyNodeId) {
+        let mut state = self.lock();
+        state.containers.remove(&topology_node_id);
+        state.container_titles.remove(&topology_node_id);
+        state.container_kinds.remove(&topology_node_id);
+        state.container_parents.remove(&topology_node_id);
+    }
+
+    /// Move one native container without removing its node or memberships.
+    pub fn drift_container(&self, node: TopologyNodeId, drift: FakeContainerDrift) {
+        self.lock().drift_container(node, drift);
+    }
+
+    /// Drift immediately after the next valid inspection returns its old facts.
+    /// This stages a change between a planning read and a pre-effect reproof.
+    pub fn drift_container_after_next_inspection(
+        &self,
+        node: TopologyNodeId,
+        drift: FakeContainerDrift,
+    ) {
+        self.lock()
+            .container_drift_after_inspection
+            .insert(node, drift);
+    }
+
+    /// Plant the native workspace shape this runtime holds for one container.
+    ///
+    /// The only way to stage a container whose shape is wrong for its
+    /// semantics — a ticket container that is a plain directory, or an epic
+    /// container that is somebody's worktree. Nothing in ordinary operation
+    /// produces one, which is exactly why a test has to be able to.
+    pub fn seed_container_kind(
+        &self,
+        topology_node_id: TopologyNodeId,
+        kind: ContainerWorkspaceKind,
+    ) {
+        self.lock().container_kinds.insert(topology_node_id, kind);
+    }
+
+    /// Plant one native container as though a prior attempt had built it.
+    ///
+    /// The lost-acknowledgement fixture, and the only honest way to stage it:
+    /// the runtime holds a live container at the node's canonical path under
+    /// its exact title, while Kontor's durable binding still names the native
+    /// that vanished — because the create succeeded and its answer never
+    /// arrived. A retry must adopt this one rather than build a second.
+    pub fn seed_container(
+        &self,
+        topology_node_id: TopologyNodeId,
+        container_binding_id: ContainerBindingId,
+        native_id: ExternalId,
+        root: crate::workspace::WorkspaceRoot,
+        title: &str,
+        bound_at: Timestamp,
+    ) {
+        let mut state = self.lock();
+        let identity = state.identity(native_id);
+        let correlation =
+            ContainerCorrelationEvidence::by_exact_id(topology_node_id, identity.clone(), bound_at);
+        let snapshot = ContainerBindingSnapshot {
+            binding: ContainerBinding {
+                id: container_binding_id,
+                topology_node_id,
+                projection: ContainerProjection::NativeChild,
+                identity,
+                root: Some(root),
+                bound_at,
+            },
+            capabilities: state.capabilities.clone(),
+            correlation,
+        };
+        state.containers.insert(topology_node_id, snapshot);
+        state
+            .container_titles
+            .insert(topology_node_id, title.to_owned());
     }
 
     /// The capabilities the runtime currently declares.
@@ -1797,6 +2172,67 @@ impl ScriptedFakeRuntime {
         pause
     }
 
+    /// Answer every hosted-seat inspection with one exact `StaleBinding` rule.
+    ///
+    /// The live runtime distinguishes a predecessor that is gone from one it
+    /// declines to speak for by the rule string alone, and both arrive as the
+    /// same variant. Staging the rule is the only way a test can put those two
+    /// cases side by side.
+    pub fn refuse_hosted_inspection(&self, rule: &'static str) {
+        self.lock().hosted_inspect_stale_rule = Some(rule);
+    }
+
+    /// Lose one acknowledgement after the hosted native has already been
+    /// created.
+    ///
+    /// The seat exists in the runtime afterwards; only the answer is gone. That
+    /// is the shape of the real failure — a created agent whose caller never
+    /// learned its identity — and it is the one a durable pre-effect launch
+    /// intent exists to survive.
+    pub fn lose_next_hosted_launch_ack(&self) {
+        self.lock().lose_hosted_launch_ack_once = true;
+    }
+
+    /// Report this runtime as reachable but not drivable, the shape a seat has
+    /// after its workspace was archived: an exact readback still answers while
+    /// every driving operation refuses for want of a placement.
+    pub fn report_readback_only(&self) {
+        self.lock().readback_only = true;
+    }
+
+    /// Exact native currently filling one hosted seat, as the runtime holds it.
+    #[must_use]
+    pub fn hosted_seat_native_id(&self, seat_binding_id: SeatBindingId) -> Option<ExternalId> {
+        self.lock()
+            .hosted_seats
+            .get(&seat_binding_id)
+            .map(|held| held.identity.native_id.clone())
+    }
+
+    /// How many natives this runtime has minted, of every kind.
+    ///
+    /// A replay that created a second agent instead of returning the first one
+    /// is invisible in any per-seat read, because the newer native simply
+    /// replaces the older one under the same key. The count is what makes a
+    /// duplicate observable.
+    #[must_use]
+    pub fn minted_natives(&self) -> u64 {
+        self.lock().minted
+    }
+
+    /// Hold the next message send immediately before its native effect.
+    ///
+    /// A follow-up handed to a seat whose session is gone is the shape a realm
+    /// carrying old undelivered dispatches actually has: the delivery is awaited
+    /// and never answered. This lets a test occupy that wait deterministically
+    /// instead of depending on a timeout.
+    #[must_use]
+    pub fn pause_next_send(&self) -> FakeNativePause {
+        let pause = FakeNativePause::default();
+        self.lock().pause_send_once = Some(pause.clone());
+        pause
+    }
+
     /// Lose one acknowledgement after exact hosted native retirement has taken effect.
     pub fn lose_next_hosted_retire_ack(&self, seat_binding_id: SeatBindingId) {
         self.lock()
@@ -1888,6 +2324,52 @@ impl ScriptedFakeRuntime {
         self.lock().calls.clone()
     }
 
+    /// Every authority a hosted-seat control operation was asked for, in order.
+    #[must_use]
+    pub fn hosted_autonomy_calls(&self) -> Vec<HostedAutonomyObservation> {
+        self.lock().hosted_autonomy.clone()
+    }
+
+    /// The authority named by the last control operation of one kind on a seat.
+    #[must_use]
+    pub fn last_hosted_autonomy(
+        &self,
+        operation: HostedSeatOperation,
+        seat_binding_id: SeatBindingId,
+    ) -> Option<SeatAutonomy> {
+        self.lock()
+            .hosted_autonomy
+            .iter()
+            .rev()
+            .find(|observed| {
+                observed.operation == operation && observed.seat_binding_id == seat_binding_id
+            })
+            .map(|observed| observed.autonomy)
+    }
+
+    /// The placement the most recent retirement of this seat actually named.
+    ///
+    /// `Some(None)` is a retirement that named no placement at all, which is a
+    /// different answer from never having retired.
+    #[must_use]
+    pub fn last_hosted_retire_placement(
+        &self,
+        seat_binding_id: SeatBindingId,
+    ) -> Option<Option<crate::adapter::HostedSeatRetirePlacement>> {
+        self.lock()
+            .hosted_retire_placements
+            .iter()
+            .rev()
+            .find(|observed| observed.seat_binding_id == seat_binding_id)
+            .map(|observed| observed.placement.clone())
+    }
+
+    /// Move the plane-wide default, as an operator editing `runtimes.json`
+    /// between two control operations would.
+    pub fn declare_autonomy(&self, autonomy: Option<SeatAutonomy>) {
+        self.lock().declared_autonomy = autonomy;
+    }
+
     /// Exact route supplied for one launched delivery run.
     #[must_use]
     pub fn launched_model(&self, run: AgentRunId) -> Option<ModelRung> {
@@ -1904,6 +2386,18 @@ impl ScriptedFakeRuntime {
     #[must_use]
     pub fn launched_prompt(&self, run: AgentRunId) -> Option<BoundedText> {
         self.lock().launched_prompts.get(&run).cloned()
+    }
+
+    /// The persona supplied to the last launch, including an explicit absence.
+    #[must_use]
+    pub fn hosted_role_prompt(&self, seat: SeatBindingId) -> Option<Option<BoundedText>> {
+        self.lock().hosted_role_prompts.get(&seat).cloned()
+    }
+
+    /// The bounded first handoff one hosted seat was launched with.
+    #[must_use]
+    pub fn hosted_initial_prompt(&self, seat: SeatBindingId) -> Option<BoundedText> {
+        self.lock().hosted_initial_prompts.get(&seat).cloned()
     }
 
     /// The route a consultation seat was launched on.
@@ -1959,6 +2453,123 @@ impl ScriptedFakeRuntime {
         self.lock().fail_next_inspect = true;
     }
 
+    /// Declare a refetch on every anchored read until the epoch is re-read.
+    ///
+    /// The recoverable shape of that signal, and the one a settlement has to
+    /// survive: the session is entirely readable, and a reader that answers the
+    /// runtime's question — *which epoch are you addressing?* — may carry on
+    /// from the same cursor. A reader that only retries stays stuck here, which
+    /// is what makes this hook worth having.
+    pub fn require_timeline_refetch_until_epoch_refresh(&self) {
+        self.lock().refetch_until_epoch_refresh = true;
+    }
+
+    /// Never answer a session read, as an unreachable seat does.
+    ///
+    /// Not a refusal and not a dropped connection: the runtime is *there*, it
+    /// simply does not answer. That is the shape that made a live realm hang —
+    /// each request bounded correctly by the client's own deadline, and a read
+    /// that issues a page at a time paying that deadline per page until the
+    /// caller gave up. What must end the wait is the realm's own derived-read
+    /// deadline, and that is what a test asserts.
+    pub fn never_answer_session_reads(&self) {
+        self.lock().never_answer_session_reads = true;
+    }
+
+    /// Never answer, holding no lock while not answering.
+    ///
+    /// A pending future rather than a sleep, so this crate stays free of a
+    /// timer — and so the fake models the live shape exactly. The runtime is
+    /// reachable and simply never replies; what ends the wait is the caller's
+    /// own deadline, which is the thing under test. Reading the flag and
+    /// dropping the guard first is not incidental either: a lock held across
+    /// this await would serialize every caller behind the silent one, and the
+    /// property proven would be the fake's contention rather than the bound.
+    async fn stall(&self) {
+        let silent = self.lock().never_answer_session_reads;
+        if silent {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    /// Drop one event from the next tail window, leaving a forward gap.
+    ///
+    /// `from_end` counts back from the newest event, so a caller can put the
+    /// hole wherever it needs it: inside the page the window starts from, or on
+    /// the join between two of the pages the window was assembled out of. The
+    /// sequences on either side still ascend — that is the whole point, because
+    /// an ascending check cannot tell a gap from a continuous read, and the
+    /// event that went missing may be the message or the response the scan is
+    /// there to find.
+    pub fn skip_next_tail_event(&self, from_end: usize) {
+        self.lock().skip_next_tail_event = Some(from_end);
+    }
+
+    /// Repeat one position inside the next tail window.
+    ///
+    /// A runtime that hands back a window whose positions do not advance. Not a
+    /// transport fault and not an empty read: the content is there, and two of
+    /// its entries claim the same place in the session. A reader that picked a
+    /// turn out of that would be picking arbitrarily, so the only safe answer is
+    /// to refuse — and this is how that is provoked.
+    pub fn repeat_next_tail_position(&self) {
+        self.lock().repeat_next_tail_position = true;
+    }
+
+    /// Forget every epoch mapping, as a process that restarted with nothing
+    /// durable behind it does.
+    ///
+    /// Not a transport fault and not a runtime change: the sessions and their
+    /// native epochs are untouched, and only this side's memory of what number
+    /// each was given is gone. That is the state a restart leaves when the
+    /// durable table is empty, and it is the one that makes a cursor issued by
+    /// the previous process unspellable.
+    pub fn forget_timeline_epochs(&self) {
+        let mut state = self.lock();
+        state.epoch_mappings.clear();
+        state.undrained_epochs.clear();
+    }
+
+    /// Give a newly seated fixture a distinct native timeline before sending.
+    ///
+    /// # Errors
+    /// Refuses a binding this fake does not own. Callers must use this before
+    /// any delivery whose acknowledgement would refer to the previous epoch.
+    pub fn set_unread_timeline_epoch(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        epoch: u64,
+    ) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        let session = state.session(binding)?;
+        session.epoch = epoch;
+        for event in &mut session.content {
+            event.position.epoch = epoch;
+        }
+        Ok(())
+    }
+
+    /// The mappings allocated but not yet handed over for persistence.
+    ///
+    /// The same list [`RuntimeAdapter::pending_timeline_epochs`] serves, read
+    /// from the test side. Neither one consumes: only
+    /// [`RuntimeAdapter::ack_timeline_epochs`] may clear an entry, and it is the
+    /// control plane's to call once its commit has returned.
+    #[must_use]
+    pub fn undrained_epochs(&self) -> Vec<(String, u64)> {
+        self.lock().undrained_epochs.clone()
+    }
+
+    /// The boundary this message was registered as issued after, if any.
+    ///
+    /// The floor is what lets a reconciliation prove itself from a suffix, and
+    /// a first send that never registers one falls back to whole history — which
+    /// is the difference between acknowledging a long session and refusing it.
+    #[must_use]
+    pub fn issuance_floor(&self, message_id: MessageId) -> Option<TimelinePosition> {
+        self.lock().issuance_floors.get(&message_id).copied()
+    }
+
     /// Every recorded event of the session behind `binding`.
     #[must_use]
     pub fn content(&self, binding: &RuntimeBindingSnapshot) -> Vec<SessionEvent> {
@@ -1967,6 +2578,22 @@ impl ScriptedFakeRuntime {
             .get(&binding.identity().native_id)
             .map(|session| session.content.clone())
             .unwrap_or_default()
+    }
+
+    /// Replace canonical fixture content to model retention gaps or rewrites.
+    ///
+    /// # Errors
+    /// Refuses a binding this fake does not own.
+    pub fn replace_recorded_history(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        content: Vec<SessionEvent>,
+    ) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        let session = state.session(binding)?;
+        session.history_len = content.len();
+        session.content = content;
+        Ok(())
     }
 
     /// The permission requests the runtime is still waiting on.
@@ -2051,6 +2678,7 @@ impl ScriptedFakeRuntime {
         at: Timestamp,
     ) -> RuntimeResult<ControlPlaneObservation> {
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id: snapshot.agent_run_id(),
             contact,
             state,
@@ -2080,6 +2708,7 @@ fn payload(kind: SessionEventKind, sequence: u64, body: &str) -> RuntimeResult<C
         "kind": kind,
         "sequence": sequence,
         "body": body,
+        "message_body_hash": ContentHash::of(body.as_bytes()).to_string(),
     }))?)
 }
 
@@ -2147,6 +2776,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         !self.lock().unavailable_providers.contains(provider)
     }
 
+    fn declared_autonomy(&self) -> Option<SeatAutonomy> {
+        self.lock().declared_autonomy
+    }
+
     fn fallback_model_rung(&self, requested: &ModelRung) -> Option<ModelRung> {
         let state = self.lock();
         state
@@ -2191,6 +2824,157 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     /// *does this session still exist here?*, and everything else comes out of
     /// the persisted snapshot. A fake that rebuilt capabilities here would let a
     /// re-grading bug pass its own restart test.
+    /// The newest `page_size * max_pages` events, and nothing older.
+    ///
+    /// Bounded by construction, like the native one it stands for: the cost is
+    /// the window, never the transcript in front of it. A test can therefore
+    /// grow the session arbitrarily and still assert what observing it costs.
+    async fn tail_window(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        page_size: u32,
+        max_pages: usize,
+    ) -> RuntimeResult<HistoryPage> {
+        self.stall().await;
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(page_size)),
+                context_policy: None,
+            },
+        )?;
+        state
+            .calls
+            .push(AdapterCall::TailWindow(binding.binding_id()));
+        // The same break a cursor is refused with, on the same condition: a
+        // reader that has not established which epoch this session is in cannot
+        // be handed content addressed by one.
+        if state.refetch_until_epoch_refresh {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            });
+        }
+        let epoch = state.session(binding)?.epoch;
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
+        let session = state.session(binding)?;
+        let recorded = &session.content[..session.history_len];
+        let window = (page_size as usize).saturating_mul(max_pages.max(1));
+        let from = recorded.len().saturating_sub(window);
+        let mut items: Vec<SessionEvent> = recorded[from..].to_vec();
+        if std::mem::take(&mut state.repeat_next_tail_position)
+            && let Some(last) = items.last().cloned()
+        {
+            items.push(last);
+        }
+        if let Some(from_end) = std::mem::take(&mut state.skip_next_tail_event)
+            && from_end < items.len()
+        {
+            items.remove(items.len() - 1 - from_end);
+        }
+        let end = items
+            .last()
+            .map_or(TimelinePosition::start_of(epoch), |event| event.position);
+        Ok(HistoryPage {
+            epoch,
+            items,
+            next: None,
+            end,
+        })
+    }
+
+    fn pending_timeline_epochs(&self) -> Vec<(String, u64)> {
+        self.lock().undrained_epochs.clone()
+    }
+
+    fn ack_timeline_epochs(&self, persisted: &[(String, u64)]) {
+        self.lock()
+            .undrained_epochs
+            .retain(|pending| !persisted.contains(pending));
+    }
+
+    fn note_issuance_boundary(
+        &self,
+        message_id: MessageId,
+        issued_after: TimelinePosition,
+    ) -> RuntimeResult<()> {
+        self.lock().issuance_floors.insert(message_id, issued_after);
+        Ok(())
+    }
+
+    /// Remember, at adapter level, that this message may already be out there.
+    fn note_unconfirmed_delivery(
+        &self,
+        message_id: MessageId,
+        body_hash: &ContentHash,
+        issued_after: Option<TimelinePosition>,
+    ) -> RuntimeResult<()> {
+        let _ = (body_hash, issued_after);
+        self.lock().unconfirmed_deliveries.insert(message_id);
+        Ok(())
+    }
+
+    fn restore_timeline_epochs(&self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        for (raw, epoch) in pairs {
+            state.epoch_mappings.insert(raw.clone(), *epoch);
+        }
+        Ok(())
+    }
+
+    /// Map the session's current epoch and answer the refetch signal, without
+    /// touching its content.
+    ///
+    /// Reads `session.epoch` and allocates through the same boundary
+    /// [`FakeAdapter::history`] uses, so the mapping this produces is
+    /// indistinguishable from one a read produced — and, like that one, is
+    /// undrained until the control plane takes it.
+    ///
+    /// Off the strict script queue, for the same reason as `fail_next_inspect`:
+    /// this call is reached *through* a read that was refused, so a queued step
+    /// naming it could never be scheduled in the right place.
+    async fn refresh_timeline_epoch(&self, binding: &RuntimeBindingSnapshot) -> RuntimeResult<()> {
+        let mut state = self.lock();
+        let declared = state.capabilities.clone();
+        let generation = state.generation;
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(1)),
+                context_policy: None,
+            },
+        )?;
+        state
+            .calls
+            .push(AdapterCall::RefreshTimelineEpoch(binding.binding_id()));
+        let epoch = state.session(binding)?.epoch;
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
+        state.refetch_until_epoch_refresh = false;
+        Ok(())
+    }
+
     async fn restore_bindings(
         &self,
         snapshots: &[RuntimeBindingSnapshot],
@@ -2455,6 +3239,50 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 rule: "the native child is archived",
             });
         }
+        // A request Kontor holds a binding for addresses that exact container
+        // and nothing else. The same rule the wire adapter reconciles by: the
+        // persisted id is the address, so a node whose container this runtime
+        // no longer holds, or holds under a different id, is stale — never a
+        // licence to mint a replacement beside the one that went missing.
+        if let Some(bound) = request.bound_native_id.as_ref() {
+            let held = state
+                .containers
+                .get(&request.topology_node_id)
+                .map(|it| it.binding.identity.native_id.clone());
+            match held {
+                None => {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: "the exact bound native container is not present",
+                    });
+                }
+                Some(native_id) if &native_id != bound => {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: "the persisted container binding no longer matches the runtime",
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        // The same shared predicate the wire plane proves on its readback. A
+        // fake that accepted a shape Paseo refuses would let a test pass
+        // against a container no real runtime would have bound.
+        if request.bound_native_id.is_some() {
+            let task_container = request.task_container();
+            let held = state
+                .container_kinds
+                .get(&request.topology_node_id)
+                .copied()
+                .unwrap_or(if task_container {
+                    ContainerWorkspaceKind::Worktree
+                } else {
+                    ContainerWorkspaceKind::Directory
+                });
+            if !held.is_applicable_to(task_container) {
+                return Err(RuntimeError::StaleBinding {
+                    rule: ContainerWorkspaceKind::refusal(task_container),
+                });
+            }
+        }
         // Idempotent per *node*, and a contradiction is a contradiction rather
         // than a second container: the same node asked for at a different root,
         // or as a different shape, is not the retry it looks like.
@@ -2508,9 +3336,201 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             request.topology_node_id,
             request.display_name.as_str().to_owned(),
         );
+        // A container this runtime makes takes the shape its own semantics
+        // require, so the default can never be the reason a later proof fails.
+        state.container_kinds.insert(
+            request.topology_node_id,
+            if request.task_container() {
+                ContainerWorkspaceKind::Worktree
+            } else {
+                ContainerWorkspaceKind::Directory
+            },
+        );
         Ok(ContainerOutcome {
             snapshot,
             created: true,
+        })
+    }
+
+    async fn preview_container_recovery(
+        &self,
+        request: &ContainerRecoveryRequest,
+    ) -> RuntimeResult<ContainerRecoveryOutcome> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        state.calls.push(AdapterCall::PreviewContainerRecovery(
+            request.topology_node_id,
+        ));
+        let node = request.topology_node_id;
+        let Some(existing) = state.containers.get(&node).cloned() else {
+            // Zero candidates. The adoption disposition has nothing to adopt;
+            // whether anything may be *built* is a different question, asked by
+            // the recreation census.
+            return Err(RuntimeError::StaleBinding {
+                rule: "no live workspace occupies the stale container's exact parent and canonical path",
+            });
+        };
+        if existing.binding.identity == request.stale_identity {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persisted native container still exists and cannot be recovered as another identity",
+            });
+        }
+        let title = state
+            .container_titles
+            .get(&node)
+            .cloned()
+            .unwrap_or_default();
+        if existing.binding.root.as_ref() != Some(&request.canonical_cwd)
+            || title != request.expected_title.as_str()
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the sole parent/path candidate does not carry the current configuration-rendered title",
+            });
+        }
+        Ok(ContainerRecoveryOutcome {
+            snapshot: existing,
+            observed_title: title,
+        })
+    }
+
+    async fn preview_container_recreation(
+        &self,
+        request: &ContainerRecreationRequest,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        state.calls.push(AdapterCall::PreviewContainerRecreation(
+            request.topology_node_id,
+        ));
+        state.recreation_census(request, request.requested_at)
+    }
+
+    async fn recreate_container(
+        &self,
+        request: &ContainerRecreationRequest,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        let census = state.recreation_census(request, request.requested_at)?;
+        if !census.created {
+            // A prior attempt already built it and lost its answer. Adopting is
+            // the only correct move, and no create is recorded.
+            return Ok(census);
+        }
+        let node = request.topology_node_id;
+        state.minted += 1;
+        let native_id = ExternalId::parse(&format!("native-container-{}", state.minted))?;
+        let identity = state.identity(native_id);
+        let correlation = ContainerCorrelationEvidence::establish(
+            node,
+            &request.correlation().to_string(),
+            identity.clone(),
+            request.requested_at,
+        )?;
+        let snapshot = ContainerBindingSnapshot {
+            binding: ContainerBinding {
+                id: request.container_binding_id,
+                topology_node_id: node,
+                projection: ContainerProjection::NativeChild,
+                identity,
+                root: Some(request.canonical_cwd.clone()),
+                bound_at: request.requested_at,
+            },
+            capabilities: state.capabilities.clone(),
+            correlation,
+        };
+        state.containers.insert(node, snapshot.clone());
+        state
+            .container_parents
+            .insert(node, request.bound_project_native_id.clone());
+        state
+            .container_titles
+            .insert(node, request.expected_title.as_str().to_owned());
+        // Recorded last, and only here: this is the one line that means a
+        // native was actually built.
+        state.calls.push(AdapterCall::CreateNativeContainer(node));
+        Ok(ContainerRecreationOutcome {
+            snapshot,
+            observed_title: request.expected_title.as_str().to_owned(),
+            created: true,
+        })
+    }
+
+    async fn inspect_container(
+        &self,
+        request: &ContainerInspectRequest,
+    ) -> RuntimeResult<ContainerInspection> {
+        request.validate()?;
+        let mut state = self.lock();
+        state.require_plane()?;
+        let mut snapshot = state
+            .containers
+            .get(&request.binding.topology_node_id)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the exact native container is not present",
+            })?;
+        if snapshot.binding != request.binding {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persisted container binding no longer matches the runtime",
+            });
+        }
+        let native_parent = state
+            .container_parents
+            .get(&request.binding.topology_node_id)
+            .cloned()
+            .map(|native_id| state.identity(native_id));
+        if native_parent != request.native_parent {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the inspected container does not have its exact persisted parent",
+            });
+        }
+        if request.binding.projection == ContainerProjection::NativeChild {
+            let task_container = request.scope.task.is_some();
+            let kind = state
+                .container_kinds
+                .get(&request.binding.topology_node_id)
+                .copied()
+                .ok_or(RuntimeError::CorrelationFailed)?;
+            if !kind.is_applicable_to(task_container) {
+                return Err(RuntimeError::StaleBinding {
+                    rule: ContainerWorkspaceKind::refusal(task_container),
+                });
+            }
+        }
+        let visible_title = state
+            .container_titles
+            .get(&request.binding.topology_node_id)
+            .cloned()
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        state.calls.push(AdapterCall::InspectContainer(
+            request.binding.topology_node_id,
+        ));
+        // A fresh inspection replaces the runtime's proof, as the live adapter
+        // does. Callers must forward this proof instead of the preparation's.
+        snapshot.correlation.established_at = request.requested_at;
+        state
+            .containers
+            .insert(request.binding.topology_node_id, snapshot.clone());
+
+        if let Some(drift) = state
+            .container_drift_after_inspection
+            .remove(&request.binding.topology_node_id)
+        {
+            state.drift_container(request.binding.topology_node_id, drift);
+        }
+        Ok(ContainerInspection {
+            binding: request.binding.clone(),
+            observed_kind: match request.binding.projection {
+                ContainerProjection::NativeRoot => ObservedContainerKind::Project,
+                ContainerProjection::NativeChild => ObservedContainerKind::Workspace,
+                ContainerProjection::LogicalOnly => unreachable!("validated above"),
+            },
+            visible_title,
+            canonical_cwd: snapshot.binding.root,
+            native_parent,
+            correlation: snapshot.correlation,
+            observed_at: request.requested_at,
         })
     }
 
@@ -2558,24 +3578,38 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     ) -> RuntimeResult<crate::container::ArchiveContainerOutcome> {
         let mut state = self.lock();
         state.require_plane()?;
+        // The shape decides what ancestry may be named at all, before anything
+        // is compared against what this plane holds.
+        let parent = request.parent_project()?;
         let bound =
             state
                 .containers
                 .get(&request.topology_node_id)
                 .ok_or(RuntimeError::StaleBinding {
-                    rule: "the child binding is unknown",
+                    rule: "the container binding is unknown",
                 })?;
-        if request.projection != ContainerProjection::NativeChild
-            || bound.binding.projection != ContainerProjection::NativeChild
+        if bound.binding.projection != request.projection
             || bound.binding.id != request.container_binding_id
             || bound.binding.identity != request.identity
             || bound.binding.root.as_ref() != Some(&request.canonical_cwd)
-            || state.container_parents.get(&request.topology_node_id)
-                != Some(&request.bound_project_native_id)
+            || state.container_parents.get(&request.topology_node_id) != parent
         {
             return Err(RuntimeError::WorkspaceMismatch {
-                rule: "the archive request contradicts the native child binding",
+                rule: "the archive request contradicts the native container binding",
             });
+        }
+        // Leaves before roots, repeated here because this is the last point
+        // before the destructive effect. A root whose children are still
+        // present natively is occupied, whatever the logical plane believes.
+        if request.projection == ContainerProjection::NativeRoot {
+            let native_id = &request.identity.native_id;
+            if state.container_parents.iter().any(|(node, project)| {
+                project == native_id && !state.archived_containers.contains(node)
+            }) {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the native root still holds an unarchived child",
+                });
+            }
         }
         let changed = state.archived_containers.insert(request.topology_node_id);
         if changed {
@@ -2624,6 +3658,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     /// called" keeps meaning what it says.
     async fn admit_launch(&self, request: &AdmissionRequest) -> RuntimeResult<AdmissionOutcome> {
         self.lock().admit(request)
+    }
+
+    async fn release_unclaimed_admission(
+        &self,
+        slot: &crate::admission::RoleSlotKey,
+        agent_run_id: kontor_core::id::AgentRunId,
+    ) -> RuntimeResult<bool> {
+        Ok(self.lock().admissions.release_unclaimed(slot, agent_run_id))
     }
 
     async fn launch(&self, request: &LaunchRequest) -> RuntimeResult<LaunchOutcome> {
@@ -2905,6 +3947,15 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         let mut state = self.lock();
         state.require_plane()?;
+        if state
+            .containers
+            .get(&request.container.binding.topology_node_id)
+            != Some(&request.container)
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the hosted launch must use the latest inspected container proof",
+            });
+        }
         preflight(
             &state.capabilities,
             &OperationContext {
@@ -2923,6 +3974,17 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         state
             .calls
             .push(AdapterCall::LaunchHostedSeat(request.seat_binding_id));
+        state.hosted_autonomy.push(HostedAutonomyObservation {
+            operation: HostedSeatOperation::Launch,
+            seat_binding_id: request.seat_binding_id,
+            autonomy: request.autonomy,
+        });
+        state
+            .hosted_role_prompts
+            .insert(request.seat_binding_id, request.role_prompt.clone());
+        state
+            .hosted_initial_prompts
+            .insert(request.seat_binding_id, request.prompt.clone());
         if let Some(existing) = state.hosted_seats.get(&request.seat_binding_id) {
             return Ok(existing.clone());
         }
@@ -2954,6 +4016,13 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 request.display_name.as_str().to_owned(),
             ),
         );
+        // The native is now real and the caller is about to learn nothing about
+        // it. Everything above this line has already been committed.
+        if std::mem::take(&mut state.lose_hosted_launch_ack_once) {
+            return Err(RuntimeError::Transport {
+                rule: "the native launch acknowledgement was lost",
+            });
+        }
         Ok(outcome)
     }
 
@@ -2961,11 +4030,16 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         &self,
         request: &HostedSeatInspectRequest,
     ) -> RuntimeResult<HostedSeatInspection> {
-        let state = self.lock();
+        let mut state = self.lock();
         preflight(
             &state.capabilities,
             &OperationContext::new(RuntimeCapability::Inspect),
         )?;
+        state.hosted_autonomy.push(HostedAutonomyObservation {
+            operation: HostedSeatOperation::Inspect,
+            seat_binding_id: request.seat_binding_id,
+            autonomy: request.autonomy,
+        });
         if request.identity.runtime_kind != state.runtime_kind
             || request.identity.host != state.host
             || request.identity.generation > state.generation
@@ -2973,6 +4047,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             return Err(RuntimeError::StaleBinding {
                 rule: "the hosted topology predecessor belongs to another runtime",
             });
+        }
+        // A staged refusal stands in for a live runtime that answers this exact
+        // way. It is deliberately not consumed: the succession inspects the
+        // predecessor twice — once when planning and once immediately before
+        // the archive — and a one-shot would let the second look see a state
+        // the first did not.
+        if let Some(rule) = state.hosted_inspect_stale_rule {
+            return Err(RuntimeError::StaleBinding { rule });
         }
         let disposition = match state.hosted_seats.get(&request.seat_binding_id) {
             Some(held) if held.identity == request.identity => HostedSeatNativeState::Live,
@@ -3259,6 +4341,41 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(outcome)
     }
 
+    async fn prove_archived_hosted_seat(
+        &self,
+        request: &HostedSeatRetireRequest,
+        _known_retired_native_ids: &[ExternalId],
+    ) -> RuntimeResult<HostedSeatRetireOutcome> {
+        let state = self.lock();
+        preflight(
+            &state.capabilities,
+            &OperationContext::new(RuntimeCapability::Inspect),
+        )?;
+        let placement = request
+            .placement
+            .as_ref()
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let held = state
+            .archived_hosted_seats
+            .get(&request.seat_binding_id)
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let (workspace, conversation, _) = state
+            .seat_titles
+            .get(&held.identity.native_id)
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        if held.identity != request.identity
+            || state.hosted_seats.contains_key(&request.seat_binding_id)
+            || workspace != &placement.workspace_native_id
+            || conversation != &placement.provider_session_id
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(HostedSeatRetireOutcome {
+            identity: held.identity.clone(),
+            archived_at: held.observed_at,
+        })
+    }
+
     async fn retire_hosted_seat(
         &self,
         request: &HostedSeatRetireRequest,
@@ -3268,6 +4385,19 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             pause.pause().await;
         }
         let mut state = self.lock();
+        // Recorded before the disposition branch: a retire that is replay-safe
+        // still named an authority, and that is the value under test.
+        state.hosted_autonomy.push(HostedAutonomyObservation {
+            operation: HostedSeatOperation::Retire,
+            seat_binding_id: request.seat_binding_id,
+            autonomy: request.autonomy,
+        });
+        state
+            .hosted_retire_placements
+            .push(HostedRetirePlacementObservation {
+                seat_binding_id: request.seat_binding_id,
+                placement: request.placement.clone(),
+            });
         if let Some(held) = state.hosted_seats.get(&request.seat_binding_id) {
             if held.identity != request.identity {
                 return Err(RuntimeError::CorrelationFailed);
@@ -3303,6 +4433,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
 
     async fn resume(&self, request: &ResumeRequest) -> RuntimeResult<ControlPlaneObservation> {
         let mut state = self.lock();
+        if state.readback_only {
+            return Err(RuntimeError::WorkspaceBindingRequired);
+        }
         let declared = state.capabilities.clone();
         let generation = state.generation;
         preflight(
@@ -3349,6 +4482,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     }
 
     async fn send(&self, request: &SendMessageRequest) -> RuntimeResult<MessageAck> {
+        let pause = { self.lock().pause_send_once.take() };
+        if let Some(pause) = pause {
+            pause.pause().await;
+        }
         let mut state = self.lock();
         let declared = state.capabilities.clone();
         let generation = state.generation;
@@ -3385,13 +4522,61 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             request.message_id,
         ));
 
+        // Paseo's send reconciliation learns the native epoch before it can
+        // acknowledge a canonical position. Model that same persistence debt
+        // here, including an acknowledgement replay after a failed store write.
+        let epoch = state.session(&request.binding)?.epoch;
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
+
         let binding_id = request.binding.binding_id();
         let body_hash = request.body_hash();
+        let unconfirmed = state.unconfirmed_deliveries.contains(&request.message_id);
+        let deduplicates = state.native_deduplicates_messages;
         let session = state.session(&request.binding)?;
-        if let Admission::Replay(original) =
-            session.messages.admit(&request.message_id, &body_hash)?
-        {
-            return Ok(original);
+        // The ledger is consulted first, always, because it is what refuses a
+        // reused id carrying different content. Reconciling before that check
+        // would let a contradictory retry be answered from the original
+        // delivery instead of refused.
+        let admission = session.messages.admit(&request.message_id, &body_hash)?;
+        // Declared possibly-delivered by the control plane, so canonical content
+        // decides before anything is appended — the same order the real
+        // adapter's confirmation-unknown path takes. An occurrence already there
+        // is adopted; its absence means the effect never landed and the send
+        // proceeds.
+        if unconfirmed {
+            let landed = session.content[..session.history_len]
+                .iter()
+                .find(|event| event.subject == EventSubject::Message(request.message_id))
+                .map(|event| (event.position, event.emitted_at));
+            if let Some((position, accepted_at)) = landed {
+                state.unconfirmed_deliveries.remove(&request.message_id);
+                // The occurrence's own instant, never this retry's: adopting what
+                // already landed is a readback, and the real adapter reports the
+                // native entry's timestamp for exactly the same reason. A retry
+                // that answered with its own clock would make a byte-identical
+                // replay impossible to observe.
+                return Ok(MessageAck {
+                    message_id: request.message_id,
+                    binding_id,
+                    position,
+                    accepted_at,
+                });
+            }
+        }
+        let session = state.session(&request.binding)?;
+        match admission {
+            // The forgiving native runtime: a resent id is answered from the
+            // session's own ledger and lands once.
+            Admission::Replay(original) if deduplicates => return Ok(original),
+            // The runtime Kontor actually talks to. It recorded the id the first
+            // time — which is what makes "did it land?" answerable — and it will
+            // still happily append a second entry if asked again. Preventing
+            // that is the adapter's job, not this one's.
+            Admission::Replay(_) | Admission::New => {}
         }
         let position = session.append(
             SessionEventKind::Message,
@@ -3512,24 +4697,30 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                     && event.kind == SessionEventKind::Message
                     && payload_body_is(event, request.body.as_str())
             })
-            .map(|event| event.position)
+            .map(|event| (event.position, event.emitted_at))
             .collect::<Vec<_>>();
         if matches.len() > 1 {
             return Err(RuntimeError::DuplicateMessage {
                 rule: "the exact server correlation challenge appears more than once",
             });
         }
-        let position = if let Some(position) = matches.first().copied() {
-            position
+        // Adoption reports the occurrence already in the timeline, so its own
+        // instant travels with its position; only a fresh dispatch is stamped
+        // with this request's clock.
+        let (position, accepted_at) = if let Some((position, accepted_at)) =
+            matches.first().copied()
+        {
+            (position, accepted_at)
         } else if request.may_dispatch {
             // Deliberately omit EventSubject::Message: the challenge contract
             // proves the Paseo 0.8.0 case where native history loses that echo.
-            session.append(
+            let position = session.append(
                 SessionEventKind::Message,
                 EventSubject::None,
                 request.body.as_str(),
                 request.sent_at,
-            )?
+            )?;
+            (position, request.sent_at)
         } else {
             return Err(RuntimeError::DeliveryConfirmationUnknown {
                 rule: "the durably claimed correlation challenge is not yet present; retry may reconcile but must not resend",
@@ -3539,7 +4730,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             message_id: request.message_id,
             binding_id,
             position,
-            accepted_at: request.sent_at,
+            accepted_at,
         };
         if lose_ack {
             return Err(RuntimeError::Transport {
@@ -3625,7 +4816,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 )
             })
             .map(|event| event.position)
-            .last();
+            .next_back();
         if challenge_body_positions.len() > 1 {
             return Err(RuntimeError::DuplicateMessage {
                 rule: "the exact server correlation challenge body appears more than once after its boundary",
@@ -3812,7 +5003,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             0,
             request.requested_at,
         )?;
-        Ok(observation.with_refusal((!process_missing).then_some(refusal).flatten()))
+        let drivable = !state.readback_only;
+        Ok(observation
+            .with_refusal((!process_missing).then_some(refusal).flatten())
+            .with_drivability(drivable))
     }
 
     async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome> {
@@ -3987,6 +5181,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     }
 
     async fn history(&self, request: &HistoryRequest) -> RuntimeResult<HistoryPage> {
+        self.stall().await;
         let mut state = self.lock();
         let declared = state.capabilities.clone();
         let generation = state.generation;
@@ -4023,6 +5218,23 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 reason: TimelineBreak::EpochChanged,
             });
         }
+        // Anchored reads only. A cursor-free read names no epoch, so it has
+        // none to be wrong about — which is why it stays available as the way
+        // back even while every cursor is being refused.
+        if request.cursor.is_some() && state.refetch_until_epoch_refresh {
+            return Err(RuntimeError::TimelineRefetchRequired {
+                reason: TimelineBreak::EpochChanged,
+            });
+        }
+        // First sight of this raw epoch allocates a Kontor number, the same
+        // shape a native adapter has. It is surfaced through the runtime
+        // boundary rather than persisted here: adapters stay store-free.
+        let raw = format!("fake-epoch-{epoch}");
+        if !state.epoch_mappings.contains_key(&raw) {
+            state.epoch_mappings.insert(raw.clone(), epoch);
+            state.undrained_epochs.push((raw, epoch));
+        }
+        let session = state.session(&request.binding)?;
         let recorded = &session.content[..session.history_len];
         let items: Vec<SessionEvent> = recorded
             .iter()
@@ -4456,6 +5668,7 @@ mod retitle_seat_generation_tests {
                 model: ModelRef("fake-model".to_owned()),
                 effort: None,
             },
+            autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: "2026-08-20T12:01:00Z"
                 .parse::<Timestamp>()
                 .expect("timestamp"),
@@ -4485,6 +5698,7 @@ mod retitle_seat_generation_tests {
                 seat_binding_id: request.seat_binding_id,
                 identity: request.identity.clone(),
                 model_rung: request.model_rung.clone(),
+                autonomy: request.autonomy,
                 requested_at: request.requested_at,
             })
             .await
@@ -4508,6 +5722,7 @@ mod retitle_seat_generation_tests {
                 seat_binding_id: request.seat_binding_id,
                 identity: request.identity.clone(),
                 model_rung: request.model_rung.clone(),
+                autonomy: request.autonomy,
                 requested_at: request.requested_at,
             })
             .await

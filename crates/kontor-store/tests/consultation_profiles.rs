@@ -4,6 +4,8 @@
 //! are about the two things that pinning depends on: a version is the next one
 //! or it is refused, and what comes back out is byte-for-byte what went in.
 
+mod support;
+
 use kontor_core::consultation::ConsultationFamily;
 use kontor_core::id::{
     CanonicalDocument, ContentHash, ExternalName, ProjectId, SpecVersion, Timestamp,
@@ -30,7 +32,7 @@ struct World {
 }
 
 fn world() -> World {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
     let project_id = ProjectId::generate();
     store

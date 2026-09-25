@@ -5,7 +5,7 @@ Artifact: `high-scope-record`
 Task: `ASMA-8110` / `01a07391-328e-74a3-a808-e7b5775c8438`
 Phase: `high-scope`
 TeamRun: `01a07398-b8d2-7363-8dcc-e92c061deffa`
-Status: implementation contract amended after rejected high verification
+Status: implementation contract amended for identity-preserving replacement, succession, rejection-fence role resolution, and reachable startup convergence
 
 ## Decision and frozen baseline
 
@@ -49,14 +49,30 @@ AgentRun, seat, native-session, workspace, and `cwd` identity remains fixed.
 
 ## Schema generation
 
-This work's route migration is **`0090_gate_rejection_routes.sql`**. It was
-scoped as 0089/89, but master claimed v89 for ASMA-8101 publication
-attestations before this landed, so the route migration renumbered behind it
-and first shipped at schema 90. The protected realm currently reads back at 90
-with `task_gate_rejection_routes` present. The frozen integration candidate
-also contains ASMA-8114's later migrations 0091/0092, so its
-`SCHEMA_VERSION` and the next protected delivery readback are **92**; this
-does not renumber or rewrite this work's 0090 migration.
+This work's route migration is, and remains, **`0090_gate_rejection_routes.sql`**.
+It was scoped as 0089/89, but master claimed v89 for ASMA-8101 publication
+attestations before this landed, so the route migration renumbered behind it and
+first shipped at schema 90.
+
+Two numbers are in play and must not be conflated:
+
+- **the route migration** is `0090`. It is immutable and is never renumbered
+  again, whatever master adds after it;
+- **the terminal schema generation** is whatever the integrated candidate builds
+  to, and it moves every time master lands a migration.
+
+The candidate integrates master at `f78d041`, which carries `0091`
+(ASMA-8114 consultation semantic identity), `0092` (settled consultation topic
+corrections), `0093` (consultation session releases), `0094` (Jira description
+projection), `0095` (ASMA-8116 immutable Jira issue identity) and `0096`
+(ASMA-8117 consultation subject). Its `SCHEMA_VERSION` is therefore **96**, and
+that is what the protected delivery readback must require.
+
+A binary built from this candidate upgrades a realm through `0096`, so any
+readback pinned to an earlier generation cannot succeed. The generation below is
+stated as of this candidate; if master lands further migrations before delivery,
+the readback is re-pinned to the integrated terminal generation at that time and
+`0090` still identifies this work's route migration.
 
 ## Required behavior
 
@@ -415,8 +431,9 @@ the scope or implementation seat—performs this sequence:
    TeamRun, reopen a task, or issue a recovery command. Restart against the same
    state root.
 6. Run SQLite `PRAGMA integrity_check;` and `PRAGMA foreign_key_check;`. Require
-   `ok`, zero foreign-key rows, schema version 92, and migrations 0090, 0091,
-   and 0092 exactly once.
+   `ok`, zero foreign-key rows, schema version 96, and migrations 0090 through
+   0096 each exactly once. `0090` is this work's route migration; `0091`-`0096`
+   are the integrated generations it now sits behind.
 7. Read the realm, topology, ASMA-8100, its workflow, source receipt, gate
    history, and route ledger back. Require exact identity equality with step 4,
    `done@5`, `final-review@5`, the later passed evaluation unchanged, and no
@@ -485,3 +502,278 @@ and the verifier's OQ-8110-03 is resolved by retiring the live ASMA-8100
 recovery while retaining generic qualification. A future request to recover a
 terminal or later-advanced task requires new scope and must not reinterpret this
 contract.
+
+## Operator continuation addendum: existing TeamRun recovery
+
+The 2026-09-13/14 operator continuation explicitly authorizes supported
+settlement or archive-and-replacement of unusable seats in TeamRun
+`01a07398-b8d2-7363-8dcc-e92c061deffa`, recovery of its dead TSW container, and
+routing of fresh implementation, verification and audit turns. This is an
+identity-preserving continuation of the existing run; it does not authorize a
+new TeamRun, duplicate topology, a gate waiver, or a live ASMA-8100 recovery.
+The protected ASMA-8100 receipt remains historical and unconsumed.
+
+The first supported implementation-slot replacement after terminal settlement
+revealed a production defect inside this document's existing
+`crates/kontor-daemon/src/applications.rs` and `loopback_api.rs` ownership. An
+abandoned unbound parent in the verify slot was discarded before its recovered
+successor could be hydrated, making replacement of a separate implementation
+slot fail with `400 invalid TeamRunSlots`. The refusal wrote no state.
+
+The bounded correction keeps the full recovery lineage until
+`TeamRunSlots::hydrate` applies the already-defined rule: retain abandoned
+parents referenced by a successor and discard abandoned runs that are not part
+of a recovery chain. The new cross-slot regression proves a recovered successor
+retains its parent while an unrelated terminal slot is replaced. It changes no
+slot identity rule, scheduler route, topology, gate verdict, Jira projection, or
+ASMA-8100 state.
+
+The first archive-qualified recovery target was candidate
+`dc6cb3718671d1ef421797be88301c9dda64b7b1`, tree
+`2a6902787555cc3b42e6a456c6e6d8f71bcbc0ff`, integrated with master
+`f78d041e80042417e0d9a059449eb85737571797` at schema 96. Gate 8 exited 0; its
+complete log digest is
+`522aded4a78d63bf0aff770df89520dcdbad2bc17abb6f2848d8e31edbf426b7`.
+Independent inspection then found the same premature filter at
+`launch_succession_successor`, where quota succession also hydrates the whole
+TeamRun. That finding is inside the same `applications.rs` and `loopback_api.rs`
+ownership and the same identity-preserving recovery rule. OQ-A is resolved by
+correcting it in this task; leaving a supported route known-broken on the live
+TeamRun is not accepted. OQ-B, whether the generic archive script should print
+commit/tree identities, is a separate tooling improvement and does not widen
+this delivery.
+
+The terminal archive-qualified target is candidate
+`18923bd0387f8bc88c1d5ed3bb878c478b3e189f`, tree
+`e6f7b3713b998fa08bacd83c9eb1847313c19612`, still integrated with master
+`f78d041e80042417e0d9a059449eb85737571797` at schema 96. The added quota
+regression freezes a durable succession attempt and exercises retirement,
+launch, whole-TeamRun hydration, and readback through `successors:recover`; it
+does not repeat the earlier fresh-observation and headroom planning walk. It
+proves the old launch call site fails red as `400 invalid_request`, subject
+`TeamRunSlots`, and the corrected path passes while retaining the other slot's
+recovery chain. Gate 9 exited 0 with 2479 Rust tests and 300 console tests; its
+complete log digest is
+`5eb052058249b07362877140784c742e2886f70dbe9455341cf3ed2257b48c46`.
+Independent verification must evaluate this exact candidate and the separate
+evidence-only commit before gate acceptance or publication.
+
+## 2026-09-17 publication-salvage scope
+
+The operator disposition is **salvage**, using a fresh branch from current
+master. The stale 18-commit branch remains preserved as historical source and is
+designated superseded once the fresh attested head merges. It is not rebased,
+force-pushed or deleted.
+
+The fresh integration base is
+`86ba6065494eabb5fbe56e1ec4d6b432f08779ed` at schema 99. The final code/test
+candidate is `1c1f549fbabbe5273cf4b8b67a3be19713fb7b7b`, tree
+`e929e860ad8bc57737e4244fd40c4b852a1f12a5`. It carries the 18 historical
+follow-ups plus bounded compatibility repairs required by today's master:
+
+- retain PR #230's production route-fence implementation while adding the
+  unique ASMA-8110 fleet fixture and regression coverage;
+- clear inherited Rust 1.97 clippy failures from PRs #217 and #229 without
+  changing their behavior;
+- align the stale session-key assertion with ASMA-8191 / PR #222;
+- preserve the normal 30-second SQLite busy timeout while allowing the first
+  migration-lock acquisition one additional bounded attempt;
+- align the pilot with the current `delivery_unconfirmed` safety contract after
+  a write may have committed.
+
+Gate 18 exited 0. Its log digest is
+`ac6f2c1761e5d8397ec174c9cdd8119fd96a70ca950aa2e5e2b07ff8764cc4a6`.
+The clean archive recorded 2535 Rust tests passed, 0 failed and 9 ignored; 360
+loopback tests passed with one ignored; the 58-test schema suite and both pilots
+passed; and 305 console tests passed. Lockfile byte comparison, fmt, clippy,
+RustSec audit, cargo-deny, frozen install, typecheck and production dependency
+audit all passed. Gates 13 through 17 remain append-only failed evidence in the
+high-change record.
+
+This scope does not reopen the completed ASMA-8110 task or its closed TeamRun.
+It authorizes publication/integration of the salvaged follow-ups and the epic
+closeout evidence only. No topology, TeamRun, task, gate, seat or Jira mutation
+was made during salvage, and no ASMA-8100 receipt or state was touched.
+
+## Rejection-fence role resolution addendum (gate rejection sequence 4)
+
+Independent verification rejected candidate `18923bd` under receipt
+`01a0a243-c170-7970-9d17-2bf7675f97eb`. The blocking finding, F-8110-R9, is
+inside this document's existing `crates/kontor-daemon/src/applications.rs` and
+`loopback_api.rs` ownership and changes no scope boundary.
+
+`rejection_fence_holds` compared the workflow edge's logical `handoff_role` to a
+settled turn's concrete `role_slot_id`. Those are two distinct identities in the
+frozen team template — this task's template maps slot `implement` onto role
+`fleet-implementer` — so the entitled rework could never match and the workflow
+stayed at `high-implementation@7` even though gate sequence 3 had passed and the
+fresh high-change turn satisfied freshness, the route-time TeamRun and the
+artifact conditions.
+
+The bounded correction resolves the turn's concrete slot through the immutable
+team template pinned by `route.team_run_id` and compares that slot's logical
+role to the edge. It preserves every existing check in this contract:
+
+- **route-time TeamRun authority** is unchanged — the template is read from the
+  route row's own run, never the task's latest run and never the mutable
+  catalog, so a later definition cannot decide who answers an earlier rejection;
+- **freshness, required artifacts and task scoping** are byte-identical;
+- **fail-closed** is added, not relaxed: an unreadable route run, a frozen
+  template that does not verify against its snapshot, and a slot the template
+  never declared each leave the fence standing;
+- **entry-phase targets** still name no role, consult no template, and rest on
+  the remaining conditions exactly as before.
+
+No slot identity rule, scheduler route, topology, gate verdict, Jira projection,
+or ASMA-8100 state is changed. The protected ASMA-8100 receipt remains
+historical and unconsumed.
+
+Two regressions were added on a new pack fixture whose rejection target is not
+the entry phase, because every pre-existing fence case routes to an entry phase
+with no inbound edge and therefore never evaluates the role comparison at all.
+The fixture separates the identities deliberately: slot `implement` carries role
+`fleet-implementer`, and a decoy slot spelled `fleet-implementer` carries
+`fleet-reviewer`. The positive regression walks the recorded incident — rejection
+route, fresh `high-change` settlement, passed verification gate, then
+reconciliation past `high-implementation` writing no second route and no turn of
+its own. The decoy regression proves slot spelling alone cannot release a fence.
+Against the pre-fix comparison the first fails to release and the second
+releases wrongly; both pass after the correction, alongside the retained
+stale-evidence, empty-turn, reviewer, other-task and later-TeamRun cases.
+
+The terminal archive-qualified target is candidate
+`705571de51f9e152ba3029a1f36961807a333e8e`, tree
+`1cc762b0fa3f537217d36aa9a9a16959344e6ef3`, still integrated with master
+`f78d041e80042417e0d9a059449eb85737571797` at schema 96. Gate 10 exited 0 with
+2481 Rust tests, 332 loopback tests and 300 console tests; its complete log
+digest is
+`8b4b116cd0da7ca62eb124d4a29cd9250c273ad398d764504b844a5c6daf2b89`.
+The Gate 9 candidate `18923bd` and its digest remain superseded evidence.
+Independent verification must evaluate this exact candidate and the separate
+evidence-only commit before gate acceptance or publication.
+
+## Startup convergence addendum (gate rejection sequence 5)
+
+Independent verification rejected candidate `705571d` under receipt
+`01a0a289-db11-7323-ab7b-cfb195087266`. The logical-role mapping correction was
+accepted as correct and is preserved unchanged. The blocking finding, F-8110-R10,
+is that the corrected predicate only ever runs when a caller drives it.
+
+`advance_workflow_from_evidence` is invoked by a settled turn or a non-rejecting
+gate record. A realm whose qualifying turn and passing gate verdict were already
+durable when the corrected binary was installed has no settlement left to make,
+so nothing reprojects the workflow and it stays pinned on its rejection target
+indefinitely. The Gate 10 positive regression did not cover this: its workflow
+advanced at turn settlement, and the later reconcile calls only confirmed it
+stayed advanced. That statement has been corrected in place in
+`HIGH-CHANGE-RECORD.md`.
+
+The bounded addition is a projection on the supported startup seam, inside this
+document's existing `applications.rs` / `lib.rs` / `repository.rs` ownership:
+
+- `list_fenced_task_workflows` enumerates exactly the fenced population, using
+  the same condition the single-workflow fence query already applies, so a realm
+  that never rejected a gate is untouched;
+- `catch_up_fenced_workflows` reprojects each through the existing evidence
+  projection, writing at most the phase advance that durable evidence already
+  justifies;
+- `Daemon::reconcile` asks once per supported startup.
+
+It preserves every guarantee this contract already states. No turn is replayed,
+no gate evaluation re-recorded, and the rejection route is neither rewritten nor
+removed — it remains history. Route-time TeamRun authority, freshness, required
+artifacts and task scoping are unchanged, because the fence predicate itself is
+unchanged. Re-running on a converged realm does nothing, so restart loops are
+safe. Failure is closed in both directions: an unreadable workflow is skipped
+rather than advanced, and the new `PhaseRoute::Unambiguous` mode refuses to
+advance wherever a phase has more than one successor, so the catch-up never
+chooses a workflow branch on a realm's behalf. Both caller-driven call sites keep
+the declared-order behaviour they have always had.
+
+No slot identity rule, scheduler route, topology, gate verdict, Jira projection,
+or ASMA-8100 state is changed, and no TeamRun was created. The protected
+ASMA-8100 receipt remains historical and unconsumed.
+
+The regression constructs the pre-fix durable state from rows the ordinary public
+path wrote — rejection route, qualifying `implement` turn, passing verification
+verdict — pins the workflow's one mutable column back onto `high-implementation`,
+then recovers through the supported `Daemon::start` + `reconcile` restart. It
+proves convergence, then proves three further reconciliations move nothing and
+leave the route, role-turn and gate-evaluation rows identical. With the startup
+hunk reverted it fails while both logical-role regressions still pass, isolating
+the finding to the catch-up.
+
+The terminal archive-qualified target is candidate
+`5d9f9799f6a335c090e23f98bc11985e2ae4e8ed`, tree
+`8c7c38f2bc221d1c0af34f13b889829cc3c78cc3`, still integrated with master
+`f78d041e80042417e0d9a059449eb85737571797` at schema 96. Gate 11 exited 0 with
+2482 Rust tests, 333 loopback tests and 300 console tests; its complete log
+digest is
+`3bc0ad3e64bdb85d4fe5f697e02ad57a87c598b41e58a43e35115b520931c68c`.
+The Gate 10 candidate `705571d` and its digest remain superseded evidence.
+Independent verification must evaluate this exact candidate and the separate
+evidence-only commit before gate acceptance or publication.
+
+## Startup ordering addendum (live-deployment finding R11)
+
+The LSA installed the exact Gate-11 candidate `5d9f979` on the live realm at
+02:25:00Z and the barrier opened at 02:25:10.630832Z. This is the first finding
+in this task that came from running the code rather than from reading it.
+
+The R10 catch-up ran and did its job: "fenced workflows converged" was logged at
+02:39:13.028833Z and startup reconciliation finished at 02:39:14.257255Z. Kontor
+and a read-only database read now show workflow
+`01a07391-328e-74a3-a808-e7cbffc4b828` at `high-verification` revision 10, with
+15 turns, 5 gate evaluations, 4 immutable rejection routes, and 61 dispatches
+still undelivered. An observation taken at ~02:32Z, while startup was still
+inside the retry, showed the workflow at `high-implementation` revision 9; that
+was true in the moment and is not the final state.
+
+What the deployment exposed is placement, not correctness. `Daemon::reconcile`
+awaited `retry_undelivered_dispatches` before `catch_up_fenced_workflows`, and
+working through 61 historical dispatches with stale and lost-contact targets took
+from 02:25:10Z to 02:39:13Z — about **14 minutes** during which a workflow sat
+fenced against evidence that had been durable throughout. The duration is also
+not a property this contract controls: a target that accepts a connection and
+never answers would hold startup open with no bound at all, and the local durable
+repair behind it would never run.
+
+The bounded correction is ordering only, inside this document's existing
+`lib.rs` ownership. The catch-up is durable-only work on the realm's own database
+and now runs immediately after the barrier opens, before anything that awaits a
+runtime. Every guarantee this contract already states is preserved:
+
+- **all retry behaviour is kept** — `retry_undelivered_dispatches` still runs,
+  unmodified, and keeps its order relative to `reopen_completed_epics` and
+  `retry_completion_wakes`; no retry is dropped, skipped, or reordered among
+  themselves;
+- **barrier semantics are unchanged** — the barrier is settled exactly where it
+  was, and the reordered work all sits inside the existing `Open` branch;
+- **the catch-up itself is unchanged** — same projection, same fail-closed
+  behaviour, same refusal to choose a workflow branch, same idempotency.
+
+The regression removes the accident that hid this: earlier restart tests ran
+against realms with nothing to retry, so the awaited call returned at once. The
+new `a_stalled_follow_up_delivery_does_not_delay_the_fenced_catch_up` re-opens a
+delivered dispatch and holds startup inside the awaited send, using a new
+`FakeAdapter::pause_next_send` that mirrors the fake's existing
+hosted-retirement pause. It proves the workflow has already converged at that
+instant, then that the retry still completes and delivers, the barrier still
+opens, three further reconciliations move nothing, and the route, role-turn and
+gate-evaluation rows are unchanged. With the catch-up returned to its Gate-11
+position it fails while the R9 and R10 regressions still pass.
+
+No slot identity rule, scheduler route, topology, gate verdict, Jira projection,
+or ASMA-8100 state is changed. No TeamRun was created, and the preserved
+AgentRun, SeatBinding and TeamRun identities are untouched.
+
+The terminal archive-qualified target is candidate
+`741443f1b6b8df122c8425471c6ae7cdadf8d64f`, tree
+`405006ebe8ddf892550bd5a941459029cb6143b1`, still integrated with master
+`f78d041e80042417e0d9a059449eb85737571797` at schema 96. Gate 12 exited 0 with
+2483 Rust tests, 334 loopback tests and 300 console tests; its complete log
+digest is
+`036965a07453e814ff6cd17183ce8c88d7b36a134d0a8066ef948d6e9f6400a0`.
+The Gate 11 candidate `5d9f979` and its digest remain superseded evidence.
+Independent verification must evaluate this exact candidate and the separate
+evidence-only commit before gate acceptance or publication.

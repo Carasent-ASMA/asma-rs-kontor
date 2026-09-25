@@ -115,6 +115,20 @@ closed_enum! {
         /// that died *after* a write was put on the wire is
         /// [`Self::DeliveryUnconfirmed`], not this.
         Unavailable => "unavailable",
+        /// A settlement's canonical proof scan could not be completed, so the
+        /// proof was neither accepted nor rejected.
+        ///
+        /// Distinct from [`Self::Unavailable`], which blames the channel, and
+        /// from [`Self::RevisionConflict`], which blames the caller's tuple.
+        /// Both were wrong here: the runtime answers bounded reads and reports
+        /// itself reachable, and the tuple may be perfectly valid — the daemon
+        /// simply could not read far enough to decide. Saying "the runtime
+        /// could not be reached" sends an operator to look at a healthy plane,
+        /// and saying the tuple is not the current turn accuses them of a
+        /// forgery they did not commit.
+        ///
+        /// Nothing was changed: the scan runs entirely before any write.
+        ProofScanIncomplete => "proof_scan_incomplete",
         /// A write was put on the wire and the channel failed before its
         /// outcome could be confirmed. It may well have landed.
         ///
@@ -130,6 +144,8 @@ closed_enum! {
         ProviderUnauthorized => "provider_unauthorized",
         /// The fixed provider usage endpoint could not be reached successfully.
         ProviderUnreachable => "provider_unreachable",
+        /// The usage endpoint throttled observation requests, not model execution.
+        ProviderUsageThrottled => "provider_usage_throttled",
         /// The exact account or successful provider response is not supported
         /// by this build's closed usage-reader set.
         ProviderUnsupported => "provider_unsupported",
@@ -179,10 +195,11 @@ impl ApiErrorCode {
             // 4xx that blames either would misdirect. "Too many requests" is
             // what a spent ceiling is, and it is the status a client already
             // knows to back off and retry on.
-            Self::CapacityExhausted => StatusCode::TOO_MANY_REQUESTS,
+            Self::CapacityExhausted | Self::ProviderUsageThrottled => StatusCode::TOO_MANY_REQUESTS,
             Self::ReconciliationPending
             | Self::Unavailable
             | Self::DeliveryUnconfirmed
+            | Self::ProofScanIncomplete
             | Self::ProviderUnreachable => StatusCode::SERVICE_UNAVAILABLE,
             Self::ProviderUnauthorized => StatusCode::BAD_GATEWAY,
             Self::ProviderUnsupported => StatusCode::UNPROCESSABLE_ENTITY,
@@ -229,6 +246,9 @@ impl ApiErrorCode {
             Self::HandoffUnsettled => "settle the outstanding turn before terminalizing the run",
             Self::PlacementBlocked => "resolve where the work belongs in the topology, then retry",
             Self::Unavailable => "retry once the dependency answers; nothing was changed",
+            Self::ProofScanIncomplete => {
+                "settle again naming the same turn once the session's canonical history is readable to its end; the proof was neither accepted nor rejected and nothing was changed"
+            }
             Self::DeliveryUnconfirmed => {
                 "read this session's timeline for the exact idempotency key to learn the outcome, then replay that same key; never resend under a new one"
             }
@@ -237,6 +257,9 @@ impl ApiErrorCode {
             }
             Self::ProviderUnreachable => {
                 "retry after the provider usage endpoint is reachable; nothing was changed"
+            }
+            Self::ProviderUsageThrottled => {
+                "honor retry_after_seconds before probing again; this is not evidence that model quota is exhausted"
             }
             Self::ProviderUnsupported => {
                 "use an enabled config-home account and provider response supported by this build"
@@ -282,6 +305,9 @@ const fn const_str_eq(left: &str, right: &str) -> bool {
 /// The JSON body every refusal is reported with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct ApiErrorBody {
+    /// Safe delay before retrying a throttled usage read; quota projections were not changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_seconds: Option<u64>,
     /// The Realm the request was refused in.
     #[schema(value_type = String)]
     pub realm_id: RealmId,
@@ -354,6 +380,8 @@ pub struct ApiError {
 /// Where a refusal happened, in structural terms only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorDiagnostic {
+    /// Delay for a provider-throttled observation, never a quota reset assertion.
+    pub retry_after_seconds: Option<u64>,
     /// The type, field or state machine that refused.
     pub subject: Option<&'static str>,
     /// The structural path of the offending node. Never its value.
@@ -409,10 +437,18 @@ impl ApiError {
     fn diagnostic_mut(&mut self) -> &mut ErrorDiagnostic {
         self.diagnostic.get_or_insert_with(|| {
             Box::new(ErrorDiagnostic {
+                retry_after_seconds: None,
                 subject: None,
                 at: None,
             })
         })
+    }
+
+    /// Attach a safe observation retry delay without asserting a quota reset.
+    #[must_use]
+    pub fn with_retry_after(mut self, seconds: u64) -> Self {
+        self.diagnostic_mut().retry_after_seconds = Some(seconds);
+        self
     }
 
     /// State what the caller can do about it.
@@ -448,6 +484,10 @@ impl ApiError {
     #[must_use]
     pub fn body(&self) -> ApiErrorBody {
         ApiErrorBody {
+            retry_after_seconds: self
+                .diagnostic
+                .as_ref()
+                .and_then(|value| value.retry_after_seconds),
             realm_id: self.realm_id,
             code: self.code,
             rule: self.rule,
@@ -808,6 +848,27 @@ impl ApiError {
                 "the runtime does not agree the cited predecessor is finished",
             )
             .advising(rule),
+            // The same lesson as the arm above, found the same way. A claimant the
+            // runtime already admitted elsewhere is a *conflict* the caller can
+            // act on: release or reuse the seat it already holds. Answering an
+            // unclassified 503 told an operator to upgrade the daemon for a
+            // refusal that is working exactly as designed, and left an
+            // epic-level claim preview looking like a server defect.
+            RuntimeError::SlotAlreadyAdmitted { rule } => Self::new(
+                realm_id,
+                ApiErrorCode::RevisionConflict,
+                "the runtime has already admitted this role slot",
+            )
+            .advising(rule),
+            // A launch the runtime will not admit because it cannot prove a
+            // required capability is not unavailability either: retrying will
+            // not help until the capability is provable.
+            RuntimeError::LaunchNotAdmitted { rule } => Self::new(
+                realm_id,
+                ApiErrorCode::UnsupportedCapability,
+                "the runtime would not admit this launch",
+            )
+            .advising(rule),
             RuntimeError::Domain(domain) => Self::from_domain(realm_id, domain),
             // Whatever is left is genuinely unclassified, and it says so in the
             // log rather than only in the answer: an operator who sees this
@@ -846,7 +907,17 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.code.status(), Json(self.body())).into_response()
+        let body = self.body();
+        let retry_after = body.retry_after_seconds;
+        let mut response = (self.code.status(), Json(body)).into_response();
+        if let Some(seconds) = retry_after
+            && let Ok(value) = axum::http::HeaderValue::from_str(&seconds.to_string())
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, value);
+        }
+        response
     }
 }
 
@@ -855,6 +926,44 @@ mod tests {
     use kontor_core::id::AggregateRevision;
 
     use super::*;
+
+    /// The 2026-08-22 lesson, applied to the two refusals that were still
+    /// falling through: a conflict and a capability refusal are actionable
+    /// answers, and telling an operator to upgrade the daemon for either one
+    /// hides a working fence behind a server defect.
+    #[test]
+    fn an_already_admitted_slot_is_a_conflict_not_an_unclassified_outage() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_runtime(
+            realm,
+            &RuntimeError::SlotAlreadyAdmitted {
+                rule: "the claimant already belongs to another Kontor or native seat",
+            },
+        );
+        assert_eq!(refusal.code, ApiErrorCode::RevisionConflict);
+        assert_ne!(
+            refusal.code,
+            ApiErrorCode::Unavailable,
+            "an already-admitted claimant is not an outage"
+        );
+        assert!(
+            refusal.action.contains("already belongs"),
+            "the runtime's own rule is carried as the action: {refusal:?}"
+        );
+    }
+
+    #[test]
+    fn an_unadmitted_launch_is_an_unsupported_capability_not_an_outage() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_runtime(
+            realm,
+            &RuntimeError::LaunchNotAdmitted {
+                rule: "this Paseo does not advertise providerOptionsApplied",
+            },
+        );
+        assert_eq!(refusal.code, ApiErrorCode::UnsupportedCapability);
+        assert_ne!(refusal.code, ApiErrorCode::Unavailable);
+    }
 
     #[test]
     fn a_realm_mismatch_is_reported_as_such_and_echoes_no_payload() {
@@ -1053,6 +1162,20 @@ mod tests {
         );
         assert!(refusal.action.contains("do not resend"));
         assert!(!refusal.action.contains("nothing was changed"));
+    }
+
+    #[test]
+    fn usage_throttle_returns_the_actual_retry_instruction_in_body_and_header() {
+        let error = ApiError::new(
+            RealmId::generate(),
+            ApiErrorCode::ProviderUsageThrottled,
+            "the usage endpoint throttled observation requests",
+        )
+        .with_retry_after(2312);
+        assert_eq!(error.body().retry_after_seconds, Some(2312));
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()["retry-after"], "2312");
     }
 
     /// The two codes are told apart by the one sentence a caller acts on.

@@ -26,9 +26,9 @@ use kontor_runtime::capability::{RuntimeCapabilities, RuntimeCapability, TrustGr
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdaptiveWindowConfig, AuthorizationEvidence,
     CalendarAdmission, CalendarPolicyEvidence, Candidate, CapacityConfig, CapacityUsage,
-    ExternalWorkEvidence, ReconciliationEvidence, ReconciliationScope, RejectionCode,
-    RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
-    WorktreeClaim, WorktreeVerification,
+    ExternalWorkEvidence, PlacementAdmission, ReconciliationEvidence, ReconciliationScope,
+    RejectionCode, RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot,
+    TaskOrigin, WorktreeClaim, WorktreeVerification,
 };
 use kontor_scheduler::ready::{explain, minimum_launch_capabilities, plan};
 use kontor_tests_e2e::Bundle;
@@ -628,6 +628,9 @@ fn candidate(
         mini_project_id: None,
         workflow_id: TaskWorkflowId::generate(),
         delivery_slots_registered: true,
+        placement: PlacementAdmission::Confirmed {
+            attestation_digest: kontor_core::id::ContentHash::of(b"pilot-placement"),
+        },
         state: TaskState::Ready,
         revision: AggregateRevision::INITIAL,
         created_at: taken_at,

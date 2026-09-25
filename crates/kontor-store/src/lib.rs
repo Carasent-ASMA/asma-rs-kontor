@@ -27,6 +27,9 @@
 //! The rule they share is the one uncertainty always breaks: an absence, a
 //! timeout, a closed stream or a missing session is never a completion.
 
+mod artifact_submissions;
+pub use artifact_submissions::NewArtifactSubmission;
+
 pub mod authority;
 pub mod backup;
 mod commands;
@@ -37,7 +40,11 @@ mod graph;
 mod intake;
 mod jira;
 pub mod memory;
+mod message_delivery_proofs;
 mod migrations;
+pub use message_delivery_proofs::{
+    MessageDeliveryProof, MessageProofAnchor, message_issuance_digest,
+};
 mod policy;
 pub mod publication;
 pub mod query;
@@ -72,10 +79,11 @@ pub use events::types::{
 pub use graph::{
     Applied, AppliedBacklogImport, AppliedEpic, AppliedLink, AppliedTask, AuthorizationRevocation,
     BacklogImport, EpicApplication, EpicExecutionScope, EpicExecutionScopeDeclaration, EpicTask,
-    EpicTicketLink, IdempotencyBinding, NewRoleSlotWaiver, NewRoleTurn, ProfileSelection,
-    ProjectEnsure, RegisteredPack, RoleTurnReplay, RoleTurnRuntimeProof, SeatRow, SettledTurn,
-    StoredAuthorization, StoredBindingSnapshot, StoredComment, StoredConflict,
-    StoredProfileSelectionOutcome, StoredWaiver, TeamTemplateSource, TurnDispatch,
+    EpicTicketLink, IdempotencyBinding, MessageIssuance, MessageIssuanceOutcome, NewRoleSlotWaiver,
+    NewRoleTurn, ProfileSelection, ProjectEnsure, RegisteredPack, RoleTurnReplay,
+    RoleTurnRuntimeProof, SeatRow, SettledTurn, StoredAuthorization, StoredBindingSnapshot,
+    StoredComment, StoredConflict, StoredProfileSelectionOutcome, StoredTaskWorktreeCorrection,
+    StoredWaiver, TaskWorktreeCorrection, TeamTemplateSource, TurnDispatch,
 };
 pub use jira::{
     ConfirmedJiraBinding, ConflictClose, JiraBindingState, JiraBindingSubject, JiraIntentKind,

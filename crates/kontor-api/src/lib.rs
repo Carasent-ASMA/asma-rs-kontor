@@ -36,12 +36,15 @@
 //! has nowhere to put.
 
 pub mod applications;
+pub mod artifacts;
 pub mod auth;
 pub mod body;
+pub mod committee_evidence;
 pub mod control;
 pub mod dto;
 pub mod error;
 pub mod memory;
+pub mod open_questions;
 pub mod openapi;
 pub mod sessions;
 pub mod state;
@@ -291,6 +294,8 @@ pub fn router(state: ApiState) -> Router {
         ]);
 
     Router::new()
+        .route("/v1/projects/{project_id}/epics/{epic_id}/open-questions", get(open_questions::list_open_questions))
+        .route("/v1/projects/{project_id}/epics/{epic_id}/open-questions:record", post(open_questions::record_open_question))
         .route("/v1/health", get(control::health))
         .route("/v1/realm", get(control::realm))
         .route("/v1/projects/{project_id}/memory", get(memory::list))
@@ -609,6 +614,10 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::apply_core_team_route),
             )
             .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede",
+                post(applications::supersede_core_team_launch_intent),
+            )
+            .route(
                 "/v1/projects/{project_id}/epics/{epic_id}/core-team/seat-claims:preview",
                 post(applications::preview_core_team_seat_claim),
             )
@@ -687,6 +696,10 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/committee-runs/{committee_run_id}",
                 get(applications::committee_run),
+            )
+            .route(
+                "/v1/projects/{project_id}/committee-runs/{committee_run_id}/artifacts/{evidence_id}",
+                get(committee_evidence::committee_artifact),
             )
             .route(
                 "/v1/projects/{project_id}/committee-runs/{committee_run_id}/seats/{seat_binding_id}/permissions",
@@ -821,6 +834,10 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::resume_admissions),
             )
             .route(
+                "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/admission:adopt",
+                post(applications::adopt_team_run_admission),
+            )
+            .route(
                 "/v1/projects/{project_id}/team-runs/{team_run_id}/role-slots/{role_slot_id}/seat",
                 post(applications::fill_team_run_seat),
             )
@@ -844,6 +861,10 @@ pub fn router(state: ApiState) -> Router {
                 post(applications::recover_gate_rejection),
             )
             .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/workflow:recover-phase",
+                post(applications::recover_workflow_phase),
+            )
+            .route(
                 "/v1/projects/{project_id}/tasks/{task_id}/profile-selection",
                 post(applications::select_profile),
             )
@@ -858,6 +879,14 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/tasks/{task_id}/ticket:reconcile-plan",
                 post(applications::ticket_reconcile_plan),
+            )
+            .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:preview",
+                post(applications::preview_worktree_claim_correction),
+            )
+            .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/worktree-claim:apply",
+                post(applications::apply_worktree_claim_correction),
             )
             .route(
                 "/v1/projects/{project_id}/tasks/{task_id}/ticket/description:preview",
@@ -880,6 +909,10 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/agent-runs/{agent_run_id}/runtime:abandon",
                 post(applications::abandon_run),
+            )
+            .route(
+                "/v1/projects/{project_id}/tasks/{task_id}/artifacts:record",
+                post(artifacts::record_artifact),
             )
             // A *turn* is smaller than a run: settling one closes Kontor's bounded
             // piece of work and leaves the seat's native session live.
@@ -1012,6 +1045,8 @@ pub fn router(state: ApiState) -> Router {
             "/v1/sessions/{agent_run_id}/messages",
             post(sessions::send_message),
         )
+        .route("/v1/sessions/{agent_run_id}/messages:reconcile", post(sessions::reconcile_message_delivery))
+        .route("/v1/sessions/{agent_run_id}/messages/proof", get(sessions::message_proof))
         .route(
             "/v1/sessions/{agent_run_id}/permissions/{request_id}",
             post(sessions::respond_permission),

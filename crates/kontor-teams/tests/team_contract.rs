@@ -467,9 +467,7 @@ fn the_bundled_pack_declares_per_slot_autonomy_as_a_new_revision() {
             .teams
             .iter()
             .find(|team| team.template_id == first.template_id && team.version == second)
-            .unwrap_or_else(|| {
-                panic!("template {} ships a v2 revision", first.template_id)
-            });
+            .unwrap_or_else(|| panic!("template {} ships a v2 revision", first.template_id));
 
         for slot in &shipped.slots {
             assert_eq!(
@@ -946,6 +944,102 @@ async fn a_replacement_closes_the_old_session_before_the_successor_exists() {
         fresh.agent_run_id(),
         successor_run,
         "the new binding names the successor run"
+    );
+}
+
+#[tokio::test]
+async fn an_unbound_child_retry_preserves_native_depth_and_exact_parent_evidence() {
+    let template = parallel_seed();
+    let snapshot = snapshot_of(&template);
+    let team = TeamRunId::generate();
+    let runtime = Runtime::prepare(team).await;
+    let slot = template.slots[0].id.clone();
+    let mut slots = TeamRunSlots::open(lease(team), &snapshot).unwrap();
+    let original = occupy(&mut slots, &runtime, &slot, AgentRunId::generate()).await;
+    let old = closing_row(team, &slot, &original, None, RunLifecycle::Cancelled);
+    let occupied = slots.occupied(&slot).unwrap();
+    slots.close_completed(occupied, &old).unwrap();
+    let mut abandoned = run_row(
+        team,
+        &slot,
+        AgentRunId::generate(),
+        Some(old.id),
+        RunLifecycle::Parked,
+    );
+    abandoned.terminal = Some(TerminalEvidence {
+        outcome: TerminalOutcome::Abandoned,
+        source: TerminalEvidenceSource::OperatorAbandon {
+            receipt_id: kontor_core::id::CommandReceiptId::generate(),
+        },
+        evidence_hash: ContentHash::of(b"an explicit never-bound abandonment"),
+        closed_at: now(),
+    });
+    abandoned.closed_at = Some(now());
+    for mismatch in 0..5 {
+        let mut wrong = abandoned.clone();
+        match mismatch {
+            0 => wrong.parent_agent_run_id = Some(AgentRunId::generate()),
+            1 => wrong.team_run_id = TeamRunId::generate(),
+            2 => wrong.role = RoleKey::parse("another-slot").unwrap(),
+            3 => wrong.binding = old.binding.clone(),
+            _ => wrong.terminal = None,
+        }
+        let closed = slots.latest_closed(&slot).unwrap();
+        assert!(
+            slots
+                .reserve_after_unbound_successor(closed, &wrong, AgentRunId::generate())
+                .is_err()
+        );
+        assert_eq!(slots.latest_closed(&slot).unwrap().agent_run_id(), old.id);
+    }
+    let child = AgentRunId::generate();
+    let closed = slots.latest_closed(&slot).unwrap();
+    let permit = slots
+        .reserve_after_unbound_successor(closed, &abandoned, child)
+        .unwrap();
+    assert_eq!(permit.parent_agent_run_id(), Some(abandoned.id));
+    let admission = permit.admission_request(&runtime.launch_input());
+    assert_eq!(
+        admission.replaces,
+        Some(ReplacedBinding {
+            binding_id: original.binding_id(),
+            agent_run_id: old.id,
+            successor_agent_run_id: child,
+        })
+    );
+    let mut row = run_row(
+        team,
+        &slot,
+        child,
+        permit.parent_agent_run_id(),
+        RunLifecycle::Queued,
+    );
+    row.project_id = old.project_id;
+    drop(slots);
+    let recovered = TeamRunSlots::hydrate(
+        lease(team),
+        &snapshot,
+        &[old.clone(), abandoned.clone(), row],
+        &[],
+    )
+    .unwrap();
+    drop(recovered);
+
+    let mut no_successors = template.clone();
+    no_successors.max_successor_depth = 0;
+    let mut slots = TeamRunSlots::hydrate(
+        lease(team),
+        &snapshot_of(&no_successors),
+        &[old, abandoned.clone()],
+        &[],
+    )
+    .unwrap();
+    let closed = slots.latest_closed(&slot).unwrap();
+    assert!(
+        slots
+            .reserve_after_unbound_successor(closed, &abandoned, AgentRunId::generate())
+            .is_err(),
+        "never-bound recovery must not bypass the native successor limit"
     );
 }
 

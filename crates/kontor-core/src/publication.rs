@@ -17,7 +17,7 @@ use crate::{DomainError, DomainResult};
 
 /// The revision of the rules below. Bumped whenever a rule changes so a recorded
 /// decision can be read against the exact policy that produced it.
-pub const POLICY_REVISION: u32 = 3;
+pub const POLICY_REVISION: u32 = 4;
 
 /// A Git commit identity: exactly forty lowercase hexadecimal digits.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -72,6 +72,14 @@ pub struct PublicationIdentity {
 /// What Kontor holds about the work a publication claims to serve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicationBinding {
+    /// The exact forge repositories this Kontor project may publish.
+    ///
+    /// Derived by the daemon from the durable ProjectId the forge mapping
+    /// governs and the bound task's module. A producer's observed `repository`
+    /// is a claim; this is the durable fact it is judged against. An empty set
+    /// authorizes nothing, which is the fail-closed answer for a project the
+    /// mapping does not govern.
+    pub repositories: Vec<ExternalName>,
     /// The confirmed tracker key of the epic.
     pub epic_key: TrackerKey,
     /// The confirmed tracker key of the task the branch names, when the branch
@@ -104,10 +112,14 @@ crate::closed_enum! {
     /// Why a publication was refused. Each spelling is the stable code a producer
     /// reports; the branch codes are [`BranchRefusal`]'s own spellings.
     PublicationRefusal, "PublicationRefusal" {
+        /// The forge repository is outside the project's approved publication scope.
+        RepositoryMismatch => "repository_mismatch",
         /// The head branch is not the branch the binding allows.
         BranchBindingMismatch => "branch_binding_mismatch",
         /// No confirmed tracker key exists for the branch's key.
         BindingUnconfirmed => "binding_unconfirmed",
+        /// More than one epic or task resolves the branch's key.
+        BindingAmbiguous => "binding_ambiguous",
         /// The title does not lead with a canonical key and one space.
         TitleKeyMissing => "pr_title_key_missing",
         /// The title leads with a key outside the epic graph.
@@ -122,8 +134,14 @@ impl PublicationRefusal {
     #[must_use]
     pub const fn rule(self) -> &'static str {
         match self {
+            Self::RepositoryMismatch => {
+                "repository_mismatch: the publication repository must be in the project's approved scope"
+            }
             Self::BranchBindingMismatch => BranchRefusal::BindingMismatch.rule(),
             Self::BindingUnconfirmed => BranchRefusal::BindingUnconfirmed.rule(),
+            Self::BindingAmbiguous => {
+                "binding_ambiguous: the branch key must resolve to exactly one confirmed epic or task"
+            }
             Self::TitleKeyMissing => {
                 "pr_title_key_missing: a pull-request title starts with the canonical tracker key and one space"
             }
@@ -177,6 +195,16 @@ impl PublicationDecision {
         Self::refused_branch(BranchRefusal::BindingUnconfirmed)
     }
 
+    /// The decision for a branch key that resolves to more than one subject.
+    #[must_use]
+    pub fn ambiguous() -> Self {
+        Self {
+            accepted: false,
+            reasons: vec![PublicationRefusal::BindingAmbiguous.as_str().to_owned()],
+            policy_revision: POLICY_REVISION,
+        }
+    }
+
     /// Whether a given stable code is among the reasons.
     #[must_use]
     pub fn refused_for(&self, code: &str) -> bool {
@@ -204,6 +232,9 @@ pub fn evaluate(
     binding: &PublicationBinding,
 ) -> PublicationDecision {
     let mut reasons = Vec::new();
+    if !binding.repositories.contains(&identity.repository) {
+        reasons.push(PublicationRefusal::RepositoryMismatch);
+    }
     let allowed_branch_keys = std::iter::once(&binding.epic_key).chain(binding.task_key.iter());
     if identity
         .head_branch
@@ -215,14 +246,20 @@ pub fn evaluate(
     if identity.base_branch != binding.default_branch {
         reasons.push(PublicationRefusal::BaseBranchNotDefault);
     }
-    if let Some(title) = identity.title.as_ref() {
-        match title_key(title.as_str()) {
+    match (identity.pull_request, identity.title.as_ref()) {
+        // A pull request always carries a title, so an absent one is the
+        // missing key rather than a rule that does not apply. Skipping it let a
+        // pull request publish under no key at all.
+        (Some(_), None) => reasons.push(PublicationRefusal::TitleKeyMissing),
+        (_, Some(title)) => match title_key(title.as_str()) {
             None => reasons.push(PublicationRefusal::TitleKeyMissing),
             Some(key) if !binding.title_keys().any(|allowed| *allowed == key) => {
                 reasons.push(PublicationRefusal::TitleKeyMismatch);
             }
             Some(_) => {}
-        }
+        },
+        // Branch-only publication: a push carries no title to judge.
+        (None, None) => {}
     }
     PublicationDecision {
         accepted: reasons.is_empty(),

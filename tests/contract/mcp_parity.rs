@@ -9,8 +9,8 @@
 //! contract growing.
 //!
 //! On top of it sits a **snapshot canary**: at this base the contract has exactly
-//! 178 mapped operations and exactly two allowlisted ones. The canary is not a
-//! claim that 178 is forever — it is what makes a later change to the daemon's
+//! 190 mapped operations and exactly two allowlisted ones. The canary is not a
+//! claim that 190 is forever — it is what makes a later change to the daemon's
 //! surface *fail here* rather than pass silently, so somebody has to decide
 //! whether the new operation gets a tool or a recorded deferral.
 //!
@@ -537,12 +537,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "181 forever": this is what makes a later contract change fail here, so a
+    // Not "192 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        181,
+        192,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
@@ -550,7 +550,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         REGISTRY.len() - CLI_ONLY.len(),
-        180,
+        191,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -558,13 +558,11 @@ fn the_snapshot_canary_holds_at_this_base() {
         2,
         "the allowlist changed; an omission must be reviewed, not added"
     );
-    // 182 against a registry of 181: the regenerated contract also documents
-    // master's `fill_team_run_seat` (#225), which was served but never written
-    // into the document and has no MCP tool of its own. The gap is master's to
-    // close, and it is named here rather than hidden by a matching count.
+    // Every registry operation plus health is documented. The other allowlisted
+    // route serves the document itself and is not self-documented.
     assert_eq!(
         documented().len(),
-        182,
+        193,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -597,6 +595,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_realm_get", CallerTier::Observer),
         ("kontor_run_get", CallerTier::Observer),
         ("kontor_task_get", CallerTier::Observer),
+        ("kontor_open_questions_list", CallerTier::Observer),
+        ("kontor_open_question_record", CallerTier::Operator),
+        ("kontor_artifact_record", CallerTier::Operator),
+        ("kontor_committee_artifact_get", CallerTier::Observer),
         ("kontor_events_list", CallerTier::Observer),
         ("kontor_work_profiles_list", CallerTier::Observer),
         ("kontor_team_templates_list", CallerTier::Observer),
@@ -623,6 +625,7 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_scheduler_start", CallerTier::Operator),
         ("kontor_scheduler_resume", CallerTier::Operator),
         ("kontor_team_run_seat_fill", CallerTier::Operator),
+        ("kontor_team_run_admission_adopt", CallerTier::Operator),
         ("kontor_lifecycle_transition", CallerTier::Operator),
         ("kontor_context_resolve", CallerTier::Operator),
         ("kontor_gate_record", CallerTier::Operator),
@@ -630,6 +633,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // authority over the process, not work inside it. The daemon requires
         // the same tier on the route itself.
         ("kontor_gate_rejection_recover", CallerTier::Admin),
+        // Re-deriving a stalled phase from evidence already recorded is a
+        // repair, not a verdict: it writes only the advance its own projection
+        // proves, so it sits at the sibling recovery's admin tier.
+        ("kontor_workflow_phase_recover", CallerTier::Admin),
         ("kontor_runtime_settle", CallerTier::Operator),
         // Abandoning an unbound run drives the same seat-shaped aggregate that
         // settlement does, so it sits at the same tier — no wider, because the
@@ -638,6 +645,8 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_ticket_reconcile_plan", CallerTier::Operator),
         ("kontor_ticket_reconcile_apply", CallerTier::Operator),
         ("kontor_session_message_send", CallerTier::Operator),
+        ("kontor_session_message_reconcile", CallerTier::Operator),
+        ("kontor_session_message_proof_get", CallerTier::Observer),
         ("kontor_topology_seat_message_send", CallerTier::Operator),
         ("kontor_session_permission_respond", CallerTier::Operator),
         // KON-15 route additions: the five new surface groups.
@@ -791,6 +800,15 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_core_team_materialize", CallerTier::Operator),
         ("kontor_core_team_route_preview", CallerTier::Admin),
         ("kontor_core_team_route_apply", CallerTier::Admin),
+        // Superseding an inert launch intent is admin for the same reason the
+        // route correction is: it decides which approved route a governed seat
+        // will launch on, and therefore whose capacity is spent. That the seat
+        // has no native yet makes it safer to perform, not lower authority to
+        // authorize.
+        (
+            "kontor_core_team_launch_intent_supersede",
+            CallerTier::Admin,
+        ),
         ("kontor_seat_claim_preview", CallerTier::Admin),
         ("kontor_seat_claim_apply", CallerTier::Admin),
         ("kontor_quick_roles_list", CallerTier::Observer),
@@ -861,6 +879,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_publication_attest", CallerTier::Operator),
         ("kontor_publication_get", CallerTier::Observer),
         ("kontor_publication_merge", CallerTier::Operator),
+        // Placement repair remains operator work because every target fact is
+        // server-derived and revision/old-value/preview fenced.
+        ("kontor_task_worktree_claim_preview", CallerTier::Operator),
+        ("kontor_task_worktree_claim_apply", CallerTier::Operator),
         // Publishing an issue body is operator work of the same shape as
         // reconciling its status: the caller supplies the text and the daemon
         // proves the write by reading it back. Replacing a body Kontor never

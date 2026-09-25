@@ -49,12 +49,14 @@ use crate::wire::parse_wire_timestamp;
 use async_trait::async_trait;
 use kontor_core::compaction::CompactionReceipt;
 use kontor_core::id::{
-    AgentRunId, CanonicalDocument, ContentHash, ExternalId, ExternalName, RoleSlotId,
+    AgentRunId, BoundedText, CanonicalDocument, ContentHash, ExternalId, ExternalName, RoleSlotId,
     RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId, Timestamp, TopologyNodeId,
 };
 use kontor_core::repository::RuntimeBinding;
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef, SeatAutonomy};
-use kontor_core::state::{NativeRuntimeIdentity, ObservedRunState, RuntimeContact};
+use kontor_core::state::{
+    NativeRuntimeIdentity, ObservedContainerKind, ObservedRunState, RuntimeContact,
+};
 use kontor_core::{DomainError, DomainResult};
 use kontor_runtime::adapter::{
     ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationMessageRequest,
@@ -79,9 +81,11 @@ use kontor_runtime::capability::{
     RuntimeCapabilities, RuntimeCapability, RuntimeLimits, TrustGrade, preflight,
 };
 use kontor_runtime::container::{
-    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence, ContainerOutcome,
-    ContainerProjection, ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRequest,
-    RetitleContainerOutcome, RetitleContainerRequest,
+    ContainerBinding, ContainerBindingSnapshot, ContainerCorrelationEvidence,
+    ContainerInspectRequest, ContainerInspection, ContainerOutcome, ContainerProjection,
+    ContainerRecoveryOutcome, ContainerRecoveryRequest, ContainerRecreationOutcome,
+    ContainerRecreationRequest, ContainerRequest, ContainerWorkspaceKind, RetitleContainerOutcome,
+    RetitleContainerRequest,
 };
 use kontor_runtime::observation::{
     ControlPlaneObservation, CorrelationEvidence, NativeSession, ObservationSource,
@@ -114,8 +118,23 @@ use crate::wire::{
     PaseoProject, PaseoProjectAdded, PaseoProjectList, PaseoProjectRenamed, PaseoProjection,
     PaseoSendAccepted, PaseoServerInfo, PaseoStreamFrame, PaseoSubscriptionAck,
     PaseoTimelineCursor, PaseoTimelineEntry, PaseoTimelinePage, PaseoWorkspace, PaseoWorkspaceKind,
-    PaseoWorkspacePage, label, normalize_entry, stream_permission_external_id,
+    PaseoWorkspacePage, covers_window, expand_to_sequences, label, normalize_entry,
+    stream_permission_external_id,
 };
+
+/// Map this plane's wire vocabulary onto the runtime-neutral container shape.
+///
+/// The mapping is total and explicit so a new Paseo workspace kind is a
+/// compile error here rather than a silently accepted container.
+const fn container_workspace_kind(kind: PaseoWorkspaceKind) -> ContainerWorkspaceKind {
+    match kind {
+        PaseoWorkspaceKind::Worktree => ContainerWorkspaceKind::Worktree,
+        PaseoWorkspaceKind::Checkout => ContainerWorkspaceKind::Checkout,
+        PaseoWorkspaceKind::LocalCheckout => ContainerWorkspaceKind::LocalCheckout,
+        PaseoWorkspaceKind::Directory => ContainerWorkspaceKind::Directory,
+        PaseoWorkspaceKind::Other => ContainerWorkspaceKind::Other,
+    }
+}
 
 /// Everything Paseo can prove at trust grade A.
 const SUPPORTED: &[RuntimeCapability] = &[
@@ -159,6 +178,23 @@ const RECONCILE_PAGE_BUDGET: usize = 4;
 /// from the invalidated attempt. The bound prevents a runtime that keeps
 /// renumbering from turning one read into an unbounded request.
 const CURSOR_FREE_REFETCH_ATTEMPTS: usize = 3;
+
+/// What a container-recreation census found at the node's canonical place.
+///
+/// Two outcomes, because the operation has exactly two correct moves. Every
+/// other shape the runtime can be in — the persisted native still alive, two
+/// containers at one path, a title that has drifted — is a refusal raised
+/// inside the census rather than a variant here, so a caller cannot reach a
+/// native effect while holding an ambiguous answer.
+#[derive(Debug, Clone)]
+enum RecreationCensus {
+    /// Nothing occupies the canonical path below the exact parent. Create.
+    Vacant,
+    /// Exactly one container already stands where the recreation would build,
+    /// carrying the exact expected title: a previous attempt created it and
+    /// lost its answer. Adopt it.
+    AlreadyCreated(Box<PaseoWorkspace>),
+}
 
 // ---------------------------------------------------------------------------
 // Configuration and scope
@@ -604,6 +640,13 @@ pub enum PaseoDelivery {
 struct EpochRegistry {
     by_raw: BTreeMap<String, u64>,
     next: u64,
+    /// Mappings allocated since the last drain, awaiting durable persistence.
+    ///
+    /// Held separately from `by_raw` because "known" and "durable" are different
+    /// facts. A number is usable in this process the instant it is allocated,
+    /// but nothing addressed by it may be exposed until the control plane has
+    /// taken this list and committed it.
+    undrained: Vec<(String, u64)>,
 }
 
 impl EpochRegistry {
@@ -632,7 +675,12 @@ impl EpochRegistry {
             }
         }
         let next = seen.iter().next_back().copied().unwrap_or(0);
-        Ok(Self { by_raw, next })
+        // Restored from a checkpoint, so nothing here is awaiting persistence.
+        Ok(Self {
+            by_raw,
+            next,
+            undrained: Vec::new(),
+        })
     }
 
     /// The Kontor epoch for `raw`, allocating one only for an epoch never seen.
@@ -642,7 +690,60 @@ impl EpochRegistry {
         }
         self.next = self.next.saturating_add(1);
         self.by_raw.insert(raw.to_owned(), self.next);
+        self.undrained.push((raw.to_owned(), self.next));
         self.next
+    }
+
+    /// What has not been persisted yet, without forgetting it.
+    ///
+    /// Reading the list must not discharge the obligation it represents. A take
+    /// here would mean a caller whose commit failed had already lost the only
+    /// record that these numbers are undurable — and `resolve` would go on
+    /// serving them from `by_raw`, so they would never be offered again.
+    fn pending(&self) -> Vec<(String, u64)> {
+        self.undrained.clone()
+    }
+
+    /// Drop exactly the pairs a caller has made durable.
+    ///
+    /// Exactly, and no more: an allocation that happened while the caller was
+    /// committing is still pending and keeps its place in the queue, so the
+    /// order the numbers were issued in is the order they are offered in.
+    /// `by_raw` is untouched — acknowledging is about durability, not about
+    /// forgetting a mapping this process is still using.
+    fn ack(&mut self, persisted: &[(String, u64)]) {
+        self.undrained
+            .retain(|pending| !persisted.contains(pending));
+    }
+
+    /// Adopt durable mappings. Known raws keep their number; the allocator
+    /// continues above the highest number in use so it can never re-issue one.
+    ///
+    /// Restored pairs are *not* marked undrained: they came from the store, so
+    /// persisting them again would be a write with nothing to record.
+    fn adopt(&mut self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
+        for (raw, epoch) in pairs {
+            if *epoch == 0 {
+                return Err(RuntimeError::Domain(DomainError::invalid(
+                    "runtime_timeline_epochs.kontor_epoch",
+                    "a timeline epoch is one-based",
+                )));
+            }
+            match self.by_raw.get(raw.as_str()) {
+                Some(known) if known != epoch => {
+                    return Err(RuntimeError::Domain(DomainError::invalid(
+                        "runtime_timeline_epochs.raw_epoch",
+                        "the durable mapping contradicts one this process already issued",
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    self.by_raw.insert(raw.clone(), *epoch);
+                }
+            }
+            self.next = self.next.max(*epoch);
+        }
+        Ok(())
     }
 
     /// Restore one exact mapping retained by a server-owned recovery record.
@@ -815,6 +916,15 @@ struct PaseoState {
     /// correlation chain nobody recorded.
     placements: BTreeMap<RuntimeBindingId, ExternalId>,
     messages: MessageLedger<PaseoDelivery>,
+    /// The canonical tail each message was issued after, as the control plane
+    /// recorded it.
+    ///
+    /// Adapter-local and deliberately not in the checkpoint: it is not this
+    /// process's knowledge to keep. The durable copy lives with the issuance,
+    /// and a rebuilt adapter is handed the original back — never a tail
+    /// recaptured now, which would be a floor above the delivery it is supposed
+    /// to bound.
+    issuance_floors: BTreeMap<MessageId, TimelinePosition>,
     deliveries: Vec<(MessageId, ContentHash, PaseoDelivery)>,
     permissions: PermissionLedger,
     /// The session that raised each request still awaiting an answer.
@@ -930,6 +1040,50 @@ fn unconfirmed_after_delivery(error: RuntimeError) -> RuntimeError {
             rule: "delivery began and the confirming canonical read could not reach the runtime",
         },
         other => other,
+    }
+}
+
+/// Whether one reported working directory lies at or inside a canonical root.
+///
+/// Containment is decided by walking **path components**, never by comparing
+/// raw strings. Two cases make that the only workable rule, and a textual
+/// prefix test gets exactly one of them right:
+///
+/// * `/w/epic` must not be read as containing `/w/epic-2`. A prefix test
+///   catches this only if it also demands a separator after the prefix.
+/// * the filesystem root `/` — which [`WorkspaceRoot`] accepts and normalizes
+///   as a spellable place — must contain `/dangling-session`. Demanding a
+///   separator after the prefix gets this **wrong**, because stripping `/`
+///   leaves `dangling-session` with no leading separator. That was HV-001: a
+///   live session under an epic root spelled `/` was reported as outside it,
+///   and the irreversible project removal proceeded over the top of it.
+///
+/// Component comparison answers both without a special case: `/` is the single
+/// [`std::path::Component::RootDir`], every absolute path starts with it, and
+/// `epic` and `epic-2` are simply different components.
+///
+/// An unparsable cwd is *not* treated as outside. A directory the runtime
+/// reports and this adapter cannot read is exactly the case where refusing
+/// costs least, and this predicate only ever refuses — nothing is selected for
+/// removal by a path.
+fn within(cwd: &str, root: &WorkspaceRoot) -> bool {
+    let Ok(cwd) = WorkspaceRoot::parse(cwd) else {
+        return true;
+    };
+    let mut root_parts = std::path::Path::new(root.as_str()).components();
+    let mut cwd_parts = std::path::Path::new(cwd.as_str()).components();
+    loop {
+        match (root_parts.next(), cwd_parts.next()) {
+            // The root ran out first: the cwd is the root, or below it.
+            (None, _) => return true,
+            // The cwd ran out first: it is an ancestor, not a descendant.
+            (Some(_), None) => return false,
+            (Some(root_part), Some(cwd_part)) => {
+                if root_part != cwd_part {
+                    return false;
+                }
+            }
+        }
     }
 }
 
@@ -1132,6 +1286,7 @@ impl PaseoAdapter {
             mcp: None,
             state: Mutex::new(PaseoState {
                 generation: checkpoint.generation,
+                issuance_floors: BTreeMap::new(),
                 server: None,
                 projects: checkpoint_projects
                     .into_iter()
@@ -1360,6 +1515,169 @@ impl PaseoAdapter {
         Ok(())
     }
 
+    /// Archive one bound native child: prove the exact workspace, empty it, and
+    /// prove it gone.
+    ///
+    /// The parent is the one the persisted binding names. A workspace id is
+    /// unique only beneath its project, so a census that did not fix the parent
+    /// first could settle cleanup against somebody else's identically-numbered
+    /// child.
+    async fn archive_bound_child(
+        &self,
+        request: &kontor_runtime::container::ArchiveContainerRequest,
+        native_id: &str,
+        parent: &ExternalId,
+    ) -> RuntimeResult<bool> {
+        let find_exact = async {
+            let mut found = Vec::new();
+            let projects = self.fetch_projects().await?;
+            if !projects.iter().any(|project| project.id == parent.as_str()) {
+                return Err(RuntimeError::StaleBinding {
+                    rule: "the native child's bound project is absent",
+                });
+            }
+            for project in projects {
+                found.extend(
+                    self.fetch_workspaces(&project.id)
+                        .await?
+                        .into_iter()
+                        .filter(|workspace| workspace.id == native_id),
+                );
+            }
+            match found.len() {
+                0 => Ok(None),
+                1 => Ok(found.pop()),
+                _ => Err(RuntimeError::CorrelationFailed),
+            }
+        };
+        let before: Option<PaseoWorkspace> = find_exact.await?;
+        // Check even when the workspace is absent: a dangling active session
+        // is not successful cleanup of this binding.
+        if self
+            .fetch_agents(&BTreeMap::new(), false)
+            .await?
+            .iter()
+            .any(|agent| agent.workspace_id.as_deref() == Some(native_id) && !agent.is_archived())
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the native child still contains an unarchived session",
+            });
+        }
+        let changed = if let Some(workspace) = before {
+            if workspace.project_id != parent.as_str()
+                || WorkspaceRoot::parse(&workspace.workspace_directory)? != request.canonical_cwd
+                || workspace.is_paseo_owned_worktree()
+                || !matches!(
+                    workspace.workspace_kind,
+                    PaseoWorkspaceKind::LocalCheckout | PaseoWorkspaceKind::Directory
+                )
+            {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the archive target changed parent, directory or filesystem ownership",
+                });
+            }
+            self.require_workspace_quiet(native_id, &request.canonical_cwd)
+                .await?;
+            // A lost acknowledgement is recoverable only by complete fresh
+            // absence readback below. Never substitute a CLI exit code for it.
+            let _archive_ack = self
+                .transport
+                .run(&PaseoCommand::workspace_archive(native_id))
+                .await;
+            true
+        } else {
+            false
+        };
+        for project in self.fetch_projects().await? {
+            if self
+                .fetch_workspaces(&project.id)
+                .await?
+                .iter()
+                .any(|workspace| workspace.id == native_id)
+            {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Remove one bound, non-adopted native root and prove that exact id absent.
+    ///
+    /// This is the only irreversible effect the adapter has, so every gate in
+    /// it is a refusal and none of them is a search: the project is selected by
+    /// the id the binding froze, never by display name, remote or path. The
+    /// order — identity, canonical root, emptiness, then advertised capability
+    /// — is the order in which being wrong costs less.
+    ///
+    /// The acknowledgement is deliberately discarded, exactly as
+    /// [`Self::archive_bound_child`] discards the CLI's. A daemon that removed
+    /// the project and then lost the reply is indistinguishable on the wire
+    /// from one that refused, and only the fresh complete listing below can
+    /// tell those apart — so that listing is the sole evidence, and a retry
+    /// after prior absence reports `false` rather than removing anything again.
+    async fn archive_bound_root(
+        &self,
+        request: &kontor_runtime::container::ArchiveContainerRequest,
+        native_id: &str,
+    ) -> RuntimeResult<bool> {
+        let before = self
+            .fetch_projects()
+            .await?
+            .into_iter()
+            .find(|project| project.id == native_id);
+        let changed = if let Some(project) = before {
+            if WorkspaceRoot::parse(&project.root_path)? != request.canonical_cwd {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the native root came back rooted in another directory",
+                });
+            }
+            // Leaves before roots, proved against the runtime rather than
+            // inferred from the logical plane that asked.
+            if !self.fetch_workspaces(native_id).await?.is_empty() {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the native root still holds a workspace",
+                });
+            }
+            // A session whose directory is inside the root is live work in the
+            // tree about to be removed, whether or not any workspace still
+            // lists it. This reads a path only to *refuse*: nothing is ever
+            // selected for removal by one.
+            if self
+                .fetch_agents(&BTreeMap::new(), false)
+                .await?
+                .iter()
+                .any(|agent| !agent.is_archived() && within(&agent.cwd, &request.canonical_cwd))
+            {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "the native root still contains an unarchived session",
+                });
+            }
+            if !self
+                .fetch_server_info()
+                .await?
+                .supports(crate::wire::PaseoFeature::ProjectRemove)
+            {
+                return Err(RuntimeError::UnsupportedCapability {
+                    capability: RuntimeCapability::Retire,
+                });
+            }
+            let rpc = PaseoRpc::project_remove(self.next_request_id(), native_id);
+            let _remove_ack = self.transport.request(&rpc).await;
+            true
+        } else {
+            false
+        };
+        if self
+            .fetch_projects()
+            .await?
+            .iter()
+            .any(|project| project.id == native_id)
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(changed)
+    }
+
     async fn fetch_projects(&self) -> RuntimeResult<Vec<PaseoProject>> {
         let request = PaseoRpc::project_list(self.next_request_id());
         let frame = self.transport.request(&request).await?;
@@ -1483,6 +1801,185 @@ impl PaseoAdapter {
             .into_iter()
             .find(|workspace| workspace.id == workspace_id)
             .ok_or(RuntimeError::CorrelationFailed)
+    }
+
+    /// One workspace read back from an exact parent project by exact id.
+    ///
+    /// Scoped to the parent deliberately: it is what proves a freshly created
+    /// native landed in the persisted ancestor rather than wherever the daemon
+    /// last pointed. The create answer omits `projectId`, so this readback is
+    /// the only evidence of placement there is.
+    async fn fetch_workspace_by_id(
+        &self,
+        parent_native_id: &str,
+        workspace_id: &str,
+    ) -> RuntimeResult<PaseoWorkspace> {
+        self.fetch_workspaces(parent_native_id)
+            .await?
+            .into_iter()
+            .find(|workspace| {
+                workspace.id == workspace_id && workspace.project_id == parent_native_id
+            })
+            .ok_or(RuntimeError::CorrelationFailed)
+    }
+
+    /// Prove what stands at one node's canonical place, and refuse every shape
+    /// that is not one of the two the operation may act on.
+    ///
+    /// Ordered so the cheapest disqualification comes first and no native
+    /// effect is reachable past an ambiguous read.
+    async fn recreation_census(
+        &self,
+        request: &ContainerRecreationRequest,
+    ) -> RuntimeResult<RecreationCensus> {
+        let declared = self.declared().await?;
+        if !declared.supports(RuntimeCapability::PrepareWorkspace) {
+            return Err(self.refuse(RuntimeCapability::PrepareWorkspace, &declared));
+        }
+        if request.absent_identity.runtime_kind != self.config.runtime_kind
+            || request.absent_identity.host != self.config.host_key
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the lost container binding belongs to another runtime host",
+            });
+        }
+
+        let workspaces = self
+            .fetch_workspaces(request.bound_project_native_id.as_str())
+            .await?;
+        // The persisted native being alive is the one state recreation must
+        // never act on: building beside it would duplicate a container the node
+        // still owns. This is checked before the path census so a live native
+        // at a *different* path is still refused.
+        if workspaces
+            .iter()
+            .any(|workspace| workspace.id == request.absent_identity.native_id.as_str())
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the persisted native container still exists and cannot be recreated",
+            });
+        }
+
+        let candidates = workspaces
+            .iter()
+            .filter(|workspace| {
+                workspace.project_id == request.bound_project_native_id.as_str()
+                    && WorkspaceRoot::parse(&workspace.workspace_directory)
+                        .is_ok_and(|root| root == request.canonical_cwd)
+            })
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [] => Ok(RecreationCensus::Vacant),
+            [candidate] => {
+                // A single candidate is only ever this operation's own lost
+                // creation. Anything else standing at the node's canonical path
+                // under its exact parent is a container Kontor did not make,
+                // and adopting it on a title match alone would be how a foreign
+                // workspace becomes a node's binding.
+                if candidate.visible_title() != request.expected_title.as_str() {
+                    return Err(RuntimeError::WorkspaceMismatch {
+                        rule: "a differently titled container already occupies the canonical path",
+                    });
+                }
+                Ok(RecreationCensus::AlreadyCreated(Box::new(
+                    (*candidate).clone(),
+                )))
+            }
+            [_, _, ..] => Err(RuntimeError::WorkspaceMismatch {
+                rule: "several live containers occupy the canonical path below the exact parent",
+            }),
+        }
+    }
+
+    /// The binding snapshot a recreation reports, preserving every identity.
+    fn recreation_snapshot(
+        &self,
+        request: &ContainerRecreationRequest,
+        identity: NativeRuntimeIdentity,
+        declared: RuntimeCapabilities,
+    ) -> ContainerBindingSnapshot {
+        ContainerBindingSnapshot {
+            binding: ContainerBinding {
+                id: request.container_binding_id,
+                topology_node_id: request.topology_node_id,
+                projection: ContainerProjection::NativeChild,
+                identity: identity.clone(),
+                root: Some(request.canonical_cwd.clone()),
+                bound_at: request.requested_at,
+            },
+            capabilities: declared,
+            correlation: ContainerCorrelationEvidence::by_exact_id(
+                request.topology_node_id,
+                identity,
+                request.requested_at,
+            ),
+        }
+    }
+
+    /// Read back a container this call created and prove it is the right one.
+    async fn recreation_created(
+        &self,
+        request: &ContainerRecreationRequest,
+        workspace: &PaseoWorkspace,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        self.recreation_readback(request, workspace, true).await
+    }
+
+    /// Adopt the container a lost attempt already created.
+    async fn recreation_adoption(
+        &self,
+        request: &ContainerRecreationRequest,
+        workspace: &PaseoWorkspace,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        self.recreation_readback(request, workspace, false).await
+    }
+
+    /// The readback both recreation paths must pass before anything is bound.
+    ///
+    /// Placement, path and title are all re-proved from the runtime's own
+    /// answer rather than from what was requested. An adapter that returned the
+    /// requested values would make a create that silently landed elsewhere
+    /// indistinguishable from one that landed correctly.
+    async fn recreation_readback(
+        &self,
+        request: &ContainerRecreationRequest,
+        workspace: &PaseoWorkspace,
+        created: bool,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        if workspace.project_id != request.bound_project_native_id.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the recreated container did not land in the exact persisted native parent",
+            });
+        }
+        let root = WorkspaceRoot::parse(&workspace.workspace_directory)?;
+        if root != request.canonical_cwd {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the recreated container is not rooted at the preserved canonical path",
+            });
+        }
+        if workspace.visible_title() != request.expected_title.as_str() {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the recreated container does not carry the exact rendered title",
+            });
+        }
+        if !container_workspace_kind(workspace.workspace_kind)
+            .is_applicable_to(request.task_container)
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: ContainerWorkspaceKind::refusal(request.task_container),
+            });
+        }
+        if workspace.id == request.absent_identity.native_id.as_str() {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the runtime reported the absent native id as the replacement",
+            });
+        }
+        let identity = self.identity(ExternalId::parse(&workspace.id)?, self.generation());
+        Ok(ContainerRecreationOutcome {
+            snapshot: self.recreation_snapshot(request, identity, self.declared().await?),
+            observed_title: workspace.visible_title().to_owned(),
+            created,
+        })
     }
 
     async fn fetch_workspace(&self, workspace_id: &str) -> RuntimeResult<PaseoWorkspace> {
@@ -1665,7 +2162,7 @@ impl PaseoAdapter {
             return Err(RuntimeError::CorrelationFailed);
         }
         if !agent.is_archived() {
-            Self::verify_agent_route(&agent, &request.model_rung, SeatAutonomy::Supervised)?;
+            Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
         }
         Ok(Some(agent))
     }
@@ -1773,6 +2270,52 @@ impl PaseoAdapter {
             .ok_or(RuntimeError::WorkspaceMismatch {
                 rule: "the native project is not bound to an epic on this adapter",
             })
+    }
+
+    /// Every workspace id this plane can currently see, across every project.
+    ///
+    /// Read exactly once per restore. Enumerating the directory per claim is an
+    /// N-by-directory sweep: a realm holding hundreds of open claims can spend
+    /// its bounded restart window before it reaches the oldest ones — which are
+    /// precisely the claims most likely to need the readback exception — and
+    /// two claims in one restore could otherwise be judged against two
+    /// different answers. One immutable read settles both.
+    ///
+    /// A census that cannot be read fails the whole restore rather than
+    /// answering for any claim. "No project owns this workspace" read off a
+    /// failed or partial enumeration is indistinguishable from a retirement,
+    /// and would silently widen the exception to every claim at once.
+    async fn active_workspace_census(&self) -> RuntimeResult<BTreeMap<String, PaseoWorkspace>> {
+        let mut seen = BTreeMap::new();
+        for project in self.fetch_projects().await? {
+            for workspace in self.fetch_workspaces(&project.id).await? {
+                seen.insert(workspace.id.clone(), workspace);
+            }
+        }
+        Ok(seen)
+    }
+
+    /// Whether this agent's own declared workspace is absent from the active
+    /// census — the retired-task-worktree shape.
+    ///
+    /// This is proved positively rather than inferred from a recovery failure,
+    /// because [`Self::recover_project_for_agent`] answers `CorrelationFailed`
+    /// both for a workspace no project owns *and* for an agent that never
+    /// carried a project label. Only the first is recoverable, so the second
+    /// must not be swept in by reading the error alone. A workspace that still
+    /// appears in the census — including under a project this plane does not
+    /// own — is not this shape and stays refused.
+    fn workspace_owner_retired(
+        agent: &PaseoAgent,
+        census: &BTreeMap<String, PaseoWorkspace>,
+    ) -> bool {
+        let Some(workspace_id) = agent.workspace_id.as_deref() else {
+            return false;
+        };
+        if agent.label(label::PROJECT_ID).is_none() {
+            return false;
+        }
+        !census.contains_key(workspace_id)
     }
 
     async fn recover_project_for_agent(
@@ -2337,8 +2880,10 @@ impl PaseoAdapter {
         ) {
             return None;
         }
+        // Raw on purpose: refusal provenance is defined over Paseo's own source
+        // ranges, which expansion would narrow to one sequence.
         let page = self
-            .fetch_canonical(
+            .fetch_timeline_page(
                 native_id,
                 PaseoDirection::Tail,
                 None,
@@ -2374,6 +2919,7 @@ impl PaseoAdapter {
             )
         })?;
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id,
             contact,
             state,
@@ -2559,6 +3105,53 @@ impl PaseoAdapter {
                     .ok_or(RuntimeError::StaleBinding {
                         rule: "the bound container is not in the parent this node is placed under",
                     })?;
+                // Containment is proved, not assumed. The listing is *asked*
+                // for one parent's workspaces, but a reply is evidence only for
+                // what it actually says: a descriptor naming another project is
+                // a container in another parent, whatever it was returned by.
+                // `inspect_container` proves the same fact on the same shape.
+                if workspace.project_id != project_id.as_str() {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: "the bound container is not in the parent this node is placed under",
+                    });
+                }
+                // The directory is proved on the way back, not carried over
+                // from the request. Creation already refuses a child that does
+                // not say where it works and refuses to bind one whose path is
+                // not the canonical one; a reconcile that copied `request.cwd`
+                // onto the snapshot would report the directory the caller
+                // *asked* for while the container had been re-rooted somewhere
+                // else, and every later placement check would agree with it.
+                let cwd = request
+                    .cwd
+                    .as_ref()
+                    .ok_or(RuntimeError::WorkspaceMismatch {
+                        rule: "a native_child must say which directory it works in",
+                    })?;
+                if !WorkspaceRoot::parse(&workspace.workspace_directory)
+                    .is_ok_and(|root| &root == cwd)
+                {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: "the bound container no longer works in the canonical directory this node declares",
+                    });
+                }
+                // And it is the right *kind* of place, which the path alone
+                // cannot say: a ticket worktree and an epic's stable directory
+                // can sit at paths that look equally plausible. The predicate
+                // is the shared one so this plane and the fake cannot drift.
+                //
+                // Deliberately not `verify_workspace_placement`: that is the
+                // ticket-role rule, and it refuses anything that is not a
+                // worktree. Applied here it would refuse the epic's ECP,
+                // which is intentionally a directory or local checkout.
+                let task_container = request.task_container();
+                if !container_workspace_kind(workspace.workspace_kind)
+                    .is_applicable_to(task_container)
+                {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: ContainerWorkspaceKind::refusal(task_container),
+                    });
+                }
                 let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
                 (
                     identity.clone(),
@@ -3085,13 +3678,19 @@ impl PaseoAdapter {
 // ---------------------------------------------------------------------------
 
 impl PaseoAdapter {
-    /// One canonical page for `agent_id`, strictly after `cursor`.
+    /// One canonical page for `agent_id`: one entry per native sequence.
     ///
-    /// A page that declares `reset`, `staleCursor` or `gap` is a break rather
-    /// than a page: Paseo puts those flags on the *response*, so this is the one
-    /// place they have to be read, and reading its entries anyway would page
-    /// over the hole the daemon just declared. Same for the daemon's own
-    /// `error`: a page that failed is not an empty transcript.
+    /// Paseo 0.9 answers every read from its projection, so a page may carry
+    /// entries that span several sequences, and an older page may have holes
+    /// where an entry anchored further back absorbed a later sequence (a tool
+    /// call completing across the page boundary). Both are re-expressed here
+    /// through [`expand_to_sequences`], so every caller keeps paging a dense,
+    /// one-event-per-sequence transcript. An already-canonical page is returned
+    /// exactly as the daemon sent it.
+    ///
+    /// # Errors
+    /// Everything [`Self::fetch_timeline_page`] refuses, plus
+    /// [`TimelineBreak::SequenceGap`] when the window cannot be proven dense.
     async fn fetch_canonical(
         &self,
         agent_id: &str,
@@ -3100,16 +3699,132 @@ impl PaseoAdapter {
         limit: u32,
         projection: PaseoProjection,
     ) -> RuntimeResult<PaseoTimelinePage> {
-        let request = PaseoRpc::timeline_fetch(
-            self.next_request_id(),
-            agent_id,
-            projection,
-            direction,
-            cursor,
-            limit,
-        );
-        let frame = self.transport.request(&request).await?;
-        let page: PaseoTimelinePage = frame.resolve(&request, "PaseoTimelinePage")?;
+        let gap = || RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::SequenceGap,
+        };
+        let page = self
+            .fetch_timeline_page(agent_id, direction, cursor, limit, projection)
+            .await?;
+        let collapsed = page.entries.iter().any(|entry| !entry.is_single_sequence());
+        if !collapsed && direction != PaseoDirection::Before {
+            return Ok(page);
+        }
+        let Some(lo) = page.entries.iter().map(|entry| entry.seq_start).min() else {
+            return Ok(page);
+        };
+        let (lo, hi) = match direction {
+            PaseoDirection::Tail => (
+                lo,
+                page.entries
+                    .iter()
+                    .map(|entry| entry.seq_end)
+                    .max()
+                    .unwrap_or(lo),
+            ),
+            PaseoDirection::After => {
+                let after = cursor.ok_or_else(gap)?.seq;
+                let hi = page.end_cursor.as_ref().ok_or_else(gap)?.seq;
+                (after.checked_add(1).ok_or_else(gap)?, hi)
+            }
+            PaseoDirection::Before => (
+                lo,
+                cursor.ok_or_else(gap)?.seq.checked_sub(1).ok_or_else(gap)?,
+            ),
+        };
+        let mut expanded = expand_to_sequences(&page.entries, lo, hi)?;
+        if !collapsed && covers_window(&expanded, lo, hi) {
+            return Ok(page);
+        }
+        // An older page's holes belong to entries anchored further back; fetch
+        // those and fold them in until the window is dense or provably is not.
+        let (mut lo, mut has_older, mut entries) = (lo, page.has_older, page.entries.clone());
+        let mut budget = RECONCILE_PAGE_BUDGET;
+        while direction == PaseoDirection::Before && !covers_window(&expanded, lo, hi) {
+            if !has_older || budget == 0 {
+                return Err(gap());
+            }
+            budget -= 1;
+            let older_cursor = PaseoTimelineCursor {
+                epoch: page.epoch.clone(),
+                seq: lo,
+            };
+            let older = self
+                .fetch_timeline_page(agent_id, direction, Some(&older_cursor), limit, projection)
+                .await?;
+            if older.epoch != page.epoch {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::EpochChanged,
+                });
+            }
+            let older_lo = older
+                .entries
+                .iter()
+                .map(|entry| entry.seq_start)
+                .min()
+                .ok_or_else(gap)?;
+            if older_lo >= lo {
+                return Err(gap());
+            }
+            entries.extend(older.entries);
+            (lo, has_older) = (older_lo, older.has_older);
+            expanded = expand_to_sequences(&entries, lo, hi)?;
+        }
+        if !covers_window(&expanded, lo, hi) {
+            return Err(gap());
+        }
+        let at = |seq| PaseoTimelineCursor {
+            epoch: page.epoch.clone(),
+            seq,
+        };
+        Ok(PaseoTimelinePage {
+            entries: expanded.into_values().collect(),
+            start_cursor: Some(at(lo)),
+            end_cursor: Some(at(hi)),
+            has_older,
+            ..page
+        })
+    }
+
+    /// One raw page for `agent_id`, exactly as the daemon answered it.
+    ///
+    /// A page that declares `reset`, `staleCursor` or `gap` is a break rather
+    /// than a page: Paseo puts those flags on the *response*, so this is the one
+    /// place they have to be read, and reading its entries anyway would page
+    /// over the hole the daemon just declared. Same for the daemon's own
+    /// `error`: a page that failed is not an empty transcript.
+    async fn fetch_timeline_page(
+        &self,
+        agent_id: &str,
+        direction: PaseoDirection,
+        cursor: Option<&PaseoTimelineCursor>,
+        limit: u32,
+        projection: PaseoProjection,
+    ) -> RuntimeResult<PaseoTimelinePage> {
+        let mut page_limit = limit;
+        let page: PaseoTimelinePage = loop {
+            let request = PaseoRpc::timeline_fetch(
+                self.next_request_id(),
+                agent_id,
+                projection,
+                direction,
+                cursor,
+                page_limit,
+            );
+            let result = self
+                .transport
+                .request(&request)
+                .await
+                .and_then(|frame| frame.resolve(&request, "PaseoTimelinePage"));
+            match result {
+                // Entry count is not a byte bound: a few large tool outputs can
+                // exceed the wire limit. Retry the same read from the same
+                // cursor with fewer entries; never truncate or accept the frame.
+                Err(RuntimeError::Transport {
+                    rule: "frame exceeded the bounded frame size",
+                }) if page_limit > 1 => page_limit = (page_limit / 2).max(1),
+                other => break other?,
+            }
+        };
         if page.agent_id != agent_id {
             return Err(RuntimeError::CorrelationFailed);
         }
@@ -3255,9 +3970,30 @@ impl PaseoAdapter {
     /// "Read even once" includes this scan's own first page: a multi-page scan
     /// is one read, and its later pages have to continue the transcript its
     /// first page came from.
+    /// `floor` is the session's canonical tail at the moment this message was
+    /// issued, when the control plane recorded one. A send cannot have landed
+    /// before it was issued, so everything at or below that position belongs to
+    /// the transcript this delivery was appended *after* and cannot contain it.
+    /// Reaching the floor therefore completes the proof exactly as reaching the
+    /// beginning does, and the cost becomes how much the session grew since the
+    /// send rather than how long it has been alive — which is the difference
+    /// between a bounded read and a ceiling that refuses every large seat.
+    ///
+    /// It narrows the range, never the standard. Occurrences are still counted,
+    /// so a duplicate inside the suffix is still divergence; an occurrence below
+    /// the floor belongs to a different issuance, which the issuance key and its
+    /// recorded delivery position already tell apart. A floor from another
+    /// numbering is an epoch break and refuses. Running out of budget before
+    /// reaching it is still confirmation-unknown: a suffix that was not read to
+    /// its end proves nothing about absence, and absence is what authorizes a
+    /// resend.
+    ///
+    /// `None` keeps the whole-history requirement, which is what rows issued
+    /// before the boundary existed must fall back to.
     async fn scan_canonical<F>(
         &self,
         binding: &RuntimeBindingSnapshot,
+        floor: Option<TimelinePosition>,
         mut matches: F,
     ) -> RuntimeResult<Option<(TimelinePosition, usize)>>
     where
@@ -3298,11 +4034,61 @@ impl PaseoAdapter {
             // transcript is then reconciled as though it continued page one —
             // which is exactly the `no` that authorizes a resend.
             expected = Some(epoch);
-            for event in self.normalize_page(&page, epoch)? {
-                if matches(&event) {
+            // A floor issued under a different numbering cannot bound this
+            // transcript: the position it names is not a position here, and
+            // treating it as one would end the scan somewhere arbitrary.
+            if let Some(floor) = floor
+                && floor.epoch != epoch
+            {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::EpochChanged,
+                });
+            }
+            let items = self.normalize_page(&page, epoch)?;
+            let oldest = items.first().map(|event| event.position.sequence);
+            if let Some(floor) = floor {
+                // A floor limits the proof's range, never its continuity. A
+                // missing entry within that suffix could hide a second copy of
+                // the message; a missing page could hide the only copy.
+                let newest = items.last().map(|event| event.position.sequence);
+                let joins = before.as_ref().is_none_or(|before| {
+                    newest.and_then(|sequence| sequence.checked_add(1)) == Some(before.seq)
+                });
+                let contiguous = items.windows(2).all(|pair| {
+                    pair[1].position.sequence <= floor.sequence
+                        || pair[0].position.sequence.checked_add(1)
+                            == Some(pair[1].position.sequence)
+                });
+                let tail_covers_floor =
+                    before.is_some() || (!page.has_newer && newest.unwrap_or(0) >= floor.sequence);
+                if !joins || !contiguous || !tail_covers_floor {
+                    return Err(RuntimeError::TimelineRefetchRequired {
+                        reason: TimelineBreak::SequenceGap,
+                    });
+                }
+            }
+            for event in &items {
+                // Strictly after the frozen tail. The page that reaches the
+                // floor necessarily overshoots it, and an occurrence at or below
+                // it was there before this message was issued — so it belongs to
+                // some earlier issuance and is not evidence that this send
+                // landed. Counting it would both adopt the wrong position and
+                // invent a duplicate.
+                if floor.is_some_and(|floor| event.position.sequence <= floor.sequence) {
+                    continue;
+                }
+                if matches(event) {
                     hits += 1;
                     found.get_or_insert(event.position);
                 }
+            }
+            // Walked back to or past the issuance tail: the rest of the session
+            // predates this send and is not evidence about it.
+            if let Some(floor) = floor
+                && oldest.is_some_and(|oldest| oldest <= floor.sequence)
+            {
+                complete = true;
+                break;
             }
             // A reconciliation starts at the newest window because that is the
             // only cursor-free read Paseo exposes, then walks *backward*. A busy
@@ -3314,6 +4100,14 @@ impl PaseoAdapter {
             match (page.has_older, page.start_cursor) {
                 (true, Some(start)) => before = Some(start),
                 (false, _) => {
+                    if let Some(floor) = floor
+                        && !oldest.is_some_and(|oldest| oldest <= floor.sequence.saturating_add(1))
+                        && !(items.is_empty() && floor.sequence == 0)
+                    {
+                        return Err(RuntimeError::TimelineRefetchRequired {
+                            reason: TimelineBreak::SequenceGap,
+                        });
+                    }
                     complete = true;
                     break;
                 }
@@ -5189,7 +5983,7 @@ impl PaseoAdapter {
                         rule: "hosted seat MCP composition failed in the ECP",
                     }
                 })?;
-                let creation = PaseoRpc::hosted_seat_agent_create(
+                let mut creation = PaseoRpc::hosted_seat_agent_create(
                     self.next_request_id(),
                     &workspace_id,
                     request.cwd.as_str(),
@@ -5197,8 +5991,13 @@ impl PaseoAdapter {
                     request.display_name.as_str(),
                     &labels,
                     request.prompt.as_str(),
+                    request.role_prompt.as_ref().map(BoundedText::as_str),
                     request.credential.expose_secret(),
+                    request.autonomy,
                 )?;
+                if let Some(seat_mcp) = self.config.seat_mcp.as_ref() {
+                    creation.with_leadership_mcp(seat_mcp);
+                }
                 let frame = self.transport.request(&creation).await?;
                 let status: serde_json::Value =
                     frame.resolve(&creation, "PaseoHostedSeatAgentCreated")?;
@@ -5222,9 +6021,39 @@ impl PaseoAdapter {
                 (native_id, true)
             }
         };
-        let agent = self.fetch_agent(&native_id).await?;
+        let mut agent = self.fetch_agent(&native_id).await?;
         self.verify_agent_placement(&agent, &workspace_id, &labels)?;
-        Self::verify_agent_route(&agent, &request.model_rung, SeatAutonomy::Supervised)?;
+        // The readback asserts the autonomy the launch asked for, which is what
+        // makes the pair evidence: a seat that came back in another mode fails
+        // correlation instead of quietly running under it.
+        Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
+        // A lost create acknowledgement can leave the exact SeatBinding agent
+        // attached while its provider thread never initialized. Re-enter that
+        // same native identity and reload only the failed pre-thread state;
+        // never resend the topology message and never create a replacement.
+        if agent.provider_session_id().is_none()
+            && matches!(
+                agent.status,
+                PaseoAgentStatus::Error | PaseoAgentStatus::Closed
+            )
+        {
+            let output = self
+                .transport
+                .run(&PaseoCommand::agent_reload(&native_id))
+                .await?;
+            let reloaded: PaseoCliAgentReloaded = output.parse("PaseoCliAgentReloaded")?;
+            if reloaded.agent_id != native_id {
+                return Err(RuntimeError::CorrelationFailed);
+            }
+            agent = self.fetch_agent(&native_id).await?;
+            self.verify_agent_placement(&agent, &workspace_id, &labels)?;
+            Self::verify_agent_route(&agent, &request.model_rung, request.autonomy)?;
+        }
+        if agent.provider_session_id().is_none() {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "the exact hosted seat is attached but its provider thread is not initialized; retry this SeatBinding or use the supported seat claim",
+            });
+        }
         Ok(ConsultationLaunchOutcome {
             identity: self.identity(ExternalId::parse(&agent.id)?, generation),
             provider_session_id: agent
@@ -5322,6 +6151,225 @@ impl RuntimeAdapter for PaseoAdapter {
     /// still exist here?*. Rebuilding capabilities from a fresh
     /// `discover_capabilities` would re-grade a binding whose session never
     /// changed, which is precisely what the freeze rule exists to stop.
+    fn pending_timeline_epochs(&self) -> Vec<(String, u64)> {
+        self.lock().epochs.pending()
+    }
+
+    fn ack_timeline_epochs(&self, persisted: &[(String, u64)]) {
+        self.lock().epochs.ack(persisted);
+    }
+
+    fn restore_timeline_epochs(&self, pairs: &[(String, u64)]) -> RuntimeResult<()> {
+        self.lock().epochs.adopt(pairs)
+    }
+
+    /// Restore this one message's ledger entry as confirmation-unknown.
+    ///
+    /// `PaseoCheckpoint::fresh` is what production builds, so a restart leaves
+    /// this ledger empty and a retry of an unconfirmed delivery would be admitted
+    /// as a first attempt. The control plane's durable issuance record is the
+    /// memory this process lacks, and this is how it is handed back — one
+    /// message at a time, at the moment it matters, rather than by trusting a
+    /// checkpoint that was never persisted.
+    ///
+    /// An entry already here is left alone. An acknowledged delivery must not be
+    /// downgraded to unknown, and `admit` still refuses a reused id whose body
+    /// changed, so the contradiction check survives the restore.
+    fn note_issuance_boundary(
+        &self,
+        message_id: MessageId,
+        issued_after: TimelinePosition,
+    ) -> RuntimeResult<()> {
+        self.lock().issuance_floors.insert(message_id, issued_after);
+        Ok(())
+    }
+
+    fn note_unconfirmed_delivery(
+        &self,
+        message_id: MessageId,
+        body_hash: &ContentHash,
+        issued_after: Option<TimelinePosition>,
+    ) -> RuntimeResult<()> {
+        let state = &mut *self.lock();
+        if matches!(
+            state.messages.admit(&message_id, body_hash)?,
+            Admission::New
+        ) {
+            state.messages.record(
+                message_id,
+                body_hash.clone(),
+                PaseoDelivery::ConfirmationUnknown,
+            );
+        }
+        // The floor is whatever the durable issuance recorded, including
+        // nothing. `insert` rather than a conditional update is deliberate: the
+        // caller reads it from the row every time, so the value handed here is
+        // always the original one, and there is no path that raises a floor
+        // after the fact.
+        if let Some(floor) = issued_after {
+            state.issuance_floors.insert(message_id, floor);
+        }
+        Ok(())
+    }
+
+    /// At most `max_pages` pages of the newest content, never a walk to origin.
+    ///
+    /// The same backwards stepping the cursor-free [`RuntimeAdapter::history`]
+    /// path does, stopped at a budget instead of at the beginning of the
+    /// session. That is the whole difference, and it is what makes observing a
+    /// three-event turn cost three events rather than the transcript in front of
+    /// it.
+    ///
+    /// The non-advancing guard is kept verbatim: a page whose newest item is not
+    /// older than the cursor it was fetched before is a runtime that is not
+    /// making progress, and continuing would loop. Epoch agreement is enforced
+    /// on every step, so a window never splices two numberings together.
+    async fn tail_window(
+        &self,
+        binding: &RuntimeBindingSnapshot,
+        page_size: u32,
+        max_pages: usize,
+    ) -> RuntimeResult<HistoryPage> {
+        let binding = self.attested(binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::History,
+        )
+        .await?;
+        let declared = self.declared().await?;
+        let generation = self.generation();
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(page_size)),
+                context_policy: None,
+            },
+        )?;
+        let native_id = binding.identity().native_id.as_str().to_owned();
+        let mut page = self
+            .fetch_canonical(
+                &native_id,
+                PaseoDirection::Tail,
+                None,
+                page_size,
+                PaseoProjection::Canonical,
+            )
+            .await?;
+        let epoch = self.resolve_epoch(&page.epoch, None)?;
+        let mut items = self.normalize_page(&page, epoch)?;
+        let mut read = 1usize;
+        while page.has_older && read < max_pages.max(1) {
+            let before =
+                page.start_cursor
+                    .clone()
+                    .ok_or(RuntimeError::TimelineRefetchRequired {
+                        reason: TimelineBreak::SequenceGap,
+                    })?;
+            if before.epoch != page.epoch {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::EpochChanged,
+                });
+            }
+            let older = self
+                .fetch_canonical(
+                    &native_id,
+                    PaseoDirection::Before,
+                    Some(&before),
+                    page_size,
+                    PaseoProjection::Canonical,
+                )
+                .await?;
+            self.resolve_epoch(&older.epoch, Some(epoch))?;
+            let older_items = self.normalize_page(&older, epoch)?;
+            // Backward progress is necessary but not sufficient. A page whose
+            // newest item is older than the cursor proves the read is advancing;
+            // it does not prove the two pages *meet*. Splicing them when they do
+            // not would hand back a window with a hole in the middle that every
+            // later check reads as one continuous stretch of session.
+            let joins = match (older_items.last(), items.first()) {
+                (Some(older_end), Some(window_start)) => {
+                    older_end.position.sequence < before.seq
+                        && older_end.position.sequence + 1 == window_start.position.sequence
+                }
+                // Nothing older came back, or nothing to join it to: either way
+                // there is no merge to validate and no window to extend.
+                _ => false,
+            };
+            if !joins {
+                return Err(RuntimeError::TimelineRefetchRequired {
+                    reason: TimelineBreak::SequenceGap,
+                });
+            }
+            let mut merged = older_items;
+            merged.append(&mut items);
+            items = merged;
+            page = older;
+            read += 1;
+        }
+        let end = items
+            .last()
+            .map_or(TimelinePosition::start_of(epoch), |event| event.position);
+        Ok(HistoryPage {
+            epoch,
+            items,
+            // The window ends at the tail; there is nothing after it.
+            next: None,
+            end,
+        })
+    }
+
+    /// One tail entry, read only for the epoch it is stamped with.
+    ///
+    /// Deliberately *not* [`RuntimeAdapter::history`] with no cursor. That path
+    /// walks `start_cursor` backwards until Paseo says nothing older remains,
+    /// because a caller asking for content from the origin must be given the
+    /// origin; this caller wants no content at all. Asking for one entry at the
+    /// tail costs a single request on a session of any length, and
+    /// [`PaseoAdapter::resolve_epoch`] with no expectation is exactly the step
+    /// that maps the session's current raw epoch — allocating a number if it is
+    /// new, returning the known one if it is not.
+    async fn refresh_timeline_epoch(&self, binding: &RuntimeBindingSnapshot) -> RuntimeResult<()> {
+        let binding = self.attested(binding)?;
+        self.require_session_permissions(
+            &[crate::wire::PASEO_PERMISSION_WORKSPACE_READ],
+            RuntimeCapability::History,
+        )
+        .await?;
+        let declared = self.declared().await?;
+        let generation = self.generation();
+        preflight(
+            &declared,
+            &OperationContext {
+                operation: RuntimeCapability::History,
+                autonomous: false,
+                account_pinned: false,
+                binding: Some(&binding),
+                placement: None,
+                current_generation: Some(generation),
+                demand: Some(LimitDemand::HistoryPage(1)),
+                context_policy: None,
+            },
+        )?;
+        let native_id = binding.identity().native_id.as_str().to_owned();
+        let page = self
+            .fetch_canonical(
+                &native_id,
+                PaseoDirection::Tail,
+                None,
+                1,
+                PaseoProjection::Canonical,
+            )
+            .await?;
+        self.resolve_epoch(&page.epoch, None)?;
+        Ok(())
+    }
+
     async fn restore_bindings(
         &self,
         snapshots: &[RuntimeBindingSnapshot],
@@ -5339,7 +6387,10 @@ impl RuntimeAdapter for PaseoAdapter {
         // settings; exact reads let each surviving seat re-establish its own
         // epic project from the immutable PROJECT_ID label and workspace owner.
         let generation = self.generation();
+        // Once, before any claim is judged — never once per claim.
+        let census = self.active_workspace_census().await?;
         let mut live = Vec::new();
+        let mut readback_only = Vec::new();
         for snapshot in snapshots {
             let Ok(agent) = self
                 .fetch_agent(snapshot.identity().native_id.as_str())
@@ -5354,12 +6405,29 @@ impl RuntimeAdapter for PaseoAdapter {
             // longer be present in Paseo's active workspace census. Refusing
             // that readback strands the open Kontor run after restart even
             // though Paseo still attests the archive stamp by exact agent id.
-            if self.recover_project_for_agent(&agent).await.is_err() && !agent.is_archived() {
+            // A seat whose workspace owner is provably absent from every census
+            // is the same terminal shape as an archived one: the native still
+            // exists and answers by exact id, so its open run can be settled,
+            // but there is no placement and therefore nothing may drive it.
+            // This is judged on its own, not inferred from whether the project
+            // happened to survive, because the retired worktree strands the run
+            // either way. Anything else — an unlabelled agent, an ambiguous
+            // owner, a workspace that still exists somewhere, or a census this
+            // adapter could not read — is not the shape and stays refused.
+            let retired_owner = Self::workspace_owner_retired(&agent, &census);
+            if self.recover_project_for_agent(&agent).await.is_err()
+                && !agent.is_archived()
+                && !retired_owner
+            {
                 continue;
             }
             let (state, _) = Self::normalize_agent(&agent);
+            let identity = self.identity(ExternalId::parse(&agent.id)?, generation);
+            if retired_owner {
+                readback_only.push(identity.clone());
+            }
             live.push(NativeSession {
-                identity: self.identity(ExternalId::parse(&agent.id)?, generation),
+                identity,
                 correlation: agent
                     .label(label::AGENT_RUN)
                     .and_then(|value| CorrelationLabel::parse(value).ok()),
@@ -5376,7 +6444,7 @@ impl RuntimeAdapter for PaseoAdapter {
         // fabricated here. Only the placement is recovered, which is the part
         // every driving operation actually reads and the part the runtime can
         // still answer for.
-        let placements = self.reprove_placements(snapshots, &live).await?;
+        let placements = self.reprove_placements(snapshots, &live, &census).await?;
         let mut restored = Vec::new();
         let mut state = self.lock();
         for snapshot in snapshots {
@@ -5393,7 +6461,10 @@ impl RuntimeAdapter for PaseoAdapter {
                         &session.identity == snapshot.identity()
                             && session.state == ObservedRunState::Cancelled
                     });
-                    if workspace_id.is_none() && !archived {
+                    let readback = readback_only
+                        .iter()
+                        .any(|identity| identity == snapshot.identity());
+                    if workspace_id.is_none() && !archived && !readback {
                         tracing::warn!(
                             binding = %snapshot.binding_id(),
                             agent_run = %snapshot.agent_run_id(),
@@ -5551,9 +6622,13 @@ impl RuntimeAdapter for PaseoAdapter {
         {
             return Err(RuntimeError::CorrelationFailed);
         }
-        if before.status != PaseoAgentStatus::Idle || !before.pending_permissions.is_empty() {
+        if !matches!(
+            before.status,
+            PaseoAgentStatus::Idle | PaseoAgentStatus::Error
+        ) || !before.pending_permissions.is_empty()
+        {
             return Err(RuntimeError::ReplacementNotEvidenced {
-                rule: "consultation recovery requires an idle predecessor with no pending permission",
+                rule: "consultation recovery requires an idle or failed predecessor with no pending permission",
             });
         }
         let output = self
@@ -5779,6 +6854,88 @@ impl RuntimeAdapter for PaseoAdapter {
         })
     }
 
+    async fn prove_archived_hosted_seat(
+        &self,
+        request: &HostedSeatRetireRequest,
+        known_retired_native_ids: &[ExternalId],
+    ) -> RuntimeResult<HostedSeatRetireOutcome> {
+        let declared = self.declared().await?;
+        preflight(
+            &declared,
+            &OperationContext::new(RuntimeCapability::Inspect),
+        )?;
+        let placement = request
+            .placement
+            .as_ref()
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        let agent = self
+            .hosted_seat_agent(&HostedSeatInspectRequest {
+                seat_binding_id: request.seat_binding_id,
+                identity: request.identity.clone(),
+                model_rung: request.model_rung.clone(),
+                autonomy: request.autonomy,
+                requested_at: request.requested_at,
+            })
+            .await?
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        if !agent.is_archived() || !agent.pending_permissions.is_empty() {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "launch-intent supersession requires an archived predecessor without pending permissions",
+            });
+        }
+        if agent.workspace_id.as_deref() != Some(placement.workspace_native_id.as_str())
+            || WorkspaceRoot::parse(&agent.cwd)? != placement.canonical_cwd
+            || placement
+                .provider_session_id
+                .as_ref()
+                .is_some_and(|expected| agent.provider_session_id() != Some(expected.as_str()))
+        {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "the archived predecessor changed workspace, directory or provider conversation",
+            });
+        }
+        // A lost successor acknowledgement must not be mistaken for an inert
+        // intent. The global exact-label census also catches a moved successor.
+        let label_value = request.seat_binding_id.to_string();
+        let labels = BTreeMap::from([(label::SEAT_BINDING.to_owned(), label_value.clone())]);
+        let census = self.fetch_agents(&labels, true).await?;
+        let mut matching = census.iter().filter(|candidate| candidate.id == agent.id);
+        let confirmed = matching.next().ok_or(RuntimeError::CorrelationFailed)?;
+        if matching.next().is_some()
+            || confirmed.archived_at != agent.archived_at
+            || !confirmed.pending_permissions.is_empty()
+            || confirmed.workspace_id != agent.workspace_id
+            || WorkspaceRoot::parse(&confirmed.cwd)? != placement.canonical_cwd
+            || confirmed.provider_session_id() != agent.provider_session_id()
+            || confirmed.label(label::SEAT_BINDING) != Some(label_value.as_str())
+            || confirmed.label(label::HOSTED_SEAT) != Some("true")
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        if census.iter().any(|candidate| {
+            candidate.label(label::SEAT_BINDING) == Some(label_value.as_str())
+                && candidate.id != agent.id
+                && (!candidate.is_archived()
+                    || !known_retired_native_ids
+                        .iter()
+                        .any(|known| known.as_str() == candidate.id))
+        }) {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the logical seat has a live or unaccounted native successor",
+            });
+        }
+        Ok(HostedSeatRetireOutcome {
+            identity: request.identity.clone(),
+            archived_at: parse_wire_timestamp(
+                "hosted predecessor archive",
+                agent
+                    .archived_at
+                    .as_deref()
+                    .ok_or(RuntimeError::CorrelationFailed)?,
+            )?,
+        })
+    }
+
     async fn retire_hosted_seat(
         &self,
         request: &HostedSeatRetireRequest,
@@ -5790,6 +6947,7 @@ impl RuntimeAdapter for PaseoAdapter {
             seat_binding_id: request.seat_binding_id,
             identity: request.identity.clone(),
             model_rung: request.model_rung.clone(),
+            autonomy: request.autonomy,
             requested_at: request.requested_at,
         };
         let Some(before) = self.hosted_seat_agent(&inspect).await? else {
@@ -5824,9 +6982,13 @@ impl RuntimeAdapter for PaseoAdapter {
                 archived_at: request.requested_at,
             });
         }
-        if before.status != PaseoAgentStatus::Idle || !before.pending_permissions.is_empty() {
+        if !matches!(
+            before.status,
+            PaseoAgentStatus::Idle | PaseoAgentStatus::Error
+        ) || !before.pending_permissions.is_empty()
+        {
             return Err(RuntimeError::ReplacementNotEvidenced {
-                rule: "Core Team route correction requires an idle predecessor with no pending permission",
+                rule: "Core Team route correction requires an idle or failed predecessor with no pending permission",
             });
         }
         let output = self
@@ -6114,6 +7276,14 @@ impl RuntimeAdapter for PaseoAdapter {
         state.admissions.admit(request, &facts)
     }
 
+    async fn release_unclaimed_admission(
+        &self,
+        slot: &RoleSlotKey,
+        agent_run_id: AgentRunId,
+    ) -> RuntimeResult<bool> {
+        Ok(self.lock().admissions.release_unclaimed(slot, agent_run_id))
+    }
+
     /// Rename the bound workspace through the daemon's MCP facade, then read the
     /// title back.
     ///
@@ -6237,7 +7407,15 @@ impl RuntimeAdapter for PaseoAdapter {
         })
     }
 
-    /// Archive one retired native child by exact persisted identity and fresh readback.
+    /// Archive one retired native container by exact persisted identity and
+    /// fresh readback.
+    ///
+    /// The shared preamble is everything that is true of both shapes: the
+    /// connection's permissions, the ancestry the projection admits, the
+    /// runtime host and generation, operator adoption, and agreement with the
+    /// registered binding. Only after all of that does the request reach the
+    /// one branch that differs — what "this container" physically *is*, and
+    /// therefore what removing it means.
     async fn archive_container(
         &self,
         request: &kontor_runtime::container::ArchiveContainerRequest,
@@ -6250,17 +7428,15 @@ impl RuntimeAdapter for PaseoAdapter {
             RuntimeCapability::Retire,
         )
         .await?;
-        if request.projection != ContainerProjection::NativeChild {
-            return Err(RuntimeError::WorkspaceMismatch {
-                rule: "only an explicitly bound native child may be archived",
-            });
-        }
+        // What ancestry this shape may name at all, decided before any of it is
+        // looked up.
+        let parent = request.parent_project()?;
         if request.identity.runtime_kind != self.config.runtime_kind
             || request.identity.host != self.config.host_key
             || request.identity.generation > self.generation()
         {
             return Err(RuntimeError::StaleBinding {
-                rule: "the child belongs to another runtime host or a future generation",
+                rule: "the container belongs to another runtime host or a future generation",
             });
         }
         let native_id = request.identity.native_id.as_str();
@@ -6288,79 +7464,10 @@ impl RuntimeAdapter for PaseoAdapter {
                 rule: "the archive request contradicts the registered container binding",
             });
         }
-        let find_exact = async {
-            let mut found = Vec::new();
-            let projects = self.fetch_projects().await?;
-            if !projects
-                .iter()
-                .any(|project| project.id == request.bound_project_native_id.as_str())
-            {
-                return Err(RuntimeError::StaleBinding {
-                    rule: "the native child's bound project is absent",
-                });
-            }
-            for project in projects {
-                found.extend(
-                    self.fetch_workspaces(&project.id)
-                        .await?
-                        .into_iter()
-                        .filter(|workspace| workspace.id == native_id),
-                );
-            }
-            match found.len() {
-                0 => Ok(None),
-                1 => Ok(found.pop()),
-                _ => Err(RuntimeError::CorrelationFailed),
-            }
+        let changed = match parent {
+            Some(parent) => self.archive_bound_child(request, native_id, parent).await?,
+            None => self.archive_bound_root(request, native_id).await?,
         };
-        let before: Option<PaseoWorkspace> = find_exact.await?;
-        // Check even when the workspace is absent: a dangling active session
-        // is not successful cleanup of this binding.
-        if self
-            .fetch_agents(&BTreeMap::new(), false)
-            .await?
-            .iter()
-            .any(|agent| agent.workspace_id.as_deref() == Some(native_id) && !agent.is_archived())
-        {
-            return Err(RuntimeError::WorkspaceMismatch {
-                rule: "the native child still contains an unarchived session",
-            });
-        }
-        let changed = if let Some(workspace) = before {
-            if workspace.project_id != request.bound_project_native_id.as_str()
-                || WorkspaceRoot::parse(&workspace.workspace_directory)? != request.canonical_cwd
-                || workspace.is_paseo_owned_worktree()
-                || !matches!(
-                    workspace.workspace_kind,
-                    PaseoWorkspaceKind::LocalCheckout | PaseoWorkspaceKind::Directory
-                )
-            {
-                return Err(RuntimeError::WorkspaceMismatch {
-                    rule: "the archive target changed parent, directory or filesystem ownership",
-                });
-            }
-            self.require_workspace_quiet(native_id, &request.canonical_cwd)
-                .await?;
-            // A lost acknowledgement is recoverable only by complete fresh
-            // absence readback below. Never substitute a CLI exit code for it.
-            let _archive_ack = self
-                .transport
-                .run(&PaseoCommand::workspace_archive(native_id))
-                .await;
-            true
-        } else {
-            false
-        };
-        for project in self.fetch_projects().await? {
-            if self
-                .fetch_workspaces(&project.id)
-                .await?
-                .iter()
-                .any(|workspace| workspace.id == native_id)
-            {
-                return Err(RuntimeError::CorrelationFailed);
-            }
-        }
         Ok(kontor_runtime::container::ArchiveContainerOutcome {
             request: request.clone(),
             changed,
@@ -6404,6 +7511,167 @@ impl RuntimeAdapter for PaseoAdapter {
         })
     }
 
+    async fn inspect_container(
+        &self,
+        request: &ContainerInspectRequest,
+    ) -> RuntimeResult<ContainerInspection> {
+        request.validate()?;
+        let declared = self.declared().await?;
+        if !declared.supports(RuntimeCapability::Inspect) {
+            return Err(self.refuse(RuntimeCapability::Inspect, &declared));
+        }
+        let generation = self.generation();
+        let expected = &request.binding.identity;
+        if expected.runtime_kind != self.config.runtime_kind
+            || expected.host != self.config.host_key
+            || expected.generation != generation
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the container binding belongs to another runtime host or generation",
+            });
+        }
+
+        let mut project_to_remember = None;
+        let (identity, observed_kind, visible_title, canonical_cwd, native_parent) = match request
+            .binding
+            .projection
+        {
+            ContainerProjection::LogicalOnly => unreachable!("validated above"),
+            ContainerProjection::NativeRoot => {
+                let project = self.read_project_by_id(expected.native_id.as_str()).await?;
+                let identity = self.identity(ExternalId::parse(&project.id)?, generation);
+                let cwd = WorkspaceRoot::parse(&project.root_path)?;
+                if request.epic_container {
+                    let epic_id = Self::external_epic_id(&request.scope)?;
+                    project_to_remember = Some(PaseoProjectBinding {
+                        mini_project_id: epic_id,
+                        host_key: self.config.host_key.clone(),
+                        project_id: identity.native_id.clone(),
+                        observed_name: project.display_name.clone(),
+                    });
+                }
+                (
+                    identity,
+                    ObservedContainerKind::Project,
+                    project.display_name,
+                    Some(cwd),
+                    None,
+                )
+            }
+            ContainerProjection::NativeChild => {
+                let parent = request
+                    .native_parent
+                    .as_ref()
+                    .expect("validated native child parent");
+                if parent.runtime_kind != self.config.runtime_kind
+                    || parent.host != self.config.host_key
+                    || parent.generation != generation
+                {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: "the container parent belongs to another runtime host or generation",
+                    });
+                }
+                let project = self.read_project_by_id(parent.native_id.as_str()).await?;
+                let project_binding = PaseoProjectBinding {
+                    mini_project_id: Self::external_epic_id(&request.scope)?,
+                    host_key: self.config.host_key.clone(),
+                    project_id: ExternalId::parse(&project.id)?,
+                    observed_name: project.display_name,
+                };
+                let workspace = self
+                    .fetch_workspace_in(&project_binding, expected.native_id.as_str())
+                    .await?;
+                if workspace.project_id != parent.native_id.as_str() {
+                    return Err(RuntimeError::WorkspaceMismatch {
+                        rule: "the inspected container is outside its exact persisted parent",
+                    });
+                }
+                let task_container = request.scope.task.is_some();
+                if !container_workspace_kind(workspace.workspace_kind)
+                    .is_applicable_to(task_container)
+                {
+                    return Err(RuntimeError::StaleBinding {
+                        rule: ContainerWorkspaceKind::refusal(task_container),
+                    });
+                }
+                // The exact parent was read by id on the same path that proved
+                // the child. A restarted adapter needs that ephemeral project
+                // binding as well as the child binding before it can compose a
+                // launch in the inspected workspace.
+                project_to_remember = Some(project_binding);
+                let identity = self.identity(ExternalId::parse(&workspace.id)?, generation);
+                let cwd = WorkspaceRoot::parse(&workspace.workspace_directory)?;
+                (
+                    identity,
+                    ObservedContainerKind::Workspace,
+                    workspace.visible_title().to_owned(),
+                    Some(cwd),
+                    Some(parent.clone()),
+                )
+            }
+        };
+        if &identity != expected {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the exact container readback returned another native identity",
+            });
+        }
+        // The stored directory is part of the binding being proved. Merely
+        // returning the observed directory while caching the requested one
+        // would authorize later writes against a proof the runtime contradicted.
+        // Legacy native roots without a recorded directory may still be read
+        // so their canonical directory can be backfilled through recovery.
+        if request.binding.root.is_some() && canonical_cwd != request.binding.root {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the inspected container no longer works in its persisted canonical directory",
+            });
+        }
+        if request.binding.projection == ContainerProjection::NativeChild
+            && request.binding.root.is_none()
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the inspected child has no persisted canonical directory to prove",
+            });
+        }
+        let correlation = ContainerCorrelationEvidence::by_exact_id(
+            request.binding.topology_node_id,
+            identity,
+            request.requested_at,
+        );
+        // Inspection is the restart-safe proof that this process was missing.
+        // The durable binding names the exact native id and parent, and every
+        // one of those facts has just been read back above. Rehydrate the
+        // ephemeral node ledger from that proof so the immediately following
+        // launch compares against this inspection rather than an older
+        // preparation timestamp (or no in-process preparation at all).
+        //
+        // This is deliberately after every identity, generation, parent and
+        // placement check. A failed or merely name-matching inspection never
+        // enters the ledger and therefore can never authorize a launch.
+        let mut state = self.lock();
+        if let Some(project) = project_to_remember {
+            state
+                .projects
+                .insert(project.mini_project_id.clone(), project);
+        }
+        state.containers.insert(
+            request.binding.topology_node_id,
+            ContainerBindingSnapshot {
+                binding: request.binding.clone(),
+                capabilities: declared,
+                correlation: correlation.clone(),
+            },
+        );
+        Ok(ContainerInspection {
+            binding: request.binding.clone(),
+            observed_kind,
+            visible_title,
+            canonical_cwd,
+            native_parent,
+            correlation,
+            observed_at: request.requested_at,
+        })
+    }
+
     async fn prepare_container(
         &self,
         request: &ContainerRequest,
@@ -6426,24 +7694,24 @@ impl RuntimeAdapter for PaseoAdapter {
         }
         let generation = self.generation();
 
-        // An in-ledger binding is answered from state, so a retry after a lost
-        // answer never reaches the wire at all.
-        if let Some(existing) = self
-            .lock()
-            .containers
-            .get(&request.topology_node_id)
-            .cloned()
-            && existing.binding.identity.generation == generation
-            && request
-                .bound_native_id
-                .as_ref()
-                .is_none_or(|persisted| persisted == &existing.binding.identity.native_id)
-        {
-            return Ok(ContainerOutcome {
-                snapshot: existing,
-                created: false,
-            });
-        }
+        // There is deliberately no cache short-circuit here.
+        //
+        // Answering a preparation out of the adapter's own ledger returns a
+        // container this process once prepared, which is a different claim from
+        // the one every caller below actually relies on: that the container the
+        // realm is asking for is the one the *current* runtime holds, under the
+        // parent it is placed in, at this generation. A cached answer proves
+        // none of that — it reaches no wire, so a container that was moved,
+        // re-parented, re-rooted or destroyed since it was cached is reported as
+        // present and correct. That is the shape five separate call sites
+        // reported as a workspace mismatch they could not explain.
+        //
+        // The cache is still worth having, and it is still written below; it is
+        // rehydrated *from* a proof rather than offered *instead of* one.
+        // Idempotence is unchanged and is stronger for it: a retry reconciles
+        // the same exact id and returns the same binding with `created: false`,
+        // because that is what the readback says, not because a local map
+        // remembered saying it.
 
         // Everything below reconciles or binds against the *exact* native id,
         // and never against a display name or a path. A name is validation
@@ -6471,12 +7739,12 @@ impl RuntimeAdapter for PaseoAdapter {
         // A binding Kontor already holds is reconciled by its stored id, which
         // is the whole of the restart path: the adapter's ledger is gone, the
         // container is not.
-        let stored = request.bound_native_id.clone().or_else(|| {
-            self.lock()
-                .containers
-                .get(&request.topology_node_id)
-                .map(|it| it.binding.identity.native_id.clone())
-        });
+        //
+        // Only Kontor's persisted id counts. Falling back to the adapter's own
+        // cached id would let an *unbound* request — one Kontor holds no binding
+        // for — be answered by reconciling whatever this process last put in the
+        // map, which is adoption by local memory rather than by authority.
+        let stored = request.bound_native_id.clone();
         if let Some(native_id) = stored {
             let snapshot = self
                 .reconcile_container_by_id(
@@ -6593,6 +7861,13 @@ impl RuntimeAdapter for PaseoAdapter {
                 rule: "the sole parent/path candidate does not carry the current configuration-rendered title",
             });
         }
+        if !container_workspace_kind(candidate.workspace_kind)
+            .is_applicable_to(request.task_container)
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: ContainerWorkspaceKind::refusal(request.task_container),
+            });
+        }
 
         let identity = self.identity(ExternalId::parse(&candidate.id)?, generation);
         let snapshot = ContainerBindingSnapshot {
@@ -6615,6 +7890,62 @@ impl RuntimeAdapter for PaseoAdapter {
             snapshot,
             observed_title: candidate.visible_title().to_owned(),
         })
+    }
+
+    async fn preview_container_recreation(
+        &self,
+        request: &ContainerRecreationRequest,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        match self.recreation_census(request).await? {
+            RecreationCensus::Vacant => {
+                // Nothing exists yet, so there is nothing to read a title back
+                // from. The preview reports the title the apply will write, and
+                // says plainly that it would create.
+                let identity = self.identity(request.absent_identity.native_id.clone(), 0);
+                Ok(ContainerRecreationOutcome {
+                    snapshot: self.recreation_snapshot(request, identity, self.declared().await?),
+                    observed_title: request.expected_title.as_str().to_owned(),
+                    created: true,
+                })
+            }
+            RecreationCensus::AlreadyCreated(workspace) => {
+                self.recreation_adoption(request, &workspace).await
+            }
+        }
+    }
+
+    async fn recreate_container(
+        &self,
+        request: &ContainerRecreationRequest,
+    ) -> RuntimeResult<ContainerRecreationOutcome> {
+        let workspace = match self.recreation_census(request).await? {
+            // The whole point of the operation: the node's native is gone and
+            // nothing stands at its canonical path.
+            RecreationCensus::Vacant => {
+                let command = PaseoCommand::workspace_create(
+                    request.canonical_cwd.as_str(),
+                    request.bound_project_native_id.as_str(),
+                    request.expected_title.as_str(),
+                );
+                let output = self.transport.run(&command).await?;
+                let created: PaseoCliWorkspaceCreated = output.parse("PaseoCliWorkspaceCreated")?;
+                // The create answer omits `projectId`, so it cannot be believed
+                // about placement. The readback below is what proves the native
+                // landed in the exact persisted parent.
+                let workspace = self
+                    .fetch_workspace_by_id(
+                        request.bound_project_native_id.as_str(),
+                        &created.workspace_id,
+                    )
+                    .await?;
+                return self.recreation_created(request, &workspace).await;
+            }
+            // A previous attempt created it and lost its answer. Adopting is
+            // the only correct move: creating again would leave two natives at
+            // one canonical path and no way to say which one the node owns.
+            RecreationCensus::AlreadyCreated(workspace) => workspace,
+        };
+        self.recreation_adoption(request, &workspace).await
     }
 
     async fn prepare_workspace(
@@ -7183,12 +8514,26 @@ impl RuntimeAdapter for PaseoAdapter {
         let suffix = self
             .challenge_suffix(&binding, request.after, &request.native_epoch)
             .await?;
+        // Paseo streams one assistant answer as many adjacent entries sharing
+        // the provider's own messageId, so only their concatenation is the
+        // reply. A group is closed by *any* entry that is not the next chunk of
+        // the same message, which is what makes interleaved or non-contiguous
+        // chunks two partial groups rather than one whole one. An absent
+        // messageId never joins anything: without the provider's own id there is
+        // no evidence that two entries are one message.
+        struct ResponseGroup {
+            id: Option<String>,
+            end: TimelinePosition,
+            text: String,
+        }
         let mut message_matches = 0usize;
         let mut challenge_body_positions = Vec::new();
-        let mut response_positions = Vec::new();
+        let mut response_groups: Vec<ResponseGroup> = Vec::new();
+        let mut open: Option<ResponseGroup> = None;
         let mut last_content = None;
         let wanted_id = request.message_id.to_string();
-        for (entry, position) in suffix {
+        for (entry, position) in &suffix {
+            let position = *position;
             let kind = crate::wire::classify_item(&entry.item.item_type);
             if entry.item.item_type == "user_message"
                 && entry.item.text.as_deref() == Some(request.body.as_str())
@@ -7206,31 +8551,70 @@ impl RuntimeAdapter for PaseoAdapter {
             {
                 message_matches += 1;
             }
-            if position.sequence > request.message_position.sequence
-                && entry.item.item_type == "assistant_message"
-                && entry.item.text.as_deref() == Some(request.expected_response.as_str())
-            {
-                response_positions.push(position);
+            let chunk = (position.sequence > request.message_position.sequence
+                && entry.item.item_type == "assistant_message")
+                .then(|| {
+                    (
+                        entry.item.message_id.as_deref(),
+                        entry.item.text.as_deref().unwrap_or_default(),
+                    )
+                });
+            match chunk {
+                Some((Some(id), text))
+                    if open
+                        .as_ref()
+                        .is_some_and(|group| group.id.as_deref() == Some(id)) =>
+                {
+                    let group = open.as_mut().expect("the guard proved one is open");
+                    group.text.push_str(text);
+                    group.end = position;
+                }
+                Some((id, text)) => {
+                    response_groups.extend(open.take());
+                    open = Some(ResponseGroup {
+                        id: id.map(str::to_owned),
+                        end: position,
+                        text: text.to_owned(),
+                    });
+                }
+                None => response_groups.extend(open.take()),
             }
             if !matches!(kind, SessionEventKind::StateChange | SessionEventKind::Log) {
                 last_content = Some(position);
             }
         }
+        response_groups.extend(open);
         if challenge_body_positions.len() > 1 {
             return Err(RuntimeError::DuplicateMessage {
                 rule: "the exact server correlation challenge body appears more than once after its boundary",
             });
         }
+        // Only a whole answer counts. A partial group, an extra byte, or a
+        // chunk carried under another id all fail this equality rather than
+        // being repaired into a match.
+        let mut whole = response_groups
+            .iter()
+            .filter(|group| group.text == request.expected_response.as_str());
+        let response = whole.next();
+        if whole.next().is_some() {
+            return Err(RuntimeError::DuplicateMessage {
+                rule: "the exact server correlation challenge answer appears more than once after its boundary",
+            });
+        }
+        let Some(response) = response else {
+            return Err(RuntimeError::ReplacementNotEvidenced {
+                rule: "the exact server correlation challenge has no unique terminal confirmation",
+            });
+        };
         if message_matches != 1
             || challenge_body_positions.first().copied() != Some(request.message_position)
-            || response_positions.len() != 1
-            || last_content != response_positions.first().copied()
+            || last_content != Some(response.end)
         {
             return Err(RuntimeError::ReplacementNotEvidenced {
                 rule: "the exact server correlation challenge has no unique terminal confirmation",
             });
         }
-        Ok(response_positions[0])
+        Ok(response.end)
     }
 
     async fn cancel(&self, request: &CancelRequest) -> RuntimeResult<ControlPlaneObservation> {
@@ -7621,7 +9005,10 @@ impl RuntimeAdapter for PaseoAdapter {
                 request.requested_at,
                 ObservationSource::Inspect,
             )?
-            .with_refusal(refusal))
+            .with_refusal(refusal)
+            // A seat restored without a placement is readback-only: every
+            // driving operation below refuses it for want of exactly this.
+            .with_drivability(self.placement(binding.binding_id()).is_some()))
     }
 
     async fn adopt(&self, request: &AdoptRequest) -> RuntimeResult<LaunchOutcome> {
@@ -8429,64 +9816,32 @@ impl PaseoAdapter {
         state.deliveries.push((message_id, body_hash, delivery));
     }
 
-    /// Promote confirmation-unknown deliveries when an ordinary history read
-    /// encounters their exact native message id.
-    ///
-    /// A history page is canonical runtime evidence. Keeping an already-seen
-    /// message unknown would force a later retry to search backwards from a
-    /// moving tail and could turn an incomplete read into a second send. The
-    /// page therefore repairs the adapter ledger at the exact epoch/sequence it
-    /// returns to the caller.
+    /// An ordinary page can disprove a known acknowledgement, but cannot prove
+    /// uniqueness for an unknown delivery. Only the complete issuance suffix
+    /// (or complete legacy transcript) may promote an unknown acknowledgement.
     fn reconcile_deliveries_from_history(
         &self,
         binding_id: RuntimeBindingId,
         events: &[SessionEvent],
     ) -> RuntimeResult<()> {
-        let state = &mut *self.lock();
+        let state = self.lock();
         for event in events {
             let EventSubject::Message(message_id) = &event.subject else {
                 continue;
             };
-            let message_id = *message_id;
-            let mut acknowledged = false;
             for (_, _, delivery) in state
                 .deliveries
                 .iter()
-                .filter(|(id, _, _)| *id == message_id)
+                .filter(|(id, _, _)| id == message_id)
             {
-                if let PaseoDelivery::Acknowledged(receipt) = delivery {
-                    if receipt.position != event.position {
-                        return Err(RuntimeError::DuplicateMessage {
-                            rule: "appears more than once in this session's canonical content",
-                        });
-                    }
-                    acknowledged = true;
+                if let PaseoDelivery::Acknowledged(receipt) = delivery
+                    && (receipt.binding_id != binding_id || receipt.position != event.position)
+                {
+                    return Err(RuntimeError::DuplicateMessage {
+                        rule: "appears more than once in this session's canonical content",
+                    });
                 }
             }
-            if acknowledged {
-                continue;
-            }
-            let Some(body_hash) = state.deliveries.iter().find_map(|(id, hash, delivery)| {
-                (*id == message_id && matches!(delivery, PaseoDelivery::ConfirmationUnknown))
-                    .then(|| hash.clone())
-            }) else {
-                continue;
-            };
-            let receipt = MessageAck {
-                message_id,
-                binding_id,
-                position: event.position,
-                accepted_at: event.emitted_at,
-            };
-            state.deliveries.retain(|(id, _, _)| *id != message_id);
-            state.deliveries.push((
-                message_id,
-                body_hash.clone(),
-                PaseoDelivery::Acknowledged(receipt.clone()),
-            ));
-            state
-                .messages
-                .record(message_id, body_hash, PaseoDelivery::Acknowledged(receipt));
         }
         Ok(())
     }
@@ -8503,8 +9858,13 @@ impl PaseoAdapter {
         request: &SendMessageRequest,
     ) -> RuntimeResult<Option<MessageAck>> {
         let wanted = request.message_id;
+        // The floor this exact issuance was recorded against, or nothing for a
+        // row written before boundaries were kept — which keeps the
+        // whole-history requirement it was created under rather than inventing
+        // a tail it never had.
+        let floor = self.lock().issuance_floors.get(&wanted).copied();
         let found = self
-            .scan_canonical(binding, |event| {
+            .scan_canonical(binding, floor, |event| {
                 event.subject == EventSubject::Message(wanted)
             })
             .await?;
@@ -8665,6 +10025,7 @@ impl PaseoAdapter {
         &self,
         snapshots: &[RuntimeBindingSnapshot],
         live: &[NativeSession],
+        census: &BTreeMap<String, PaseoWorkspace>,
     ) -> RuntimeResult<BTreeMap<RuntimeBindingId, ExternalId>> {
         let mut placements = BTreeMap::new();
         for snapshot in snapshots {
@@ -8697,11 +10058,13 @@ impl PaseoAdapter {
             {
                 continue;
             }
-            let Ok(workspace) = self.fetch_workspace_in(&project, &workspace_id).await else {
+            // Read from the one census this restore already took, so a
+            // directory enumeration is not repeated for every claim.
+            let Some(workspace) = census.get(&workspace_id) else {
                 continue;
             };
             if self
-                .verify_workspace_placement(&workspace, &project, &root)
+                .verify_workspace_placement(workspace, &project, &root)
                 .is_err()
             {
                 continue;
@@ -8711,6 +10074,91 @@ impl PaseoAdapter {
             }
         }
         Ok(placements)
+    }
+}
+
+#[cfg(test)]
+mod epoch_registry_tests {
+    use super::EpochRegistry;
+
+    fn fresh() -> EpochRegistry {
+        EpochRegistry::restore(&[]).expect("an empty registry restores")
+    }
+
+    /// Reading the pending list is not the same event as persisting it.
+    ///
+    /// The audit's P1 in miniature. A take here meant a caller whose commit
+    /// failed had already lost the only record that these numbers are not
+    /// durable — and `resolve` would keep serving them out of `by_raw`, so they
+    /// would never be offered again.
+    #[test]
+    fn pending_does_not_discharge_the_obligation_it_reports() {
+        let mut registry = fresh();
+        assert_eq!(registry.resolve("raw-a"), 1);
+
+        assert_eq!(registry.pending(), vec![("raw-a".to_owned(), 1)]);
+        assert_eq!(
+            registry.pending(),
+            vec![("raw-a".to_owned(), 1)],
+            "reading twice reports the same outstanding work"
+        );
+
+        registry.ack(&[("raw-a".to_owned(), 1)]);
+        assert!(
+            registry.pending().is_empty(),
+            "only an acknowledgement clears it"
+        );
+        assert_eq!(
+            registry.resolve("raw-a"),
+            1,
+            "and acknowledging durability does not forget the mapping itself"
+        );
+    }
+
+    /// An acknowledgement drops exactly what it names, in place.
+    ///
+    /// A caller commits the list it read; anything allocated while that commit
+    /// was in flight is still undurable and must keep both its place and its
+    /// turn. Clearing wholesale would silently drop it.
+    #[test]
+    fn ack_keeps_what_it_was_not_told_about_in_allocation_order() {
+        let mut registry = fresh();
+        assert_eq!(registry.resolve("raw-a"), 1);
+        let committing = registry.pending();
+
+        // Allocated after the caller read the list, before it acknowledged.
+        assert_eq!(registry.resolve("raw-b"), 2);
+        assert_eq!(registry.resolve("raw-c"), 3);
+
+        registry.ack(&committing);
+        assert_eq!(
+            registry.pending(),
+            vec![("raw-b".to_owned(), 2), ("raw-c".to_owned(), 3)],
+            "the later allocations survive, in the order they were issued"
+        );
+
+        // Idempotent on both sides: a retry after an ambiguous failure must not
+        // be punished, and a pair this registry never held is not an error.
+        registry.ack(&committing);
+        registry.ack(&[("raw-never-seen".to_owned(), 99)]);
+        assert_eq!(
+            registry.pending(),
+            vec![("raw-b".to_owned(), 2), ("raw-c".to_owned(), 3)],
+            "a repeated or unknown acknowledgement changes nothing"
+        );
+    }
+
+    /// Re-resolving a raw epoch already pending does not queue it twice.
+    #[test]
+    fn a_known_raw_epoch_is_never_queued_a_second_time() {
+        let mut registry = fresh();
+        assert_eq!(registry.resolve("raw-a"), 1);
+        assert_eq!(registry.resolve("raw-a"), 1);
+        assert_eq!(
+            registry.pending(),
+            vec![("raw-a".to_owned(), 1)],
+            "one allocation is one pending entry"
+        );
     }
 }
 
@@ -9487,5 +10935,53 @@ mod refusal_probe_tests {
             .is_none()
         );
         assert!(select(&[]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod containment {
+    use super::within;
+    use kontor_runtime::workspace::WorkspaceRoot;
+
+    fn root(text: &str) -> WorkspaceRoot {
+        WorkspaceRoot::parse(text).expect("a canonical root")
+    }
+
+    #[test]
+    fn containment_is_decided_on_whole_components_including_the_filesystem_root() {
+        // Exact: a root contains itself, so a session sitting in it counts.
+        assert!(within("/w/epic", &root("/w/epic")));
+        assert!(within("/", &root("/")));
+
+        // Descendant, at one level and several.
+        assert!(within("/w/epic/task-11", &root("/w/epic")));
+        assert!(within("/w/epic/task-11/nested", &root("/w/epic")));
+
+        // HV-001: the filesystem root is a real root and contains everything
+        // absolute. A textual prefix test with a separator check returns false
+        // here, which is what let removal proceed over a live session.
+        assert!(within("/dangling-session", &root("/")));
+        assert!(within("/w/epic/task-11", &root("/")));
+
+        // Sibling sharing a textual prefix but not a component boundary.
+        assert!(!within("/w/epic-2", &root("/w/epic")));
+        assert!(!within("/w/epicary/task", &root("/w/epic")));
+
+        // Ancestor and unrelated branches are outside.
+        assert!(!within("/w", &root("/w/epic")));
+        assert!(!within("/", &root("/w/epic")));
+        assert!(!within("/other/epic", &root("/w/epic")));
+
+        // Trailing separator is the one spelling difference that is not one.
+        assert!(within("/w/epic/", &root("/w/epic")));
+
+        // Malformed: refused into containment, never out of it. A cwd this
+        // adapter cannot read must not certify an empty root.
+        for malformed in ["relative/path", "", "/w/epic/..", "/w//epic", "/w/./epic"] {
+            assert!(
+                within(malformed, &root("/w/epic")),
+                "{malformed} must refuse rather than read as outside"
+            );
+        }
     }
 }

@@ -53,6 +53,8 @@ axum = { workspace = true }
 # outside the machine: it asks each account's provider what its own quota
 # is doing, because a refusal-derived state can never say a window reopened.
 reqwest = { workspace = true }
+futures = { workspace = true }
+httpdate = { workspace = true }
 aws-lc-rs = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
@@ -90,9 +92,8 @@ kontor-runtime = { path = "../kontor-runtime", version = "=0.2.1" }
 # `async-trait` is already a normal dependency above, so the journey's transport
 # impl needs no second edge for it.
 kontor-mcp = { path = "../kontor-mcp", version = "=0.2.1" }
-futures = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
 wiremock = { workspace = true }

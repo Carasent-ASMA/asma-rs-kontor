@@ -28,7 +28,7 @@ use kontor_core::repository::{
     TopologyRepository,
 };
 use kontor_core::spec::{
-    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, Shareability, ShareabilityTier,
+    CatalogRoleRef, ModelRef, ModelRung, ProviderRef, SeatAutonomy, Shareability, ShareabilityTier,
     TeamDefinitionSnapshot, TeamDefinitionSpec, TeamRunSnapshot, TeamTemplateRevision,
     TopologySnapshot,
 };
@@ -178,6 +178,8 @@ fn world() -> World {
                 identity: identity(native),
                 observed_kind: kind,
                 canonical_cwd: Some(name("/tmp/kontor")),
+                readback: None,
+                bound_at: created_at,
                 observed_at: created_at,
             })
             .expect("the native container is bound");
@@ -216,6 +218,8 @@ fn world() -> World {
             identity: identity("wks_tsw"),
             observed_kind: ObservedContainerKind::Workspace,
             canonical_cwd: Some(name("/tmp/kontor")),
+            readback: None,
+            bound_at: created_at,
             observed_at: created_at,
         })
         .expect("the task workspace takes a native container");
@@ -407,6 +411,252 @@ fn migration(
 // ---------------------------------------------------------------------------
 // P1-1 — the census must be complete
 // ---------------------------------------------------------------------------
+
+fn add_linked_delivery_successor(w: &World, native: Option<&str>) -> AgentRunId {
+    let predecessor = w
+        .store
+        .list_agent_runs_for_team_run(w.project_id, w.team_run)
+        .expect("the original role reads")[0]
+        .agent_run_id;
+    let id = AgentRunId::generate();
+    w.store
+        .create_agent_run(&NewAgentRun {
+            id,
+            project_id: w.project_id,
+            team_run_id: w.team_run,
+            parent_agent_run_id: Some(predecessor),
+            role: RoleKey::parse("delivery.auditor").expect("the same slot"),
+            account_profile_id: None,
+            binding: native.map(|native| RuntimeBinding {
+                id: RuntimeBindingId::generate(),
+                agent_run_id: id,
+                identity: identity(native),
+                bound_at: at("2026-09-02T10:00:00Z"),
+            }),
+            created_at: at("2026-09-02T10:00:00Z"),
+        })
+        .expect("the immutable replacement lineage is recorded");
+    id
+}
+
+#[test]
+fn a_delivery_replacement_census_uses_only_its_current_native_leaf() {
+    let w = world();
+    add_linked_delivery_successor(&w, Some("agent_current_aud"));
+    let census = w
+        .store
+        .list_live_native_subjects(w.project_id, w.mini_project_id)
+        .expect("the current census reads");
+    let seats: Vec<_> = census
+        .iter()
+        .filter(|entry| matches!(entry.subject, TeamDefinitionMigrationSubject::Seat { .. }))
+        .collect();
+    assert_eq!(
+        seats.len(),
+        1,
+        "a predecessor is historical lineage, not a second filler"
+    );
+    assert_eq!(seats[0].identity.native_id.as_str(), "agent_current_aud");
+    assert!(
+        w.store
+            .record_team_definition_migration(&migration(
+                &w,
+                "stale-predecessor-census",
+                complete_targets(&w)
+            ),)
+            .is_err(),
+        "the predecessor must never satisfy the current role proof"
+    );
+    let mut targets = complete_targets(&w);
+    targets
+        .iter_mut()
+        .find(|target| matches!(target.subject, TeamDefinitionMigrationSubject::Seat { .. }))
+        .expect("the delivery target")
+        .identity = identity("agent_current_aud");
+    let recorded = w
+        .store
+        .record_team_definition_migration(&migration(&w, "current-successor-census", targets))
+        .expect("a complete current census can upgrade");
+    for target in &recorded.targets {
+        w.store
+            .observe_team_definition_migration(
+                w.project_id,
+                recorded.id,
+                &[TeamDefinitionMigrationObservation {
+                    subject: target.subject,
+                    identity: target.identity.clone(),
+                    observed: Some(target.desired.clone()),
+                    state: TeamDefinitionMigrationTargetState::Unchanged,
+                    observed_at: at("2026-09-02T11:00:00Z"),
+                }],
+                at("2026-09-02T11:00:00Z"),
+            )
+            .expect("each current target reads back exactly");
+    }
+    w.store
+        .confirm_team_definition_migration(w.project_id, recorded.id, at("2026-09-02T11:05:00Z"))
+        .expect("confirmation uses the same current lineage");
+    assert_eq!(
+        w.store
+            .list_agent_runs_for_team_run(w.project_id, w.team_run)
+            .expect("history reads")
+            .len(),
+        2,
+        "neither lineage record was deleted"
+    );
+}
+
+#[test]
+fn an_unbound_delivery_leaf_never_substitutes_its_bound_predecessor() {
+    let w = world();
+    add_linked_delivery_successor(&w, None);
+    let census = w
+        .store
+        .list_live_native_subjects(w.project_id, w.mini_project_id)
+        .expect("the current census reads");
+    assert!(
+        census
+            .iter()
+            .all(|entry| !matches!(entry.subject, TeamDefinitionMigrationSubject::Seat { .. })),
+        "the queued current leaf has no native yet"
+    );
+    assert!(
+        w.store
+            .record_team_definition_migration(&migration(
+                &w,
+                "unbound-leaf-stale-predecessor",
+                complete_targets(&w)
+            ),)
+            .is_err(),
+        "old bound native is not a substitute for the queued leaf"
+    );
+}
+
+#[test]
+fn an_operator_abandoned_unbound_attempt_does_not_hide_the_current_native() {
+    let w = world();
+    let attempt = add_linked_delivery_successor(&w, None);
+    let intent = CanonicalDocument::from_serializable(&serde_json::json!({
+        "schema_version": 1, "operation": "abandon", "run": attempt,
+    }))
+    .expect("the exact abandon intent");
+    let evidence_hash = intent.hash().clone();
+    let receipt_id = w
+        .store
+        .record_abandon_receipt(&kontor_core::repository::NewAbandonReceipt {
+            project_id: w.project_id,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: IdempotencyKey::parse("abandoned-unbound-attempt").expect("a key"),
+            target: AggregateRef::AgentRun {
+                agent_run_id: attempt,
+            },
+            target_revision: kontor_core::id::AggregateRevision::parse(1).expect("a revision"),
+            intent,
+            recorded_at: at("2026-09-02T10:02:00Z"),
+        })
+        .expect("the operator decision is recorded");
+    w.store
+        .close_agent_run(&kontor_core::repository::RunClosure {
+            project_id: w.project_id,
+            agent_run_id: attempt,
+            expected_revision: kontor_core::id::AggregateRevision::parse(1).expect("a revision"),
+            evidence: kontor_core::state::TerminalEvidence {
+                outcome: kontor_core::state::TerminalOutcome::Abandoned,
+                source: kontor_core::state::TerminalEvidenceSource::OperatorAbandon { receipt_id },
+                evidence_hash,
+                closed_at: at("2026-09-02T10:02:00Z"),
+            },
+        })
+        .expect("the never-bound attempt is certified abandoned");
+    let census = w
+        .store
+        .list_live_native_subjects(w.project_id, w.mini_project_id)
+        .expect("the current census reads");
+    let seats: Vec<_> = census
+        .iter()
+        .filter(|entry| matches!(entry.subject, TeamDefinitionMigrationSubject::Seat { .. }))
+        .collect();
+    assert_eq!(seats.len(), 1);
+    assert_eq!(seats[0].identity.native_id.as_str(), "agent_delivery_aud");
+    w.store
+        .record_team_definition_migration(&migration(
+            &w,
+            "current-after-abandoned-attempt",
+            complete_targets(&w),
+        ))
+        .expect("the still-current native remains required and admissible");
+}
+
+#[test]
+fn an_empty_native_census_can_upgrade_and_replay_after_reopen() {
+    let w = world();
+    let epic = MiniProjectId::generate();
+    w.store
+        .create_mini_project(&NewMiniProject {
+            id: epic,
+            project_id: w.project_id,
+            name: name("Unmaterialized epic"),
+            created_at: at("2026-09-02T09:00:00Z"),
+        })
+        .expect("the unmaterialized epic exists");
+    w.store
+        .pin_mini_project_team_definition(&MiniProjectTeamDefinitionSnapshot {
+            project_id: w.project_id,
+            mini_project_id: epic,
+            definition: snapshot(&w.definition),
+            pinned_at: at("2026-09-02T09:00:00Z"),
+        })
+        .expect("the old definition is pinned");
+    let mut request = migration(&w, "empty-census-upgrade", Vec::new());
+    request.mini_project_id = epic;
+    let recorded = w
+        .store
+        .record_team_definition_migration(&request)
+        .expect("an empty live census needs no invented native target");
+    assert!(recorded.targets.is_empty());
+    let confirmed = w
+        .store
+        .confirm_team_definition_migration(w.project_id, recorded.id, at("2026-09-02T11:00:00Z"))
+        .expect("the empty census is re-proved at confirmation");
+    assert_eq!(confirmed.state, TeamDefinitionMigrationState::Confirmed);
+    drop(w.store);
+    let store = SqliteStore::open(&w.database).expect("the store reopens");
+    let replay = store
+        .record_team_definition_migration(&request)
+        .expect("the same request retains its confirmed migration");
+    assert_eq!(replay.id, recorded.id);
+    assert_eq!(replay.state, TeamDefinitionMigrationState::Confirmed);
+    assert_eq!(
+        store
+            .get_mini_project_team_definition(w.project_id, epic)
+            .expect("the pin reads")
+            .expect("the pin exists")
+            .definition,
+        snapshot(&w.second)
+    );
+}
+
+#[test]
+fn an_empty_requested_census_cannot_hide_existing_native_subjects() {
+    let w = world();
+    assert!(w.store.record_team_definition_migration(
+        &migration(&w, "empty-census-omits-live", Vec::new()),
+    ).is_err());
+    assert!(
+        w.store
+            .get_in_flight_team_definition_migration(w.project_id, w.mini_project_id)
+            .expect("the migration reads")
+            .is_none()
+    );
+    assert_eq!(
+        w.store
+            .get_mini_project_team_definition(w.project_id, w.mini_project_id)
+            .expect("the pin reads")
+            .expect("the pin exists")
+            .definition,
+        snapshot(&w.definition)
+    );
+}
 
 #[test]
 fn the_census_lists_every_live_native_bearing_subject_of_the_epic() {
@@ -970,6 +1220,7 @@ fn an_exact_rename_pending_seat_can_be_retired_before_migration_confirmation() {
                 effort: None,
             },
             native_identity: identity("agent_hosted_architect"),
+            autonomy: SeatAutonomy::Supervised,
             provider_session_id: None,
             observed_at: at("2026-09-02T09:46:00Z"),
         })
@@ -1331,6 +1582,8 @@ fn confirmation_re_proves_parity_against_the_live_census() {
             identity: identity("wks_asw"),
             observed_kind: ObservedContainerKind::Workspace,
             canonical_cwd: Some(name("/tmp/kontor")),
+            readback: None,
+            bound_at: at("2026-09-02T10:31:00Z"),
             observed_at: at("2026-09-02T10:31:00Z"),
         })
         .expect("it takes a native container");

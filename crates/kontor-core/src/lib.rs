@@ -96,6 +96,7 @@ pub mod branch;
 pub mod calendar;
 pub mod compaction;
 pub mod consultation;
+pub mod epic_seat;
 pub mod id;
 pub mod naming;
 pub mod open_question;
@@ -104,11 +105,13 @@ pub mod quota;
 pub mod realm;
 pub mod receipt;
 pub mod repository;
+pub mod retired_evaluator;
 pub mod selector;
 pub mod spec;
 pub mod state;
 pub mod succession;
 pub mod ticket;
+pub mod tpm_lineage;
 
 /// Every domain rejection in this crate.
 ///

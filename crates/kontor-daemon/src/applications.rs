@@ -25,6 +25,10 @@
 //! they have no TeamRun and are keyed by their durable SeatBinding. Neither
 //! path can create the other's kind of session.
 
+mod artifact_submission;
+mod committee_evidence;
+mod open_questions;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -54,9 +58,13 @@ use kontor_api::applications::{
     AccountAvailabilityDto, AdaptiveWindowDto, AvailabilityOverrideDto,
     AvailabilityOverrideRequest, CapacityCeilingsDto, CapacityConfigurationDto,
     CapacityConfigurationPreviewDto, CapacityConfigurationRequest, CapacityObservationDto,
-    CapacityRefreshRequest, MutationReceiptDto, ObservedBindingDto, ProjectCapacityDto,
-    PublishTriggerRequest, RecordProviderQuotaRequest, ResolvedRoleRefDto, SeatBindingOutcomeDto,
-    SeatBindingRequest, TopologySeatDto,
+    CapacityRefreshRequest, ContainerReadbackDto, MutationReceiptDto, NativeContainerParentDto,
+    ObservedBindingDto, ProjectCapacityDto, PublishTriggerRequest, RecordProviderQuotaRequest,
+    ResolvedRoleRefDto, SeatBindingOutcomeDto, SeatBindingRequest, TopologySeatDto,
+};
+use kontor_api::applications::{
+    AdoptTeamRunAdmissionRequest, FillTeamRunSeatRequest, FilledTeamRunSeatDto, MemorySelectionDto,
+    OmittedMemoryRevisionDto, TeamRunAdmissionAdoptionDto, TeamRunSeatDispatchDto,
 };
 use kontor_api::applications::{
     AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CloseoutEvidenceDto,
@@ -65,22 +73,23 @@ use kontor_api::applications::{
     CompletionPhaseDto, CompletionRoundDto, CompletionStateDto, CompletionWakeDto,
     ConsultationPermissionAckDto, ConsultationPermissionInspectionDto, ConsultationSeatDto,
     ConsultationSeatRecoveryDto, ConsultationSeatRecoveryReasonDto, ConsultationVerdictDto,
-    CoreTeamApplyRequest, CoreTeamDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
+    CoreTeamApplyRequest, CoreTeamDto, CoreTeamLaunchIntentSupersedeRequest,
+    CoreTeamLaunchIntentSupersessionDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
     CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
     CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest,
     CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto, CoreTeamSeatClaimPreviewDto,
-    CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto, CoreTeamSeatRouteRequest,
-    CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto, DeliberationStepDto,
-    EnsureQuickSessionRequest, HostedSeatMessageDto, HostedSeatMessageRequestDto,
-    IntegrationRecordDto, InvokeAdvisorRequest, InvokeConsultationRequest, NeedsHumanDto,
-    PartialAdmissionSeatDto, ProfileApplyRequest, ProfileCatalogDto, ProfilePreviewDto,
-    ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto, PromotionApplyRequest,
-    PromotionPreviewDto, QuickRolesDto, QuickSessionDto, RecordFindingsRequest,
-    RecordedCloseoutDto, RecoverConsultationSeatRequest, RemediateCompletionRequest,
-    RemediationActionDto, RemediationAuthorityDto, RemediationAuthorizationDto,
-    RemediationRecordDto, RepositoryOutcomeDto, RepositoryOutcomeInputDto,
-    RerouteUnmaterializedConsultationSeatRequest, RosterUpgradePreviewDto,
-    RosterUpgradePreviewRequest, SettleConsultationRequest,
+    CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto, CoreTeamSeatPersonaDto,
+    CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto,
+    DeliberationStepDto, EnsureQuickSessionRequest, HostedSeatMessageDto,
+    HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeAdvisorRequest,
+    InvokeConsultationRequest, NeedsHumanDto, PartialAdmissionSeatDto, ProfileApplyRequest,
+    ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto,
+    PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
+    RecordFindingsRequest, RecordedCloseoutDto, RecoverConsultationSeatRequest,
+    RemediateCompletionRequest, RemediationActionDto, RemediationAuthorityDto,
+    RemediationAuthorizationDto, RemediationRecordDto, RepositoryOutcomeDto,
+    RepositoryOutcomeInputDto, RerouteUnmaterializedConsultationSeatRequest,
+    RosterUpgradePreviewDto, RosterUpgradePreviewRequest, SettleConsultationRequest,
     UnmaterializedConsultationSeatRerouteDto,
 };
 use kontor_api::applications::{
@@ -90,19 +99,20 @@ use kontor_api::applications::{
     AppliedTeamDefinitionUpgradeDto, AppliedTopologyUpgradeDto, CodeHelpEntryDto,
     CommitteeTopicCorrectionApplyRequest, CommitteeTopicCorrectionPreviewDto,
     CommitteeTopicCorrectionPreviewRequest, ContainerRecoveryApplyRequest,
-    ContainerRecoveryPreviewDto, ContainerRecoveryPreviewRequest, ContainerRetitlePreviewDto,
-    ContainerRetitleRequest, DesiredBindingDto, EpicBacklogCodeCorrectionApplyRequest,
-    EpicBacklogCodeCorrectionPreviewDto, EpicBacklogCodeCorrectionPreviewRequest,
-    JiraMaterializationAppliedDto, JiraMaterializationApplyRequest, JiraMaterializationIntentDto,
-    JiraMaterializationItemDto, JiraMaterializationModeDto, JiraMaterializationPreviewDto,
-    JiraMaterializationPreviewRequest, NativeNameSubjectKindDto, NativeNameTargetDto,
-    NativeNamesApplyRequest, NativeNamesPreviewDto, NativeNamesPreviewRequest, PinnedSpecDto,
-    PinnedTeamDefinitionDto, ProjectTeamDefinitionSelectionApplyRequest,
-    ProjectTeamDefinitionSelectionPreviewDto, ProjectTeamDefinitionSelectionPreviewRequest,
-    ProjectTopologySelectionApplyRequest, ProjectTopologySelectionPreviewDto,
-    ProjectTopologySelectionPreviewRequest, SemanticTopologyRequest, SemanticTopologyTargetDto,
-    SessionLabelsReconcileRequest, SessionLabelsReconciledDto, ShareabilityDto,
-    TeamDefinitionRefDto, TeamDefinitionUpgradeApplyRequest, TeamDefinitionUpgradePreviewDto,
+    ContainerRecoveryDispositionDto, ContainerRecoveryPreviewDto, ContainerRecoveryPreviewRequest,
+    ContainerRetitlePreviewDto, ContainerRetitleRequest, DesiredBindingDto,
+    EpicBacklogCodeCorrectionApplyRequest, EpicBacklogCodeCorrectionPreviewDto,
+    EpicBacklogCodeCorrectionPreviewRequest, JiraMaterializationAppliedDto,
+    JiraMaterializationApplyRequest, JiraMaterializationIntentDto, JiraMaterializationItemDto,
+    JiraMaterializationModeDto, JiraMaterializationPreviewDto, JiraMaterializationPreviewRequest,
+    NativeNameSubjectKindDto, NativeNameTargetDto, NativeNamesApplyRequest, NativeNamesPreviewDto,
+    NativeNamesPreviewRequest, PinnedSpecDto, PinnedTeamDefinitionDto,
+    ProjectTeamDefinitionSelectionApplyRequest, ProjectTeamDefinitionSelectionPreviewDto,
+    ProjectTeamDefinitionSelectionPreviewRequest, ProjectTopologySelectionApplyRequest,
+    ProjectTopologySelectionPreviewDto, ProjectTopologySelectionPreviewRequest,
+    SemanticTopologyRequest, SemanticTopologyTargetDto, SessionLabelsReconcileRequest,
+    SessionLabelsReconciledDto, ShareabilityDto, TeamDefinitionRefDto,
+    TeamDefinitionUpgradeApplyRequest, TeamDefinitionUpgradePreviewDto,
     TeamDefinitionUpgradePreviewRequest, TopologyMutationDto, TopologyNodeDto, TopologyNodeRequest,
     TopologyProjectionDto, TopologyUpgradeApplyRequest, TopologyUpgradeEffectDto,
     TopologyUpgradePreviewDto, TopologyUpgradePreviewRequest,
@@ -133,9 +143,8 @@ use kontor_api::applications::{
     ResolveContextRequest, ResolvedContextDto, RuntimeSettlementDto, SelectionDto,
     SelectionRequest, SessionVerdictCitationDto, TicketContentConflictDto, TicketFieldDiffDto,
     TicketReconcileAppliedDto, TicketReconcileApplyRequest, TicketReconcilePlanDto,
-};
-use kontor_api::applications::{
-    FillTeamRunSeatRequest, FilledTeamRunSeatDto, TeamRunSeatDispatchDto,
+    WorktreeClaimCorrectionAppliedDto, WorktreeClaimCorrectionApplyRequest,
+    WorktreeClaimCorrectionPreviewDto, WorktreeClaimCorrectionRequest,
 };
 use kontor_api::dto::JiraBindingDto;
 use kontor_api::error::{ApiError, ApiErrorCode};
@@ -177,26 +186,28 @@ use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
     CommandRepository, CompletionWrite, CredentialReference, CredentialReferenceKind,
-    IntakeOutcome, IntakeRepository, LegacyConsultationTopicCorrection,
-    LegacyEpicBacklogCodeCorrection, MigrationObjectKind, MiniProject,
-    MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
-    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
-    NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
-    NewConsultationRecoveryAttempt, NewGateEvaluation, NewLocalCommand, NewMiniProject,
-    NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, NewTeamRun,
-    OpenQuestionRepository, ProjectRepository, ProjectTeamDefinitionDefault,
-    ProjectTopologyDefault, ProviderUsageObservation, RealmRepository, RepositoryError,
-    RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition, SpecRepository,
-    StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
-    StoredCompletionWakeDelivery, StoredConsultationProfileRevision, StoredConsultationRun,
-    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedTopologySeat, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
-    SuccessionRepository, TaskTransitionRequest, TaskWorkflow, TeamDefinitionMigrationObservation,
-    TeamDefinitionMigrationState, TeamDefinitionMigrationSubject,
-    TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketLink, TicketRepository,
-    TopologyContainerRecovery, TopologyRepository, WorkflowRepository,
+    HostedSeatLaunchIntentState, HostedSeatLaunchIntentSupersession, IntakeOutcome,
+    IntakeRepository, LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection,
+    MigrationObjectKind, MiniProject, MiniProjectTeamDefinitionSnapshot,
+    MiniProjectTopologySnapshot, NativePlacement, NewAccountProfile, NewAdaptiveAdmissionState,
+    NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
+    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt, NewGateEvaluation,
+    NewLocalCommand, NewMiniProject, NewNativeContainerBinding, NewProviderQuotaState,
+    NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTeamDefinitionMigration,
+    NewTeamDefinitionMigrationTarget, NewTeamRun, OpenQuestionRepository, ProjectRepository,
+    ProjectTeamDefinitionDefault, ProjectTopologyDefault, ProviderUsageObservation,
+    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
+    SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationProfileRevision,
+    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
+    StoredEpicRoster, StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredPromotion,
+    StoredQuickSession, StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest,
+    TaskWorkflow, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
+    TicketLink, TicketRepository, TopologyContainerRecovery, TopologyContainerRecoveryDisposition,
+    TopologyRepository, WorkflowRepository,
 };
+use kontor_core::spec::HoldLiftCondition;
 use kontor_core::spec::{
     AutoArmPolicy, CanonicalSourceEvent, CatalogRoleRef, CodeCategory, ContextEnforcement,
     ContextPolicySnapshot, EffectiveContextPolicy, EffortLevel, EpicPresence, IntakeReceipt,
@@ -208,8 +219,9 @@ use kontor_core::spec::{
 };
 use kontor_core::state::{
     DerivedRunState, Freshness, GateVerdict, ImportedTaskState, NativeContainerBinding,
-    ObservedContainerKind, RuntimeContact, SeatBinding, SessionTopologyNode, TaskState,
-    TaskTeamClosure, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+    NativeContainerReadback, ObservedContainerKind, ObservedContainerProjection, RuntimeContact,
+    SeatBinding, SessionTopologyNode, TaskState, TaskTeamClosure, TerminalEvidenceSource,
+    TerminalOutcome, TopologyLifecycle,
 };
 use kontor_core::succession::{
     NewSuccessionAttempt, SuccessionAttempt, SuccessionAttemptAdvance, SuccessionAttemptState,
@@ -224,6 +236,10 @@ use kontor_core::ticket::{
     InternalEpicFacts, InternalTaskFacts, OwnershipAction, ReconciliationOutcome, StatusConflict,
     StatusConflictKind, StatusSelector, TicketFieldKey, TicketSyncProjection, TransitionPlan,
     classify_body, classify_observed_body, reconcile_epic,
+};
+use kontor_core::tpm_lineage::{
+    self, AuthoritativeNative, CatalogRoute, IntentState, LineageEvidence, LineageQuery,
+    LineageRefusal, ObservedLaunchIntent, ObservedOccupancy,
 };
 use kontor_jira::jira::{
     ApplyAuthority, BodyAmbiguityVerdict, CompiledFieldSpec, CompiledWorkflowSpec, FieldWrite,
@@ -251,8 +267,9 @@ use kontor_runtime::adapter::{
 use kontor_runtime::admission::{AdmissionRequest, RoleSlotKey};
 use kontor_runtime::capability::{RuntimeBindingSnapshot, RuntimeCapability};
 use kontor_runtime::container::{
-    ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerProjection,
-    ContainerRecoveryRequest, ContainerRequest, RetitleContainerRequest,
+    ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerInspectRequest,
+    ContainerInspection, ContainerProjection, ContainerRecoveryRequest, ContainerRecreationRequest,
+    ContainerRequest, RetitleContainerRequest,
 };
 use kontor_runtime::observation::ControlPlaneObservation;
 use kontor_runtime::request::{
@@ -269,9 +286,9 @@ use kontor_scheduler::headroom::HeadroomConfig;
 use kontor_scheduler::model::{
     AccountAdmissionEvidence, AdaptiveWindow, AdmissionEventId, AdmittedCandidate,
     AuthorizationEvidence, CalendarAdmission, Candidate, CandidateDecision, CapacityConfig,
-    CapacityUsage, ExternalWorkEvidence, ReconciliationEvidence, ReconciliationScope,
-    RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
-    WorktreeClaim, WorktreeVerification, covering_authority,
+    CapacityUsage, ExternalWorkEvidence, PlacementAdmission, ReconciliationEvidence,
+    ReconciliationScope, RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth,
+    SchedulingSnapshot, TaskOrigin, WorktreeClaim, WorktreeVerification, covering_authority,
 };
 use kontor_scheduler::{
     CommitteeVerdict, CompiledCompletion, CompletionBlocker, CompletionCommand,
@@ -289,7 +306,7 @@ use kontor_store::{
     NewJiraMaterializationItem, NewRoleTurn, ProfileSelection, ProjectEnsure, RegisteredPack,
     RoleTurnReplay, RoleTurnRuntimeProof, SettledTurn, SqliteStore, StoredConflict,
     StoredConsultationPermissionResponse, StoredTeamDraft, StoredTeamsProjection,
-    TeamTemplateSource, TurnDispatch, UnconfirmedAdmission,
+    TaskWorktreeCorrection, TeamTemplateSource, TurnDispatch, UnconfirmedAdmission,
 };
 use kontor_teams::run::{SlotLaunch, TeamClosureCertificate, TeamRunLease, TeamRunSlots};
 use kontor_teams::{
@@ -456,6 +473,16 @@ struct PreparedDescription {
     field_spec: CompiledFieldSpec,
     workflow_spec: CompiledWorkflowSpec,
     preview_hash: String,
+}
+
+/// Every stored and derived fact one worktree-claim correction is bound to.
+struct PreparedWorktreeClaimCorrection {
+    task_revision: AggregateRevision,
+    old_worktree: ExternalName,
+    new_worktree: ExternalName,
+    module: ModuleKey,
+    branch: ExternalName,
+    preview_hash: ContentHash,
 }
 
 /// The complete, externally observed plan one reconcile response names.
@@ -632,7 +659,24 @@ struct PreparedNativeNames {
 struct PreparedContainerRecovery {
     preview: ContainerRecoveryPreviewDto,
     expected: NativeContainerBinding,
-    replacement: NewNativeContainerBinding,
+    /// The identity apply will bind, when the census already found one.
+    ///
+    /// `None` is exactly the `recreate_absent` disposition: nothing stands at
+    /// the canonical place yet, so there is no identity to carry. Apply mints
+    /// it by issuing one create and reading it back, and refuses to bind
+    /// anything it did not read back.
+    replacement: Option<NewNativeContainerBinding>,
+    /// The exact request apply replays to drive its single create.
+    ///
+    /// Carried from preview so apply cannot re-derive placement from anything
+    /// the caller sent. Present only for `recreate_absent`.
+    recreation: Option<ContainerRecreationRequest>,
+    /// The runtime this subject's container lives in.
+    ///
+    /// Resolved during preview and carried, exactly as
+    /// [`PreparedCommitteeTopicCorrection`] does, so apply drives the same
+    /// runtime the census read rather than re-resolving one.
+    adapter: Arc<dyn RuntimeAdapter>,
 }
 
 struct PreparedCommitteeTopicCorrection {
@@ -677,6 +721,15 @@ struct CoreTeamSeatClaimPlan {
 /// and it is also a closed `CHECK` value in the schema, so the two spellings have
 /// to be the same one.
 const REGISTER_PACK: &str = "register_profile_pack";
+
+/// The placement recorded when the control plane's container could not be
+/// re-read at all.
+///
+/// Deliberately not a shape any runtime issues, so it can only ever mismatch.
+/// Lineage then refuses through [`kontor_core::tpm_lineage::resolve`] rather
+/// than through a second, separately-worded guard here — one authority, one
+/// refusal vocabulary, and a fence a mutant cannot quietly delete.
+const UNCONFIRMED_PLACEMENT: &str = "kontor:control-plane-placement-unconfirmed";
 
 /// How long a scheduler-held module or worktree lease lives, in seconds.
 const LEASE_SECONDS: i64 = 3_600;
@@ -816,13 +869,20 @@ impl Services {
     /// is durable before dispatch; unavailable or ambiguous effects remain
     /// pending and are inspected again on the next pass or after restart.
     pub async fn release_completed_consultations(&self, limit: u32) -> Result<usize, ApiError> {
-        let _activity = self.native_activity()?;
         let state = self.state()?;
-        let releases = state
-            .with_store(|store| store.plan_consultation_releases(limit, kontor_api::now()))
-            .map_err(|error| self.refuse(&error))?;
+        let releases = {
+            let _activity = self.native_activity()?;
+            state
+                .with_store(|store| store.plan_consultation_releases(limit, kontor_api::now()))
+                .map_err(|error| self.refuse(&error))?
+        };
         let mut confirmed = 0;
         for release in releases {
+            // Finish one existing native operation before yielding to a queued
+            // lifecycle writer. The remaining durable intents retry next pass.
+            let Ok(_activity) = self.native_activity() else {
+                break;
+            };
             let Some(adapter) = state.runtimes().get(&release.identity.runtime_kind) else {
                 continue;
             };
@@ -946,13 +1006,31 @@ impl Services {
         })
     }
 
-    fn native_lifecycle_change(&self) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ApiError> {
-        self.native_lifecycle_guard.try_write().map_err(|_| {
+    /// Retirement, cleanup and migration wait for native operations to drain.
+    /// Queueing the writer prevents recurring background reads from starving it.
+    /// Allow an in-flight transport request and its confirming readback to
+    /// finish; each normally has a thirty-second deadline. A stuck operation
+    /// still refuses the migration before any state or native write.
+    async fn native_lifecycle_change(
+        &self,
+    ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ApiError> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            self.native_lifecycle_guard.write(),
+        )
+        .await
+        .map_err(|_| {
             self.deny(
                 ApiErrorCode::PlacementBlocked,
-                "native topology work is in progress; retirement or migration must wait",
+                "native topology work is in progress; lifecycle wait timed out before any write",
             )
         })
+    }
+
+    async fn native_migration_change(
+        &self,
+    ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ApiError> {
+        self.native_lifecycle_change().await
     }
 
     /// Build the runtime-neutral scope for one epic or task from durable state.
@@ -1208,6 +1286,14 @@ impl Services {
 
     /// Turn a domain refusal into the one the caller is owed.
     fn refuse_domain(&self, error: &kontor_core::DomainError) -> ApiError {
+        if let kontor_core::DomainError::MissingEvidence {
+            subject: "ProviderHeadroom",
+            rule,
+        } = error
+        {
+            return self.deny(ApiErrorCode::PlacementBlocked, rule)
+                .advising("probe the exact configured provider account and retry after current quota evidence permits admission");
+        }
         ApiError::from_domain(self.realm_id, error)
     }
 
@@ -1517,6 +1603,7 @@ impl Services {
         &self,
         project_id: ProjectId,
         task_id: TaskId,
+        route: PhaseRoute,
     ) -> Result<TaskWorkflow, ApiError> {
         let state = self.state()?;
         loop {
@@ -1544,16 +1631,24 @@ impl Services {
             if ready == workflow.current_phase {
                 return Ok(workflow);
             }
-            let Some(next) = workflow
+            let mut leaving = workflow
                 .snapshot
                 .definition
                 .edges
                 .iter()
-                .find(|edge| edge.from == workflow.current_phase)
-                .map(|edge| edge.to.clone())
-            else {
+                .filter(|edge| edge.from == workflow.current_phase);
+            let Some(edge) = leaving.next() else {
                 return Ok(workflow);
             };
+            // A caller-driven settlement follows the profile's declared order,
+            // which is the behaviour every existing advance already has. An
+            // unattended catch-up does not: where a phase leads to more than one
+            // successor, choosing between them is a decision this projection has
+            // no authority to make, so it stops and leaves the branch to a turn.
+            if route == PhaseRoute::Unambiguous && leaving.next().is_some() {
+                return Ok(workflow);
+            }
+            let next = edge.to.clone();
             state
                 .with_store(|store| {
                     store.advance_phase(&kontor_core::repository::PhaseAdvance {
@@ -1567,6 +1662,78 @@ impl Services {
                 .map_err(|error| self.refuse(&error))?;
             state.signals().appended();
         }
+    }
+
+    /// Reproject every workflow a rejection route still fences.
+    ///
+    /// Ordinary advancement is driven by a caller: a settled turn or a
+    /// non-rejecting gate record reprojects the task it touched. That is enough
+    /// while the predicate deciding a fence is correct, and not enough the
+    /// moment it is corrected — a realm whose qualifying turn and passing gate
+    /// verdict became durable under the earlier predicate has no settlement
+    /// left to make, so nothing would ever ask the question again and the
+    /// workflow would sit on its rejection target forever.
+    ///
+    /// This asks it once per supported startup. It reads only durable evidence
+    /// and writes, at most, the phase advance that evidence already justifies:
+    /// no turn is replayed, no gate evaluation is re-recorded, and the rejection
+    /// route is never rewritten or removed. Running it again on a converged
+    /// realm therefore finds nothing to do, which is what makes a restart loop
+    /// safe.
+    ///
+    /// It fails closed in both directions. The enumeration is exactly the
+    /// fenced population, so a realm that never rejected a gate is untouched;
+    /// and a task whose state cannot be read is skipped rather than advanced,
+    /// because an unreadable workflow is not a workflow that proved anything.
+    ///
+    /// Returns how many workflows actually moved.
+    ///
+    /// # Errors
+    /// Only when the fenced population itself cannot be enumerated.
+    pub fn catch_up_fenced_workflows(&self) -> Result<usize, ApiError> {
+        let state = self.state()?;
+        let fenced = state
+            .with_store(SqliteStore::list_fenced_task_workflows)
+            .map_err(|error| self.refuse(&error))?;
+        let mut advanced: usize = 0;
+        for (project_id, task_id) in fenced {
+            let before = match state
+                .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+            {
+                Ok(Some(workflow)) => workflow.current_phase,
+                Ok(None) => continue,
+                Err(detail) => {
+                    tracing::warn!(
+                        project_id = %project_id,
+                        task_id = %task_id,
+                        detail = %detail,
+                        "a fenced workflow could not be read; it stays where it is"
+                    );
+                    continue;
+                }
+            };
+            match self.advance_workflow_from_evidence(project_id, task_id, PhaseRoute::Unambiguous)
+            {
+                Ok(workflow) if workflow.current_phase != before => {
+                    advanced = advanced.saturating_add(1);
+                    tracing::info!(
+                        project_id = %project_id,
+                        task_id = %task_id,
+                        from = %before.as_str(),
+                        to = %workflow.current_phase.as_str(),
+                        "a fenced workflow converged on evidence that was already durable"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    project_id = %project_id,
+                    task_id = %task_id,
+                    detail = %error.code.as_str(),
+                    "a fenced workflow could not be reprojected; it stays where it is"
+                ),
+            }
+        }
+        Ok(advanced)
     }
 
     fn latest_handoff_receipt(
@@ -2168,7 +2335,7 @@ impl Services {
         )
         .await?;
         let disarm_key = self.epic_apply_child_key(parent_key, "initial-hold-disarm")?;
-        <Self as ApplicationOperations>::disarm(
+        let held = <Self as ApplicationOperations>::disarm(
             self,
             &disarm_key,
             project_id,
@@ -2179,7 +2346,35 @@ impl Services {
                 reason: request.reason.clone(),
             },
         )
-        .await
+        .await?;
+        // After the revocation, never before it: the condition's foreign key
+        // points at the revocation, which is what makes "a lift condition on
+        // something that is not a hold" unrepresentable.
+        //
+        // Recorded even when it is `manual`, so the hold states its terms
+        // explicitly rather than by saying nothing. The read path still treats
+        // an absent row as manual, because holds predating this table said
+        // nothing and must not acquire a self-lift they were never given.
+        let condition = request.lift_condition.unwrap_or(HoldLiftCondition::Manual);
+        let authorization_id = ExecutionAuthorizationId::parse(&held.authorization_id)
+            .map_err(|error| self.refuse_domain(&error))?;
+        self.state()?
+            .with_store(|store| {
+                store.record_hold_lift_condition(
+                    project_id,
+                    authorization_id,
+                    condition,
+                    kontor_api::now(),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        // The disarm answered before the condition existed, so the terms are
+        // stated here. A caller that applied a hold reads back what would end
+        // it, rather than having to ask the epic again.
+        Ok(AuthorizationProjectionDto {
+            lift_condition: Some(condition),
+            ..held
+        })
     }
 
     /// Every agent run in one team run, loaded whole.
@@ -3058,8 +3253,13 @@ impl Services {
                 requested_key: request.epic.issue_key.clone(),
                 marker: epic_marker,
                 require_marker: false,
+                update_description: request.epic.mode == JiraMaterializationModeDto::Link
+                    && request.epic.description.is_some(),
                 summary: epic.name.as_str().to_owned(),
-                description: format!("Kontor epic {epic_id}: {}", epic.name.as_str()),
+                description: request.epic.description.as_ref().map_or_else(
+                    || format!("Kontor epic {epic_id}: {}", epic.name.as_str()),
+                    |description| description.as_str().to_owned(),
+                ),
                 parent_key: None,
             },
         )]);
@@ -3069,6 +3269,21 @@ impl Services {
             mode: request.epic.mode,
             requested_key: request.epic.issue_key.clone(),
             confirmed_key: None,
+            description: (request.epic.mode == JiraMaterializationModeDto::Create)
+                .then(|| {
+                    request.epic.description.as_ref().map_or_else(
+                        || format!("Kontor epic {epic_id}: {}", epic.name.as_str()),
+                        |description| description.as_str().to_owned(),
+                    )
+                })
+                .or_else(|| {
+                    request
+                        .epic
+                        .description
+                        .as_ref()
+                        .map(|it| it.as_str().to_owned())
+                }),
+            confirmed_description: None,
         }];
 
         for task in &tasks {
@@ -3118,8 +3333,13 @@ impl Services {
                     requested_key: intent.issue_key.clone(),
                     marker,
                     require_marker: false,
+                    update_description: intent.mode == JiraMaterializationModeDto::Link
+                        && intent.description.is_some(),
                     summary: task.title.as_str().to_owned(),
-                    description: format!("Kontor task {}: {}", task.id, task.title.as_str()),
+                    description: intent.description.as_ref().map_or_else(
+                        || format!("Kontor task {}: {}", task.id, task.title.as_str()),
+                        |description| description.as_str().to_owned(),
+                    ),
                     parent_key: None,
                 },
             );
@@ -3129,6 +3349,15 @@ impl Services {
                 mode: intent.mode,
                 requested_key: intent.issue_key.clone(),
                 confirmed_key: None,
+                description: (intent.mode == JiraMaterializationModeDto::Create)
+                    .then(|| {
+                        intent.description.as_ref().map_or_else(
+                            || format!("Kontor task {}: {}", task.id, task.title.as_str()),
+                            |description| description.as_str().to_owned(),
+                        )
+                    })
+                    .or_else(|| intent.description.as_ref().map(|it| it.as_str().to_owned())),
+                confirmed_description: None,
             });
         }
 
@@ -4740,6 +4969,8 @@ impl Services {
         let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team_run.snapshot)
             .map_err(|error| self.refuse_domain(&error))?;
 
+        // Declared labels may coordinate a handoff; they never qualify a gate,
+        // phase or completion requirement, which consumes the artifact registry.
         // Every artifact this task's turns have produced, not only this turn's.
         // A handoff waits on artifacts, and it does not care which turn produced
         // which: the condition is about the task's state, not about authorship.
@@ -4981,8 +5212,52 @@ impl Services {
         {
             return Ok(false);
         }
-        match adapter.send(&request).await {
-            Ok(_) => {
+        // The same ledger the operator path writes, for the same reason and in
+        // the same order: before the runtime is asked to accept it. A follow-up
+        // is a Kontor-minted id in a session exactly like a direct send, and an
+        // observation of the turn it opens has to be able to prove it
+        // unambiguous without reading the whole transcript. The dispatch row
+        // fixes the id across retries, so a replay recognises its own issuance
+        // rather than writing a second one.
+        // Same capture, same order, on the derived path: the tail before the
+        // dispatch is what bounds the reconciliation that a later retry runs.
+        let boundary = state
+            .canonical_tail_boundary(
+                adapter.as_ref(),
+                request.binding.identity(),
+                &request.binding,
+            )
+            .await?;
+        let issuance = state.record_message_issuance(
+            request.binding.identity(),
+            request.binding.binding_id(),
+            message_id,
+            "handoff_dispatch",
+            &message_id.to_string(),
+            boundary,
+        )?;
+        // A derived dispatch is retried by reconciliation, which is precisely
+        // the path that crosses a restart: the row fixes the id, so a second
+        // arrival means an earlier attempt already reached the runtime, and a
+        // rebuilt adapter must reconcile rather than instruct the seat twice.
+        state.note_replayed_issuance(
+            adapter.as_ref(),
+            issuance,
+            message_id,
+            &request.body_hash(),
+        )?;
+        match state.send_issued_message(adapter.as_ref(), &request).await {
+            Ok(acknowledged) => {
+                // The same delivery position the operator path records, for the
+                // same reason: a follow-up is a Kontor-minted id in a session,
+                // and an observation of the turn it opens has to be able to tell
+                // the occurrence Kontor delivered from any other mention of it.
+                state.record_message_delivery_durably(
+                    adapter.as_ref(),
+                    request.binding.identity(),
+                    message_id,
+                    acknowledged.position,
+                )?;
                 state
                     .with_store(|store| {
                         store.mark_turn_dispatched(settled.id, &handoff.to_slot, target)
@@ -5018,7 +5293,19 @@ impl Services {
                     "this task declares no worktree, so there is nowhere to prepare its workspace",
                 )
             })?;
-        WorkspaceRoot::parse(declared.as_str()).map_err(|error| self.refuse_domain(&error))
+        let canonical = std::fs::canonicalize(declared.as_str()).map_err(|_| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this task's declared worktree is missing or cannot be canonicalized",
+            )
+        })?;
+        WorkspaceRoot::parse(canonical.to_str().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this task's canonical worktree is not valid UTF-8",
+            )
+        })?)
+        .map_err(|error| self.refuse_domain(&error))
     }
 
     /// Read one task row, refusing an id that is not in this project.
@@ -5037,6 +5324,179 @@ impl Services {
                     "no such task exists in this project",
                 )
             })
+    }
+
+    /// Derive and validate the sole supported replacement for one task claim.
+    ///
+    /// The target is not accepted as an arbitrary path. It must be exactly the
+    /// ASMA catalog-module layout derived from the stored project root, the
+    /// task's confirmed Jira key and the basename of its stored module key.
+    fn prepare_worktree_claim_correction(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        expected_revision: AggregateRevision,
+        old_worktree: &ExternalName,
+        new_worktree: &ExternalName,
+    ) -> Result<PreparedWorktreeClaimCorrection, ApiError> {
+        let state = self.state()?;
+        let task = self.task_row(project_id, task_id)?;
+        self.ensure_pre_run(project_id, task_id)?;
+        if task.revision != expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the task moved since the worktree claim was inspected",
+                )
+                .with_revision(Some(task.revision)));
+        }
+        if old_worktree == new_worktree {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "worktree_target_invalid: a correction must name a different deterministic target",
+            ));
+        }
+        WorkspaceRoot::parse(old_worktree.as_str()).map_err(|error| self.refuse_domain(&error))?;
+        let new_root = WorkspaceRoot::parse(new_worktree.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
+
+        let current = state
+            .with_store(|store| store.task_worktree(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?;
+        if current.as_ref() != Some(old_worktree) {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the stored worktree no longer matches the exact old claim",
+                )
+                .with_revision(Some(task.revision)));
+        }
+
+        let project = self.project_row(project_id)?;
+        let project_root = WorkspaceRoot::parse(project.root_path.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
+        let module = task.module.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the task has no catalog module from which a deterministic worktree can be derived",
+            )
+        })?;
+        let module_directory = module
+            .as_str()
+            .rsplit('/')
+            .next()
+            .filter(|segment| !segment.is_empty())
+            .expect("ModuleKey validation leaves one non-empty final segment");
+        let jira = state
+            .with_store(|store| store.confirmed_jira_task_key(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the task has no unambiguous confirmed Jira binding",
+                )
+            })?;
+        let tracker = TrackerKey::from_external(&jira)
+            .map_err(|refusal| self.deny(ApiErrorCode::PlacementBlocked, refusal.rule()))?;
+        let expected_slug = tracker.as_str().to_ascii_lowercase();
+        let expected_target = ExternalName::parse(&format!(
+            "{}/{MANAGED_WORKTREES_DIR}/{}/{}",
+            project_root.as_str().trim_end_matches('/'),
+            expected_slug,
+            module_directory,
+        ))
+        .map_err(|error| self.refuse_domain(&error))?;
+        if new_root.as_str() != expected_target.as_str() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "worktree_target_invalid: the replacement is not the task's deterministic ASMA catalog-module path",
+            ));
+        }
+        let expected_parts =
+            managed_catalog_worktree_parts(project_root.as_str(), expected_target.as_str());
+        if expected_parts != Some((expected_slug.as_str(), module_directory)) {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "worktree_target_invalid: the replacement does not encode one task slug and one catalog module",
+            ));
+        }
+        if state
+            .with_store(|store| store.task_worktree_owner(project_id, &expected_target))
+            .map_err(|error| self.refuse(&error))?
+            .is_some_and(|owner| owner != task_id)
+        {
+            return Err(self.deny(
+                ApiErrorCode::RevisionConflict,
+                "the deterministic worktree target is already registered to another task",
+            ));
+        }
+
+        let branch = ExternalName::parse(
+            BranchName::derive(BranchType::Feat, &tracker, task.title.as_str()).as_str(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
+        let preview_hash = self
+            .intent(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "correct_task_worktree",
+                "project_id": project_id.to_string(),
+                "task_id": task_id.to_string(),
+                "task_revision": task.revision.get(),
+                "old_worktree": old_worktree.as_str(),
+                "new_worktree": expected_target.as_str(),
+                "jira_key": tracker.as_str(),
+                "module": module.as_str(),
+                "branch": branch.as_str(),
+            }))?
+            .hash()
+            .clone();
+        Ok(PreparedWorktreeClaimCorrection {
+            task_revision: task.revision,
+            old_worktree: old_worktree.clone(),
+            new_worktree: expected_target,
+            module,
+            branch,
+            preview_hash,
+        })
+    }
+
+    fn worktree_claim_correction_intent(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &WorktreeClaimCorrectionApplyRequest,
+    ) -> Result<CanonicalDocument, ApiError> {
+        self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "correct_task_worktree",
+            "project_id": project_id.to_string(),
+            "task_id": task_id.to_string(),
+            "expected_revision": request.expected_revision.get(),
+            "old_worktree": request.old_worktree.as_str(),
+            "new_worktree": request.new_worktree.as_str(),
+            "preview_hash": request.preview_hash,
+        }))
+    }
+
+    fn worktree_claim_correction_applied(
+        &self,
+        correction: kontor_store::StoredTaskWorktreeCorrection,
+        applied: Applied,
+    ) -> Result<WorktreeClaimCorrectionAppliedDto, ApiError> {
+        Ok(WorktreeClaimCorrectionAppliedDto {
+            realm_id: self.state()?.realm_id(),
+            project_id: correction.project_id,
+            task_id: correction.task_id,
+            task_revision: correction.task_revision,
+            old_worktree: correction.old_worktree,
+            new_worktree: correction.new_worktree,
+            module: correction.module.as_str().to_owned(),
+            branch: correction.branch.as_str().to_owned(),
+            applied: applied_dto(applied),
+            receipt_id: correction.receipt_id.to_string(),
+            preview_hash: correction.preview_hash.as_str().to_owned(),
+            corrected_at: correction.corrected_at,
+        })
     }
 
     /// The agent run currently filling this task's seat, if there is one.
@@ -5112,6 +5572,31 @@ impl Services {
         Ok(None)
     }
 
+    /// Return only unspent runtime reservations after the store certified this
+    /// exact run never bound a native. Replays finish an interrupted cleanup.
+    async fn release_abandoned_reservation(
+        &self,
+        run: &kontor_core::repository::AgentRun,
+    ) -> Result<(), ApiError> {
+        if !run.is_operator_abandoned_unbound() {
+            return Ok(());
+        }
+        let state = self.state()?;
+        let slot = RoleSlotKey::new(
+            run.team_run_id,
+            RoleSlotId::parse(run.role.as_str()).map_err(|error| self.refuse_domain(&error))?,
+        );
+        for family in state.runtimes().families() {
+            if let Some(adapter) = state.runtimes().get(family) {
+                adapter
+                    .release_unclaimed_admission(&slot, run.id)
+                    .await
+                    .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Refuse a correction to a selection a run has already frozen.
     ///
     /// This is the whole reason the selection routes are separate from
@@ -5182,7 +5667,31 @@ impl Services {
                 "the cited session record is not this task's evaluator seat",
             ));
         }
-        if run.role != *evaluator_role {
+        // A gate declares the *catalog role* that may evaluate it
+        // (`fleet-spec-auditor`), while a run persists the *slot* it was
+        // admitted on (`audit`). Those are two different keys for the same
+        // seat, so comparing them directly refuses every evaluator in any
+        // profile whose slot ids are not also role names. Resolve the role
+        // through the TeamRun's own frozen definition first, exactly as
+        // `live_evaluator_seat` already does for the non-recovery path. This
+        // narrows nothing: the cited run must still hold an evaluator slot of
+        // this gate, on the TeamRun already proved to serve this task.
+        let team_run = state
+            .with_store(|store| store.get_team_run(project_id, run.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the cited session record names no team run in this project",
+                )
+            })?;
+        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team_run.snapshot)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if !template
+            .slots_of(evaluator_role)
+            .iter()
+            .any(|slot| slot.id.as_role_key() == &run.role)
+        {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
                 "the cited session record does not hold the role recording the verdict",
@@ -5357,6 +5866,37 @@ impl Services {
         kontor_accounts::eligible_accounts(&profiles).map_err(|error| self.refuse_domain(&error))
     }
 
+    /// The single enabled account that may be selected for one governed route.
+    ///
+    /// Ambiguity refuses rather than picks. A launch freezes a provider alias,
+    /// not an account id, so two enabled profiles able to select the same alias
+    /// leave a provider report unattributable to the account whose capacity is
+    /// actually being spent. Resolving this at preview is deliberate: the
+    /// alternative is handing back a hash that could never be applied.
+    fn approved_route_account(
+        &self,
+        project_id: ProjectId,
+        rung: &ModelRung,
+    ) -> Result<kontor_scheduler::headroom::EligibleAccount, ApiError> {
+        let accounts = self.eligible_accounts(project_id)?;
+        let mut selectable = accounts
+            .into_iter()
+            .filter(|account| account.selectable_providers.contains(&rung.provider.0));
+        let account = selectable.next().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "no enabled account profile can select the approved route's provider",
+            )
+        })?;
+        if selectable.next().is_some() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "more than one enabled account profile can select the approved route's provider",
+            ));
+        }
+        Ok(account)
+    }
+
     /// The headroom policy in force, or the state-only fallback.
     ///
     /// A realm configured before OP-REQ-042 has no policy, and that is not a
@@ -5366,6 +5906,32 @@ impl Services {
         self.capacity
             .headroom
             .unwrap_or_else(HeadroomConfig::state_only)
+    }
+
+    /// Admission view of quota evidence. An unchanged successful poll appends
+    /// an immutable heartbeat without rewriting the quota projection. Only an
+    /// exact matching provider report may supply that newer observation time;
+    /// persisted timestamps and public readback remain unchanged.
+    fn admission_quota_states(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Vec<kontor_core::repository::ProviderQuotaState>, ApiError> {
+        self.state()?
+            .with_store(|store| {
+                store
+                    .list_provider_quota_states(project_id)?
+                    .into_iter()
+                    .map(|row| {
+                        let observation = store.latest_provider_usage_observation(
+                            project_id,
+                            row.account_profile_id,
+                            &row.provider,
+                        )?;
+                        Ok(quota_state_for_admission(row, observation.as_ref()))
+                    })
+                    .collect::<Result<Vec<_>, RepositoryError>>()
+            })
+            .map_err(|error| self.refuse(&error))
     }
 
     /// Whether this key has already recorded *this exact* request.
@@ -5403,6 +5969,92 @@ impl Services {
 
     /// Canonicalize one intent document, refusing anything the domain will not
     /// store.
+    /// Choose the approved memory a Context Pack can actually carry.
+    ///
+    /// The whole approved set is tried first and is the answer whenever it fits,
+    /// so nothing changes for a project below the ceiling — same sources, same
+    /// bytes, same hash. Only when the canonical document would exceed
+    /// [`kontor_core::id::MAX_CANONICAL_BYTES`] is the set narrowed, and then to
+    /// the longest prefix of the store's own deterministic order that does fit.
+    ///
+    /// The prefix is found by canonicalizing candidate packs rather than by
+    /// estimating their size from the documents' own lengths: key names, JSON
+    /// escaping and one provenance entry per resolved leaf all land in the
+    /// canonical bytes, so an estimate would have to carry a safety margin and
+    /// would drop revisions that would have fitted. Each memory item occupies its
+    /// own `/memory/<item_id>` subtree and so can only add bytes, which makes the
+    /// fit monotonic in the prefix length and lets a binary search find the exact
+    /// boundary in a logarithmic number of attempts.
+    ///
+    /// Only the ceiling refusal is treated this way. Sensitive material, a
+    /// non-finite number or a missing `schema_version` are faults in a document
+    /// that no amount of narrowing can fix, and they still refuse.
+    fn select_memory_within_ceiling(
+        &self,
+        realm_id: kontor_core::id::RealmId,
+        task: &kontor_core::repository::Task,
+        workflow: &kontor_core::repository::TaskWorkflow,
+        memory: &[kontor_store::memory::MemoryRevision],
+    ) -> Result<MemorySelection, ApiError> {
+        let fits = |count: usize| -> Result<bool, ApiError> {
+            let sources = context_sources(realm_id, task, workflow, &memory[..count])?;
+            let references = kontor_context::model::ReferenceInputs::new();
+            let resolution = kontor_context::resolve::ResolutionRequest {
+                realm_id,
+                sources: &sources,
+                references: &references,
+            };
+            match kontor_context::resolve::preview(&resolution) {
+                Ok(_) => Ok(true),
+                Err(kontor_core::DomainError::Invalid { subject, rule })
+                    if subject == "CanonicalDocument"
+                        && rule == kontor_core::id::OVER_CANONICAL_CEILING =>
+                {
+                    Ok(false)
+                }
+                Err(error) => Err(self.refuse_domain(&error)),
+            }
+        };
+
+        if fits(memory.len())? {
+            return Ok(MemorySelection::whole(memory.len()));
+        }
+        // The base layers alone are over the ceiling, so no choice of memory
+        // rescues this. Refuse with the resolver's own error rather than return
+        // a pack that silently stands for something else.
+        if !fits(0)? {
+            let sources = context_sources(realm_id, task, workflow, &[])?;
+            let references = kontor_context::model::ReferenceInputs::new();
+            let resolution = kontor_context::resolve::ResolutionRequest {
+                realm_id,
+                sources: &sources,
+                references: &references,
+            };
+            let error = kontor_context::resolve::preview(&resolution)
+                .err()
+                .unwrap_or_else(|| {
+                    kontor_core::DomainError::invalid(
+                        "CanonicalDocument",
+                        kontor_core::id::OVER_CANONICAL_CEILING,
+                    )
+                });
+            return Err(self.refuse_domain(&error));
+        }
+        // Largest `included` in [0, len) that fits; `low` always fits and `high`
+        // never does, so the loop closes on the exact boundary.
+        let mut low = 0usize;
+        let mut high = memory.len();
+        while high - low > 1 {
+            let middle = low + (high - low) / 2;
+            if fits(middle)? {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        Ok(MemorySelection::narrowed(low))
+    }
+
     fn intent(&self, value: &serde_json::Value) -> Result<CanonicalDocument, ApiError> {
         CanonicalDocument::from_value(value).map_err(|error| self.refuse_domain(&error))
     }
@@ -5810,9 +6462,26 @@ impl Services {
                 .with_store(|store| store.task_worktree(project_id, task.id))
                 .map_err(|error| self.refuse(&error))?
                 .map(|worktree| WorktreeClaim {
+                    verification: if PathBuf::from(worktree.as_str()).is_dir()
+                        && PathBuf::from(worktree.as_str()).join(".git").exists()
+                        && std::fs::canonicalize(worktree.as_str()).is_ok()
+                    {
+                        WorktreeVerification::Verified
+                    } else {
+                        WorktreeVerification::Unverified
+                    },
                     worktree,
-                    verification: WorktreeVerification::Verified,
                 });
+            let placement = self
+                .placement_admission(
+                    project_id,
+                    epic_id,
+                    task.id,
+                    registered.get(&task.id).copied().unwrap_or(true),
+                    worktree.as_ref(),
+                    &runtime,
+                )
+                .await?;
             let changed_modules = state
                 .with_store(|store| store.task_changed_modules(project_id, task.id))
                 .map_err(|error| self.refuse(&error))?;
@@ -5820,6 +6489,7 @@ impl Services {
                 project_id,
                 task_id: task.id,
                 delivery_slots_registered: registered.get(&task.id).copied().unwrap_or(true),
+                placement,
                 mini_project_id: Some(epic_id),
                 workflow_id: workflow.id,
                 state: task.state,
@@ -5859,6 +6529,208 @@ impl Services {
             capacity: self.capacity,
             adaptive_window: self.admission_window(project_id, epic_id)?,
             freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+        })
+    }
+
+    /// Build the fail-closed placement proof consumed by the pure scheduler.
+    async fn placement_admission(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        task_id: TaskId,
+        delivery_slots_registered: bool,
+        worktree: Option<&WorktreeClaim>,
+        runtime: &RuntimeAdmissionEvidence,
+    ) -> Result<PlacementAdmission, ApiError> {
+        let state = self.state()?;
+        let jira = state.with_store(|store| {
+            Ok::<_, RepositoryError>((
+                store.confirmed_jira_epic_key(project_id, epic_id)?,
+                store.confirmed_jira_task_key(project_id, task_id)?,
+            ))
+        });
+        let (epic_jira, task_jira) = match jira {
+            Ok((Some(epic), Some(task)))
+                if TrackerKey::from_external(&epic).is_ok()
+                    && TrackerKey::from_external(&task).is_ok() =>
+            {
+                (epic, task)
+            }
+            Ok(_) | Err(RepositoryError::Conflict { .. }) => {
+                return Ok(PlacementAdmission::JiraBindingUnconfirmed);
+            }
+            Err(error) => return Err(self.refuse(&error)),
+        };
+
+        let Some(pin) = state
+            .with_store(|store| store.get_mini_project_team_definition(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(PlacementAdmission::TeamDefinitionUnpinned);
+        };
+        let Some(definition) = state
+            .with_store(|store| {
+                store.get_team_definition(
+                    project_id,
+                    pin.definition.definition_id,
+                    pin.definition.version,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(PlacementAdmission::TeamDefinitionUnpinned);
+        };
+        if TeamDefinitionSnapshot::from_revision(&definition)
+            .map_err(|error| self.refuse_domain(&error))?
+            != pin.definition
+        {
+            return Ok(PlacementAdmission::TeamDefinitionUnpinned);
+        }
+        if !delivery_slots_registered {
+            return Ok(PlacementAdmission::DeliverySlotUnregistered);
+        }
+        let Some(worktree) = worktree else {
+            return Ok(PlacementAdmission::WorktreeMissing);
+        };
+        if worktree.verification != WorktreeVerification::Verified {
+            return Ok(PlacementAdmission::WorktreeUnverified);
+        }
+        let Ok(canonical_worktree) = std::fs::canonicalize(worktree.worktree.as_str()) else {
+            return Ok(PlacementAdmission::WorktreeUnverified);
+        };
+        let Some(canonical_worktree) = canonical_worktree.to_str() else {
+            return Ok(PlacementAdmission::WorktreeUnverified);
+        };
+        let Ok(canonical_worktree) = WorkspaceRoot::parse(canonical_worktree) else {
+            return Ok(PlacementAdmission::WorktreeUnverified);
+        };
+
+        let Some(adapter) = state.runtimes().get(&runtime.runtime_kind) else {
+            return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
+        };
+        let epic_scope = match self.execution_scope(project_id, epic_id, None, adapter.as_ref()) {
+            Ok(scope) if scope.epic.external_epic_key == epic_jira => scope,
+            Ok(_) => return Ok(PlacementAdmission::JiraBindingUnconfirmed),
+            Err(_) => return Ok(PlacementAdmission::NativeTopologyUnconfirmed),
+        };
+        let task_scope =
+            match self.execution_scope(project_id, epic_id, Some(task_id), adapter.as_ref()) {
+                Ok(scope)
+                    if scope.epic.external_epic_key == epic_jira
+                        && scope
+                            .task
+                            .as_ref()
+                            .is_some_and(|task| task.external_issue_key == task_jira) =>
+                {
+                    scope
+                }
+                Ok(_) => return Ok(PlacementAdmission::JiraBindingUnconfirmed),
+                Err(_) => return Ok(PlacementAdmission::NativeTopologyUnconfirmed),
+            };
+        let nodes = state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?;
+        let exact = |kind: &TopologyKindKey, task: Option<TaskId>| {
+            let found = nodes
+                .iter()
+                .filter(|node| &node.kind == kind && node.task_id == task)
+                .collect::<Vec<_>>();
+            (found.len() == 1).then(|| (*found[0]).clone())
+        };
+        let (Some(esw), Some(ecp), Some(tsw)) = (
+            exact(&self.domain.delivery.epic_kind, None),
+            exact(&self.domain.delivery.control_kind, None),
+            exact(&self.domain.delivery.task_kind, Some(task_id)),
+        ) else {
+            return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
+        };
+        if esw.lifecycle != TopologyLifecycle::Active
+            || ecp.lifecycle != TopologyLifecycle::Active
+            || tsw.lifecycle != TopologyLifecycle::Active
+            || ecp.parent_id != Some(esw.id)
+            || tsw.parent_id != Some(esw.id)
+            || definition.container(&esw.kind).is_none()
+            || definition.container(&ecp.kind).is_none()
+            || definition.container(&tsw.kind).is_none()
+        {
+            return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
+        }
+
+        let mut readbacks = Vec::with_capacity(3);
+        for (role, node, scope) in [
+            ("esw", &esw, &epic_scope),
+            ("ecp", &ecp, &epic_scope),
+            ("tsw", &tsw, &task_scope),
+        ] {
+            let Some(binding) = state
+                .with_store(|store| store.get_topology_node_container(project_id, node.id))
+                .map_err(|error| self.refuse(&error))?
+            else {
+                return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
+            };
+            if binding.identity.runtime_kind != runtime.runtime_kind {
+                return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
+            }
+            let inspection = match self
+                .inspect_bound_container(project_id, node, &binding, adapter.as_ref())
+                .await
+            {
+                Ok(inspection) => inspection,
+                Err(_) => return Ok(PlacementAdmission::NativeTopologyUnconfirmed),
+            };
+            let expected_title =
+                self.container_name_from_definition(&definition, node, Some(scope), None)?;
+            let expected_cwd = binding
+                .canonical_cwd
+                .as_ref()
+                .and_then(|cwd| WorkspaceRoot::parse(cwd.as_str()).ok());
+            if inspection.visible_title != expected_title.as_str()
+                || expected_cwd.is_none()
+                || inspection.canonical_cwd != expected_cwd
+                || (role == "tsw" && inspection.canonical_cwd.as_ref() != Some(&canonical_worktree))
+            {
+                return Ok(PlacementAdmission::NativeTopologyUnconfirmed);
+            }
+            let parent = inspection.native_parent.as_ref().map(|parent| {
+                serde_json::json!({
+                    "runtime_kind": parent.runtime_kind.as_str(),
+                    "runtime_host": parent.host.as_str(),
+                    "runtime_generation": parent.generation,
+                    "native_id": parent.native_id.as_str(),
+                })
+            });
+            readbacks.push(serde_json::json!({
+                "role": role,
+                "topology_node_id": node.id.to_string(),
+                "container_binding_id": inspection.binding.id.to_string(),
+                "runtime_kind": inspection.binding.identity.runtime_kind.as_str(),
+                "runtime_host": inspection.binding.identity.host.as_str(),
+                "runtime_generation": inspection.binding.identity.generation,
+                "native_id": inspection.binding.identity.native_id.as_str(),
+                "projection": inspection.binding.projection.to_string(),
+                "native_kind": inspection.observed_kind.as_str(),
+                "visible_title": inspection.visible_title,
+                "canonical_cwd": inspection.canonical_cwd.as_ref().map(WorkspaceRoot::as_str),
+                "native_parent": parent,
+                "topology_correlation": inspection.correlation.label.to_string(),
+            }));
+        }
+        let attestation = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "project_id": project_id.to_string(),
+            "epic_id": epic_id.to_string(),
+            "task_id": task_id.to_string(),
+            "epic_jira_key": epic_jira.as_str(),
+            "task_jira_key": task_jira.as_str(),
+            "team_definition_id": pin.definition.definition_id.to_string(),
+            "team_definition_version": pin.definition.version.get(),
+            "team_definition_hash": pin.definition.canonical_hash.as_str(),
+            "worktree": canonical_worktree.as_str(),
+            "containers": readbacks,
+        }))
+        .map_err(|error| self.refuse_domain(&error))?;
+        Ok(PlacementAdmission::Confirmed {
+            attestation_digest: attestation.hash().clone(),
         })
     }
 
@@ -6018,6 +6890,31 @@ impl Services {
                     "no such role catalog revision exists in this realm",
                 )
             })
+    }
+
+    /// Freeze the launch-time persona for one role, when that role seeds one.
+    ///
+    /// The snapshot is what gets persisted *and* what gets delivered, so the
+    /// bytes recorded as received and the bytes actually sent cannot drift
+    /// apart: there is one value, hashed once and used twice. A role with no
+    /// seeded persona yields `None` and is launched under no system prompt,
+    /// exactly as every role was before this table existed.
+    fn freeze_role_persona(
+        &self,
+        role_code: &RoleCode,
+    ) -> Result<Option<kontor_core::spec::RolePersonaSnapshot>, ApiError> {
+        let Some(prompt) = self.domain.role_prompt(role_code) else {
+            return Ok(None);
+        };
+        kontor_core::spec::RolePersonaSnapshot::freeze(
+            role_code.clone(),
+            prompt.clone(),
+            kontor_core::spec::RolePersonaDelivery::CreateOnlyNoReadback,
+            SCHEMA_VERSION,
+            kontor_api::now(),
+        )
+        .map(Some)
+        .map_err(|error| self.refuse_domain(&error))
     }
 
     /// The catalog revision this build publishes.
@@ -6653,6 +7550,158 @@ impl Services {
         })
     }
 
+    /// Whether one hold's recorded condition is now true.
+    ///
+    /// Every arm reads only Kontor's own durable state — no runtime call, no
+    /// external fetch. That bound is what makes this safe to evaluate inline at
+    /// the boundary that can make it true: it cannot fail for a reason that has
+    /// nothing to do with the epic, and it cannot turn a busy Jira into a stuck
+    /// epic.
+    ///
+    /// [`HoldLiftCondition::Manual`] is always false. It is not "no condition",
+    /// it is the statement that a person decides, and the whole point of the
+    /// type is that a hold cannot lift itself without having said it would.
+    fn hold_lift_satisfied(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        condition: HoldLiftCondition,
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        match condition {
+            HoldLiftCondition::Manual => Ok(false),
+            HoldLiftCondition::KickoffReady => {
+                let epic_bound = state
+                    .with_store(|store| store.confirmed_jira_epic_key(project_id, epic_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .is_some();
+                let tasks = state
+                    .with_store(|store| store.list_epic_tasks(project_id, epic_id))
+                    .map_err(|error| self.refuse(&error))?;
+                let mut every_task_bound = true;
+                let mut every_task_placed = true;
+                for task in tasks {
+                    if state
+                        .with_store(|store| store.confirmed_jira_task_key(project_id, task.id))
+                        .map_err(|error| self.refuse(&error))?
+                        .is_none()
+                    {
+                        every_task_bound = false;
+                    }
+                    // The durable declaration, which is what "worktrees are
+                    // confirmed" can mean at kickoff. A claim the scheduler
+                    // verified and a workspace placement preflight proved are
+                    // both later facts, produced during the admission this hold
+                    // exists to withhold — requiring either would make the hold
+                    // wait on itself.
+                    if state
+                        .with_store(|store| store.task_worktree(project_id, task.id))
+                        .map_err(|error| self.refuse(&error))?
+                        .is_none()
+                    {
+                        every_task_placed = false;
+                    }
+                    if !every_task_bound && !every_task_placed {
+                        break;
+                    }
+                }
+                Ok(kickoff_is_ready(
+                    epic_bound,
+                    every_task_bound,
+                    every_task_placed,
+                ))
+            }
+        }
+    }
+
+    /// Lift every hold on this epic whose recorded condition has come true.
+    ///
+    /// A hold is a covering authorization persisted already revoked. Lifting it
+    /// is arming a replacement, which is exactly what the human did by hand —
+    /// so this mints an ordinary grant with an ordinary command receipt, and
+    /// the evidence a lift leaves is the same evidence an `execution-arm`
+    /// leaves. Nothing about the governance bar moves: the replacement covers
+    /// the epic, and every gate, gate evaluator and completion rule still
+    /// applies to what runs under it.
+    ///
+    /// Idempotent twice over. An epic that already holds a live grant is left
+    /// alone, because it is no longer held and a second grant would only widen
+    /// concurrency behind the operator's back. And the arm's key is derived
+    /// from the hold it lifts, so a retry after any interruption converges the
+    /// same authorization instead of minting another.
+    async fn lift_satisfied_holds(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let now = kontor_api::now();
+        let stored = state
+            .with_store(|store| store.list_authorizations(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        let covering = stored.iter().filter(|entry| {
+            entry.authorization.scope
+                == WorkScope::MiniProject {
+                    mini_project_id: epic_id,
+                }
+        });
+        // Already armed is already lifted. Checked before any condition is
+        // evaluated, so the common case costs nothing.
+        if covering
+            .clone()
+            .any(|entry| entry.arms(now, Some(epic_id), None))
+        {
+            return Ok(());
+        }
+        for entry in covering {
+            if entry.revocation.is_none() {
+                continue;
+            }
+            let id = entry.authorization.id;
+            let condition = state
+                .with_store(|store| store.get_hold_lift_condition(project_id, id))
+                .map_err(|error| self.refuse(&error))?;
+            if !self.hold_lift_satisfied(project_id, epic_id, condition)? {
+                continue;
+            }
+            let epic = self.epic_row(project_id, epic_id)?;
+            let key = IdempotencyKey::parse(&format!("hold-lift-{id}"))
+                .map_err(|error| self.refuse_domain(&error))?;
+            let reason = ExternalName::parse(&format!(
+                "self-lifted: the recorded condition {condition} is satisfied"
+            ))
+            .map_err(|error| self.refuse_domain(&error))?;
+            <Self as ApplicationOperations>::arm(
+                self,
+                &key,
+                project_id,
+                epic_id,
+                &ArmRequest {
+                    expected_revision: epic.revision,
+                    tasks: Vec::new(),
+                    allowed_start: None,
+                    allowed_end: None,
+                    max_concurrency: Some(entry.authorization.max_concurrency),
+                    budget: None,
+                    // The owner the hold recorded. A self-lift is the hold's
+                    // own terms being met, not a new party deciding.
+                    granted_by: entry
+                        .revocation
+                        .as_ref()
+                        .map_or(entry.authorization.created_by, |revocation| {
+                            revocation.revoked_by
+                        }),
+                    reason,
+                },
+            )
+            .await?;
+            // One lift per pass. The epic now holds a live grant, so every
+            // remaining hold on it is moot until that grant is itself revoked.
+            return Ok(());
+        }
+        Ok(())
+    }
+
     /// Whether one epic has the governed leadership its roster mandates.
     ///
     /// The snapshot's answer to [`RosterGovernance`], resolved here rather than
@@ -7010,6 +8059,24 @@ impl Services {
                     },
                     observed_at: native.observed_at,
                 });
+            // Read for the occupancy actually filling the seat, so a replaced
+            // seat reports the persona *its own* generation was launched under
+            // rather than inheriting the predecessor's.
+            seat.role_persona = match seat.seat_binding_id {
+                Some(seat_binding_id) => state
+                    .with_store(|store| {
+                        store.latest_hosted_seat_role_persona(project_id, seat_binding_id)
+                    })
+                    .map_err(|error| self.refuse(&error))?
+                    .map(|(occupancy_generation, persona)| CoreTeamSeatPersonaDto {
+                        role_code: persona.role_code,
+                        prompt_hash: persona.prompt_hash,
+                        delivery: persona.delivery.as_str().to_owned(),
+                        occupancy_generation,
+                        frozen_at: persona.frozen_at,
+                    }),
+                None => None,
+            };
         }
         Ok(CoreTeamDto {
             realm_id: state.realm_id(),
@@ -7018,6 +8085,159 @@ impl Services {
             revision: roster.revision_of_epic,
             snapshot_cursor: self.cursor()?,
         })
+    }
+
+    /// The one native durable Kontor records name for this seat and generation.
+    ///
+    /// Read only from what Kontor itself wrote — the occupancies it bound and
+    /// the launch intents it installed — and correlated by
+    /// [`kontor_core::tpm_lineage::resolve`]. A native answering to the seat's
+    /// labels but present in neither record is not a weak candidate here; it is
+    /// not a candidate, which is the whole point of asking this before anything
+    /// is adopted or retired.
+    ///
+    /// Placement is proved, not assumed, whenever a native decision may follow.
+    /// The topology holds one ECP workspace for this control plane; if that
+    /// exact container cannot be re-read, the observed placement is recorded as
+    /// unconfirmed and the resolver refuses. Failing closed there is the
+    /// difference between "the seat is where we think it is" and "nobody
+    /// checked".
+    ///
+    /// `may_bind_native` is what decides whether that re-read happens, and it
+    /// is a statement about consequence rather than an optimization. A plan
+    /// whose successor is already bound will adopt nothing and retire nothing,
+    /// so it makes no placement claim and must not spend a runtime call to
+    /// restate one — that is what keeps an idempotent replay free of runtime
+    /// effects. The lineage *answer* is identical either way: placement can
+    /// only refuse, never change which native is authoritative.
+    async fn hosted_seat_lineage(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        binding: &SeatBinding,
+        predecessor: &StoredHostedTopologySeat,
+        may_bind_native: bool,
+    ) -> Result<AuthoritativeNative, ApiError> {
+        let state = self.state()?;
+        let container = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Core Team control plane has no persisted native container",
+                )
+            })?;
+        let observed_placement = if may_bind_native {
+            let adapter = state
+                .runtimes()
+                .get(&container.identity.runtime_kind)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the control plane's container runtime is not configured in this daemon",
+                    )
+                })?;
+            match self
+                .inspect_bound_container(project_id, node, &container, adapter.as_ref())
+                .await
+            {
+                Ok(inspection) => inspection.binding.identity.native_id,
+                Err(_) => ExternalId::parse(UNCONFIRMED_PLACEMENT)
+                    .map_err(|error| self.refuse_domain(&error))?,
+            }
+        } else {
+            container.identity.native_id.clone()
+        };
+        let expected_route = catalog_route(&predecessor.model_rung);
+        // An occupancy generation is an *ordinal*, not the runtime generation
+        // carried by a native identity: the store derives it as one more than
+        // the number of predecessors this seat has retired. Reconstructing it
+        // the same way here is what makes an occupancy row and a launch intent
+        // comparable at all — the native identity's own generation counts
+        // runtime restarts and is shared by every occupancy between two of
+        // them.
+        let mut occupancies = state
+            .with_store(|store| store.list_hosted_topology_seat_history(project_id, binding.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .enumerate()
+            .map(|(retired, row)| ObservedOccupancy {
+                generation: retired as u64 + 1,
+                native_id: row.native_identity.native_id,
+                route: catalog_route(&row.model_rung),
+            })
+            .collect::<Vec<_>>();
+        let current_generation = occupancies.len() as u64 + 1;
+        if let Some(active) = state
+            .with_store(|store| store.get_hosted_topology_seat(project_id, binding.id))
+            .map_err(|error| self.refuse(&error))?
+        {
+            occupancies.push(ObservedOccupancy {
+                generation: current_generation,
+                native_id: active.native_identity.native_id,
+                route: catalog_route(&active.model_rung),
+            });
+        }
+        // Which occupancy the caller's predecessor *is*, named by the same
+        // ordinal. A predecessor that appears in no occupancy at all leaves the
+        // generation unresolvable, and that refuses through the resolver's own
+        // vocabulary rather than a second guard here.
+        let generation = occupancies
+            .iter()
+            .find(|occupancy| occupancy.native_id == predecessor.native_identity.native_id)
+            .map_or(current_generation, |occupancy| occupancy.generation);
+        let intents = state
+            .with_store(|store| store.list_hosted_seat_launch_intents(project_id, binding.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .map(|row| ObservedLaunchIntent {
+                occupancy_generation: row.occupancy_generation,
+                state: match row.state {
+                    HostedSeatLaunchIntentState::Prepared => IntentState::Prepared,
+                    HostedSeatLaunchIntentState::Installed => IntentState::Installed,
+                },
+                observed_native_id: row.observed_native_id,
+                route: catalog_route(&row.model_rung),
+            })
+            .collect::<Vec<_>>();
+        tpm_lineage::resolve(
+            &LineageQuery {
+                generation,
+                expected_route,
+                expected_placement: container.identity.native_id.clone(),
+                observed_placement,
+            },
+            &occupancies,
+            &intents,
+        )
+        .map_err(|refusal| self.refuse_lineage(refusal))
+    }
+
+    /// One closed refusal vocabulary, mapped to the codes the contract owes.
+    fn refuse_lineage(&self, refusal: LineageRefusal) -> ApiError {
+        match refusal {
+            LineageRefusal::PlacementMismatch => self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the hosted seat is not in the ECP workspace its topology holds",
+            ),
+            LineageRefusal::NoEligibleLineage => self.deny(
+                ApiErrorCode::StaleBinding,
+                "no durable Kontor record names a native for this seat and generation",
+            ),
+            LineageRefusal::AmbiguousLineage => self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "more than one durable record names a different native for this generation",
+            ),
+            LineageRefusal::RouteMismatch => self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "a durable record's route disagrees with the seat's catalog route",
+            ),
+            LineageRefusal::ContradictoryOccupancy => self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the occupancy and the launch intent name different natives for one generation",
+            ),
+        }
     }
 
     async fn core_team_route_plan(
@@ -7061,7 +8281,6 @@ impl Services {
                     "the SeatBinding is not hosted by this epic's control plane",
                 )
             })?;
-        let _ = node;
         if !roster.revision.seats.iter().any(|seat| {
             seat.presence != EpicPresence::OnDemand
                 && seat.role_slot_id == binding.role_slot_id
@@ -7115,6 +8334,28 @@ impl Services {
             }
             (predecessor, Some(active))
         };
+        // Asked before anything is adopted or retired, and before the runtime
+        // is consulted about liveness at all. The absence classification below
+        // says whether the predecessor is still *there*; this says whether that
+        // predecessor is the native Kontor's own records name for this seat and
+        // generation. A proved-gone answer must never be allowed to stand in
+        // for that: converging on a successor is only safe once the native
+        // being replaced is the authoritative one.
+        let lineage = self
+            .hosted_seat_lineage(
+                project_id,
+                &node,
+                &binding,
+                &predecessor,
+                successor.is_none(),
+            )
+            .await?;
+        if lineage.native_id != predecessor.native_identity.native_id {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "durable lineage names a different native for this seat and generation",
+            ));
+        }
         let native_is_live = if successor.is_some() {
             true
         } else {
@@ -7127,17 +8368,35 @@ impl Services {
                         "the hosted-seat runtime is not configured in this daemon",
                     )
                 })?;
-            adapter
+            match adapter
                 .inspect_hosted_seat(&HostedSeatInspectRequest {
                     seat_binding_id: binding.id,
                     identity: predecessor.native_identity.clone(),
                     model_rung: predecessor.model_rung.clone(),
+                    // The authority this native was launched under, not the one
+                    // the plane would grant a new seat today. Re-resolving here
+                    // makes a liveness probe fail whenever the default moved.
+                    autonomy: predecessor.autonomy,
                     requested_at: kontor_api::now(),
                 })
                 .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-                .state
-                .is_live()
+            {
+                Ok(inspection) => inspection.state.is_live(),
+                // The runtime proved this predecessor is gone rather than
+                // declining to answer: it holds a different native for the seat
+                // (a lost launch acknowledgement leaves exactly that), or the
+                // exact session no longer exists or is already terminal.
+                // Refusing here would wedge the seat on the very retry that
+                // exists to recover it.
+                //
+                // Every other refusal — a working or permission-waiting
+                // session, a wrong runtime or generation, a disposition this
+                // build has not audited — still refuses.
+                Err(error) if error.proves_hosted_predecessor_absent() => false,
+                Err(error) => {
+                    return Err(ApiError::from_runtime(state.realm_id(), &error));
+                }
+            }
         };
         let stale_native_recovery =
             predecessor.model_rung == desired && (successor.is_some() || !native_is_live);
@@ -7171,6 +8430,20 @@ impl Services {
                 "model": predecessor.model_rung,
             },
             "desired": desired,
+            // The resolved lineage is part of what was previewed, not a note
+            // about it. Apply re-plans and compares this hash before its first
+            // native effect, so a seat whose durable records come to name a
+            // different native — or name it on different evidence — expires the
+            // preview instead of retiring whatever now answers.
+            "lineage": {
+                "native_id": lineage.native_id.as_str(),
+                "generation": lineage.generation,
+                "evidence": match lineage.evidence {
+                    LineageEvidence::Occupancy => "occupancy",
+                    LineageEvidence::InstalledIntent => "installed_intent",
+                    LineageEvidence::OccupancyAndIntent => "occupancy_and_intent",
+                },
+            },
         });
         if stale_native_recovery {
             preview_document["stale_native_recovery"] = serde_json::Value::Bool(true);
@@ -7319,7 +8592,18 @@ impl Services {
                     "the hosted-seat runtime is not configured in this daemon",
                 )
             })?;
-        let cwd = self.runtime_root(project_id, Some(epic_id))?;
+        // A claimant being in the named workspace does not prove that the
+        // workspace still satisfies its durable ECP binding. Preserve both
+        // independent read-only fences in preview and in apply's fresh plan.
+        let proved_container = self
+            .bound_container_snapshot(project_id, &node, adapter.as_ref())
+            .await?;
+        let cwd = proved_container.binding.root.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the proved Core Team container has no canonical directory",
+            )
+        })?;
         let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
         let display_name = self.seat_name(
             project_id,
@@ -7332,7 +8616,7 @@ impl Services {
             seat_binding_id: binding.id,
             role_slot_id: binding.role_slot_id.clone(),
             display_name,
-            container_native_id: container.identity.native_id,
+            container_native_id: proved_container.binding.identity.native_id.clone(),
             cwd,
             scope,
             claimant_native_id: request.claimant_native_id.clone(),
@@ -7374,6 +8658,15 @@ impl Services {
             "epic": epic_id.to_string(),
             "epic_revision": epic.revision.get(),
             "seat_binding": binding.id.to_string(),
+            "container": {
+                "binding_id": proved_container.binding.id.to_string(),
+                "topology_node_id": proved_container.binding.topology_node_id.to_string(),
+                "runtime_kind": proved_container.binding.identity.runtime_kind.as_str(),
+                "host": proved_container.binding.identity.host.as_str(),
+                "generation": proved_container.binding.identity.generation,
+                "native_id": proved_container.binding.identity.native_id.as_str(),
+                "canonical_cwd": proved_container.binding.root.as_ref().map(WorkspaceRoot::as_str),
+            },
             "claimant": {
                 "runtime_kind": runtime_preview.identity.runtime_kind.as_str(),
                 "host": runtime_preview.identity.host.as_str(),
@@ -7470,6 +8763,7 @@ impl Services {
                     ad_hoc_allowed: seat.ad_hoc_allowed,
                     seat_binding_id: None,
                     native_seat: None,
+                    role_persona: None,
                 })
             })
             .collect()
@@ -8491,19 +9785,63 @@ impl Services {
                 "the stale child has no persisted native project ancestor",
             )
         })?;
+        let recovery_node = state
+            .with_store(|store| store.get_topology_node(project_id, topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "no such topology node exists in this project",
+                )
+            })?;
         let recovery_request = ContainerRecoveryRequest {
             topology_node_id,
             container_binding_id: retitle.container_binding_id,
             stale_identity: expected.identity.clone(),
             bound_project_native_id: parent_native_id.clone(),
             canonical_cwd: canonical_root,
+            task_container: recovery_node.task_id.is_some(),
             expected_title: retitle.desired_title,
             requested_at: kontor_api::now(),
         };
-        let outcome = adapter
-            .preview_container_recovery(&recovery_request)
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        // The adoption census is tried first and is unchanged. Only when it
+        // declines does the second disposition get a hearing, so every subject
+        // that has a live candidate keeps taking exactly the path it always
+        // took.
+        let outcome = match adapter.preview_container_recovery(&recovery_request).await {
+            Ok(outcome) => outcome,
+            Err(adopt_refusal) => {
+                let recreation_request = ContainerRecreationRequest {
+                    topology_node_id,
+                    container_binding_id: recovery_request.container_binding_id,
+                    absent_identity: recovery_request.stale_identity.clone(),
+                    bound_project_native_id: recovery_request.bound_project_native_id.clone(),
+                    canonical_cwd: recovery_request.canonical_cwd.clone(),
+                    task_container: recovery_request.task_container,
+                    expected_title: recovery_request.expected_title.clone(),
+                    requested_at: recovery_request.requested_at,
+                };
+                // Only a positively proved vacancy authorizes creation. Every
+                // other refusal — live native, several candidates, drifted
+                // title — is reported as the adoption census stated it, rather
+                // than being re-described by a second census that refused for
+                // the same underlying reason.
+                let vacant = matches!(
+                    adapter.preview_container_recreation(&recreation_request).await,
+                    Ok(outcome) if outcome.created
+                );
+                if !vacant {
+                    return Err(ApiError::from_runtime(state.realm_id(), &adopt_refusal));
+                }
+                return self.prepared_container_recreation(
+                    project_id,
+                    expected_revision,
+                    expected,
+                    recreation_request,
+                    adapter,
+                );
+            }
+        };
         outcome
             .snapshot
             .ensure_node(topology_node_id)
@@ -8568,6 +9906,22 @@ impl Services {
             identity: outcome.snapshot.binding.identity.clone(),
             observed_kind: ObservedContainerKind::Workspace,
             canonical_cwd: Some(canonical_cwd.clone()),
+            readback: Some(NativeContainerReadback {
+                projection: ObservedContainerProjection::NativeChild,
+                visible_title: ExternalName::parse(&outcome.observed_title)
+                    .map_err(|error| self.refuse_domain(&error))?,
+                native_parent: Some(kontor_core::state::NativeRuntimeIdentity {
+                    runtime_kind: outcome.snapshot.binding.identity.runtime_kind.clone(),
+                    host: outcome.snapshot.binding.identity.host.clone(),
+                    generation: outcome.snapshot.binding.identity.generation,
+                    native_id: parent_native_id.clone(),
+                }),
+                topology_correlation: ExternalName::parse(
+                    &outcome.snapshot.correlation.label.to_string(),
+                )
+                .map_err(|error| self.refuse_domain(&error))?,
+            }),
+            bound_at: outcome.snapshot.binding.bound_at,
             observed_at: recovery_request.requested_at,
         };
         let preview_hash = self.preview_hash(&serde_json::json!({
@@ -8598,8 +9952,9 @@ impl Services {
                 realm_id: state.realm_id(),
                 project_id,
                 topology_node_id,
+                disposition: ContainerRecoveryDispositionDto::AdoptExisting,
                 stale_native_id: expected.identity.native_id.clone(),
-                replacement_native_id: replacement.identity.native_id.clone(),
+                replacement_native_id: Some(replacement.identity.native_id.clone()),
                 parent_native_id,
                 canonical_cwd,
                 observed_title: outcome.observed_title,
@@ -8607,8 +9962,159 @@ impl Services {
                 snapshot_cursor: self.cursor()?,
             },
             expected,
-            replacement,
+            replacement: Some(replacement),
+            recreation: None,
+            adapter,
         })
+    }
+
+    /// The `recreate_absent` half of one container-recovery preview.
+    ///
+    /// Reached only after the adoption census declined *and* a second census
+    /// positively proved the canonical place vacant. It writes nothing and
+    /// names no replacement identity, because none exists yet: what it freezes
+    /// is the placement tuple apply must build at, and the disposition that
+    /// says apply is allowed to build at all.
+    fn prepared_container_recreation(
+        &self,
+        project_id: ProjectId,
+        expected_revision: AggregateRevision,
+        expected: NativeContainerBinding,
+        recreation: ContainerRecreationRequest,
+        adapter: Arc<dyn RuntimeAdapter>,
+    ) -> Result<PreparedContainerRecovery, ApiError> {
+        let state = self.state()?;
+        // Both are already inside the request the census froze, so taking them
+        // as separate arguments would only create a way for them to disagree
+        // with it.
+        let parent_native_id = recreation.bound_project_native_id.clone();
+        let canonical_cwd = ExternalName::parse(recreation.canonical_cwd.as_str())
+            .map_err(|error| self.refuse_domain(&error))?;
+        // The disposition is inside the hash. An adopt preview and a recreate
+        // preview over the same subject must not produce the same digest, or
+        // one could authorize the other's apply — and only one of the two is
+        // permitted to create a native.
+        let preview_hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "disposition": "recreate_absent",
+            "project_id": project_id.to_string(),
+            "project_revision": expected_revision.get(),
+            "topology_node_id": recreation.topology_node_id.to_string(),
+            "container_binding_id": expected.container_binding_id.as_str(),
+            "stale_identity": {
+                "runtime_kind": expected.identity.runtime_kind.as_str(),
+                "host": expected.identity.host.as_str(),
+                "generation": expected.identity.generation,
+                "native_id": expected.identity.native_id.as_str(),
+                "binding_revision": expected.revision.get(),
+            },
+            "parent_native_id": parent_native_id.as_str(),
+            "canonical_cwd": canonical_cwd.as_str(),
+            "expected_title": recreation.expected_title.as_str(),
+        }))?;
+        Ok(PreparedContainerRecovery {
+            preview: ContainerRecoveryPreviewDto {
+                realm_id: state.realm_id(),
+                project_id,
+                topology_node_id: recreation.topology_node_id,
+                disposition: ContainerRecoveryDispositionDto::RecreateAbsent,
+                stale_native_id: expected.identity.native_id.clone(),
+                // Deliberately none: apply mints it, and a preview that named
+                // one would be predicting an identity no runtime has issued.
+                replacement_native_id: None,
+                parent_native_id,
+                canonical_cwd,
+                observed_title: recreation.expected_title.as_str().to_owned(),
+                preview_hash,
+                snapshot_cursor: self.cursor()?,
+            },
+            expected,
+            replacement: None,
+            recreation: Some(recreation),
+            adapter,
+        })
+    }
+
+    /// Issue the one create a `recreate_absent` apply is authorized to make.
+    ///
+    /// An adopt-disposition preview passes through untouched, so the existing
+    /// path reaches the store having spoken to no runtime.
+    ///
+    /// Nothing is bound that was not read back. The adapter returns the native
+    /// it observed at the exact parent, canonical path and rendered title, and
+    /// every one of those is re-checked here before a replacement binding is
+    /// built — a create that silently landed elsewhere must not become this
+    /// node's container.
+    async fn recreate_prepared_container(
+        &self,
+        mut prepared: PreparedContainerRecovery,
+    ) -> Result<Option<PreparedContainerRecovery>, ApiError> {
+        let Some(recreation) = prepared.recreation.clone() else {
+            return Ok(Some(prepared));
+        };
+        let state = self.state()?;
+        let outcome = prepared
+            .adapter
+            .recreate_container(&recreation)
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+
+        // The same proofs the adoption disposition demands. A native this
+        // operation built is not trusted more than one it found.
+        outcome
+            .snapshot
+            .ensure_node(recreation.topology_node_id)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        outcome
+            .snapshot
+            .ensure_correlated()
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        outcome
+            .snapshot
+            .ensure_root(&recreation.canonical_cwd)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if outcome.snapshot.binding.id != recreation.container_binding_id
+            || outcome.snapshot.binding.projection != ContainerProjection::NativeChild
+            || outcome.snapshot.binding.identity == prepared.expected.identity
+            || outcome.observed_title != recreation.expected_title.as_str()
+        {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the runtime recreation readback did not preserve the logical binding and exact rendered title",
+            ));
+        }
+
+        let parent_native_id = prepared.preview.parent_native_id.clone();
+        let canonical_cwd = prepared.preview.canonical_cwd.clone();
+        let identity = outcome.snapshot.binding.identity.clone();
+        prepared.preview.replacement_native_id = Some(identity.native_id.clone());
+        prepared.preview.observed_title = outcome.observed_title.clone();
+        prepared.replacement = Some(NewNativeContainerBinding {
+            topology_node_id: recreation.topology_node_id,
+            project_id: prepared.preview.project_id,
+            container_binding_id: prepared.expected.container_binding_id.clone(),
+            identity: identity.clone(),
+            observed_kind: ObservedContainerKind::Workspace,
+            canonical_cwd: Some(canonical_cwd),
+            readback: Some(NativeContainerReadback {
+                projection: ObservedContainerProjection::NativeChild,
+                visible_title: ExternalName::parse(&outcome.observed_title)
+                    .map_err(|error| self.refuse_domain(&error))?,
+                native_parent: Some(kontor_core::state::NativeRuntimeIdentity {
+                    runtime_kind: identity.runtime_kind.clone(),
+                    host: identity.host.clone(),
+                    generation: identity.generation,
+                    native_id: parent_native_id,
+                }),
+                topology_correlation: ExternalName::parse(
+                    &outcome.snapshot.correlation.label.to_string(),
+                )
+                .map_err(|error| self.refuse_domain(&error))?,
+            }),
+            bound_at: outcome.snapshot.binding.bound_at,
+            observed_at: recreation.requested_at,
+        });
+        Ok(Some(prepared))
     }
 
     /// Preflight every existing native container and persistent seat in one
@@ -9014,8 +10520,108 @@ impl Services {
         })
     }
 
-    /// Complete native child cleanup before its logical archive is recorded.
-    async fn archive_native_child(
+    /// Whether this node still holds active seats or active direct children.
+    ///
+    /// One read shared by the archive route and the completion gate, so the two
+    /// cannot drift into disagreeing about what "still busy" means.
+    fn hosts_active_work(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+    ) -> Result<bool, ApiError> {
+        let state = self.state()?;
+        let seats = state
+            .with_store(|store| store.list_seat_bindings(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?;
+        let children = state
+            .with_store(|store| store.list_project_topology_nodes(project_id))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(seats
+            .iter()
+            .any(|seat| seat.lifecycle == TopologyLifecycle::Active)
+            || children.iter().any(|child| {
+                child.parent_id == Some(node.id) && child.lifecycle == TopologyLifecycle::Active
+            }))
+    }
+
+    /// Refuse an epic-scoped native root's retirement or archival until that
+    /// epic's completion is durably `Done`.
+    ///
+    /// The root is the epic's whole native place: once it is gone, the evidence
+    /// that the work finished cannot be gathered from the runtime any more. So
+    /// completion is read here, before either the logical transition or any
+    /// runtime effect, and only the one terminal phase that means *finished*
+    /// passes. `NeedsHuman` is terminal too, and deliberately does not: it is a
+    /// hold awaiting a decision, not a closed epic.
+    ///
+    /// The shape comes from the node's own pinned specification revision rather
+    /// than from whatever it currently holds, so a root that never materialized
+    /// is gated exactly like one that did. Anything that is not a native root
+    /// passes untouched — a child's ordering is the store's invariant, not this
+    /// one.
+    fn ensure_root_completion_done(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        node: &SessionTopologyNode,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the node's pinned topology revision is not published in this project",
+                )
+            })?;
+        let declared = spec
+            .node_kinds
+            .iter()
+            .find(|declared| declared.kind == node.kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the pinned specification no longer declares this node's kind",
+                )
+            })?;
+        let projection = ContainerProjection::resolve(&declared.projection_capabilities)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if projection != ContainerProjection::NativeRoot {
+            return Ok(());
+        }
+        // Structure first. While live seats or children remain beneath the
+        // node, the existing structural refusal is both more specific and the
+        // one callers already depend on, and completion has nothing to add to
+        // it — the node is not going anywhere either way, because the store
+        // refuses the transition below. Answering "no completion run yet" here
+        // would replace "your child is still live" with a less useful truth.
+        if self.hosts_active_work(project_id, node)? {
+            return Ok(());
+        }
+        // A missing run refuses as `NotFound` and an undecodable one as
+        // `Unavailable`, both from the accessors themselves. Neither is read as
+        // "nothing to check".
+        let completion = self.require_completion(project_id, epic_id)?;
+        if self.completion_state(&completion)?.phase != CompletionPhase::Done {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the epic's completion is not done, so its native root stays addressable",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Complete native cleanup before a logical archive is recorded.
+    ///
+    /// One route for both materialized shapes. The node's persisted binding
+    /// says which it is — a workspace is a child and is addressed beneath its
+    /// exact native project ancestor, a project is the root and has none — and
+    /// the adapter re-derives the same distinction from the request rather than
+    /// trusting this caller for it.
+    async fn archive_native_container(
         &self,
         project_id: ProjectId,
         node: &SessionTopologyNode,
@@ -9027,19 +10633,7 @@ impl Services {
                 "native cleanup requires a retired topology node",
             ));
         }
-        let seats = state
-            .with_store(|store| store.list_seat_bindings(project_id, node.id))
-            .map_err(|error| self.refuse(&error))?;
-        let children = state
-            .with_store(|store| store.list_project_topology_nodes(project_id))
-            .map_err(|error| self.refuse(&error))?;
-        if seats
-            .iter()
-            .any(|seat| seat.lifecycle == TopologyLifecycle::Active)
-            || children.iter().any(|child| {
-                child.parent_id == Some(node.id) && child.lifecycle == TopologyLifecycle::Active
-            })
-        {
+        if self.hosts_active_work(project_id, node)? {
             return Err(self.deny(
                 ApiErrorCode::PlacementBlocked,
                 "the archive target still hosts active work",
@@ -9062,54 +10656,65 @@ impl Services {
         else {
             return Ok(());
         };
-        if binding.observed_kind != ObservedContainerKind::Workspace {
-            return Err(self.deny(
-                ApiErrorCode::UnsupportedCapability,
-                "native root archive is not supported; preserve the bound project",
-            ));
-        }
-        let mut parent_id = node.parent_id;
-        let mut native_parent = None;
-        while let Some(id) = parent_id {
-            let parent = state
-                .with_store(|store| store.get_topology_node(project_id, id))
-                .map_err(|error| self.refuse(&error))?
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "the archive target has missing persisted ancestry",
-                    )
-                })?;
-            if let Some(parent_binding) = state
-                .with_store(|store| store.get_topology_node_container(project_id, id))
-                .map_err(|error| self.refuse(&error))?
-                && parent_binding.observed_kind == ObservedContainerKind::Project
-            {
-                if parent_binding.identity.runtime_kind != binding.identity.runtime_kind
-                    || parent_binding.identity.host != binding.identity.host
+        // The persisted binding decides the shape, exactly as the retitle route
+        // decides it. A node kind's declared capabilities say what it *would*
+        // materialize as; what it actually holds is what cleanup must address.
+        let projection = match binding.observed_kind {
+            ObservedContainerKind::Project => ContainerProjection::NativeRoot,
+            ObservedContainerKind::Workspace => ContainerProjection::NativeChild,
+        };
+        // Paseo can fetch a workspace only inside an exact native project, and
+        // that ancestry is durable Kontor state rather than adapter cache. Walk
+        // the logical parents until a persisted binding names the native
+        // project; never scan every runtime project or infer it from a title.
+        // A root has no such ancestor and must not claim one.
+        let bound_project_native_id = if projection == ContainerProjection::NativeChild {
+            let mut parent_id = node.parent_id;
+            let mut native_parent = None;
+            while let Some(id) = parent_id {
+                let parent = state
+                    .with_store(|store| store.get_topology_node(project_id, id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the archive target has missing persisted ancestry",
+                        )
+                    })?;
+                if let Some(parent_binding) = state
+                    .with_store(|store| store.get_topology_node_container(project_id, id))
+                    .map_err(|error| self.refuse(&error))?
+                    && parent_binding.observed_kind == ObservedContainerKind::Project
                 {
-                    return Err(self.deny(
-                        ApiErrorCode::StaleBinding,
-                        "the native child's persisted parent belongs to another runtime host",
-                    ));
+                    if parent_binding.identity.runtime_kind != binding.identity.runtime_kind
+                        || parent_binding.identity.host != binding.identity.host
+                    {
+                        return Err(self.deny(
+                            ApiErrorCode::StaleBinding,
+                            "the native child's persisted parent belongs to another runtime host",
+                        ));
+                    }
+                    native_parent = Some(parent_binding.identity.native_id);
+                    break;
                 }
-                native_parent = Some(parent_binding.identity.native_id);
-                break;
+                parent_id = parent.parent_id;
             }
-            parent_id = parent.parent_id;
-        }
-        let archive = kontor_runtime::container::ArchiveContainerRequest {
-            topology_node_id: node.id,
-            container_binding_id: ContainerBindingId::parse(binding.container_binding_id.as_str())
-                .map_err(|error| self.refuse_domain(&error))?,
-            projection: ContainerProjection::NativeChild,
-            identity: binding.identity.clone(),
-            bound_project_native_id: native_parent.ok_or_else(|| {
+            Some(native_parent.ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
                     "the native child has no persisted project ancestor",
                 )
-            })?,
+            })?)
+        } else {
+            None
+        };
+        let archive = kontor_runtime::container::ArchiveContainerRequest {
+            topology_node_id: node.id,
+            container_binding_id: ContainerBindingId::parse(binding.container_binding_id.as_str())
+                .map_err(|error| self.refuse_domain(&error))?,
+            projection,
+            identity: binding.identity.clone(),
+            bound_project_native_id,
             canonical_cwd: WorkspaceRoot::parse(
                 binding
                     .canonical_cwd
@@ -9117,7 +10722,7 @@ impl Services {
                     .ok_or_else(|| {
                         self.deny(
                             ApiErrorCode::PlacementBlocked,
-                            "the native child has no persisted directory",
+                            "the native container has no persisted directory",
                         )
                     })?
                     .as_str(),
@@ -9164,7 +10769,7 @@ impl Services {
         request: &TopologyNodeRequest,
         lifecycle: TopologyLifecycle,
     ) -> Result<TopologyMutationDto, ApiError> {
-        let _native_lifecycle = self.native_lifecycle_change()?;
+        let _native_lifecycle = self.native_lifecycle_change().await?;
         let state = self.state()?;
         let now = kontor_api::now();
         let project = state
@@ -9223,8 +10828,14 @@ impl Services {
                 )
             })?;
             self.ensure_no_team_definition_migration(project_id, epic_id)?;
+            // Both terminal directions, not just the destructive one: a retired
+            // root is already unusable, so gating only the archive would let an
+            // incomplete epic lose its native place in two steps instead of one.
+            if lifecycle != TopologyLifecycle::Active {
+                self.ensure_root_completion_done(project_id, epic_id, &node)?;
+            }
             if lifecycle == TopologyLifecycle::Archived {
-                self.archive_native_child(project_id, &node).await?;
+                self.archive_native_container(project_id, &node).await?;
                 self.ensure_no_team_definition_migration(project_id, epic_id)?;
             }
         }
@@ -9374,6 +10985,7 @@ impl Services {
                         .canonical_cwd
                         .as_ref()
                         .and_then(|cwd| ExternalId::parse(cwd.as_str()).ok()),
+                    container_readback: container_readback_dto(binding),
                     observed_at: binding.last_readback_at,
                 }),
                 seats: seats
@@ -9600,7 +11212,7 @@ impl Services {
         act: SeatAct,
     ) -> Result<SeatBindingOutcomeDto, ApiError> {
         let _native_lifecycle = if act == SeatAct::Retire {
-            Some(self.native_lifecycle_change()?)
+            Some(self.native_lifecycle_change().await?)
         } else {
             None
         };
@@ -9732,6 +11344,10 @@ impl Services {
                         seat_binding_id,
                         identity: hosted.native_identity.clone(),
                         model_rung: hosted.model_rung.clone(),
+                        // Retirement must describe the seat being retired. A
+                        // freshly resolved default refuses the retire before
+                        // archival, which is the wedge that blocks replacement.
+                        autonomy: hosted.autonomy,
                         requested_at: now,
                     })
                     .await
@@ -9748,6 +11364,7 @@ impl Services {
                     seat_binding_id,
                     identity: hosted.native_identity.clone(),
                     model_rung: hosted.model_rung.clone(),
+                    autonomy: hosted.autonomy,
                     requested_at: now,
                 })
                 .await
@@ -9789,6 +11406,7 @@ impl Services {
                         .as_ref()
                         .and_then(|cwd| ExternalId::parse(cwd.as_str()).ok())
                 }),
+                container_readback: None,
                 observed_at: inspection.observed_at,
             });
             (observed, live)
@@ -9801,6 +11419,7 @@ impl Services {
                     .canonical_cwd
                     .as_ref()
                     .and_then(|cwd| ExternalId::parse(cwd.as_str()).ok()),
+                container_readback: container_readback_dto(binding),
                 observed_at: binding.last_readback_at,
             });
             (observed, container.is_some())
@@ -10506,14 +12125,8 @@ impl Services {
     /// an exhausted account while the chain's other rungs sat unconsulted. The
     /// walk here is the same account-before-rung resolution delivery seats use.
     ///
-    /// Two deliberate asymmetries against the delivery path. A realm that has
-    /// declared no addressable account aliases preserves the prior primary-rung
-    /// fallback when nothing is admissible; once aliases exist, an exhausted
-    /// walk refuses rather than silently launching onto one of those blocked
-    /// accounts. And the admitted account is honoured through the rung's
-    /// provider alias alone, never claimed: a consultation launch carries no
-    /// account pin, so there is nothing for preflight to attest and nothing
-    /// unverified in the receipt.
+    /// A failed account walk is a placement refusal. Runtime availability or a
+    /// template's primary route cannot substitute for quota evidence.
     fn freeze_consultation_model_rung(
         &self,
         project_id: ProjectId,
@@ -10522,18 +12135,17 @@ impl Services {
         missing: &'static str,
     ) -> Result<ModelRung, ApiError> {
         let state = self.state()?;
-        let Some(primary) = rungs.first().cloned() else {
+        if rungs.is_empty() {
             return Err(self.deny(ApiErrorCode::PlacementBlocked, missing));
         };
         let runtime_kind = self.node_runtime_kind()?;
-        let Some(adapter) = state.runtimes().get(&runtime_kind) else {
-            // No adapter means no availability answer; the primary is the same
-            // honest freeze the pre-walk code performed.
-            return Ok(primary);
-        };
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "consultation admission requires its runtime adapter",
+            )
+        })?;
+        let quota_states = self.admission_quota_states(project_id)?;
         let accounts = self.eligible_accounts(project_id)?;
         let effective_rungs = consultation_account_rungs(rungs, &accounts);
         let placement = resolve_chain_placement(
@@ -10548,6 +12160,7 @@ impl Services {
                 account: None,
                 accounts: &accounts,
                 headroom: self.headroom_policy(),
+                freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                 now,
             },
         )
@@ -10555,16 +12168,10 @@ impl Services {
         match placement {
             kontor_scheduler::headroom::Placement::Admit { rung, .. } => Ok(rung),
             kontor_scheduler::headroom::Placement::Wait { .. }
-            | kontor_scheduler::headroom::Placement::NeedsHuman { .. }
-                if effective_rungs != rungs =>
-            {
-                Err(self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "no governed consultation account currently has admissible headroom",
-                ))
-            }
-            kontor_scheduler::headroom::Placement::Wait { .. }
-            | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => Ok(primary),
+            | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "no consultation account has current quota evidence and admissible headroom",
+            )),
         }
     }
 
@@ -10586,34 +12193,20 @@ impl Services {
     ) -> Result<Vec<FrozenCommitteeRoute>, ApiError> {
         let state = self.state()?;
         let runtime_kind = self.node_runtime_kind()?;
-        let Some(adapter) = state.runtimes().get(&runtime_kind) else {
-            if !request.initial_recovery_profiles.is_empty() {
-                return Err(self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "initial Committee recovery profiles require an available runtime adapter",
-                ));
-            }
-            return Ok(template
-                .slots
-                .iter()
-                .map(|slot| FrozenCommitteeRoute {
-                    model_rung: slot.models.rungs[0].clone(),
-                    source: "template",
-                    rank: 1,
-                    profile_hash: template_revision.definition_hash.clone(),
-                    headroom_basis_account_id: None,
-                })
-                .collect());
-        };
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "Committee admission requires its runtime adapter",
+            )
+        })?;
+        let quota_states = self.admission_quota_states(project_id)?;
         let accounts = self.eligible_accounts(project_id)?;
         let quota = QuotaOutlook {
             states: &quota_states,
             account: None,
             accounts: &accounts,
             headroom: self.headroom_policy(),
+            freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
             now,
         };
         let mut recovery_profiles = BTreeMap::new();
@@ -10675,10 +12268,6 @@ impl Services {
                 &accounts,
             )
             .map_err(|error| self.refuse_domain(&error))?;
-            let governed_template = effective
-                .iter()
-                .any(|candidate| consultation_route_has_account(&candidate.model_rung, &accounts));
-            let has_recovery_profile = recovery_profiles.contains_key(&slot.id);
             if let Some((routes, profile_hash)) = recovery_profiles.get(&slot.id) {
                 for candidate in committee_route_candidates(
                     routes,
@@ -10727,27 +12316,6 @@ impl Services {
                     admitted_candidate.model_rung = rung;
                     admitted_candidate.headroom_basis_account_id = Some(account);
                     admitted.push(admitted_candidate);
-                }
-            }
-            if admitted.is_empty() && !governed_template && !has_recovery_profile {
-                // Compatibility for a realm that has no addressable account or
-                // fallback policy for this provider family. The runtime still
-                // owns route validation before anything is frozen.
-                let compatibility = FrozenCommitteeRoute {
-                    model_rung: slot.models.rungs[0].clone(),
-                    source: "template",
-                    rank: 1,
-                    profile_hash: template_revision.definition_hash.clone(),
-                    headroom_basis_account_id: None,
-                };
-                let provenance = compatibility
-                    .provenance()
-                    .map_err(|error| self.refuse_domain(&error))?;
-                if adapter
-                    .validate_consultation_model_rung(&compatibility.model_rung, &provenance)
-                    .is_ok()
-                {
-                    admitted.push(compatibility);
                 }
             }
             if admitted.is_empty() {
@@ -11191,6 +12759,7 @@ impl Services {
                 .map(|seat| ConsultationSeatDto {
                     role_slot_id: seat.role_slot_id.as_str().to_owned(),
                     logical_role: seat.logical_role.as_str().to_owned(),
+                    committee_role: seat.committee_role.map(|role| role.as_str().to_owned()),
                     seat_binding_id: seat.seat_binding_id,
                     occupancy_generation: seat.occupancy_generation,
                     model_route: runtime_model_route_dto(&seat.model_rung),
@@ -11199,6 +12768,7 @@ impl Services {
                         native_id: identity.native_id,
                         native_name: None,
                         cwd: None,
+                        container_readback: None,
                         observed_at: seat.observed_at.unwrap_or(run.updated_at),
                     }),
                 })
@@ -11685,7 +13255,7 @@ impl Services {
                  Governed re-review evidence reconstructed by Kontor: {} \
                  Submit this seat's own finding through the scoped Kontor MCP tools, which inherit authentication automatically. \
                  Context: project_id {}, committee_run_id {}, round {}, expected_revision {}, seat_binding_id {}. \
-                 Read this run to refresh its revision before submission. Never disclose credentials.",
+                 Read this run with kontor_committee_run_get: subject_evidence contains the pinned task contracts, gate evaluations, artifact locators and completion integration bodies. Cite its content_hash and refresh the run revision before submission. Never disclose credentials.",
                 authority,
                 template.charter.as_str(),
                 slot.behavior.as_str(),
@@ -11859,7 +13429,7 @@ impl Services {
              Question: {} Durable reviewer findings available to this seat: {} \
              Submit this seat's own finding through the scoped Kontor MCP tools, which inherit authentication automatically. \
              Context: project_id {}, committee_run_id {}, round {}, expected_revision {}, seat_binding_id {}. \
-             Read this run to refresh its revision before submission. Never disclose credentials.",
+             Read this run with kontor_committee_run_get: subject_evidence contains the pinned task contracts, gate evaluations, artifact locators and completion integration bodies. Cite its content_hash and refresh the run revision before submission. Never disclose credentials.",
             authority,
             template.charter.as_str(),
             slot.behavior.as_str(),
@@ -12018,6 +13588,10 @@ impl Services {
             realm_id: state.realm_id(),
             committee_run_id,
             epic_id: run.mini_project_id,
+            subject_evidence: run
+                .subject
+                .map(|_| self.committee_subject_evidence(run))
+                .transpose()?,
             template: consultation_revision_dto(&revision),
             topic: run.topic.clone(),
             container_name,
@@ -12027,6 +13601,7 @@ impl Services {
                 .map(|seat| ConsultationSeatDto {
                     role_slot_id: seat.role_slot_id.as_str().to_owned(),
                     logical_role: seat.logical_role.as_str().to_owned(),
+                    committee_role: seat.committee_role.map(|role| role.as_str().to_owned()),
                     seat_binding_id: seat.seat_binding_id,
                     occupancy_generation: seat.occupancy_generation,
                     model_route: runtime_model_route_dto(&seat.model_rung),
@@ -12035,6 +13610,7 @@ impl Services {
                         native_id: identity.native_id,
                         native_name: None,
                         cwd: None,
+                        container_readback: None,
                         observed_at: seat.observed_at.unwrap_or(run.updated_at),
                     }),
                 })
@@ -12204,6 +13780,63 @@ fn scan_resume_point(
     }
 }
 
+/// Which approved memory revisions a Context Pack carries.
+///
+/// The store's order is the selection order, so `included` is a prefix length
+/// and the omitted revisions are exactly the tail. Keeping it as a length rather
+/// than a copied list is what makes the choice reproducible: the same store
+/// order and the same ceiling give the same prefix, and therefore the same pack
+/// bytes and the same hash, on every call and on a replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MemorySelection {
+    included: usize,
+    narrowed: bool,
+}
+
+impl MemorySelection {
+    /// The rule that chose the revisions. Bump this when the rule changes, so a
+    /// pack whose hash moved for that reason can be told from one whose inputs
+    /// moved.
+    const VERSION: u32 = 1;
+
+    const fn whole(included: usize) -> Self {
+        Self {
+            included,
+            narrowed: false,
+        }
+    }
+
+    const fn narrowed(included: usize) -> Self {
+        Self {
+            included,
+            narrowed: true,
+        }
+    }
+
+    fn included<'a>(
+        &self,
+        memory: &'a [kontor_store::memory::MemoryRevision],
+    ) -> &'a [kontor_store::memory::MemoryRevision] {
+        &memory[..self.included]
+    }
+
+    fn report(&self, memory: &[kontor_store::memory::MemoryRevision]) -> MemorySelectionDto {
+        MemorySelectionDto {
+            selector_version: Self::VERSION,
+            ceiling_bytes: kontor_core::id::MAX_CANONICAL_BYTES as u64,
+            included: u32::try_from(self.included).unwrap_or(u32::MAX),
+            narrowed: self.narrowed,
+            omitted: memory[self.included..]
+                .iter()
+                .map(|revision| OmittedMemoryRevisionDto {
+                    item_id: revision.item_id.clone(),
+                    revision_id: revision.revision_id.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// The visible state of a durable admission awaiting its first attachment.
 fn unconfirmed_admission_block(admission: &UnconfirmedAdmission) -> BlockedTaskDto {
     BlockedTaskDto {
@@ -12238,8 +13871,17 @@ fn evidence_of(authorization: &ExecutionAuthorization) -> AuthorizationEvidence 
 }
 
 /// The wire view of one stored authorization.
-fn authorization_dto(stored: &kontor_store::StoredAuthorization) -> AuthorizationProjectionDto {
+///
+/// `lift_condition` is passed rather than read, because this is a pure shape
+/// over an already-loaded row: only a caller that consulted the condition
+/// ledger may claim a hold's terms, and a caller that did not says `None`
+/// instead of implying `manual`.
+fn authorization_dto(
+    stored: &kontor_store::StoredAuthorization,
+    lift_condition: Option<HoldLiftCondition>,
+) -> AuthorizationProjectionDto {
     AuthorizationProjectionDto {
+        lift_condition,
         authorization_id: stored.authorization.id.to_string(),
         scope: match stored.authorization.scope {
             WorkScope::Project => "project".to_owned(),
@@ -12345,6 +13987,23 @@ struct Seating<'a> {
 /// yields every slot as a root, which is the honest reading: with nothing to wait
 /// for, there is nothing to be downstream of. `TeamTemplateSpec::validate` already
 /// refuses a cyclic handoff graph, so the first case does not reach here.
+/// How a phase projection picks the successor of a phase whose evidence is
+/// complete.
+///
+/// The two differ only where a phase leads to more than one successor, and only
+/// because of who is asking. A caller-driven settlement resolves that the way
+/// the pinned profile declares it, which is what every advance has always done.
+/// An unattended catch-up refuses to resolve it at all: choosing a branch on a
+/// realm's behalf, with no turn behind the choice, is not a projection of
+/// evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhaseRoute {
+    /// Follow the profile's first declared edge out of the phase.
+    Declared,
+    /// Advance only where exactly one edge leaves the phase.
+    Unambiguous,
+}
+
 fn eligible_roots(team: &kontor_teams::spec::TeamTemplateSpec) -> BTreeSet<RoleSlotId> {
     let downstream: BTreeSet<&RoleSlotId> = team
         .handoffs
@@ -12501,13 +14160,73 @@ fn freeze_seat_autonomy(
     slot: &RoleSlotId,
     plane_default: Option<SeatAutonomy>,
 ) -> kontor_core::DomainResult<SeatAutonomy> {
-    Ok(
+    Ok(resolve_seat_autonomy(
         kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?
             .slot(slot)
-            .and_then(|seat| seat.autonomy)
-            .or(plane_default)
-            .unwrap_or_else(SeatAutonomy::standard),
-    )
+            .and_then(|seat| seat.autonomy),
+        plane_default,
+    ))
+}
+
+/// The occupancy generation a Core Team materialization creates.
+///
+/// Materialization is a seat's first filler, and the credential it is handed is
+/// fenced to generation 1; the launch intent is keyed the same way so the two
+/// describe one occupancy rather than two.
+const FIRST_HOSTED_OCCUPANCY: u64 = 1;
+
+/// The three-source order itself, shared by every seat Kontor launches.
+///
+/// Extracted so that "a leadership seat resolves the way a delivery seat does"
+/// is true by construction rather than by two copies of the order agreeing.
+/// A mutant that reverses the first two arms, or that reaches the fallback
+/// early, is one edit that both paths' tests observe.
+const fn resolve_seat_autonomy(
+    declared: Option<SeatAutonomy>,
+    plane_default: Option<SeatAutonomy>,
+) -> SeatAutonomy {
+    match (declared, plane_default) {
+        (Some(autonomy), _) | (None, Some(autonomy)) => autonomy,
+        (None, None) => SeatAutonomy::standard(),
+    }
+}
+
+/// Freeze how much one persistent leadership seat may do before it has to ask.
+///
+/// The same order [`freeze_seat_autonomy`] takes, on the inputs a Core Team
+/// seat actually has. A Core Team role slot carries no `autonomy` declaration —
+/// only a team template's slot does — so step 1 has no input here and the
+/// runtime's `permission_posture` is the most specific answer available.
+///
+/// That is the whole of ASMA-8193. An LSA or TPM seat used to read a hardcoded
+/// [`SeatAutonomy::Supervised`] inside the Paseo adapter: the one seat an epic
+/// has for acting without the operator was the one seat no configuration could
+/// reach, so `runtimes.json` could declare `permission_posture: autonomous` and
+/// leadership would still stop and ask.
+///
+/// A realm that declares nothing still gets [`SeatAutonomy::standard`], so this
+/// grants no authority on its own — it makes the existing declaration apply
+/// where it already should have.
+const fn freeze_hosted_seat_autonomy(plane_default: Option<SeatAutonomy>) -> SeatAutonomy {
+    resolve_seat_autonomy(None, plane_default)
+}
+
+/// Whether a whole epic graph has finished kickoff.
+///
+/// Separated from the reads that answer its three questions, because the states
+/// that decide it cannot all be built through a supported call: Kontor's Jira
+/// materialization batches cover an epic *and every one of its tasks* at once
+/// and refuse anything narrower, so "the epic is bound and a task is not" is
+/// unreachable from the outside. Each is reachable in life — a task added after
+/// a batch confirmed is unbound, and a task carrying neither its own ticket key
+/// nor an epic key is never given a worktree at all — and each is exactly the
+/// case a check that looked only at the epic, or only at Jira, would get wrong.
+const fn kickoff_is_ready(
+    epic_bound: bool,
+    every_task_bound: bool,
+    every_task_placed: bool,
+) -> bool {
+    epic_bound && every_task_bound && every_task_placed
 }
 
 /// Select the primary model rung from the team run's immutable template.
@@ -12539,6 +14258,8 @@ struct QuotaOutlook<'a> {
     /// The declared headroom policy, or the state-only fallback when a realm has
     /// declared none.
     headroom: HeadroomConfig,
+    /// The same configured evidence lifetime used by provider preflight.
+    freshness: jiff::SignedDuration,
     now: Timestamp,
 }
 
@@ -12577,7 +14298,10 @@ impl QuotaOutlook<'_> {
     /// default route while keeping its declared effort.
     fn effective_rungs(&self, rungs: &[ModelRung]) -> kontor_core::DomainResult<Vec<ModelRung>> {
         let Some(pin) = self.account else {
-            return Ok(rungs.to_vec());
+            // Unpinned delivery routes need the same declared account aliases
+            // as consultations. Preserve explicit aliases and model/effort;
+            // the shared headroom walk still requires exact fresh evidence.
+            return Ok(consultation_account_rungs(rungs, self.accounts));
         };
         let Some(account) = self
             .accounts
@@ -12753,15 +14477,6 @@ fn committee_route_candidates(
     Ok(candidates)
 }
 
-fn consultation_route_has_account(
-    rung: &ModelRung,
-    accounts: &[kontor_scheduler::headroom::EligibleAccount],
-) -> bool {
-    accounts
-        .iter()
-        .any(|account| account.selectable_providers.contains(&rung.provider.0))
-}
-
 /// A generic provider spelling can select an account for headroom without
 /// carrying that account identity into a consultation launch. That is honest
 /// only while exactly one enabled account owns the spelling; aliases are the
@@ -12864,8 +14579,46 @@ pub(crate) fn model_route_is_catalogued(rung: &ModelRung) -> bool {
         ("opencode", "deepseek/deepseek-v4-flash" | "deepseek/deepseek-flash") => {
             effort_is(&["low", "high", "max"])
         }
+        // ASMA-8237: the approved watchdog fallback routes, at the exact
+        // provider-native ids and effort ceilings the catalog advertises.
+        // Recognition only: whether a route is *reachable* still depends on
+        // account headroom, role eligibility, provider availability and
+        // template authority, which remain the separate gates they already are.
+        ("codex" | "codex-work" | "codex-personal", "gpt-5.6-luna") => {
+            effort_is(&["low", "medium", "high", "xhigh", "max"])
+        }
+        ("cursor", "auto-smart") => effort_is(&["low", "medium", "high", "xhigh"]),
+        // Operator exception 2026-09-23: Codex's model through the Cursor
+        // plan, for audit and review while Codex accounts are exhausted.
+        ("cursor", "gpt-5.6-sol") => effort_is(&["low", "medium", "high", "xhigh", "max"]),
+        ("opencode", "openrouter/z-ai/glm-5.3-flash") => effort_is(&["low", "high", "max"]),
+        ("opencode", "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free") => {
+            effort_is(&["medium", "high"])
+        }
         _ => false,
     }
+}
+
+/// Build an ephemeral admission view from a current projection and its exact
+/// immutable provider heartbeat. This never writes or invents an observation.
+fn quota_state_for_admission(
+    mut state: kontor_core::repository::ProviderQuotaState,
+    observation: Option<&ProviderUsageObservation>,
+) -> kontor_core::repository::ProviderQuotaState {
+    if state.source == kontor_core::spec::ProviderQuotaSource::ProviderReport
+        && let Some(observation) = observation
+        && observation.project_id == state.project_id
+        && observation.account_profile_id == state.account_profile_id
+        && observation.provider == state.provider
+        && observation.evidence_hash == state.evidence_hash
+        && observation.state == state.state
+        && observation.resets_at == state.resets_at
+        && observation.windows == state.windows
+        && observation.observed_at > state.observed_at
+    {
+        state.observed_at = observation.observed_at;
+    }
+    state
 }
 
 /// The catalog default used when an explicit task account changes provider
@@ -12882,9 +14635,8 @@ fn default_model_for_provider(provider: &str) -> Option<&'static str> {
 /// Resolve one chain against quota headroom, in the walk's own vocabulary.
 ///
 /// The shared half of delivery-seat and consultation-seat route freezing: the
-/// account-before-rung walk itself. What a caller does when nothing is
-/// admissible stays the caller's, because the two launch paths have different
-/// current behaviour to preserve on that arm.
+/// account-before-rung walk itself. A refusal must remain a refusal at every
+/// caller; falling back to an unpinned primary would bypass admission.
 fn resolve_chain_placement(
     adapter: &dyn RuntimeAdapter,
     rungs: &[ModelRung],
@@ -12905,6 +14657,7 @@ fn resolve_chain_placement(
         &quota.headroom,
         seat,
         quota.now,
+        quota.freshness,
         |provider| adapter.provider_available(provider),
     )
 }
@@ -13013,28 +14766,13 @@ fn freeze_seat_model_rung(
         // ambient login: the rung's provider alias selects the account, and the
         // account id is what the launch claims and quota attribution reads.
         kontor_scheduler::headroom::Placement::Admit { rung, account } => (rung, Some(account)),
-        // Nothing is admissible. Preserve master's refusal shape rather than
-        // inventing a route: an adapter-declared fallback if one is clear, and
-        // otherwise the frozen primary, so the adapter emits its own typed
-        // provider-outage refusal. Deciding here to descend anyway is exactly
-        // what a near reset must not cause, and substituting a model the
-        // template never declared would weaken the template. No account is
-        // claimed on this arm: the walk selected none, and a claim invented
-        // here would be exactly the unverified attestation preflight refuses.
-        //
-        // ponytail: the wait instant and the escalation payload are computed and
-        // then dropped on this path, because this function's contract is to
-        // return a rung. Parking the work on them needs a launch path that can
-        // hold a seat instead of routing it — see the handoff's open risks.
         kontor_scheduler::headroom::Placement::Wait { .. }
-        | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => (
-            effective_rungs
-                .iter()
-                .find_map(|rung| adapter.fallback_model_rung(rung))
-                .or_else(|| effective_rungs.first().cloned())
-                .expect("a validated model chain is non-empty"),
-            None,
-        ),
+        | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => {
+            return Err(kontor_core::DomainError::MissingEvidence {
+                subject: "ProviderHeadroom",
+                rule: "no declared account route has current quota evidence and admissible headroom",
+            });
+        }
     })
 }
 
@@ -13131,6 +14869,15 @@ fn validate_team_draft_routes(request: &TeamDraftRequest) -> kontor_core::Domain
         ModelChainPolicy { rungs }.validate()?;
     }
     Ok(())
+}
+
+/// One catalog route, in the shape lineage compares: whole, never by part.
+fn catalog_route(rung: &ModelRung) -> CatalogRoute {
+    CatalogRoute {
+        provider: rung.provider.0.clone(),
+        model: rung.model.0.clone(),
+        effort: rung.effort.map(|effort| effort.as_str().to_owned()),
+    }
 }
 
 fn runtime_model_route_dto(rung: &ModelRung) -> RuntimeModelRouteRequest {
@@ -13417,6 +15164,25 @@ fn capacity_config(ceilings: &CapacityCeilingsDto) -> CapacityConfig {
             escalation_horizon_seconds: headroom.escalation_horizon_seconds,
         }),
     }
+}
+
+/// The policy a durable capacity document carries.
+///
+/// The startup loader uses this validated conversion. The configuration read
+/// surface retains its separate conversion of the stored document. Validation
+/// belongs here because a document read from storage is not guaranteed to
+/// satisfy the current domain rules.
+///
+/// # Errors
+/// Returns [`kontor_core::DomainError`] when the document is not a ceilings
+/// document this build understands, or carries a set the domain refuses.
+pub(crate) fn stored_capacity(
+    document: &CanonicalDocument,
+) -> kontor_core::DomainResult<CapacityConfig> {
+    let stored: StoredCeilings = document.deserialize()?;
+    let capacity = capacity_config(&stored.ceilings);
+    capacity.validate()?;
+    Ok(capacity)
 }
 
 /// One catalog entry, as a reference projection reports it.
@@ -14614,6 +16380,16 @@ impl Services {
                     })
                     .map_err(|error| self.refuse(&error))?,
             );
+            // A settled turn's claimed keys count only while that task is done
+            // and native. They do not pass a gate. A key nobody claimed, or a
+            // task that is still open, stays a ticket-gate blocker.
+            evidence.extend(
+                state
+                    .with_store(|store| {
+                        store.list_settled_turn_artifact_keys(project_id, requirement.task_id)
+                    })
+                    .map_err(|error| self.refuse(&error))?,
+            );
             recorded.push(TicketEvidence {
                 task_id: requirement.task_id,
                 goals,
@@ -14851,6 +16627,9 @@ impl Services {
                     CompletionPhase::Integration | CompletionPhase::Remediating(_),
                     CompletionEvidenceDto::Integration { .. }
                 ) | (
+                    CompletionPhase::Verdict(_),
+                    CompletionEvidenceDto::Verdict { .. }
+                ) | (
                     CompletionPhase::Closeout,
                     CompletionEvidenceDto::Closeout { .. }
                 )
@@ -14883,6 +16662,13 @@ impl Services {
                 })
             }
             CompletionPhase::Verdict(round) => {
+                let selected_committee_run_id = match evidence {
+                    Some(CompletionEvidenceDto::Verdict { committee_run_id }) => {
+                        Some(*committee_run_id)
+                    }
+                    None => None,
+                    Some(_) => unreachable!("phase evidence was validated above"),
+                };
                 let runs = self
                     .state()?
                     .with_store(|store| {
@@ -14982,6 +16768,11 @@ impl Services {
                         ConsultationRunId::Committee(id) => id,
                         ConsultationRunId::Advisor(_) => continue,
                     };
+                    if selected_committee_run_id
+                        .is_some_and(|selected| selected != committee_run_id)
+                    {
+                        continue;
+                    }
                     let historical = round == 1
                         && run.round > 1
                         && run
@@ -15070,8 +16861,14 @@ impl Services {
                 }
                 if candidates.len() != 1 {
                     return Err(self.deny(
-                        ApiErrorCode::Unavailable,
-                        if candidates.is_empty() {
+                        if selected_committee_run_id.is_some() {
+                            ApiErrorCode::InvalidRequest
+                        } else {
+                            ApiErrorCode::Unavailable
+                        },
+                        if selected_committee_run_id.is_some() {
+                            "the selected Committee run is not an exact result for this completion round"
+                        } else if candidates.is_empty() {
                             "no exact Committee result matches this completion round"
                         } else {
                             "more than one exact Committee result matches this completion round"
@@ -15636,6 +17433,9 @@ const fn jira_materialization_conflict_rule(
         MaterializationConflict::AmbiguousMarker => {
             "several Jira issues carry the pending creation marker"
         }
+        MaterializationConflict::IssueKeyMismatch => {
+            "the Jira readback key differs from the requested issue key"
+        }
         MaterializationConflict::ProjectMismatch => "the Jira issue belongs to another project",
         MaterializationConflict::ParentMismatch => {
             "the Jira issue parent differs from the confirmed epic binding"
@@ -16039,10 +17839,12 @@ impl Services {
     }
 
     /// Verify the current approved operational-gap revision against the exact
-    /// task/run/topology seat/runtime binding it names. This deliberately understands only the
-    /// identity-poor Paseo evidence shape that motivated the recovery surface:
-    /// two or more user positions and no message identity on any event. It does
-    /// not read, accept, or return any historical position as correlation.
+    /// task/run/topology seat/runtime binding it names. Authorization is one
+    /// closed evidence envelope whose every field equals a value this server has
+    /// already derived, so an approved record may describe its incident in any
+    /// words while only the envelope authorizes a challenge, and only for the
+    /// identity it spells out. It does not read, accept, or return any
+    /// historical position as correlation.
     fn correlation_challenge_evidence(
         &self,
         project_id: ProjectId,
@@ -16102,72 +17904,48 @@ impl Services {
                 .pointer(pointer)
                 .and_then(serde_json::Value::as_u64)
         };
-        let addendum = "/asma_8118_paseo_0_8_correlation_addendum_20260914";
-        let correction = "/asma_8118_binding_identity_correction_20260914";
-        let exact_identity = format!("{correction}/exact_identity");
-        let readback = format!("{addendum}/readback");
-        let timeline = format!("{addendum}/canonical_timeline");
-        let users = document
-            .pointer(&format!("{timeline}/user_message_sequences"))
-            .and_then(serde_json::Value::as_array);
-        let ambiguous_identity = u64_at(&format!("{timeline}/epoch")) == Some(2)
-            && u64_at(&format!("{timeline}/end_sequence")) == Some(385)
-            && users.is_some_and(|positions| {
-                positions.as_slice() == [serde_json::json!(1), serde_json::json!(144)]
-            })
-            && text_at(&format!("{timeline}/correlation_fields/message_id"))
-                == Some("null for every event")
-            && text_at(&format!("{timeline}/correlation_fields/native_event_id"))
-                == Some("null for every event")
-            && text_at(&format!("{timeline}/paseo_version")) == Some("0.8.0")
-            && document
-                .pointer(&format!("{timeline}/next"))
-                .is_some_and(serde_json::Value::is_null);
-        let exact_blocker = text_at(&format!("{addendum}/blocker/code"))
-            == Some("runtime_proof_unavailable")
-            && document
-                .pointer(&format!("{addendum}/blocker/settlement_attempted"))
-                .and_then(serde_json::Value::as_bool)
-                == Some(false);
-        let exact = text_at("/project_id") == Some(project_id.to_string().as_str())
-            && text_at(&format!("{readback}/task/id")) == Some(task.id.to_string().as_str())
-            && u64_at(&format!("{readback}/task/revision")) == Some(task.revision.get())
-            && text_at(&format!("{readback}/team_run_id"))
+        // One closed envelope, read at one fixed pointer. Nothing else in the
+        // document is consulted, so an identifier a wider incident record
+        // happens to mention never becomes authorization for this seat.
+        let envelope = "/turn_correlation_challenge";
+        // Today `CanonicalDocument` cannot hold any other document version, so
+        // no fixture can construct a counter-example; the check is kept because
+        // `SchemaVersion::parse` accepts a range that is meant to widen, and a
+        // document written to a later shape must not be read as this one.
+        let addressed = u64_at("/schema_version") == Some(1)
+            && text_at("/type") == Some("operational_gap")
+            && u64_at(&format!("{envelope}/schema_version")) == Some(1)
+            && text_at("/project_id") == Some(project_id.to_string().as_str())
+            // The caller's report checksum is only ever confirmed against the
+            // hash the approved document itself embeds, never taken as prose.
+            && text_at("/report_sha256") == Some(request.report_checksum.as_str());
+        let exact_blocker =
+            text_at(&format!("{envelope}/blocker/code")) == Some("runtime_proof_unavailable");
+        let exact = text_at(&format!("{envelope}/task/id")) == Some(task.id.to_string().as_str())
+            && u64_at(&format!("{envelope}/task/revision")) == Some(task.revision.get())
+            && text_at(&format!("{envelope}/team_run_id"))
                 == Some(run.team_run_id.to_string().as_str())
-            && text_at(&format!("{readback}/agent_run/id")) == Some(run.id.to_string().as_str())
-            && u64_at(&format!("{readback}/agent_run/revision")) == Some(run.revision.get())
-            // Revision 21 preserves this historically mislabeled field as
-            // correction history. It names the runtime binding and must not be
-            // reinterpreted as the topology SeatBinding.
-            && text_at(&format!("{readback}/seat_binding_id"))
-                == Some(binding.id.to_string().as_str())
-            && document
-                .pointer(&format!("{readback}/runtime_binding_id"))
-                .is_none()
-            && text_at(&format!("{exact_identity}/topology_seat_binding_id"))
+            && text_at(&format!("{envelope}/agent_run/id")) == Some(run.id.to_string().as_str())
+            && u64_at(&format!("{envelope}/agent_run/revision")) == Some(run.revision.get())
+            // This seat was selected by filtering on the requested role slot,
+            // so its own slot is that request in derived form.
+            && text_at(&format!("{envelope}/role_slot"))
+                == Some(seat_binding.role_slot_id.as_str())
+            // The topology seat and the runtime binding are separate
+            // identities; neither may be presented as the other.
+            && text_at(&format!("{envelope}/topology_seat_binding_id"))
                 == Some(seat_binding.id.to_string().as_str())
-            && text_at(&format!("{exact_identity}/runtime_binding_id"))
+            && text_at(&format!("{envelope}/runtime_binding/id"))
                 == Some(binding.id.to_string().as_str())
-            && u64_at(&format!("{exact_identity}/runtime_binding_generation"))
+            && u64_at(&format!("{envelope}/runtime_binding/generation"))
                 == Some(binding.identity.generation)
-            && text_at(&format!("{exact_identity}/agent_run_id"))
-                == Some(run.id.to_string().as_str())
-            && u64_at(&format!("{exact_identity}/agent_run_revision"))
-                == Some(run.revision.get())
-            && text_at(&format!("{readback}/native_id"))
+            && text_at(&format!("{envelope}/runtime_binding/native_id"))
                 == Some(binding.identity.native_id.as_str())
-            && text_at(&format!("{addendum}/report_sha256"))
-                == Some("3f667be8feac65ef1e8331fa872966cf6868d173e8405921b931749168df1ee8")
-            // The root follows the current additive report revision. The
-            // nested correction keeps the immutable hash of revision 21.
-            && text_at("/report_sha256") == Some(request.report_checksum.as_str())
-            && text_at(&format!("{correction}/report_sha256"))
-                == Some("0ad932926ae6813bd134468b53986c61339bf45de41b9aec237441edf512009c")
-            && text_at("/closeout_recovery_20260914/asma_8118/artifact") == Some(artifact.as_str());
-        if !ambiguous_identity || !exact_blocker || !exact {
+            && text_at(&format!("{envelope}/artifact")) == Some(artifact.as_str());
+        if !addressed || !exact_blocker || !exact {
             return Err(self.deny(
                 ApiErrorCode::RevisionConflict,
-                "the approved evidence does not uniquely fence this identity-poor topology seat, runtime binding, blocker, and artifact",
+                "the approved evidence does not uniquely fence this task, run, topology seat, runtime binding, blocker, and artifact",
             ));
         }
         Ok((evidence_revision_id, artifact))
@@ -16366,6 +18144,80 @@ impl Services {
         })
     }
 
+    /// How many pages of *trailing* content a terminality check will read.
+    ///
+    /// Proving that nothing follows the claimed response means reading what
+    /// follows it, so this cannot be made free — but it is now the only part of
+    /// the proof that depends on the session's length, and it starts at the
+    /// response rather than at the message. The budget matches the scan it
+    /// replaced, so this path is never worse than the one it supersedes, and a
+    /// session that exceeds it is reported as an incomplete scan rather than
+    /// quietly called terminal.
+    const TRAILING_PAGE_BUDGET: usize = 64;
+
+    /// The refusal a proof scan owes when a canonical read did not answer.
+    ///
+    /// Two unlike facts wear the same 503 if they are not separated here. A read
+    /// that simply did not answer is an incomplete scan: the tuple is not in
+    /// question and retrying is the right advice. A read the runtime refused
+    /// *again* after being asked which epoch it is in is not retryable at all —
+    /// the positions name a numbering this runtime no longer maps, which is what
+    /// a restart with no durable epoch mappings leaves behind — and the only way
+    /// forward is to observe the turn again and settle the tuple that
+    /// observation returns. Telling an operator to retry that one would be
+    /// telling them to wait for something that cannot happen.
+    fn unreadable_proof_scan(&self, error: &ApiError, unreadable: &'static str) -> ApiError {
+        if error.code == ApiErrorCode::TimelineRefetchRequired {
+            return self.deny(
+                ApiErrorCode::TimelineRefetchRequired,
+                "the claimed positions name a timeline epoch this runtime no longer maps, so this turn must be observed again before it can settle",
+            );
+        }
+        self.deny(ApiErrorCode::ProofScanIncomplete, unreadable)
+    }
+
+    /// One anchored page of a settlement proof scan, with a single bounded
+    /// recovery when the runtime refuses the cursor.
+    ///
+    /// `timeline_refetch_required` is not "the read failed". It is the runtime
+    /// saying the cursor addresses a numbering it is not in — because it
+    /// declared the page a break, or because this process has no raw epoch for
+    /// the number the cursor names at all. A scan that treats it as a failure
+    /// reports an unreadable session while the very same session reads fine to
+    /// anyone who asks without a cursor, which is precisely the shape this
+    /// settlement path was seen taking after a restart left the epoch registry
+    /// empty.
+    ///
+    /// So it is answered, once: re-read which epoch the session is in — one
+    /// call, no content, no walk to the origin — then ask the anchored question
+    /// again. Once is the whole budget. A second refusal is not transient, and
+    /// it is *not* reported as an incomplete scan either: the positions the
+    /// caller holds name a numbering this runtime no longer has, and the way
+    /// out of that is a fresh observation of the turn, not a retry of the same
+    /// tuple. Nothing here writes, on either outcome.
+    async fn proof_scan_page(
+        &self,
+        state: &kontor_api::state::ApiState,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        issued: &kontor_runtime::capability::IssuedBinding,
+        cursor: Option<HistoryCursor>,
+        page_size: u32,
+    ) -> Result<kontor_runtime::timeline::HistoryPage, ApiError> {
+        let request = HistoryRequest {
+            binding: issued.snapshot().clone(),
+            cursor,
+            page_size,
+        };
+        // Through the same barrier and the same single recovery every derived
+        // read uses. A settlement must never consume a position addressed by an
+        // epoch number that is not yet durable: if this process died here, the
+        // next one would resolve the same raw epoch to something else and the
+        // tuple would name different content.
+        state
+            .history_recovering_epoch_once(adapter, issued.snapshot().identity(), &request)
+            .await
+    }
+
     /// Re-read the exact bound session and prove that the message named by the
     /// caller is the current completed turn, not a delayed prior notification.
     async fn prove_current_turn(
@@ -16460,7 +18312,7 @@ impl Services {
         // an older message.
         let mut newer_messages_inside = 0usize;
         let mut last_turn_position = None;
-        let mut exhausted = false;
+        let mut covered = false;
         let page_size = issued
             .snapshot()
             .capabilities
@@ -16474,14 +18326,30 @@ impl Services {
             ));
         }
         for _ in 0..64 {
-            let page = adapter
-                .history(&HistoryRequest {
-                    binding: issued.snapshot().clone(),
-                    cursor,
-                    page_size,
-                })
+            let page = self
+                .proof_scan_page(state, adapter.as_ref(), &issued, cursor, page_size)
                 .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                .map_err(|error| {
+                    // The plane is not necessarily down: capabilities report it
+                    // reachable and bounded reads succeed. What failed is this
+                    // scan, which has to walk from the claimed message to the
+                    // end of the session to prove terminality — so a proof that
+                    // sits early in a long epoch reads almost all of it. Saying
+                    // "the runtime could not be reached" sends an operator to
+                    // look at a healthy runtime.
+                    tracing::warn!(
+                        agent_run_id = %run.id,
+                        claimed_message = %message_position.sequence,
+                        reached = last_turn_position
+                            .map_or(0, |position: TimelinePosition| position.sequence),
+                        detail = %error,
+                        "a settlement proof scan could not reach the end of the session"
+                    );
+                    self.unreadable_proof_scan(
+                        &error,
+                        "the canonical proof scan could not be read to the end of this session",
+                    )
+                })?;
             for event in &page.items {
                 if event.position == message_position
                     && event.kind == SessionEventKind::Message
@@ -16513,17 +18381,91 @@ impl Services {
                     last_turn_position = Some(event.position);
                 }
             }
+            // The window ends at the claimed response. Everything the exact-turn
+            // proof needs about *content* lives between the message and the
+            // response; what lies beyond is a question about terminality, and
+            // reading the whole tail to answer it is what made a proof sitting
+            // early in a long epoch unsettleable. That question is asked below,
+            // anchored, in one read.
+            if page
+                .items
+                .last()
+                .is_some_and(|event| event.position.sequence >= response_position.sequence)
+            {
+                covered = true;
+                break;
+            }
             match page.next {
                 Some(next) => cursor = Some(next),
                 None => {
-                    exhausted = true;
+                    covered = last_turn_position
+                        .is_some_and(|position| position.sequence >= response_position.sequence);
                     break;
                 }
             }
         }
-        if !exhausted
-            || message_matches != 1
+        // Reaching the page budget means the scan stopped short, not that the
+        // caller's tuple is wrong. Reporting it as "not the exact current turn"
+        // accuses an operator of a forgery when the daemon simply ran out of
+        // reads — and leaves them with no way to tell the two apart.
+        if !covered {
+            return Err(self.deny(
+                ApiErrorCode::ProofScanIncomplete,
+                "the canonical proof scan reached its page budget before the claimed response",
+            ));
+        }
+        // Terminality, asked directly instead of inferred from having read
+        // everything. Anchored *at* the claimed response, so the runtime is
+        // asked only "is there anything after this?" — one bounded read for a
+        // session of any length. A trailing status change is not a turn and does
+        // not unseat the response, which is why the kind filter is the same one
+        // the window uses.
+        let mut after = Some(HistoryCursor::issue(binding.id, response_position));
+        let mut later_turn_event = false;
+        let mut settled_tail = false;
+        for _ in 0..Self::TRAILING_PAGE_BUDGET {
+            let page = self
+                .proof_scan_page(state, adapter.as_ref(), &issued, after, page_size)
+                .await
+                .map_err(|error| {
+                    tracing::warn!(
+                        agent_run_id = %run.id,
+                        claimed_response = response_position.sequence,
+                        detail = %error,
+                        "a settlement could not read past the claimed response"
+                    );
+                    self.unreadable_proof_scan(
+                        &error,
+                        "the canonical read after the claimed response did not answer",
+                    )
+                })?;
+            if page.items.iter().any(|event| {
+                !matches!(
+                    event.kind,
+                    SessionEventKind::StateChange | SessionEventKind::Log
+                )
+            }) {
+                later_turn_event = true;
+                settled_tail = true;
+                break;
+            }
+            match page.next {
+                Some(next) => after = Some(next),
+                None => {
+                    settled_tail = true;
+                    break;
+                }
+            }
+        }
+        if !settled_tail {
+            return Err(self.deny(
+                ApiErrorCode::ProofScanIncomplete,
+                "the canonical read after the claimed response reached its page budget",
+            ));
+        }
+        if message_matches != 1
             || response_matches != 1
+            || later_turn_event
             || last_turn_position != Some(response_position)
         {
             return Err(self.deny(
@@ -16565,7 +18507,6 @@ impl Services {
     /// and expected response come from the immutable challenge row.
     async fn prove_challenged_turn(
         &self,
-        project_id: ProjectId,
         task: &kontor_core::repository::Task,
         run: &kontor_core::repository::AgentRun,
         binding: &RuntimeBinding,
@@ -16574,6 +18515,7 @@ impl Services {
         now: Timestamp,
     ) -> Result<RoleTurnRuntimeProof, ApiError> {
         let state = self.state()?;
+        let project_id = task.project_id;
         let message_id =
             MessageId::parse(challenge_message_id).map_err(|error| self.refuse_domain(&error))?;
         let external_message_id =
@@ -16931,6 +18873,25 @@ impl Services {
 
 #[async_trait]
 impl ApplicationOperations for Services {
+    fn open_questions(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        actor: Option<kontor_api::open_questions::QuestionActor>,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.read_open_questions(project_id, epic_id, actor)
+    }
+    fn record_open_question(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        actor: kontor_api::open_questions::QuestionActor,
+        request: &kontor_api::open_questions::RecordQuestionRequest,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.write_open_question(key, project_id, epic_id, actor, request)
+    }
+
     async fn preview_publication(
         &self,
         project_id: ProjectId,
@@ -17309,6 +19270,15 @@ impl ApplicationOperations for Services {
 
     fn model_catalog(&self) -> Result<ModelCatalogDto, ApiError> {
         let state = self.state()?;
+        // ASMA-8237: exact provider-native routes and thinking options read from
+        // Paseo on 2026-09-19. Catalog presence does not attest account headroom
+        // or authorize a route for a role; those remain separate admission checks.
+        let watchdog_provenance = serde_json::json!({
+            "state": "live",
+            "reviewRef": "ASMA-8237",
+            "citation": "Paseo list_models: codex, cursor and opencode",
+            "observedAt": "2026-09-19"
+        });
         let provenance = serde_json::json!({
             "state": "live",
             "reviewRef": "KON-MVP-25-GATE-2026-08-14-02",
@@ -17365,6 +19335,11 @@ impl ApplicationOperations for Services {
                 "basis": { "value": "provider_account", "provenance": provenance },
                 "reachedVia": null, "pooledUsage": false
             }),
+            serde_json::json!({
+                "id": "cursor", "label": "Cursor",
+                "basis": { "value": "plan_allowance", "provenance": unverified },
+                "reachedVia": null, "pooledUsage": true
+            }),
         ];
         let mut models = vec![
             serde_json::json!({
@@ -17403,7 +19378,59 @@ impl ApplicationOperations for Services {
                 "pricing": [], "degradedLane": false
             }),
         ];
-        // Each Codex account alias serves the same two routes as the family
+        for provider in ["codex", "codex-work", "codex-personal"] {
+            models.push(serde_json::json!({
+                "id": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "provider": provider,
+                "isDefault": false,
+                "contextWindow": { "value": null, "provenance": unverified },
+                "efforts": { "value": ["low", "medium", "high", "xhigh", "max"], "provenance": watchdog_provenance },
+                "pricing": [], "degradedLane": false
+            }));
+        }
+        for (provider, id, label, efforts) in [
+            (
+                "cursor",
+                "auto-smart",
+                "Cursor Auto",
+                vec!["low", "medium", "high", "xhigh"],
+            ),
+            (
+                "opencode",
+                "openrouter/z-ai/glm-5.3-flash",
+                "GLM 5.3 Flash",
+                vec!["low", "high", "max"],
+            ),
+            (
+                "opencode",
+                "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+                "Nemotron 3 Ultra Free",
+                vec!["medium", "high"],
+            ),
+        ] {
+            models.push(serde_json::json!({
+                "id": id, "label": label, "provider": provider,
+                "isDefault": provider == "cursor",
+                "contextWindow": { "value": null, "provenance": unverified },
+                "efforts": { "value": efforts, "provenance": watchdog_provenance },
+                "pricing": [], "degradedLane": false
+            }));
+        }
+        models.push(serde_json::json!({
+            "id": "gpt-5.6-sol", "label": "GPT-5.6 Sol via Cursor", "provider": "cursor",
+            "isDefault": false,
+            "contextWindow": { "value": null, "provenance": unverified },
+            "efforts": {
+                "value": ["low", "medium", "high", "xhigh", "max"],
+                "provenance": {
+                    "state": "live",
+                    "reviewRef": "operator-exception-2026-09-23",
+                    "citation": "Paseo list_models: cursor",
+                    "observedAt": "2026-09-23"
+                }
+            },
+            "pricing": [], "degradedLane": false
+        }));
+        // Each Codex account alias serves the same routes as the family
         // provider: the alias changes the credential home, never the model.
         for alias in ["codex-work", "codex-personal"] {
             for (id, label, default) in [
@@ -17803,6 +19830,10 @@ impl ApplicationOperations for Services {
                         ApiErrorCode::ProviderUnreachable,
                         "the fixed provider usage endpoint did not answer successfully",
                     ),
+                    ProviderUsageProbeFailure::Throttled { retry_after_seconds } => self.deny(
+                        ApiErrorCode::ProviderUsageThrottled,
+                        "the provider throttled usage observation requests; model allowance was not observed",
+                    ).with_retry_after(retry_after_seconds),
                     ProviderUsageProbeFailure::Unsupported => self.deny(
                         ApiErrorCode::ProviderUnsupported,
                         "the exact account or provider response is not supported by this build",
@@ -18736,7 +20767,6 @@ impl ApplicationOperations for Services {
         request: &SemanticTopologyRequest,
     ) -> Result<TopologyMutationDto, ApiError> {
         let state = self.state()?;
-        let now = kontor_api::now();
         let project = self.project_at(project_id, request.expected_revision)?;
         let scope = self.resolve_scope(project_id, &request.target)?;
 
@@ -18762,30 +20792,15 @@ impl ApplicationOperations for Services {
                 else {
                     continue;
                 };
-                // The exact identity, re-confirmed against the family that
-                // issued it. A family this Realm is no longer configured with
-                // cannot confirm anything, so the stored readback instant stays
-                // where it was — an old confirmation reads as old.
-                if state
-                    .runtimes()
-                    .get(&binding.identity.runtime_kind)
-                    .is_none()
-                {
+                let Some(adapter) = state.runtimes().get(&binding.identity.runtime_kind) else {
+                    // An unconfigured family cannot confirm anything. Preserve
+                    // the old observation instead of refreshing it locally.
                     continue;
-                }
-                state
-                    .with_store(|store| {
-                        store.bind_topology_node_container(&NewNativeContainerBinding {
-                            topology_node_id: node.id,
-                            project_id,
-                            container_binding_id: binding.container_binding_id.clone(),
-                            identity: binding.identity.clone(),
-                            observed_kind: binding.observed_kind,
-                            canonical_cwd: binding.canonical_cwd.clone(),
-                            observed_at: now,
-                        })
-                    })
-                    .map_err(|error| self.refuse(&error))?;
+                };
+                let inspection = self
+                    .inspect_bound_container(project_id, &node, &binding, adapter.as_ref())
+                    .await?;
+                self.bind_container(project_id, node.id, &inspection)?;
             }
         }
 
@@ -18883,6 +20898,18 @@ impl ApplicationOperations for Services {
         // untouched and the already bound TSW keeps its native identity.
         if replayed && let Some(task_id) = scope.task_id {
             let leaf = self.ensure_task_node(project_id, task_id)?;
+            // A replay repairs seats, and a seat repair is a write, so it earns
+            // the same prerequisite the first pass does: the container those
+            // seats hang off is proved by an exact-id readback before anything
+            // is opened or retired against it.
+            //
+            // Idempotency still suppresses every native *mutation* — nothing
+            // below creates, renames, archives, launches or binds. What it does
+            // not suppress is the proof itself, because repairing logical state
+            // against a container the runtime no longer holds is the outcome
+            // this ordering exists to make unreachable.
+            self.prove_existing_bound_container(project_id, &leaf)
+                .await?;
             self.retire_unrouted_task_persistent_seats(project_id, task_id, leaf.id)?;
             // A historical materialization receipt is exactly the shape the
             // logical gap lives in: the ticket was materialized before the slot
@@ -19318,6 +21345,9 @@ impl ApplicationOperations for Services {
             })
             .map_err(|error| self.refuse(&error))?;
         let recovered_in_place = recovered.is_some();
+        let confirmed_link_replay = recovered
+            .as_ref()
+            .is_some_and(|recovered| recovered.confirmed_link_replay);
         let (batch_id, batch_ids, stored) = if let Some(recovered) = recovered {
             (recovered.batch_id, recovered.batch_ids, recovered.items)
         } else {
@@ -19420,11 +21450,19 @@ impl ApplicationOperations for Services {
         // A task can never be created under an inferred or merely planned
         // parent. Confirm the epic first, independently of stored item order or
         // restart position, and use only that readback for every task.
+        //
+        // The confirmed description is taken from *this* readback rather than a
+        // second pass. Re-materializing every item to echo its body back would
+        // add a Jira request per issue that this operation does not owe, which
+        // is exactly what the adoption path's request budget refuses.
+        let mut descriptions = BTreeMap::new();
         for (ordinal, base_plan) in &prepared.plans {
             let item = stored_by_ordinal
                 .get(ordinal)
                 .expect("the complete ordinal map was validated above");
-            if item.item_kind != JiraItemKind::Epic || item.confirmed_key.is_some() {
+            if item.item_kind != JiraItemKind::Epic
+                || (item.confirmed_key.is_some() && !confirmed_link_replay)
+            {
                 continue;
             }
             let mut plan = base_plan.clone();
@@ -19448,13 +21486,16 @@ impl ApplicationOperations for Services {
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
+            descriptions.insert(*ordinal, readback.description);
             epic_key = Some(readback.issue_key);
         }
         for (ordinal, base_plan) in &prepared.plans {
             let item = stored_by_ordinal
                 .get(ordinal)
                 .expect("the complete ordinal map was validated above");
-            if item.confirmed_key.is_some() || item.item_kind == JiraItemKind::Epic {
+            if item.item_kind == JiraItemKind::Epic
+                || (item.confirmed_key.is_some() && !confirmed_link_replay)
+            {
                 continue;
             }
             let mut plan = base_plan.clone();
@@ -19486,6 +21527,7 @@ impl ApplicationOperations for Services {
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
+            descriptions.insert(*ordinal, readback.description);
         }
         for confirmed_batch_id in &batch_ids {
             state
@@ -19529,6 +21571,17 @@ impl ApplicationOperations for Services {
                 )
             })
             .map_err(|error| self.refuse(&error))?;
+        // This is the boundary the kickoff condition was waiting for, and the
+        // whole of ASMA-8194: the graph is now bound end to end and the epic is
+        // active, so a hold that said it would end here ends here — without
+        // anyone being asked to look, and without a scheduler pass to carry it.
+        //
+        // After the activation rather than before it, because that ordering is
+        // what makes the evaluation honest: every fact the condition reads is
+        // already durable when it is read. A refusal here refuses the
+        // materialization it belongs to; there is no state in which the epic is
+        // activated and its satisfied hold is silently still holding.
+        self.lift_satisfied_holds(project_id, epic_id).await?;
         let mut confirmed = Vec::with_capacity(prepared.preview.items.len());
         for confirmed_batch_id in &batch_ids {
             confirmed.extend(
@@ -19574,6 +21627,8 @@ impl ApplicationOperations for Services {
                     mode: requested.mode,
                     requested_key: requested.requested_key,
                     confirmed_key: item.confirmed_key.clone(),
+                    description: requested.description,
+                    confirmed_description: descriptions.get(&ordinal).cloned(),
                 })
             })
             .collect::<Result<Vec<_>, ApiError>>()?;
@@ -20288,7 +22343,16 @@ impl ApplicationOperations for Services {
                     "the stale-container recovery candidate changed since preview",
                 ));
             }
-            Some(prepared)
+            // The single create. It happens here and nowhere else: after the
+            // durable replay check above (so a settled key never reaches a
+            // runtime), after the preview digest matched (so placement is the
+            // one an operator read), and before the store CAS below.
+            //
+            // The adapter re-runs its own census first, so a create whose
+            // acknowledgement was lost is adopted rather than repeated. That is
+            // what bounds this to at most one native per subject across every
+            // retry that gets this far.
+            self.recreate_prepared_container(prepared).await?
         } else {
             None
         };
@@ -20320,6 +22384,8 @@ impl ApplicationOperations for Services {
         );
         let recovery = prepared.as_ref().map_or_else(
             || TopologyContainerRecovery {
+                // Ignored by durable replay, which returns the original row.
+                disposition: TopologyContainerRecoveryDisposition::AdoptExisting,
                 expected: current.clone(),
                 replacement: NewNativeContainerBinding {
                     topology_node_id,
@@ -20328,6 +22394,8 @@ impl ApplicationOperations for Services {
                     identity: current.identity.clone(),
                     observed_kind: current.observed_kind,
                     canonical_cwd: current.canonical_cwd.clone(),
+                    readback: current.readback.clone(),
+                    bound_at: current.bound_at,
                     observed_at: now,
                 },
                 parent_native_id: current.identity.native_id.clone(),
@@ -20335,8 +22403,23 @@ impl ApplicationOperations for Services {
                     .expect("the replay marker is a valid external name"),
             },
             |prepared| TopologyContainerRecovery {
+                disposition: match prepared.preview.disposition {
+                    ContainerRecoveryDispositionDto::AdoptExisting => {
+                        TopologyContainerRecoveryDisposition::AdoptExisting
+                    }
+                    ContainerRecoveryDispositionDto::RecreateAbsent => {
+                        TopologyContainerRecoveryDisposition::RecreateAbsent
+                    }
+                },
                 expected: prepared.expected.clone(),
-                replacement: prepared.replacement.clone(),
+                // Always populated by this point: the adopt disposition carries
+                // its candidate from preview, and the recreate disposition has
+                // just read one back. A `None` here would mean a binding with
+                // no proved native, which the CAS must never be handed.
+                replacement: prepared
+                    .replacement
+                    .clone()
+                    .expect("apply binds only a replacement it read back"),
                 parent_native_id: prepared.preview.parent_native_id.clone(),
                 observed_title: ExternalName::parse(&prepared.preview.observed_title)
                     .expect("runtime titles were parsed by the recovery contract"),
@@ -20359,8 +22442,21 @@ impl ApplicationOperations for Services {
                 realm_id: state.realm_id(),
                 project_id,
                 topology_node_id,
+                // An applied result always names the disposition its prepared
+                // preview carried, and a replay reports the disposition the
+                // original apply committed under.
+                disposition: match evidence.disposition {
+                    TopologyContainerRecoveryDisposition::AdoptExisting => {
+                        ContainerRecoveryDispositionDto::AdoptExisting
+                    }
+                    TopologyContainerRecoveryDisposition::RecreateAbsent => {
+                        ContainerRecoveryDispositionDto::RecreateAbsent
+                    }
+                },
                 stale_native_id: evidence.prior_identity.native_id,
-                replacement_native_id: evidence.replacement_identity.native_id,
+                // Never absent on an applied result: the store returns the
+                // identity it bound.
+                replacement_native_id: Some(evidence.replacement_identity.native_id),
                 parent_native_id: evidence.parent_native_id,
                 canonical_cwd,
                 observed_title: evidence.observed_title.as_str().to_owned(),
@@ -20547,7 +22643,7 @@ impl ApplicationOperations for Services {
         epic_id: MiniProjectId,
         request: &TeamDefinitionUpgradeApplyRequest,
     ) -> Result<AppliedTeamDefinitionUpgradeDto, ApiError> {
-        let _native_lifecycle = self.native_lifecycle_change()?;
+        let _native_lifecycle = self.native_migration_change().await?;
         let state = self.state()?;
         let project = self.project_at(project_id, request.upgrade.expected_revision)?;
         let aggregate = AggregateRef::MiniProject {
@@ -21326,24 +23422,33 @@ impl ApplicationOperations for Services {
                 store.set_capacity_configuration(&document, &binding, request.expected_revision)
             })
             .map_err(|error| self.refuse(&error))?;
+        let written = stored
+            .ceilings
+            .deserialize::<StoredCeilings>()
+            .map(|stored| stored.ceilings)
+            .map_err(|error| self.refuse_domain(&error))?;
         Ok(CapacityConfigurationDto {
             realm_id: state.realm_id(),
+            // What was just written is durable but not composed, so it governs
+            // admission from the next start rather than from this request. Saying
+            // so is the whole point: an apply that answers 200 and changes
+            // nothing about admission is exactly the shape that hid this for as
+            // long as it did.
+            //
+            // "Not composed" is not the same as "different", though. An apply of
+            // the ceilings already in force leaves nothing for a restart to
+            // reveal, and announcing one would send an operator to restart a
+            // realm that is already enforcing exactly what they asked for.
+            restart_required: written != ceilings_dto(self.capacity),
             // The stored document, not the composed one: this answer is about
             // the record that was just written. The Realm keeps admitting under
             // the ceilings it started with until it next composes — re-reading
             // them between planning a batch and committing it could refuse a
             // candidate the plan had already admitted.
-            ceilings: stored
-                .ceilings
-                .deserialize::<StoredCeilings>()
-                .map(|stored| stored.ceilings)
-                .map_err(|error| self.refuse_domain(&error))?,
-            // What was just written is durable but not composed, so it is not
-            // yet in force. Saying so here is the whole point: an apply that
-            // answers 200 and changes nothing about admission is exactly the
-            // shape that hid this for as long as it did.
+            ceilings: written,
+            // The durable replacement is this answer's own `ceilings`; a second
+            // copy would say nothing the caller cannot already read.
             stored_ceilings: None,
-            restart_required: true,
             revision: stored.revision,
             snapshot_cursor: self.cursor()?,
         })
@@ -21864,6 +23969,27 @@ impl ApplicationOperations for Services {
                 &SemanticTopologyTargetDto::EpicControl { epic_id },
             )?,
         )?;
+        // The epic's ECP is proved before a single seat exists.
+        //
+        // The seats below are durable topology. Materializing them against a
+        // control container the runtime has moved, re-rooted or stopped holding
+        // writes logical bindings for a place that is no longer there, and the
+        // native half that follows then fails with the seats already recorded —
+        // a state an operator cannot undo by retrying.
+        //
+        // Deliberately outside the `routes` guard. Whether this materialization
+        // also routes native seats is a separate question from whether the
+        // container its seats hang off is still there, and the logical-only
+        // request is exactly the one that used to write seats having proved
+        // nothing at all.
+        //
+        // A control node with no binding yet answers `None`: there is nothing
+        // to prove, and a first materialization keeps working without a
+        // container it has not been given.
+        let proved_control = self
+            .prove_existing_bound_container(project_id, &control)
+            .await?;
+
         // Missing seats only. Every seat already there keeps its identity,
         // because a seat binding is what a running agent is attached to. This
         // also runs on replay so an old receipt whose process died between the
@@ -21882,6 +24008,18 @@ impl ApplicationOperations for Services {
             let container = self
                 .ensure_container(project_id, &control, &cwd, adapter.as_ref())
                 .await?;
+            // Preparation must not have moved the container the seats above
+            // were materialized against. On the supported path it cannot, which
+            // is why disagreement is a refusal rather than something to
+            // reconcile after the fact.
+            if let Some(proved) = proved_control.as_ref()
+                && proved.binding.identity != container.binding.identity
+            {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the Core Team control container changed identity during materialization",
+                ));
+            }
             let scope = self.execution_scope(project_id, epic_id, None, adapter.as_ref())?;
             let capabilities = adapter
                 .discover_capabilities()
@@ -21920,6 +24058,70 @@ impl ApplicationOperations for Services {
                     seat_binding_id,
                 ))
                 .map_err(|error| self.refuse_domain(&error))?;
+                // Launch intent, not live configuration, survives a lost
+                // acknowledgement and a restart.
+                //
+                // Three sources in order, and the middle one is the whole point.
+                // A bound occupancy is authoritative. Failing that, a *prepared
+                // intent* means a previous attempt already resolved this
+                // generation's authority and may have created the native before
+                // its acknowledgement was lost — so the replay must ask for what
+                // that native was started with, not what the plane says now.
+                // Only a seat with neither is genuinely new, and only then is
+                // the plane default read.
+                let autonomy = if let Some(existing) = state
+                    .with_store(|store| store.get_hosted_topology_seat(project_id, seat_binding_id))
+                    .map_err(|error| self.refuse(&error))?
+                {
+                    existing.autonomy
+                } else if let Some(intent) = state
+                    .with_store(|store| {
+                        store.get_hosted_seat_launch_intent(
+                            project_id,
+                            seat_binding_id,
+                            FIRST_HOSTED_OCCUPANCY,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?
+                {
+                    intent.autonomy
+                } else {
+                    freeze_hosted_seat_autonomy(adapter.declared_autonomy())
+                };
+                // Recorded before the effect, so the window between a created
+                // native and its persisted occupancy is never empty. This is
+                // idempotent for the same decision and refuses a different one.
+                state
+                    .with_store(|store| {
+                        store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+                            project_id,
+                            seat_binding_id,
+                            occupancy_generation: FIRST_HOSTED_OCCUPANCY,
+                            autonomy,
+                            model_rung: model_rung.clone(),
+                            state: HostedSeatLaunchIntentState::Prepared,
+                            observed_native_id: None,
+                            prepared_at: kontor_api::now(),
+                            installed_at: None,
+                        })
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                // Frozen before the native call for the same reason the intent is:
+                // a launch whose acknowledgement is lost must still leave behind
+                // which persona it was going to deliver.
+                let role_persona = self.freeze_role_persona(&seat.role.role_code)?;
+                if let Some(persona) = role_persona.as_ref() {
+                    state
+                        .with_store(|store| {
+                            store.record_hosted_seat_role_persona(
+                                project_id,
+                                seat_binding_id,
+                                FIRST_HOSTED_OCCUPANCY,
+                                persona,
+                            )
+                        })
+                        .map_err(|error| self.refuse(&error))?;
+                }
                 let outcome = adapter
                     .launch_hosted_seat(&HostedSeatLaunchRequest {
                         seat_binding_id,
@@ -21929,6 +24131,7 @@ impl ApplicationOperations for Services {
                         cwd: cwd.clone(),
                         scope: scope.clone(),
                         prompt,
+                        role_prompt: role_persona.as_ref().map(|persona| persona.prompt.clone()),
                         credential: ConsultationCredential::new(
                             state
                                 .credentials()
@@ -21936,6 +24139,7 @@ impl ApplicationOperations for Services {
                         ),
                         fenced_predecessor_native_ids: Vec::new(),
                         model_rung: model_rung.clone(),
+                        autonomy,
                         context_policy: context_policy.clone(),
                         requested_at: kontor_api::now(),
                     })
@@ -21946,11 +24150,25 @@ impl ApplicationOperations for Services {
                     seat_binding_id,
                     model_rung: model_rung.clone(),
                     native_identity: outcome.identity,
+                    autonomy,
                     provider_session_id: outcome.provider_session_id,
                     observed_at: outcome.observed_at,
                 };
                 state
                     .with_store(|store| store.bind_hosted_topology_seat(&hosted))
+                    .map_err(|error| self.refuse(&error))?;
+                // The occupancy is durable now, so the intent has done its work
+                // and is reconciled against the native it actually produced.
+                state
+                    .with_store(|store| {
+                        store.install_hosted_seat_launch_intent(
+                            project_id,
+                            seat_binding_id,
+                            FIRST_HOSTED_OCCUPANCY,
+                            &hosted.native_identity.native_id,
+                            hosted.observed_at,
+                        )
+                    })
                     .map_err(|error| self.refuse(&error))?;
                 state
                     .with_store(|store| {
@@ -22020,6 +24238,292 @@ impl ApplicationOperations for Services {
         })
     }
 
+    /// Supersede one never-bound prepared launch intent (ASMA-7869).
+    async fn supersede_core_team_launch_intent(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        request: &CoreTeamLaunchIntentSupersedeRequest,
+    ) -> Result<CoreTeamLaunchIntentSupersessionDto, ApiError> {
+        let _native_lifecycle = self.native_lifecycle_change().await?;
+        let state = self.state()?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        if epic.revision != request.expected_revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the epic moved since the caller read it",
+                )
+                .with_revision(Some(epic.revision)));
+        }
+        // The URL epic is not evidence that this seat belongs to it. The store
+        // fences on project and seat, which cannot tell one epic's Core Team
+        // from another's inside the same project — so without this, a caller
+        // naming the wrong epic would record a receipt under that epic for a
+        // seat it does not own. Proved exactly as every other Core Team
+        // correction proves it: the seat's topology node is this epic's control
+        // plane, and the role it fills is in this epic's frozen roster.
+        let roster = self.frozen_roster(project_id, epic_id)?;
+        let binding = state
+            .with_store(|store| store.get_seat_binding(project_id, request.seat_binding_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(SeatBinding::is_non_terminal)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the requested persistent Core Team SeatBinding is not active",
+                )
+            })?;
+        let node = state
+            .with_store(|store| store.get_topology_node(project_id, binding.topology_node_id))
+            .map_err(|error| self.refuse(&error))?
+            .filter(|node| {
+                node.mini_project_id == Some(epic_id)
+                    && node.kind == self.domain.delivery.control_kind
+                    && node.task_id.is_none()
+            })
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the SeatBinding is not hosted by this epic's control plane",
+                )
+            })?;
+        if !roster.revision.seats.iter().any(|seat| {
+            seat.presence != EpicPresence::OnDemand
+                && seat.role_slot_id == binding.role_slot_id
+                && seat.role.role_code == binding.role.role_code
+        }) {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the SeatBinding is not one of this epic's frozen Core Team roles",
+            ));
+        }
+        let superseded = parse_runtime_model_route(&request.expected_model_route)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let replacement = parse_runtime_model_route(&request.desired_model_route)
+            .map_err(|error| self.refuse_domain(&error))?;
+        // Never attempted, by contract rather than by configuration. The wedge
+        // this repair exists for is an OpenCode route nothing can launch, and a
+        // replacement that reached for it again would recreate the wedge under
+        // a new prepared_at.
+        if replacement.provider.0.eq_ignore_ascii_case("opencode")
+            || superseded.provider.0 == replacement.provider.0
+                && superseded.model.0 == replacement.model.0
+                && superseded.effort == replacement.effort
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the replacement route must be a different, non-OpenCode approved route",
+            ));
+        }
+        // Catalog-approved, proved the same way every other governed launch
+        // proves it: the runtime offers the provider and exactly one enabled
+        // account may select it.
+        let runtime_kind = self.node_runtime_kind()?;
+        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the runtime selected for Core Team placement is not configured",
+            )
+        })?;
+        if !adapter.provider_available(replacement.provider.0.as_str()) {
+            return Err(ApiError::from_runtime(
+                state.realm_id(),
+                &RuntimeError::ProviderUnavailable {
+                    provider: replacement.provider.0.clone(),
+                },
+            ));
+        }
+        self.approved_route_account(project_id, &replacement)?;
+
+        let prepared_at = kontor_core::id::parse_utc_timestamp(&request.expected_prepared_at)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let mut intent_body = serde_json::json!({
+            "schema_version": 1,
+            "operation": "supersede_core_team_launch_intent",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "seat_binding": request.seat_binding_id.to_string(),
+            "seat_binding_revision": request.expected_seat_binding_revision.get(),
+            "occupancy_generation": request.occupancy_generation,
+            "superseded": superseded,
+            "superseded_prepared_at": prepared_at.to_string(),
+            "replacement": replacement,
+        });
+        let predecessor_fence = match (
+            &request.expected_predecessor_native_id,
+            request.expected_predecessor_generation,
+            &request.expected_predecessor_archived_at,
+        ) {
+            (None, None, None) => None,
+            (Some(native), Some(generation), Some(archived_at)) => {
+                let archived_at = kontor_core::id::parse_utc_timestamp(archived_at)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                intent_body["archived_predecessor"] = serde_json::json!({
+                    "native_id": native, "generation": generation,
+                    "archived_at": archived_at.to_string(),
+                });
+                Some((native, generation, archived_at))
+            }
+            _ => {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "all three archived predecessor fences must be supplied together",
+                ));
+            }
+        };
+        let intent = self.intent(&intent_body)?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+
+        let receipt_replayed = self.replayed(key, &intent, Some(&target))?.is_some();
+        let recorded_hash = state
+            .with_store(|store| store.hosted_seat_launch_intent_supersession_hash(key))
+            .map_err(|error| self.refuse(&error))?;
+        if recorded_hash
+            .as_ref()
+            .is_some_and(|hash| hash != intent.hash())
+        {
+            return Err(self.deny(
+                ApiErrorCode::IdempotencyConflict,
+                "the supersession key already records a different command",
+            ));
+        }
+        let replayed = receipt_replayed || recorded_hash.is_some();
+        let archived_predecessor = if replayed {
+            // The store's immutable supersession ledger answers before checking
+            // occupancy, so a replay still works after the successor is installed.
+            None
+        } else if let Some((native, generation, archived_at)) = predecessor_fence {
+            let predecessor = state
+                .with_store(|store| store.get_hosted_topology_seat(project_id, binding.id))
+                .map_err(|error| self.refuse(&error))?
+                .filter(|row| {
+                    row.native_identity.native_id == *native
+                        && row.native_identity.generation == generation
+                })
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "the archived predecessor no longer matches the current occupancy",
+                    )
+                })?;
+            self.hosted_seat_lineage(project_id, &node, &binding, &predecessor, true)
+                .await?;
+            let container = state
+                .with_store(|store| store.get_topology_node_container(project_id, node.id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the archived predecessor has no bound container",
+                    )
+                })?;
+            let predecessor_adapter = state
+                .runtimes()
+                .get(&predecessor.native_identity.runtime_kind)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the predecessor runtime is unavailable",
+                    )
+                })?;
+            let retired_native_ids = state
+                .with_store(|store| store.list_hosted_topology_seat_history(project_id, binding.id))
+                .map_err(|error| self.refuse(&error))?
+                .into_iter()
+                .map(|row| row.native_identity.native_id)
+                .collect::<Vec<_>>();
+            let proof = predecessor_adapter
+                .prove_archived_hosted_seat(
+                    &HostedSeatRetireRequest {
+                        seat_binding_id: binding.id,
+                        identity: predecessor.native_identity.clone(),
+                        model_rung: predecessor.model_rung.clone(),
+                        autonomy: predecessor.autonomy,
+                        requested_at: kontor_api::now(),
+                        placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
+                            workspace_native_id: container.identity.native_id,
+                            canonical_cwd: WorkspaceRoot::parse(
+                                container
+                                    .canonical_cwd
+                                    .ok_or_else(|| {
+                                        self.deny(
+                                            ApiErrorCode::PlacementBlocked,
+                                            "the predecessor container has no canonical root",
+                                        )
+                                    })?
+                                    .as_str(),
+                            )
+                            .map_err(|error| self.refuse_domain(&error))?,
+                            provider_session_id: predecessor.provider_session_id.clone(),
+                        }),
+                    },
+                    &retired_native_ids,
+                )
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            if proof.identity != predecessor.native_identity || proof.archived_at != archived_at {
+                return Err(self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the predecessor archive differs from the exact expected proof",
+                ));
+            }
+            Some(predecessor)
+        } else {
+            None
+        };
+
+        // The whole compare-and-swap, and every absence it rests on, is proved
+        // inside one transaction. Nothing is checked out here that the store
+        // does not re-prove under the lock it writes with.
+        let applied = state
+            .with_store(|store| {
+                store.supersede_hosted_seat_launch_intent(&HostedSeatLaunchIntentSupersession {
+                    idempotency_key: key.clone(),
+                    intent_hash: intent.hash().clone(),
+                    project_id,
+                    seat_binding_id: request.seat_binding_id,
+                    expected_seat_binding_revision: request.expected_seat_binding_revision,
+                    occupancy_generation: request.occupancy_generation,
+                    archived_predecessor,
+                    expected_model_rung: superseded.clone(),
+                    expected_prepared_at: prepared_at,
+                    replacement_model_rung: replacement.clone(),
+                    recorded_at: kontor_api::now(),
+                })
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let receipt_id = self.record(
+            key,
+            project_id,
+            CommandKind::CorrectCoreTeamRoute,
+            target,
+            epic.revision,
+            &intent,
+        )?;
+        Ok(CoreTeamLaunchIntentSupersessionDto {
+            realm_id: state.realm_id(),
+            seat_binding_id: request.seat_binding_id,
+            seat_binding_revision: request.expected_seat_binding_revision,
+            occupancy_generation: request.occupancy_generation,
+            superseded_model_route: runtime_model_route_dto(&superseded),
+            replacement_model_route: runtime_model_route_dto(&replacement),
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                // The store's own answer, not a constant. An exact replay
+                // swaps nothing and says so; reporting `updated` for it would
+                // tell a caller that a second supersession happened.
+                applied: applied_dto(applied),
+                revision: epic.revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
     async fn apply_core_team_route(
         &self,
         key: &IdempotencyKey,
@@ -22065,16 +24569,87 @@ impl ApplicationOperations for Services {
                     "the hosted seat runtime is not configured in this daemon",
                 )
             })?;
-            let retired = adapter
+            // The same closed classification the plan used, re-asked here
+            // because the answer may have changed since it was previewed. A
+            // predecessor the runtime proves gone has nothing left to archive,
+            // and this is the shape the live ASMA-8098 TPM recovery hit: a
+            // closed predecessor answered `stale_binding` and the apply refused
+            // instead of converging on the successor it was there to create.
+            //
+            // Nothing else is read as absence. A session that is working,
+            // waiting on a permission request, addressed on another runtime or
+            // generation, or in a disposition this build has not audited still
+            // refuses with no effect, and every fence above is unchanged.
+            // Re-proved here, after the preview validated and before the
+            // first irreversible effect. The plan proved it too, but that read
+            // is older than this one by a re-plan, and a retirement cannot be
+            // taken back. Drift refuses with the predecessor still live.
+            let control_node = state
+                .with_store(|store| {
+                    store.get_topology_node(project_id, plan.binding.topology_node_id)
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the Core Team control-plane node no longer exists",
+                    )
+                })?;
+            // The readback is the fence. `inspect_bound_container` refuses with
+            // WorkspaceMismatch or StaleBinding when the runtime no longer holds
+            // the exact native the binding records, and that refusal lands here
+            // before the retirement below — predecessor, session and
+            // SeatBinding all still live, no successor, no receipt, no effect.
+            let proved_placement = self
+                .prove_existing_bound_container(project_id, &control_node)
+                .await?;
+            // Never `None` and never guessed: the retirement names the exact
+            // native child this proof just read back, or it does not happen.
+            let proved = proved_placement.as_ref().map(|proved| &proved.binding);
+            let proved = proved.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the hosted Core Team seat has no proved native child to retire",
+                )
+            })?;
+            let placement = kontor_runtime::adapter::HostedSeatRetirePlacement {
+                workspace_native_id: proved.identity.native_id.clone(),
+                canonical_cwd: proved.root.clone().ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "the proved native child records no canonical directory",
+                    )
+                })?,
+                provider_session_id: plan.predecessor.provider_session_id.clone(),
+            };
+            let (retired_at, retirement_reason) = match adapter
                 .retire_hosted_seat(&HostedSeatRetireRequest {
-                    placement: None,
+                    placement: Some(placement),
                     seat_binding_id: plan.binding.id,
                     identity: plan.predecessor.native_identity.clone(),
                     model_rung: plan.predecessor.model_rung.clone(),
+                    autonomy: plan.predecessor.autonomy,
                     requested_at: kontor_api::now(),
                 })
                 .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            {
+                Ok(retired) => (
+                    retired.archived_at,
+                    "authorized Core Team provider/model route correction",
+                ),
+                // The server clock, because the runtime reported no archival
+                // instant: it had nothing to archive. Recording a fabricated
+                // runtime timestamp would make history claim an effect that
+                // never happened, and the distinct reason keeps the two cases
+                // tellable apart in the immutable record.
+                Err(error) if error.proves_hosted_predecessor_absent() => (
+                    kontor_api::now(),
+                    "authorized Core Team route correction; the predecessor was already gone",
+                ),
+                Err(error) => {
+                    return Err(ApiError::from_runtime(state.realm_id(), &error));
+                }
+            };
             let control = state
                 .with_store(|store| {
                     store.get_topology_node(project_id, plan.binding.topology_node_id)
@@ -22140,6 +24715,56 @@ impl ApplicationOperations for Services {
                     store.list_hosted_topology_seat_history_native_ids(project_id, plan.binding.id)
                 })
                 .map_err(|error| self.refuse(&error))?;
+            // A successor is a new generation, so the plane default is the
+            // right source — but only the *first* time this runs. If a previous
+            // attempt already resolved it and lost its acknowledgement, that
+            // decision is what the native out there was created under, and the
+            // replay has to converge on it rather than resolve again.
+            let successor_autonomy = match state
+                .with_store(|store| {
+                    store.get_hosted_seat_launch_intent(
+                        project_id,
+                        plan.binding.id,
+                        successor_occupancy_generation,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?
+            {
+                Some(intent) => intent.autonomy,
+                None => freeze_hosted_seat_autonomy(adapter.declared_autonomy()),
+            };
+            state
+                .with_store(|store| {
+                    store.prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+                        project_id,
+                        seat_binding_id: plan.binding.id,
+                        occupancy_generation: successor_occupancy_generation,
+                        autonomy: successor_autonomy,
+                        model_rung: plan.desired.clone(),
+                        state: HostedSeatLaunchIntentState::Prepared,
+                        observed_native_id: None,
+                        prepared_at: kontor_api::now(),
+                        installed_at: None,
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
+            // A successor is its own occupancy, so it freezes its own persona.
+            // Reading the predecessor's would report a persona this native was
+            // never created under, which is the exact confusion a per-seat
+            // record would permit.
+            let role_persona = self.freeze_role_persona(&plan.binding.role.role_code)?;
+            if let Some(persona) = role_persona.as_ref() {
+                state
+                    .with_store(|store| {
+                        store.record_hosted_seat_role_persona(
+                            project_id,
+                            plan.binding.id,
+                            successor_occupancy_generation,
+                            persona,
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+            }
             let outcome = adapter
                 .launch_hosted_seat(&HostedSeatLaunchRequest {
                     seat_binding_id: plan.binding.id,
@@ -22149,6 +24774,7 @@ impl ApplicationOperations for Services {
                     cwd,
                     scope,
                     prompt,
+                    role_prompt: role_persona.as_ref().map(|persona| persona.prompt.clone()),
                     credential: ConsultationCredential::new(
                         state.credentials().seat_credential_for_generation(
                             plan.binding.id,
@@ -22157,6 +24783,12 @@ impl ApplicationOperations for Services {
                     ),
                     fenced_predecessor_native_ids,
                     model_rung: plan.desired.clone(),
+                    // The one place a changed plane default legitimately takes
+                    // effect. This is a new occupancy generation created through
+                    // the audited retire/replace path, and the predecessor it
+                    // supersedes has already been archived with the authority it
+                    // ran under, so nothing is rewritten by resolving afresh.
+                    autonomy: successor_autonomy,
                     context_policy,
                     requested_at: kontor_api::now(),
                 })
@@ -22167,6 +24799,7 @@ impl ApplicationOperations for Services {
                 seat_binding_id: plan.binding.id,
                 model_rung: plan.desired.clone(),
                 native_identity: outcome.identity,
+                autonomy: successor_autonomy,
                 provider_session_id: outcome.provider_session_id,
                 observed_at: outcome.observed_at,
             };
@@ -22175,8 +24808,19 @@ impl ApplicationOperations for Services {
                     store.replace_hosted_topology_seat_route(
                         &plan.predecessor,
                         &successor,
-                        retired.archived_at,
-                        "authorized Core Team provider/model route correction",
+                        retired_at,
+                        retirement_reason,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            state
+                .with_store(|store| {
+                    store.install_hosted_seat_launch_intent(
+                        project_id,
+                        plan.binding.id,
+                        successor_occupancy_generation,
+                        &successor.native_identity.native_id,
+                        successor.observed_at,
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
@@ -22314,6 +24958,18 @@ impl ApplicationOperations for Services {
             seat_binding_id: plan.binding.id,
             model_rung: runtime_outcome.claim.model_rung.clone(),
             native_identity: runtime_outcome.claim.identity.clone(),
+            // A claim adopts a session Kontor did not launch. The claim preview
+            // reads back the route the claimant is actually running, but no
+            // runtime reports the authority a live session was started under,
+            // so there is no readback to agree with here the way there is on a
+            // launch. Resolving the plane default would hand an adopted foreign
+            // session whatever the plane currently permits on no evidence at
+            // all; the predecessor's value would be worse still, since the
+            // claimant is a different native that never ran under it.
+            //
+            // Kontor records what it can prove: the least authority the domain
+            // has. Widening it is the audited retire/replace path's job.
+            autonomy: SeatAutonomy::standard(),
             provider_session_id: runtime_outcome.claim.provider_session_id.clone(),
             observed_at: runtime_outcome.claim.observed_at,
         };
@@ -23704,6 +26360,21 @@ impl ApplicationOperations for Services {
         self.committee_run_dto(&run, None, AppliedDto::Unchanged)
     }
 
+    async fn committee_artifact(
+        &self,
+        project_id: ProjectId,
+        committee_run_id: CommitteeRunId,
+        evidence_id: &str,
+        offset: u32,
+    ) -> Result<kontor_api::committee_evidence::CommitteeArtifactContentDto, ApiError> {
+        self.read_committee_artifact(project_id, committee_run_id, evidence_id, offset)
+            .await
+    }
+
+    async fn hydrate_committee_reports(&self, run: &mut CommitteeRunDto) -> Result<(), ApiError> {
+        self.hydrate_subject_reports(run).await
+    }
+
     async fn inspect_consultation_permissions(
         &self,
         project_id: ProjectId,
@@ -24147,9 +26818,7 @@ impl ApplicationOperations for Services {
             {
                 predecessor.model_rung.clone()
             } else {
-                let quota_states = state
-                    .with_store(|store| store.list_provider_quota_states(project_id))
-                    .map_err(|error| self.refuse(&error))?;
+                let quota_states = self.admission_quota_states(project_id)?;
                 let accounts = self.eligible_accounts(project_id)?;
                 resolve_recovery_placement(
                     adapter.as_ref(),
@@ -24159,6 +26828,7 @@ impl ApplicationOperations for Services {
                         account: None,
                         accounts: &accounts,
                         headroom: self.headroom_policy(),
+                freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                         now: kontor_api::now(),
                     },
                 )
@@ -24553,9 +27223,7 @@ impl ApplicationOperations for Services {
                 "no recovery route preserves the pinned provider-family diversity",
             ));
         }
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
+        let quota_states = self.admission_quota_states(project_id)?;
         let accounts = self.eligible_accounts(project_id)?;
         let usage_observations = state
             .with_store(
@@ -24612,6 +27280,7 @@ impl ApplicationOperations for Services {
                 account: None,
                 accounts: &accounts,
                 headroom: self.headroom_policy(),
+                freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                 now,
             },
         )
@@ -26015,16 +28684,29 @@ impl ApplicationOperations for Services {
                 );
         }
         if let Some(hold) = &request.initial_hold {
+            let mut hold_intent = serde_json::json!({
+                "held_by": hold.held_by.to_string(),
+                "reason": hold.reason.as_str(),
+            });
+            // The hold's terms are part of the operation, so idempotency
+            // protects them: the same key with a different lift condition is a
+            // different command, not a replay of this one. Widened only when a
+            // condition was actually named, in the same way ASMA-7941 widened
+            // the task intent — a caller that says nothing keeps the pre-field
+            // intent bytes, so its existing apply receipt stays replayable.
+            if let Some(condition) = hold.lift_condition {
+                hold_intent
+                    .as_object_mut()
+                    .expect("a hold intent is an object")
+                    .insert(
+                        "lift_condition".to_owned(),
+                        serde_json::json!(condition.as_str()),
+                    );
+            }
             intent_document
                 .as_object_mut()
                 .expect("an epic intent is an object")
-                .insert(
-                    "initial_hold".to_owned(),
-                    serde_json::json!({
-                        "held_by": hold.held_by.to_string(),
-                        "reason": hold.reason.as_str(),
-                    }),
-                );
+                .insert("initial_hold".to_owned(), hold_intent);
         }
         let intent = self.intent(&intent_document)?;
         if let Some(receipt) = self.replayed(key, &intent, None)? {
@@ -26311,6 +28993,9 @@ impl ApplicationOperations for Services {
                     state: "revoked".to_owned(),
                     held_by: hold.held_by,
                     reason: hold.reason.clone(),
+                    // Resolved, not echoed: a caller that named no condition
+                    // sees `manual` rather than an absence it has to interpret.
+                    lift_condition: hold.lift_condition.unwrap_or(HoldLiftCondition::Manual),
                 }
             }),
             tasks: preview
@@ -26559,8 +29244,28 @@ impl ApplicationOperations for Services {
                     stored.authorization.scope.covers(Some(epic_id), None)
                         || matches!(stored.authorization.scope, WorkScope::Project)
                 })
-                .map(authorization_dto)
-                .collect(),
+                .map(|stored| {
+                    // Only a revoked authorization is a hold, and only a hold
+                    // has terms. Reading the ledger for a live grant would
+                    // report `manual` for something that is not waiting on
+                    // anyone.
+                    let lift_condition = if stored.revocation.is_some() {
+                        Some(
+                            state
+                                .with_store(|store| {
+                                    store.get_hold_lift_condition(
+                                        project_id,
+                                        stored.authorization.id,
+                                    )
+                                })
+                                .map_err(|error| self.refuse(&error))?,
+                        )
+                    } else {
+                        None
+                    };
+                    Ok(authorization_dto(stored, lift_condition))
+                })
+                .collect::<Result<Vec<_>, ApiError>>()?,
             scheduling_open: state.barrier().state().is_open(),
         })
     }
@@ -26653,7 +29358,7 @@ impl ApplicationOperations for Services {
                         "the replayed receipt names an authorization this realm no longer has",
                     )
                 })?;
-            return Ok(authorization_dto(&granted));
+            return Ok(authorization_dto(&granted, None));
         }
 
         let receipt = self.record(
@@ -26685,10 +29390,13 @@ impl ApplicationOperations for Services {
         state
             .with_store(|store| store.insert_authorization(&authorization))
             .map_err(|error| self.refuse(&error))?;
-        Ok(authorization_dto(&kontor_store::StoredAuthorization {
-            authorization,
-            revocation: None,
-        }))
+        Ok(authorization_dto(
+            &kontor_store::StoredAuthorization {
+                authorization,
+                revocation: None,
+            },
+            None,
+        ))
     }
 
     async fn disarm(
@@ -26736,8 +29444,13 @@ impl ApplicationOperations for Services {
         }
         if stored.revocation.is_some() {
             // Already disarmed, and the request that says so has been proved to be
-            // the same one. Re-asserting something already true is an answer.
-            return Ok(authorization_dto(&stored));
+            // the same one. Re-asserting something already true is an answer, and
+            // it answers with the hold's terms, which a caller re-reading a hold
+            // is precisely what wants.
+            let condition = state
+                .with_store(|store| store.get_hold_lift_condition(project_id, id))
+                .map_err(|error| self.refuse(&error))?;
+            return Ok(authorization_dto(&stored, Some(condition)));
         }
         if replay {
             // The key recorded this disarm, but the authorization is not revoked:
@@ -26766,10 +29479,13 @@ impl ApplicationOperations for Services {
         state
             .with_store(|store| store.revoke_authorization(project_id, id, &revocation))
             .map_err(|error| self.refuse(&error))?;
-        Ok(authorization_dto(&kontor_store::StoredAuthorization {
-            authorization: stored.authorization,
-            revocation: Some(revocation),
-        }))
+        Ok(authorization_dto(
+            &kontor_store::StoredAuthorization {
+                authorization: stored.authorization,
+                revocation: Some(revocation),
+            },
+            None,
+        ))
     }
 
     async fn plan(
@@ -27172,6 +29888,203 @@ impl ApplicationOperations for Services {
         })
     }
 
+    async fn adopt_team_run_admission(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        role_slot_id: &RoleSlotId,
+        request: &AdoptTeamRunAdmissionRequest,
+    ) -> Result<TeamRunAdmissionAdoptionDto, ApiError> {
+        let _native_activity = self.native_activity()?;
+        let _succession_guard = self.succession_guard.lock().await;
+        let state = self.state()?;
+        let team = state
+            .with_store(|store| store.get_team_run(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the TeamRun does not exist in this project",
+                )
+            })?;
+        let task = self.task_row(project_id, team.task_id)?;
+        let epic_id = task
+            .mini_project_id
+            .ok_or_else(|| self.deny(ApiErrorCode::PlacementBlocked, "the task has no epic"))?;
+        let epic = self.epic_row(project_id, epic_id)?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1, "operation": "team_run_admission_adopt",
+            "project_id": project_id, "team_run_id": team_run_id,
+            "role_slot_id": role_slot_id, "request": {
+                "agent_run_id": request.agent_run_id,
+                "expected_task_revision": request.expected_task_revision,
+                "expected_agent_run_revision": request.expected_agent_run_revision,
+                "reason": request.reason,
+            },
+        }))?;
+        let replay = self.replayed(key, &intent, Some(&target))?;
+        let (adoption, receipt, applied) = if let Some(receipt) = replay {
+            let adoption = state
+                .with_store(|store| store.team_run_admission_adoption_by_receipt(receipt.id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::Unavailable,
+                        "the command receipt has no adoption",
+                    )
+                })?;
+            (adoption, receipt, Applied::Unchanged)
+        } else {
+            if !state.barrier().state().is_open() {
+                return Err(self.deny(
+                    ApiErrorCode::ReconciliationPending,
+                    "startup reconciliation has not finished",
+                ));
+            }
+            if task.revision != request.expected_task_revision {
+                return Err(self
+                    .deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the task changed before adoption",
+                    )
+                    .with_revision(Some(task.revision)));
+            }
+            let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
+                .map_err(|error| self.refuse_domain(&error))?;
+            if !template.slots.iter().any(|slot| &slot.id == role_slot_id) {
+                return Err(self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the frozen TeamRun snapshot does not declare this slot",
+                ));
+            }
+            let run = self
+                .current_delivery_role_leaf(project_id, team_run_id, role_slot_id.as_role_key())?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "this slot has no existing run to adopt",
+                    )
+                })?;
+            if run.id != request.agent_run_id
+                || run.revision != request.expected_agent_run_revision
+                || run.binding.is_some()
+                || run.terminal.is_some()
+                || run.projection.lifecycle != kontor_core::state::RunLifecycle::Queued
+                || run.projection.desired != kontor_core::state::DesiredRunState::RunRequested
+                || run.projection.observed != kontor_core::state::ObservedRunState::Unknown
+            {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "adoption requires the exact current queued, unbound slot leaf",
+                ));
+            }
+            let epic_id = task
+                .mini_project_id
+                .ok_or_else(|| self.deny(ApiErrorCode::PlacementBlocked, "the task has no epic"))?;
+            self.ensure_no_team_definition_migration(project_id, epic_id)?;
+            let node = state
+                .with_store(|store| store.get_task_topology_node(project_id, task.id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the task has no existing TSW node",
+                    )
+                })?;
+            self.preflight_delivery_slots(&node, std::slice::from_ref(role_slot_id))?;
+            let logical_seat = state
+                .with_store(|store| store.list_seat_bindings(project_id, node.id))
+                .map_err(|error| self.refuse(&error))?
+                .into_iter()
+                .any(|seat| {
+                    seat.team_run_id == Some(team_run_id)
+                        && seat.task_id == Some(task.id)
+                        && &seat.role_slot_id == role_slot_id
+                        && seat.is_non_terminal()
+                });
+            if !logical_seat {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the slot has no live SeatBinding on its TSW",
+                ));
+            }
+            self.prove_existing_bound_container(project_id, &node)
+                .await?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the TSW has no bound container",
+                    )
+                })?;
+            let now = kontor_api::now();
+            let receipt_id = CommandReceiptId::generate();
+            let adoption = kontor_core::repository::StoredTeamRunAdmissionAdoption {
+                id: ExternalId::parse(&CommandReceiptId::generate().to_string())
+                    .map_err(|error| self.refuse_domain(&error))?,
+                project_id,
+                task_id: task.id,
+                team_run_id,
+                role_slot_id: role_slot_id.clone(),
+                agent_run_id: run.id,
+                adopted_agent_run_revision: run.revision,
+                receipt_id,
+                adopted_at: now,
+            };
+            let envelope = ReceiptEnvelope::new(
+                state.realm_id(),
+                NewLocalCommand {
+                    project_id,
+                    receipt_id,
+                    idempotency_key: key.clone(),
+                    kind: CommandKind::StartScheduledWork,
+                    target,
+                    target_revision: epic.revision,
+                    intent,
+                    created_at: now,
+                },
+            );
+            state
+                .with_store(|store| {
+                    store.adopt_team_run_admission_with_intent(
+                        &adoption,
+                        request.expected_task_revision,
+                        &envelope,
+                    )
+                })
+                .map_err(|error| match &error {
+                    RepositoryError::Conflict {
+                        subject: "team-run admission adoption" | "admission adoption",
+                        rule,
+                    } => self.deny(ApiErrorCode::RevisionConflict, rule),
+                    _ => self.refuse(&error),
+                })?
+        };
+        state.signals().appended();
+        Ok(TeamRunAdmissionAdoptionDto {
+            adoption_id: adoption.id.as_str().to_owned(),
+            task_id: adoption.task_id,
+            team_run_id: adoption.team_run_id,
+            role_slot_id: adoption.role_slot_id,
+            agent_run_id: adoption.agent_run_id,
+            adopted_agent_run_revision: adoption.adopted_agent_run_revision,
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt.id.to_string(),
+                applied: if applied == Applied::Created {
+                    AppliedDto::Created
+                } else {
+                    AppliedDto::Unchanged
+                },
+                revision: receipt.target_revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
+    }
+
     async fn fill_team_run_seat(
         &self,
         key: &IdempotencyKey,
@@ -27238,12 +30151,18 @@ impl ApplicationOperations for Services {
             )
         })?;
         let epic = self.epic_row(project_id, epic_id)?;
+        let explicit_model_route = request
+            .model_route
+            .as_ref()
+            .map(parse_runtime_model_route)
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?;
         // As with exact admission recovery, the scheduling receipt witnesses
         // the owning epic; its canonical intent narrows the effect to one slot.
         let target = AggregateRef::MiniProject {
             mini_project_id: epic_id,
         };
-        let intent = self.intent(&serde_json::json!({
+        let mut intent_document = serde_json::json!({
             "schema_version": 1,
             "operation": "team_run_seat_fill",
             "project_id": project_id,
@@ -27251,7 +30170,13 @@ impl ApplicationOperations for Services {
             "role_slot_id": slot.id,
             "expected_task_revision": request.expected_task_revision,
             "reason": request.reason,
-        }))?;
+        });
+        // Present only when named, so fills recorded before routes existed
+        // replay under their original intent.
+        if let Some(route) = request.model_route.as_ref() {
+            intent_document["model_route"] = serde_json::json!(route);
+        }
+        let intent = self.intent(&intent_document)?;
         self.replayed(key, &intent, Some(&target))?;
         let bound = self
             .current_delivery_role_leaf(project_id, team_run_id, slot.id.as_role_key())?
@@ -27271,7 +30196,7 @@ impl ApplicationOperations for Services {
             )?;
             applied = AppliedDto::Unchanged;
         } else {
-            let owed = state
+            let owed_by_dispatch = state
                 .with_store(|store| store.list_turn_dispatches(project_id))
                 .map_err(|error| self.refuse(&error))?
                 .into_iter()
@@ -27280,6 +30205,54 @@ impl ApplicationOperations for Services {
                         && row.to_role_slot_id == slot.id
                         && !row.dispatched
                 });
+            // A slot can be owed a seat for a second, narrower reason: an
+            // immutable adoption recorded that an already-created run belongs
+            // to it. A run created before its handoff exists has no dispatch
+            // yet. Adoption permits materialization in WAIT while the ordinary
+            // handoff conditions continue to govern delivery of actual work.
+            //
+            // The adoption is authority to fill, not a substitute for the
+            // checks below: the run it names is re-proved here against the same
+            // revision the adoption recorded, and a run that has since bound,
+            // moved role or left the team is refused rather than reused.
+            let adoption = state
+                .with_store(|store| {
+                    store.team_run_admission_adoption(project_id, team_run_id, &slot.id)
+                })
+                .map_err(|error| self.refuse(&error))?;
+            if let Some(adoption) = adoption.as_ref() {
+                let adopted = state
+                    .with_store(|store| store.get_agent_run(project_id, adoption.agent_run_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::StaleBinding,
+                            "the adopted run named by this slot's adoption no longer exists",
+                        )
+                    })?;
+                let current = self.current_delivery_role_leaf(
+                    project_id,
+                    team_run_id,
+                    slot.id.as_role_key(),
+                )?;
+                if current.as_ref().is_none_or(|run| run.id != adopted.id)
+                    || adopted.projection.lifecycle != kontor_core::state::RunLifecycle::Queued
+                    || adopted.projection.desired
+                        != kontor_core::state::DesiredRunState::RunRequested
+                    || adopted.projection.observed != kontor_core::state::ObservedRunState::Unknown
+                    || adopted.team_run_id != team_run_id
+                    || adopted.role != *slot.id.as_role_key()
+                    || adopted.revision != adoption.adopted_agent_run_revision
+                    || adopted.binding.is_some()
+                    || adopted.terminal.is_some()
+                {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the adopted run moved since its adoption was recorded",
+                    ));
+                }
+            }
+            let owed = owed_by_dispatch || adoption.is_some();
             if !owed {
                 return Err(self.deny(
                     ApiErrorCode::InvalidRequest,
@@ -27391,16 +30364,31 @@ impl ApplicationOperations for Services {
                 })?;
             let scope =
                 self.execution_scope(project_id, epic_id, Some(task.id), adapter.as_ref())?;
-            receipt_id = self.record(
-                key,
-                project_id,
-                CommandKind::StartScheduledWork,
-                target,
-                epic.revision,
-                &intent,
-            )?;
-            // Re-attest the bound container through the same preparation path
-            // as seating; the runtime owns the snapshot used by launch.
+            let route_override = explicit_model_route
+                .map(|route| {
+                    self.place_explicit_route(project_id, task.id, route, adapter.as_ref())
+                })
+                .transpose()?;
+            if let Some((_, account)) = route_override.as_ref()
+                && self
+                    .current_delivery_role_leaf(project_id, team_run_id, slot.id.as_role_key())?
+                    .and_then(|run| run.account_profile_id)
+                    .is_some_and(|claimed| claimed != *account)
+            {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the slot's queued run already claims a different provider account",
+                ));
+            }
+            // The placement is proved *before* the receipt exists.
+            //
+            // Recording first and proving afterwards leaves a durable receipt
+            // behind for a fill that never happened: the command is on the
+            // ledger, its idempotency key is spent, and the refusal that
+            // follows can take back neither. Every effect below — the AgentRun,
+            // its launch intent, the launch, the dispatch and the runtime
+            // binding — hangs off this proof, so the proof comes first and a
+            // mismatch costs nothing at all.
             let workspace = self
                 .ensure_container(project_id, &placement, &task_root, adapter.as_ref())
                 .await?;
@@ -27410,6 +30398,14 @@ impl ApplicationOperations for Services {
                     "container preparation changed the existing TSW native identity",
                 ));
             }
+            receipt_id = self.record(
+                key,
+                project_id,
+                CommandKind::StartScheduledWork,
+                target,
+                epic.revision,
+                &intent,
+            )?;
             let seating = Seating {
                 project_id,
                 admitted: &admitted,
@@ -27421,7 +30417,10 @@ impl ApplicationOperations for Services {
                 cwd: &task_root,
                 now: kontor_api::now(),
             };
-            applied = self.fill_slot(&seating, &slot.id, None).await?.applied;
+            applied = self
+                .fill_slot(&seating, &slot.id, None, route_override.as_ref())
+                .await?
+                .applied;
             self.retry_undelivered_dispatches().await?;
         }
         let run = self
@@ -27544,7 +30543,11 @@ impl ApplicationOperations for Services {
                     "approved project memory could not be read",
                 ),
             })?;
-        let sources = context_sources(realm_id, &task, &workflow, &memory)?;
+        // Approved memory grows without bound; the canonical pack does not. When
+        // the whole approved set no longer fits, resolving must still answer —
+        // with a pack that says exactly which revisions it left out.
+        let selection = self.select_memory_within_ceiling(realm_id, &task, &workflow, &memory)?;
+        let sources = context_sources(realm_id, &task, &workflow, selection.included(&memory))?;
         let references = kontor_context::model::ReferenceInputs::new();
         let resolution = kontor_context::resolve::ResolutionRequest {
             realm_id,
@@ -27633,6 +30636,7 @@ impl ApplicationOperations for Services {
                     reason: format!("{:?}", record.reason).to_lowercase(),
                 })
                 .collect(),
+            memory_selection: selection.report(&memory),
         })
     }
 
@@ -27832,7 +30836,7 @@ impl ApplicationOperations for Services {
         let now = kontor_api::now();
         let command = ReceiptEnvelope::new(
             state.realm_id(),
-            NewCommandIntent {
+            NewLocalCommand {
                 project_id,
                 receipt_id: CommandReceiptId::generate(),
                 idempotency_key: key.clone(),
@@ -27840,9 +30844,6 @@ impl ApplicationOperations for Services {
                 target,
                 target_revision: task.revision,
                 intent: intent.clone(),
-                payload: intent,
-                desired: None,
-                not_before: now,
                 created_at: now,
             },
         );
@@ -27873,7 +30874,7 @@ impl ApplicationOperations for Services {
         // before that rejection; the responsible seat must settle the routed
         // phase once more before ordinary evidence advancement resumes.
         if verdict != GateVerdict::Rejected {
-            self.advance_workflow_from_evidence(project_id, task_id)?;
+            self.advance_workflow_from_evidence(project_id, task_id, PhaseRoute::Declared)?;
         }
         state.signals().appended();
         Ok(GateVerdictDto {
@@ -27888,6 +30889,40 @@ impl ApplicationOperations for Services {
                 digest: citation.digest,
             }),
             receipt_id: receipt.id.to_string(),
+        })
+    }
+
+    async fn recover_workflow_phase(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<kontor_api::applications::WorkflowPhaseRecoveryDto, ApiError> {
+        let state = self.state()?;
+        // Read the stored phase first, so the answer can say whether anything
+        // actually moved rather than just reporting where we ended up.
+        let before = state
+            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the task has no active workflow to recover",
+                )
+            })?;
+        // The same deterministic projection every other path runs. It writes
+        // only phase advances it derives, and it derives them only from
+        // evidence that is already durable — so no verdict is recorded, no
+        // evaluation appended and no turn replayed. A workflow already at its
+        // evidence phase returns unchanged, which is what makes this idempotent.
+        let after =
+            self.advance_workflow_from_evidence(project_id, task_id, PhaseRoute::Declared)?;
+        Ok(kontor_api::applications::WorkflowPhaseRecoveryDto {
+            realm_id: state.realm_id(),
+            task_id,
+            previous_phase: before.current_phase.as_str().to_owned(),
+            current_phase: after.current_phase.as_str().to_owned(),
+            revision: after.revision,
+            advanced: before.current_phase != after.current_phase,
         })
     }
 
@@ -28405,6 +31440,107 @@ impl ApplicationOperations for Services {
             },
             receipt_id: receipt.to_string(),
         })
+    }
+
+    async fn preview_worktree_claim_correction(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &WorktreeClaimCorrectionRequest,
+    ) -> Result<WorktreeClaimCorrectionPreviewDto, ApiError> {
+        let prepared = self.prepare_worktree_claim_correction(
+            project_id,
+            task_id,
+            request.expected_revision,
+            &request.old_worktree,
+            &request.new_worktree,
+        )?;
+        Ok(WorktreeClaimCorrectionPreviewDto {
+            realm_id: self.state()?.realm_id(),
+            project_id,
+            task_id,
+            task_revision: prepared.task_revision,
+            old_worktree: prepared.old_worktree,
+            new_worktree: prepared.new_worktree,
+            module: prepared.module.as_str().to_owned(),
+            branch: prepared.branch.as_str().to_owned(),
+            writes: true,
+            preview_hash: prepared.preview_hash.as_str().to_owned(),
+        })
+    }
+
+    async fn apply_worktree_claim_correction(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &WorktreeClaimCorrectionApplyRequest,
+    ) -> Result<WorktreeClaimCorrectionAppliedDto, ApiError> {
+        let state = self.state()?;
+        let intent = self.worktree_claim_correction_intent(project_id, task_id, request)?;
+        let target = AggregateRef::Task { task_id };
+        if let Some(existing) = self.replayed(key, &intent, Some(&target))? {
+            if existing.kind != CommandKind::CorrectTaskWorktree {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key was already used for a different operation",
+                ));
+            }
+            let correction = state
+                .with_store(|store| store.get_task_worktree_correction(project_id, existing.id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the durable receipt has no immutable worktree-correction result",
+                    )
+                })?;
+            return self.worktree_claim_correction_applied(correction, Applied::Unchanged);
+        }
+
+        let prepared = self.prepare_worktree_claim_correction(
+            project_id,
+            task_id,
+            request.expected_revision,
+            &request.old_worktree,
+            &request.new_worktree,
+        )?;
+        let requested_hash = ContentHash::parse(&request.preview_hash)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if requested_hash != prepared.preview_hash {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the worktree claim or its deterministic source identity changed since preview",
+                )
+                .with_revision(Some(prepared.task_revision)));
+        }
+
+        let now = kontor_api::now();
+        let command = NewLocalCommand {
+            project_id,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: key.clone(),
+            kind: CommandKind::CorrectTaskWorktree,
+            target,
+            target_revision: prepared.task_revision,
+            intent,
+            created_at: now,
+        };
+        let correction = TaskWorktreeCorrection {
+            command: &command,
+            task_id,
+            expected_old: &prepared.old_worktree,
+            replacement: &prepared.new_worktree,
+            module: &prepared.module,
+            branch: &prepared.branch,
+            preview_hash: &prepared.preview_hash,
+        };
+        let (stored, applied) = state
+            .with_store(|store| store.apply_task_worktree_correction(&correction))
+            .map_err(|error| self.refuse(&error))?;
+        state.signals().appended();
+        self.worktree_claim_correction_applied(stored, applied)
     }
 
     async fn preview_task_description(
@@ -29200,6 +32336,18 @@ impl ApplicationOperations for Services {
         })
     }
 
+    async fn record_artifact(
+        &self,
+        key: &IdempotencyKey,
+        authority: kontor_api::auth::CallerCapability,
+        project_id: ProjectId,
+        task_id: TaskId,
+        request: &kontor_api::artifacts::RecordArtifactRequest,
+    ) -> Result<kontor_api::artifacts::ArtifactSubmissionDto, ApiError> {
+        self.recover_artifact(key, authority, project_id, task_id, request)
+            .await
+    }
+
     async fn settle_turn(
         &self,
         key: &IdempotencyKey,
@@ -29290,16 +32438,8 @@ impl ApplicationOperations for Services {
         } else if let Some(challenge_message_id) =
             request.correlation_challenge_message_id.as_deref()
         {
-            self.prove_challenged_turn(
-                project_id,
-                &task,
-                &run,
-                binding,
-                challenge_message_id,
-                &artifacts,
-                now,
-            )
-            .await?
+            self.prove_challenged_turn(&task, &run, binding, challenge_message_id, &artifacts, now)
+                .await?
         } else {
             return Err(self.deny(
                 ApiErrorCode::RevisionConflict,
@@ -29378,7 +32518,7 @@ impl ApplicationOperations for Services {
         // be trusted to answer — the certifier decides it from the template's
         // declared slots. Until every one is accounted for this is a no-op.
         let (team_run_closed, _) = self.settle_team(project_id, &run, now)?;
-        self.advance_workflow_from_evidence(project_id, task_id)?;
+        self.advance_workflow_from_evidence(project_id, task_id, PhaseRoute::Declared)?;
         let follow_ups = self.derive_follow_ups(project_id, &settled, now).await?;
 
         Ok(SettledTurnDto {
@@ -29721,6 +32861,7 @@ impl ApplicationOperations for Services {
         // run and role slot. Admin may move only that never-bound attempt, and
         // must name the temporary route explicitly; a root admission still
         // recovers through the scheduler's admission receipt.
+        let mut authorized_parent_id = None;
         if unbound_recovery {
             if request.unavailable_provider.is_some() || request.quota_exhausted.is_some() {
                 return Err(self.deny(
@@ -29774,7 +32915,40 @@ impl ApplicationOperations for Services {
                     run.parent_agent_run_id == Some(agent_run_id)
                         && !run.is_operator_abandoned_unbound()
                 });
-            if !pending_dispatch && !targetless_dispatch && !already_replaced {
+            // An authorized replacement can itself fail before native launch.
+            // Its recorded parent is authority independent of an old handoff
+            // that was already delivered to that parent. Require the exact
+            // sole child of a runtime-terminal bound holder in this same slot;
+            // a foreign, live or ambiguous lineage authorizes nothing.
+            let members = self.team_members(project_id, predecessor.team_run_id)?;
+            let recorded_parent = predecessor.parent_agent_run_id.and_then(|parent_id| {
+                members.iter().find(|parent| {
+                    parent.id == parent_id
+                        && parent.project_id == project_id
+                        && parent.team_run_id == predecessor.team_run_id
+                        && parent.role == predecessor.role
+                        && parent.binding.is_some()
+                        && parent.projection.lifecycle.is_terminal()
+                        && parent.terminal.as_ref().is_some_and(|terminal| {
+                            matches!(
+                                terminal.source,
+                                TerminalEvidenceSource::RuntimeObservation { .. }
+                            )
+                        })
+                })
+            });
+            let authorized_parent = recorded_parent.is_some_and(|parent| {
+                let children: Vec<_> = members
+                    .iter()
+                    .filter(|run| run.parent_agent_run_id == Some(parent.id))
+                    .collect();
+                matches!(children.as_slice(), [only] if only.id == agent_run_id)
+            });
+            authorized_parent_id = recorded_parent
+                .filter(|_| authorized_parent)
+                .map(|parent| parent.id);
+            if !pending_dispatch && !targetless_dispatch && !already_replaced && !authorized_parent
+            {
                 return Err(self.deny(
                     ApiErrorCode::RevisionConflict,
                     "no pending handoff dispatch or recorded successor authorizes this never-bound seat",
@@ -29791,6 +32965,16 @@ impl ApplicationOperations for Services {
             .map(parse_runtime_model_route)
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
+        if let (Some(evidence), Some(route)) = (
+            request.unavailable_provider.as_ref(),
+            request.model_route.as_ref(),
+        ) && route.provider == evidence.provider
+        {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the successor route names the provider evidenced as unavailable",
+            ));
+        }
 
         let runtime_kind = binding.as_ref().map_or_else(
             || self.node_runtime_kind(),
@@ -29807,20 +32991,25 @@ impl ApplicationOperations for Services {
         // retirement or any native call. A Wait/NeedsHuman answer is a
         // side-effect-free deferral, never permission to archive first and
         // discover afterwards that nowhere can accept the work.
-        let quota_successor_route = if request.quota_exhausted.is_some() {
-            let quota_states = state
-                .with_store(|store| store.list_provider_quota_states(project_id))
-                .map_err(|error| self.refuse(&error))?;
+        let quota_successor_route = if request.quota_exhausted.is_some()
+            || explicit_model_route.is_some()
+        {
+            let quota_states = self.admission_quota_states(project_id)?;
             let eligible = self.eligible_accounts(project_id)?;
             let task_pin = state
                 .with_store(|store| store.task_account_selection(project_id, task_id))
                 .map_err(|error| self.refuse(&error))?
                 .map(|(account_profile_id, _)| account_profile_id);
+            if unbound_recovery && let Some(route) = explicit_model_route.as_ref() {
+                account_for_explicit_provider_alias(route, &eligible)
+                    .map_err(|error| self.refuse_domain(&error))?;
+            }
             let outlook = QuotaOutlook {
                 states: &quota_states,
                 account: task_pin,
                 accounts: &eligible,
                 headroom: self.headroom_policy(),
+                freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                 now,
             };
             let declared = if let Some(route) = explicit_model_route.as_ref() {
@@ -29937,7 +33126,10 @@ impl ApplicationOperations for Services {
                     project_id,
                     &predecessor,
                     binding,
-                    request.unavailable_provider.as_ref(),
+                    request
+                        .unavailable_provider
+                        .as_ref()
+                        .map(|evidence| (evidence, request.model_route.is_some())),
                     request
                         .quota_exhausted
                         .as_ref()
@@ -30028,9 +33220,7 @@ impl ApplicationOperations for Services {
         let recorded_successor_id = recorded_successor.map(|successor| successor.id);
         let slot_members: Vec<_> = members
             .iter()
-            .filter(|run| {
-                !run.is_operator_abandoned_unbound() && recorded_successor_id != Some(run.id)
-            })
+            .filter(|run| recorded_successor_id != Some(run.id))
             .cloned()
             .collect();
 
@@ -30044,7 +33234,20 @@ impl ApplicationOperations for Services {
         let mut slots = TeamRunSlots::hydrate(lease, &team.snapshot, &slot_members, &bindings)
             .map_err(|error| self.refuse_domain(&error))?;
         let successor_agent_run_id = recorded_successor_id.unwrap_or_else(AgentRunId::generate);
-        let permit = if unbound_recovery {
+        let permit = if let Some(parent_id) = authorized_parent_id {
+            let closed = slots
+                .latest_closed(&role_slot)
+                .map_err(|error| self.refuse_domain(&error))?;
+            if closed.agent_run_id() != parent_id {
+                return Err(self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the failed successor's parent is not the role slot's latest closed holder",
+                ));
+            }
+            slots
+                .reserve_after_unbound_successor(closed, &predecessor, successor_agent_run_id)
+                .map_err(|error| self.refuse_domain(&error))?
+        } else if unbound_recovery {
             slots
                 .reserve_after_unbound_abandonment(&role_slot, agent_run_id, successor_agent_run_id)
                 .map_err(|error| self.refuse_domain(&error))?
@@ -30090,22 +33293,23 @@ impl ApplicationOperations for Services {
         }
         self.ensure_launch_intent(project_id, successor_agent_run_id)?;
 
-        adapter
-            .prepare_plane()
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        // The replacement is placed in the *same* container as the seat it
-        // replaces. Preparing a fresh one keyed by anything else is how a
-        // successor ends up working somewhere its predecessor never was.
+        // The replacement reuses the exact persisted container; recovery is not
+        // authority to create or move topology.
         let task_root = self.task_root(project_id, task_id)?;
-        let node = self.ensure_task_node(project_id, task_id)?;
+        let node = state
+            .with_store(|store| store.get_task_topology_node(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the replacement task has no materialized ticket workspace",
+                )
+            })?;
         let workspace = self
-            .ensure_container(project_id, &node, &task_root, adapter.as_ref())
+            .bound_container_snapshot(project_id, &node, adapter.as_ref())
             .await?;
         let scope = self.execution_scope(project_id, epic_id, Some(task_id), adapter.as_ref())?;
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
+        let quota_states = self.admission_quota_states(project_id)?;
         let eligible = self.eligible_accounts(project_id)?;
         // The *task's* explicit pin constrains the successor's walk; the
         // predecessor's run account must not. `QuotaOutlook::candidates`
@@ -30125,28 +33329,15 @@ impl ApplicationOperations for Services {
             account: task_pin,
             accounts: &eligible,
             headroom: self.headroom_policy(),
+            freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
             now,
         };
-        // A never-bound recovery route has no predecessor account to inherit.
-        // Its exact provider alias must therefore resolve to one enabled
-        // governed account before the native launch. Other explicit replacement
-        // routes retain their existing no-account behavior; their authority and
-        // evidence are separate from this narrow recovery.
+        // Explicit routes were resolved before recording a successor. An
+        // operator-selected alias is placement authority, never quota evidence.
         let (model_rung, routed_account) = match quota_successor_route {
             Some(preplanned) => preplanned,
-            None => match explicit_model_route {
-                Some(route) => {
-                    let account = unbound_recovery
-                        .then(|| account_for_explicit_provider_alias(&route, &eligible))
-                        .transpose()
-                        .map_err(|error| self.refuse_domain(&error))?;
-                    (route, account)
-                }
-                None => {
-                    freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
-                        .map_err(|error| self.refuse_domain(&error))?
-                }
-            },
+            None => freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
+                .map_err(|error| self.refuse_domain(&error))?,
         };
         let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
             .await
@@ -30296,6 +33487,7 @@ impl ApplicationOperations for Services {
             // ask again.
             if let Some(receipt_id) = receipt_id {
                 self.release_run_leases(project_id, agent_run_id, receipt_id, now)?;
+                self.release_abandoned_reservation(&run).await?;
             }
             let (mut team_run_closed, mut team_pending) =
                 self.team_closure_state(project_id, &run)?;
@@ -30409,6 +33601,7 @@ impl ApplicationOperations for Services {
                     "the run disappeared while it was being abandoned",
                 )
             })?;
+        self.release_abandoned_reservation(&closed).await?;
         let (mut team_run_closed, mut team_pending) = self.settle_team(project_id, &closed, now)?;
         // A team whose every run has ended, and which no certificate can close,
         // is abandoned under the same operator decision. That is the whole
@@ -32125,9 +35318,7 @@ impl Services {
                 "quota recovery requires an account-pinned predecessor",
             )
         })?;
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
+        let quota_states = self.admission_quota_states(project_id)?;
         let mut exact_evidence = None;
         for row in quota_states.iter().filter(|row| {
             row.account_profile_id == account_profile_id
@@ -32213,6 +35404,7 @@ impl Services {
             account: task_pin,
             accounts: &eligible,
             headroom: self.headroom_policy(),
+            freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
             now,
         };
         let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
@@ -32637,9 +35829,7 @@ impl Services {
             .with_store(|store| store.get_agent_run(project_id, predecessor.id))
             .map_err(|error| self.refuse(&error))?
             .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "the predecessor disappeared"))?;
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
+        let quota_states = self.admission_quota_states(project_id)?;
         let quota = quota_states
             .iter()
             .find(|row| {
@@ -32719,6 +35909,7 @@ impl Services {
             account: task_pin,
             accounts: &eligible,
             headroom: self.headroom_policy(),
+            freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
             now,
         };
         let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
@@ -32939,11 +36130,15 @@ impl Services {
                 )
             })?;
         let recorded_successor_id = recorded_successor.map(|run| run.id);
+        // The roster handed to hydration must stay complete. An abandoned
+        // unbound run in another slot is still that slot's root while a live
+        // successor names it as its audit parent, and dropping it here makes
+        // the successor rootless -- refusing a succession this slot authorized.
+        // `TeamRunSlots::hydrate` is the single authority that keeps referenced
+        // abandoned parents and discards unreferenced ones.
         let slot_members: Vec<_> = members
             .iter()
-            .filter(|run| {
-                !run.is_operator_abandoned_unbound() && recorded_successor_id != Some(run.id)
-            })
+            .filter(|run| recorded_successor_id != Some(run.id))
             .cloned()
             .collect();
         let bindings: Vec<_> = members
@@ -32985,14 +36180,18 @@ impl Services {
             })
             .map_err(|error| self.refuse(&error))?;
 
-        adapter
-            .prepare_plane()
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
         let task_root = self.task_root(project_id, attempt.request.task_id)?;
-        let node = self.ensure_task_node(project_id, attempt.request.task_id)?;
+        let node = state
+            .with_store(|store| store.get_task_topology_node(project_id, attempt.request.task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the succession task has no materialized ticket workspace",
+                )
+            })?;
         let workspace = self
-            .ensure_container(project_id, &node, &task_root, adapter.as_ref())
+            .bound_container_snapshot(project_id, &node, adapter.as_ref())
             .await?;
         let scope = self.execution_scope(
             project_id,
@@ -33405,7 +36604,10 @@ impl Services {
         project_id: ProjectId,
         predecessor: &kontor_core::repository::AgentRun,
         binding: &RuntimeBinding,
-        unavailable: Option<&kontor_api::applications::UnavailableProviderSeatRequest>,
+        unavailable: Option<(
+            &kontor_api::applications::UnavailableProviderSeatRequest,
+            bool,
+        )>,
         quota: Option<(&kontor_api::applications::QuotaExhaustedSeatRequest, bool)>,
         now: Timestamp,
     ) -> Result<kontor_core::repository::AgentRun, ApiError> {
@@ -33426,7 +36628,7 @@ impl Services {
                     "this daemon is not configured with the predecessor's runtime",
                 )
             })?;
-        if let Some(evidence) = unavailable {
+        if let Some((evidence, operator_rerouted)) = unavailable {
             if evidence.runtime_binding_id != binding.id.to_string()
                 || evidence.native_id != binding.identity.native_id.as_str()
             {
@@ -33436,15 +36638,20 @@ impl Services {
                 ));
             }
             ExternalId::parse(&evidence.provider).map_err(|error| self.refuse_domain(&error))?;
-            if predecessor.projection.lifecycle != kontor_core::state::RunLifecycle::Launching
-                || predecessor.projection.desired
-                    != kontor_core::state::DesiredRunState::RunRequested
-                || predecessor.projection.observed
-                    != kontor_core::state::ObservedRunState::Launching
-            {
+            let evidenced_only_at_launch = predecessor.projection.lifecycle
+                == kontor_core::state::RunLifecycle::Launching
+                && predecessor.projection.desired
+                    == kontor_core::state::DesiredRunState::RunRequested
+                && predecessor.projection.observed
+                    == kontor_core::state::ObservedRunState::Launching;
+            // A seat that already ran may leave an operator-disabled provider
+            // (an account whose login expired or was switched off) only onto an
+            // explicit Admin route. The runtime still proves the session idle
+            // with no pending permission before it archives anything.
+            if !evidenced_only_at_launch && !operator_rerouted {
                 return Err(self.deny(
                     ApiErrorCode::UnsupportedCapability,
-                    "provider-unavailable retirement is limited to a seat evidenced only at launch",
+                    "provider-unavailable retirement of a seat that already ran requires an explicit Admin model route",
                 ));
             }
             if adapter.provider_available(&evidence.provider) {
@@ -33491,7 +36698,7 @@ impl Services {
             // before persisting that readback. The fresh archive evidence is
             // sufficient; repeating the native effect is unnecessary.
             liveness
-        } else if let Some(evidence) = unavailable {
+        } else if let Some((evidence, _)) = unavailable {
             adapter
                 .retire_unavailable_provider(issued.snapshot(), &evidence.provider, now)
                 .await
@@ -33536,7 +36743,14 @@ impl Services {
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
         } else {
-            if liveness.contact != RuntimeContact::ProcessMissing {
+            // Reachable is not the same as reusable. A predecessor restored
+            // for terminal readback answers an exact inspection and refuses
+            // every driving operation, so "reuse it" names a move no caller
+            // can make; that seat is the linked-successor case. It is not
+            // waved through: it still proves itself unusable on the resume
+            // probe below and still has to come back runtime-observed
+            // `Cancelled`, exactly as every other arm does.
+            if liveness.contact != RuntimeContact::ProcessMissing && liveness.drivable {
                 return Err(self.deny(
                     ApiErrorCode::UnsupportedCapability,
                     "the predecessor is still reachable and must be reused",
@@ -33797,6 +37011,12 @@ impl Services {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
         let now = kontor_api::now();
+        if admitted.placement_attestation_digest.is_none() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the scheduler admission carries no successful placement attestation",
+            ));
+        }
         let workflow = state
             .with_store(|store| store.get_active_task_workflow(project_id, admitted.task_id))
             .map_err(|error| self.refuse(&error))?
@@ -33947,8 +37167,8 @@ impl Services {
                 "the admitted task is not scoped to an epic",
             )
         })?;
-        // Admission is fenced before placement writes, scheduler commits or
-        // runtime preparation. Otherwise a new native could appear outside the
+        // Admission is fenced before placement inspection or scheduler commits.
+        // Otherwise native state could move outside
         // migration's exact census while the old pin is still retained.
         self.ensure_no_team_definition_migration(project_id, epic_id)?;
         let task_root = self.task_root(project_id, admitted.task_id)?;
@@ -33961,7 +37181,7 @@ impl Services {
         )?;
         // Before the runtime is contacted at all. `ensure_seat_binding` checks
         // the same thing when it opens each seat, but by then a TeamRun, an
-        // AgentRun and a prepared plane already exist — and a slot the
+        // AgentRun and verified native placement already exist — and a slot the
         // governing Team Definition does not register must leave none of them
         // behind.
         self.preflight_delivery_slots(&placement, &ordered)?;
@@ -33971,6 +37191,9 @@ impl Services {
             Some(admitted.task_id),
             adapter.as_ref(),
         )?;
+        let workspace = self
+            .bound_container_snapshot(project_id, &placement, adapter.as_ref())
+            .await?;
 
         let intent = CanonicalDocument::from_value(&serde_json::json!({
             "schema_version": 1,
@@ -34058,21 +37281,6 @@ impl Services {
         });
         commit.map_err(|error| self.refuse(&error))?;
 
-        // Where this seat belongs is settled before the runtime is touched at
-        // all. A placement that cannot be resolved stops here, with nothing
-        // dispatched and nothing to undo.
-        // A container is prepared *inside* the runtime's plane, so the plane has
-        // to exist first. This is idempotent and re-attests a binding the
-        // adapter already holds, so the cost of asking on every admission is one
-        // readback — and the cost of not asking is a seat that can never be
-        // materialized on a runtime whose plane nothing else creates.
-        adapter
-            .prepare_plane()
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let workspace = self
-            .ensure_container(project_id, &placement, &task_root, adapter.as_ref())
-            .await?;
         // The seat that owns this task's seats, opened once per epic. Every
         // delivery binding names it, so closing it orphans them all at once
         // instead of leaving each to be judged on its own liveness.
@@ -34102,21 +37310,7 @@ impl Services {
                 applied: AppliedDto::Unchanged,
             }
         } else {
-            let authority = adapter
-                .admit_launch(&AdmissionRequest {
-                    slot: RoleSlotKey::new(team_run_id, slot.clone()),
-                    agent_run_id,
-                    binding_id,
-                    replaces: None,
-                    requested_at: now,
-                })
-                .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-                .into_authority()
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-            let quota_states = state
-                .with_store(|store| store.list_provider_quota_states(project_id))
-                .map_err(|error| self.refuse(&error))?;
+            let quota_states = self.admission_quota_states(project_id)?;
             let (model_rung, routed_account) = freeze_seat_model_rung(
                 adapter.as_ref(),
                 &team_snapshot,
@@ -34126,6 +37320,7 @@ impl Services {
                     account: admitted.account_profile_id,
                     accounts: &self.eligible_accounts(project_id)?,
                     headroom: self.headroom_policy(),
+                    freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                     now,
                 },
             )
@@ -34149,34 +37344,46 @@ impl Services {
                     })
                     .map_err(|error| self.refuse(&error))?;
             }
-            let outcome = adapter
-                .launch(&authority.into_request(LaunchParts {
-                    scope: scope.clone(),
-                    display_name: self.delivery_seat_name(
-                        project_id,
-                        admitted.task_id,
-                        &scope,
-                        &team_snapshot,
-                        &slot,
-                    )?,
+            let parts = LaunchParts {
+                scope: scope.clone(),
+                display_name: self.delivery_seat_name(
+                    project_id,
+                    admitted.task_id,
+                    &scope,
+                    &team_snapshot,
+                    &slot,
+                )?,
+                agent_run_id,
+                team_run_id,
+                role_slot_id: slot.clone(),
+                task_id: admitted.task_id,
+                binding_id,
+                placement: Some(LaunchPlacement::Container(workspace.clone())),
+                cwd: task_root.clone(),
+                // The task's own pin outranks the walk: a pinned run's walk
+                // can only ever answer with that pin, so `.or` is the
+                // no-pin case — the account the walk actually selected.
+                account_profile_id: admitted.account_profile_id.or(routed_account),
+                prompt: slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
+                model_rung,
+                context_policy: context_policy.clone(),
+                autonomy,
+                requested_at: now,
+            };
+            let authority = adapter
+                .admit_launch(&AdmissionRequest {
+                    slot: RoleSlotKey::new(team_run_id, slot.clone()),
                     agent_run_id,
-                    team_run_id,
-                    role_slot_id: slot.clone(),
-                    task_id: admitted.task_id,
                     binding_id,
-                    placement: Some(LaunchPlacement::Container(workspace.clone())),
-                    cwd: task_root.clone(),
-                    // The task's own pin outranks the walk: a pinned run's walk
-                    // can only ever answer with that pin, so `.or` is the
-                    // no-pin case — the account the walk actually selected.
-                    account_profile_id: admitted.account_profile_id.or(routed_account),
-                    prompt:
-                        slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
-                    model_rung,
-                    context_policy: context_policy.clone(),
-                    autonomy,
+                    replaces: None,
                     requested_at: now,
-                }))
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+                .into_authority()
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let outcome = adapter
+                .launch(&authority.into_request(parts))
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
 
@@ -34253,7 +37460,10 @@ impl Services {
             {
                 continue;
             }
-            filled.push(self.fill_slot(&seating, role, partial_recovery).await?);
+            filled.push(
+                self.fill_slot(&seating, role, partial_recovery, None)
+                    .await?,
+            );
         }
         Ok(filled)
     }
@@ -34269,19 +37479,6 @@ impl Services {
     /// by this exact task and TeamRun is the idempotent recovery case, not a
     /// second placement.
     ///
-    /// **There is deliberately no escape for a project that has no topology
-    /// yet.** An earlier revision answered `Ok(None)` there and let admission
-    /// fall back to a TeamRun-keyed task workspace. That escape existed only
-    /// because nothing wrote topology nodes; now [`Self::ensure_task_node`]
-    /// does, seeding the project's revision and creating the chain on first
-    /// admission. Keeping the escape would mean keeping a second, TeamRun-keyed
-    /// way to place a production seat, which is the whole defect OP-02 removes.
-    ///
-    /// The worry the escape answered is still answered — a project that never
-    /// selected a topology is given one rather than refused, so no task becomes
-    /// unrunnable by not having been configured. What changed is *how*: by
-    /// seeding, not by placing the seat somewhere unmodelled.
-    ///
     /// Nothing here repairs a disagreement. Rewriting either side to match the
     /// other is what turns "these two disagree about where the work is" into
     /// "the work is now in two places".
@@ -34294,7 +37491,15 @@ impl Services {
         worktree: &kontor_runtime::workspace::WorkspaceRoot,
     ) -> Result<SessionTopologyNode, ApiError> {
         let state = self.state()?;
-        let node = self.ensure_task_node(project_id, task_id)?;
+        let node = state
+            .with_store(|store| store.get_task_topology_node(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the task has no explicitly materialized ticket session workspace",
+                )
+            })?;
 
         // The kind's capabilities come from the pinned specification revision,
         // never from the kind's name: the vocabulary is data a revision owns,
@@ -34334,13 +37539,8 @@ impl Services {
         // A child node's container lives below its parent's, so a node with no
         // parent is a seat with nowhere to be.
         //
-        // Whether that parent *holds* a container is deliberately not asked
-        // here. Preparation walks the lineage from the root down and presents
-        // each level's exact binding to the next, so by the time a child is
-        // created its parent is bound or the whole preparation failed loudly.
-        // Asking before preparation would refuse the ordinary first admission of
-        // an epic; asking after it would be asking whether the call that just
-        // returned had returned.
+        // Placement admission separately reads back the exact parent chain; this
+        // local check only prevents a structurally rootless ticket node.
         if node.parent_id.is_none() {
             return Err(self.deny(
                 ApiErrorCode::PlacementBlocked,
@@ -34351,13 +37551,31 @@ impl Services {
         // Where the node is bound, compared against where the seat is about to
         // work. A container bound elsewhere is not corrected to match the
         // request; the disagreement is reported.
-        if let Some(bound) = state
+        let canonical_worktree = std::fs::canonicalize(worktree.as_str()).map_err(|_| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the task worktree is missing or cannot be canonicalized",
+            )
+        })?;
+        let canonical_worktree = canonical_worktree.to_str().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the canonical task worktree is not valid UTF-8",
+            )
+        })?;
+        let bound = state
             .with_store(|store| store.get_topology_node_container(project_id, node.id))
             .map_err(|error| self.refuse(&error))?
-            && bound
-                .canonical_cwd
-                .as_ref()
-                .is_none_or(|cwd| cwd.as_str() != worktree.as_str())
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the task has no persisted native container binding",
+                )
+            })?;
+        if bound
+            .canonical_cwd
+            .as_ref()
+            .is_none_or(|cwd| cwd.as_str() != canonical_worktree)
         {
             return Err(self.deny(
                 ApiErrorCode::PlacementBlocked,
@@ -35957,6 +39175,213 @@ impl Services {
     /// node, when it holds one. That is the whole restart contract: a daemon
     /// restart destroys the adapter's ledger while the native container carries
     /// on existing, and the persisted id is the only way back to it.
+    async fn inspect_bound_container(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        binding: &NativeContainerBinding,
+        adapter: &dyn RuntimeAdapter,
+    ) -> Result<ContainerInspection, ApiError> {
+        let state = self.state()?;
+        let epic_id = node.mini_project_id.ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the bound container is not scoped to an epic",
+            )
+        })?;
+        let scope = self.execution_scope(project_id, epic_id, node.task_id, adapter)?;
+        let spec = state
+            .with_store(|store| {
+                store.get_topology_spec(project_id, node.topology.spec_id, node.topology.version)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the node's pinned topology revision is not published in this project",
+                )
+            })?;
+        let team_definition = self.pinned_team_definition(project_id, epic_id)?;
+        let capabilities = if let Some(definition) = team_definition.as_ref() {
+            definition
+                .container(&node.kind)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the pinned Team Definition does not configure the bound container",
+                    )
+                })?
+                .projection_capabilities
+                .clone()
+        } else {
+            spec.node_kinds
+                .iter()
+                .find(|declared| declared.kind == node.kind)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the node's kind is not declared by its pinned topology revision",
+                    )
+                })?
+                .projection_capabilities
+                .clone()
+        };
+        let projection = ContainerProjection::resolve(&capabilities)
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        if !projection.is_native() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "a logical-only node cannot hold a native container binding",
+            ));
+        }
+        let native_parent = if projection == ContainerProjection::NativeChild {
+            let mut parent_id = node.parent_id;
+            let mut found = None;
+            while let Some(candidate_id) = parent_id {
+                let candidate = state
+                    .with_store(|store| store.get_topology_node(project_id, candidate_id))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the container's parent is not in this project's topology",
+                        )
+                    })?;
+                if let Some(candidate_binding) = state
+                    .with_store(|store| store.get_topology_node_container(project_id, candidate_id))
+                    .map_err(|error| self.refuse(&error))?
+                    && candidate_binding.observed_kind == ObservedContainerKind::Project
+                {
+                    found = Some(candidate_binding.identity);
+                    break;
+                }
+                parent_id = candidate.parent_id;
+            }
+            Some(found.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the native child has no persisted native project ancestor",
+                )
+            })?)
+        } else {
+            None
+        };
+        let root = binding
+            .canonical_cwd
+            .as_ref()
+            .map(|cwd| WorkspaceRoot::parse(cwd.as_str()))
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?;
+        let durable = ContainerBinding {
+            id: ContainerBindingId::parse(binding.container_binding_id.as_str())
+                .map_err(|error| self.refuse_domain(&error))?,
+            topology_node_id: node.id,
+            projection,
+            identity: binding.identity.clone(),
+            root,
+            bound_at: binding.bound_at,
+        };
+        let inspection = adapter
+            .inspect_container(&ContainerInspectRequest {
+                binding: durable.clone(),
+                native_parent: native_parent.clone(),
+                scope,
+                epic_container: projection == ContainerProjection::NativeRoot,
+                requested_at: kontor_api::now(),
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let observed_kind = match projection {
+            ContainerProjection::NativeRoot => ObservedContainerKind::Project,
+            ContainerProjection::NativeChild => ObservedContainerKind::Workspace,
+            ContainerProjection::LogicalOnly => unreachable!("rejected above"),
+        };
+        if inspection.binding != durable
+            || inspection.observed_kind != observed_kind
+            || inspection.native_parent != native_parent
+            || inspection.correlation.label.topology_node_id() != node.id
+            || inspection.correlation.native != durable.identity
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the exact native container readback does not match its durable binding",
+            ));
+        }
+        Ok(inspection)
+    }
+
+    /// Freshly prove the native container a node already holds, if it holds one.
+    ///
+    /// An exact-id readback against the runtime that recorded the binding, and
+    /// nothing else: it creates nothing, renames nothing, archives nothing and
+    /// launches nothing. That is what makes it usable as a prerequisite — a
+    /// caller that refuses on the answer has spent no seat, no receipt, no
+    /// history row and no native effect.
+    ///
+    /// A node with no persisted binding yet answers `None` rather than
+    /// refusing. There is nothing to prove and nothing for a later write to
+    /// hang off, and refusing would turn a first materialization into a
+    /// requirement for a container that does not exist yet.
+    ///
+    /// The runtime is resolved from the binding's own recorded kind rather than
+    /// from configuration, because the question being asked is whether *the
+    /// runtime holding this container* still agrees about it.
+    async fn prove_existing_bound_container(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+    ) -> Result<Option<ContainerBindingSnapshot>, ApiError> {
+        let state = self.state()?;
+        let Some(binding) = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(None);
+        };
+        let adapter = state
+            .runtimes()
+            .get(&binding.identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the runtime holding this node's native container is not configured",
+                )
+            })?;
+        self.bound_container_snapshot(project_id, node, adapter.as_ref())
+            .await
+            .map(Some)
+    }
+
+    async fn bound_container_snapshot(
+        &self,
+        project_id: ProjectId,
+        node: &SessionTopologyNode,
+        adapter: &dyn RuntimeAdapter,
+    ) -> Result<ContainerBindingSnapshot, ApiError> {
+        let state = self.state()?;
+        let binding = state
+            .with_store(|store| store.get_topology_node_container(project_id, node.id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the task has no persisted native container binding",
+                )
+            })?;
+        let inspection = self
+            .inspect_bound_container(project_id, node, &binding, adapter)
+            .await?;
+        let capabilities = adapter
+            .discover_capabilities()
+            .await
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        Ok(ContainerBindingSnapshot {
+            binding: inspection.binding,
+            capabilities,
+            correlation: inspection.correlation,
+        })
+    }
+
     async fn ensure_container(
         &self,
         project_id: ProjectId,
@@ -36069,6 +39494,15 @@ impl Services {
             let bound = state
                 .with_store(|store| store.get_topology_node_container(project_id, level.id))
                 .map_err(|error| self.refuse(&error))?;
+            let container_binding_id = bound
+                .as_ref()
+                .map(|binding| ContainerBindingId::parse(binding.container_binding_id.as_str()))
+                .transpose()
+                .map_err(|error| self.refuse_domain(&error))?
+                .unwrap_or_else(ContainerBindingId::generate);
+            let bound_native_id = bound
+                .as_ref()
+                .map(|binding| binding.identity.native_id.clone());
             let leaf = level.id == node.id;
             // Only a `native_child` is created below anything. A `native_root`
             // is its own root even when it sits below another node logically —
@@ -36088,12 +39522,25 @@ impl Services {
                                 .map_err(|error| self.refuse_domain(&error))?,
                         )
                     } else if level.task_id.is_some() {
+                        let worktree = level_scope
+                            .require_task()
+                            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
+                            .worktree
+                            .as_str();
+                        let canonical = std::fs::canonicalize(worktree).map_err(|_| {
+                            self.deny(
+                                ApiErrorCode::PlacementBlocked,
+                                "the task worktree is missing or cannot be canonicalized",
+                            )
+                        })?;
                         Some(
-                            level_scope
-                                .require_task()
-                                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
-                                .worktree
-                                .clone(),
+                            WorkspaceRoot::parse(canonical.to_str().ok_or_else(|| {
+                                self.deny(
+                                    ApiErrorCode::PlacementBlocked,
+                                    "the canonical task worktree is not valid UTF-8",
+                                )
+                            })?)
+                            .map_err(|error| self.refuse_domain(&error))?,
                         )
                     } else if projection == ContainerProjection::NativeRoot {
                         Some(self.runtime_root(project_id, level.mini_project_id)?)
@@ -36105,7 +39552,7 @@ impl Services {
                 }
             };
             let request = ContainerRequest {
-                container_binding_id: ContainerBindingId::generate(),
+                container_binding_id,
                 topology_node_id: level.id,
                 topology: level.topology.clone(),
                 scope: level_scope.clone(),
@@ -36119,7 +39566,7 @@ impl Services {
                 // roots keep the directory stored with their binding; an
                 // unbound epic gets its own marker rather than the shared repo.
                 cwd: level_cwd,
-                bound_native_id: bound.map(|binding| binding.identity.native_id),
+                bound_native_id,
                 epic_container: projection == ContainerProjection::NativeRoot
                     && level.mini_project_id == Some(epic_scope.epic.mini_project_id),
                 task_id: level.task_id,
@@ -36138,9 +39585,30 @@ impl Services {
                 .snapshot
                 .ensure_correlated()
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-            self.bind_container(project_id, level.id, &outcome.snapshot)?;
-            parent = Some(outcome.snapshot.binding.clone());
-            prepared = Some(outcome.snapshot);
+            let inspection = adapter
+                .inspect_container(&ContainerInspectRequest {
+                    binding: outcome.snapshot.binding.clone(),
+                    native_parent: request
+                        .parent
+                        .as_ref()
+                        .map(|parent| parent.identity.clone()),
+                    scope: request.scope.clone(),
+                    epic_container: request.epic_container,
+                    requested_at: kontor_api::now(),
+                })
+                .await
+                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            self.validate_container_inspection(&request, &outcome.snapshot, &inspection)?;
+            self.bind_container(project_id, level.id, &inspection)?;
+            parent = Some(inspection.binding.clone());
+            // Inspection refreshes the adapter's correlation ledger. The
+            // launch must carry that same proof, not the superseded prepare
+            // snapshot, even when the native container has not moved.
+            prepared = Some(ContainerBindingSnapshot {
+                binding: inspection.binding,
+                capabilities: outcome.snapshot.capabilities,
+                correlation: inspection.correlation,
+            });
         }
         prepared.ok_or_else(|| {
             self.deny(
@@ -36948,26 +40416,80 @@ impl Services {
             .map_err(|error| self.refuse_domain(&error))
     }
 
+    /// Refuse any readback that differs from the exact placement request.
+    fn validate_container_inspection(
+        &self,
+        request: &ContainerRequest,
+        snapshot: &ContainerBindingSnapshot,
+        inspection: &ContainerInspection,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let projection = request
+            .validate()
+            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let observed_kind = match projection {
+            ContainerProjection::NativeRoot => ObservedContainerKind::Project,
+            ContainerProjection::NativeChild => ObservedContainerKind::Workspace,
+            ContainerProjection::LogicalOnly => {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a logical-only node produced a native container inspection",
+                ));
+            }
+        };
+        if inspection.binding != snapshot.binding
+            || inspection.binding.id != request.container_binding_id
+            || inspection.binding.topology_node_id != request.topology_node_id
+            || inspection.binding.projection != projection
+            || inspection.observed_kind != observed_kind
+            || inspection.visible_title != request.display_name.as_str()
+            || inspection.binding.root != request.cwd
+            || inspection.canonical_cwd != request.cwd
+            || inspection.native_parent
+                != request
+                    .parent
+                    .as_ref()
+                    .map(|parent| parent.identity.clone())
+            || inspection.correlation.label.topology_node_id() != request.topology_node_id
+            || inspection.correlation.native != inspection.binding.identity
+        {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the native container readback does not exactly match the pinned placement",
+            ));
+        }
+        Ok(())
+    }
+
     /// Persist the native container a runtime read back for one node.
     fn bind_container(
         &self,
         project_id: ProjectId,
         topology_node_id: TopologyNodeId,
-        snapshot: &ContainerBindingSnapshot,
+        inspection: &ContainerInspection,
     ) -> Result<(), ApiError> {
         let state = self.state()?;
-        let observed_kind = match snapshot.binding.projection {
-            ContainerProjection::NativeChild => ObservedContainerKind::Workspace,
-            _ => ObservedContainerKind::Project,
+        let projection = match inspection.binding.projection {
+            ContainerProjection::NativeRoot => ObservedContainerProjection::NativeRoot,
+            ContainerProjection::NativeChild => ObservedContainerProjection::NativeChild,
+            ContainerProjection::LogicalOnly => {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a logical-only node has no native container readback to persist",
+                ));
+            }
         };
-        let canonical_cwd = snapshot
-            .binding
-            .root
+        let canonical_cwd = inspection
+            .canonical_cwd
             .as_ref()
             .map(|root| ExternalName::parse(root.as_str()))
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
-        let binding_id = ExternalId::parse(&snapshot.binding.id.to_string())
+        let binding_id = ExternalId::parse(&inspection.binding.id.to_string())
+            .map_err(|error| self.refuse_domain(&error))?;
+        let visible_title = ExternalName::parse(&inspection.visible_title)
+            .map_err(|error| self.refuse_domain(&error))?;
+        let topology_correlation = ExternalName::parse(&inspection.correlation.label.to_string())
             .map_err(|error| self.refuse_domain(&error))?;
         state
             .with_store(|store| {
@@ -36975,10 +40497,17 @@ impl Services {
                     topology_node_id,
                     project_id,
                     container_binding_id: binding_id.clone(),
-                    identity: snapshot.binding.identity.clone(),
-                    observed_kind,
+                    identity: inspection.binding.identity.clone(),
+                    observed_kind: inspection.observed_kind,
                     canonical_cwd: canonical_cwd.clone(),
-                    observed_at: snapshot.binding.bound_at,
+                    readback: Some(NativeContainerReadback {
+                        projection,
+                        visible_title: visible_title.clone(),
+                        native_parent: inspection.native_parent.clone(),
+                        topology_correlation: topology_correlation.clone(),
+                    }),
+                    bound_at: inspection.binding.bound_at,
+                    observed_at: inspection.observed_at,
                 })
             })
             .map_err(|error| self.refuse(&error))?;
@@ -36986,11 +40515,56 @@ impl Services {
     }
 
     /// Fill one more declared slot inside a team run admission already committed.
+    /// Place one Admin-named route on an eligible account with admissible
+    /// headroom, or refuse without effect.
+    fn place_explicit_route(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        route: ModelRung,
+        adapter: &dyn RuntimeAdapter,
+    ) -> Result<(ModelRung, AccountProfileId), ApiError> {
+        let state = self.state()?;
+        let quota_states = self.admission_quota_states(project_id)?;
+        let eligible = self.eligible_accounts(project_id)?;
+        let task_pin = state
+            .with_store(|store| store.task_account_selection(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .map(|(account_profile_id, _)| account_profile_id);
+        let outlook = QuotaOutlook {
+            states: &quota_states,
+            account: task_pin,
+            accounts: &eligible,
+            headroom: self.headroom_policy(),
+            freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+            now: kontor_api::now(),
+        };
+        match resolve_chain_placement(
+            adapter,
+            &[route],
+            kontor_scheduler::headroom::SeatClass::Delivery,
+            &outlook,
+        )
+        .map_err(|error| self.refuse_domain(&error))?
+        {
+            kontor_scheduler::headroom::Placement::Admit { rung, account } => Ok((rung, account)),
+            kontor_scheduler::headroom::Placement::Wait { .. } => Err(self.deny(
+                ApiErrorCode::CapacityExhausted,
+                "the named route is deferred until recorded headroom returns",
+            )),
+            kontor_scheduler::headroom::Placement::NeedsHuman { .. } => Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the named route has no eligible account with admissible headroom",
+            )),
+        }
+    }
+
     async fn fill_slot(
         &self,
         seating: &Seating<'_>,
         slot: &RoleSlotId,
         partial_recovery: Option<&PartialAdmissionSeatDto>,
+        route_override: Option<&(ModelRung, AccountProfileId)>,
     ) -> Result<StartedSeatDto, ApiError> {
         let _native_activity = self.native_activity()?;
         let Seating {
@@ -37051,7 +40625,9 @@ impl Services {
                         team_run_id,
                         parent_agent_run_id: None,
                         role: slot.clone().into_role_key(),
-                        account_profile_id: admitted.account_profile_id,
+                        account_profile_id: route_override
+                            .map(|(_, account)| *account)
+                            .or(admitted.account_profile_id),
                         binding: None,
                         created_at: now,
                     })
@@ -37077,34 +40653,28 @@ impl Services {
         // The caller supplies the runtime's prepared container snapshot. Initial
         // seating prepares it once for all slots; bounded seat fill re-attests
         // the existing native container before reaching this shared path.
-        let authority = adapter
-            .admit_launch(&AdmissionRequest {
-                slot: RoleSlotKey::new(team_run_id, slot.clone()),
-                agent_run_id,
-                binding_id,
-                replaces: None,
-                requested_at: now,
-            })
-            .await
-            .map_err(|error| ApiError::from_runtime(realm_id, &error))?
-            .into_authority()
-            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
-        let quota_states = state
-            .with_store(|store| store.list_provider_quota_states(project_id))
-            .map_err(|error| self.refuse(&error))?;
-        let (model_rung, routed_account) = freeze_seat_model_rung(
-            adapter.as_ref(),
-            &team_snapshot,
-            slot,
-            &QuotaOutlook {
-                states: &quota_states,
-                account: admitted.account_profile_id,
-                accounts: &self.eligible_accounts(project_id)?,
-                headroom: self.headroom_policy(),
-                now,
-            },
-        )
-        .map_err(|error| self.refuse_domain(&error))?;
+        let (model_rung, account_profile_id) = if let Some((rung, account)) = route_override {
+            // The named route's account selects its provider alias; the
+            // admission's account belongs to the frozen chain it replaces.
+            (rung.clone(), Some(*account))
+        } else {
+            let quota_states = self.admission_quota_states(project_id)?;
+            let (rung, routed_account) = freeze_seat_model_rung(
+                adapter.as_ref(),
+                &team_snapshot,
+                slot,
+                &QuotaOutlook {
+                    states: &quota_states,
+                    account: admitted.account_profile_id,
+                    accounts: &self.eligible_accounts(project_id)?,
+                    headroom: self.headroom_policy(),
+                    freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+                    now,
+                },
+            )
+            .map_err(|error| self.refuse_domain(&error))?;
+            (rung, admitted.account_profile_id.or(routed_account))
+        };
         let context_policy = freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
@@ -37113,7 +40683,7 @@ impl Services {
         // Durable before the first native effect, as in the admitted path: a
         // seat that reaches a provider unpinned cannot have its refusal
         // attributed or its replacement evidenced.
-        if let Some(account) = admitted.account_profile_id.or(routed_account) {
+        if let Some(account) = account_profile_id {
             state
                 .with_store(|store| store.pin_agent_run_account(project_id, agent_run_id, account))
                 .map_err(|error| self.refuse(&error))?;
@@ -37134,13 +40704,25 @@ impl Services {
             binding_id,
             placement: Some(LaunchPlacement::Container(container.clone())),
             cwd: cwd.clone(),
-            account_profile_id: admitted.account_profile_id.or(routed_account),
+            account_profile_id,
             prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,
             model_rung,
             context_policy: context_policy.clone(),
             autonomy,
             requested_at: now,
         };
+        let authority = adapter
+            .admit_launch(&AdmissionRequest {
+                slot: RoleSlotKey::new(team_run_id, slot.clone()),
+                agent_run_id,
+                binding_id,
+                replaces: None,
+                requested_at: now,
+            })
+            .await
+            .map_err(|error| ApiError::from_runtime(realm_id, &error))?
+            .into_authority()
+            .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
         let request = match partial_recovery {
             Some(recovery) => {
                 authority.into_recovery_request(parts, recovery.expected_native_id.clone())
@@ -37366,7 +40948,7 @@ impl Services {
         };
         let command = ReceiptEnvelope::new(
             state.realm_id(),
-            NewCommandIntent {
+            NewLocalCommand {
                 project_id,
                 receipt_id,
                 idempotency_key: key.clone(),
@@ -37374,9 +40956,6 @@ impl Services {
                 target,
                 target_revision: task.revision,
                 intent: intent.clone(),
-                payload: intent.clone(),
-                desired: None,
-                not_before: now,
                 created_at: now,
             },
         );
@@ -37700,6 +41279,33 @@ fn map_succession_api_error(error: ApiError) -> SuccessionCoordinationError {
     }
 }
 
+fn container_readback_dto(binding: &NativeContainerBinding) -> Option<ContainerReadbackDto> {
+    binding
+        .readback
+        .as_ref()
+        .map(|readback| ContainerReadbackDto {
+            host: binding.identity.host.as_str().to_owned(),
+            generation: binding.identity.generation,
+            projection: readback.projection.as_str().to_owned(),
+            native_kind: binding.observed_kind.as_str().to_owned(),
+            visible_title: readback.visible_title.as_str().to_owned(),
+            canonical_cwd: binding
+                .canonical_cwd
+                .as_ref()
+                .map(|cwd| cwd.as_str().to_owned()),
+            native_parent: readback
+                .native_parent
+                .as_ref()
+                .map(|parent| NativeContainerParentDto {
+                    runtime_kind: parent.runtime_kind.as_str().to_owned(),
+                    host: parent.host.as_str().to_owned(),
+                    generation: parent.generation,
+                    native_id: parent.native_id.as_str().to_owned(),
+                }),
+            topology_correlation: readback.topology_correlation.as_str().to_owned(),
+        })
+}
+
 /// Render a pre-v47 immutable template only when it names the old closed scope
 /// placeholders explicitly. Opaque legacy prose remains read-only: it cannot be
 /// guessed into a native identity after the typed naming contract exists.
@@ -37902,6 +41508,47 @@ const fn counts_towards_completion(state: TaskState) -> bool {
 /// The only branch a publication may target. Both governed repositories use it
 /// and the plan records the assumption; a per-project default is a later field.
 const PUBLICATION_DEFAULT_BRANCH: &str = "master";
+/// The one Kontor project the governed ASMA forge mapping belongs to.
+///
+/// The durable ProjectId is the boundary, not the project's root path. A path
+/// is machine-specific and a checkout can be moved or cloned elsewhere, while
+/// the id is the same fact in every replica of this realm. Authorization
+/// belongs to *this* project: no other project inherits these forge roots, by
+/// holding a confirmed tracker key or by sitting at a familiar path.
+const PUBLICATION_GOVERNED_PROJECT: &str = "01a0064a-e056-7603-9968-ef64fdaacb75";
+
+/// Whether the repository mapping below governs this project.
+///
+/// A constant that failed to parse authorizes nothing rather than everything:
+/// the comparison is against a parsed id, never against text a request carried.
+fn is_governed_publication_project(project_id: ProjectId) -> bool {
+    ProjectId::parse(PUBLICATION_GOVERNED_PROJECT).is_ok_and(|governed| governed == project_id)
+}
+
+/// The superproject repository that project's publications may target.
+///
+/// A task's own module may add one more repository, but the root always stays
+/// authorized: a module's code change and the superproject documentation that
+/// accompanies it are one unit of work published to two governed roots.
+const PUBLICATION_ROOT_REPOSITORY: &str = "Carasent-ASMA/asma-modules";
+
+/// The modules of that project that are themselves governed repositories.
+///
+/// Membership is a durable property of the module, not a caller claim and not
+/// the GitHub App's optional configuration: the App may be absent entirely and
+/// a publication must still be judged. A module missing here authorizes only
+/// the root, which is the fail-closed answer rather than a wildcard.
+const PUBLICATION_MODULE_REPOSITORIES: &[(&str, &str)] =
+    &[("_tools/asma-rs-kontor", "Carasent-ASMA/asma-rs-kontor")];
+
+/// The repository a module is governed as, when it is one of them.
+fn publication_module_repository(module: Option<&ModuleKey>) -> Option<&'static str> {
+    let module = module?;
+    PUBLICATION_MODULE_REPOSITORIES
+        .iter()
+        .find(|(key, _)| *key == module.as_str())
+        .map(|(_, repository)| *repository)
+}
 
 /// The binding a publication's branch key resolved to.
 struct ResolvedPublicationBinding {
@@ -37919,6 +41566,33 @@ struct JudgedPublication {
 }
 
 impl Services {
+    /// The repositories one binding may publish to: the governed root, plus
+    /// whatever the bound module adds. Never widened by the request.
+    ///
+    /// A project the mapping does not govern authorizes nothing at all. That is
+    /// deliberate: an unknown project has no forge mapping to apply, and
+    /// refusing every repository is the only answer that cannot lend one
+    /// project's roots to another.
+    fn authorized_repositories(
+        &self,
+        project_id: ProjectId,
+        module_repositories: &[&'static str],
+    ) -> Result<Vec<ExternalName>, ApiError> {
+        if !is_governed_publication_project(project_id) {
+            return Ok(Vec::new());
+        }
+        let mut names = Vec::with_capacity(module_repositories.len() + 1);
+        for text in
+            std::iter::once(PUBLICATION_ROOT_REPOSITORY).chain(module_repositories.iter().copied())
+        {
+            let name = ExternalName::parse(text).map_err(|error| self.refuse_domain(&error))?;
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        Ok(names)
+    }
+
     /// The epic or task whose confirmed tracker key is `key`, with every key a
     /// title under that epic may name.
     ///
@@ -37929,13 +41603,14 @@ impl Services {
         &self,
         project_id: ProjectId,
         key: &TrackerKey,
-    ) -> Result<Option<ResolvedPublicationBinding>, ApiError> {
+    ) -> Result<Vec<ResolvedPublicationBinding>, ApiError> {
         let state = self.state()?;
         let default_branch = ExternalName::parse(PUBLICATION_DEFAULT_BRANCH)
             .map_err(|error| self.refuse_domain(&error))?;
         let epics = state
             .with_store(|store| store.list_mini_projects(project_id))
             .map_err(|error| self.refuse(&error))?;
+        let mut resolved = Vec::new();
         for epic in epics {
             let Some(epic_key) = self.epic_tracker_key(project_id, epic.id)? else {
                 continue;
@@ -37944,48 +41619,65 @@ impl Services {
                 .with_store(|store| store.list_epic_tasks(project_id, epic.id))
                 .map_err(|error| self.refuse(&error))?;
             let mut child_keys = Vec::with_capacity(tasks.len());
-            let mut matched_task = None;
+            let mut epic_module_repositories: Vec<&'static str> = Vec::new();
+            let mut matched_tasks = Vec::new();
             for task in tasks {
                 let links = state
                     .with_store(|store| store.list_task_ticket_links(project_id, task.id))
                     .map_err(|error| self.refuse(&error))?;
-                let task_key = links
+                let task_repository = publication_module_repository(task.module.as_ref());
+                if let Some(repository) = task_repository
+                    && !epic_module_repositories.contains(&repository)
+                {
+                    epic_module_repositories.push(repository);
+                }
+                for task_key in links
                     .iter()
                     .filter(|link| link.connector.as_str() == "connector.jira")
-                    .find_map(|link| TrackerKey::from_external(&link.external_issue_key).ok());
-                if let Some(task_key) = task_key {
+                    .filter_map(|link| TrackerKey::from_external(&link.external_issue_key).ok())
+                {
                     if task_key == *key {
-                        matched_task = Some((task.id, task_key.clone()));
+                        matched_tasks.push((task.id, task_key.clone(), task_repository));
                     }
                     child_keys.push(task_key);
                 }
             }
             if epic_key == *key {
-                return Ok(Some(ResolvedPublicationBinding {
+                // An epic branch may publish into the root and into every module
+                // its own tasks own, and nothing else.
+                let repositories =
+                    self.authorized_repositories(project_id, &epic_module_repositories)?;
+                resolved.push(ResolvedPublicationBinding {
                     epic_id: epic.id,
                     task_id: None,
                     binding: PublicationBinding {
-                        epic_key,
+                        repositories,
+                        epic_key: epic_key.clone(),
                         task_key: None,
-                        child_keys,
-                        default_branch,
+                        child_keys: child_keys.clone(),
+                        default_branch: default_branch.clone(),
                     },
-                }));
+                });
             }
-            if let Some((task_id, task_key)) = matched_task {
-                return Ok(Some(ResolvedPublicationBinding {
+            for (task_id, task_key, task_repository) in matched_tasks {
+                // A task branch is narrower than its epic: only the root and the
+                // task's own module, never a sibling module's repository.
+                let repositories =
+                    self.authorized_repositories(project_id, task_repository.as_slice())?;
+                resolved.push(ResolvedPublicationBinding {
                     epic_id: epic.id,
                     task_id: Some(task_id),
                     binding: PublicationBinding {
-                        epic_key,
+                        repositories,
+                        epic_key: epic_key.clone(),
                         task_key: Some(task_key),
-                        child_keys,
-                        default_branch,
+                        child_keys: child_keys.clone(),
+                        default_branch: default_branch.clone(),
                     },
-                }));
+                });
             }
         }
-        Ok(None)
+        Ok(resolved)
     }
 
     /// Judge one observed publication. A malformed commit is a malformed
@@ -38007,8 +41699,9 @@ impl Services {
             Ok(branch) => match branch.key().cloned() {
                 None => (PublicationDecision::unconfirmed(), None),
                 Some(key) => match self.resolve_publication_binding(project_id, &key)? {
-                    None => (PublicationDecision::unconfirmed(), None),
-                    Some(resolved) => {
+                    resolved if resolved.is_empty() => (PublicationDecision::unconfirmed(), None),
+                    mut resolved if resolved.len() == 1 => {
+                        let resolved = resolved.pop().expect("one resolved publication binding");
                         let identity = PublicationIdentity {
                             repository: request.repository.clone(),
                             base_branch: request.base_branch.clone(),
@@ -38019,6 +41712,7 @@ impl Services {
                         };
                         (evaluate(&identity, &resolved.binding), Some(resolved))
                     }
+                    _ => (PublicationDecision::ambiguous(), None),
                 },
             },
         };
@@ -38118,6 +41812,99 @@ impl Services {
 #[cfg(test)]
 mod tests {
 
+    #[tokio::test(start_paused = true)]
+    async fn a_native_migration_waits_for_inflight_work_without_admitting_new_readers() {
+        let directory = tempfile::tempdir().expect("isolated state");
+        let services = Services::new(
+            RealmId::generate(),
+            crate::DEFAULT_CAPACITY,
+            kontor_jira::JiraConnectors::read(directory.path()).expect("no connectors"),
+            directory.path().join("runtime-roots"),
+            crate::usage::UsagePoller::discover(directory.path()),
+            Vec::new(),
+            None,
+        )
+        .expect("services");
+        let existing = services.native_activity().expect("existing work started");
+        let migration = services.native_migration_change();
+        tokio::pin!(migration);
+        std::future::poll_fn(|context| {
+            assert!(
+                std::future::Future::poll(migration.as_mut(), context).is_pending(),
+                "a migration must queue behind in-flight work, not refuse immediately"
+            );
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert!(
+            services.native_activity().is_err(),
+            "new readers cannot starve the queued migration"
+        );
+        // Real native operations can still be awaiting their 30-second
+        // transport deadline after the old five-second migration wait expired.
+        tokio::time::advance(std::time::Duration::from_secs(6)).await;
+        std::future::poll_fn(|context| {
+            assert!(
+                std::future::Future::poll(migration.as_mut(), context).is_pending(),
+                "migration must retain its queue position while native work drains"
+            );
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(existing);
+        let exclusive = tokio::time::timeout(std::time::Duration::from_secs(1), migration)
+            .await
+            .expect("migration resumes when existing work drains")
+            .expect("exclusive migration authority");
+        assert!(
+            services.native_activity().is_err(),
+            "native work stays fenced during migration"
+        );
+        drop(exclusive);
+        assert!(
+            services.native_activity().is_ok(),
+            "native work resumes after migration"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stuck_native_operation_bounds_migration_wait_and_releases_the_queue() {
+        let directory = tempfile::tempdir().expect("isolated state");
+        let services = Services::new(
+            RealmId::generate(),
+            crate::DEFAULT_CAPACITY,
+            kontor_jira::JiraConnectors::read(directory.path()).expect("no connectors"),
+            directory.path().join("runtime-roots"),
+            crate::usage::UsagePoller::discover(directory.path()),
+            Vec::new(),
+            None,
+        )
+        .expect("services");
+        let existing = services.native_activity().expect("existing work started");
+        let migration = services.native_migration_change();
+        tokio::pin!(migration);
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(migration.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        tokio::time::advance(std::time::Duration::from_secs(61)).await;
+        let refusal = migration.await.expect_err("stuck work must time out");
+        assert_eq!(
+            refusal.code,
+            kontor_api::error::ApiErrorCode::PlacementBlocked
+        );
+        assert!(
+            services.native_activity().is_ok(),
+            "timed-out writer must not retain the queue"
+        );
+        drop(existing);
+        assert!(
+            services.native_lifecycle_change().await.is_ok(),
+            "timeout must not leak an exclusive guard"
+        );
+    }
+
     /// After a valid same-external-ID rename, every write addresses the key
     /// Jira reports now — and the superseded key cannot be reached.
     ///
@@ -38159,9 +41946,11 @@ mod tests {
         assert_eq!(Services::write_key_for(&entry, &unchanged), entry);
     }
     use super::{
-        AdmissionScanKey, FrozenCommitteeRoute, IdentityDecision, QuotaOutlook, Services,
-        account_for_explicit_provider_alias, consultation_account_rungs, counts_towards_completion,
-        eligible_roots, ensure_unambiguous_generic_consultation_routes, freeze_seat_autonomy,
+        AdmissionScanKey, FrozenCommitteeRoute, IdentityDecision, QuotaOutlook,
+        RuntimeModelRouteRequest, Services, account_for_explicit_provider_alias,
+        consultation_account_rungs, counts_towards_completion, eligible_roots,
+        ensure_unambiguous_generic_consultation_routes, freeze_hosted_seat_autonomy,
+        freeze_seat_autonomy, kickoff_is_ready, parse_runtime_model_route,
         re_review_remediation_identity, render_legacy_container_name, scan_reached_the_end,
         scan_resume_point, seat_block, select_committee_allocation, slot_prompt,
     };
@@ -38408,6 +42197,7 @@ mod tests {
             account: Some(selected),
             accounts: &accounts,
             headroom: HeadroomConfig::state_only(),
+            freshness: jiff::SignedDuration::from_secs(60),
             now: Timestamp::from_second(1).expect("a timestamp"),
         };
         let frozen = outlook
@@ -38422,6 +42212,219 @@ mod tests {
         assert_eq!(frozen[0].provider.0, "claude-work");
         assert_eq!(frozen[0].model.0, "claude-opus-5");
         assert_eq!(frozen[0].effort, Some(EffortLevel::Xhigh));
+    }
+
+    #[test]
+    fn unpinned_generic_routes_use_exact_declared_alias_evidence_without_changing_models() {
+        use kontor_core::repository::ProviderQuotaState;
+        use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
+        use kontor_scheduler::headroom::{Placement, SeatClass};
+        let selected = AccountProfileId::generate();
+        let other = AccountProfileId::generate();
+        let accounts = [
+            EligibleAccount {
+                account_profile_id: selected,
+                selectable_providers: BTreeSet::from(["codex-personal".to_owned()]),
+            },
+            EligibleAccount {
+                account_profile_id: other,
+                selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+            },
+        ];
+        let now = Timestamp::from_second(1000).unwrap();
+        let route = ModelRung {
+            provider: ProviderRef("codex".to_owned()),
+            model: ModelRef("gpt-5.6-sol".to_owned()),
+            effort: Some(EffortLevel::High),
+        };
+        let current = ProviderQuotaState {
+            project_id: kontor_core::id::ProjectId::generate(),
+            account_profile_id: selected,
+            provider: "codex-personal".to_owned(),
+            state: ProviderQuotaKind::Available,
+            resets_at: None,
+            windows: Vec::new(),
+            credit: None,
+            evidence_hash: ContentHash::of(b"actual exact-alias quota report"),
+            source: ProviderQuotaSource::ProviderReport,
+            observed_at: now,
+            provenance_id: None,
+            revision: kontor_core::id::AggregateRevision::INITIAL,
+            updated_at: now,
+        };
+        let resolve = |states: &[ProviderQuotaState], declared: &[ModelRung]| {
+            let outlook = QuotaOutlook {
+                states,
+                account: None,
+                accounts: &accounts,
+                headroom: HeadroomConfig::state_only(),
+                freshness: jiff::SignedDuration::from_secs(60),
+                now,
+            };
+            let effective = outlook.effective_rungs(declared).unwrap();
+            kontor_scheduler::headroom::resolve(
+                &effective,
+                &outlook.candidates(&effective),
+                states,
+                &outlook.headroom,
+                SeatClass::Delivery,
+                now,
+                outlook.freshness,
+                |_| true,
+            )
+            .unwrap()
+        };
+        assert!(
+            matches!(resolve(std::slice::from_ref(&current), std::slice::from_ref(&route)),
+            Placement::Admit { account, rung } if account == selected
+                && rung.provider.0 == "codex-personal" && rung.model == route.model
+                && rung.effort == route.effort),
+            "a generic frozen route must reach its fresh exact governed account alias"
+        );
+        for invalid in 0..5 {
+            let mut evidence = current.clone();
+            match invalid {
+                0 => evidence.provider = "codex".to_owned(),
+                1 => evidence.account_profile_id = other,
+                2 => evidence.observed_at = Timestamp::from_second(1).unwrap(),
+                3 => evidence.observed_at = Timestamp::from_second(1001).unwrap(),
+                _ => {
+                    evidence.state = ProviderQuotaKind::Exhausted;
+                    evidence.resets_at = Some(Timestamp::from_second(2000).unwrap());
+                }
+            }
+            assert!(
+                !matches!(
+                    resolve(&[evidence], std::slice::from_ref(&route)),
+                    Placement::Admit { .. }
+                ),
+                "alias expansion cannot weaken exact-account evidence, freshness, or exhaustion: case {invalid}"
+            );
+        }
+        assert!(!matches!(
+            resolve(&[], std::slice::from_ref(&route)),
+            Placement::Admit { .. }
+        ));
+        let mut explicit = route.clone();
+        explicit.provider = ProviderRef("codex-work".to_owned());
+        assert!(
+            !matches!(
+                resolve(std::slice::from_ref(&current), &[explicit]),
+                Placement::Admit { .. }
+            ),
+            "an explicit unavailable alias cannot silently choose another account"
+        );
+        let mut foreign = current;
+        foreign.account_profile_id = other;
+        foreign.provider = "claude-work".to_owned();
+        assert!(
+            !matches!(resolve(&[foreign], &[route]), Placement::Admit { .. }),
+            "an unpinned generic route never gains a cross-provider fallback"
+        );
+    }
+
+    #[test]
+    fn provider_admission_never_freezes_a_refused_account_as_an_unpinned_fallback() {
+        let selected = AccountProfileId::generate();
+        let accounts = [EligibleAccount {
+            account_profile_id: selected,
+            selectable_providers: BTreeSet::from(["claude-work".to_owned()]),
+        }];
+        let outlook = QuotaOutlook {
+            states: &[],
+            account: Some(selected),
+            accounts: &accounts,
+            headroom: HeadroomConfig::state_only(),
+            freshness: jiff::SignedDuration::from_secs(60),
+            now: Timestamp::from_second(1).expect("a timestamp"),
+        };
+        let adapter = kontor_runtime::fake::ScriptedFakeRuntime::new(
+            kontor_runtime::capability::RuntimeCapabilities {
+                trust_grade: kontor_runtime::capability::TrustGrade::C,
+                supported: BTreeSet::new(),
+                account_env: true,
+                limits: kontor_runtime::capability::RuntimeLimits {
+                    max_message_bytes: 0,
+                    max_history_page: 0,
+                    max_concurrent_sessions: 0,
+                    context_window: kontor_core::spec::ContextWindowBounds::unknown(),
+                },
+            },
+        );
+        let (snapshot, slot) = snapshot_declaring(None);
+        assert!(
+            super::freeze_seat_model_rung(&adapter, &snapshot, &slot, &outlook).is_err(),
+            "a headroom refusal must not become an unpinned primary or fallback launch"
+        );
+    }
+
+    #[test]
+    fn provider_admission_accepts_only_an_exact_matching_immutable_heartbeat() {
+        use kontor_core::repository::{ProviderQuotaState, ProviderUsageObservation};
+        use kontor_core::spec::{ProviderQuotaKind, ProviderQuotaSource};
+        let old = Timestamp::from_second(1).expect("old timestamp");
+        let now = Timestamp::from_second(1000).expect("current timestamp");
+        let state = ProviderQuotaState {
+            project_id: kontor_core::id::ProjectId::generate(),
+            account_profile_id: AccountProfileId::generate(),
+            provider: "claude-work".to_owned(),
+            state: ProviderQuotaKind::Available,
+            resets_at: None,
+            windows: Vec::new(),
+            credit: None,
+            evidence_hash: ContentHash::of(b"unchanged exact report"),
+            source: ProviderQuotaSource::ProviderReport,
+            observed_at: old,
+            provenance_id: None,
+            revision: kontor_core::id::AggregateRevision::INITIAL,
+            updated_at: old,
+        };
+        let heartbeat = ProviderUsageObservation {
+            id: kontor_core::id::ProviderUsageObservationId::generate(),
+            project_id: state.project_id,
+            account_profile_id: state.account_profile_id,
+            provider: state.provider.clone(),
+            evidence_hash: state.evidence_hash.clone(),
+            state: state.state,
+            resets_at: state.resets_at,
+            windows: state.windows.clone(),
+            observed_at: now,
+        };
+        assert_eq!(
+            super::quota_state_for_admission(state.clone(), None).observed_at,
+            old
+        );
+        assert_eq!(
+            super::quota_state_for_admission(state.clone(), Some(&heartbeat)).observed_at,
+            now
+        );
+        assert_eq!(
+            state.observed_at, old,
+            "the stored projection remains historical"
+        );
+        for mismatch in 0..6 {
+            let mut wrong = heartbeat.clone();
+            match mismatch {
+                0 => wrong.project_id = kontor_core::id::ProjectId::generate(),
+                1 => wrong.account_profile_id = AccountProfileId::generate(),
+                2 => wrong.provider = "claude-personal".to_owned(),
+                3 => wrong.evidence_hash = ContentHash::of(b"different report"),
+                4 => wrong.state = ProviderQuotaKind::Unknown,
+                _ => wrong.resets_at = Some(now),
+            }
+            assert_eq!(
+                super::quota_state_for_admission(state.clone(), Some(&wrong)).observed_at,
+                old,
+                "a different report must not freshen an old positive projection"
+            );
+        }
+        let mut operator = state;
+        operator.source = ProviderQuotaSource::Operator;
+        assert_eq!(
+            super::quota_state_for_admission(operator, Some(&heartbeat)).observed_at,
+            old,
+            "a provider heartbeat cannot renew a separate operator assertion"
+        );
     }
 
     #[test]
@@ -38463,6 +42466,114 @@ mod tests {
         );
     }
 
+    /// ASMA-8237: a model the runtime does not list is refused when it is
+    /// *requested*, not merely left out of what `/v1/catalog` advertises.
+    ///
+    /// The catalog regression proves the guessed aliases are absent from the
+    /// advertised list. Absence alone is not a refusal: the enforced boundary
+    /// is `model_route_is_catalogued`, consulted here on the write path, and a
+    /// route that never reaches the advertised list would still be admitted if
+    /// that predicate were widened. The admitted control below is what keeps
+    /// this honest — it fails if the parser starts refusing everything, so the
+    /// refusals above cannot pass for the wrong reason.
+    #[test]
+    fn requesting_a_model_the_runtime_does_not_list_is_refused_by_the_governed_catalog() {
+        let request = |provider: &str, model: &str| RuntimeModelRouteRequest {
+            provider: provider.to_owned(),
+            model: model.to_owned(),
+            effort: None,
+        };
+        for (provider, model) in [
+            ("opencode", "glm-5.3-flash"),
+            ("opencode", "nemotron-3-ultra:free"),
+            ("cursor", "cursor-auto"),
+        ] {
+            assert_eq!(
+                parse_runtime_model_route(&request(provider, model)),
+                Err(kontor_core::DomainError::invalid(
+                    "RuntimeModelRouteRequest",
+                    "the model route is not in the governed catalog",
+                )),
+                "an unlisted {provider}/{model} route is refused on request"
+            );
+        }
+        assert_eq!(
+            parse_runtime_model_route(&request("codex", "gpt-5.6-sol")),
+            Ok(ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: None,
+            }),
+            "a listed route is still admitted"
+        );
+    }
+
+    /// ASMA-8237 / OQ-002: the routes the catalog advertises are the routes a
+    /// request may actually name, at exactly the advertised effort ceilings.
+    ///
+    /// `9f61c74a` advertised these six routes in `model_catalog` but left
+    /// `model_route_is_catalogued` — the predicate every write path consults —
+    /// unable to recognize any of them, so each was refused indistinguishably
+    /// from an invented alias. This pins both directions: the approved routes
+    /// and their chain efforts are admitted, and an effort above the advertised
+    /// ceiling is still refused, so recognition cannot be widened into a
+    /// blanket accept. Recognition only — headroom, eligibility, availability
+    /// and template authority are asserted nowhere here and remain separate.
+    #[test]
+    fn the_advertised_watchdog_fallback_routes_are_recognized_at_their_exact_ceilings() {
+        let route = |provider: &str, model: &str, effort: &str| RuntimeModelRouteRequest {
+            provider: provider.to_owned(),
+            model: model.to_owned(),
+            effort: Some(effort.to_owned()),
+        };
+        // The approved chain efforts, primary first. Order is the published
+        // policy's; this asserts only that each rung is nameable.
+        for (provider, model, effort) in [
+            ("opencode", "deepseek/deepseek-flash", "max"),
+            ("codex", "gpt-5.6-luna", "xhigh"),
+            ("opencode", "openrouter/z-ai/glm-5.3-flash", "high"),
+            ("cursor", "auto-smart", "high"),
+            (
+                "opencode",
+                "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+                "high",
+            ),
+        ] {
+            assert!(
+                parse_runtime_model_route(&route(provider, model, effort)).is_ok(),
+                "approved chain route {provider}/{model}@{effort} is nameable"
+            );
+        }
+        // Each Codex account alias reaches Luna: the alias changes the
+        // credential home, never the model.
+        for provider in ["codex", "codex-work", "codex-personal"] {
+            assert!(
+                parse_runtime_model_route(&route(provider, "gpt-5.6-luna", "max")).is_ok(),
+                "{provider} reaches Luna at its ceiling"
+            );
+        }
+        // Efforts above the advertised ceiling stay refused. Nemotron `max` is
+        // the invented option the catalog regression was written to exclude.
+        for (provider, model, effort) in [
+            (
+                "opencode",
+                "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+                "max",
+            ),
+            ("cursor", "auto-smart", "max"),
+            ("codex", "gpt-5.6-luna", "ultra"),
+            ("opencode", "openrouter/z-ai/glm-5.3-flash", "medium"),
+        ] {
+            assert_eq!(
+                parse_runtime_model_route(&route(provider, model, effort)),
+                Err(kontor_core::DomainError::invalid(
+                    "RuntimeModelRouteRequest",
+                    "the model route is not in the governed catalog",
+                )),
+                "{provider}/{model} refuses the off-ceiling effort {effort}"
+            );
+        }
+    }
     #[test]
     fn a_native_launch_refusal_keeps_its_exact_actionable_reason_in_scheduler_evidence() {
         let caller =
@@ -38645,6 +42756,76 @@ mod tests {
         assert_eq!(
             freeze_seat_autonomy(&declared, &slot, None).expect("resolves"),
             SeatAutonomy::Advisory,
+        );
+    }
+
+    /// Kickoff readiness is about the whole graph, and every part of it counts.
+    ///
+    /// The whole truth table, because the interesting rows cannot all be
+    /// reached end to end: a Jira materialization batch covers an epic and
+    /// every one of its tasks and refuses anything narrower, so a loopback test
+    /// can only produce "none bound" or "all bound". `(true, false, _)` — the
+    /// epic's issue exists while a task's does not — is reachable in life, when
+    /// a task is added after a batch confirmed.
+    ///
+    /// The placement column is the half the provisional branch omitted. The
+    /// recorded hold says "until Jira binding *and worktrees* are confirmed",
+    /// so `(true, true, false)` — a fully bound graph holding a task nobody can
+    /// seat — must not lift, and that is precisely the row a Jira-only check
+    /// gets wrong.
+    #[test]
+    fn kickoff_is_ready_only_when_the_epic_and_every_task_are_bound_and_placed() {
+        assert!(kickoff_is_ready(true, true, true));
+        assert!(
+            !kickoff_is_ready(true, true, false),
+            "a bound graph with an unplaced task is not kickoff: the hold named worktrees too"
+        );
+        assert!(
+            !kickoff_is_ready(true, false, true),
+            "an epic whose own issue exists still has an unbound task: kickoff is not finished"
+        );
+        assert!(
+            !kickoff_is_ready(false, true, true),
+            "and tasks alone are not the graph either"
+        );
+        assert!(!kickoff_is_ready(false, false, false));
+    }
+
+    /// A leadership seat reads the same configuration a delivery seat reads.
+    ///
+    /// Before ASMA-8193 there was nothing to test: the Paseo adapter launched
+    /// every hosted LSA/TPM seat under a hardcoded
+    /// [`SeatAutonomy::Supervised`], so the epic's own architect was the one
+    /// seat `runtimes.json` could not reach. The assertion that matters is the
+    /// *agreement* — a delivery seat that declared nothing at slot level and a
+    /// leadership seat, handed one plane default, answer the same thing. A
+    /// mutant that restores the constant breaks the pair, not one side of it.
+    #[test]
+    fn a_leadership_seat_resolves_the_same_plane_default_a_delivery_seat_does() {
+        let (undeclared, slot) = snapshot_declaring(None);
+
+        for plane_default in [
+            None,
+            Some(SeatAutonomy::Supervised),
+            Some(SeatAutonomy::Bounded),
+            Some(SeatAutonomy::Advisory),
+        ] {
+            assert_eq!(
+                freeze_hosted_seat_autonomy(plane_default),
+                freeze_seat_autonomy(&undeclared, &slot, plane_default).expect("resolves"),
+                "leadership and delivery must read one configuration, not two"
+            );
+        }
+
+        assert_eq!(
+            freeze_hosted_seat_autonomy(None),
+            SeatAutonomy::Supervised,
+            "a realm that declares nothing grants nothing: this is not a new authority"
+        );
+        assert_eq!(
+            freeze_hosted_seat_autonomy(Some(SeatAutonomy::Bounded)),
+            SeatAutonomy::Bounded,
+            "and a realm that did declare one finally reaches its leadership seats"
         );
     }
 }

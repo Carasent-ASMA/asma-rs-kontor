@@ -174,6 +174,8 @@ fn fixture() -> Fixture {
             identity: native.clone(),
             observed_kind: ObservedContainerKind::Workspace,
             canonical_cwd: None,
+            readback: None,
+            bound_at: created_at,
             observed_at: created_at,
         })
         .expect("the live native container is bound before migration preflight");

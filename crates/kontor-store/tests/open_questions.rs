@@ -13,6 +13,8 @@
 //! * a round, disposition, firing or shareability stamp lost across a restart, a
 //!   deterministic export, or a snapshot restore.
 
+mod support;
+
 use kontor_core::id::{
     BoundedText, ContentHash, ExternalName, MiniProjectId, OpenQuestionId, ProjectId,
     RoleCatalogId, RoleCode, RoleKey, RoleSlotId, SeatBindingId, SpecVersion, Timestamp,
@@ -80,7 +82,7 @@ struct Fixture {
 
 impl Fixture {
     fn build() -> Self {
-        let home = TempDir::new().expect("a temporary directory");
+        let home = support::state_root();
         let mut fixture = Self::open(home, "2026-08-19T09:00:00Z");
         fixture.seed();
         fixture
@@ -821,7 +823,7 @@ fn an_import_records_every_ledger_row_as_lineage() {
     full_history(&fixture);
     let export = export_realm(&fixture.store, at("2026-08-19T13:00:00Z")).expect("the export runs");
 
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::created_state_root();
     let destination =
         SqliteStore::open(&home.path().join("kontor.db")).expect("the destination migrates");
     let into = ProjectId::generate();

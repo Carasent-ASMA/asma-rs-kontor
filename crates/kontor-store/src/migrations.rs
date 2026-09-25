@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 99;
+pub const SCHEMA_VERSION: i64 = 118;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -367,6 +367,50 @@ const MIGRATIONS: &[&str] = &[
     // one future turn on an exact existing binding; ambiguous history remains
     // permanently ineligible for backfill.
     include_str!("../migrations/0099_turn_correlation_challenges.sql"),
+    // Schema v100. Kontor's own timeline-epoch numbering becomes durable, so the
+    // same raw runtime epoch resolves to the same number after a restart and a
+    // proof observed in one process still names the same content in the next.
+    include_str!("../migrations/0100_runtime_timeline_epochs.sql"),
+    // Schema v101. A kickoff hold records what would end it beside the
+    // revocation that is the hold, so a hold states its own terms instead of
+    // only its prose reason; an absent row still means `manual`.
+    include_str!("../migrations/0101_hold_lift_conditions.sql"),
+    // Schema v102. A hosted leadership seat's autonomy is frozen beside its
+    // occupancy generation, so inspect, retire, restart and replay read what
+    // the seat was launched under instead of recomputing a mutable default.
+    include_str!("../migrations/0102_hosted_seat_autonomy_generation.sql"),
+    // Schema v103. The authority a hosted-seat launch resolved is recorded
+    // before the native call and consumed when the occupancy binds, so a lost
+    // acknowledgement cannot leave a live native whose intent nothing holds.
+    include_str!("../migrations/0103_hosted_seat_launch_intents.sql"),
+    // Schema v104. Every client message id Kontor issues is recorded against the
+    // exact binding it was issued to, so proving one unambiguous is a key lookup
+    // rather than a walk of the session's whole canonical content.
+    include_str!("../migrations/0104_runtime_message_issuances.sql"),
+    // Schema v105. The position each issued message was acknowledged at, so a
+    // bounded observation can ask "is this the occurrence Kontor delivered?"
+    // instead of "is this the only occurrence?", which needs a scan.
+    include_str!("../migrations/0105_runtime_message_delivery_positions.sql"),
+    // Schema v106. The complete exact-id native container readback, nullable
+    // for legacy rows: a desired shape or a rendered title is not observation
+    // evidence and must not be promoted into it.
+    include_str!("../migrations/0106_container_native_readback.sql"),
+    include_str!("../migrations/0107_retired_evaluator_attestations.sql"),
+    include_str!("../migrations/0108_task_worktree_corrections.sql"),
+    include_str!("../migrations/0109_launch_intent_supersession.sql"),
+    include_str!("../migrations/0110_team_run_admission_adoptions.sql"),
+    include_str!("../migrations/0111_artifact_producer_submissions.sql"),
+    include_str!("../migrations/0112_open_question_commands.sql"),
+    include_str!("../migrations/0113_artifact_unknown_producer_account.sql"),
+    include_str!("../migrations/0114_container_recovery_disposition.sql"),
+    include_str!("../migrations/0115_atomic_local_command_results.sql"),
+    include_str!("../migrations/0116_hosted_seat_role_personas.sql"),
+    // Schema v117. The canonical tail each message was issued after, so a
+    // delivery reconciliation proves itself from a bounded suffix instead of
+    // requiring the whole transcript — which is what put a ceiling on every
+    // session past two thousand entries.
+    include_str!("../migrations/0117_runtime_message_issuance_boundaries.sql"),
+    include_str!("../migrations/0118_runtime_message_delivery_proofs.sql"),
 ];
 
 const _: () = assert!(
@@ -492,7 +536,21 @@ fn apply_pending(
     version: i64,
 ) -> Result<(), StoreError> {
     let _ = version;
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // A cold first open now applies the complete migration history. On a loaded
+    // machine that can outlast one connection busy timeout, even though the
+    // peer holding the lock is making legitimate progress. Give this one lock
+    // acquisition one additional bounded timeout window; every ordinary store
+    // operation keeps the connection's 30-second busy contract.
+    let lock_deadline = Instant::now() + BUSY_TIMEOUT + BUSY_TIMEOUT;
+    let transaction = loop {
+        match connection.transaction_with_behavior(TransactionBehavior::Immediate) {
+            Ok(transaction) => break transaction,
+            Err(error) if is_busy(&error) && Instant::now() < lock_deadline => {
+                std::thread::sleep(BUSY_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
 
     // Re-read the version now that the write lock is actually held. The first
     // read above was unlocked: with two processes opening the same new file at
