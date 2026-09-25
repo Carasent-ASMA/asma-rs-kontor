@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 118;
+pub const SCHEMA_VERSION: i64 = 119;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -411,6 +411,10 @@ const MIGRATIONS: &[&str] = &[
     // session past two thousand entries.
     include_str!("../migrations/0117_runtime_message_issuance_boundaries.sql"),
     include_str!("../migrations/0118_runtime_message_delivery_proofs.sql"),
+    // Schema v119. Refuse every update and delete of publication attestations at
+    // the SQLite boundary so recorded publication evidence cannot be rewritten
+    // or erased after insertion (ASMA-8102 / PUB-01).
+    include_str!("../migrations/0119_publication_attestations_immutable.sql"),
 ];
 
 const _: () = assert!(
