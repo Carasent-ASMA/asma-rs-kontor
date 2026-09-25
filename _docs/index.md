@@ -1,6 +1,6 @@
 # Kontor — Documentation Index
 
-> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-09-05.
+> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-09-25.
 
 ## Overview
 
@@ -21,6 +21,7 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 | Document | Summary | Status | When to Load |
 |----------|---------|--------|-------------|
 | [`2026-09-01-21-45-plan-configuration-driven-native-naming-live-migration.md`](plans/2026-09-01-21-45-plan-configuration-driven-native-naming-live-migration.md) | Implements ASMA-8062: immutable pinned Team Definition naming/hierarchy, deterministic ASW/CSW topics and seats, identity-preserving migration, exact-master deployment and live readback. | 📚 KBI migration verified 2026-09-02; historical execution plan | Auditing the migration receipt or planning a separate epic upgrade |
+| [`2026-09-25-06-50-plan-kontor-fast-verification.md`](plans/2026-09-25-06-50-plan-kontor-fast-verification.md) | Implements ASMA-8258: SQLite build flags (memstatus off, optimised), desktop crate out of the default gate, nextest lanes with per-test timings, a shared on-disk migrated template, one integration binary per crate, injectable timeouts, machine hygiene for parallel seats, and a decision-gated move of the full gate to one run per candidate commit. Measured 2026-09-25: `schema_v1` 198 s → 7.7 s from the two flags alone. | 🔵 Planned — Paseo direct, one team, Kontor bypassed by operator decision | Changing how Kontor tests are built, selected, run or timed; editing the store/daemon test harness; revisiting the local-verification policy |
 | [`2026-09-01-21-45-open-questions-configuration-driven-native-naming.md`](plans/2026-09-01-21-45-open-questions-configuration-driven-native-naming.md) | Four original naming questions and their dispositions. | 📚 Historical — closed | Tracing the approved aggregate boundary and naming agreement |
 
 ### Architecture (`architecture/`)
