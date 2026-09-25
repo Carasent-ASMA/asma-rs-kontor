@@ -555,7 +555,7 @@ fn compose_paseo(
         fallback
             .validate()
             .map_err(|_| refuse("provider_fallbacks model route"))?;
-        if !crate::applications::model_route_is_catalogued(fallback) {
+        if !crate::applications::model_route_is_catalogued(fallback, None) {
             return Err(refuse("provider_fallbacks model route"));
         }
     }

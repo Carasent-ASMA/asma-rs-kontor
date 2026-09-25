@@ -211,6 +211,7 @@ async fn open_question_commands_preserve_authority_history_and_completion_blocke
 }
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{
     Arc, Mutex,
@@ -265,7 +266,7 @@ use kontor_daemon::succession_supervision::{
     SuccessionSupervisionCoordinator, reconcile_once as reconcile_succession_once,
 };
 use kontor_daemon::usage::{ExactProviderUsageReporter, ProviderUsageProbeFailure};
-use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig};
+use kontor_daemon::{DEFAULT_CAPACITY, Daemon, DaemonConfig, logging};
 use kontor_runtime::adapter::RuntimeAdapter as _;
 use kontor_runtime::capability::RuntimeCapability;
 use kontor_runtime::fake::{
@@ -33984,6 +33985,1806 @@ async fn an_admin_fills_an_owed_slot_on_a_named_route_and_an_operator_cannot() {
         audit.account_profile_id,
         Some(cursor_account),
         "the named route's account, not the admission's, is pinned"
+    );
+}
+
+/// Write one fleet configuration into the Realm state root.
+///
+/// Mode 0600 is load-bearing: the loader refuses a document group or others can
+/// write (F-02), so a test that skipped this would silently fall back to the
+/// frozen template chain.
+fn write_fleet(world: &World, yaml: &str) {
+    let path = world.directory.path().join("fleet.yml");
+    std::fs::write(&path, yaml).expect("the fleet configuration is written");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        .expect("the fleet configuration is owner-only");
+}
+
+/// The seat key the live fleet must bind to reach one slot of the fixture's
+/// frozen template.
+fn fleet_binding_key(fixture: &SeatFillWorld, slot: &str) -> String {
+    let template = fixture.world.daemon.state().with_store(|store| {
+        store
+            .get_team_run(fixture.project, fixture.team)
+            .expect("team reads")
+            .expect("team exists")
+            .snapshot
+            .template_id
+    });
+    format!("team/{template}/{slot}")
+}
+
+/// One schema-version-1 fleet document binding every key to `fleet-chain`.
+///
+/// The domains are the account aliases `prepare_fake_provider_headroom_for`
+/// declares, and the models are ones the frozen `test/test` template chain
+/// never uses, so a launched route tells live fleet routing from the template.
+fn fleet_yaml(binding_keys: &[&str], steps: &str) -> String {
+    let bindings: String = binding_keys
+        .iter()
+        .map(|key| format!("  {key}: fleet-chain\n"))
+        .collect();
+    format!(
+        "schema_version: 1\n\
+         domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work] }}\n\
+         models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai }}\n\
+         chains:\n  fleet-chain:\n{steps}\
+         bindings:\n{bindings}"
+    )
+}
+
+/// Claude before Codex: step 1 walks both Claude logins, step 2 Codex.
+const CLAUDE_THEN_CODEX: &str = "    - [opus]\n    - [sol]\n";
+
+/// The same two domains with the steps swapped, so step 1 is Codex.
+const CODEX_THEN_CLAUDE: &str = "    - [sol]\n    - [opus]\n";
+
+/// The delivery member filling `slot`, as `seat_fill_world` left it.
+fn delivery_member(fixture: &SeatFillWorld, slot: &str) -> kontor_core::repository::AgentRun {
+    fixture
+        .members()
+        .into_iter()
+        .find(|run| run.role.as_str() == slot)
+        .expect("the role slot has a member")
+}
+
+/// The enabled account profile that declares `alias` as selectable.
+fn account_with_alias(fixture: &SeatFillWorld, alias: &str) -> AccountProfileId {
+    fixture.world.daemon.state().with_store(|store| {
+        store
+            .list_account_profiles(fixture.project)
+            .expect("profiles read")
+            .into_iter()
+            .find(|profile| {
+                kontor_accounts::selectable_providers(profile)
+                    .expect("routes read")
+                    .contains(alias)
+            })
+            .expect("an enabled account declares the alias")
+            .id
+    })
+}
+
+/// Retire one quota-blocked seat and return the answer naming its successor.
+///
+/// The evidence is the runtime's own reachable `Blocked` refusal, recorded
+/// against the predecessor's exact binding and account, exactly as
+/// `record_runtime_quota_refusal` builds it for the quota succession tests.
+async fn take_over_blocked_seat(
+    fixture: &SeatFillWorld,
+    predecessor: AgentRunId,
+    slot: &str,
+    key: &str,
+) -> Answer {
+    let run = fixture.world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(fixture.project, predecessor)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let binding = run.binding.clone().expect("the predecessor is bound");
+    let account = run
+        .account_profile_id
+        .expect("the predecessor owns the account the walk selected");
+    let provider = fixture
+        .world
+        .fake
+        .launched_model(predecessor)
+        .expect("the predecessor's launched route")
+        .provider
+        .0;
+    let (run, evidence) = record_runtime_quota_refusal(
+        &fixture.world,
+        fixture.project,
+        predecessor,
+        &binding,
+        account,
+        &provider,
+        at("2099-01-01T00:00:00Z"),
+    )
+    .await;
+    Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{predecessor}/successors:replace",
+            fixture.project
+        ),
+        &serde_json::json!({
+            "role_slot": slot,
+            "expected_predecessor_revision": run.revision,
+            "expected_task_revision": fixture.task_revision(),
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": evidence,
+        }),
+    )
+    .signed_as(&fixture.world, "admin")
+    .with_key(key)
+    .send(&fixture.world)
+    .await
+}
+
+/// The successor run a quota takeover named.
+fn replaced_successor(answer: &Answer) -> AgentRunId {
+    AgentRunId::parse(
+        answer.json()["successor_agent_run_id"]
+            .as_str()
+            .expect("the replacement names its successor"),
+    )
+    .expect("a canonical successor id")
+}
+
+/// The launched route one placement froze, as `(provider, model)`.
+fn launched_route(fixture: &SeatFillWorld, run: AgentRunId) -> (String, String) {
+    let launched = fixture
+        .world
+        .fake
+        .launched_model(run)
+        .expect("the seat launched natively");
+    (launched.provider.0, launched.model.0)
+}
+
+/// Every `fleet-decision` line this TeamRun has recorded, in order.
+fn fleet_decisions(fixture: &SeatFillWorld) -> Vec<serde_json::Value> {
+    let path = fixture
+        .world
+        .directory
+        .path()
+        .join("fleet-decisions")
+        .join(format!("{}.jsonl", fixture.team));
+    let text = std::fs::read_to_string(path).expect("the decision log exists");
+    text.lines()
+        .map(|line| serde_json::from_str(line).expect("every decision line is JSON"))
+        .collect()
+}
+
+/// Record one `(account, provider)` quota state through the supported operator
+/// operation, the way the account-routing tests prepare headroom.
+///
+/// Succession evidence leaves the predecessor's account spent; a test that then
+/// wants another route on that account has to say the operator cleared it, or
+/// spent it, exactly as an operator would.
+async fn record_fixture_quota(
+    fixture: &SeatFillWorld,
+    account: AccountProfileId,
+    provider: &str,
+    state: &str,
+    resets_at: Option<&str>,
+) {
+    let revision = fixture.world.daemon.state().with_store(|store| {
+        store
+            .list_provider_quota_states(fixture.project)
+            .expect("quota states read")
+            .into_iter()
+            .find(|row| row.account_profile_id == account && row.provider == provider)
+            .expect("the fixture recorded this account and provider")
+            .revision
+    });
+    let recorded = Call::post(
+        format!(
+            "/v1/projects/{}/provider-quota-states:record",
+            fixture.project
+        ),
+        &serde_json::json!({
+            "account_profile_id": account.to_string(),
+            "provider": provider,
+            "state": state,
+            "resets_at": resets_at,
+            "expected_revision": revision.get(),
+        }),
+    )
+    .signed_as(&fixture.world, "admin")
+    .with_key("fleet-fixture-quota")
+    .send(&fixture.world)
+    .await;
+    assert_eq!(recorded.status, 200, "{}", recorded.body);
+}
+
+/// The live fleet is read by the *next placement*: binding a slot to a chain
+/// the frozen template never carried routes its replacement seat onto the
+/// fleet's first account and model, with no daemon restart and no republish.
+#[tokio::test]
+async fn a_fleet_binding_routes_a_new_seat_without_restart() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    write_fleet(
+        &fixture.world,
+        &fleet_yaml(
+            &[&fleet_binding_key(&fixture, "implement")],
+            CLAUDE_THEN_CODEX,
+        ),
+    );
+    let predecessor = delivery_member(&fixture, "implement");
+    let replaced =
+        take_over_blocked_seat(&fixture, predecessor.id, "implement", "fleet-first-route").await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    let successor = replaced_successor(&replaced);
+    assert_eq!(
+        launched_route(&fixture, successor),
+        ("claude-personal".to_owned(), "claude-opus-5".to_owned()),
+        "the fleet chain's first route, not the frozen template chain"
+    );
+    assert_ne!(
+        launched_route(&fixture, successor),
+        ("test".to_owned(), "test".to_owned()),
+        "the template chain the slot was frozen with"
+    );
+}
+
+/// One operator edit changes the next placement: swapping the chain's steps in
+/// `fleet.yml` moves the following succession to the other domain, with no
+/// republish, no restart and no rebuild.
+#[tokio::test]
+async fn an_edit_to_fleet_yml_changes_the_next_placement() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    let binding = fleet_binding_key(&fixture, "implement");
+    write_fleet(&fixture.world, &fleet_yaml(&[&binding], CLAUDE_THEN_CODEX));
+    let predecessor = delivery_member(&fixture, "implement");
+    let first =
+        take_over_blocked_seat(&fixture, predecessor.id, "implement", "fleet-reorder-first").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_successor = replaced_successor(&first);
+    assert_eq!(
+        launched_route(&fixture, first_successor),
+        ("claude-personal".to_owned(), "claude-opus-5".to_owned())
+    );
+
+    write_fleet(&fixture.world, &fleet_yaml(&[&binding], CODEX_THEN_CLAUDE));
+    let second = take_over_blocked_seat(
+        &fixture,
+        first_successor,
+        "implement",
+        "fleet-reorder-second",
+    )
+    .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let second_successor = replaced_successor(&second);
+    assert_eq!(
+        launched_route(&fixture, second_successor),
+        ("codex-work".to_owned(), "gpt-5.6-sol".to_owned())
+    );
+    assert_ne!(
+        launched_route(&fixture, first_successor),
+        launched_route(&fixture, second_successor),
+        "the edited file moved the next placement to another domain"
+    );
+}
+
+/// An edit the loader refuses is not a routing change: the last accepted
+/// snapshot keeps authorising placements, and the rejection is reported in
+/// `fleet-status.json` rather than silently ignored.
+#[tokio::test]
+async fn an_invalid_edit_keeps_the_previous_fleet() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    let binding = fleet_binding_key(&fixture, "implement");
+    write_fleet(&fixture.world, &fleet_yaml(&[&binding], CLAUDE_THEN_CODEX));
+    let predecessor = delivery_member(&fixture, "implement");
+    let first =
+        take_over_blocked_seat(&fixture, predecessor.id, "implement", "fleet-invalid-first").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_successor = replaced_successor(&first);
+
+    write_fleet(&fixture.world, "schema_version: [1\n");
+    let second = take_over_blocked_seat(
+        &fixture,
+        first_successor,
+        "implement",
+        "fleet-invalid-second",
+    )
+    .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let second_successor = replaced_successor(&second);
+    assert_eq!(
+        launched_route(&fixture, second_successor),
+        ("claude-work".to_owned(), "claude-opus-5".to_owned()),
+        "the rejected edit leaves the previous chain authorising placements: \
+         the spent first login gives way inside step 1, not to the template chain"
+    );
+    let decisions = fleet_decisions(&fixture);
+    assert_eq!(
+        decisions.len(),
+        2,
+        "both placements were admitted: {decisions:?}"
+    );
+    assert_eq!(
+        decisions[0]["fleet_hash"], decisions[1]["fleet_hash"],
+        "the same accepted snapshot authorised both placements"
+    );
+    assert_eq!(decisions[0]["step"], 1);
+    assert_eq!(decisions[0]["sub_step"], 1);
+    assert_eq!(decisions[0]["provider"], "claude-personal");
+    assert_eq!(decisions[1]["step"], 1);
+    assert_eq!(decisions[1]["sub_step"], 2);
+    assert_eq!(decisions[1]["provider"], "claude-work");
+    let status: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture.world.directory.path().join("fleet-status.json"))
+            .expect("the status file is written"),
+    )
+    .expect("the status file is JSON");
+    assert!(
+        status["last_error"]
+            .as_str()
+            .is_some_and(|error| !error.is_empty()),
+        "the rejected edit is reported: {status}"
+    );
+}
+
+/// Deleting `fleet.yml` restores template routing for the next placement, and
+/// a template-routed placement is not a fleet placement: it writes no decision.
+#[tokio::test]
+async fn deleting_fleet_yml_restores_template_routing() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    write_fleet(
+        &fixture.world,
+        &fleet_yaml(
+            &[&fleet_binding_key(&fixture, "implement")],
+            CLAUDE_THEN_CODEX,
+        ),
+    );
+    let predecessor = delivery_member(&fixture, "implement");
+    let first =
+        take_over_blocked_seat(&fixture, predecessor.id, "implement", "fleet-delete-first").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_successor = replaced_successor(&first);
+    assert_eq!(
+        launched_route(&fixture, first_successor),
+        ("claude-personal".to_owned(), "claude-opus-5".to_owned())
+    );
+
+    // The takeover spent the fixture seat's own account. Clear that exhaustion
+    // through the operator record, so the template chain can place work on it
+    // once the fleet is gone -- the state change is fixture hygiene, not part
+    // of what the fleet edit decides.
+    record_fixture_quota(
+        &fixture,
+        predecessor
+            .account_profile_id
+            .expect("the fixture seat owns an account"),
+        &launched_route(&fixture, predecessor.id).0,
+        "cannot_report",
+        None,
+    )
+    .await;
+
+    std::fs::remove_file(fixture.world.directory.path().join("fleet.yml"))
+        .expect("fleet.yml is deleted");
+    let second = take_over_blocked_seat(
+        &fixture,
+        first_successor,
+        "implement",
+        "fleet-delete-second",
+    )
+    .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let second_successor = replaced_successor(&second);
+    assert_eq!(
+        launched_route(&fixture, second_successor),
+        ("test".to_owned(), "test".to_owned()),
+        "the frozen template chain, a route the fleet chain never contained"
+    );
+    assert_eq!(
+        fleet_decisions(&fixture).len(),
+        1,
+        "a template-routed placement records no fleet decision"
+    );
+}
+
+/// Account before rung: a blocked login walks to the next sub-step in the same
+/// step before the chain descends to the next domain.
+#[tokio::test]
+async fn a_quota_takeover_walks_sub_steps_before_the_next_domain() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    write_fleet(
+        &fixture.world,
+        &fleet_yaml(
+            &[
+                &fleet_binding_key(&fixture, "implement"),
+                &fleet_binding_key(&fixture, "scope"),
+            ],
+            CLAUDE_THEN_CODEX,
+        ),
+    );
+    let predecessor = delivery_member(&fixture, "implement");
+    let first =
+        take_over_blocked_seat(&fixture, predecessor.id, "implement", "fleet-walk-first").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_successor = replaced_successor(&first);
+    assert_eq!(
+        launched_route(&fixture, first_successor),
+        ("claude-personal".to_owned(), "claude-opus-5".to_owned()),
+        "the first placement lands on the first Claude sub-step"
+    );
+
+    let second =
+        take_over_blocked_seat(&fixture, first_successor, "implement", "fleet-walk-second").await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let second_successor = replaced_successor(&second);
+    assert_eq!(
+        launched_route(&fixture, second_successor),
+        ("claude-work".to_owned(), "claude-opus-5".to_owned()),
+        "the exhausted first login moves the placement inside step 1"
+    );
+
+    // The frozen template caps one slot's successor chain, so the third
+    // placement takes over another fleet-bound seat. Both Claude logins are
+    // spent: the first by the succession evidence above, the second by the
+    // operator record an exhausted login would produce.
+    record_fixture_quota(
+        &fixture,
+        account_with_alias(&fixture, "claude-work"),
+        "claude-work",
+        "exhausted",
+        Some("2099-01-01T00:00:00Z"),
+    )
+    .await;
+    let scope = delivery_member(&fixture, "scope");
+    let third = take_over_blocked_seat(&fixture, scope.id, "scope", "fleet-walk-third").await;
+    assert_eq!(third.status, 200, "{}", third.body);
+    let third_successor = replaced_successor(&third);
+    assert_eq!(
+        launched_route(&fixture, third_successor),
+        ("codex-work".to_owned(), "gpt-5.6-sol".to_owned()),
+        "both Claude logins spent, the chain descends to step 2"
+    );
+
+    let recorded: Vec<(String, u64, u64, String, String)> = fleet_decisions(&fixture)
+        .iter()
+        .map(|decision| {
+            (
+                decision["role_slot"]
+                    .as_str()
+                    .expect("a role slot")
+                    .to_owned(),
+                decision["step"].as_u64().expect("a step"),
+                decision["sub_step"].as_u64().expect("a sub-step"),
+                decision["provider"]
+                    .as_str()
+                    .expect("a provider")
+                    .to_owned(),
+                decision["model"].as_str().expect("a model").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        recorded,
+        vec![
+            (
+                "implement".to_owned(),
+                1,
+                1,
+                "claude-personal".to_owned(),
+                "claude-opus-5".to_owned()
+            ),
+            (
+                "implement".to_owned(),
+                1,
+                2,
+                "claude-work".to_owned(),
+                "claude-opus-5".to_owned()
+            ),
+            (
+                "scope".to_owned(),
+                2,
+                1,
+                "codex-work".to_owned(),
+                "gpt-5.6-sol".to_owned()
+            ),
+        ],
+        "each placement is recorded at the exact route the walk reached"
+    );
+}
+
+/// Every admitted fleet placement is recorded once, before the launch it
+/// authorises, against the exact binding and slot it routed.
+#[tokio::test]
+async fn every_admitted_fleet_placement_is_recorded() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    let binding = fleet_binding_key(&fixture, "implement");
+    write_fleet(&fixture.world, &fleet_yaml(&[&binding], CLAUDE_THEN_CODEX));
+    let predecessor = delivery_member(&fixture, "implement");
+    let first =
+        take_over_blocked_seat(&fixture, predecessor.id, "implement", "fleet-record-first").await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_successor = replaced_successor(&first);
+    let second = take_over_blocked_seat(
+        &fixture,
+        first_successor,
+        "implement",
+        "fleet-record-second",
+    )
+    .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let second_successor = replaced_successor(&second);
+
+    let decisions = fleet_decisions(&fixture);
+    assert_eq!(
+        decisions.len(),
+        2,
+        "one line per admitted placement: {decisions:?}"
+    );
+    assert_eq!(decisions[0]["role_slot"], "implement");
+    assert_eq!(decisions[1]["role_slot"], "implement");
+    assert_eq!(decisions[0]["binding_key"], binding);
+    assert_eq!(decisions[1]["binding_key"], binding);
+    assert_eq!(decisions[0]["team_run_id"], fixture.team.to_string());
+    assert_eq!(decisions[1]["team_run_id"], fixture.team.to_string());
+    let recorded: Vec<(u64, u64, String, String)> = decisions
+        .iter()
+        .map(|decision| {
+            (
+                decision["step"].as_u64().expect("a step"),
+                decision["sub_step"].as_u64().expect("a sub-step"),
+                decision["provider"]
+                    .as_str()
+                    .expect("a provider")
+                    .to_owned(),
+                decision["model"].as_str().expect("a model").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        recorded,
+        vec![
+            (
+                1,
+                1,
+                "claude-personal".to_owned(),
+                "claude-opus-5".to_owned()
+            ),
+            (1, 2, "claude-work".to_owned(), "claude-opus-5".to_owned()),
+        ]
+    );
+    let launched: Vec<(String, String)> = [first_successor, second_successor]
+        .into_iter()
+        .map(|run| launched_route(&fixture, run))
+        .collect();
+    let decided: Vec<(String, String)> = recorded
+        .iter()
+        .map(|(_, _, provider, model)| (provider.clone(), model.clone()))
+        .collect();
+    assert_eq!(
+        launched, decided,
+        "the log names the exact route each launch was admitted on"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// LF-04 — Committee and Advisor seats take their chain from the live fleet.
+//
+// Each test writes a `fleet.yml` whose routes the pinned policy never names,
+// so a frozen or launched route is evidence of *which* policy the daemon
+// actually consulted, and the acceptance evidence is read back from the run's
+// immutable admission block rather than inferred from a successful request.
+// ---------------------------------------------------------------------------
+
+/// The seat key one Committee template slot is bound under in `fleet.yml`.
+fn committee_fleet_key(slot: &str) -> String {
+    format!("committee/{COMMITTEE_PRESET}/{slot}")
+}
+
+/// The key the live fleet binds the fixture Advisor profile under.
+fn advisor_fleet_key() -> String {
+    format!("advisor/{ADVISOR_PROFILE}")
+}
+
+/// One LF-04 `fleet.yml` over the fixture accounts' aliases.
+///
+/// The two `claude-then-*` chains deliberately open on the same vendor (step 1
+/// is the Claude domain) and diverge afterwards, so a reviewer that may not
+/// share its peer's vendor is visibly forced down to its next step.
+/// `cursor-grok` carries a single step, a vendor no template revision names.
+fn committee_fleet_yaml(bindings: &[(&str, &str)]) -> String {
+    let bindings: String = bindings
+        .iter()
+        .map(|(key, chain)| format!("  {key}: {chain}\n"))
+        .collect();
+    format!(
+        "schema_version: 1\n\
+         domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n\
+         models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai }}\n  grok: {{ domain: cursor, id: grok-4.7, vendor: xai }}\n\
+         chains:\n  claude-then-codex:\n    - [opus]\n    - [sol]\n  claude-then-grok:\n    - [opus]\n    - [grok]\n  cursor-grok:\n    - [grok]\n\
+         bindings:\n{bindings}"
+    )
+}
+
+/// One LF-04 `fleet.yml` whose reviewers open on the same provider *family*
+/// (opencode) through two accounts of different vendors: `glm-5.3-flash` is
+/// `zhipu`, `deepseek-flash` is `deepseek`. Vendor independence must be decided
+/// by the vendor the fleet lists, not by the provider family; a family key
+/// collapses both step-1 routes into one and forces the second reviewer onto
+/// its step 2.
+fn committee_family_fleet_yaml(bindings: &[(&str, &str)]) -> String {
+    let bindings: String = bindings
+        .iter()
+        .map(|(key, chain)| format!("  {key}: {chain}\n"))
+        .collect();
+    format!(
+        "schema_version: 1\n\
+         domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work] }}\n  opencode-a: {{ provider: opencode, accounts: [opencode-a] }}\n  opencode-b: {{ provider: opencode, accounts: [opencode-b] }}\n\
+         models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai }}\n  glm: {{ domain: opencode-a, id: openrouter/z-ai/glm-5.3-flash, vendor: zhipu }}\n  deepseek: {{ domain: opencode-b, id: deepseek/deepseek-flash, vendor: deepseek }}\n\
+         chains:\n  opencode-a-then-codex:\n    - [glm]\n    - [sol]\n  opencode-b-then-claude:\n    - [deepseek]\n    - [opus]\n\
+         bindings:\n{bindings}"
+    )
+}
+
+/// Ensure one enabled fake-runtime account whose selectable alias is `provider`.
+async fn ensure_consultation_account(
+    world: &World,
+    project: &str,
+    label: &str,
+    credential: &str,
+    provider: &str,
+) {
+    let ensured = Call::post(
+        format!("/v1/projects/{project}/provider-account-profiles:ensure"),
+        &serde_json::json!({
+            "label": label,
+            "harness": "fake.runtime",
+            "credential_alias": credential,
+            "selectable_providers": [provider],
+            "enabled": true,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("lf04-account-{provider}"))
+    .send(world)
+    .await;
+    assert_eq!(ensured.status, 200, "{}", ensured.body);
+}
+
+/// A composed Realm with a promoted epic, materialized LSA/TPM control seats
+/// and fake provider headroom: everything a Committee or Advisor invocation
+/// needs from the public API.
+struct ConsultationRealm {
+    world: World,
+    project: String,
+    epic: String,
+    caller: String,
+}
+
+async fn consultation_realm(root: &str, extra_providers: &[(&str, &str)]) -> ConsultationRealm {
+    let composed = compose_realm(root).await;
+    let world = &composed.world;
+    let project = &composed.project;
+    adopt_session_base(world, project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let (quick, preview_hash) =
+        quick_session_ready_to_promote(world, project, "Fleet consultation", "lf04-consult-quick")
+            .await;
+    let promoted = Call::post(
+        format!("/v1/projects/{project}/quick-sessions/{quick}/promotion:apply"),
+        &promotion_apply_body(&preview_hash),
+    )
+    .signed_as(world, "operator")
+    .with_key("lf04-consult-promote")
+    .send(world)
+    .await;
+    assert_eq!(promoted.status, 200, "{}", promoted.body);
+    let epic = promoted.json()["epic_id"]
+        .as_str()
+        .expect("an epic id")
+        .to_owned();
+    confirm_promoted_epic_identity(world, project, &epic, "PROMO", "ASMA-9001");
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                {"role_code": "LSA", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }},
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }}
+            ]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("lf04-consult-control")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+    let caller = materialized.json()["core_team"]["seats"]
+        .as_array()
+        .expect("core seats")
+        .iter()
+        .find(|seat| seat["role"]["role_code"] == "LSA")
+        .and_then(|seat| seat["seat_binding_id"].as_str())
+        .expect("the LSA SeatBinding")
+        .to_owned();
+    // The explicit account makes `codex-work` the first Codex alias by profile
+    // id, so the template reviewer route is deterministic.
+    ensure_consultation_account(
+        world,
+        project,
+        "Codex Work",
+        "lf04-codex-work",
+        "codex-work",
+    )
+    .await;
+    for &(label, provider) in extra_providers {
+        ensure_consultation_account(world, project, label, &format!("lf04-{provider}"), provider)
+            .await;
+    }
+    prepare_fake_provider_headroom(world, project).await;
+    ConsultationRealm {
+        world: composed.world,
+        project: composed.project,
+        epic,
+        caller,
+    }
+}
+
+/// Invoke the pinned Independent-review Committee through the public API.
+async fn invoke_fleet_committee(realm: &ConsultationRealm, topic: &str, key: &str) -> Answer {
+    let world = &realm.world;
+    let project = &realm.project;
+    let epic_read = Call::get(format!("/v1/projects/{project}/epics/{}", realm.epic))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(epic_read.status, 200, "{}", epic_read.body);
+    Call::post(
+        format!(
+            "/v1/projects/{project}/epics/{}/committee-runs:invoke",
+            realm.epic
+        ),
+        &serde_json::json!({
+            "profile": {"id": COMMITTEE_PRESET, "version": 1},
+            "topic": topic,
+            "question": format!("Does the {topic} evidence hold?"),
+            "caller_seat_binding_id": realm.caller,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(key)
+    .send(world)
+    .await
+}
+
+/// One Committee run as the public readback exposes it.
+async fn committee_readback(world: &World, project: &str, run: &str) -> serde_json::Value {
+    let read = Call::get(format!("/v1/projects/{project}/committee-runs/{run}"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(read.status, 200, "{}", read.body);
+    read.json()
+}
+
+/// The immutable admission block one stored consultation run was frozen with.
+fn frozen_consultation_context(
+    world: &World,
+    project: &str,
+    run: ConsultationRunId,
+) -> serde_json::Value {
+    let project_id = ProjectId::parse(project).expect("a project id");
+    world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run(project_id, run)
+            .expect("the consultation run reads")
+            .expect("the consultation run exists")
+            .context
+    })
+}
+
+/// The frozen admission entry one Committee slot was placed on.
+fn admission_route_for_slot<'a>(
+    routes: &'a [serde_json::Value],
+    slot: &str,
+) -> &'a serde_json::Value {
+    routes
+        .iter()
+        .find(|route| route["role_slot_id"] == slot)
+        .unwrap_or_else(|| panic!("the admission block names the {slot} slot: {routes:?}"))
+}
+
+/// LF-04: with the fleet bound, the first reviewer keeps step 1 and the second
+/// descends its own chain until it reaches a vendor its peer does not hold.
+#[tokio::test]
+async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
+    let realm = consultation_realm(
+        "/tmp/kontor-lf04-committee-vendors",
+        &[
+            ("Cursor", "cursor"),
+            ("OpenCode A", "opencode-a"),
+            ("OpenCode B", "opencode-b"),
+        ],
+    )
+    .await;
+    let world = &realm.world;
+    let fleet = committee_fleet_yaml(&[
+        (&committee_fleet_key("reviewer-a"), "claude-then-codex"),
+        (&committee_fleet_key("reviewer-b"), "claude-then-grok"),
+    ]);
+    write_fleet(world, &fleet);
+    let fleet_hash = ContentHash::of(fleet.as_bytes());
+
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Fleet reviewer vendor independence",
+        "lf04-vendors-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Committee(
+            kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+        ),
+    );
+    let routes = context["admission"]["routes"]
+        .as_array()
+        .expect("frozen admission routes");
+    let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
+    let reviewer_b = admission_route_for_slot(routes, "reviewer-b");
+
+    // Both chains open on step 1 of the Claude domain, so the first-ordered
+    // reviewer keeps that step -- a route the pinned template never declares,
+    // because the template starts reviewer-a at `claude-work`.
+    assert_eq!(
+        reviewer_a["model_route"]["provider"], "claude-personal",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(
+        reviewer_a["model_route"]["model"], "claude-opus-5",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(reviewer_a["rank"], 1, "{}", reviewer_a);
+    // The second reviewer may not hold the same vendor, so it must leave step 1
+    // for the next step of its own chain, whose vendor is xai.
+    assert_eq!(
+        reviewer_b["model_route"]["provider"], "cursor",
+        "the second reviewer did not descend its chain: {}",
+        reviewer_b
+    );
+    assert_eq!(
+        reviewer_b["model_route"]["model"], "grok-4.7",
+        "{}",
+        reviewer_b
+    );
+    assert_eq!(
+        reviewer_b["rank"], 3,
+        "the second reviewer kept a step-1 route: {}",
+        reviewer_b
+    );
+    assert_ne!(
+        reviewer_a["model_route"], reviewer_b["model_route"],
+        "both reviewers were seated on the same vendor"
+    );
+    for route in [reviewer_a, reviewer_b] {
+        assert_eq!(route["source"], "fleet_configuration", "{}", route);
+        assert_eq!(
+            route["profile_hash"],
+            fleet_hash.as_str(),
+            "the frozen route is not stamped with the accepted fleet snapshot: {route}"
+        );
+        assert_ne!(
+            route["profile_hash"], context["template_hash"],
+            "the frozen route is the pinned template revision: {route}"
+        );
+    }
+
+    // A second scenario separates the fleet's *vendor* from the provider
+    // *family*: both reviewers open on the opencode family, but on different
+    // vendors (`zhipu` for GLM, `deepseek` for DeepSeek). Independence must be
+    // decided by the vendor the fleet lists; a key that collapses to the family
+    // seats the second reviewer on its step 2 instead of letting it keep step 1.
+    let fleet = committee_family_fleet_yaml(&[
+        (&committee_fleet_key("reviewer-a"), "opencode-a-then-codex"),
+        (&committee_fleet_key("reviewer-b"), "opencode-b-then-claude"),
+    ]);
+    write_fleet(world, &fleet);
+    let fleet_hash = ContentHash::of(fleet.as_bytes());
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Family versus vendor independence",
+        "lf04-vendors-invoke-2",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Committee(
+            kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+        ),
+    );
+    let routes = context["admission"]["routes"]
+        .as_array()
+        .expect("frozen admission routes");
+    let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
+    let reviewer_b = admission_route_for_slot(routes, "reviewer-b");
+    // Both reviewers keep step 1: the vendors differ even though the provider
+    // family is the same, so neither descends its chain.
+    assert_eq!(
+        reviewer_a["model_route"]["provider"], "opencode-a",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(
+        reviewer_a["model_route"]["model"], "openrouter/z-ai/glm-5.3-flash",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(reviewer_a["rank"], 1, "{}", reviewer_a);
+    assert_eq!(
+        reviewer_b["model_route"]["provider"], "opencode-b",
+        "the second reviewer did not keep its step-1 vendor: {}",
+        reviewer_b
+    );
+    assert_eq!(
+        reviewer_b["model_route"]["model"], "deepseek/deepseek-flash",
+        "{}",
+        reviewer_b
+    );
+    assert_eq!(
+        reviewer_b["rank"], 1,
+        "the second reviewer kept a step-1 route: {}",
+        reviewer_b
+    );
+    assert_ne!(
+        reviewer_a["model_route"], reviewer_b["model_route"],
+        "both reviewers were seated on the same vendor"
+    );
+    for route in [reviewer_a, reviewer_b] {
+        assert_eq!(route["source"], "fleet_configuration", "{}", route);
+        assert_eq!(
+            route["profile_hash"],
+            fleet_hash.as_str(),
+            "the frozen route is not stamped with the accepted fleet snapshot: {route}"
+        );
+        assert_ne!(
+            route["profile_hash"], context["template_hash"],
+            "the frozen route is the pinned template revision: {route}"
+        );
+    }
+}
+
+/// LF-04: a fleet-listed Cursor route is the exact route the runtime is asked
+/// to launch.
+///
+/// The `plan` permission mode is a Paseo-adapter projection of the frozen
+/// `fleet_configuration` provenance (`consultation_route_permission_mode`),
+/// and is derived at native-launch time; the scripted fake runtime receives a
+/// `ConsultationLaunchRequest`, which carries the model rung and provenance but
+/// no mode field, and records the route it was asked to launch rather than a
+/// mode. The assertions below are therefore the strongest observable the
+/// harness provides: the provenance that selects `plan` for Cursor, and the
+/// exact route the launch was admitted on.
+#[tokio::test]
+async fn a_fleet_committee_route_launches_cursor_in_plan_mode() {
+    let realm =
+        consultation_realm("/tmp/kontor-lf04-committee-cursor", &[("Cursor", "cursor")]).await;
+    let world = &realm.world;
+    let fleet = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    write_fleet(world, &fleet);
+    let fleet_hash = ContentHash::of(fleet.as_bytes());
+
+    let invoked =
+        invoke_fleet_committee(&realm, "Fleet cursor reviewer route", "lf04-cursor-invoke").await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let invoked_json = invoked.json();
+    let run = invoked_json["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Committee(
+            kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+        ),
+    );
+    let routes = context["admission"]["routes"]
+        .as_array()
+        .expect("frozen admission routes");
+    let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
+    assert_eq!(
+        reviewer_a["model_route"]["provider"], "cursor",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(
+        reviewer_a["model_route"]["model"], "grok-4.7",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(
+        reviewer_a["source"], "fleet_configuration",
+        "Cursor's plan mode is derived from this provenance: {}",
+        reviewer_a
+    );
+    assert_eq!(
+        reviewer_a["profile_hash"],
+        fleet_hash.as_str(),
+        "{}",
+        reviewer_a
+    );
+
+    let reviewer_seat = invoked_json["seats"]
+        .as_array()
+        .expect("Committee seats")
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "reviewer-a")
+        .expect("the reviewer-a seat");
+    assert!(
+        reviewer_seat["observed_binding"].is_object(),
+        "the fleet-bound reviewer never launched: {}",
+        invoked.body
+    );
+    let binding = SeatBindingId::parse(
+        reviewer_seat["seat_binding_id"]
+            .as_str()
+            .expect("the reviewer-a SeatBinding"),
+    )
+    .expect("a SeatBinding");
+    assert!(
+        world
+            .fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, AdapterCall::LaunchConsultation(seat) if *seat == binding)),
+        "the fleet-bound reviewer never reached the native runtime"
+    );
+    let launched = world
+        .fake
+        .consultation_route(binding)
+        .expect("the reviewer launched natively");
+    assert_eq!(
+        (launched.provider.0.as_str(), launched.model.0.as_str()),
+        ("cursor", "grok-4.7"),
+        "the runtime was asked for a route other than the fleet's"
+    );
+}
+
+/// LF-04: the Advisor's admission block and its launched route both come from
+/// the live fleet, and survive the materialization that rebuilds the
+/// provenance through `advisor_route_provenance`.
+#[tokio::test]
+async fn a_fleet_bound_advisor_keeps_its_fleet_provenance_through_materialization() {
+    let realm = consultation_realm("/tmp/kontor-lf04-advisor-fleet", &[("Cursor", "cursor")]).await;
+    let world = &realm.world;
+    let mut advisor = advisor_definition(ADVISOR_PROFILE, 1);
+    advisor["allowed_caller_roles"] = serde_json::json!(["lsa"]);
+    let previewed = Call::post(
+        format!("/v1/projects/{}/advisor-profiles:preview", realm.project),
+        &serde_json::json!({"definition": advisor}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let applied = Call::post(
+        format!("/v1/projects/{}/advisor-profiles:apply", realm.project),
+        &serde_json::json!({
+            "definition": advisor,
+            "preview_hash": previewed.json()["preview_hash"],
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("lf04-advisor-apply")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    let fleet = committee_fleet_yaml(&[(&advisor_fleet_key(), "cursor-grok")]);
+    write_fleet(world, &fleet);
+    let fleet_hash = ContentHash::of(fleet.as_bytes());
+    let epic_read = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        realm.project, realm.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic_read.status, 200, "{}", epic_read.body);
+    let invoked = Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/advisor-runs:invoke",
+            realm.project, realm.epic
+        ),
+        &serde_json::json!({
+            "profile": {"id": ADVISOR_PROFILE, "version": 1},
+            "topic": "Fleet advisor provenance",
+            "question": "Which route did the live fleet freeze for this Advisor?",
+            "caller_seat_binding_id": realm.caller,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key("lf04-advisor-invoke")
+    .send(world)
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let invoked_json = invoked.json();
+    let advisor_run = kontor_core::id::AdvisorRunId::parse(
+        invoked_json["advisor_run_id"]
+            .as_str()
+            .expect("an Advisor run"),
+    )
+    .expect("an Advisor run id");
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Advisor(advisor_run),
+    );
+    assert_eq!(
+        context["admission"]["source"], "fleet_configuration",
+        "the run context does not record the fleet as the route's policy: {context}"
+    );
+    assert_eq!(
+        context["admission"]["profile_hash"],
+        fleet_hash.as_str(),
+        "the admission block is not stamped with the accepted fleet snapshot: {context}"
+    );
+    assert_ne!(
+        context["admission"]["profile_hash"], context["profile_hash"],
+        "the admission hash is the template's, not the fleet's: {context}"
+    );
+
+    let seat = &invoked_json["seats"][0];
+    assert!(
+        seat["observed_binding"].is_object(),
+        "the Advisor seat was not launched: {}",
+        invoked.body
+    );
+    assert_eq!(seat["model_route"]["provider"], "cursor", "{seat}");
+    assert_eq!(seat["model_route"]["model"], "grok-4.7", "{seat}");
+    let binding = SeatBindingId::parse(
+        seat["seat_binding_id"]
+            .as_str()
+            .expect("an Advisor SeatBinding"),
+    )
+    .expect("a SeatBinding");
+    let launched = world
+        .fake
+        .consultation_route(binding)
+        .expect("the Advisor launched natively");
+    assert_eq!(
+        (launched.provider.0.as_str(), launched.model.0.as_str()),
+        ("cursor", "grok-4.7"),
+        "materialization launched a route other than the fleet's"
+    );
+    assert_eq!(
+        world.fake.consultation_route_provenance(binding),
+        Some("fleet_configuration"),
+        "materialization launched the seat without the fleet's provenance"
+    );
+}
+
+/// LF-04: an empty `provider_unavailable` recovery profile takes its candidate
+/// chain from the live fleet when the fleet binds the seat, not from the
+/// pinned template.
+#[tokio::test]
+async fn a_fleet_bound_reviewer_that_loses_its_provider_recovers_on_the_fleet_chain() {
+    let realm = consultation_realm(
+        "/tmp/kontor-lf04-committee-recovery",
+        &[("Cursor", "cursor")],
+    )
+    .await;
+    let world = &realm.world;
+    // The predecessor is placed from the pinned template; the fleet arrives
+    // only for the recovery, which is what makes the successor route evidence
+    // of the chain the recovery consulted.
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Fleet seat recovery provenance",
+        "lf04-recovery-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let readback = committee_readback(world, &realm.project, &run).await;
+    let reviewer_a = readback["seats"]
+        .as_array()
+        .expect("Committee seats")
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "reviewer-a")
+        .unwrap_or_else(|| panic!("the Committee has a reviewer-a seat: {readback}"))
+        .clone();
+    assert_eq!(
+        reviewer_a["model_route"]["provider"], "claude-work",
+        "the template placed reviewer-a before the fleet was written: {reviewer_a}"
+    );
+    let binding = SeatBindingId::parse(
+        reviewer_a["seat_binding_id"]
+            .as_str()
+            .expect("the reviewer-a SeatBinding"),
+    )
+    .expect("a SeatBinding");
+    let predecessor_native = ExternalId::parse(
+        reviewer_a["observed_binding"]["native_id"]
+            .as_str()
+            .expect("the launched reviewer-a native"),
+    )
+    .expect("a native id");
+
+    let fleet = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    write_fleet(world, &fleet);
+    let recovered = Call::post(
+        format!(
+            "/v1/projects/{}/committee-runs/{run}/seats/{binding}/recover",
+            realm.project
+        ),
+        &serde_json::json!({
+            "expected_revision": readback["revision"],
+            "expected_native_id": predecessor_native,
+            "reason": "provider_unavailable",
+            "recovery_profile": [],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("lf04-reviewer-recovery")
+    .send(world)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(
+        recovered.json()["active_model_route"]["provider"],
+        "cursor",
+        "the successor did not take the fleet chain's route: {}",
+        recovered.body
+    );
+    assert_eq!(
+        recovered.json()["active_model_route"]["model"],
+        "grok-4.7",
+        "{}",
+        recovered.body
+    );
+    let launched = world
+        .fake
+        .consultation_route(binding)
+        .expect("the successor launched natively");
+    assert_eq!(
+        (launched.provider.0.as_str(), launched.model.0.as_str()),
+        ("cursor", "grok-4.7"),
+        "the recovery launched a route other than the fleet's"
+    );
+    assert_ne!(
+        (launched.provider.0.as_str(), launched.model.0.as_str()),
+        ("claude-personal", "claude-opus-5"),
+        "the recovery walked the pinned template chain"
+    );
+    let recorded = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_recovery_attempt(
+                ProjectId::parse(&realm.project).expect("the project"),
+                ConsultationRunId::Committee(
+                    kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+                ),
+                &RoleSlotId::parse("reviewer-a").expect("a role slot"),
+                &predecessor_native,
+            )
+            .expect("the recovery attempt reads")
+            .expect("the recovery attempt exists")
+            .recovery_profile
+    });
+    assert_eq!(
+        recorded["ordered_rungs"][0]["provider"], "cursor",
+        "the durable recovery policy is not the fleet chain: {recorded}"
+    );
+    assert_eq!(
+        recorded["ordered_rungs"][0]["model"], "grok-4.7",
+        "{}",
+        recorded
+    );
+}
+
+/// LF-04: with no `fleet.yml`, Committee allocation is exactly the pinned
+/// template's, and no placement records a fleet decision.
+#[tokio::test]
+async fn without_fleet_yml_committee_allocation_is_unchanged() {
+    let realm = consultation_realm("/tmp/kontor-lf04-committee-no-fleet", &[]).await;
+    let world = &realm.world;
+    let invoked =
+        invoke_fleet_committee(&realm, "Pinned template allocation", "lf04-no-fleet-invoke").await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Committee(
+            kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+        ),
+    );
+    let routes = context["admission"]["routes"]
+        .as_array()
+        .expect("frozen admission routes");
+    let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
+    assert_eq!(
+        reviewer_a["model_route"]["provider"], "claude-work",
+        "{}",
+        reviewer_a
+    );
+    assert_eq!(
+        reviewer_a["model_route"]["model"], "claude-opus-5",
+        "{}",
+        reviewer_a
+    );
+    let reviewer_b = admission_route_for_slot(routes, "reviewer-b");
+    assert_eq!(
+        reviewer_b["model_route"]["provider"], "codex-work",
+        "{}",
+        reviewer_b
+    );
+    assert_eq!(
+        reviewer_b["model_route"]["model"], "gpt-5.6-sol",
+        "{}",
+        reviewer_b
+    );
+    let judge = admission_route_for_slot(routes, "judge");
+    assert_eq!(judge["model_route"]["provider"], "claude-work", "{}", judge);
+    assert_eq!(judge["model_route"]["model"], "claude-opus-5", "{}", judge);
+    for route in [reviewer_a, reviewer_b, judge] {
+        assert_eq!(
+            route["source"], "template",
+            "a template-routed slot was stamped with another policy: {route}"
+        );
+        assert_eq!(
+            route["profile_hash"], context["template_hash"],
+            "the frozen route is not the pinned template revision: {route}"
+        );
+    }
+    assert!(
+        !world.directory.path().join("fleet-decisions").exists(),
+        "a placement without a fleet wrote a fleet decision"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// LF-05 — a delivery seat keeps the vendor of the seat it must differ from.
+//
+// `rules.independent_of` makes a placement read the vendor this team run already
+// recorded for the other seat and drop every route that vendor could reach
+// (R-02). A vendor the run never recorded cannot be avoided: every route is
+// kept and the placement warns `fleet.independence_unknown` instead of silently
+// breaking the rule.
+// ---------------------------------------------------------------------------
+
+/// One LF-05 `fleet.yml`: both delivery seats open on the same DeepSeek vendor.
+///
+/// `deepseek-only` flattens to exactly the vendor an implementation seat records,
+/// so an independent verifier left with it has no route at all; the chains and
+/// the models are ones the frozen `test/test` template never carries, so a
+/// launched route says which policy the placement actually consulted.
+fn independence_fleet_yaml(implement_key: &str, verify_key: &str, verify_chain: &str) -> String {
+    format!(
+        "schema_version: 1\n\
+         domains:\n  deepseek: {{ provider: opencode, accounts: [opencode] }}\n  claude: {{ provider: claude, accounts: [claude-personal] }}\n\
+         models:\n  flash: {{ domain: deepseek, id: deepseek/deepseek-flash, vendor: deepseek }}\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic }}\n\
+         chains:\n  deepseek-only:\n    - [flash]\n  deepseek-then-claude:\n    - [flash]\n    - [opus]\n\
+         bindings:\n  {implement_key}: deepseek-only\n  {verify_key}: {verify_chain}\n\
+         rules:\n  independent_of:\n    {verify_key}: {implement_key}\n"
+    )
+}
+
+/// A writer the test can read back, so the assertion is over the bytes the sink
+/// really produced rather than over what a formatter was asked to do.
+///
+/// The same capture `recovery_security.rs` uses over `logging::subscriber`: the
+/// installed process subscriber is never asked, so a thread-local default is how
+/// an event emitted inside one request becomes an assertion.
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl Write for Captured {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("the buffer is not poisoned")
+            .extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for Captured {
+    type Writer = Self;
+
+    fn make_writer(&'writer self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Launch the fixture's queued `verify` run before any fleet exists.
+///
+/// `seat_fill_world_with_recovery(false, ..)` deliberately leaves `verify`
+/// unbound, so a quota takeover of it has no launch to replace. Adopting the
+/// queued run and filling the slot launches it on the frozen `test/test` chain:
+/// a template-routed placement, and therefore one that records no fleet
+/// decision, exactly as the implementer seated before `fleet.yml` did.
+async fn place_verify_before_the_fleet(fixture: &SeatFillWorld, key: &str) -> AgentRunId {
+    let body = adoption_body(fixture);
+    let adopted = adopt_slot(
+        fixture,
+        "verify",
+        &body,
+        &format!("{key}-adopt"),
+        "operator",
+    )
+    .await;
+    assert_eq!(adopted.status, 200, "{}", adopted.body);
+    fixture
+        .world
+        .fake
+        .allowing_launch_of(&RoleSlotId::parse("verify").expect("a role slot"));
+    let filled = fixture
+        .fill("verify", fixture.task_revision(), &format!("{key}-fill"))
+        .await;
+    assert_eq!(filled.status, 200, "{}", filled.body);
+    AgentRunId::parse(
+        filled.json()["agent_run_id"]
+            .as_str()
+            .expect("the fill names its run"),
+    )
+    .expect("a canonical agent run id")
+}
+
+/// Take over one quota-blocked seat onto one explicit Admin-authorized route.
+///
+/// The evidence is [`take_over_blocked_seat`]'s; the named route is what a
+/// predecessor placed before `fleet.yml` existed uses. An explicit route is not
+/// a fleet placement, so this takeover records no fleet decision — the shape a
+/// seat predating the fleet leaves behind.
+async fn take_over_blocked_seat_on_route(
+    fixture: &SeatFillWorld,
+    predecessor: AgentRunId,
+    slot: &str,
+    route: &serde_json::Value,
+    key: &str,
+) -> Answer {
+    let run = fixture.world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(fixture.project, predecessor)
+            .expect("the predecessor reads")
+            .expect("the predecessor exists")
+    });
+    let binding = run.binding.clone().expect("the predecessor is bound");
+    let account = run
+        .account_profile_id
+        .expect("the predecessor owns the account the walk selected");
+    let provider = fixture
+        .world
+        .fake
+        .launched_model(predecessor)
+        .expect("the predecessor's launched route")
+        .provider
+        .0;
+    let (run, evidence) = record_runtime_quota_refusal(
+        &fixture.world,
+        fixture.project,
+        predecessor,
+        &binding,
+        account,
+        &provider,
+        at("2099-01-01T00:00:00Z"),
+    )
+    .await;
+    Call::post(
+        format!(
+            "/v1/projects/{}/agent-runs/{predecessor}/successors:replace",
+            fixture.project
+        ),
+        &serde_json::json!({
+            "role_slot": slot,
+            "expected_predecessor_revision": run.revision,
+            "expected_task_revision": fixture.task_revision(),
+            "binding_generation": binding.identity.generation,
+            "quota_exhausted": evidence,
+            "model_route": route,
+        }),
+    )
+    .signed_as(&fixture.world, "admin")
+    .with_key(key)
+    .send(&fixture.world)
+    .await
+}
+
+/// LF-05: a verifier declared independent of the implementer drops the vendor
+/// the implementer was admitted on and takes the next one.
+///
+/// Both chains open on the same DeepSeek route, so a placement that ignored
+/// `rules.independent_of` would land the verifier on step 1 exactly as the
+/// implementer did. The exact provider and model are asserted so neither the
+/// success nor a wrong-vendor success can pass.
+#[tokio::test]
+async fn a_verifier_skips_the_implementers_vendor() {
+    let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    place_verify_before_the_fleet(&fixture, "lf05-skip-verify").await;
+    let implement_key = fleet_binding_key(&fixture, "implement");
+    let verify_key = fleet_binding_key(&fixture, "verify");
+    write_fleet(
+        &fixture.world,
+        &independence_fleet_yaml(&implement_key, &verify_key, "deepseek-then-claude"),
+    );
+
+    let implemented = take_over_blocked_seat(
+        &fixture,
+        delivery_member(&fixture, "implement").id,
+        "implement",
+        "lf05-skip-implement",
+    )
+    .await;
+    assert_eq!(implemented.status, 200, "{}", implemented.body);
+    let implementer = replaced_successor(&implemented);
+    assert_eq!(
+        launched_route(&fixture, implementer),
+        ("opencode".to_owned(), "deepseek/deepseek-flash".to_owned()),
+        "the implementer opens on the shared DeepSeek step: {}",
+        implemented.body
+    );
+
+    let verified = take_over_blocked_seat(
+        &fixture,
+        delivery_member(&fixture, "verify").id,
+        "verify",
+        "lf05-skip-verifier",
+    )
+    .await;
+    assert_eq!(verified.status, 200, "{}", verified.body);
+    let verifier = replaced_successor(&verified);
+    assert_eq!(
+        launched_route(&fixture, verifier),
+        ("claude-personal".to_owned(), "claude-opus-5".to_owned()),
+        "the independent verifier skips the implementer's recorded vendor: {}",
+        verified.body
+    );
+    assert_ne!(
+        launched_route(&fixture, verifier),
+        ("opencode".to_owned(), "deepseek/deepseek-flash".to_owned()),
+        "the verifier must not share the implementer's vendor"
+    );
+
+    let decisions = fleet_decisions(&fixture);
+    assert_eq!(
+        decisions.len(),
+        2,
+        "one line per admitted placement: {decisions:?}"
+    );
+    assert_eq!(decisions[0]["role_slot"], "implement");
+    assert_eq!(decisions[0]["binding_key"], implement_key);
+    assert_eq!(decisions[0]["vendor"], "deepseek");
+    assert_eq!(decisions[0]["step"], 1);
+    assert_eq!(decisions[0]["sub_step"], 1);
+    assert_eq!(decisions[1]["role_slot"], "verify");
+    assert_eq!(decisions[1]["binding_key"], verify_key);
+    assert_eq!(decisions[1]["vendor"], "anthropic");
+    assert_eq!(
+        decisions[1]["step"], 2,
+        "step 1 of the verifier's chain is the dropped vendor: {decisions:?}"
+    );
+    assert_eq!(decisions[1]["sub_step"], 1);
+    assert_eq!(decisions[1]["provider"], "claude-personal");
+    assert_eq!(decisions[1]["model"], "claude-opus-5");
+}
+
+/// LF-05: with only the implementer's vendor left, the independent verifier is
+/// refused rather than launched on it.
+///
+/// The recorded vendor is DeepSeek, the verifier's whole chain is DeepSeek, and
+/// the refusal is the exact `MissingEvidence` the rule raises; a version of the
+/// filter that dropped nothing would place the verifier and fail this test.
+#[tokio::test]
+async fn independence_fails_closed_when_only_the_implementers_vendor_is_left() {
+    let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    place_verify_before_the_fleet(&fixture, "lf05-closed-verify").await;
+    let implement_key = fleet_binding_key(&fixture, "implement");
+    let verify_key = fleet_binding_key(&fixture, "verify");
+    write_fleet(
+        &fixture.world,
+        &independence_fleet_yaml(&implement_key, &verify_key, "deepseek-only"),
+    );
+
+    let implemented = take_over_blocked_seat(
+        &fixture,
+        delivery_member(&fixture, "implement").id,
+        "implement",
+        "lf05-closed-implement",
+    )
+    .await;
+    assert_eq!(implemented.status, 200, "{}", implemented.body);
+    assert_eq!(
+        launched_route(&fixture, replaced_successor(&implemented)),
+        ("opencode".to_owned(), "deepseek/deepseek-flash".to_owned()),
+        "{}",
+        implemented.body
+    );
+
+    let members = fixture.members().len();
+    let calls = fixture.world.fake.calls().len();
+    let refused = take_over_blocked_seat(
+        &fixture,
+        delivery_member(&fixture, "verify").id,
+        "verify",
+        "lf05-closed-verifier",
+    )
+    .await;
+    // REQ-008: the refusal is a placement block carrying Appendix B's R-02 text
+    // verbatim, so the operator can tell which fleet rule refused.
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(refused.code(), "placement_blocked");
+    assert_eq!(refused.json()["subject"], "FleetConfiguration");
+    assert_eq!(
+        refused.json()["rule"],
+        "every fleet route left for this seat uses the vendor of the seat it must be independent of"
+    );
+    assert_eq!(
+        fixture.members().len(),
+        members,
+        "a refused verifier placement creates no successor"
+    );
+    assert!(
+        !fixture.world.fake.calls()[calls..]
+            .iter()
+            .any(|call| matches!(call, AdapterCall::Launch(_))),
+        "a refused verifier placement launches nothing: {}",
+        refused.body
+    );
+    assert_eq!(
+        fleet_decisions(&fixture).len(),
+        1,
+        "the refused verifier is not a fleet placement"
+    );
+}
+
+/// LF-05: a seat placed before `fleet.yml` existed has no recorded vendor, so
+/// the rule cannot avoid one — the verifier keeps its whole chain and the
+/// placement warns instead.
+///
+/// An implementer seated before the fleet wrote no decision, so the verifier's
+/// takeover must keep every route, step 1 included, and say so through
+/// `fleet.independence_unknown`.
+#[tokio::test]
+async fn an_implementer_placed_before_fleet_yml_does_not_block_its_verifier() {
+    let fixture = seat_fill_world_with_recovery(false, 1, false).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    place_verify_before_the_fleet(&fixture, "lf05-unknown-verify").await;
+
+    // A quota takeover cannot walk the frozen `test/test` chain here: its only
+    // route's account is the one the takeover evidence just marked exhausted.
+    // Admin names a compiled catalogued route instead. Still not a fleet
+    // placement, so still no decision — the property under test.
+    let implementer = take_over_blocked_seat_on_route(
+        &fixture,
+        delivery_member(&fixture, "implement").id,
+        "implement",
+        &serde_json::json!({"provider": "claude-personal", "model": "claude-opus-5"}),
+        "lf05-unknown-implement",
+    )
+    .await;
+    assert_eq!(implementer.status, 200, "{}", implementer.body);
+    assert_eq!(
+        launched_route(&fixture, replaced_successor(&implementer)),
+        ("claude-personal".to_owned(), "claude-opus-5".to_owned()),
+        "{}",
+        implementer.body
+    );
+    assert!(
+        !fixture
+            .world
+            .directory
+            .path()
+            .join("fleet-decisions")
+            .exists(),
+        "the pre-fleet implementer placement wrote a fleet decision"
+    );
+
+    let implement_key = fleet_binding_key(&fixture, "implement");
+    let verify_key = fleet_binding_key(&fixture, "verify");
+    write_fleet(
+        &fixture.world,
+        &independence_fleet_yaml(&implement_key, &verify_key, "deepseek-then-claude"),
+    );
+
+    // The handler runs in this task on this thread, so the thread-local default
+    // is the sink the warning inside the request is written to.
+    let captured = Captured::default();
+    let subscriber = logging::subscriber(captured.clone());
+    let verified = {
+        let _capture = tracing::subscriber::set_default(subscriber);
+        take_over_blocked_seat(
+            &fixture,
+            delivery_member(&fixture, "verify").id,
+            "verify",
+            "lf05-unknown-verifier",
+        )
+        .await
+    };
+    assert_eq!(verified.status, 200, "{}", verified.body);
+    assert_eq!(
+        launched_route(&fixture, replaced_successor(&verified)),
+        ("opencode".to_owned(), "deepseek/deepseek-flash".to_owned()),
+        "with no recorded implementer vendor every route is kept, step 1 included: {}",
+        verified.body
+    );
+
+    let decisions = fleet_decisions(&fixture);
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    assert_eq!(decisions[0]["role_slot"], "verify");
+    assert_eq!(decisions[0]["vendor"], "deepseek");
+    assert_eq!(decisions[0]["step"], 1);
+    assert_eq!(decisions[0]["sub_step"], 1);
+    assert!(
+        decisions
+            .iter()
+            .all(|decision| decision["role_slot"] != "implement"),
+        "the pre-fleet implementer placement recorded no decision: {decisions:?}"
+    );
+
+    let written = String::from_utf8(
+        captured
+            .0
+            .lock()
+            .expect("the buffer is not poisoned")
+            .clone(),
+    )
+    .expect("the log is UTF-8");
+    assert!(
+        written
+            .lines()
+            .any(|line| line.contains("WARN") && line.contains("fleet.independence_unknown")),
+        "the unknown-vendor branch is observable in the daemon log:\n{written}"
     );
 }
 

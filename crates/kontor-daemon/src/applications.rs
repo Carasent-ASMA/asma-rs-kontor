@@ -399,6 +399,9 @@ fn consultation_route_provenance(
             evidence_hash,
             fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
         }),
+        "fleet_configuration" => Ok(ConsultationRouteProvenance::fleet_configuration(
+            evidence_hash,
+        )),
         _ => Err(kontor_core::DomainError::invalid(
             "consultation route provenance",
             "the frozen route source is not recognized by this build",
@@ -796,6 +799,12 @@ pub struct Services {
     /// filesystem I/O, and a document that changed mid-flight would classify
     /// two observations of one refusal differently.
     quota_signals: Vec<kontor_accounts::QuotaSignal>,
+    /// The live `fleet.yml` source every placement consults.
+    ///
+    /// A source rather than a snapshot: an operator edit takes effect at the
+    /// next placement with no restart or republish, and an invalid edit keeps
+    /// the last valid snapshot inside the source.
+    fleet: Arc<crate::fleet::FleetSource>,
 }
 
 struct CompletionCommit<'a> {
@@ -833,6 +842,7 @@ impl Services {
     /// ceilings are *not* judged here: [`crate::Daemon::start`] validates them
     /// before it claims a state root, so a refused set stops a start rather than
     /// failing a composition halfway through one.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         realm_id: kontor_core::id::RealmId,
         capacity: CapacityConfig,
@@ -841,6 +851,7 @@ impl Services {
         usage_poller: crate::usage::UsagePoller,
         quota_signals: Vec<kontor_accounts::QuotaSignal>,
         github: Option<Arc<crate::github_publication::GithubPublicationGateway>>,
+        fleet: Arc<crate::fleet::FleetSource>,
     ) -> Result<Arc<Self>, kontor_core::DomainError> {
         Ok(Arc::new(Self {
             realm_id,
@@ -857,6 +868,7 @@ impl Services {
             succession_guard: tokio::sync::Mutex::new(()),
             native_lifecycle_guard: tokio::sync::RwLock::new(()),
             quota_signals,
+            fleet,
         }))
     }
 
@@ -1293,6 +1305,21 @@ impl Services {
         {
             return self.deny(ApiErrorCode::PlacementBlocked, rule)
                 .advising("probe the exact configured provider account and retry after current quota evidence permits admission");
+        }
+        // REQ-008: a fleet binding that resolves to no admissible route is a
+        // placement refusal, and the Appendix B rule is the whole answer — the
+        // generic `MissingEvidence` text would hide which fleet rule refused.
+        if let kontor_core::DomainError::MissingEvidence {
+            subject: "FleetConfiguration",
+            rule,
+        } = error
+        {
+            return self
+                .deny(ApiErrorCode::PlacementBlocked, rule)
+                .about("FleetConfiguration")
+                .advising(
+                    "edit fleet.yml so the bound chain keeps an admissible route, then retry",
+                );
         }
         ApiError::from_domain(self.realm_id, error)
     }
@@ -8300,8 +8327,11 @@ impl Services {
                     "the logical Core Team seat has no exact native session to reroute",
                 )
             })?;
-        let desired = parse_runtime_model_route(&request.desired_model_route)
-            .map_err(|error| self.refuse_domain(&error))?;
+        let desired = parse_runtime_model_route(
+            &request.desired_model_route,
+            self.fleet.current().as_deref(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
         let (predecessor, successor) = if active.native_identity.native_id
             == request.expected_native_id
             && active.native_identity.generation == request.expected_generation
@@ -12199,6 +12229,9 @@ impl Services {
                 "Committee admission requires its runtime adapter",
             )
         })?;
+        // One snapshot for the whole invocation: an edit between two slots must
+        // not mix two fleet versions into one allocation.
+        let fleet = self.fleet.current();
         let quota_states = self.admission_quota_states(project_id)?;
         let accounts = self.eligible_accounts(project_id)?;
         let quota = QuotaOutlook {
@@ -12235,11 +12268,11 @@ impl Services {
             let routes = profile
                 .ordered_routes
                 .iter()
-                .map(parse_runtime_model_route)
+                .map(|route| parse_runtime_model_route(route, fleet.as_deref()))
                 .collect::<kontor_core::DomainResult<Vec<_>>>()
                 .map_err(|error| self.refuse_domain(&error))?;
             for route in &routes {
-                if !model_route_is_catalogued(route) {
+                if !model_route_is_catalogued(route, fleet.as_deref()) {
                     return Err(self.deny(
                         ApiErrorCode::InvalidRequest,
                         "an initial Committee recovery route is absent from the governed model catalog",
@@ -12261,13 +12294,34 @@ impl Services {
         }
         let mut candidates = Vec::with_capacity(template.slots.len());
         for slot in &template.slots {
-            let mut effective = committee_route_candidates(
-                &slot.models.rungs,
-                "template",
-                &template_revision.definition_hash,
-                &accounts,
-            )
-            .map_err(|error| self.refuse_domain(&error))?;
+            let fleet_routes = fleet.as_deref().and_then(|fleet| {
+                fleet
+                    .routes_for(&crate::fleet::committee_key(
+                        &template_revision.profile_id,
+                        slot.id.as_str(),
+                    ))
+                    .map(|routes| (fleet, routes))
+            });
+            let mut effective = match fleet_routes {
+                Some((fleet, routes)) => {
+                    let rungs: Vec<ModelRung> =
+                        routes.into_iter().map(|route| route.rung).collect();
+                    committee_route_candidates(
+                        &rungs,
+                        "fleet_configuration",
+                        fleet.hash(),
+                        &accounts,
+                    )
+                    .map_err(|error| self.refuse_domain(&error))?
+                }
+                None => committee_route_candidates(
+                    &slot.models.rungs,
+                    "template",
+                    &template_revision.definition_hash,
+                    &accounts,
+                )
+                .map_err(|error| self.refuse_domain(&error))?,
+            };
             if let Some((routes, profile_hash)) = recovery_profiles.get(&slot.id) {
                 for candidate in committee_route_candidates(
                     routes,
@@ -12326,7 +12380,7 @@ impl Services {
             }
             candidates.push(admitted);
         }
-        select_committee_allocation(template, &candidates).ok_or_else(|| {
+        select_committee_allocation(template, &candidates, fleet.as_deref()).ok_or_else(|| {
             self.deny(
                 ApiErrorCode::PlacementBlocked,
                 "no currently admissible whole-Committee allocation preserves the pinned provider-family diversity",
@@ -12403,6 +12457,22 @@ impl Services {
                 .advising("read or resume the existing consultation run"));
         }
         let question_hash = ContentHash::of(request.question.as_str().as_bytes());
+        // One snapshot for the whole invocation: the context records which
+        // policy supplied the route, and the freeze below must not disagree
+        // with it because an edit landed in between.
+        let fleet = self.fleet.current();
+        let fleet_routes = fleet.as_deref().and_then(|fleet| {
+            fleet
+                .routes_for(&crate::fleet::advisor_key(&revision.profile_id))
+                .map(|routes| (fleet, routes))
+        });
+        let route_provenance = match fleet_routes.as_ref() {
+            Some((fleet, _)) => {
+                ConsultationRouteProvenance::fleet_configuration(fleet.hash().clone())
+            }
+            None => consultation_route_provenance("template", revision.definition_hash.clone())
+                .map_err(|error| self.refuse_domain(&error))?,
+        };
         let context = self.intent(&serde_json::json!({
             "schema_version": 1,
             "realm_id": state.realm_id().to_string(),
@@ -12418,6 +12488,11 @@ impl Services {
             "team_definition_hash": definition_snapshot.canonical_hash.as_str(),
             "topic": topic.as_str(),
             "question_hash": question_hash.as_str(),
+            "admission": {
+                "schema_version": 1,
+                "source": route_provenance.source.as_str(),
+                "profile_hash": route_provenance.evidence_hash.as_str(),
+            },
         }))?;
         let run = StoredConsultationRun {
             id: ConsultationRunId::Advisor(run_id),
@@ -12481,14 +12556,23 @@ impl Services {
         let deadline = now
             .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
             .unwrap_or(now);
-        let model_rung = self.freeze_consultation_model_rung(
-            project_id,
-            &profile.models.rungs,
-            now,
-            "the Advisor profile has no model route",
-        )?;
-        let route_provenance =
-            ConsultationRouteProvenance::template(revision.definition_hash.clone());
+        let model_rung = match fleet_routes.as_ref() {
+            Some((_, routes)) => {
+                let rungs: Vec<ModelRung> = routes.iter().map(|route| route.rung.clone()).collect();
+                self.freeze_consultation_model_rung(
+                    project_id,
+                    &rungs,
+                    now,
+                    "the Advisor profile has no model route",
+                )?
+            }
+            None => self.freeze_consultation_model_rung(
+                project_id,
+                &profile.models.rungs,
+                now,
+                "the Advisor profile has no model route",
+            )?,
+        };
         if let Some(adapter) = state.runtimes().get(&self.node_runtime_kind()?) {
             adapter
                 .validate_consultation_model_rung(&model_rung, &route_provenance)
@@ -12534,6 +12618,35 @@ impl Services {
             .with_store(|store| store.create_consultation_run(&run, &node, &pairs))
             .map_err(|error| self.refuse(&error))?;
         Ok(run)
+    }
+
+    /// Reconstruct the exact immutable policy that selected one Advisor seat.
+    ///
+    /// Runs frozen before the fleet existed carry no `admission` block and keep
+    /// their published template provenance.
+    ///
+    /// # Errors
+    /// Returns the domain's refusal when the frozen source or hash is unreadable.
+    fn advisor_route_provenance(
+        &self,
+        run: &StoredConsultationRun,
+    ) -> Result<ConsultationRouteProvenance, ApiError> {
+        if let Some(admission) = run.context.get("admission")
+            && let (Some(source), Some(profile_hash)) = (
+                admission.get("source").and_then(serde_json::Value::as_str),
+                admission
+                    .get("profile_hash")
+                    .and_then(serde_json::Value::as_str),
+            )
+        {
+            let evidence_hash =
+                ContentHash::parse(profile_hash).map_err(|error| self.refuse_domain(&error))?;
+            return consultation_route_provenance(source, evidence_hash)
+                .map_err(|error| self.refuse_domain(&error));
+        }
+        Ok(ConsultationRouteProvenance::template(
+            run.definition_hash.clone(),
+        ))
     }
 
     /// Launch or exact-label recover the one Advisor seat.
@@ -12596,8 +12709,7 @@ impl Services {
             if seat.native_identity.is_some() {
                 continue;
             }
-            let route_provenance =
-                ConsultationRouteProvenance::template(run.definition_hash.clone());
+            let route_provenance = self.advisor_route_provenance(run)?;
             adapter
                 .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -13044,7 +13156,7 @@ impl Services {
                 serde_json::from_value::<kontor_api::applications::RuntimeModelRouteRequest>(value)
                     .ok()
             })
-            .map(|route| parse_runtime_model_route(&route))
+            .map(|route| parse_runtime_model_route(&route, self.fleet.current().as_deref()))
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?
             .ok_or_else(|| {
@@ -14509,10 +14621,12 @@ fn ensure_unambiguous_generic_consultation_routes(
 fn select_committee_allocation(
     template: &CommitteeTemplateSpec,
     candidates: &[Vec<FrozenCommitteeRoute>],
+    fleet: Option<&crate::fleet::FleetSnapshot>,
 ) -> Option<Vec<FrozenCommitteeRoute>> {
     fn walk(
         template: &CommitteeTemplateSpec,
         candidates: &[Vec<FrozenCommitteeRoute>],
+        fleet: Option<&crate::fleet::FleetSnapshot>,
         index: usize,
         reviewer_families: &mut BTreeSet<String>,
         selected: &mut Vec<FrozenCommitteeRoute>,
@@ -14522,20 +14636,40 @@ fn select_committee_allocation(
         }
         let slot = &template.slots[index];
         for rung in &candidates[index] {
-            let family = provider_family(&rung.model_rung.provider.0).to_owned();
             let constrained = template.diversity
                 == kontor_core::consultation::DiversityRule::DistinctProviderPerSlot
                 && slot.role == CommitteeRole::Reviewer;
-            if constrained && !reviewer_families.insert(family.clone()) {
+            // Without a fleet this is a pure renaming of the provider family;
+            // with one it is the model's vendor. A constrained reviewer never
+            // takes a route whose vendor cannot be named, and never the vendor
+            // another reviewer already holds.
+            let tracked = if constrained {
+                let Some(vendor) = crate::fleet::independence_key(&rung.model_rung, fleet) else {
+                    continue;
+                };
+                Some(vendor)
+            } else {
+                None
+            };
+            if let Some(vendor) = tracked.as_ref()
+                && !reviewer_families.insert(vendor.clone())
+            {
                 continue;
             }
             selected.push(rung.clone());
-            if walk(template, candidates, index + 1, reviewer_families, selected) {
+            if walk(
+                template,
+                candidates,
+                fleet,
+                index + 1,
+                reviewer_families,
+                selected,
+            ) {
                 return true;
             }
             selected.pop();
-            if constrained {
-                reviewer_families.remove(&family);
+            if let Some(vendor) = tracked.as_ref() {
+                reviewer_families.remove(vendor);
             }
         }
         false
@@ -14549,6 +14683,7 @@ fn select_committee_allocation(
     walk(
         template,
         candidates,
+        fleet,
         0,
         &mut reviewer_families,
         &mut selected,
@@ -14556,12 +14691,24 @@ fn select_committee_allocation(
     .then_some(selected)
 }
 
-/// Whether one route is exposed by the governed Teams model catalog.
+/// Whether one route is exposed by the governed Teams model catalog or by the
+/// live fleet configuration.
 ///
-/// Explicit initial-admission recovery profiles pass through this same
-/// predicate. That prevents an Admin request from selecting a route omitted
-/// from `/v1/catalog` after quota routing failed.
-pub(crate) fn model_route_is_catalogued(rung: &ModelRung) -> bool {
+/// A route is catalogued when the compiled list accepts it or the current
+/// `fleet.yml` snapshot lists its account alias, model and effort. Explicit
+/// routes — initial-admission recovery profiles, the bridge's named-route
+/// moves, Committee seat recovery — pass through this same predicate, so a
+/// fleet-only model such as Opus 5.5 is nameable without a rebuild.
+/// `/v1/catalog` still advertises only the compiled list (DEF-004).
+pub(crate) fn model_route_is_catalogued(
+    rung: &ModelRung,
+    fleet: Option<&crate::fleet::FleetSnapshot>,
+) -> bool {
+    compiled_route_is_catalogued(rung) || fleet.is_some_and(|fleet| fleet.lists(rung))
+}
+
+/// Whether the compiled model list accepts one route, ignoring the live fleet.
+fn compiled_route_is_catalogued(rung: &ModelRung) -> bool {
     let effort = rung.effort.map(EffortLevel::as_str);
     let effort_is = |allowed: &[&str]| effort.is_none_or(|value| allowed.contains(&value));
     match (rung.provider.0.as_str(), rung.model.0.as_str()) {
@@ -14737,18 +14884,10 @@ fn has_fresh_provider_reported_headroom(
 
 fn freeze_seat_model_rung(
     adapter: &dyn RuntimeAdapter,
-    snapshot: &TeamRunSnapshot,
-    slot: &RoleSlotId,
+    declared: &[ModelRung],
     quota: &QuotaOutlook<'_>,
 ) -> kontor_core::DomainResult<(ModelRung, Option<AccountProfileId>)> {
-    let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?;
-    let chain = template
-        .slot(slot)
-        .and_then(|seat| seat.model_chain.as_ref())
-        .ok_or_else(|| {
-            kontor_core::DomainError::invalid("TeamRunSnapshot", "the role slot has no model route")
-        })?;
-    let effective_rungs = quota.effective_rungs(&chain.rungs)?;
+    let effective_rungs = quota.effective_rungs(declared)?;
     let placement = resolve_chain_placement(
         adapter,
         &effective_rungs,
@@ -14778,6 +14917,7 @@ fn freeze_seat_model_rung(
 
 fn parse_runtime_model_route(
     route: &RuntimeModelRouteRequest,
+    fleet: Option<&crate::fleet::FleetSnapshot>,
 ) -> kontor_core::DomainResult<ModelRung> {
     if route.provider.trim().is_empty() || route.model.trim().is_empty() {
         return Err(kontor_core::DomainError::invalid(
@@ -14792,7 +14932,7 @@ fn parse_runtime_model_route(
         effort,
     };
     rung.validate()?;
-    if !model_route_is_catalogued(&rung) {
+    if !model_route_is_catalogued(&rung, fleet) {
         return Err(kontor_core::DomainError::invalid(
             "RuntimeModelRouteRequest",
             "the model route is not in the governed catalog",
@@ -14801,7 +14941,7 @@ fn parse_runtime_model_route(
     Ok(rung)
 }
 
-fn parse_effort(effort: &str) -> kontor_core::DomainResult<EffortLevel> {
+pub(crate) fn parse_effort(effort: &str) -> kontor_core::DomainResult<EffortLevel> {
     match effort {
         "off" => Ok(EffortLevel::Off),
         "low" => Ok(EffortLevel::Low),
@@ -14858,7 +14998,7 @@ fn validate_team_draft_routes(request: &TeamDraftRequest) -> kontor_core::Domain
                 model: ModelRef(model.to_owned()),
                 effort,
             };
-            if !model_route_is_catalogued(&rung) {
+            if !model_route_is_catalogued(&rung, None) {
                 return Err(kontor_core::DomainError::invalid(
                     "TeamDraftRequest",
                     "a model rung must use a route in the governed catalog",
@@ -17010,10 +17150,12 @@ impl Services {
                 serde_json::from_str::<CommitteeTemplateSpec>(&revision.definition).is_ok_and(
                     |spec| {
                         spec.validate().is_ok()
-                            && spec
-                                .slots
-                                .iter()
-                                .all(|slot| slot.models.rungs.iter().all(model_route_is_catalogued))
+                            && spec.slots.iter().all(|slot| {
+                                slot.models
+                                    .rungs
+                                    .iter()
+                                    .all(|rung| model_route_is_catalogued(rung, None))
+                            })
                     },
                 )
             })
@@ -23915,7 +24057,7 @@ impl ApplicationOperations for Services {
             .map(|route: &CoreTeamSeatRouteRequest| {
                 Ok((
                     route.role_code.clone(),
-                    parse_runtime_model_route(&route.model_route)?,
+                    parse_runtime_model_route(&route.model_route, self.fleet.current().as_deref())?,
                 ))
             })
             .collect::<kontor_core::DomainResult<_>>()
@@ -24299,10 +24441,16 @@ impl ApplicationOperations for Services {
                 "the SeatBinding is not one of this epic's frozen Core Team roles",
             ));
         }
-        let superseded = parse_runtime_model_route(&request.expected_model_route)
-            .map_err(|error| self.refuse_domain(&error))?;
-        let replacement = parse_runtime_model_route(&request.desired_model_route)
-            .map_err(|error| self.refuse_domain(&error))?;
+        let superseded = parse_runtime_model_route(
+            &request.expected_model_route,
+            self.fleet.current().as_deref(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
+        let replacement = parse_runtime_model_route(
+            &request.desired_model_route,
+            self.fleet.current().as_deref(),
+        )
+        .map_err(|error| self.refuse_domain(&error))?;
         // Never attempted, by contract rather than by configuration. The wedge
         // this repair exists for is an OpenCode route nothing can launch, and a
         // replacement that reached for it again would recreate the wedge under
@@ -26747,6 +26895,17 @@ impl ApplicationOperations for Services {
                 "the runtime selected for Committee recovery is not configured",
             )
         })?;
+        // One snapshot for the whole recovery: an edit between the candidate
+        // list and the provenance would record a policy the file never held.
+        let fleet = self.fleet.current();
+        let fleet_routes = fleet.as_deref().and_then(|fleet| {
+            fleet
+                .routes_for(&crate::fleet::committee_key(
+                    &run.profile_id,
+                    slot.id.as_str(),
+                ))
+                .map(|routes| (fleet, routes))
+        });
         let (desired_rung, recovery_profile, pending_attempt) = if let Some(attempt) =
             pending_attempt
         {
@@ -26768,13 +26927,23 @@ impl ApplicationOperations for Services {
                 ConsultationSeatRecoveryReasonDto::ProviderUnavailable => {
                     let mut rungs = if request.recovery_profile.is_empty() {
                         let accounts = self.eligible_accounts(project_id)?;
-                        consultation_account_rungs(&slot.models.rungs, &accounts)
+                        match fleet_routes.as_ref() {
+                            Some((_, routes)) => {
+                                let rungs: Vec<ModelRung> =
+                                    routes.iter().map(|route| route.rung.clone()).collect();
+                                consultation_account_rungs(&rungs, &accounts)
+                            }
+                            None => consultation_account_rungs(&slot.models.rungs, &accounts),
+                        }
                     } else {
                         request
                             .recovery_profile
                             .iter()
                             .map(|route| {
-                                let rung = parse_runtime_model_route(route)?;
+                                let rung = parse_runtime_model_route(
+                                    route,
+                                    self.fleet.current().as_deref(),
+                                )?;
                                 if provider_family(&rung.provider.0) == rung.provider.0.as_str() {
                                     return Err(kontor_core::DomainError::invalid(
                                         "RecoverConsultationSeatRequest",
@@ -26854,9 +27023,19 @@ impl ApplicationOperations for Services {
                 "provider recovery did not resolve to a different governed route",
             ));
         }
-        let successor_route_provenance =
-            consultation_route_provenance("seat_recovery_profile", recovery_profile.hash().clone())
-                .map_err(|error| self.refuse_domain(&error))?;
+        let successor_route_provenance = match fleet_routes.as_ref() {
+            Some((fleet, _))
+                if request.reason == ConsultationSeatRecoveryReasonDto::ProviderUnavailable
+                    && request.recovery_profile.is_empty() =>
+            {
+                ConsultationRouteProvenance::fleet_configuration(fleet.hash().clone())
+            }
+            _ => consultation_route_provenance(
+                "seat_recovery_profile",
+                recovery_profile.hash().clone(),
+            )
+            .map_err(|error| self.refuse_domain(&error))?,
+        };
         // Validate the exact successor policy before fencing the logical seat or
         // touching its native predecessor. In particular, a same-rung
         // credential-propagation retry must not turn an already-running
@@ -27106,8 +27285,10 @@ impl ApplicationOperations for Services {
                     "the Committee has no such logical consultation seat",
                 )
             })?;
-        let expected_rung = parse_runtime_model_route(&request.expected_model_route)
-            .map_err(|error| self.refuse_domain(&error))?;
+        let fleet = self.fleet.current();
+        let expected_rung =
+            parse_runtime_model_route(&request.expected_model_route, fleet.as_deref())
+                .map_err(|error| self.refuse_domain(&error))?;
         if seat.occupancy_generation != request.expected_occupancy_generation
             || seat.model_rung != expected_rung
         {
@@ -27186,7 +27367,9 @@ impl ApplicationOperations for Services {
                 candidate.role_slot_id != seat.role_slot_id
                     && candidate.committee_role == Some(CommitteeRole::Reviewer)
             })
-            .map(|candidate| provider_family(&candidate.model_rung.provider.0).to_owned())
+            .filter_map(|candidate| {
+                crate::fleet::independence_key(&candidate.model_rung, fleet.as_deref())
+            })
             .collect();
         let recovery_profile_document = self.intent(&serde_json::json!({
             "schema_version": 1, "ordered_routes": request.recovery_profile,
@@ -27198,10 +27381,10 @@ impl ApplicationOperations for Services {
         .map_err(|error| self.refuse_domain(&error))?;
         let mut candidates = Vec::new();
         for route in &request.recovery_profile {
-            let rung =
-                parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?;
+            let rung = parse_runtime_model_route(route, fleet.as_deref())
+                .map_err(|error| self.refuse_domain(&error))?;
             if provider_family(&rung.provider.0) == rung.provider.0.as_str()
-                || !model_route_is_catalogued(&rung)
+                || !model_route_is_catalogued(&rung, fleet.as_deref())
             {
                 return Err(self.deny(ApiErrorCode::InvalidRequest,
                     "a materialization recovery profile must name exact catalogued governed aliases"));
@@ -27212,7 +27395,8 @@ impl ApplicationOperations for Services {
             let violates_diversity = template.diversity
                 == kontor_core::consultation::DiversityRule::DistinctProviderPerSlot
                 && seat.committee_role == Some(CommitteeRole::Reviewer)
-                && occupied_families.contains(provider_family(&rung.provider.0));
+                && crate::fleet::independence_key(&rung, fleet.as_deref())
+                    .is_none_or(|vendor| occupied_families.contains(&vendor));
             if !violates_diversity && !candidates.contains(&rung) {
                 candidates.push(rung);
             }
@@ -30154,7 +30338,7 @@ impl ApplicationOperations for Services {
         let explicit_model_route = request
             .model_route
             .as_ref()
-            .map(parse_runtime_model_route)
+            .map(|route| parse_runtime_model_route(route, self.fleet.current().as_deref()))
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
         // As with exact admission recovery, the scheduling receipt witnesses
@@ -32962,7 +33146,7 @@ impl ApplicationOperations for Services {
         let explicit_model_route = request
             .model_route
             .as_ref()
-            .map(parse_runtime_model_route)
+            .map(|route| parse_runtime_model_route(route, self.fleet.current().as_deref()))
             .transpose()
             .map_err(|error| self.refuse_domain(&error))?;
         if let (Some(evidence), Some(route)) = (
@@ -33012,23 +33196,22 @@ impl ApplicationOperations for Services {
                 freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
                 now,
             };
-            let declared = if let Some(route) = explicit_model_route.as_ref() {
-                vec![route.clone()]
+            let (declared, fleet_declared) = if let Some(route) = explicit_model_route.as_ref() {
+                (vec![route.clone()], None)
             } else {
-                let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
-                    .map_err(|error| self.refuse_domain(&error))?;
-                let chain = template
-                    .slot(&role_slot)
-                    .and_then(|seat| seat.model_chain.as_ref())
+                let declared = self
+                    .declared_delivery_rungs(predecessor.team_run_id, &team.snapshot, &role_slot)
+                    .map_err(|error| self.refuse_domain(&error))?
                     .ok_or_else(|| {
                         self.deny(
                             ApiErrorCode::UnsupportedCapability,
                             "the role slot has no declared successor route",
                         )
                     })?;
-                outlook
-                    .effective_rungs(&chain.rungs)
-                    .map_err(|error| self.refuse_domain(&error))?
+                let rungs = outlook
+                    .effective_rungs(&declared.rungs)
+                    .map_err(|error| self.refuse_domain(&error))?;
+                (rungs, Some(declared))
             };
             match resolve_chain_placement(
                 adapter.as_ref(),
@@ -33039,7 +33222,7 @@ impl ApplicationOperations for Services {
             .map_err(|error| self.refuse_domain(&error))?
             {
                 kontor_scheduler::headroom::Placement::Admit { rung, account } => {
-                    Some((rung, Some(account)))
+                    Some((rung, Some(account), fleet_declared))
                 }
                 kontor_scheduler::headroom::Placement::Wait { .. } => {
                     return Err(self.deny(
@@ -33334,11 +33517,35 @@ impl ApplicationOperations for Services {
         };
         // Explicit routes were resolved before recording a successor. An
         // operator-selected alias is placement authority, never quota evidence.
-        let (model_rung, routed_account) = match quota_successor_route {
+        let (model_rung, routed_account, fleet_declared) = match quota_successor_route {
             Some(preplanned) => preplanned,
-            None => freeze_seat_model_rung(adapter.as_ref(), &team.snapshot, &role_slot, &outlook)
-                .map_err(|error| self.refuse_domain(&error))?,
+            None => {
+                let declared = self
+                    .declared_delivery_rungs(predecessor.team_run_id, &team.snapshot, &role_slot)
+                    .map_err(|error| self.refuse_domain(&error))?
+                    .ok_or_else(|| {
+                        self.refuse_domain(&kontor_core::DomainError::invalid(
+                            "TeamRunSnapshot",
+                            "the role slot has no model route",
+                        ))
+                    })?;
+                let (rung, routed_account) =
+                    freeze_seat_model_rung(adapter.as_ref(), &declared.rungs, &outlook)
+                        .map_err(|error| self.refuse_domain(&error))?;
+                (rung, routed_account, Some(declared))
+            }
         };
+        if let Some(declared) = fleet_declared.as_ref() {
+            self.record_fleet_decision(
+                declared,
+                predecessor.team_run_id,
+                successor_agent_run_id,
+                &role_slot,
+                &model_rung,
+                routed_account,
+                now,
+            )?;
+        }
         let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -35407,23 +35614,28 @@ impl Services {
             freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
             now,
         };
-        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
-            .map_err(|error| self.refuse_domain(&error))?;
-        let chain = template
-            .slot(&role_slot)
-            .and_then(|seat| seat.model_chain.as_ref())
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::UnsupportedCapability,
-                    "the role slot has no declared successor route",
-                )
-            })?;
-        let declared = if let Some(route) = requested_route {
-            vec![parse_runtime_model_route(route).map_err(|error| self.refuse_domain(&error))?]
+        let (declared, fleet_declared) = if let Some(route) = requested_route {
+            (
+                vec![
+                    parse_runtime_model_route(route, self.fleet.current().as_deref())
+                        .map_err(|error| self.refuse_domain(&error))?,
+                ],
+                None,
+            )
         } else {
-            outlook
-                .effective_rungs(&chain.rungs)
+            let declared = self
+                .declared_delivery_rungs(predecessor.team_run_id, &team.snapshot, &role_slot)
                 .map_err(|error| self.refuse_domain(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::UnsupportedCapability,
+                        "the role slot has no declared successor route",
+                    )
+                })?;
+            let rungs = outlook
+                .effective_rungs(&declared.rungs)
+                .map_err(|error| self.refuse_domain(&error))?;
+            (rungs, Some(declared))
         };
         let placement = resolve_chain_placement(
             adapter.as_ref(),
@@ -35434,6 +35646,17 @@ impl Services {
         .map_err(|error| self.refuse_domain(&error))?;
         let (successor_model_rung, successor_account_profile_id, deferred_until) = match placement {
             kontor_scheduler::headroom::Placement::Admit { rung, account } => {
+                if let Some(declared) = fleet_declared.as_ref() {
+                    self.record_fleet_decision(
+                        declared,
+                        predecessor.team_run_id,
+                        agent_run_id,
+                        &role_slot,
+                        &rung,
+                        Some(account),
+                        now,
+                    )?;
+                }
                 (Some(rung), Some(account), None)
             }
             kontor_scheduler::headroom::Placement::Wait { until, .. } => (None, None, Some(until)),
@@ -35912,30 +36135,37 @@ impl Services {
             freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
             now,
         };
-        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&team.snapshot)
-            .map_err(|error| self.refuse_domain(&error))?;
         let role_slot = RoleSlotId::new(attempt.request.role.clone());
-        let chain = template
-            .slot(&role_slot)
-            .and_then(|seat| seat.model_chain.as_ref())
+        let declared = self
+            .declared_delivery_rungs(attempt.request.team_run_id, &team.snapshot, &role_slot)
+            .map_err(|error| self.refuse_domain(&error))?
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::UnsupportedCapability,
                     "the deferred role slot has no declared successor route",
                 )
             })?;
-        let declared = outlook
-            .effective_rungs(&chain.rungs)
+        let rungs = outlook
+            .effective_rungs(&declared.rungs)
             .map_err(|error| self.refuse_domain(&error))?;
         let placement = resolve_chain_placement(
             adapter.as_ref(),
-            &declared,
+            &rungs,
             kontor_scheduler::headroom::SeatClass::Delivery,
             &outlook,
         )
         .map_err(|error| self.refuse_domain(&error))?;
         let (successor_model_rung, successor_account_profile_id, deferred_until) = match placement {
             kontor_scheduler::headroom::Placement::Admit { rung, account } => {
+                self.record_fleet_decision(
+                    &declared,
+                    attempt.request.team_run_id,
+                    attempt.request.predecessor_agent_run_id,
+                    &role_slot,
+                    &rung,
+                    Some(account),
+                    now,
+                )?;
                 (Some(rung), Some(account), None)
             }
             kontor_scheduler::headroom::Placement::Wait { until, .. } => (None, None, Some(until)),
@@ -36994,6 +37224,132 @@ impl Services {
             .await
     }
 
+    /// The rungs one delivery seat walks: the live fleet chain when `fleet.yml`
+    /// binds the seat, the frozen template chain otherwise.
+    ///
+    /// A binding that exists never falls back to the template chain: a chain
+    /// that flattens to no admissible route is R-01, not a reason to use the
+    /// route the operator replaced. A seat named in `rules.independent_of`
+    /// additionally drops every route whose vendor the seat it must differ from
+    /// already ran on in this team run (R-02).
+    ///
+    /// # Errors
+    /// Returns [`kontor_core::DomainError::MissingEvidence`] for R-01 and R-02,
+    /// and the template snapshot's own refusal when it cannot be read.
+    fn declared_delivery_rungs(
+        &self,
+        team_run_id: TeamRunId,
+        snapshot: &TeamRunSnapshot,
+        slot: &RoleSlotId,
+    ) -> kontor_core::DomainResult<Option<crate::fleet::DeclaredRungs>> {
+        let key = crate::fleet::team_key(&snapshot.template_id.to_string(), slot.as_str());
+        if let Some(fleet) = self.fleet.current()
+            && let Some(routes) = fleet.routes_for(&key)
+        {
+            if routes.is_empty() {
+                return Err(kontor_core::DomainError::MissingEvidence {
+                    subject: "FleetConfiguration",
+                    rule: "the fleet chain bound to this seat has no route left after the unavailable, calibration and vision rules",
+                });
+            }
+            let routes = if let Some(other_key) = fleet.independent_of(&key) {
+                match self.fleet.last_vendor(&team_run_id.to_string(), other_key) {
+                    Some(vendor) => {
+                        let remaining: Vec<crate::fleet::FleetRoute> = routes
+                            .into_iter()
+                            .filter(|route| route.vendor != vendor)
+                            .collect();
+                        if remaining.is_empty() {
+                            return Err(kontor_core::DomainError::MissingEvidence {
+                                subject: "FleetConfiguration",
+                                rule: "every fleet route left for this seat uses the vendor of the seat it must be independent of",
+                            });
+                        }
+                        remaining
+                    }
+                    // The other seat was placed before the fleet existed, so
+                    // its vendor was never recorded and cannot be avoided.
+                    None => {
+                        tracing::warn!(
+                            binding_key = %key,
+                            other_key = %other_key,
+                            "fleet.independence_unknown"
+                        );
+                        routes
+                    }
+                }
+            } else {
+                routes
+            };
+            return Ok(Some(crate::fleet::DeclaredRungs {
+                rungs: routes.into_iter().map(|route| route.rung).collect(),
+                fleet: Some((fleet, key)),
+            }));
+        }
+        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(snapshot)?;
+        Ok(template
+            .slot(slot)
+            .and_then(|seat| seat.model_chain.as_ref())
+            .map(|chain| crate::fleet::DeclaredRungs {
+                rungs: chain.rungs.clone(),
+                fleet: None,
+            }))
+    }
+
+    /// Append one admitted fleet placement to the run's decision log.
+    ///
+    /// Called before the launch it authorises: an unrecorded route would
+    /// silently break `rules.independent_of` (REQ-017). Rungs that came from the
+    /// frozen template chain are not fleet placements and write nothing.
+    ///
+    /// # Errors
+    /// Returns an `Unavailable` refusal when the decision cannot be recorded.
+    #[allow(clippy::too_many_arguments)]
+    fn record_fleet_decision(
+        &self,
+        declared: &crate::fleet::DeclaredRungs,
+        team_run_id: TeamRunId,
+        agent_run_id: AgentRunId,
+        slot: &RoleSlotId,
+        rung: &ModelRung,
+        account: Option<AccountProfileId>,
+        now: kontor_core::id::Timestamp,
+    ) -> Result<(), ApiError> {
+        let Some((snapshot, binding_key)) = declared.fleet.as_ref() else {
+            return Ok(());
+        };
+        let Some(route) = snapshot
+            .routes_for(binding_key)
+            .and_then(|routes| routes.into_iter().find(|route| route.rung == *rung))
+        else {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the admitted fleet route is not listed by the bound fleet chain",
+            ));
+        };
+        let decision = crate::fleet::FleetDecision {
+            team_run_id: team_run_id.to_string(),
+            agent_run_id: agent_run_id.to_string(),
+            binding_key: binding_key.clone(),
+            role_slot: slot.as_str().to_owned(),
+            fleet_hash: snapshot.hash().as_str().to_owned(),
+            step: route.step,
+            sub_step: route.sub_step,
+            provider: route.rung.provider.0.clone(),
+            model: route.rung.model.0.clone(),
+            effort: route.rung.effort.map(|effort| effort.as_str().to_owned()),
+            vendor: route.vendor,
+            account_profile_id: account.map(|id| id.to_string()),
+            decided_at: now.to_string(),
+        };
+        self.fleet.record_decision(&decision).map_err(|_| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the fleet placement decision could not be recorded",
+            )
+        })
+    }
+
     /// Re-enter the admission path at one immutable launch address.
     ///
     /// Ordinary scheduler starts derive that address from their command key.
@@ -37310,11 +37666,19 @@ impl Services {
                 applied: AppliedDto::Unchanged,
             }
         } else {
+            let declared = self
+                .declared_delivery_rungs(team_run_id, &team_snapshot, &slot)
+                .map_err(|error| self.refuse_domain(&error))?
+                .ok_or_else(|| {
+                    self.refuse_domain(&kontor_core::DomainError::invalid(
+                        "TeamRunSnapshot",
+                        "the role slot has no model route",
+                    ))
+                })?;
             let quota_states = self.admission_quota_states(project_id)?;
             let (model_rung, routed_account) = freeze_seat_model_rung(
                 adapter.as_ref(),
-                &team_snapshot,
-                &slot,
+                &declared.rungs,
                 &QuotaOutlook {
                     states: &quota_states,
                     account: admitted.account_profile_id,
@@ -37325,6 +37689,16 @@ impl Services {
                 },
             )
             .map_err(|error| self.refuse_domain(&error))?;
+            let launch_account = admitted.account_profile_id.or(routed_account);
+            self.record_fleet_decision(
+                &declared,
+                team_run_id,
+                agent_run_id,
+                &slot,
+                &model_rung,
+                launch_account,
+                now,
+            )?;
             let context_policy = freeze_seat_context_policy(&adapter, &team_snapshot, &slot, now)
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -37337,7 +37711,7 @@ impl Services {
             // `(project, account, provider)` and there is no other key.
             // Re-presenting the same account is a replay that writes nothing,
             // so a restarted launch does not pin twice.
-            if let Some(account) = admitted.account_profile_id.or(routed_account) {
+            if let Some(account) = launch_account {
                 state
                     .with_store(|store| {
                         store.pin_agent_run_account(project_id, agent_run_id, account)
@@ -37363,7 +37737,7 @@ impl Services {
                 // The task's own pin outranks the walk: a pinned run's walk
                 // can only ever answer with that pin, so `.or` is the
                 // no-pin case — the account the walk actually selected.
-                account_profile_id: admitted.account_profile_id.or(routed_account),
+                account_profile_id: launch_account,
                 prompt: slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
                 model_rung,
                 context_policy: context_policy.clone(),
@@ -40653,28 +41027,52 @@ impl Services {
         // The caller supplies the runtime's prepared container snapshot. Initial
         // seating prepares it once for all slots; bounded seat fill re-attests
         // the existing native container before reaching this shared path.
-        let (model_rung, account_profile_id) = if let Some((rung, account)) = route_override {
-            // The named route's account selects its provider alias; the
-            // admission's account belongs to the frozen chain it replaces.
-            (rung.clone(), Some(*account))
-        } else {
-            let quota_states = self.admission_quota_states(project_id)?;
-            let (rung, routed_account) = freeze_seat_model_rung(
-                adapter.as_ref(),
-                &team_snapshot,
+        let (model_rung, account_profile_id, fleet_declared) =
+            if let Some((rung, account)) = route_override {
+                // The named route's account selects its provider alias; the
+                // admission's account belongs to the frozen chain it replaces.
+                (rung.clone(), Some(*account), None)
+            } else {
+                let declared = self
+                    .declared_delivery_rungs(team_run_id, &team_snapshot, slot)
+                    .map_err(|error| self.refuse_domain(&error))?
+                    .ok_or_else(|| {
+                        self.refuse_domain(&kontor_core::DomainError::invalid(
+                            "TeamRunSnapshot",
+                            "the role slot has no model route",
+                        ))
+                    })?;
+                let quota_states = self.admission_quota_states(project_id)?;
+                let (rung, routed_account) = freeze_seat_model_rung(
+                    adapter.as_ref(),
+                    &declared.rungs,
+                    &QuotaOutlook {
+                        states: &quota_states,
+                        account: admitted.account_profile_id,
+                        accounts: &self.eligible_accounts(project_id)?,
+                        headroom: self.headroom_policy(),
+                        freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+                        now,
+                    },
+                )
+                .map_err(|error| self.refuse_domain(&error))?;
+                (
+                    rung,
+                    admitted.account_profile_id.or(routed_account),
+                    Some(declared),
+                )
+            };
+        if let Some(declared) = fleet_declared.as_ref() {
+            self.record_fleet_decision(
+                declared,
+                team_run_id,
+                agent_run_id,
                 slot,
-                &QuotaOutlook {
-                    states: &quota_states,
-                    account: admitted.account_profile_id,
-                    accounts: &self.eligible_accounts(project_id)?,
-                    headroom: self.headroom_policy(),
-                    freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
-                    now,
-                },
-            )
-            .map_err(|error| self.refuse_domain(&error))?;
-            (rung, admitted.account_profile_id.or(routed_account))
-        };
+                &model_rung,
+                account_profile_id,
+                now,
+            )?;
+        }
         let context_policy = freeze_seat_context_policy(adapter, &team_snapshot, slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
@@ -41823,6 +42221,7 @@ mod tests {
             crate::usage::UsagePoller::discover(directory.path()),
             Vec::new(),
             None,
+            std::sync::Arc::new(crate::fleet::FleetSource::at(directory.path())),
         )
         .expect("services");
         let existing = services.native_activity().expect("existing work started");
@@ -41878,6 +42277,7 @@ mod tests {
             crate::usage::UsagePoller::discover(directory.path()),
             Vec::new(),
             None,
+            std::sync::Arc::new(crate::fleet::FleetSource::at(directory.path())),
         )
         .expect("services");
         let existing = services.native_activity().expect("existing work started");
@@ -42088,7 +42488,7 @@ mod tests {
             vec![committee_route("codex-work", "gpt-5.6-sol")],
         ];
 
-        let selected = select_committee_allocation(&template, &candidates)
+        let selected = select_committee_allocation(&template, &candidates, None)
             .expect("a diverse whole allocation exists");
         assert_eq!(selected[0].model_rung.provider.0, "opencode");
         assert_eq!(selected[1].model_rung.provider.0, "codex-personal");
@@ -42106,9 +42506,9 @@ mod tests {
             vec![committee_route("codex-work", "gpt-5.6-sol")],
             vec![committee_route("claude-personal", "claude-opus-5")],
         ];
-        let first = select_committee_allocation(&template, &primary)
+        let first = select_committee_allocation(&template, &primary, None)
             .expect("the ordinary primaries are diverse");
-        let second = select_committee_allocation(&template, &primary)
+        let second = select_committee_allocation(&template, &primary, None)
             .expect("the same allocation remains available");
         assert_eq!(
             first
@@ -42127,7 +42527,43 @@ mod tests {
             vec![committee_route("codex-personal", "gpt-5.6-sol")],
             vec![committee_route("claude-work", "claude-opus-5")],
         ];
-        assert!(select_committee_allocation(&template, &colliding).is_none());
+        assert!(select_committee_allocation(&template, &colliding, None).is_none());
+    }
+
+    /// REQ-012: a reviewer is never seated on a vendor that cannot be named.
+    ///
+    /// A fleet-listed route with vendor `unknown` (Cursor Auto) has no
+    /// independent claim, so a constrained reviewer slot skips it instead of
+    /// treating it as its own family. `V-25` keeps such a chain out of a
+    /// committee binding, so this pins the allocation guard itself; without a
+    /// fleet the same routes keep today's provider-family meaning.
+    #[test]
+    fn a_committee_reviewer_is_never_seated_on_an_unknown_vendor() {
+        let template = kontor_profiles::seeds::bundled_consultation_presets()
+            .expect("the presets load")
+            .committee_templates
+            .remove(0);
+        let fleet = crate::fleet::FleetSnapshot::parse(
+            "schema_version: 1\n\
+             domains:\n  cursor: { provider: cursor, accounts: [cursor] }\n\
+             models:\n  auto: { domain: cursor, id: auto-smart, vendor: unknown }\n\
+             chains:\n  auto-first:\n    - [auto]\n\
+             bindings:\n  team/01936f5a-0000-7000-8000-000000000101/implement: auto-first\n",
+        )
+        .expect("the fixture fleet parses");
+        let candidates = vec![
+            vec![committee_route("cursor", "auto-smart")],
+            vec![committee_route("claude-work", "claude-opus-5")],
+            vec![committee_route("codex-work", "gpt-5.6-sol")],
+        ];
+        assert!(
+            select_committee_allocation(&template, &candidates, Some(&fleet)).is_none(),
+            "a reviewer with no namable vendor cannot complete a diverse allocation"
+        );
+        assert!(
+            select_committee_allocation(&template, &candidates, None).is_some(),
+            "without a fleet the same routes keep today's family meaning"
+        );
     }
 
     #[test]
@@ -42352,8 +42788,16 @@ mod tests {
             },
         );
         let (snapshot, slot) = snapshot_declaring(None);
+        let template = kontor_teams::spec::TeamTemplateSpec::from_snapshot(&snapshot)
+            .expect("the snapshot's template reads");
+        let declared = template
+            .slot(&slot)
+            .and_then(|seat| seat.model_chain.as_ref())
+            .expect("the slot declares a chain")
+            .rungs
+            .clone();
         assert!(
-            super::freeze_seat_model_rung(&adapter, &snapshot, &slot, &outlook).is_err(),
+            super::freeze_seat_model_rung(&adapter, &declared, &outlook).is_err(),
             "a headroom refusal must not become an unpinned primary or fallback launch"
         );
     }
@@ -42489,7 +42933,7 @@ mod tests {
             ("cursor", "cursor-auto"),
         ] {
             assert_eq!(
-                parse_runtime_model_route(&request(provider, model)),
+                parse_runtime_model_route(&request(provider, model), None),
                 Err(kontor_core::DomainError::invalid(
                     "RuntimeModelRouteRequest",
                     "the model route is not in the governed catalog",
@@ -42498,13 +42942,45 @@ mod tests {
             );
         }
         assert_eq!(
-            parse_runtime_model_route(&request("codex", "gpt-5.6-sol")),
+            parse_runtime_model_route(&request("codex", "gpt-5.6-sol"), None),
             Ok(ModelRung {
                 provider: ProviderRef("codex".to_owned()),
                 model: ModelRef("gpt-5.6-sol".to_owned()),
                 effort: None,
             }),
             "a listed route is still admitted"
+        );
+    }
+
+    /// REQ-010: a route only the live fleet lists — the compiled catalog does
+    /// not carry `claude-opus-5-5` — is nameable exactly while the current
+    /// snapshot lists it, so explicit routes can reach a fleet-only model.
+    #[test]
+    fn a_fleet_listed_route_is_catalogued_only_while_listed() {
+        let request = RuntimeModelRouteRequest {
+            provider: "claude-personal".to_owned(),
+            model: "claude-opus-5-5".to_owned(),
+            effort: Some("xhigh".to_owned()),
+        };
+        assert_eq!(
+            parse_runtime_model_route(&request, None),
+            Err(kontor_core::DomainError::invalid(
+                "RuntimeModelRouteRequest",
+                "the model route is not in the governed catalog",
+            )),
+            "without a fleet the compiled list does not carry the route"
+        );
+        let document = include_str!("../../../config/examples/fleet.yml");
+        let snapshot =
+            crate::fleet::FleetSnapshot::parse(document).expect("the shipped example parses");
+        assert_eq!(
+            parse_runtime_model_route(&request, Some(&snapshot)),
+            Ok(ModelRung {
+                provider: ProviderRef("claude-personal".to_owned()),
+                model: ModelRef("claude-opus-5-5".to_owned()),
+                effort: Some(EffortLevel::Xhigh),
+            }),
+            "a fleet-listed route is nameable while the snapshot lists it"
         );
     }
 
@@ -42540,7 +43016,7 @@ mod tests {
             ),
         ] {
             assert!(
-                parse_runtime_model_route(&route(provider, model, effort)).is_ok(),
+                parse_runtime_model_route(&route(provider, model, effort), None).is_ok(),
                 "approved chain route {provider}/{model}@{effort} is nameable"
             );
         }
@@ -42548,7 +43024,7 @@ mod tests {
         // credential home, never the model.
         for provider in ["codex", "codex-work", "codex-personal"] {
             assert!(
-                parse_runtime_model_route(&route(provider, "gpt-5.6-luna", "max")).is_ok(),
+                parse_runtime_model_route(&route(provider, "gpt-5.6-luna", "max"), None).is_ok(),
                 "{provider} reaches Luna at its ceiling"
             );
         }
@@ -42565,7 +43041,7 @@ mod tests {
             ("opencode", "openrouter/z-ai/glm-5.3-flash", "medium"),
         ] {
             assert_eq!(
-                parse_runtime_model_route(&route(provider, model, effort)),
+                parse_runtime_model_route(&route(provider, model, effort), None),
                 Err(kontor_core::DomainError::invalid(
                     "RuntimeModelRouteRequest",
                     "the model route is not in the governed catalog",
