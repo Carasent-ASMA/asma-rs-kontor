@@ -2639,6 +2639,11 @@ impl Services {
             .map(|run| (run.id, run.parent_agent_run_id))
             .collect();
         let mut named_parents = BTreeSet::new();
+        let lineage_refusal = |rule| {
+            self.deny(ApiErrorCode::StaleBinding, rule).advising(
+                "reconcile the replacement lineage with its recorded authority while preserving run, parent, seat and native identities",
+            )
+        };
         for run in runs
             .iter()
             .filter(|run| !run.is_operator_abandoned_unbound())
@@ -2647,8 +2652,7 @@ impl Services {
             let mut visited = BTreeSet::new();
             while let Some(id) = parent {
                 if !visited.insert(id) {
-                    return Err(self.deny(
-                        ApiErrorCode::StaleBinding,
+                    return Err(lineage_refusal(
                         "a delivery role has a cyclic replacement chain",
                     ));
                 }
@@ -2660,14 +2664,10 @@ impl Services {
             .into_iter()
             .filter(|run| !run.is_operator_abandoned_unbound() && !named_parents.contains(&run.id));
         let leaf = leaves.next().ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::StaleBinding,
-                "a delivery role has no current replacement-chain leaf",
-            )
+            lineage_refusal("a delivery role has no current replacement-chain leaf")
         })?;
         if leaves.next().is_some() {
-            return Err(self.deny(
-                ApiErrorCode::StaleBinding,
+            return Err(lineage_refusal(
                 "a delivery role has ambiguous current replacement-chain leaves",
             ));
         }

@@ -26,11 +26,9 @@
       "name": "daemon-skip-bridge-ancestry",
       "compiled": true,
       "behavioralFailure": true,
-      "patch": "daemon-skip-bridge-ancestry.diff.json",
-      "patchSha256": "0ccfc1c602e63fac6294904fd6a7fe90680f0cb6a6436ff1315e9140bda3f377",
-      "mutatedSourceSha256": "a13657b7b9ed98cf5e9ab62be02f0cd27d64dd4e8654fa561c41d7029a5e4104",
-      "decodedPatchSha256": "01c10c45f90e8985014f8bf650183fada6f2850a5c022f736ccbe3f76b0c2a9d",
-      "patchEncoding": "base64 JSON; decode rawBase64 before applying"
+      "patch": "daemon-skip-bridge-ancestry.diff",
+      "patchSha256": "01c10c45f90e8985014f8bf650183fada6f2850a5c022f736ccbe3f76b0c2a9d",
+      "mutatedSourceSha256": "a13657b7b9ed98cf5e9ab62be02f0cd27d64dd4e8654fa561c41d7029a5e4104"
     },
     {
       "log": "daemon-count-trailing-abandoned.txt",
@@ -90,6 +88,5 @@
   "sourceSha256CaptureTime": "post-restoration",
   "buildCache": "Shared _tools/asma-rs-kontor/target; isolated disposable source archive; all source restored and both green suites re-established after mutations",
   "boundary": "Source behavioral mutation qualification only; production source, installed binaries, SQLite and native placement unchanged",
-  "driverRecovery": "Initial driver stopped after baseline greens and first compiled kill because its text locator did not accept rustfmt line breaks. Exact source restoration was verified; those actual logs and identical mutant patch were reused, with the initial driver failure preserved separately. No infrastructure failure earns behavioral credit.",
-  "publicationNormalization": "Only one patch locator/encoding changed. Original receipt bytes remain historical-results.json. No mutant, outcome, source hash or qualification subject changed."
+  "driverRecovery": "Initial driver stopped after baseline greens and first compiled kill because its text locator did not accept rustfmt line breaks. Exact source restoration was verified; those actual logs and identical mutant patch were reused, with the initial driver failure preserved separately. No infrastructure failure earns behavioral credit."
 }

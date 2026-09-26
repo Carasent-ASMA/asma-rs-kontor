@@ -2205,6 +2205,128 @@ fn the_successor_chain_stops_at_the_declared_depth() {
 // Hydration fails closed (AC-3, AC-4)
 // ---------------------------------------------------------------------------
 
+fn abandoned_bridge(parent: &AgentRun) -> AgentRun {
+    let mut row = run_row(
+        parent.team_run_id,
+        &RoleSlotId::new(parent.role.clone()),
+        AgentRunId::generate(),
+        Some(parent.id),
+        RunLifecycle::Cancelled,
+    );
+    row.project_id = parent.project_id;
+    let terminal = row
+        .terminal
+        .as_mut()
+        .expect("a cancelled attempt is closed");
+    terminal.outcome = TerminalOutcome::Abandoned;
+    terminal.source = TerminalEvidenceSource::OperatorAbandon {
+        receipt_id: kontor_core::id::CommandReceiptId::generate(),
+    };
+    assert!(row.is_operator_abandoned_unbound());
+    row
+}
+
+#[test]
+fn hydration_preserves_transitive_abandoned_bridges_without_spending_depth() {
+    let mut template = parallel_seed();
+    template.max_successor_depth = 1;
+    let team = TeamRunId::generate();
+    let slot = template.slots[0].id.clone();
+    let root = run_row(
+        team,
+        &slot,
+        AgentRunId::generate(),
+        None,
+        RunLifecycle::Cancelled,
+    );
+    let first = abandoned_bridge(&root);
+    let second = abandoned_bridge(&first);
+    let mut current = run_row(
+        team,
+        &slot,
+        AgentRunId::generate(),
+        Some(second.id),
+        RunLifecycle::Running,
+    );
+    current.project_id = root.project_id;
+    let trailing = abandoned_bridge(&current);
+    let trailing_second = abandoned_bridge(&trailing);
+    let rows = vec![
+        root.clone(),
+        first.clone(),
+        second.clone(),
+        current.clone(),
+        trailing,
+        trailing_second,
+    ];
+    let before = rows.clone();
+    let hydrated = TeamRunSlots::hydrate(lease(team), &snapshot_of(&template), &rows, &[])
+        .expect("two abandoned bridges retain the complete immutable ancestry");
+    assert_eq!(hydrated.live_run(&slot), Some(current.id));
+    assert_eq!(
+        rows, before,
+        "hydration does not rewrite any identity or parent"
+    );
+    drop(hydrated);
+
+    template.max_successor_depth = 0;
+    assert!(
+        TeamRunSlots::hydrate(lease(team), &snapshot_of(&template), &rows, &[]).is_err(),
+        "the one meaningful successor still spends its actual depth"
+    );
+}
+
+#[test]
+fn malformed_transitive_abandoned_bridges_still_refuse_hydration() {
+    let template = parallel_seed();
+    let team = TeamRunId::generate();
+    let slot = template.slots[0].id.clone();
+    let root = run_row(
+        team,
+        &slot,
+        AgentRunId::generate(),
+        None,
+        RunLifecycle::Cancelled,
+    );
+    let first = abandoned_bridge(&root);
+    let second = abandoned_bridge(&first);
+    let current = run_row(
+        team,
+        &slot,
+        AgentRunId::generate(),
+        Some(second.id),
+        RunLifecycle::Cancelled,
+    );
+    let valid = vec![root, first, second, current];
+    for case in [
+        "cycle",
+        "missing parent",
+        "foreign team",
+        "foreign role",
+        "fork",
+    ] {
+        let mut rows = valid.clone();
+        match case {
+            "cycle" => rows[1].parent_agent_run_id = Some(rows[2].id),
+            "missing parent" => rows[1].parent_agent_run_id = Some(AgentRunId::generate()),
+            "foreign team" => rows[1].team_run_id = TeamRunId::generate(),
+            "foreign role" => rows[1].role = template.slots[1].id.as_role_key().clone(),
+            "fork" => rows.push(run_row(
+                team,
+                &slot,
+                AgentRunId::generate(),
+                Some(rows[2].id),
+                RunLifecycle::Cancelled,
+            )),
+            _ => unreachable!(),
+        }
+        assert!(
+            TeamRunSlots::hydrate(lease(team), &snapshot_of(&template), &rows, &[]).is_err(),
+            "{case} must not become a valid roster through bridge retention"
+        );
+    }
+}
+
 #[test]
 fn malformed_hydrated_state_yields_no_roster() {
     let template = parallel_seed();

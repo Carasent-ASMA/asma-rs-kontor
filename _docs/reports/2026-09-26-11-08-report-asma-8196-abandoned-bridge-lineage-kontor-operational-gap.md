@@ -62,9 +62,7 @@ The [checkpoint receipt](evidence/ASMA-8196/replacement-bridges/focused-checkpoi
 and [hash manifest](evidence/ASMA-8196/replacement-bridges/SHA256SUMS.json)
 bind the source and actual outcomes.
 
-## Worktree recovery disposition
-
-### Additional unbound-fork boundary
+## Additional unbound-fork boundary
 
 The initial `eb41560f` archive has four genuine compiled behavioral kills and
 green baseline/restored suites, preserved in its
@@ -88,6 +86,50 @@ passes all three tests with both bound/bound and bound/unbound forks. The
 binds the source and actual outcomes. Earlier focused results and mutations
 retain their original subjects; no mutation or full-gate credit transfers from
 the initial store implementation to this changed source.
+
+## Independent integration audit and corrective hydration
+
+The [actual 3b9 source audit](evidence/ASMA-8196/replacement-bridges/actual-lsa-3b9-audit.txt)
+supports both selectors but finds a P1 in canonical TeamRun hydration: retaining
+only a meaningful run's immediate abandoned parent drops an earlier abandoned
+bridge. Preview/migration can therefore accept two bridges while replacement
+or team certification rejects the same immutable chain. The historical audit
+retains that defect and its two P2 findings without later approval credit.
+
+The canonical hydrator now retains the complete ancestor closure of meaningful
+runs, before applying its existing role/team, occupancy, parent, cycle, fork and
+successor-depth checks. Unreferenced trailing abandoned attempts remain omitted
+and consume no successor depth. No durable parent or identity is changed.
+The [core red log](evidence/ASMA-8196/replacement-bridges/hydration-red-teams.txt)
+reproduces the missing-parent refusal; the [daemon red log](evidence/ASMA-8196/replacement-bridges/hydration-red-daemon.txt)
+also reproduces replacement failure and the misleading settlement action.
+After correction, the [core focused log](evidence/ASMA-8196/replacement-bridges/hydration-green-teams.txt)
+passes two tests, including malformed-chain cases and actual depth enforcement;
+the [daemon focused log](evidence/ASMA-8196/replacement-bridges/hydration-green-daemon.txt)
+passes four tests. Its replacement regression actually launches the requested
+other slot while retaining the two-bridge role's exact run/parent/binding rows.
+The deliberately absent current native in that other role remains a fixture,
+not live restoration evidence.
+The [full team package](evidence/ASMA-8196/replacement-bridges/hydration-teams-all-green.txt)
+also passes all 49 lifecycle contracts. The
+[focused correction receipt](evidence/ASMA-8196/replacement-bridges/hydration-focused-checkpoint.json)
+records the exact source hashes and separate red/green subjects.
+
+Cyclic, absent-leaf and ambiguous-leaf refusals now advise reconciliation of the
+recorded lineage while preserving identities. A fork regression verifies the
+public action, rather than directing an operator to runtime settlement.
+
+The [3b9 mutation receipt](evidence/ASMA-8196/replacement-bridges/historical-3b9-mutations/results.json)
+records four actual compiled behavioral kills and restored three/24 greens on
+that earlier source. It does not qualify this hydration correction. Its full
+archive gate likewise remains an earlier-source run and gives no new-head credit.
+
+The [whitespace preservation receipt](evidence/ASMA-8196/replacement-bridges/historical-whitespace-preservation.json)
+retains original log bytes/hashes and exact encoded mutant-patch bytes. Five
+display logs remove only extra blank final lines; the historical patch's
+significant blank context is base64 encoded instead of silently changed. The
+original 3b9 manifest and original mutation receipt remain separately preserved.
+No output, outcome or historical member finding was edited or reclassified.
 
 ## Worktree recovery disposition
 

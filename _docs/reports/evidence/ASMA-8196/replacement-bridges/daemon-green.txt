@@ -8,4 +8,3 @@ test replacement_bridges::trailing_abandoned_bridge_attempts_keep_the_bound_pred
 test replacement_bridges::cancelled_bound_run_through_abandoned_bridges_names_only_the_current_native ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 478 filtered out; finished in 2.70s
-

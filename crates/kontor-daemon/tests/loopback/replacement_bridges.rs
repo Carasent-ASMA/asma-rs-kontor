@@ -183,5 +183,84 @@ async fn genuine_bound_fork_after_an_abandoned_bridge_still_refuses_preview() {
                 .body
                 .contains("ambiguous current replacement-chain leaves")
         );
+        assert_eq!(
+            response.json()["action"],
+            "reconcile the replacement lineage with its recorded authority while preserving run, parent, seat and native identities"
+        );
     }
+}
+
+#[tokio::test]
+async fn replacing_another_slot_hydrates_two_abandoned_bridges_without_rewriting_them() {
+    let (world, project, epic, predecessor) = fixture("replace-two-bridges").await;
+    let first = successor(&world, &predecessor, None);
+    abandon(&world, &first).await;
+    let second = successor(&world, &first, None);
+    abandon(&world, &second).await;
+    let current = successor(&world, &second, Some("missing-current-for-hydration"));
+    let other = world.daemon.state().with_store(|store| {
+        store
+            .list_agent_runs_for_team_run(predecessor.project_id, predecessor.team_run_id)
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.role != predecessor.role)
+            .map(|row| {
+                store
+                    .get_agent_run(predecessor.project_id, row.agent_run_id)
+                    .unwrap()
+                    .unwrap()
+            })
+            .find(|run| run.binding.is_some() && run.terminal.is_none())
+            .unwrap()
+    });
+    finish_natively(&world, &other.id.to_string()).await;
+    let settled = Call::post(
+        format!(
+            "/v1/projects/{project}/agent-runs/{}/runtime:settle",
+            other.id
+        ),
+        &serde_json::json!({}),
+    )
+    .signed_as(&world, "operator")
+    .with_key("replace-two-bridges-settle-other")
+    .send(&world)
+    .await;
+    assert_eq!(settled.status, 200, "{}", settled.body);
+    let other = world.daemon.state().with_store(|store| {
+        store
+            .get_agent_run(other.project_id, other.id)
+            .unwrap()
+            .unwrap()
+    });
+    let view = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+        .signed_as(&world, "observer")
+        .send(&world)
+        .await;
+    let response = Call::post(format!("/v1/projects/{project}/agent-runs/{}/successors:replace", other.id),
+        &serde_json::json!({"role_slot":other.role.as_str(), "expected_predecessor_revision":other.revision,
+            "expected_task_revision":view.json()["tasks"][0]["revision"], "binding_generation":other.binding.as_ref().unwrap().identity.generation}))
+        .signed_as(&world, "admin").with_key("replace-two-bridges-other").send(&world).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(response.json()["applied"], "created");
+    let replacement =
+        AgentRunId::parse(response.json()["successor_agent_run_id"].as_str().unwrap()).unwrap();
+    world.daemon.state().with_store(|store| {
+        let replaced = store
+            .get_agent_run(other.project_id, replacement)
+            .unwrap()
+            .unwrap();
+        assert_eq!(replaced.parent_agent_run_id, Some(other.id));
+        assert!(
+            replaced.binding.is_some(),
+            "the requested other slot actually launches"
+        );
+        for original in [&predecessor, &first, &second, &current] {
+            let stored = store
+                .get_agent_run(original.project_id, original.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.parent_agent_run_id, original.parent_agent_run_id);
+            assert_eq!(stored.binding, original.binding);
+        }
+    });
 }

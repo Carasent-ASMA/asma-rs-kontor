@@ -7,4 +7,3 @@ test a_genuine_delivery_fork_refuses_the_native_migration_census ... ok
 test a_fork_with_an_unbound_current_leaf_also_refuses_the_migration_census ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 5.76s
-

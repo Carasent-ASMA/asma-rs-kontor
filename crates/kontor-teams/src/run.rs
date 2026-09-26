@@ -881,16 +881,31 @@ impl TeamRunSlots {
             .collect();
 
         // An operator-abandoned run that never held a native binding normally
-        // spends neither a seat nor successor depth. Retain only the exact rows
-        // that a real successor names as its audit parent; without that anchor
-        // the successor becomes a rootless lineage after restart. Unreferenced
+        // spends neither a seat nor successor depth. Retain the full ancestor
+        // closure of meaningful runs, including consecutive abandoned bridges;
+        // otherwise their successors become rootless after restart. Unreferenced
         // failed launches remain omitted, including abandoned branches beside
         // an otherwise valid native successor chain.
-        let referenced_parents: BTreeSet<AgentRunId> = runs
+        let parents: BTreeMap<AgentRunId, Option<AgentRunId>> = runs
+            .iter()
+            .map(|run| (run.id, run.parent_agent_run_id))
+            .collect();
+        let mut pending_parents: Vec<AgentRunId> = runs
             .iter()
             .filter(|run| !run.is_operator_abandoned_unbound())
             .filter_map(|run| run.parent_agent_run_id)
             .collect();
+        let mut referenced_parents = BTreeSet::new();
+        while let Some(id) = pending_parents.pop() {
+            if referenced_parents.insert(id)
+                && let Some(Some(parent)) = parents.get(&id)
+            {
+                pending_parents.push(*parent);
+            }
+        }
+        // The closure walk is finite even for malformed ancestry. The retained
+        // rows still pass through hydrate_slot's missing-parent, fork, cycle,
+        // role, occupancy and depth checks; retention grants no launch authority.
         let mut grouped: BTreeMap<RoleSlotId, Vec<&AgentRun>> = BTreeMap::new();
         for run in runs {
             if run.team_run_id != team_run_id {
