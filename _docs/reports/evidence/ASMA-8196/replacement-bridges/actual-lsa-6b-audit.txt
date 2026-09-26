@@ -1,0 +1,32 @@
+---
+
+Read-only audit result: conditional source approval. I found no remaining P0, P1, or P2 defect in the bounded PR #276 source at:
+
+- Commit `6b3654bca823ac85ed7cc0bb1d6965bc730c4743`
+- Tree `daaf541fbc0e66d5e960a6a5e1909e348528df3f`
+- Worktree clean and still at the exact commit
+
+### Findings
+
+- **P0: none.**
+- **Prior P1: corrected.** `TeamRunSlots::hydrate` now retains the complete meaningful ancestor closure, including consecutive abandoned/unbound bridges, before invoking the existing validation. Missing parents, forks, cycles, foreign teams/roles, occupancy conflicts, and depth violations remain fail-closed. Unreferenced trailing abandoned attempts remain excluded and do not consume successor depth. No run, parent, binding, native, generation, or SeatBinding is rewritten. See [run.rs](</Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-teams/src/run.rs:883>) and [team_contract.rs](</Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-teams/tests/team_contract.rs:2229>).
+- **Prior P2, misleading recovery action: corrected.** Cycle, absent-leaf, and ambiguous-leaf refusals now direct identity-preserving lineage reconciliation. The fork regression asserts that exact public action. See [applications.rs](</Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon/src/applications.rs:2642>) and [replacement_bridges.rs](</Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon/tests/loopback/replacement_bridges.rs:171>).
+- **Prior P2, evidence whitespace: corrected.** `git diff --check dddb7287..6b3654bc` exits 0. All five normalized display logs match their declared hashes and decode to their preserved original raw hashes. The sixth historical mutant patch decodes to `01c10c45…`; its JSON carrier is `0ccfc1c6…`. No historical outcome or finding was reclassified.
+- The public replacement regression performs an actual replacement in another slot and confirms that the two-bridge lineage’s run IDs, parent IDs, and bindings remain unchanged.
+- The store census SQL remains unchanged from the previously supported source. Its recursive ancestry is scoped by exact project, TeamRun, and role; current meaningful leaves are selected before runtime-binding projection, so bound/bound and bound/unbound forks remain refusals. See [repository.rs](</Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-store/src/repository.rs:21894>).
+
+### Evidence boundary
+
+- The 51-entry [manifest](</Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/_docs/reports/evidence/ASMA-8196/replacement-bridges/SHA256SUMS.json>) validates completely: `51/51`.
+- The preserved 3b9 audit still hashes to `b8a49965…`.
+- Committed focused evidence records the intended red failures, corrected core regressions, 49 lifecycle plus three context contracts, and four daemon tests.
+- The four historical 3b9 mutation kills do **not** qualify 6b source.
+- No completed exact-6b mutation receipt or exact-6b full archive-gate receipt is present. Running jobs receive no credit.
+
+Smallest remaining qualification sequence:
+
+1. Exact-6b six-mutant run must finish with six genuine compiled behavioral kills, green baseline/restoration, and exact source restoration.
+2. Exact-6b full archive gate must finish exit 0 and bind this commit/tree and source hashes.
+3. Only then is source qualification complete; merge/build/deployment, supported settlement, ASMA-8190 live preview, all-thirteen census, task/workflow settlement, and epic/global acceptance remain separate and uncredited.
+
+No source remedy is currently indicated. No deployment, native restoration, census, task, workflow, or epic PASS is claimed.

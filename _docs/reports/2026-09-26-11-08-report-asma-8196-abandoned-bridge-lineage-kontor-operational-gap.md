@@ -131,6 +131,32 @@ significant blank context is base64 encoded instead of silently changed. The
 original 3b9 manifest and original mutation receipt remain separately preserved.
 No output, outcome or historical member finding was edited or reclassified.
 
+## Exact 6b source audit and mutation qualification
+
+The [actual corrective source audit](evidence/ASMA-8196/replacement-bridges/actual-lsa-6b-audit.txt)
+finds no remaining P0/P1/P2 in source `6b3654bca823ac85ed7cc0bb1d6965bc730c4743`,
+tree `daaf541fbc0e66d5e960a6a5e1909e348528df3f`. Its
+[publication receipt](evidence/ASMA-8196/replacement-bridges/lsa-6b-publication-receipt.json)
+preserves the complete actual conditional verdict, including its qualification
+requirements. The earlier 3b9 P1 and P2 findings remain unchanged as history.
+
+The exact-source [six-mutant receipt](evidence/ASMA-8196/replacement-bridges/qualified-6b3654bc-mutations/results.json)
+records six compiled behavioral failures, all exit 101: daemon bridge ancestry,
+daemon trailing abandonment, store bridge ancestry, store unbound-fork refusal,
+core transitive bridge retention, and core trailing abandonment. Baseline and
+restored runs each pass 49 lifecycle plus three context contracts, four daemon
+tests and 24 store contracts, all exit 0. Restored source hashes independently
+match the immutable candidate and primary source. This run completed at
+`2026-09-26T10:02:57.723400Z`.
+
+All twelve raw logs are unchanged. Six actual mutant patches are encoded with
+their decoded hashes to preserve significant whitespace; the untouched original
+execution receipt is retained beside the current publication receipt. Source
+isolation uses a disposable archive while mutation builds share
+`_tools/asma-rs-kontor/target`; the final green suites re-establish that cache.
+These results supply source mutation qualification, not deployment or native
+continuity evidence. The exact-6b full archive gate still requires actual exit 0.
+
 ## Worktree recovery disposition
 
 This Paseo-direct repair owns the existing ASMA-8190 module worktree. ASMA's
@@ -152,9 +178,10 @@ Other worktrees and their changes remain untouched.
 
 ## Remaining acceptance
 
-Current results qualify only the focused source correction. Behavioral mutants,
-the exact-candidate full archive gate, independent source review, merge/build/
-deployment, and the fresh all-thirteen joined census remain pending. No live
+Focused source correction and exact-source mutation qualification are complete.
++The independent audit conditionally supports the source. The exact-candidate
++full archive gate, merge/build/deployment, and the fresh all-thirteen joined
++census remain pending. No live
 parents, run identities, native identities or SeatBindings were rewritten.
 After qualification/deployment, use supported settlement for the current run's
 fresh observation, require ASMA-8190 preview 200 with that exact current
