@@ -892,6 +892,9 @@
           },
           "404": {
             "description": ""
+          },
+          "409": {
+            "description": ""
           }
         }
       }
@@ -1995,6 +1998,9 @@
             "description": ""
           },
           "404": {
+            "description": ""
+          },
+          "409": {
             "description": ""
           }
         }

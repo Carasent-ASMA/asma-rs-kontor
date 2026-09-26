@@ -1,5 +1,5 @@
 {
-  "scope": "ASMA-8114 exact-51 source review and three-mutant qualification; full archive gate and adjacent API-contract correction pending",
+  "scope": "ASMA-8114 exact-51 qualification, actual audit and subsequent two-response OpenAPI correction; integrated-source qualification and deployment pending",
   "files": {
     "actual-lsa-legacy-read-diagnosis.txt.json": "6ce1a3398aa9ccb3901c3f420b319bb5185368479d17b3ec69024eca559bdf54",
     "focused-runner.py": "65449ed5d72a0b7e13df4fcfa8b44ad026d6486f4837fe42f740f61b3c1fb3cd",
@@ -27,6 +27,16 @@
     "restored.txt.json": "4f07416f893bed6aa8105fc78cc5efb1a7aeb2e9d8fa0373fc4a85e0f289f63e",
     "results.json": "b9b9616df1ee3552e28591f439f4f68bbd4c1ecd442b6619d08ba4f5a5c909a4",
     "source-entries-after.json": "1f84dca5da045051b3e84f605bba9d7bc0b8cc466bd75057c5c1061f50a520ca",
-    "source-entries-before.json": "1f84dca5da045051b3e84f605bba9d7bc0b8cc466bd75057c5c1061f50a520ca"
+    "source-entries-before.json": "1f84dca5da045051b3e84f605bba9d7bc0b8cc466bd75057c5c1061f50a520ca",
+    "qualified-51cfef9c-full-gate.txt.json": "52df00735eeb6ec025121b659d4a02baf5e257915257e76360ea18c74b259a83",
+    "qualified-51cfef9c-full-gate-execution-receipt.json": "c255c9a29c922a0ec8f4af5bf88e16531ab05b58f35598389f29c3e2239183e7",
+    "qualified-51cfef9c-source-qualification.json": "51ab6e8177501df87406553f0466c5f625ef67518e6c10064ef00ad538afd27b",
+    "openapi-preparation-dns-failure.txt.json": "e6c419b9513780c975420c35dd55186344be43876cd536538b39f3b2337afb0b",
+    "openapi-preparation-dns-failure-receipt.json": "e867964fd3e3219daaff4f021d15572457ddc1780897c012482c297cf0643163",
+    "openapi-regeneration.txt.json": "f0062464ba6349278ac4e3fb1750fc7938da058e5f3d1e18eef386f3663ca3b9",
+    "openapi-regeneration-receipt.json": "712c475182134d0b9c257d3c0aae933213817154b9b7ccbcf156a4aad919c496",
+    "openapi-frozen-verification.txt.json": "7b495d76fcaa9933f4124cbbb6f730f2d9a47642d1f32bfd55619d657b5376c0",
+    "openapi-frozen-verification-receipt.json": "3d19aaa8401ad70a30f715264dd346998980b6061803d52fd5a16746a48816ad",
+    "openapi-correction-identity.json": "c670ecfd3c58cba3334adeb5c45f8cc45a530f3b39078881d8ac6221f7163faf"
   }
 }

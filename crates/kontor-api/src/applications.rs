@@ -10701,7 +10701,7 @@ pub async fn invoke_advisor_run(
     ),
     responses(
         (status = 200, body = AdvisorRunDto),
-        (status = 401), (status = 403), (status = 404)
+        (status = 401), (status = 403), (status = 404), (status = 409)
     )
 )]
 pub async fn advisor_run(
@@ -10957,7 +10957,7 @@ pub async fn invoke_committee_run(
     ),
     responses(
         (status = 200, body = CommitteeRunDto),
-        (status = 401), (status = 403), (status = 404)
+        (status = 401), (status = 403), (status = 404), (status = 409)
     )
 )]
 pub async fn committee_run(
