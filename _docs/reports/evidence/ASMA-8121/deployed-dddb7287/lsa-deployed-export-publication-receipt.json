@@ -1,0 +1,11 @@
+{
+  "recordedAt": "2026-09-26T09:04:23.768619+00:00",
+  "agentId": "6301c2d4-7fbd-4f08-b61c-9f12183ada82",
+  "nativeActivityUpdateCount": 2742,
+  "reviewedPublicationCommit": "bea9a5cb6ed8d4e4b92300696607272d6cf36626",
+  "artifact": "actual-lsa-deployed-export.txt",
+  "sha256": "0ffa7b099e8d62bca1a58c438d79c7404f886e6cab63181923a6f76ccdb48bec",
+  "actualTerminatorPresent": false,
+  "disposition": "supported; no P0/P1/P2 within deployed-export evidence scope",
+  "scope": "Actual qualified merge/build/deployment, 23711-record foreign continuity and snapshot logical identity only; bridge-selection P1, all-thirteen census and task/epic acceptance remain pending"
+}
