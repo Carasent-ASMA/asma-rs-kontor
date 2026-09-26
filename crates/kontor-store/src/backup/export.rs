@@ -21,7 +21,10 @@
 //! Runtime transcripts, message frames, tool calls and token deltas — none of
 //! which are in the database to begin with, because
 //! [`crate::events::types::ensure_control_metadata`] refuses them at the append
-//! boundary and this module re-runs that check on every exported payload.
+//! boundary and this module re-runs that check on every exported observation.
+//! Command intents share the event cursor, but retain their own canonical
+//! document contract and receive the same embedded-document canary scan as
+//! their corresponding command receipts.
 //! Runtime endpoints and provider tokens, which this process never persists.
 //! The credential file, connector credentials and keychain or config-home
 //! paths. The credential-*reference* resolution data on an account profile —
@@ -1163,18 +1166,63 @@ pub fn export_realm(store: &SqliteStore, now: Timestamp) -> Result<KontorExportV
         records,
     };
 
-    // Every stored control payload is held to the same rule the append boundary
-    // holds it to. A transcript that somehow reached a row does not leave the
-    // machine in an export.
+    // Runtime and census observations use the positive control-field vocabulary
+    // enforced by their append boundaries. Command intents occupy the same log
+    // but carry application-owned canonical documents (names, paths, graph
+    // arrays and other command fields). Re-prove their exact immutable receipt
+    // authority before the structural canary scan; the kind label alone is not
+    // authority to export arbitrary prose.
+    let receipts: BTreeMap<&str, &CommandReceiptsRow> = export
+        .records
+        .command_receipts
+        .iter()
+        .map(|receipt| (receipt.id.as_str(), receipt))
+        .collect();
     for event in &export.records.runtime_events {
         let payload: serde_json::Value =
             serde_json::from_str(&event.payload).map_err(|_| BackupError::Verification {
                 detail: "a stored control payload is not JSON",
             })?;
-        ensure_control_metadata(&payload)?;
+        match event.event_kind.as_str() {
+            "runtime_observation" | "census_observation" => ensure_control_metadata(&payload)?,
+            "command_intent" => ensure_command_event_authority(event, &receipts)?,
+            _ => {
+                return Err(BackupError::Verification {
+                    detail: "a stored event has an unknown kind",
+                });
+            }
+        }
     }
     scan_for_canaries(&canonical_value(&export)?, 0)?;
     Ok(export)
+}
+
+/// A command event may carry only the exact intent its receipt authorized.
+fn ensure_command_event_authority(
+    event: &RuntimeEventsRow,
+    receipts: &BTreeMap<&str, &CommandReceiptsRow>,
+) -> Result<(), BackupError> {
+    let receipt = event
+        .command_receipt_id
+        .as_deref()
+        .and_then(|id| receipts.get(id))
+        .ok_or(BackupError::Verification {
+            detail: "a command event has no exported command receipt",
+        })?;
+    if event.project_id != receipt.project_id
+        || event.payload != receipt.intent
+        || event.payload_hash != receipt.intent_hash
+    {
+        return Err(BackupError::Verification {
+            detail: "a command event does not match its immutable receipt",
+        });
+    }
+    if ContentHash::of(event.payload.as_bytes()).as_str() != event.payload_hash {
+        return Err(BackupError::Verification {
+            detail: "a command event payload does not hash to its declared digest",
+        });
+    }
+    Ok(())
 }
 
 /// Refuse a document that carries credential, token or Zone C material.

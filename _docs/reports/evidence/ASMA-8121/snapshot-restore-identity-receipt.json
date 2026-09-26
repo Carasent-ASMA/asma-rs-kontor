@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 119,
+  "scope": "Verified same-Realm snapshot and offline restore only; deployed export failed and is not qualified.",
+  "health": {
+    "snapshotCopy": {
+      "quickCheck": "ok",
+      "foreignKeyViolations": 0
+    },
+    "restoredCopy": {
+      "quickCheck": "ok",
+      "foreignKeyViolations": 0
+    }
+  },
+  "tables": {
+    "jira_links": {
+      "baseline": {
+        "count": 133,
+        "sha256": "73d8fee8a136e9aac42302085d2df33cf26e18f3b96b8526cfd6c39b226fed6b"
+      },
+      "restored": {
+        "count": 133,
+        "sha256": "73d8fee8a136e9aac42302085d2df33cf26e18f3b96b8526cfd6c39b226fed6b"
+      },
+      "equal": true
+    },
+    "canonical_jira_task_links": {
+      "baseline": {
+        "count": 131,
+        "sha256": "3d89b38740f9f4cccf43be625c6230822f1c9103d65196de40cf35838b463880"
+      },
+      "restored": {
+        "count": 131,
+        "sha256": "3d89b38740f9f4cccf43be625c6230822f1c9103d65196de40cf35838b463880"
+      },
+      "equal": true
+    },
+    "mini_project_team_definition_snapshots": {
+      "baseline": {
+        "count": 14,
+        "sha256": "41437e4e1247aecf6db50115d794e0ecb6ff631f175dfcfe53c9b8d744c8c77b"
+      },
+      "restored": {
+        "count": 14,
+        "sha256": "41437e4e1247aecf6db50115d794e0ecb6ff631f175dfcfe53c9b8d744c8c77b"
+      },
+      "equal": true
+    },
+    "team_definition_migration_receipts": {
+      "baseline": {
+        "count": 19,
+        "sha256": "d486b6210a5911f8600d011ed08ba2ab6b9cbbbacce92a1adced9274b82d7ffb"
+      },
+      "restored": {
+        "count": 19,
+        "sha256": "d486b6210a5911f8600d011ed08ba2ab6b9cbbbacce92a1adced9274b82d7ffb"
+      },
+      "equal": true
+    },
+    "topology_nodes": {
+      "baseline": {
+        "count": 151,
+        "sha256": "ea5866fbcfee39bd0cc26af610e148849f67a2f71879a09de821c4869fa9ef69"
+      },
+      "restored": {
+        "count": 151,
+        "sha256": "ea5866fbcfee39bd0cc26af610e148849f67a2f71879a09de821c4869fa9ef69"
+      },
+      "equal": true
+    },
+    "seat_bindings": {
+      "baseline": {
+        "count": 655,
+        "sha256": "b41c72fa1e8d96db94d512acfc33cf9fa2e2e803136c36edfec4c61027e687cb"
+      },
+      "restored": {
+        "count": 655,
+        "sha256": "b41c72fa1e8d96db94d512acfc33cf9fa2e2e803136c36edfec4c61027e687cb"
+      },
+      "equal": true
+    },
+    "hosted_topology_seats": {
+      "baseline": {
+        "count": 22,
+        "sha256": "156df1592f9e2e3be5b1f3a976454a1cb9b81ddff0f41aaa5468fac6d4c178ed"
+      },
+      "restored": {
+        "count": 22,
+        "sha256": "156df1592f9e2e3be5b1f3a976454a1cb9b81ddff0f41aaa5468fac6d4c178ed"
+      },
+      "equal": true
+    },
+    "runtime_bindings": {
+      "baseline": {
+        "count": 396,
+        "sha256": "7239a2b34c7a92b01099c3aed7a190fddc9b2eaeba30e037fa68cecf55e3d91d"
+      },
+      "restored": {
+        "count": 396,
+        "sha256": "7239a2b34c7a92b01099c3aed7a190fddc9b2eaeba30e037fa68cecf55e3d91d"
+      },
+      "equal": true
+    },
+    "command_receipts": {
+      "baseline": {
+        "count": 3531,
+        "sha256": "00d6af56cdc7af7c948e5bca8b2c48906519ac01c8b36ea7c5f8660cad68f300"
+      },
+      "restored": {
+        "count": 3531,
+        "sha256": "00d6af56cdc7af7c948e5bca8b2c48906519ac01c8b36ea7c5f8660cad68f300"
+      },
+      "equal": true
+    },
+    "epic_completion": {
+      "baseline": {
+        "count": 7,
+        "sha256": "e13d7576f93a81c920e58568bdd108aa3a3ac5991f48de5dc9bcaacefe04a4d2"
+      },
+      "restored": {
+        "count": 7,
+        "sha256": "e13d7576f93a81c920e58568bdd108aa3a3ac5991f48de5dc9bcaacefe04a4d2"
+      },
+      "equal": true
+    }
+  },
+  "export": {
+    "exitCode": 1,
+    "log": "baseline-export.txt",
+    "errorField": "name",
+    "rootCause": "command_intent validated with observation-only positive field vocabulary"
+  }
+}

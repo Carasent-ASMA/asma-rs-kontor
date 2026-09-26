@@ -1,0 +1,3 @@
+2026-09-26T06:06:25.895756Z  INFO kontor_daemon::recovery snapshot published realm_id=01a00649-9ee6-73e0-ba1b-6a6c35cfd065 snapshot=/private/tmp/ASMA-8121-continuity-20260926/snapshots/kontor-01a00649-9ee6-73e0-ba1b-6a6c35cfd065-20260926T060624015431Z.db pruned=0
+/private/tmp/ASMA-8121-continuity-20260926/snapshots/kontor-01a00649-9ee6-73e0-ba1b-6a6c35cfd065-20260926T060624015431Z.db
+2026-09-26T06:06:25.895917Z  INFO kontor_daemon snapshot complete kept=1 pruned=0

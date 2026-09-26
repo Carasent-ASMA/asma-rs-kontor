@@ -1,0 +1,11 @@
+--- restored/export.rs
++++ mutant-skip-canary/export.rs
+@@ -1186,7 +1186,7 @@
+             }
+         }
+     }
+-    scan_for_canaries(&canonical_value(&export)?, 0)?;
++    let _ = canonical_value(&export)?;
+     Ok(export)
+ }
+ 

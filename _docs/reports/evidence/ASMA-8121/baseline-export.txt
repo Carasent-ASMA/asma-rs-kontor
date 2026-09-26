@@ -1,0 +1,3 @@
+2026-09-26T06:08:01.824249Z ERROR kontor_daemon the command did not run category=domain detail=invalid ControlObservation at `name`: the durable control-plane log stores only known control-metadata fields
+
+PROCESS_EXIT_CODE=1

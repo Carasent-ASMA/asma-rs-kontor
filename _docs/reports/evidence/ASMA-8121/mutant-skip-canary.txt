@@ -1,0 +1,36 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store)
+warning: constant `MAX_EMBEDDED_DEPTH` is never used
+   --> crates/kontor-store/src/backup/export.rs:199:7
+    |
+199 | const MAX_EMBEDDED_DEPTH: u8 = 8;
+    |       ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `scan_for_canaries` is never used
+    --> crates/kontor-store/src/backup/export.rs:1200:4
+     |
+1200 | fn scan_for_canaries(value: &serde_json::Value, depth: u8) -> Result<(), BackupError> {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: `kontor-store` (lib) generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.60s
+     Running tests/backup_export.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backup_export-86507a0c15daf53a)
+
+running 1 test
+
+thread 'command_intent_payloads_still_receive_the_embedded_canary_scan' (56445655) panicked at crates/kontor-store/tests/backup_export.rs:615:18:
+commands still receive structural secret scanning
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test command_intent_payloads_still_receive_the_embedded_canary_scan ... FAILED
+
+failures:
+
+failures:
+    command_intent_payloads_still_receive_the_embedded_canary_scan
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 20 filtered out; finished in 1.75s
+
+error: test failed, to rerun pass `-p kontor-store --test backup_export`
+
+PROCESS_EXIT_CODE=101

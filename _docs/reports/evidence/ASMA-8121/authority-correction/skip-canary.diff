@@ -1,0 +1,11 @@
+--- a/crates/kontor-store/src/backup/export.rs
++++ b/crates/kontor-store/src/backup/export.rs
+@@ -1193,7 +1193,7 @@
+             }
+         }
+     }
+-    scan_for_canaries(&canonical_value(&export)?, 0)?;
++    let _ = canonical_value(&export)?;
+     Ok(export)
+ }
+ 

@@ -1,0 +1,42 @@
+{
+  "baseCommit": "4c1c52cb87b87b44b77f2eee03bfa0fbb50b7a59",
+  "sourceSha256PostRestoration": "a7fdede9a4900f49f700b1534e82492d50b7becfffc1b0810bab6bdef14f3947",
+  "source": "crates/kontor-store/src/backup/export.rs",
+  "mutants": [
+    {
+      "id": "mutant-reject-command",
+      "test": "command_intents_export_under_their_own_document_contract",
+      "exitCode": 101,
+      "compiled": true,
+      "log": "mutant-reject-command.txt",
+      "logSha256": "1d680bff109ca2dc2f4568ca5524787c167b41dfabca769d98e654502ccd7974",
+      "diff": "mutant-reject-command.diff",
+      "diffSha256": "8e248bcf09ae619938c99f769499a82606ddaf98bb237d89c3dc76e8e1ffda37"
+    },
+    {
+      "id": "mutant-allow-observation",
+      "test": "runtime_and_census_payloads_still_refuse_session_content",
+      "exitCode": 101,
+      "compiled": true,
+      "log": "mutant-allow-observation.txt",
+      "logSha256": "9e680f13a97f1cf08c3c2d5ed02f8e10eb55c11cb6778115dc77d3aac965fca7",
+      "diff": "mutant-allow-observation.diff",
+      "diffSha256": "d38676dbb0d9d1fcc157a75a48d79c8d7f4f46f273b8e705dfeae7e919de583f"
+    },
+    {
+      "id": "mutant-skip-canary",
+      "test": "command_intent_payloads_still_receive_the_embedded_canary_scan",
+      "exitCode": 101,
+      "compiled": true,
+      "log": "mutant-skip-canary.txt",
+      "logSha256": "c6fcc7de04c211efe608d5299e5c6eb34376d5bc447aed19bce66427a6d9212e",
+      "diff": "mutant-skip-canary.diff",
+      "diffSha256": "11cce45a1b933f14aa7e6ec6f039c126999ba82abdfaf3df4dc5ec0202e3c58d"
+    }
+  ],
+  "restoredExitCode": 0,
+  "isolation": "Owned ASMA-8121 worktree and disposable test SQLite; shared _tools/asma-rs-kontor/target cache. Live SQLite and installed binaries unchanged.",
+  "baseline": "focused-command-green.txt",
+  "restored": "backup-export-green-restored.txt",
+  "testSha256PostRestoration": "15f17bdda9d99c299857900a5c03565114d353f31bdda4d308125aefa24d523f"
+}
