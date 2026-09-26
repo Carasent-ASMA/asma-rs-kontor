@@ -1,0 +1,25 @@
+{
+  "tool": "kontor_project_ensure",
+  "status": 200,
+  "body": {
+    "applied": "created",
+    "backlog": {
+      "authority": "kontor",
+      "origin": "kontor_native",
+      "revision": 1
+    },
+    "created_at": "2026-09-26T08:08:33.84586Z",
+    "memory": {
+      "authority": "kontor",
+      "origin": "kontor_native",
+      "revision": 1
+    },
+    "name": "ASMA-8121 isolated foreign continuity",
+    "project_id": "01a0dcc2-4335-7603-b592-e4e7000b1089",
+    "realm_id": "01a0dcc1-2457-75e1-beb7-bd888c9c1e3e",
+    "revision": 1,
+    "root_path": "/private/tmp/ASMA-8121-continuity-20260926/corrected-dddb7287/destination-checkout"
+  }
+}
+
+PROCESS_EXIT_CODE=0

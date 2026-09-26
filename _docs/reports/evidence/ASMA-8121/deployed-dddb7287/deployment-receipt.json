@@ -1,0 +1,39 @@
+{
+  "appliedAt": "2026-09-26T08:17:15.290669Z",
+  "sourceCommit": "dddb72870c6d58d5d6383a69227844dbc8dca45e",
+  "qualifiedSource": "79b07f31028704a6a98203b89877264fd179a535",
+  "sourceTree": "538c219fcd826a40063308309c57eaa9c624442c",
+  "schema": 119,
+  "binarySha256": {
+    "kontor-daemon": "2249946d70d31bbd021b1eedb17daac9601cde09109ad39dcfe501d8eb1fa420",
+    "kontor-mcp": "8f621e9dae400625ac0a238671e682df320ece9f7ab0b1c31a5cfaa2a4268576",
+    "kontor": "6e52392b5876e5e2ddb3f1f823b8affb976cda217413124e054e9770d1e30575"
+  },
+  "mcpSymlink": "/Users/igor/.local/bin/kontor-mcp.dddb7287",
+  "backup": "/Users/igor/.local/state/kontor/asma/deployments/ASMA-8121-dddb7287-20260926/kontor-before.db",
+  "backupSha256": "26b303bbff3b27810637581b89ded029351577fc78ec9dd66ea22ba170bb50e2",
+  "observerRealmReadback": {
+    "tool": "kontor_realm_get",
+    "status": 200,
+    "body": {
+      "created_at": "2026-08-15T16:38:03.239349Z",
+      "display_label": null,
+      "realm_id": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+      "schema_version": 1
+    }
+  },
+  "health": {
+    "schema": 119,
+    "quickCheck": "ok",
+    "foreignKeyViolations": 0
+  },
+  "configHashesUnchanged": {
+    "runtimes.json": "ca096ce5ade9cffcf04224306468aa640e483fe5216b5b7e84791a2efc69e1c6",
+    "fleet.yml": "cea5cd4637ae84679cda0002b93d660dfd652161c72dc0bc28fae2c206003a2b"
+  },
+  "asma8098PhasePreserved": "Done",
+  "asma8098RevisionPreserved": 14,
+  "controlledRestart": true,
+  "manualSQLiteWrites": 0,
+  "boundary": "Actual merged-source deployment and exact realm/DB health only; fresh all-thirteen native census, deployed export proof and workflow settlement remain separate."
+}

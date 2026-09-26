@@ -1,0 +1,18 @@
+{
+  "recordedAt": "2026-09-26T08:33:51.377579+00:00",
+  "sourceCommit": "dddb72870c6d58d5d6383a69227844dbc8dca45e",
+  "installedDaemonSha256": "2249946d70d31bbd021b1eedb17daac9601cde09109ad39dcfe501d8eb1fa420",
+  "snapshotSha256": "5689cc0a1257bff94861d0a61bc5c17c3831d40419a26323f7ffc5c73ec928d7",
+  "sourceRealm": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+  "records": 23711,
+  "collections": 97,
+  "recordsHash": "bc4178ca20b785db89acdc302cc82f8a2953eebe7605e65fbe5557b9a28d92b5",
+  "stagingExportSha256": "5566827320dbae8f6c0e7a2f4acfb204b5effa90741d14e0c6c8518094c56c35",
+  "installedExportSha256": "339a96eb631a9da6ffb353374e8ed4753b22065cacdd0659b126f4e17c28b7ff",
+  "recordBodiesIdentical": true,
+  "aggregateRecordsHashEqual": true,
+  "installedExportExitCode": 0,
+  "rawInstalledExportLog": "installed-binary-source-export.txt",
+  "initialReceiptCorrection": "Initial receipt used nonexistent top-level counts/sourceRealm fields; its null values are preserved as historical-initial-export-receipt.json. Counts and realm here are independently read from records/source_realm_id. Foreign import is proven by the separate actual receipt.",
+  "boundary": "Installed-binary export on an offline copy of the unchanged snapshot; production data and native state were not mutated."
+}

@@ -1,0 +1,27 @@
+{
+  "recordedAt": "2026-09-26T08:33:51.442566+00:00",
+  "repository": "Carasent-ASMA/asma-rs-kontor",
+  "pullRequest": 274,
+  "sourceHead": "79b07f31028704a6a98203b89877264fd179a535",
+  "publicationHead": "68bbc000e29485cde0dfa7cce7aa6531f74d41c0",
+  "mergeCommit": "dddb72870c6d58d5d6383a69227844dbc8dca45e",
+  "mergeTree": "538c219fcd826a40063308309c57eaa9c624442c",
+  "mergedAt": "2026-09-26T08:00:58Z",
+  "qualifiedSourceTree": "ebd20eb03d5659b30747bc2202e2b2ee0896528d",
+  "sourceIdentityComparison": {
+    "paths": [
+      "crates",
+      "tests",
+      "Cargo.toml",
+      "Cargo.lock",
+      "console/package.json",
+      "console/pnpm-lock.yaml"
+    ],
+    "gitDiffExitCode": 0,
+    "emptyDiff": true
+  },
+  "qualifiedRustPassed": 2905,
+  "qualifiedConsolePassed": 305,
+  "apiVerificationExitCode": 0,
+  "boundary": "Real merged source equals qualified source over implementation, tests and dependency manifests; installed build/deployment and fresh live results are separately receipted."
+}

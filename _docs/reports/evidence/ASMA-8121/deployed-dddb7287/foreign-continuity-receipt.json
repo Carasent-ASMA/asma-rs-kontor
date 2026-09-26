@@ -1,0 +1,122 @@
+{
+  "recordedAt": "2026-09-26T08:13:59.222953+00:00",
+  "sourceRevision": "dddb72870c6d58d5d6383a69227844dbc8dca45e",
+  "qualifiedSource": "79b07f31028704a6a98203b89877264fd179a535",
+  "snapshotSourceRealm": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+  "destinationRealm": "01a0dcc1-2457-75e1-beb7-bd888c9c1e3e",
+  "importId": "01a0dcc2-edd2-7c32-a41e-e79c098fc845",
+  "recordCollections": 97,
+  "sourceRecords": 23711,
+  "exactCanonicalRowHashLineages": 23711,
+  "aggregateRecordsHashMatches": true,
+  "recordsHash": "bc4178ca20b785db89acdc302cc82f8a2953eebe7605e65fbe5557b9a28d92b5",
+  "canonicalEncoding": "sorted compact UTF-8 JSON plus LF, as export canonical_bytes specifies",
+  "identityChecks": {
+    "jira_links": {
+      "rows": 133,
+      "primaryKeyFields": [
+        "id"
+      ],
+      "exactPrimaryKeyIdentities": 133,
+      "identityFormatMismatchCount": 0
+    },
+    "canonical_jira_task_links": {
+      "rows": 131,
+      "primaryKeyFields": [
+        "project_id",
+        "task_id"
+      ],
+      "exactPrimaryKeyIdentities": 131,
+      "identityFormatMismatchCount": 0
+    },
+    "mini_project_team_definition_snapshots": {
+      "rows": 14,
+      "primaryKeyFields": [
+        "mini_project_id"
+      ],
+      "exactPrimaryKeyIdentities": 14,
+      "identityFormatMismatchCount": 0
+    },
+    "team_definition_migration_receipts": {
+      "rows": 19,
+      "primaryKeyFields": [
+        "intent_id"
+      ],
+      "exactPrimaryKeyIdentities": 19,
+      "identityFormatMismatchCount": 0
+    },
+    "topology_nodes": {
+      "rows": 151,
+      "primaryKeyFields": [
+        "id"
+      ],
+      "exactPrimaryKeyIdentities": 151,
+      "identityFormatMismatchCount": 0
+    },
+    "seat_bindings": {
+      "rows": 655,
+      "primaryKeyFields": [
+        "id"
+      ],
+      "exactPrimaryKeyIdentities": 655,
+      "identityFormatMismatchCount": 0
+    },
+    "runtime_bindings": {
+      "rows": 396,
+      "primaryKeyFields": [
+        "id"
+      ],
+      "exactPrimaryKeyIdentities": 396,
+      "identityFormatMismatchCount": 0
+    },
+    "command_receipts": {
+      "rows": 3531,
+      "primaryKeyFields": [
+        "id"
+      ],
+      "exactPrimaryKeyIdentities": 3531,
+      "identityFormatMismatchCount": 0
+    },
+    "runtime_events": {
+      "rows": 4864,
+      "primaryKeyFields": [
+        "cursor"
+      ],
+      "exactPrimaryKeyIdentities": 4864,
+      "identityFormatMismatchCount": 0
+    },
+    "mini_projects": {
+      "rows": 18,
+      "primaryKeyFields": [
+        "id"
+      ],
+      "exactPrimaryKeyIdentities": 18,
+      "identityFormatMismatchCount": 0
+    },
+    "tasks": {
+      "rows": 136,
+      "primaryKeyFields": [
+        "id"
+      ],
+      "exactPrimaryKeyIdentities": 136,
+      "identityFormatMismatchCount": 0
+    }
+  },
+  "commandEventsWithExactReceiptPayloadAndRecomputedHash": 3417,
+  "destinationMaterialized": 14,
+  "destinationRecordedOnly": 23697,
+  "sourceCommandOrEventAuthorityMaterialized": false,
+  "destinationLocalCommands": 1,
+  "destinationLocalEvents": 1,
+  "destinationLocalCommandPurpose": "Explicit temporary destination project creation only",
+  "destinationReExportRecords": 21,
+  "sourceLineageNotReExportedAsLocalAuthority": true,
+  "sourceLineageAfterReExportUnchanged": true,
+  "health": {
+    "quickCheck": "ok",
+    "foreignKeyViolations": 0
+  },
+  "sourceExportSha256": "5566827320dbae8f6c0e7a2f4acfb204b5effa90741d14e0c6c8518094c56c35",
+  "destinationReExportSha256": "c60632519e307fbe0bb65432090c48e7ff429627530455adb88d2d379c576f52",
+  "boundary": "Actual supported redacted foreign export/import lineage qualification on preserved snapshot; source live realm, installed binaries and active runtime remain unchanged. Same-Realm snapshot/restore separately preserves runtime authority."
+}

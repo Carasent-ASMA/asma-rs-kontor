@@ -1,0 +1,35 @@
+---
+
+Bounded result: the ASMA-8121 deployed export checkpoint is supported. No new P0/P1/P2 exists within this export evidence scope.
+
+- PR #275 publication commit is `bea9a5cb6ed8d4e4b92300696607272d6cf36626`; worktree clean and evidence-only.
+- Manifest: 63/63 hashes valid. All 46 prior entries remain unchanged; 17 new entries were added.
+- Qualified source `79b07f31028704a6a98203b89877264fd179a535` and merged PR #274 commit `dddb72870c6d58d5d6383a69227844dbc8dca45e` have identical implementation/test objects and no non-report drift.
+- Current installed hashes reproduce the deployment receipt:
+  - daemon `2249946d…fa420`
+  - MCP `8f621e9d…8576`
+  - CLI `6e52392b…0575`
+- The 08:17:15Z receipt records controlled restart, schema 119, correct realm, unchanged fleet/runtime hashes, `quick_check=ok`, zero FK violations, no manual SQLite writes, and ASMA-8098 preserved at Done revision 14. The five postdeployment read-only tests passed, with zero failures and one mutating test filtered.
+
+Export continuity independently reproduces:
+
+- Both source exports contain 23,711 records across 97 collections with identical record bodies and digest `bc4178ca…92b5`.
+- All 23,711 canonical row hashes match the imported lineage multiset; zero differences.
+- All eleven critical identity sets match exactly.
+- All 3,417 command events have an immutable receipt, matching project/payload/stored hash, and independently recomputed payload hash.
+- The destination materialized only 14 configuration rows: five workflow specs, four team templates and five work profiles. The remaining 23,697 rows are lineage-only.
+- No source command, event, binding, seat or AgentRun became executable destination authority.
+- Destination re-export contains only 21 destination-local rows, one local command/event, and does not forward `import_receipts` or `imported_records`.
+- Destination DB is healthy and the disposable daemon was stopped without touching live port 7717.
+
+One precision note: the original snapshot retains SHA-256 `5689cc0a…28d7`. Its opened source copy differs in exactly six SQLite header bytes, but has identical size and identical logical schema/content SHA3 `eca286d0…797bb34`. Thus logical unchanged-snapshot continuity is proven; byte identity should be claimed only for the preserved original snapshot.
+
+The historical null count/realm receipt remains preserved as an extraction error and is correctly superseded by the later receipt.
+
+Remaining boundary:
+
+- The retained ASMA-8196 bridge-selection P1—observed as ASMA-8190’s ambiguous replacement-chain-leaf refusal—remains open and blocks the complete all-thirteen census.
+- No ASMA-8120/8121 verification, audit, workflow settlement, active-native restoration, or epic/global PASS follows from this evidence.
+- The controlled restart proves the `dddb7287` deployment event and its postdeployment checks, not current all-thirteen native continuity.
+
+Primary evidence: [owning report](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/2026-09-26-08-28-report-asma-8121-export-event-kind-kontor-operational-gap.md:83), [foreign continuity receipt](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/deployed-dddb7287/foreign-continuity-receipt.json:1), and [deployment receipt](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/deployed-dddb7287/deployment-receipt.json:1). No files or state were changed.

@@ -1,11 +1,11 @@
 # ASMA-8121 export event-kind operational gap
 
 > **Date:** 2026-09-26 08:28 Europe/Oslo
-> **Status:** 🟡 In Review — source qualified and independently audited at 79b07f31; actual export, integration and deployed continuity pending
+> **Status:** 🟢 Export gap resolved — qualified merge deployed and actual snapshot export/import continuity verified; ASMA-8049 census and workflow closeout remain pending
 > **Author:** Codex
 > **Category:** report
 > **Scope:** ASMA-8049 / ASMA-8121 snapshot, export and identity continuity
-> **Summary:** The deployed export command applies the runtime-observation field vocabulary to application command intents. A legitimate project command containing `name` aborts export. Snapshot and offline restore preserve the audited identities; export remains unqualified.
+> **Summary:** The initial installed export incorrectly applied the observation vocabulary to command intents. The corrected exporter proves immutable receipt authority, preserves observation redaction, and now exports the unchanged snapshot successfully. All 23,711 source hashes survive isolated foreign import without executable destination authority.
 
 ## When to Load
 
@@ -15,11 +15,11 @@ Load this report when qualifying ASMA-8121 export continuity, reviewing the even
 
 Igor authorized Paseo-direct completion of Kontor and orchestration work, with direct SQLite closure reconciliation only after actual delivery proof. The failure was discovered during that qualification, rather than by changing live data to satisfy a closure projection.
 
-Installed binaries match the deployment receipt labelled `7ffd650d9091410887a3de6a360296be9d9a88fd`. The snapshot command succeeded at 2026-09-26T06:06:24Z. Supported offline restore into a disposable state root also succeeded. Export from an offline copy failed at 2026-09-26T06:08:01Z, exit 1, with:
+At the initial observation, installed binaries matched the deployment receipt labelled `7ffd650d9091410887a3de6a360296be9d9a88fd`. The snapshot command succeeded at 2026-09-26T06:06:24Z. Supported offline restore into a disposable state root also succeeded. Export from an offline copy failed at 2026-09-26T06:08:01Z, exit 1, with:
 
 > invalid ControlObservation at `name`: the durable control-plane log stores only known control-metadata fields
 
-The owning task is ASMA-8121, under ASMA-8049. This gap remains open until the correction is qualified, deployed and exercised through actual supported export and continuity readback. No epic, task gate or Kontor trust PASS is claimed.
+The owning task is ASMA-8121, under ASMA-8049. The final deployed-qualification section below supplies the actual correction, deployment and export continuity proof. No epic, task gate or Kontor trust PASS is claimed.
 
 ## Root cause and correction boundary
 
@@ -29,7 +29,7 @@ The owning task is ASMA-8121, under ASMA-8049. This gap remains open until the c
 
 The isolated correction matches the event kind: both observation kinds retain the positive metadata check; command intents retain their canonical document and receive the existing recursive embedded-document canary scan, alongside their identical command-receipt intent. Unknown event kinds refuse. No export schema, field, identifier, digest or record is omitted to make the export succeed.
 
-Source starts from merged `4c1c52cb87b87b44b77f2eee03bfa0fbb50b7a59`, retaining the independently qualified ASMA-8196 launch/attachment recovery. Primary source, installed binaries and live SQLite remain unchanged.
+Source starts from merged `4c1c52cb87b87b44b77f2eee03bfa0fbb50b7a59`, retaining the independently qualified ASMA-8196 launch/attachment recovery. During source qualification, primary source, installed binaries and live SQLite remained unchanged. The later controlled deployment is recorded separately below.
 
 ## Snapshot and restore evidence
 
@@ -67,7 +67,7 @@ The PR title now follows the required key-plus-space grammar; its new publicatio
 
 ## Remaining acceptance
 
-Complete independent review and actual export on the preserved offline snapshot; then integrate, build and deploy the qualified candidate. Repeat actual export on the unchanged snapshot and offline restore and compare the preserved record identities and digests. Obtain a fresh all-thirteen joined post-restart census, current runtime identity/health and genuine ASMA-8120/8121 verification/audit evidence. Preserve all historical failures and the 89-versus-88 temporal lifecycle distinction. [SHA256SUMS.json](evidence/ASMA-8121/SHA256SUMS.json) anchors every raw receipt and log in this checkpoint.
+The source checkpoints below preserve their original acceptance frontier. The deployed-qualification section records later completed integration, build, deployment and export steps. Still required for ASMA-8049: a complete all-thirteen joined post-restart census, genuine ASMA-8120/8121 verification/audit evidence, and actual workflow settlement. Preserve all historical failures and the 89-versus-88 temporal lifecycle distinction. [SHA256SUMS.json](evidence/ASMA-8121/SHA256SUMS.json) anchors the raw receipts and logs.
 
 The [actual corrective LSA audit](evidence/ASMA-8121/authority-correction/actual-lsa-79-audit.txt)
 confirms the prior P1 authority and P2 foreign-round-trip gaps are resolved at
@@ -79,3 +79,23 @@ Deployment and actual snapshot/export/restart qualification remain uncredited.
 ## Corrected exact-source qualification
 
 Candidate `79b07f31028704a6a98203b89877264fd179a535`, tree `ebd20eb03d5659b30747bc2202e2b2ee0896528d`, passed its own archive gate with actual exit 0: formatting, strict workspace Clippy, 2,905 Rust tests across 149 binaries, zero failed and 9 ignored, dependency audit/deny, frozen installation, typecheck, 305 console tests and production audit. Separate API-generation verification exited 0. The [exact qualification receipt](evidence/ASMA-8121/79b07f31-source-qualification.json), [raw archive log](evidence/ASMA-8121/79b07f31-full-gate.txt) and [API log](evidence/ASMA-8121/79b07f31-verify-api.txt) bind these outcomes to the source candidate. These results satisfy the corrective LSA's full-gate condition; its historical finding remains unchanged. ASMA-8098's verified Jira/SQLite Done closeout releases its installed-7ffd hold for qualified repairs, but supplies no test credit to this source. Actual snapshot export, merge/build/deployment and fresh joined post-restart census remain pending.
+
+## Actual merged and deployed qualification
+
+The [final independent source finding](evidence/ASMA-8121/authority-correction/actual-lsa-source-merge-support.txt) reports no P0/P1/P2 and verifies every prior conditional merge requirement. PR #274 actually merged at `dddb72870c6d58d5d6383a69227844dbc8dca45e` at 08:00:58Z. The [merge identity receipt](evidence/ASMA-8121/deployed-dddb7287/merge-source-identity-receipt.json) verifies an empty implementation/test/dependency diff from qualified `79b07f31`. The isolated merged archive [built successfully](evidence/ASMA-8121/deployed-dddb7287/release-build.txt); its [build receipt](evidence/ASMA-8121/deployed-dddb7287/build-receipt.json) binds the daemon, MCP and CLI hashes to that archive.
+
+The [reviewable deployment plan](evidence/ASMA-8121/deployed-dddb7287/deployment-plan.json) and [applied script](evidence/ASMA-8121/deployed-dddb7287/deployment-apply.py) stop only the configured Kontor service, preserve database/binary backups, install the exact built bytes and provide rollback on failure. The [actual deployment receipt](evidence/ASMA-8121/deployed-dddb7287/deployment-receipt.json) records successful controlled restart at 08:17:15Z, schema 119, `quick_check=ok`, zero FK violations, exact Realm HTTP 200, unchanged runtime/fleet configurations and preserved ASMA-8098 Done revision 14. It records zero manual SQLite writes. Installed daemon SHA-256 is `2249946d70d31bbd021b1eedb17daac9601cde09109ad39dcfe501d8eb1fa420`; the MCP bytes remain identical because its implementation did not change.
+
+Five [fresh read-only live tests](evidence/ASMA-8121/deployed-dddb7287/postdeployment-read-only-live.txt) pass against Paseo 0.9.1 after deployment, with the disposable mutating workspace case explicitly filtered and exit 0. These are new merged-source results. The earlier ASMA-8098 qualification supplies no deployment credit.
+
+## Actual unchanged-snapshot export and foreign continuity
+
+The preserved original snapshot remains SHA-256 `5689cc0a1257bff94861d0a61bc5c17c3831d40419a26323f7ffc5c73ec928d7`. The merged [staging export](evidence/ASMA-8121/deployed-dddb7287/source-export.txt) and later [installed-binary export](evidence/ASMA-8121/deployed-dddb7287/installed-binary-source-export.txt) both exit 0 on its offline copy. Opening that copy changed exactly six SQLite header bytes; its size and logical schema/content SHA3 remain identical to the original. Byte identity applies to the preserved original; export continuity applies to unchanged logical snapshot content. The [installed export receipt](evidence/ASMA-8121/deployed-dddb7287/installed-export-receipt.json) compares every exported record body and the aggregate digest: 23,711 records in 97 collections, records hash `bc4178ca20b785db89acdc302cc82f8a2953eebe7605e65fbe5557b9a28d92b5`, same source Realm. The [initial export receipt](evidence/ASMA-8121/deployed-dddb7287/historical-initial-export-receipt.json) is retained unchanged; its null count/Realm fields were an extraction error, corrected explicitly in the later receipt.
+
+Only a disposable destination was created. Its [operator-tier refusal](evidence/ASMA-8121/deployed-dddb7287/destination-project-ensure-operator-refusal.txt), subsequent [authorized project creation](evidence/ASMA-8121/deployed-dddb7287/destination-project-ensure.txt), [exact destination shutdown](evidence/ASMA-8121/deployed-dddb7287/destination-stopped.json) and [supported offline import](evidence/ASMA-8121/deployed-dddb7287/destination-import.txt) retain their actual outcomes. Production state and native placement were not involved in import.
+
+The [foreign continuity receipt](evidence/ASMA-8121/deployed-dddb7287/foreign-continuity-receipt.json) independently recomputes all 23,711 source row hashes using canonical compact sorted UTF-8 JSON plus LF, matches every imported lineage, verifies exact primary-key identities for eleven critical collections, and verifies 3,417 command events against immutable receipt payload/project/hash and independent hash recomputation. Fourteen configuration records materialize; 23,697 records remain lineage only. Source commands/events never become destination executable authority. Destination re-export retains the lineage but exports only 21 destination-local records, including its own explicit project-creation command/event. This foreign continuity proof does not claim restoration of active source native authority; same-Realm snapshot/offline restore supplies the separate identity-preservation proof.
+
+The deployed export gap is resolved. ASMA-8049 remains open: the fresh naming preview passes twelve migrated epics without pending changes, while ASMA-8190 refuses ambiguous delivery replacement-chain leaves. That current census obstacle and actual task/epic verification, audit and settlement require their own proof. Neither this report nor the deployed repair establishes global Kontor trust.
+
+The [actual independent deployed-export audit](evidence/ASMA-8121/deployed-dddb7287/actual-lsa-deployed-export.txt) and [publication receipt](evidence/ASMA-8121/deployed-dddb7287/lsa-deployed-export-publication-receipt.json) support this bounded checkpoint with no P0/P1/P2. The auditor independently reproduces all 63 reviewed hashes, 23,711 lineage hashes, eleven identity sets, 3,417 command/receipt authority checks, installed hashes and destination non-executable lineage. Its snapshot-header precision note is incorporated above; its outstanding bridge-selection and all-thirteen/workflow boundaries remain explicit.
