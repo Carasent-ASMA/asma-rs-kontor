@@ -1,5 +1,5 @@
 {
-  "scope": "ASMA-8114 exact-51 qualification and actual corrective integrated-source audit; exact-1b qualification and delivery pending",
+  "scope": "ASMA-8114 exact-51 behavioral and completed exact-1b archive/frozen/API qualification; merge, deployment, live historical GETs and workflow delivery pending",
   "files": {
     "MUT-CANONICAL-NAME.diff.json": "77fc38f6f9a4ffbac54dd152027b884e232d73f7efdf7f29e7ed6c699dedca3f",
     "MUT-CANONICAL-NAME.txt.json": "84f5bd3704ad8ba224b7a37600163b321850ddc115b4fd3cb08416fd1487f0af",
@@ -8,6 +8,7 @@
     "MUT-NATIVE-SUBJECT.diff.json": "541c5b50cbb23a85db81cb923f5b3284f04bbc92c4562d8e00435f53d855aa04",
     "MUT-NATIVE-SUBJECT.txt.json": "51957c026c5d789bce8724fee47cb9d5174610acfacfea2c0fb3a31d5c52f552",
     "actual-lsa-corrective-audit-1b99689d.txt.json": "438fd83a49a90382265b63bb8adcc7085b67e1fa043319ffb1510489fbd38fe9",
+    "actual-lsa-final-qualification-dcf03023.txt.json": "49d15b2e1ed55bcc0550f52188fb89e3c5814f884a0478fddaf9e6636a47ff32",
     "actual-lsa-legacy-read-diagnosis.txt.json": "6ce1a3398aa9ccb3901c3f420b319bb5185368479d17b3ec69024eca559bdf54",
     "actual-lsa-source-audit-51cfef9c.txt.json": "d5467fc79b128827be79784849951362e61f1ffc7054747f61e14ea7b76e110f",
     "baseline.txt.json": "53794ececa584b96578658bf4678355ccb05f05308f37e2a055e9dd31fc09633",
@@ -19,6 +20,7 @@
     "integrated-1b99689d-full-gate-runner.py": "e9360efe31cb0a9562db16508c031fe0f89ca5a67d1f297bc44b13485248d56d",
     "lsa-corrective-audit-1b99689d-publication-receipt.json": "25752ecf83198882ffe1dc1fea1e65efe38f79f146185d2fa66637bbe3ab4935",
     "lsa-diagnosis-publication-receipt.json": "33a6826cc7785fead15be8a8ba25ee5c6e977cd8ec0a03f8e28461b9c5722e70",
+    "lsa-final-qualification-dcf03023-publication-receipt.json": "b25b0df9b2cc386ab7fa6185afe9ca0c7705801c607b33e05b491b0acfb6275f",
     "lsa-source-audit-51cfef9c-publication-receipt.json": "5e601740161816a24330bcff53c54222a098e36d18ae284642fc9d4e1a4b3833",
     "mutant-runner.py": "fb52a549582eb64907177fa2762d8879c035a636f03418e4f544eb1fb0b937f5",
     "mutation-publication-bindings.json": "f01771059b73a9f493bcc0108b1f50b9da317fe3bdd34803fc52f2be53c25882",

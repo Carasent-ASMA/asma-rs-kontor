@@ -32,7 +32,7 @@ After the one read-projection guard changed, [five focused checks passed](eviden
 - Unknown-subject native-name preview still returns its strict 409 before effects.
 - Existing Committee and Advisor tests still render exact task/epic canonical names.
 
-The [executed focused runner](evidence/ASMA-8114/legacy-consultation-read/focused-runner.py) used disposable synthetic Realms and a private APFS-cloned cache. The [45-artifact manifest](evidence/ASMA-8114/legacy-consultation-read/SHA256SUMS.json) binds exact receipts and lossless log carriers. Decode `rawBase64` strictly without normalization.
+The [executed focused runner](evidence/ASMA-8114/legacy-consultation-read/focused-runner.py) used disposable synthetic Realms and a private APFS-cloned cache. The [47-artifact manifest](evidence/ASMA-8114/legacy-consultation-read/SHA256SUMS.json) binds exact receipts and lossless log carriers. Decode `rawBase64` strictly without normalization.
 
 ## Remaining qualification and delivery
 
@@ -66,3 +66,8 @@ The [exact-1b qualification receipt](evidence/ASMA-8114/legacy-consultation-read
 The [exact integrated frozen/API log](evidence/ASMA-8114/legacy-consultation-read/qualified-1b99689d-frozen-and-api.txt.json) and [unchanged receipt](evidence/ASMA-8114/legacy-consultation-read/qualified-1b99689d-frozen-and-api-execution-receipt.json) record three contract passes, TypeScript regeneration and exact zero-diff comparison, all exit 0 at `2026-09-26T17:21:26.335229Z`. The retained exact API archive, immutable Git objects and current publication source reproduce all seven qualification hashes. The [executed runner](evidence/ASMA-8114/legacy-consultation-read/integrated-1b99689d-full-gate-runner.py) used isolated source and a private cloned build cache.
 
 These completed receipts satisfy the execution condition stated in the preceding corrective audit; that actual audit remains unchanged and receives no retroactive claim of having inspected them. The three runtime mutants remain executions at exact 51, whose runtime/read-regression/lockfile bytes are identical at 1b; they are not relabeled as 1b executions. Final independent publication verification, merge, build/deployment, and genuine live historical GET readbacks remain pending. No task/workflow, epic or portfolio acceptance is implied.
+
+
+## Final independent qualification readback
+
+The same persistent LSA independently verified the completed exact-1b archive and frozen/API receipts at publication `dcf030235d15de256528d97c35e0079ca14d37ee`. Its [full actual finding](evidence/ASMA-8114/legacy-consultation-read/actual-lsa-final-qualification-dcf03023.txt.json) and [adjacent receipt](evidence/ASMA-8114/legacy-consultation-read/lsa-final-qualification-dcf03023-publication-receipt.json) retain no P0/P1 and one publication-only P2: the manifest scope still called exact-1b qualification pending. The scope now distinguishes completed qualification from pending merge, deployment, live historical GETs and workflow delivery. All 45 preceding artifact hashes remain unchanged; no source or execution rerun was required. This correction does not rewrite the actual audit or claim any delivery or epic outcome.
