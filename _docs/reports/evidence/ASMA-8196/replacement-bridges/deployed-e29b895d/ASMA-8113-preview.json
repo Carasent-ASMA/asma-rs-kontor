@@ -1,0 +1,12 @@
+{
+  "tool": "kontor_native_names_preview",
+  "status": 200,
+  "body": {
+    "epic_id": "01a075d2-7188-7123-9bac-f0a58d024bd5",
+    "preview_hash": "bfc8c954437a16128722ddb3b6256c2432209aff9a3eddb526fb8b2428f08f4d",
+    "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+    "realm_id": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+    "snapshot_cursor": 4868,
+    "targets": []
+  }
+}
