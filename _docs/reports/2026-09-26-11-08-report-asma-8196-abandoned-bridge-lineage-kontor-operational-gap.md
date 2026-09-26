@@ -1,7 +1,7 @@
 ---
 title: ASMA-8196 abandoned replacement bridge selection
 type: report
-status: "🟡 Source correction; qualification and deployment pending"
+status: "🟡 Source qualified; final qualification audit and deployment pending"
 created: 2026-09-26
 jira: ASMA-8196
 ---
@@ -155,7 +155,23 @@ execution receipt is retained beside the current publication receipt. Source
 isolation uses a disposable archive while mutation builds share
 `_tools/asma-rs-kontor/target`; the final green suites re-establish that cache.
 These results supply source mutation qualification, not deployment or native
-continuity evidence. The exact-6b full archive gate still requires actual exit 0.
+continuity evidence. The exact-6b full archive gate subsequently completed exit 0.
+
+The [exact-6b qualification receipt](evidence/ASMA-8196/replacement-bridges/qualified-6b3654bc-source-qualification.json)
+binds the source/tree, all changed implementation/test hashes and
+[raw full-gate log](evidence/ASMA-8196/replacement-bridges/qualified-6b3654bc-full-gate.txt).
+It reports 2,915 Rust tests passed across 149 binaries, zero failures, nine
+ignored, and 305 console tests passed. Formatting, strict workspace Clippy,
+locked workspace tests, audit, deny, frozen install, typecheck and production
+audit all passed. The run ended `2026-09-26T10:19:47.371779Z` with actual exit 0.
+It used an isolated build target after the earlier gate completed; every check
+executed anew, independently of the mutation cache.
+
+The [historical 3b9 qualification receipt](evidence/ASMA-8196/replacement-bridges/historical-3b9eb3a5-source-qualification.json)
+and [raw log](evidence/ASMA-8196/replacement-bridges/historical-3b9eb3a5-full-gate.txt)
+retain that earlier source's 2,912 Rust and 305 console passes. Its independent
+audit found the hydration P1 despite those passes. It supplies no qualification
+credit to the changed 6b implementation or its new regressions.
 
 ## Worktree recovery disposition
 
