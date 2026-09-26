@@ -3,8 +3,8 @@
   "qualifiedSource": "3b9eb3a577cdb4c3beb92ba958b775f2e91307f9",
   "qualifiedTree": "e9e70972df8d89f49293d17d2d9292ae845bdb9e",
   "mode": "exact Git archive",
-  "log": "historical-3b9eb3a5-full-gate.txt.json",
-  "logSha256": "062d8b5bebbca793ca4bf7d271eade4250d317f15edec8d84eae148273ca6fad",
+  "log": "historical-3b9eb3a5-full-gate.txt",
+  "logSha256": "396bcfdb2cac12db99a434dce0fd715fe7655e5de2fe451bb342a63b1e79d14f",
   "exitCode": 0,
   "startedAt": "2026-09-26T09:34:25.795437+00:00",
   "finishedAt": "2026-09-26T09:58:22.156070+00:00",
@@ -34,9 +34,5 @@
   "publicationHeadAtCapture": "5faa4b063ece650d7688bd3f40c4d39630bb4025",
   "currentSourceQualification": false,
   "buildCache": "Isolated full-gate target; prior 3b gate finished before 6b reused that cache; separate from mutation cache. Every check executed anew.",
-  "boundary": "Historical 3b gate only; the independent 3b audit retains a hydration P1. This run does not qualify the 6b correction.",
-  "decodedLogSha256": "396bcfdb2cac12db99a434dce0fd715fe7655e5de2fe451bb342a63b1e79d14f",
-  "logEncoding": "base64 JSON; decode rawBase64 without text normalization",
-  "originalReceipt": "original-historical-3b9eb3a5-source-qualification.json",
-  "originalReceiptSha256": "33f09e9cd106d6767bf7aa367ad1c287cacae34027dc6179923fff6551a848ff"
+  "boundary": "Historical 3b gate only; the independent 3b audit retains a hydration P1. This run does not qualify the 6b correction."
 }

@@ -3,8 +3,8 @@
   "qualifiedSource": "6b3654bca823ac85ed7cc0bb1d6965bc730c4743",
   "qualifiedTree": "daaf541fbc0e66d5e960a6a5e1909e348528df3f",
   "mode": "exact Git archive",
-  "log": "qualified-6b3654bc-full-gate.txt.json",
-  "logSha256": "17b06c8de4af8215a22954b011fe5404d20ac19b0cbe345e22e15e39ef5c1a11",
+  "log": "qualified-6b3654bc-full-gate.txt",
+  "logSha256": "56ca45ffdd3286c1ddf1d1ac2facb30d160e3e60a9c0cb4ae6783298d0ada788",
   "exitCode": 0,
   "startedAt": "2026-09-26T09:58:24.214966+00:00",
   "finishedAt": "2026-09-26T10:19:47.371779+00:00",
@@ -36,9 +36,5 @@
   "publicationHeadAtCapture": "5faa4b063ece650d7688bd3f40c4d39630bb4025",
   "currentSourceQualification": true,
   "buildCache": "Isolated full-gate target; prior 3b gate finished before 6b reused that cache; separate from mutation cache. Every check executed anew.",
-  "boundary": "Exact 6b source qualification only. Documentation-only publication preserves all implementation/test bytes. Merge, build, deployment, live continuity, task/workflow and epic acceptance remain separate.",
-  "decodedLogSha256": "56ca45ffdd3286c1ddf1d1ac2facb30d160e3e60a9c0cb4ae6783298d0ada788",
-  "logEncoding": "base64 JSON; decode rawBase64 without text normalization",
-  "originalReceipt": "original-qualified-6b3654bc-source-qualification.json",
-  "originalReceiptSha256": "15f50a74e3a64a5799c95d2a4620d6a75e123f3c287e6b17fe3ec2f95567c4fc"
+  "boundary": "Exact 6b source qualification only. Documentation-only publication preserves all implementation/test bytes. Merge, build, deployment, live continuity, task/workflow and epic acceptance remain separate."
 }

@@ -1,7 +1,7 @@
 ---
 title: ASMA-8196 abandoned replacement bridge selection
 type: report
-status: "🟡 Source qualified; final qualification audit and deployment pending"
+status: "🟡 Source qualification audited; publication correction and deployment pending"
 created: 2026-09-26
 jira: ASMA-8196
 ---
@@ -159,7 +159,7 @@ continuity evidence. The exact-6b full archive gate subsequently completed exit 
 
 The [exact-6b qualification receipt](evidence/ASMA-8196/replacement-bridges/qualified-6b3654bc-source-qualification.json)
 binds the source/tree, all changed implementation/test hashes and
-[raw full-gate log](evidence/ASMA-8196/replacement-bridges/qualified-6b3654bc-full-gate.txt).
+[raw full-gate log](evidence/ASMA-8196/replacement-bridges/qualified-6b3654bc-full-gate.txt.json).
 It reports 2,915 Rust tests passed across 149 binaries, zero failures, nine
 ignored, and 305 console tests passed. Formatting, strict workspace Clippy,
 locked workspace tests, audit, deny, frozen install, typecheck and production
@@ -168,10 +168,24 @@ It used an isolated build target after the earlier gate completed; every check
 executed anew, independently of the mutation cache.
 
 The [historical 3b9 qualification receipt](evidence/ASMA-8196/replacement-bridges/historical-3b9eb3a5-source-qualification.json)
-and [raw log](evidence/ASMA-8196/replacement-bridges/historical-3b9eb3a5-full-gate.txt)
+and [raw log](evidence/ASMA-8196/replacement-bridges/historical-3b9eb3a5-full-gate.txt.json)
 retain that earlier source's 2,912 Rust and 305 console passes. Its independent
 audit found the hydration P1 despite those passes. It supplies no qualification
 credit to the changed 6b implementation or its new regressions.
+
+## Qualification audit and byte-preserving publication correction
+
+The [actual qualification audit](evidence/ASMA-8196/replacement-bridges/actual-lsa-a488-audit.txt)
+and [identity receipt](evidence/ASMA-8196/replacement-bridges/lsa-a488-publication-receipt.json)
+confirm source qualification is complete and preserve the publication-only P2.
+Both full-gate logs are now base64 JSON carriers: decoding `rawBase64` reproduces
+the complete original bytes, including diagnostic whitespace, at the unchanged
+decoded hashes. No output or qualification result was normalized or reclassified.
+The [original exact-6b receipt](evidence/ASMA-8196/replacement-bridges/original-qualified-6b3654bc-source-qualification.json)
+and [original historical-3b receipt](evidence/ASMA-8196/replacement-bridges/original-historical-3b9eb3a5-source-qualification.json)
+retain the original raw-log locators and hashes as history. Current receipts name
+the encoded carriers and record both carrier and decoded-log hashes. This change
+supplies no new execution, deployment, census or workflow acceptance.
 
 ## Worktree recovery disposition
 
@@ -194,11 +208,13 @@ Other worktrees and their changes remain untouched.
 
 ## Remaining acceptance
 
-Focused source correction and exact-source mutation qualification are complete.
-+The independent audit conditionally supports the source. The exact-candidate
-+full archive gate, merge/build/deployment, and the fresh all-thirteen joined
-+census remain pending. No live
-parents, run identities, native identities or SeatBindings were rewritten.
+Focused source correction, six-mutant qualification and the exact-source full
+archive gate are complete. The independent qualification audit supports source
+merge and retains one publication-only P2. This publication corrects the stale
+gate wording and preserves both raw full-gate logs in encoded carriers. Final
+publication readback, merge/build/deployment and the fresh all-thirteen joined
+census remain pending. No live parents, run identities, native identities or
+SeatBindings were rewritten.
 After qualification/deployment, use supported settlement for the current run's
 fresh observation, require ASMA-8190 preview 200 with that exact current
 run/native/binding, no old native and zero `would_change`, then repeat all
