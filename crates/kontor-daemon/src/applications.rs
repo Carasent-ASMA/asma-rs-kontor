@@ -7915,6 +7915,149 @@ impl Services {
         Ok(seats)
     }
 
+    /// Re-materialize a seat that is already bound: prove what is there, and
+    /// create nothing.
+    ///
+    /// Materialization is idempotent by contract, and for the logical half it
+    /// already was -- an existing SeatBinding keeps its identity. The native
+    /// half was not. It assumed every seat it saw was new, so a replay against
+    /// a seat bound at generation two asked the runtime for a second native and
+    /// then refused at install, because generation one's intent already named
+    /// the native it actually produced. The seat's *current* occupancy was
+    /// never consulted.
+    ///
+    /// Preserve the occupancy, persona and credential generation. If a launch
+    /// stopped after binding but before installing its intent, reconcile that
+    /// intent only after proving the exact live native and frozen authority.
+    async fn reuse_bound_core_team_seat(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        existing: &StoredHostedTopologySeat,
+        desired: &ModelRung,
+        adapter: &dyn kontor_runtime::RuntimeAdapter,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        // A different route is a *replacement*: it retires a live predecessor,
+        // fences its generation-scoped credential and opens a new occupancy.
+        // That is the audited route path's authority. Doing it here would
+        // archive a running seat as a side effect of asking for the team, which
+        // is the one thing a roster call must never do.
+        if &existing.model_rung != desired {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "this seat is already bound under a different route; replace it \
+                 through the Core Team route preview and apply",
+            ));
+        }
+        // The occupancy that is actually current. Generation one is only the
+        // right answer for a seat that has never been replaced.
+        let occupancy_generation = state
+            .with_store(|store| {
+                store.hosted_topology_seat_occupancy_generation(project_id, seat_binding_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the bound hosted seat has no current occupancy generation",
+                )
+            })?;
+        // The runtime's own answer about the exact native Kontor recorded. A
+        // seat whose native is gone must not be reported as materialized on the
+        // strength of a durable row; recovering it is the route path's job, and
+        // saying so is more useful than silently succeeding.
+        let inspected_at = match adapter
+            .inspect_hosted_seat(&HostedSeatInspectRequest {
+                seat_binding_id,
+                identity: existing.native_identity.clone(),
+                model_rung: existing.model_rung.clone(),
+                // The authority this native was launched under, not the one the
+                // plane would grant today: re-resolving would make a liveness
+                // probe fail whenever the default moved.
+                autonomy: existing.autonomy,
+                requested_at: kontor_api::now(),
+            })
+            .await
+        {
+            Ok(inspection) if inspection.state.is_live() => Some(inspection.observed_at),
+            Ok(_) => None,
+            Err(error) if error.proves_hosted_predecessor_absent() => None,
+            Err(error) => return Err(ApiError::from_runtime(state.realm_id(), &error)),
+        };
+        let Some(attached_at) = inspected_at else {
+            return Err(self.deny(
+                ApiErrorCode::StaleBinding,
+                "the bound hosted seat's native is not live; recover it through \
+                 the Core Team route preview and apply",
+            ));
+        };
+        // A crash between bind and install leaves a Prepared intent alongside
+        // a durable occupancy. The current generation's frozen authority must
+        // agree before that intent can be installed. Legacy adopted occupancies
+        // may have no launch intent and retain their original provenance.
+        if let Some(intent) = state
+            .with_store(|store| {
+                store.get_hosted_seat_launch_intent(
+                    project_id,
+                    seat_binding_id,
+                    occupancy_generation,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+        {
+            if intent.model_rung != existing.model_rung || intent.autonomy != existing.autonomy {
+                return Err(self.deny(
+                    ApiErrorCode::StaleBinding,
+                    "the launch intent's frozen route or autonomy disagrees with the bound occupancy",
+                ));
+            }
+            match intent.state {
+                HostedSeatLaunchIntentState::Installed => {
+                    if intent.observed_native_id.as_ref()
+                        != Some(&existing.native_identity.native_id)
+                    {
+                        return Err(self.deny(
+                            ApiErrorCode::StaleBinding,
+                            "the installed launch intent names a different native than the bound occupancy",
+                        ));
+                    }
+                }
+                HostedSeatLaunchIntentState::Prepared => {
+                    state
+                        .with_store(|store| {
+                            store.install_hosted_seat_launch_intent(
+                                project_id,
+                                seat_binding_id,
+                                occupancy_generation,
+                                &existing.native_identity.native_id,
+                                kontor_api::now(),
+                            )
+                        })
+                        .map_err(|error| self.refuse(&error))?;
+                }
+            }
+        }
+        // Installation and attachment are separate durable boundaries. An
+        // exact-native inspection proves attachment, including a retry after
+        // installation succeeded but its attachment observation was lost.
+        // It says nothing about activity; preserve that independent history.
+        state
+            .with_store(|store| {
+                store.observe_seat_binding(
+                    project_id,
+                    seat_binding_id,
+                    &SeatLivenessObservation {
+                        attached_at: Some(attached_at),
+                        ..SeatLivenessObservation::default()
+                    },
+                    kontor_api::now(),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
+    }
+
     /// The immutable capsule promotion hands to the epic's lead architect.
     ///
     /// Server-owned throughout. The promotion contract carries no body, so
@@ -24185,6 +24328,28 @@ impl ApplicationOperations for Services {
                             provider: model_rung.provider.0.clone(),
                         },
                     ));
+                }
+                // An already-bound seat is a *replay*, not a first launch.
+                // Everything below assumes generation one: it prepares that
+                // generation's intent, freezes that generation's persona, asks
+                // the runtime for a native and installs the result. Run against
+                // a seat already bound at generation two -- the state a route
+                // replacement leaves -- it mints a second native and then
+                // refuses at install, because generation one already names the
+                // native it actually produced. Prove what is there instead.
+                if let Some(existing) = state
+                    .with_store(|store| store.get_hosted_topology_seat(project_id, seat_binding_id))
+                    .map_err(|error| self.refuse(&error))?
+                {
+                    self.reuse_bound_core_team_seat(
+                        project_id,
+                        seat_binding_id,
+                        &existing,
+                        model_rung,
+                        adapter.as_ref(),
+                    )
+                    .await?;
+                    continue;
                 }
                 let display_name = self.seat_name(
                     project_id,

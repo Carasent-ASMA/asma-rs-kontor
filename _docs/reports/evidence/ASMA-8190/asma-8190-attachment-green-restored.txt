@@ -1,0 +1,14 @@
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.66s
+     Running tests/loopback_api.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
+
+running 6 tests
+test materializing_a_ticket_binds_its_native_workspace_without_admitting_a_run ... ok
+test materializing_binds_a_seat_only_on_a_kind_declared_a_session_host ... ok
+test materializing_a_replaced_seat_reuses_its_current_occupancy ... ok
+test materializing_reconciles_a_bound_seats_prepared_intent ... ok
+test materializing_reconciles_an_installed_intents_missing_attachment ... ok
+test materializing_refuses_a_prepared_intent_with_divergent_authority ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 472 filtered out; finished in 2.44s
+

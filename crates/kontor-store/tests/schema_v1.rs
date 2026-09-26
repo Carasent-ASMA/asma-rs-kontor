@@ -753,7 +753,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // so a delivery reconciliation can prove itself from a bounded suffix
     // instead of requiring the whole transcript — which is what refused every
     // send into a session past the scan's page budget (ASMA-8203).
-    assert_eq!(SCHEMA_VERSION, 118);
+    // v118 records bounded runtime-message delivery proof steps.
+    // v119 makes publication attestations immutable, append-only evidence
+    // (ASMA-8102); both guards must survive migration and reopen.
+    assert_eq!(SCHEMA_VERSION, 119);
 }
 
 #[test]

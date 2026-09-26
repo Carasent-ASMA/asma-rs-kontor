@@ -1,6 +1,6 @@
 # Kontor — Documentation Index
 
-> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-09-25.
+> Canonical implementation-documentation root for the Kontor Rust control plane. Last updated: 2026-09-26.
 
 ## Overview
 
@@ -36,6 +36,12 @@ This documentation covers implementation-local knowledge for the `asma-rs-kontor
 |----------|---------|--------|-------------|
 | `2026-08-20-18-53-audit-kontor-rust-workspace-code-quality.md` | In-depth snapshot audit of the 240k-line Kontor Rust workspace: source/test composition, file and function size, DRY/YAGNI/SOLID, MCP-tool legitimacy, safety, dependencies, CI gaps, and prioritized remediation. Its 127-tool / 16-worker counts are explicitly historical; current inventory is routed to the repository contract. | 🟤 Point-in-time snapshot | Assessing the audited commit's maintainability or its original findings; use current source for today's counts |
 | [`2026-09-01-22-19-audit-asma-8062-team-definition-v77.md`](audits/2026-09-01-22-19-audit-asma-8062-team-definition-v77.md) | Point-in-time v77 independent audit; later KBI migration resolution is in the governing receipt. | 📚 Historical audit | Reviewing that candidate and its follow-up evidence |
+
+### Reports (`reports/`)
+
+| Document | Summary | Status | When to Load |
+| --- | --- | --- | --- |
+| [ASMA-8196 prepared-intent recovery](reports/2026-09-26-05-06-report-asma-8196-prepared-intent-recovery.md) | Real crash-boundary regression, same-native rematerialization, frozen-authority refusal, independent QA finding and preserved worktree-recovery evidence. | Candidate verified; qualification/deployment pending | Qualifying or deploying the ASMA-8196 recovery, or auditing the safe-carry incident |
 
 ### Contracts (root)
 
