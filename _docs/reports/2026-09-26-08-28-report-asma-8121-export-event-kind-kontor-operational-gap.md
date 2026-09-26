@@ -1,7 +1,7 @@
 # ASMA-8121 export event-kind operational gap
 
 > **Date:** 2026-09-26 08:28 Europe/Oslo
-> **Status:** 🟡 In Review — source and full qualification verified; independent audit, continuity and deployment pending
+> **Status:** 🟡 In Review — receipt-authority correction verified locally; fresh full qualification, corrective audit, continuity and deployment pending
 > **Author:** Codex
 > **Category:** report
 > **Scope:** ASMA-8049 / ASMA-8121 snapshot, export and identity continuity
@@ -52,6 +52,18 @@ Separately, ASMA-8049's MUT-003 was actually executed on installed-source bytes:
 ## Exact-candidate source qualification
 
 Candidate `b42b51970a254a98db2c0997f676e413b5cd7377` passed the required archive gate: formatting, workspace Clippy with warnings denied, 2,901 Rust tests across 149 test binaries (zero failed, nine ignored), dependency audit/deny, frozen console install, typecheck, 305 console tests and production dependency audit. The separate API-generation comparison also passed. Both commands exited 0. The [qualification receipt](evidence/ASMA-8121/b42b5197-source-qualification.json), [full raw log](evidence/ASMA-8121/b42b5197-full-gate.txt) and [API log](evidence/ASMA-8121/b42b5197-verify-api.txt) preserve exact identity and results.
+
+## Independent audit and receipt-authority correction
+
+The [actual independent b42 audit](evidence/ASMA-8121/authority-correction/actual-lsa-b42-audit.txt) found a P1: a command-kind label did not establish export authority. The original b42 full gate remains genuine for that revision, but does not qualify this later correction.
+
+Export now looks up the exact exported immutable command receipt, matches project, canonical payload bytes and stored hash, and recomputes the payload hash before accepting a command event. Missing receipts, different projects, unrelated payloads and matching-but-wrong stored hashes refuse without echoing content. Observation allowlisting and recursive canary scanning remain intact. Production schema and triggers are unchanged; only disposable corruption fixtures bypass their own guards.
+
+Three corruption regressions [failed against c08](evidence/ASMA-8121/authority-correction/authority-regression-red.txt). The [corrected focused run](evidence/ASMA-8121/authority-correction/authority-focused-green.txt) passed six tests, and the [restored complete export suite](evidence/ASMA-8121/authority-correction/backup-export-restored.txt) passed 25 with zero failures. Strict [store Clippy](evidence/ASMA-8121/authority-correction/store-clippy.txt) exited 0. Six compiled behavioral mutants were killed with exit 101; their exact patches, logs and restored source/test hashes are in the [corrective receipt](evidence/ASMA-8121/authority-correction/results.json).
+
+The new foreign-realm case binds exact source event payload/hash through the exported row digest and preserves source realm, record identity and non-executable import lineage. Imported commands/events do not become destination runtime authority or re-exported local commands. No claim is made that foreign import stores the raw source payload.
+
+The PR title now follows the required key-plus-space grammar; its new publication check succeeded. Fresh qualification of the corrected immutable candidate and independent corrective review remain required.
 
 ## Remaining acceptance
 

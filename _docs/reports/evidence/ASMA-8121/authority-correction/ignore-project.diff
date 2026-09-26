@@ -1,0 +1,12 @@
+--- a/crates/kontor-store/src/backup/export.rs
++++ b/crates/kontor-store/src/backup/export.rs
+@@ -1209,8 +1209,7 @@
+         .ok_or(BackupError::Verification {
+             detail: "a command event has no exported command receipt",
+         })?;
+-    if event.project_id != receipt.project_id
+-        || event.payload != receipt.intent
++    if event.payload != receipt.intent
+         || event.payload_hash != receipt.intent_hash
+     {
+         return Err(BackupError::Verification {

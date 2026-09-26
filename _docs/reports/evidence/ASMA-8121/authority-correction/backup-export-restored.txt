@@ -1,0 +1,47 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.78s
+     Running tests/backup_export.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backup_export-86507a0c15daf53a)
+
+running 25 tests
+test a_generation_three_export_from_a_quota_capable_database_is_refused_as_incomplete ... ok
+test a_future_export_generation_is_refused_and_this_one_parses ... ok
+test an_export_of_unchanged_state_is_byte_identical_and_hashes_the_same ... ok
+test a_canary_inside_a_stored_document_aborts_the_export ... ok
+test an_export_carries_no_credential_reference_no_comment_body_and_no_secret ... ok
+test command_events_refuse_an_unrelated_payload_even_with_its_own_valid_hash ... ok
+test a_realm_never_imports_its_own_export_and_never_imports_into_no_project has been running for over 60 seconds
+test a_round_trip_preserves_the_versioned_specifications_and_the_source_evidence has been running for over 60 seconds
+test an_import_mints_a_destination_receipt_and_replays_no_source_receipt has been running for over 60 seconds
+test an_import_refuses_an_outcome_that_does_not_match_its_source_policy has been running for over 60 seconds
+test an_unchanged_selection_preserves_the_older_created_workflow_binding has been running for over 60 seconds
+test a_round_trip_preserves_the_versioned_specifications_and_the_source_evidence ... ok
+test an_import_refuses_an_outcome_that_does_not_match_its_source_policy ... ok
+test a_realm_never_imports_its_own_export_and_never_imports_into_no_project ... ok
+test an_unchanged_selection_preserves_the_older_created_workflow_binding ... ok
+test command_intent_payloads_still_receive_the_embedded_canary_scan ... ok
+test command_intents_export_under_their_own_document_contract ... ok
+test an_import_mints_a_destination_receipt_and_replays_no_source_receipt ... ok
+test command_events_refuse_hashes_that_do_not_identify_the_payload has been running for over 60 seconds
+test command_events_refuse_missing_or_wrong_project_receipts has been running for over 60 seconds
+test command_intent_import_preserves_its_non_executable_source_lineage has been running for over 60 seconds
+test export_generations_are_closed_over_the_fields_and_summaries_they_define ... ok
+test command_events_refuse_missing_or_wrong_project_receipts ... ok
+test imported_task_lifecycle_provenance_survives_export_serialization_and_parse ... ok
+test command_intent_import_preserves_its_non_executable_source_lineage ... ok
+test profile_selection_outcomes_cannot_predate_the_generation_that_stored_them ... ok
+test command_events_refuse_hashes_that_do_not_identify_the_payload ... ok
+test generation_two_without_profile_selection_outcomes_remains_importable has been running for over 60 seconds
+test import_preflight_and_transaction_leave_no_orphan_specification has been running for over 60 seconds
+test profile_selection_import_rejects_every_incomplete_or_swapped_frozen_binding has been running for over 60 seconds
+test profile_selection_outcomes_round_trip_as_exact_non_executable_lineage has been running for over 60 seconds
+test generation_two_without_profile_selection_outcomes_remains_importable ... ok
+test import_preflight_and_transaction_leave_no_orphan_specification ... ok
+test profile_selection_outcomes_round_trip_as_exact_non_executable_lineage ... ok
+test runtime_and_census_payloads_still_refuse_session_content ... ok
+test profile_selection_receipt_must_be_confirmed_local_effect_evidence ... ok
+test profile_selection_import_rejects_every_incomplete_or_swapped_frozen_binding ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 180.22s
+
+
+PROCESS_EXIT_CODE=0

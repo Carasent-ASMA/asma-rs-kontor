@@ -1169,8 +1169,15 @@ pub fn export_realm(store: &SqliteStore, now: Timestamp) -> Result<KontorExportV
     // Runtime and census observations use the positive control-field vocabulary
     // enforced by their append boundaries. Command intents occupy the same log
     // but carry application-owned canonical documents (names, paths, graph
-    // arrays and other command fields). They receive the structural canary scan
-    // below, just like the identical intent on their command receipt.
+    // arrays and other command fields). Re-prove their exact immutable receipt
+    // authority before the structural canary scan; the kind label alone is not
+    // authority to export arbitrary prose.
+    let receipts: BTreeMap<&str, &CommandReceiptsRow> = export
+        .records
+        .command_receipts
+        .iter()
+        .map(|receipt| (receipt.id.as_str(), receipt))
+        .collect();
     for event in &export.records.runtime_events {
         let payload: serde_json::Value =
             serde_json::from_str(&event.payload).map_err(|_| BackupError::Verification {
@@ -1178,7 +1185,7 @@ pub fn export_realm(store: &SqliteStore, now: Timestamp) -> Result<KontorExportV
             })?;
         match event.event_kind.as_str() {
             "runtime_observation" | "census_observation" => ensure_control_metadata(&payload)?,
-            "command_intent" => {}
+            "command_intent" => ensure_command_event_authority(event, &receipts)?,
             _ => {
                 return Err(BackupError::Verification {
                     detail: "a stored event has an unknown kind",
@@ -1188,6 +1195,34 @@ pub fn export_realm(store: &SqliteStore, now: Timestamp) -> Result<KontorExportV
     }
     scan_for_canaries(&canonical_value(&export)?, 0)?;
     Ok(export)
+}
+
+/// A command event may carry only the exact intent its receipt authorized.
+fn ensure_command_event_authority(
+    event: &RuntimeEventsRow,
+    receipts: &BTreeMap<&str, &CommandReceiptsRow>,
+) -> Result<(), BackupError> {
+    let receipt = event
+        .command_receipt_id
+        .as_deref()
+        .and_then(|id| receipts.get(id))
+        .ok_or(BackupError::Verification {
+            detail: "a command event has no exported command receipt",
+        })?;
+    if event.project_id != receipt.project_id
+        || event.payload != receipt.intent
+        || event.payload_hash != receipt.intent_hash
+    {
+        return Err(BackupError::Verification {
+            detail: "a command event does not match its immutable receipt",
+        });
+    }
+    if ContentHash::of(event.payload.as_bytes()).as_str() != event.payload_hash {
+        return Err(BackupError::Verification {
+            detail: "a command event payload does not hash to its declared digest",
+        });
+    }
+    Ok(())
 }
 
 /// Refuse a document that carries credential, token or Zone C material.

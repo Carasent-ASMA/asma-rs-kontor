@@ -1,0 +1,86 @@
+{
+  "mutants": [
+    {
+      "name": "reject-command",
+      "testFilter": "command_intents_export_under_their_own_document_contract",
+      "exitCode": 101,
+      "compiled": true,
+      "behavioralFailure": true,
+      "log": "reject-command.txt",
+      "logSha256": "299f6166d9664c001497bc8093da2754e5c313aa6c29c033a2dfa775c7b1f9c4",
+      "patch": "reject-command.diff",
+      "patchSha256": "b5a27ba82ae0f2a47e237e04857db15a73e9d688d397788a7381224e9dec2624"
+    },
+    {
+      "name": "allow-observation",
+      "testFilter": "runtime_and_census_payloads_still_refuse_session_content",
+      "exitCode": 101,
+      "compiled": true,
+      "behavioralFailure": true,
+      "log": "allow-observation.txt",
+      "logSha256": "f81ae186bb5b0e46d1b5a15d91ebfe0ba715c5d6bf25c7484d377497519e590b",
+      "patch": "allow-observation.diff",
+      "patchSha256": "6925b726453d7cb4c6ec8834cd780cf8deabc30a2374c37fa4b92de7e237d369"
+    },
+    {
+      "name": "skip-canary",
+      "testFilter": "command_intent_payloads_still_receive_the_embedded_canary_scan",
+      "exitCode": 101,
+      "compiled": true,
+      "behavioralFailure": true,
+      "log": "skip-canary.txt",
+      "logSha256": "4397a88fa800bc8d476c50cfd93c74d7ea7918c7b0abd6de665f5e7c5c1db2cb",
+      "patch": "skip-canary.diff",
+      "patchSha256": "a5f4fd8da3edea8b2f5a43072ab6cf312bfe7de9743727f1332aa75f353ddced"
+    },
+    {
+      "name": "skip-authority",
+      "testFilter": "command_events_",
+      "exitCode": 101,
+      "compiled": true,
+      "behavioralFailure": true,
+      "log": "skip-authority.txt",
+      "logSha256": "e48fe29ca76c9762f34cf739f5753e6eb835bb0fb4469c8601264e784591ba16",
+      "patch": "skip-authority.diff",
+      "patchSha256": "2d144b87b6a651f61431bcac49814aa33ff33f08164bf8e94868d450e5956703"
+    },
+    {
+      "name": "ignore-project",
+      "testFilter": "command_events_refuse_missing_or_wrong_project_receipts",
+      "exitCode": 101,
+      "compiled": true,
+      "behavioralFailure": true,
+      "log": "ignore-project.txt",
+      "logSha256": "a4f37705bc5fad1ced389e5e408f7afd5cb191d39254a05ae2c08a276d414418",
+      "patch": "ignore-project.diff",
+      "patchSha256": "fc4863dbd3fc706cc1ffbd14e47db14031768a45f97584c5b2fedee9e1e63eb5"
+    },
+    {
+      "name": "skip-hash-recompute",
+      "testFilter": "command_events_refuse_hashes_that_do_not_identify_the_payload",
+      "exitCode": 101,
+      "compiled": true,
+      "behavioralFailure": true,
+      "log": "skip-hash-recompute.txt",
+      "logSha256": "3116ccda7f7f34937bdefbceef2394adc439e1eb829af4d5a6acf5e497eeef9b",
+      "patch": "skip-hash-recompute.diff",
+      "patchSha256": "396eaf1084a0594e44d3e6387948bee9b4effb6962b0fd6cb402c7cad8a4dd95"
+    }
+  ],
+  "restoredSourceSha256": "d347191051f326b16972993c37a2b707fa2c76a68508ec5bba271c059b7898ad",
+  "testedBaseCommit": "c08ea5d60a1380861a48b0e1b11a841bd5007af4",
+  "restoredTestSha256": "7afbea3321796ae70413e2f197fa9defee3c83f9b9bd97e166b32a2864412f28",
+  "sourceSha256CaptureTime": "post-restoration",
+  "restoredSuite": {
+    "testsPassed": 25,
+    "failed": 0,
+    "exitCode": 0,
+    "log": "backup-export-restored.txt"
+  },
+  "clippy": {
+    "exitCode": 0,
+    "log": "store-clippy.txt"
+  },
+  "isolation": "Owned worktree source and disposable fixture databases; shared _tools/asma-rs-kontor/target compiler cache. Restored source suite and strict store Clippy passed.",
+  "fullCandidateGate": "pending new immutable commit; b42 qualification grants no credit to this correction"
+}

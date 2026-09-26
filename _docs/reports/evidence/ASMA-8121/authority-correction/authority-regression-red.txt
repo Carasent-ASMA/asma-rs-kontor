@@ -1,0 +1,31 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.76s
+     Running tests/backup_export.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backup_export-86507a0c15daf53a)
+
+running 3 tests
+
+thread 'command_events_refuse_an_unrelated_payload_even_with_its_own_valid_hash' (56621654) panicked at crates/kontor-store/tests/backup_export.rs:581:18:
+an event cannot borrow authority from an unrelated command receipt
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test command_events_refuse_an_unrelated_payload_even_with_its_own_valid_hash ... FAILED
+
+thread 'command_events_refuse_hashes_that_do_not_identify_the_payload' (56621655) panicked at crates/kontor-store/tests/backup_export.rs:640:22:
+equal stored hashes must still recompute from the exact payload
+test command_events_refuse_hashes_that_do_not_identify_the_payload ... FAILED
+
+thread 'command_events_refuse_missing_or_wrong_project_receipts' (56621656) panicked at crates/kontor-store/tests/backup_export.rs:609:22:
+a command event needs its exact same-project receipt
+test command_events_refuse_missing_or_wrong_project_receipts ... FAILED
+
+failures:
+
+failures:
+    command_events_refuse_an_unrelated_payload_even_with_its_own_valid_hash
+    command_events_refuse_hashes_that_do_not_identify_the_payload
+    command_events_refuse_missing_or_wrong_project_receipts
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 21 filtered out; finished in 9.88s
+
+error: test failed, to rerun pass `-p kontor-store --test backup_export`
+
+PROCESS_EXIT_CODE=101

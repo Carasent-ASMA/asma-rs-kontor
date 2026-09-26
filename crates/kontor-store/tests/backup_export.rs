@@ -561,6 +561,160 @@ fn command_intents_export_under_their_own_document_contract() {
 }
 
 #[test]
+fn command_events_refuse_an_unrelated_payload_even_with_its_own_valid_hash() {
+    let seeded = seed();
+    let receipt = record_project_intent(&seeded);
+    let prose = document(&serde_json::json!({
+        "schema_version": 1,
+        "note": "unrelated private session prose",
+    }));
+    plant(
+        &seeded.database,
+        &format!(
+            "DROP TRIGGER runtime_events_no_update;
+             UPDATE runtime_events SET payload = '{}', payload_hash = '{}'
+             WHERE command_receipt_id = '{}'",
+            prose.json(),
+            prose.hash(),
+            receipt.id
+        ),
+    );
+    let error = match export_realm(&seeded.store, at("2026-08-10T10:00:00Z")) {
+        Ok(_) => panic!("an event cannot borrow authority from an unrelated command receipt"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, BackupError::Verification { .. }));
+    assert!(!format!("{error:?}").contains("unrelated private session prose"));
+}
+
+#[test]
+fn command_events_refuse_missing_or_wrong_project_receipts() {
+    for assignment in [
+        format!("command_receipt_id = '{}'", CommandReceiptId::generate()),
+        format!("project_id = '{}'", ProjectId::generate()),
+    ] {
+        let seeded = seed();
+        let receipt = record_project_intent(&seeded);
+        // Bypass only fixture FKs and the immutable event guard to simulate
+        // corruption; production schema and write paths remain unchanged.
+        plant(
+            &seeded.database,
+            &format!(
+                "PRAGMA foreign_keys = OFF;
+                 DROP TRIGGER runtime_events_no_update;
+                 UPDATE runtime_events SET {assignment}
+                 WHERE command_receipt_id = '{}'",
+                receipt.id
+            ),
+        );
+        let error = match export_realm(&seeded.store, at("2026-08-10T10:00:00Z")) {
+            Ok(_) => panic!("a command event needs its exact same-project receipt"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, BackupError::Verification { .. }));
+    }
+}
+
+#[test]
+fn command_events_refuse_hashes_that_do_not_identify_the_payload() {
+    for corrupt_receipt_too in [false, true] {
+        let seeded = seed();
+        let receipt = record_project_intent(&seeded);
+        let wrong_hash = ContentHash::of(b"not the command payload");
+        let receipt_update = if corrupt_receipt_too {
+            format!(
+                "DROP TRIGGER command_receipts_identity_immutable;
+                 UPDATE command_receipts SET intent_hash = '{wrong_hash}'
+                 WHERE id = '{}'",
+                receipt.id
+            )
+        } else {
+            String::new()
+        };
+        plant(
+            &seeded.database,
+            &format!(
+                "DROP TRIGGER runtime_events_no_update;
+                 UPDATE runtime_events SET payload_hash = '{wrong_hash}'
+                 WHERE command_receipt_id = '{}'; {receipt_update}",
+                receipt.id
+            ),
+        );
+        let error = match export_realm(&seeded.store, at("2026-08-10T10:00:00Z")) {
+            Ok(_) => panic!("equal stored hashes must still recompute from the exact payload"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, BackupError::Verification { .. }));
+    }
+}
+
+#[test]
+fn command_intent_import_preserves_its_non_executable_source_lineage() {
+    let source = seed();
+    let command = record_project_intent(&source);
+    let export = export_realm(&source.store, at("2026-08-10T10:00:00Z")).unwrap();
+    let parsed = KontorExportV1::parse(&export.canonical_bytes().unwrap()).unwrap();
+    let event = parsed
+        .records
+        .runtime_events
+        .iter()
+        .find(|row| row.command_receipt_id.as_deref() == Some(&command.id.to_string()))
+        .expect("the source command event remains exact");
+    assert_eq!(event.payload, command.intent.json());
+    assert_eq!(event.payload_hash, command.intent.hash().as_str());
+    let mut bytes = serde_json::to_vec(&serde_json::to_value(event).unwrap()).unwrap();
+    bytes.push(b'\n');
+    let expected_event_hash = ContentHash::of(&bytes).to_string();
+    let home = TempDir::new().unwrap();
+    let database = home.path().join("kontor.db");
+    let destination = SqliteStore::open(&database).unwrap();
+    let into = ProjectId::generate();
+    destination
+        .create_project(&NewProject {
+            id: into,
+            name: name("Destination project"),
+            root_path: name("/tmp/kontor-command-lineage"),
+            created_at: at("2026-08-11T09:00:00Z"),
+        })
+        .unwrap();
+    let report = import_export(
+        &destination,
+        &parsed,
+        &ImportPlan::redacted_import_into(into),
+        at("2026-08-11T10:00:00Z"),
+    )
+    .unwrap();
+    assert!(report.reconciliation_required);
+    let receipt = &destination.import_receipts().unwrap()[0];
+    assert_eq!(receipt.source_realm_id, parsed.source_realm_id.to_string());
+    assert_eq!(receipt.records_hash, parsed.records_hash.to_string());
+    let lineage = destination.imported_records(&receipt.id).unwrap();
+    let recorded = lineage
+        .iter()
+        .find(|row| {
+            row.record_kind == "runtime_events" && row.source_identity == event.cursor.to_string()
+        })
+        .unwrap();
+    assert_eq!(recorded.source_hash, expected_event_hash);
+    assert_eq!(recorded.disposition, "recorded");
+    assert!(
+        lineage
+            .iter()
+            .any(|row| row.record_kind == "command_receipts"
+                && row.source_identity == command.id.to_string()
+                && row.disposition == "recorded")
+    );
+    assert_eq!(count(&database, "command_receipts"), 0);
+    assert_eq!(count(&database, "runtime_events"), 0);
+    let again = export_realm(&destination, at("2026-08-11T11:00:00Z")).unwrap();
+    assert_eq!(again.source_realm_id, destination.realm_id());
+    assert_ne!(again.source_realm_id, parsed.source_realm_id);
+    assert!(again.records.command_receipts.is_empty());
+    assert!(again.records.runtime_events.is_empty());
+    assert_eq!(destination.imported_records(&receipt.id).unwrap(), lineage);
+}
+
+#[test]
 fn runtime_and_census_payloads_still_refuse_session_content() {
     for kind in ["runtime_observation", "census_observation"] {
         let seeded = seed();
@@ -599,16 +753,18 @@ fn command_intent_payloads_still_receive_the_embedded_canary_scan() {
     let receipt = record_project_intent(&seeded);
     // Simulate corruption only in this disposable fixture. The production
     // append-only guard stays intact; no rejected value is echoed on failure.
+    let secret = r#"{"schema_version":1,"api_key":"sk-0123456789abcdef0123456789"}"#;
+    let hash = ContentHash::of(secret.as_bytes());
     plant(
         &seeded.database,
         &format!(
             "DROP TRIGGER runtime_events_no_update;
-         UPDATE runtime_events
-         SET payload = '{{\"schema_version\":1,\"api_key\":\"sk-0123456789abcdef0123456789\"}}',
-             payload_hash = '{}'
-         WHERE command_receipt_id = '{}'",
-            ContentHash::of(b"planted-command"),
-            receipt.id
+             DROP TRIGGER command_receipts_identity_immutable;
+             UPDATE runtime_events SET payload = '{secret}', payload_hash = '{hash}'
+             WHERE command_receipt_id = '{}';
+             UPDATE command_receipts SET intent = '{secret}', intent_hash = '{hash}'
+             WHERE id = '{}'",
+            receipt.id, receipt.id
         ),
     );
     let refused = match export_realm(&seeded.store, at("2026-08-10T10:00:00Z")) {
