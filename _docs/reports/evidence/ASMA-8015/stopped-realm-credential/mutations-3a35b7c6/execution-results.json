@@ -1,0 +1,437 @@
+{
+  "startedAt": "2026-09-26T15:22:52.012708+00:00",
+  "sourceCommit": "3a35b7c6db8ef65e51aaa14c7ba69df9bf1e1c0f",
+  "sourceTree": "ea784274c592100b9154f8c9a1fbd4a297ab7ffc",
+  "sourceArchiveSha256": "4930358d1439d381ea68f5676a3f90b5ae1c9ec0c934e12b3f9a2e8ba8423d37",
+  "source": "/private/tmp/ASMA-8015-mutations-3a35b7c6/source",
+  "target": "/private/tmp/ASMA-8015-mutations-3a35b7c6/target",
+  "initialCacheCopiedFrom": "/private/tmp/ASMA-8015-credential-qualification/target",
+  "cacheBoundary": "Private cloned cache; original QA and primary checkout caches are not modified. Source archive is disposable and isolated.",
+  "sourceEntryCount": 3200,
+  "baseline": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-accounts",
+        "--lib"
+      ],
+      "startedAt": "2026-09-26T15:22:52.013044+00:00",
+      "finishedAt": "2026-09-26T15:23:20.763908+00:00",
+      "exitCode": 0,
+      "log": "logs/baseline-account-unit.txt",
+      "logSha256": "475dd1fde40243f7444f01f8ac7ef5b400b8867b202af65298eb26f3a30a64d5",
+      "summaries": [
+        {
+          "passed": 77,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0
+        }
+      ]
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-jira",
+        "--lib"
+      ],
+      "startedAt": "2026-09-26T15:23:20.764269+00:00",
+      "finishedAt": "2026-09-26T15:23:33.629413+00:00",
+      "exitCode": 0,
+      "log": "logs/baseline-jira-unit.txt",
+      "logSha256": "15887633774de8e9e67b6952ac47bf56074f56a8858ed7dad5bffc95ba8c4517",
+      "summaries": [
+        {
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0
+        }
+      ]
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-daemon",
+        "--bin",
+        "kontor-daemon"
+      ],
+      "startedAt": "2026-09-26T15:23:33.629789+00:00",
+      "finishedAt": "2026-09-26T15:24:27.224570+00:00",
+      "exitCode": 0,
+      "log": "logs/baseline-daemon-operator.txt",
+      "logSha256": "674bc5484d836e0e21a8803b462ceb036daff48c82559caaa3ba12c1c9898b0f",
+      "summaries": [
+        {
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0
+        }
+      ]
+    }
+  ],
+  "mutants": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-daemon",
+        "--bin",
+        "kontor-daemon",
+        "tests::a_running_realm_refuses_credential_installation_before_stdin_or_effects",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "startedAt": "2026-09-26T15:24:27.226335+00:00",
+      "finishedAt": "2026-09-26T15:24:28.725259+00:00",
+      "exitCode": 101,
+      "log": "logs/MUT-LOCK.txt",
+      "logSha256": "42ce3899d40440a5cb69b8f8f092279ddb92002ed342637b87455d002cb4d7cc",
+      "summaries": [
+        {
+          "passed": 0,
+          "failed": 1,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 4
+        }
+      ],
+      "id": "MUT-LOCK",
+      "file": "crates/kontor-daemon/src/main.rs",
+      "sourceSha256Before": "9a9c7c3c03765bc3ee4302d55bba034342cb624c69175e977f1e913f4bc30969",
+      "mutatedSourceSha256": "06ee4b5095564e4e7707ff9f82555dc43bb07fe6ded5f418a0250a99202540d4",
+      "patch": "patches/MUT-LOCK.diff.json",
+      "patchCarrierSha256": "e0a9aafb14cce2d332d19f99da56fe7e9ab6fd33680fc272fc4da5f86ed205b1",
+      "patchDecodedSha256": "229a31a696a0500019378acc65fcf5f4d9b74941a049a44c3fa6f7f6ec8428f6",
+      "compiled": true,
+      "behavioralAssertionMatched": true,
+      "expectedFailed": 1,
+      "observedFailed": 1,
+      "outcome": "KILLED",
+      "assertionMarker": "locked realm must refuse before reading credentials",
+      "sourceSha256PostRestoration": "9a9c7c3c03765bc3ee4302d55bba034342cb624c69175e977f1e913f4bc30969"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-jira",
+        "--lib",
+        "credentials::tests::a_writer_success_does_not_replace_matching_reader_proof",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "startedAt": "2026-09-26T15:24:28.728810+00:00",
+      "finishedAt": "2026-09-26T15:24:30.442369+00:00",
+      "exitCode": 101,
+      "log": "logs/MUT-READBACK.txt",
+      "logSha256": "8867acf80fa02b91bb5d07870cc8e31f9c8ce52b2db0aa128201df0ec710a1fe",
+      "summaries": [
+        {
+          "passed": 0,
+          "failed": 1,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 13
+        }
+      ],
+      "id": "MUT-READBACK",
+      "file": "crates/kontor-jira/src/credentials.rs",
+      "sourceSha256Before": "80350809002d6441a5cb280808b550f3af19cfd39d0ba85a2732afdfb5f623e6",
+      "mutatedSourceSha256": "f4563d0ccd8aafe8cda77ee08eaa2b9c59ba4924e249967c42c40c20aa5502cb",
+      "patch": "patches/MUT-READBACK.diff.json",
+      "patchCarrierSha256": "6ef5a264a559da0cf3fb84ea4814c5966150da5fbea7853c521a143e574b6076",
+      "patchDecodedSha256": "204a12d6c07866883eaf7bbdbb108ad93d66bbb0bba8b63fbbc77618d3e30f84",
+      "compiled": true,
+      "behavioralAssertionMatched": true,
+      "expectedFailed": 1,
+      "observedFailed": 1,
+      "outcome": "KILLED",
+      "assertionMarker": "a_writer_success_does_not_replace_matching_reader_proof",
+      "sourceSha256PostRestoration": "80350809002d6441a5cb280808b550f3af19cfd39d0ba85a2732afdfb5f623e6"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-jira",
+        "--lib",
+        "credentials::tests::invalid_documents_and_aliases_have_no_keychain_effect",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "startedAt": "2026-09-26T15:24:30.444290+00:00",
+      "finishedAt": "2026-09-26T15:24:32.129088+00:00",
+      "exitCode": 101,
+      "log": "logs/MUT-VALIDATE.txt",
+      "logSha256": "4fcfc7be90654611a1f22b6ddd220afea8596e99e5369577fc180985e867da49",
+      "summaries": [
+        {
+          "passed": 0,
+          "failed": 1,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 13
+        }
+      ],
+      "id": "MUT-VALIDATE",
+      "file": "crates/kontor-jira/src/credentials.rs",
+      "sourceSha256Before": "80350809002d6441a5cb280808b550f3af19cfd39d0ba85a2732afdfb5f623e6",
+      "mutatedSourceSha256": "a53f210820cc9437b497257a881dab485db228655f3ab54bbb6acb3a50d3732c",
+      "patch": "patches/MUT-VALIDATE.diff.json",
+      "patchCarrierSha256": "2f19028c52881b973846f3e823e76d29abbe09fb1982297d9a4f2a5a5d09bb1d",
+      "patchDecodedSha256": "3d0e8bd6f5c4a4d9147e6676710e7c55dea9e0b2a1d3a7e4932e1409dd18d71a",
+      "compiled": true,
+      "behavioralAssertionMatched": true,
+      "expectedFailed": 1,
+      "observedFailed": 1,
+      "outcome": "KILLED",
+      "assertionMarker": "invalid_documents_and_aliases_have_no_keychain_effect",
+      "sourceSha256PostRestoration": "80350809002d6441a5cb280808b550f3af19cfd39d0ba85a2732afdfb5f623e6"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-jira",
+        "--lib",
+        "credentials::tests::stdin_is_bounded_and_read_errors_are_redacted",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "startedAt": "2026-09-26T15:24:32.130501+00:00",
+      "finishedAt": "2026-09-26T15:24:33.777945+00:00",
+      "exitCode": 101,
+      "log": "logs/MUT-STDIN.txt",
+      "logSha256": "fe56f80bb4b1b597e78fc082b4d94449b9f138efc8d4ebf803c506e65a5539f5",
+      "summaries": [
+        {
+          "passed": 0,
+          "failed": 1,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 13
+        }
+      ],
+      "id": "MUT-STDIN",
+      "file": "crates/kontor-jira/src/credentials.rs",
+      "sourceSha256Before": "80350809002d6441a5cb280808b550f3af19cfd39d0ba85a2732afdfb5f623e6",
+      "mutatedSourceSha256": "5aa25feae104ab764e82907b0a983392a918a0fc316ee1c28713d310a00ab0f4",
+      "patch": "patches/MUT-STDIN.diff.json",
+      "patchCarrierSha256": "44a62d0b1b5a82fc0a71febfdab6657e7f72e0cf4356e63c869ba01bc691ec94",
+      "patchDecodedSha256": "109fe045911a65464bc20846432a5bc1fb6ff8617141363e8dd14bb796867ce9",
+      "compiled": true,
+      "behavioralAssertionMatched": true,
+      "expectedFailed": 1,
+      "observedFailed": 1,
+      "outcome": "KILLED",
+      "assertionMarker": "stdin_is_bounded_and_read_errors_are_redacted",
+      "sourceSha256PostRestoration": "80350809002d6441a5cb280808b550f3af19cfd39d0ba85a2732afdfb5f623e6"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-accounts",
+        "--lib",
+        "resolver::security_transport_tests::multiline_or_truncated_commands_are_refused_before_launch",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "startedAt": "2026-09-26T15:24:33.780162+00:00",
+      "finishedAt": "2026-09-26T15:24:35.519485+00:00",
+      "exitCode": 101,
+      "log": "logs/MUT-LINE.txt",
+      "logSha256": "dc7ba27dd9b0f225d5717d575bc8302058760ff0692908f6351b052bd015ef55",
+      "summaries": [
+        {
+          "passed": 0,
+          "failed": 1,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 76
+        }
+      ],
+      "id": "MUT-LINE",
+      "file": "crates/kontor-accounts/src/resolver.rs",
+      "sourceSha256Before": "265d256d8a99ba156740e9355433934b647e1dde1db1c0a4b71e6ba7cc30e3c0",
+      "mutatedSourceSha256": "ab80255b5b149a7cf5a2a52a7c69f18ca4c397c23e22e6b67fb531e0d33f0fa2",
+      "patch": "patches/MUT-LINE.diff.json",
+      "patchCarrierSha256": "609d469ea1de070fcce5cc54a119ffa108c69a93865eaa568eb0f38d7412a051",
+      "patchDecodedSha256": "9fbbf0e9e344344114a7053836b6efb5ff880ae7557934d1dbf5937fa3466f3b",
+      "compiled": true,
+      "behavioralAssertionMatched": true,
+      "expectedFailed": 1,
+      "observedFailed": 1,
+      "outcome": "KILLED",
+      "assertionMarker": "multiline_or_truncated_commands_are_refused_before_launch",
+      "sourceSha256PostRestoration": "265d256d8a99ba156740e9355433934b647e1dde1db1c0a4b71e6ba7cc30e3c0"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-accounts",
+        "--lib",
+        "resolver::security_transport_tests::the_writer_transports_quoted_secret_only_on_stdin",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "startedAt": "2026-09-26T15:24:35.522310+00:00",
+      "finishedAt": "2026-09-26T15:24:37.251049+00:00",
+      "exitCode": 101,
+      "log": "logs/MUT-QUOTE.txt",
+      "logSha256": "99a13e836beff3e0aaf08ebe961e0a2aec5bfbc12aa0e7106192158f4563980f",
+      "summaries": [
+        {
+          "passed": 0,
+          "failed": 1,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 76
+        }
+      ],
+      "id": "MUT-QUOTE",
+      "file": "crates/kontor-accounts/src/resolver.rs",
+      "sourceSha256Before": "265d256d8a99ba156740e9355433934b647e1dde1db1c0a4b71e6ba7cc30e3c0",
+      "mutatedSourceSha256": "82070bbf3fcf71d8caaef18afd20724998a95d7ce04f475b2cc364c91365e42f",
+      "patch": "patches/MUT-QUOTE.diff.json",
+      "patchCarrierSha256": "6c03541a8b1edd8671fd9545db727de2852d902a3dbaf4db462735c0c7c376c4",
+      "patchDecodedSha256": "ca817979ed6b649baf3993642feb407702a7cacc0e7057b7e69f7ccf4d4d024b",
+      "compiled": true,
+      "behavioralAssertionMatched": true,
+      "expectedFailed": 1,
+      "observedFailed": 1,
+      "outcome": "KILLED",
+      "assertionMarker": "the_writer_transports_quoted_secret_only_on_stdin",
+      "sourceSha256PostRestoration": "265d256d8a99ba156740e9355433934b647e1dde1db1c0a4b71e6ba7cc30e3c0"
+    }
+  ],
+  "restored": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-accounts",
+        "--lib"
+      ],
+      "startedAt": "2026-09-26T15:24:37.252688+00:00",
+      "finishedAt": "2026-09-26T15:24:39.015253+00:00",
+      "exitCode": 0,
+      "log": "logs/restored-account-unit.txt",
+      "logSha256": "f1715206e3be982b06eb416a4847857d7b8bf06e4cf9db67f947d6e43e298fcb",
+      "summaries": [
+        {
+          "passed": 77,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0
+        }
+      ]
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-jira",
+        "--lib"
+      ],
+      "startedAt": "2026-09-26T15:24:39.015883+00:00",
+      "finishedAt": "2026-09-26T15:24:41.541300+00:00",
+      "exitCode": 0,
+      "log": "logs/restored-jira-unit.txt",
+      "logSha256": "c468174094f2bad459206f16a38a197e18bf4535ded2e2284baeef1908d9f2e7",
+      "summaries": [
+        {
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0
+        }
+      ]
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "kontor-daemon",
+        "--bin",
+        "kontor-daemon"
+      ],
+      "startedAt": "2026-09-26T15:24:41.541839+00:00",
+      "finishedAt": "2026-09-26T15:24:58.884613+00:00",
+      "exitCode": 0,
+      "log": "logs/restored-daemon-operator.txt",
+      "logSha256": "d7255d54cc2dfb9309b4882b6c519cb18fc20a1479ee9c6c3cab0626d759af73",
+      "summaries": [
+        {
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0
+        }
+      ]
+    }
+  ],
+  "liveDatabaseOpenedByRunner": false,
+  "installedBinariesOrPrimarySourceModified": false,
+  "finishedAt": "2026-09-26T15:24:59.115594+00:00",
+  "sourceRestoredByteExact": true,
+  "sourceEntriesBeforeSha256": "25b835795381bc9680a98f79f397c35ad08b0f1040667f978de1ee16bfd7b1db",
+  "sourceEntriesAfterSha256": "25b835795381bc9680a98f79f397c35ad08b0f1040667f978de1ee16bfd7b1db",
+  "allSixCompiledBehavioralKills": true,
+  "restoredGreen": true,
+  "qualificationComplete": true
+}

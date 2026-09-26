@@ -1,0 +1,29 @@
+{
+  "recordedAt": "2026-09-26T15:33:28.353212+00:00",
+  "sourceCommit": "3a35b7c6db8ef65e51aaa14c7ba69df9bf1e1c0f",
+  "reason": "Independent audit withheld source support; obsolete qualification stopped, no full-gate PASS credit.",
+  "processes": [
+    {
+      "pid": 43826,
+      "ppid": 12101,
+      "command": "/private/tmp/ASMA-8015-full-gate-3a35b7c6/target/debug/deps/kontor_daemon-9a84aa7fea39f924"
+    },
+    {
+      "pid": 12101,
+      "ppid": 80520,
+      "command": "/Users/igor/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/cargo test --workspace --locked"
+    }
+  ],
+  "signals": [
+    {
+      "pid": 43826,
+      "signal": "SIGTERM",
+      "sent": true
+    },
+    {
+      "pid": 12101,
+      "signal": "SIGTERM",
+      "sent": true
+    }
+  ]
+}
