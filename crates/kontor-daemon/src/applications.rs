@@ -7967,7 +7967,7 @@ impl Services {
         // seat whose native is gone must not be reported as materialized on the
         // strength of a durable row; recovering it is the route path's job, and
         // saying so is more useful than silently succeeding.
-        let native_is_live = match adapter
+        let inspected_at = match adapter
             .inspect_hosted_seat(&HostedSeatInspectRequest {
                 seat_binding_id,
                 identity: existing.native_identity.clone(),
@@ -7980,17 +7980,18 @@ impl Services {
             })
             .await
         {
-            Ok(inspection) => inspection.state.is_live(),
-            Err(error) if error.proves_hosted_predecessor_absent() => false,
+            Ok(inspection) if inspection.state.is_live() => Some(inspection.observed_at),
+            Ok(_) => None,
+            Err(error) if error.proves_hosted_predecessor_absent() => None,
             Err(error) => return Err(ApiError::from_runtime(state.realm_id(), &error)),
         };
-        if !native_is_live {
+        let Some(attached_at) = inspected_at else {
             return Err(self.deny(
                 ApiErrorCode::StaleBinding,
                 "the bound hosted seat's native is not live; recover it through \
                  the Core Team route preview and apply",
             ));
-        }
+        };
         // A crash between bind and install leaves a Prepared intent alongside
         // a durable occupancy. The current generation's frozen authority must
         // agree before that intent can be installed. Legacy adopted occupancies
@@ -8037,6 +8038,23 @@ impl Services {
                 }
             }
         }
+        // Installation and attachment are separate durable boundaries. An
+        // exact-native inspection proves attachment, including a retry after
+        // installation succeeded but its attachment observation was lost.
+        // It says nothing about activity; preserve that independent history.
+        state
+            .with_store(|store| {
+                store.observe_seat_binding(
+                    project_id,
+                    seat_binding_id,
+                    &SeatLivenessObservation {
+                        attached_at: Some(attached_at),
+                        ..SeatLivenessObservation::default()
+                    },
+                    kontor_api::now(),
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
         Ok(())
     }
 

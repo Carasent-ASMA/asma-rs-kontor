@@ -1,0 +1,34 @@
+   Compiling kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-runtime)
+   Compiling kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-scheduler)
+   Compiling kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-teams)
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-runtime-paseo)
+   Compiling kontor-profiles v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-profiles)
+   Compiling kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-calendar)
+   Compiling kontor-accounts v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-accounts)
+   Compiling kontor-jira v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-jira)
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.96s
+     Running tests/loopback_api.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
+
+running 2 tests
+
+thread 'materializing_reconciles_a_bound_seats_prepared_intent' (55854583) panicked at crates/kontor-daemon/tests/loopback_api.rs:64281:9:
+successful exact-native recovery records attachment
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'materializing_reconciles_an_installed_intents_missing_attachment' (55854584) panicked at crates/kontor-daemon/tests/loopback_api.rs:64281:9:
+successful exact-native recovery records attachment
+test materializing_reconciles_a_bound_seats_prepared_intent ... FAILED
+test materializing_reconciles_an_installed_intents_missing_attachment ... FAILED
+
+failures:
+
+failures:
+    materializing_reconciles_a_bound_seats_prepared_intent
+    materializing_reconciles_an_installed_intents_missing_attachment
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 476 filtered out; finished in 2.00s
+
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

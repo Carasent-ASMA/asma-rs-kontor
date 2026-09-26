@@ -1,0 +1,29 @@
+{
+  "baseline": "7273196924e1dea5ff8bacfdcf12d0c0e4880e16",
+  "source_sha256": "66b4fa1303da0a2ee821be18d0c8fc532f1b04c2076acc7150f98dff7041c478",
+  "test_sha256": "8ba0c2457938072ee7c31e3db425274c5383d274c3bab9fb5ba8deca8cc4e25a",
+  "mutants": [
+    {
+      "name": "omit-attachment",
+      "status": "KILLED",
+      "exit_code": 101,
+      "log": "asma-8190-mutant-omit-attachment.txt",
+      "log_sha256": "bd2f48e95adfa68544f80704da87ca08096f1343c2bc08a35fabf6737efb17a1"
+    },
+    {
+      "name": "invent-activity",
+      "status": "KILLED",
+      "exit_code": 101,
+      "log": "asma-8190-mutant-invent-activity.txt",
+      "log_sha256": "09f5fe6d12b423a085b8acbabd049042bfd1d321149f21f06bd652d21784505f"
+    },
+    {
+      "name": "omit-prepared-install",
+      "status": "KILLED",
+      "exit_code": 101,
+      "log": "asma-8190-mutant-omit-prepared-install.txt",
+      "log_sha256": "b96d97c6de51936eb3b15d0cc1563cfd76c4107884346e3b90c4b0b0a0e85931"
+    }
+  ],
+  "restored": true
+}

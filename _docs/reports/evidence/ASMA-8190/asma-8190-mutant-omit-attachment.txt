@@ -1,0 +1,33 @@
+
+running 2 tests
+test materializing_reconciles_a_bound_seats_prepared_intent ... FAILED
+test materializing_reconciles_an_installed_intents_missing_attachment ... FAILED
+
+failures:
+
+failures:
+    materializing_reconciles_a_bound_seats_prepared_intent
+    materializing_reconciles_an_installed_intents_missing_attachment
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 476 filtered out; finished in 1.99s
+
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon)
+warning: unused variable: `attached_at`
+    --> crates/kontor-daemon/src/applications.rs:7988:18
+     |
+7988 |         let Some(attached_at) = inspected_at else {
+     |                  ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attached_at`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-daemon` (lib) generated 1 warning (run `cargo fix --lib -p kontor-daemon` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.65s
+     Running tests/loopback_api.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
+
+thread 'materializing_reconciles_a_bound_seats_prepared_intent' (55872988) panicked at crates/kontor-daemon/tests/loopback_api.rs:64293:9:
+successful exact-native recovery records attachment
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'materializing_reconciles_an_installed_intents_missing_attachment' (55872989) panicked at crates/kontor-daemon/tests/loopback_api.rs:64293:9:
+successful exact-native recovery records attachment
+error: test failed, to rerun pass `-p kontor-daemon --test loopback_api`

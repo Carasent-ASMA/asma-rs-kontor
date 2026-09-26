@@ -64143,9 +64143,9 @@ async fn an_inert_successor_intent_recovers_a_receipt_after_cas_commit_and_succe
     );
 }
 
-/// Stop the second launch after binding its occupancy but before installing
-/// its durable intent: the crash boundary a retry must reconcile.
-async fn core_team_with_uninstalled_bound_intent() -> (Composed, SeatBindingId) {
+/// Stop the second launch after binding, either before intent installation
+/// or before attachment recording. Recovery must reconcile both boundaries.
+async fn core_team_with_unattached_bound_intent(installed: bool) -> (Composed, SeatBindingId) {
     let composed = compose_realm("/tmp/kontor-remat-interrupted-install").await;
     let world = &composed.world;
     let project = ProjectId::parse(&composed.project).unwrap();
@@ -64162,16 +64162,22 @@ async fn core_team_with_uninstalled_bound_intent() -> (Composed, SeatBindingId) 
     let connection =
         rusqlite::Connection::open(world.directory.path().join(kontor_daemon::DATABASE_FILE))
             .unwrap();
-    connection
-        .execute_batch(
-            "CREATE TRIGGER interrupt_second_intent_install
+    let trigger = if installed {
+        "CREATE TRIGGER interrupt_second_intent_install
+         BEFORE UPDATE OF last_attached_at ON seat_bindings
+         WHEN NEW.last_attached_at IS NOT NULL AND
+           (SELECT count(*) FROM hosted_topology_seat_launch_intents
+            WHERE project_id = NEW.project_id AND state = 'installed') = 2
+         BEGIN SELECT RAISE(ABORT, 'simulated lost attachment acknowledgement'); END;"
+    } else {
+        "CREATE TRIGGER interrupt_second_intent_install
          BEFORE UPDATE OF state ON hosted_topology_seat_launch_intents
          WHEN NEW.state = 'installed' AND
            (SELECT count(*) FROM hosted_topology_seat_launch_intents
             WHERE project_id = NEW.project_id AND state = 'installed') = 1
-         BEGIN SELECT RAISE(ABORT, 'simulated lost install acknowledgement'); END;",
-        )
-        .unwrap();
+         BEGIN SELECT RAISE(ABORT, 'simulated lost install acknowledgement'); END;"
+    };
+    connection.execute_batch(trigger).unwrap();
     let interrupted = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
         &control_seat_routes(1),
@@ -64186,8 +64192,9 @@ async fn core_team_with_uninstalled_bound_intent() -> (Composed, SeatBindingId) 
         .unwrap();
     let pending: String = connection
         .query_row(
-            "SELECT seat_binding_id FROM hosted_topology_seat_launch_intents
-         WHERE project_id = ?1 AND state = 'prepared'",
+            "SELECT i.seat_binding_id FROM hosted_topology_seat_launch_intents i
+         JOIN seat_bindings s ON s.project_id = i.project_id AND s.id = i.seat_binding_id
+         WHERE i.project_id = ?1 AND s.last_attached_at IS NULL",
             [project.to_string()],
             |row| row.get(0),
         )
@@ -64201,12 +64208,42 @@ async fn core_team_with_uninstalled_bound_intent() -> (Composed, SeatBindingId) 
             .unwrap()
             .is_some()
     );
+    let binding = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_seat_binding(project, seat))
+        .unwrap()
+        .unwrap();
+    assert!(binding.last_attached_at.is_none());
+    let intent = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_hosted_seat_launch_intent(project, seat, 1))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        intent.state,
+        if installed {
+            kontor_core::repository::HostedSeatLaunchIntentState::Installed
+        } else {
+            kontor_core::repository::HostedSeatLaunchIntentState::Prepared
+        }
+    );
     (composed, seat)
 }
 
 #[tokio::test]
 async fn materializing_reconciles_a_bound_seats_prepared_intent() {
-    let (composed, seat) = core_team_with_uninstalled_bound_intent().await;
+    assert_bound_intent_and_attachment_recovery(false).await;
+}
+
+#[tokio::test]
+async fn materializing_reconciles_an_installed_intents_missing_attachment() {
+    assert_bound_intent_and_attachment_recovery(true).await;
+}
+
+async fn assert_bound_intent_and_attachment_recovery(installed: bool) {
+    let (composed, seat) = core_team_with_unattached_bound_intent(installed).await;
     let world = &composed.world;
     let project = ProjectId::parse(&composed.project).unwrap();
     let occupancy = world
@@ -64247,6 +64284,32 @@ async fn materializing_reconciles_a_bound_seats_prepared_intent() {
             intent.observed_native_id.as_ref(),
             Some(&occupancy.native_identity.native_id)
         );
+        let binding = world
+            .daemon
+            .state()
+            .with_store(|store| store.get_seat_binding(project, seat))
+            .unwrap()
+            .unwrap();
+        assert!(
+            binding.last_attached_at.is_some(),
+            "successful exact-native recovery records attachment"
+        );
+        assert!(
+            binding.last_activity_at.is_none(),
+            "inspection is attachment, never invented activity"
+        );
+        assert_eq!(
+            kontor_core::state::evaluate_seat_attachment(
+                &binding.attachment_observation(false),
+                binding
+                    .attach_deadline
+                    .checked_add(jiff::SignedDuration::from_secs(1))
+                    .unwrap(),
+                jiff::SignedDuration::from_secs(300),
+            ),
+            kontor_core::state::SeatAttachment::Stalled,
+            "a recovered idle seat must not become AttachmentFailed after its deadline"
+        );
         assert_eq!(
             world.fake.minted_natives(),
             minted,
@@ -64266,7 +64329,7 @@ async fn materializing_reconciles_a_bound_seats_prepared_intent() {
 #[tokio::test]
 async fn materializing_refuses_a_prepared_intent_with_divergent_authority() {
     for field in ["model", "autonomy"] {
-        let (composed, seat) = core_team_with_uninstalled_bound_intent().await;
+        let (composed, seat) = core_team_with_unattached_bound_intent(false).await;
         let world = &composed.world;
         let project = ProjectId::parse(&composed.project).unwrap();
         let mut intent = world
