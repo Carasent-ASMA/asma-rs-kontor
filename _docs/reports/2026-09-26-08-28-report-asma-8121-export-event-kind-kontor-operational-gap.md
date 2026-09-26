@@ -1,7 +1,7 @@
 # ASMA-8121 export event-kind operational gap
 
 > **Date:** 2026-09-26 08:28 Europe/Oslo
-> **Status:** 🟡 In Review — source regressions/mutations verified; full qualification and deployment pending
+> **Status:** 🟡 In Review — source and full qualification verified; independent audit, continuity and deployment pending
 > **Author:** Codex
 > **Category:** report
 > **Scope:** ASMA-8049 / ASMA-8121 snapshot, export and identity continuity
@@ -45,10 +45,14 @@ The new regression records a real `EnsureProject` local command with the observe
 
 Additional regressions require both observation kinds to refuse a planted runtime-content alias and require a planted command-intent secret to be refused by the recursive scan without echoing its value. The first suite run had one fixture collision with the one-event-per-receipt index; its [actual failed log](evidence/ASMA-8121/initial-backup-export-fixture-failure.txt) is retained and supplies no acceptance credit. The disposable corruption fixture now explicitly bypasses only its own append-only update trigger to plant the refused payload; production triggers remain unchanged.
 
-The corrected focused contracts pass. Three distinct source mutants compiled and failed the intended behavioral assertions, exit 101: rejecting valid commands, accepting runtime/census session content, and skipping the embedded canary scan. Exact candidate-relative patches, log hashes and post-restoration source/test hashes are in the [mutation receipt](evidence/ASMA-8121/export-mutation-results.json). After restoration, the [complete backup/export suite](evidence/ASMA-8121/backup-export-green-restored.txt) passes all 21 tests, zero failed, exit 0. Tests use the owned worktree and disposable SQLite; the compiler target cache is shared at `_tools/asma-rs-kontor/target`. The full exact-candidate gate and deployment remain pending.
+The corrected focused contracts pass. Three distinct source mutants compiled and failed the intended behavioral assertions, exit 101: rejecting valid commands, accepting runtime/census session content, and skipping the embedded canary scan. Exact candidate-relative patches, log hashes and post-restoration source/test hashes are in the [mutation receipt](evidence/ASMA-8121/export-mutation-results.json). After restoration, the [complete backup/export suite](evidence/ASMA-8121/backup-export-green-restored.txt) passes all 21 tests, zero failed, exit 0. Tests use the owned worktree and disposable SQLite; the compiler target cache is shared at `_tools/asma-rs-kontor/target`. The exact-candidate full gate now passes; actual snapshot export and deployed continuity remain pending.
 
 Separately, ASMA-8049's MUT-003 was actually executed on installed-source bytes: removing confirmation-time live-census parity compiled and failed `confirmation_re_proves_parity_against_the_live_census`, exit 101. Baseline and restored runs passed. The [receipt](evidence/ASMA-8121/jira-migration-mut003-results.json) and [baseline](evidence/ASMA-8121/jira-migration-mut003-baseline.txt), [mutant](evidence/ASMA-8121/jira-migration-mut003.txt), [restored](evidence/ASMA-8121/jira-migration-mut003-restored.txt) logs preserve that proof. It supplies only this mutant's qualification.
 
+## Exact-candidate source qualification
+
+Candidate `b42b51970a254a98db2c0997f676e413b5cd7377` passed the required archive gate: formatting, workspace Clippy with warnings denied, 2,901 Rust tests across 149 test binaries (zero failed, nine ignored), dependency audit/deny, frozen console install, typecheck, 305 console tests and production dependency audit. The separate API-generation comparison also passed. Both commands exited 0. The [qualification receipt](evidence/ASMA-8121/b42b5197-source-qualification.json), [full raw log](evidence/ASMA-8121/b42b5197-full-gate.txt) and [API log](evidence/ASMA-8121/b42b5197-verify-api.txt) preserve exact identity and results.
+
 ## Remaining acceptance
 
-Complete required exact-candidate source gates and independent review; then integrate, build and deploy the qualified candidate. Repeat actual export on the unchanged snapshot and offline restore and compare the preserved record identities and digests. Obtain a fresh all-thirteen joined post-restart census, current runtime identity/health and genuine ASMA-8120/8121 verification/audit evidence. Preserve all historical failures and the 89-versus-88 temporal lifecycle distinction. [SHA256SUMS.json](evidence/ASMA-8121/SHA256SUMS.json) anchors every raw receipt and log in this checkpoint.
+Complete independent review and actual export on the preserved offline snapshot; then integrate, build and deploy the qualified candidate. Repeat actual export on the unchanged snapshot and offline restore and compare the preserved record identities and digests. Obtain a fresh all-thirteen joined post-restart census, current runtime identity/health and genuine ASMA-8120/8121 verification/audit evidence. Preserve all historical failures and the 89-versus-88 temporal lifecycle distinction. [SHA256SUMS.json](evidence/ASMA-8121/SHA256SUMS.json) anchors every raw receipt and log in this checkpoint.

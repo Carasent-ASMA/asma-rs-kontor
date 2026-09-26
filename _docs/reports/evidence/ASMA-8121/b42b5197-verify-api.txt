@@ -1,0 +1,14 @@
+Scope: all 3 workspace projects
+✓ Lockfile passes supply-chain policies (verified 19d ago)
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +149
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 149, reused 149, downloaded 0, added 149, done
+
+Done in 1.1s using pnpm v11.6.0
+$ openapi-typescript ../../crates/kontor-api/contract/openapi.json -o /tmp/kontor-schema.d.ts && diff -u src/api/schema.d.ts /tmp/kontor-schema.d.ts
+✨ openapi-typescript 7.13.0
+🚀 ../../crates/kontor-api/contract/openapi.json → /tmp/kontor-schema.d.ts [247.7ms]
+
+PROCESS_EXIT_CODE=0

@@ -1,6 +1,9 @@
 {
   "scope": "ASMA-8121 actual snapshot/restore, export regression and source mutation evidence",
   "files": {
+    "b42b5197-full-gate.txt": "7a1b7d5f8c321562f791501225bcf3adca5efea729b2a192cd2bbc914a3f85e2",
+    "b42b5197-source-qualification.json": "051a7e81bd2f69917d64b68299fb6237056d769d250df15966dbc56202e10d37",
+    "b42b5197-verify-api.txt": "157bdebb8981c71cd697a59edf862dde4acd3f53ef0d0bbc7d3e5b34934b424e",
     "backup-export-green-restored.txt": "7d8d561d8f9dcc6f836c94fc2862767501a9c40937e10f7330e4cf7cb5abd596",
     "baseline-export.txt": "ff706e32aea20224fe8f77ef358cd16d561835704e9a78ab29c57573cbf6aed4",
     "deployed-snapshot.txt": "4a90e5c41b81721ece1fed1ea50ead5e83018c12dc6230a81d7dc0725ddca43e",
