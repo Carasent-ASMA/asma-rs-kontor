@@ -1,0 +1,18 @@
+{
+  "sourceCommit": "7ffd650d9091410887a3de6a360296be9d9a88fd",
+  "mutant": "MUT-003: bypass exact live-census parity re-proof during confirmation",
+  "file": "crates/kontor-store/src/repository.rs",
+  "test": "confirmation_re_proves_parity_against_the_live_census",
+  "compiled": true,
+  "exitCode": 101,
+  "result": "KILLED",
+  "baselineExitCode": 0,
+  "restoredExitCode": 0,
+  "sourceSha256": "6ccf4d867c66d77c95b8cdb4b380b5e57b984a2e9d9b1b8977f8d0d019999b19",
+  "isolation": "Isolated git archive and fixture SQLite only; primary source, live DB, pins and native state unchanged",
+  "logs": {
+    "baseline": "7794bbcece4532052bcc3a23f5e470a32142e5d8b3c87df91cd6b7644c81f525",
+    "mut003": "626fc9e85fd7c243b0eff22656547059dae38c0375bf38b1c56e4075a0ab6b9b",
+    "restored": "11e6357b3e96410fc92a5351630ca8e880e178926d7cbc647b2850fd9d2ee215"
+  }
+}

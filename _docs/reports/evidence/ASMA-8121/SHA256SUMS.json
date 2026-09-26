@@ -1,0 +1,26 @@
+{
+  "scope": "ASMA-8121 actual snapshot/restore, export regression and source mutation evidence",
+  "files": {
+    "backup-export-green-restored.txt": "7d8d561d8f9dcc6f836c94fc2862767501a9c40937e10f7330e4cf7cb5abd596",
+    "baseline-export.txt": "ff706e32aea20224fe8f77ef358cd16d561835704e9a78ab29c57573cbf6aed4",
+    "deployed-snapshot.txt": "4a90e5c41b81721ece1fed1ea50ead5e83018c12dc6230a81d7dc0725ddca43e",
+    "export-command-regression-red.txt": "8d11fc5b5f2d6720ed977fa55ef5526e1626180684ddddb6f996cb53892f9fd2",
+    "export-mutation-results.json": "0c86822786701953e1600594f92962b6a125d6e6d6a688b9354ed06bcb14187a",
+    "focused-command-green.txt": "97df531a6fd01f46897437c78913f1173165908a0391a66c5103288c6c7b5751",
+    "focused-observation-green.txt": "9099925a39575f12ec5edb9324617b4cee6f13616c3e3ad100fb5096db9c9bb4",
+    "initial-backup-export-fixture-failure.txt": "59a438125d25f42fa920e32eb2da2f2afab1abfb5451e0c99c9211679539d930",
+    "jira-migration-mut003-baseline.txt": "7794bbcece4532052bcc3a23f5e470a32142e5d8b3c87df91cd6b7644c81f525",
+    "jira-migration-mut003-restored.txt": "11e6357b3e96410fc92a5351630ca8e880e178926d7cbc647b2850fd9d2ee215",
+    "jira-migration-mut003-results.json": "87c7726a12297d9010f7c6b0b8282d2063f8c7150d20e75c6fd741125955ec03",
+    "jira-migration-mut003.txt": "626fc9e85fd7c243b0eff22656547059dae38c0375bf38b1c56e4075a0ab6b9b",
+    "mutant-allow-observation.diff": "d38676dbb0d9d1fcc157a75a48d79c8d7f4f46f273b8e705dfeae7e919de583f",
+    "mutant-allow-observation.txt": "9e680f13a97f1cf08c3c2d5ed02f8e10eb55c11cb6778115dc77d3aac965fca7",
+    "mutant-reject-command.diff": "8e248bcf09ae619938c99f769499a82606ddaf98bb237d89c3dc76e8e1ffda37",
+    "mutant-reject-command.txt": "1d680bff109ca2dc2f4568ca5524787c167b41dfabca769d98e654502ccd7974",
+    "mutant-skip-canary.diff": "11cce45a1b933f14aa7e6ec6f039c126999ba82abdfaf3df4dc5ec0202e3c58d",
+    "mutant-skip-canary.txt": "c6fcc7de04c211efe608d5299e5c6eb34376d5bc447aed19bce66427a6d9212e",
+    "offline-restore.txt": "e0dbb735a42410245fa14a37554f4d4334527566edf074837985eb69dfff8676",
+    "snapshot-restore-identity-receipt.json": "56896473f3b662fd0119a860aa6c68ca1e47d36bbc8e3f39f5a75579613052ea",
+    "store-clippy.txt": "f2877879954a04a23bb24b1abe9f6aa0710d8b6fb2965f51cb51a937107d44f7"
+  }
+}

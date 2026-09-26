@@ -510,6 +510,118 @@ fn seed_unchanged_p2_selection(seeded: &Seeded) -> kontor_store::StoredProfileSe
     outcome
 }
 
+fn record_project_intent(seeded: &Seeded) -> kontor_core::receipt::CommandReceipt {
+    seeded
+        .store
+        .record_local_command(&NewLocalCommand {
+            project_id: seeded.project,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: IdempotencyKey::parse("export-project-intent").expect("a key"),
+            kind: CommandKind::EnsureProject,
+            target: AggregateRef::Project {
+                project_id: seeded.project,
+            },
+            target_revision: AggregateRevision::INITIAL,
+            intent: document(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "ensure_project",
+                "name": "Exported project",
+                "root_path": "/tmp/kontor-export",
+            })),
+            created_at: at("2026-08-10T09:00:00Z"),
+        })
+        .expect("a real project command records its intent")
+}
+
+#[test]
+fn command_intents_export_under_their_own_document_contract() {
+    let seeded = seed();
+    let receipt = record_project_intent(&seeded);
+    let export = export_realm(&seeded.store, at("2026-08-10T10:00:00Z"))
+        .expect("command intent fields are not runtime observation fields");
+    let event = export
+        .records
+        .runtime_events
+        .iter()
+        .find(|event| event.command_receipt_id.as_deref() == Some(&receipt.id.to_string()))
+        .expect("the command event is retained");
+    assert_eq!(event.event_kind, "command_intent");
+    assert_eq!(event.payload, receipt.intent.json());
+    assert_eq!(event.payload_hash, receipt.intent.hash().as_str());
+    assert_eq!(export.records.runtime_events.len(), 2);
+    let bytes = export.canonical_bytes().expect("canonical export");
+    let parsed = KontorExportV1::parse(&bytes).expect("the export round-trips");
+    assert_eq!(parsed.records, export.records);
+    let again = export_realm(&seeded.store, at("2026-08-10T11:00:00Z")).expect("a repeat export");
+    assert_eq!(
+        again.canonical_records_bytes().unwrap(),
+        export.canonical_records_bytes().unwrap()
+    );
+    assert_eq!(again.records_hash, export.records_hash);
+}
+
+#[test]
+fn runtime_and_census_payloads_still_refuse_session_content() {
+    for kind in ["runtime_observation", "census_observation"] {
+        let seeded = seed();
+        let run = if kind == "runtime_observation" {
+            "agent_run_id"
+        } else {
+            "NULL"
+        };
+        plant(
+            &seeded.database,
+            &format!(
+                "INSERT INTO runtime_events
+             (project_id, event_kind, agent_run_id, runtime_kind, host, generation,
+              native_id, native_sequence, observed_state, contact, freshness, audit_ref,
+              payload, payload_hash, observed_at, recorded_at)
+             SELECT project_id, '{kind}', {run}, runtime_kind, host, generation,
+                    'planted-native', 99, 'running', 'reachable', 'fresh', 'planted-audit',
+                    '{{\"schema_version\":1,\"agent_reply\":\"private session content\"}}',
+                    '{}', observed_at, recorded_at
+             FROM runtime_events WHERE event_kind = 'runtime_observation' LIMIT 1",
+                ContentHash::of(b"planted-observation")
+            ),
+        );
+        let refused = match export_realm(&seeded.store, at("2026-08-10T10:00:00Z")) {
+            Ok(_) => panic!("runtime-owned content cannot leave in either observation kind"),
+            Err(error) => error,
+        };
+        assert!(matches!(refused, BackupError::Domain(_)), "{refused:?}");
+        assert!(!format!("{refused:?}").contains("private session content"));
+    }
+}
+
+#[test]
+fn command_intent_payloads_still_receive_the_embedded_canary_scan() {
+    let seeded = seed();
+    let receipt = record_project_intent(&seeded);
+    // Simulate corruption only in this disposable fixture. The production
+    // append-only guard stays intact; no rejected value is echoed on failure.
+    plant(
+        &seeded.database,
+        &format!(
+            "DROP TRIGGER runtime_events_no_update;
+         UPDATE runtime_events
+         SET payload = '{{\"schema_version\":1,\"api_key\":\"sk-0123456789abcdef0123456789\"}}',
+             payload_hash = '{}'
+         WHERE command_receipt_id = '{}'",
+            ContentHash::of(b"planted-command"),
+            receipt.id
+        ),
+    );
+    let refused = match export_realm(&seeded.store, at("2026-08-10T10:00:00Z")) {
+        Ok(_) => panic!("commands still receive structural secret scanning"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(refused, BackupError::Redaction { .. }),
+        "{refused:?}"
+    );
+    assert!(!format!("{refused:?}").contains("sk-0123456789"));
+}
+
 #[test]
 fn an_export_of_unchanged_state_is_byte_identical_and_hashes_the_same() {
     let seeded = seed();
