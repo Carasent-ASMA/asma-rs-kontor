@@ -1,0 +1,22 @@
+{
+  "observedAt": "2026-09-26T05:03:39.405557+00:00",
+  "qualifiedCommit": "f2ba0a738b9a107be51d24e3cdedc487cb4f8fa9",
+  "baseline": "7ffd650d9091410887a3de6a360296be9d9a88fd",
+  "archiveGate": "completed successfully; all gates fail immediately on nonzero, see scripts/verify-tree.py",
+  "rustPassed": 2898,
+  "rustIgnored": 9,
+  "rustFailed": 0,
+  "rustTestBinaries": 149,
+  "consolePassed": 305,
+  "apiGenerationCheck": "passed with tool exit_code 0",
+  "sourceSha256": {
+    "crates/kontor-daemon/src/applications.rs": "66b4fa1303da0a2ee821be18d0c8fc532f1b04c2076acc7150f98dff7041c478",
+    "crates/kontor-daemon/tests/loopback_api.rs": "8ba0c2457938072ee7c31e3db425274c5383d274c3bab9fb5ba8deca8cc4e25a"
+  },
+  "files": {
+    "asma-8190-f2ba0a73-full-gate.txt": "7be9627e7db90a4af62bd407b0eeb5935359693f43f0c2feeaa404c81be1a319",
+    "asma-8190-f2ba0a73-verify-api.txt": "351b9dab826b43070c0d66579e8e929009eb278bb6ef42ee68d66464277eb726",
+    "lsa-attachment-corrective-review-20260926.txt": "5eebd626abc5a62d5f8d4165b4b5132615e1044957bece50b2ad707b31824332"
+  },
+  "boundary": "bounded source qualification; deployment, live whole-epic acceptance and SQLite task/epic settlement pending"
+}

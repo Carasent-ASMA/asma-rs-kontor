@@ -1,7 +1,7 @@
 # ASMA-8196 bound-seat recovery verification
 
 > **Date:** 2026-09-26 05:06 Europe/Oslo
-> **Status:** Attachment correction verified; exact-candidate requalification and deployment pending
+> **Status:** Source qualified and independently approved; merge/deployment and epic acceptance pending
 > **Category:** report
 > **Scope:** Core Team rematerialization, exact native occupancy reuse and interrupted launch-intent installation
 > **Summary:** A crash after occupancy binding left a Prepared launch intent. Retry previously returned success without installing it. Recovery now proves the exact live native and frozen authority, installs that same intent, and preserves the occupancy generation.
@@ -38,6 +38,9 @@ The new crash fixture aborts the second intent installation after both native oc
 | Attachment regressions against `72731969` | Both Prepared-before-install and Installed-before-attachment recovery failed the durable attachment assertion |
 | Corrected materialization contracts after mutation restoration | Six passed; exact native/authority/generation, durable attachment and no invented activity |
 | Attachment/installation source mutation verification | Three compiled mutants killed and restored; actual logs preserved below |
+| Full archive verification of `f2ba0a73` | Completed successfully; 2,898 Rust passed, zero failed, nine ignored; 305 console passed; all mandatory archive checks passed |
+| Separate `verify:api` on `f2ba0a73` | Passed, tool exit 0; generated OpenAPI has no drift |
+| Independent attachment corrective review on `f2ba0a73` | Existing LSA confirms the P2 resolved and no remaining material issue in the bounded correction; supports merge after the fresh gate |
 
 Independent QA's actual finding:
 
@@ -55,7 +58,7 @@ The LSA independently reviewed `72731969`, confirmed the P1 correction and full-
 
 Two real-router crash cases reproduced the missing-attachment assertion on the reviewed source. Recovery now retains the successful exact-native inspection's timestamp and records it as attachment after intent reconciliation. It writes no activity timestamp and retains the independent activity history. The fixture checks both Prepared and Installed intents, unchanged exact native/generation, no extra creation, durable attachment, and a post-deadline `Stalled` conclusion rather than `AttachmentFailed`. An idle seat's inspection is not proof of activity.
 
-After correction, all six materialization contracts passed. Three separately seeded source defects—omitted attachment recording, invented activity, and omitted Prepared-intent installation—compiled and failed the intended behavioral assertions. Every source mutation was restored and the six contracts passed again. The [manifest](evidence/ASMA-8190/asma-8190-attachment-mutation-results-20260926.json) links exact source/test hashes and actual failure logs; [red](evidence/ASMA-8190/asma-8190-attachment-red.txt) and [restored green](evidence/ASMA-8190/asma-8190-attachment-green-restored.txt) results are retained. Full qualification and independent corrective review remain pending on the new committed candidate before merge.
+After correction, all six materialization contracts passed. Three separately seeded source defects—omitted attachment recording, invented activity, and omitted Prepared-intent installation—compiled and failed the intended behavioral assertions. Every source mutation was restored and the six contracts passed again. The [manifest](evidence/ASMA-8190/asma-8190-attachment-mutation-results-20260926.json) links exact source/test hashes and actual failure logs; [red](evidence/ASMA-8190/asma-8190-attachment-red.txt) and [restored green](evidence/ASMA-8190/asma-8190-attachment-green-restored.txt) results are retained. Full qualification then completed successfully on exact candidate `f2ba0a738b9a107be51d24e3cdedc487cb4f8fa9`. The same independent LSA confirmed its attachment P2 resolved and found no remaining material source issue. The [actual corrective finding](evidence/ASMA-8190/lsa-attachment-corrective-review-20260926.txt), [qualification receipt](evidence/ASMA-8190/asma-8190-f2ba0a73-source-qualification.json), [full gate log](evidence/ASMA-8190/asma-8190-f2ba0a73-full-gate.txt) and [API-generation log](evidence/ASMA-8190/asma-8190-f2ba0a73-verify-api.txt) retain the evidence. This documentation checkpoint changes no qualified source or test input.
 
 Original P1 candidate source SHA-256:
 
@@ -64,8 +67,8 @@ Original P1 candidate source SHA-256:
 
 ## Worktree recovery incident
 
-ASMA CLI root checkout with `--safe-carry` stashed two sibling Kontor worktrees that share `refs/stash`, then popped the current top stash into ASMA-8190 instead of its own stash. Recovery restored ASMA-8190's two files from exact stash `403d1993`, removed the mistakenly imported fake-runtime change, and restored ASMA-8202's original three files from `0f09fc3b`. Byte comparisons against each saved tree matched. Both stashes and conflict evidence remain preserved. No other agent's work was committed. This CLI defect requires a separate correction before safe-carry can be trusted with shared-repository worktrees.
+ASMA CLI root checkout with `--safe-carry` stashed two sibling Kontor worktrees that share `refs/stash`, then popped the current top stash into ASMA-8190 instead of its own stash. Recovery restored ASMA-8190's two files from exact stash `403d1993`, removed the mistakenly imported fake-runtime change, and restored ASMA-8202's original three files from `0f09fc3b`. Byte comparisons against each saved tree matched. Both stashes and conflict evidence remain preserved. No other agent's work was committed. The separate CLI ownership/recovery correction passed 380 tests, eight subtests and six source mutants, received independent corrective approval, and merged through root PR #3122 at `b7472989c16400928e70b30b62ca89f2ae7ffa7e`. The original incident and recovery stashes remain preserved.
 
 ## Remaining delivery boundary
 
-The original `72731969` passed the complete source gate set; its attachment P2 is corrected and focused verification/mutations pass. The new exact candidate must complete full qualification and corrective review before source merge. Deployment, live persona/attachment readback, final task settlement, ASMA-8190 epic completion and Kontor trust promotion still require their actual receipts and readbacks.
+The original `72731969` qualification is historical. Its attachment P2 is corrected in `f2ba0a73`, which now passes the complete fresh source gate set and independent corrective review. The next step is source merge through the ASMA workflow. Deployment, live persona/attachment readback, final task settlement, ASMA-8190 epic completion and Kontor trust promotion still require their actual receipts and readbacks.

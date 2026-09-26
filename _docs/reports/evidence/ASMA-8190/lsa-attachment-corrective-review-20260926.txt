@@ -1,0 +1,18 @@
+Showing 1 of 75 activities (limited to 1)
+
+---
+
+**My attachment P2 is resolved. No remaining material source issue found in the bounded correction.** Reviewed exact commit `f2ba0a738b9a107be51d24e3cdedc487cb4f8fa9` against `72731969`.
+
+The [corrected path](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon/src/applications.rs:8041) records the successful inspection’s timestamp only after authority checks and intent reconciliation. It covers both crash boundaries, invents no activity, and preserves existing activity history.
+
+I verified:
+
+- Both fixtures assert attachment, unchanged native/generation, no extra creation, and post-deadline `Stalled`.
+- The restored focused suite log reports **six passed**.
+- All three mutants compiled and failed the intended behavioral assertions.
+- Source, test and mutant-log hashes match the committed [manifest](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/_docs/reports/evidence/ASMA-8190/asma-8190-attachment-mutation-results-20260926.json).
+
+**I support source merge once the fresh exact-candidate gate confirms exit 0.** Its log was still showing compilation at my final read; the prior `72731969` qualification does not qualify this commit.
+
+No edits, Cargo runs or agents. Native placement, deployment, task settlement and whole-epic PASS remain outside this verdict.
