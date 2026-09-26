@@ -2805,7 +2805,8 @@ fn atomic_local_gate_and_done_survive_restart_and_replay_after_reopen() {
 /// has to be undone here: the reopen at the end of the v115 test replays them,
 /// and a table or column left behind turns that replay into a collision instead
 /// of a migration. 0116 adds one table, 0117 two columns and 0118 the two
-/// delivery-proof tables; a future migration that adds anything must undo it
+/// delivery-proof tables, and 0119 the publication-attestation guards;
+/// a future migration that adds anything must undo it
 /// here too, and the replay is what notices when it does not.
 fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
     let connection = Connection::open(&fixture.path).expect("migration connection");
@@ -2818,6 +2819,8 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
          ALTER TABLE runtime_message_issuances DROP COLUMN boundary_sequence;
          DROP TABLE runtime_message_delivery_proof_steps;
          DROP TABLE runtime_message_delivery_proofs;
+         DROP TRIGGER publication_attestation_no_update;
+         DROP TRIGGER publication_attestation_no_delete;
          PRAGMA user_version = 114;",
         )
         .expect("return empty v115 tables to exact prior schema");
