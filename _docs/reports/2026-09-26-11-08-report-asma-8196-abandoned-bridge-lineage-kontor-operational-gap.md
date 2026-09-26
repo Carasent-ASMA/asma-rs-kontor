@@ -251,8 +251,9 @@ The [joined current census](evidence/ASMA-8196/replacement-bridges/deployed-e29b
 and [58 exact-ID native readbacks](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/native-exact-readbacks.json)
 find all requested natives and all 56 current project/workspace containers;
 43 distinct current seat references have matching names and present parents.
-Fifteen referenced natives are archived and remain explicitly recorded as such;
-this is naming/identity readback, not a claim of live occupancy for those sessions.
+Fifteen of the 43 current seat references are archived. The complete 58-ID
+readback also includes 15 historical IDs; 23 of all 58 are archived. These are
+naming/identity observations, not live-occupancy claims for archived sessions.
 The historical 89 applied targets and later 88-target readback are separate dated
 sets. Their before/apply/after/current temporal reconciliation is still pending.
 
@@ -261,8 +262,10 @@ sets. Their before/apply/after/current temporal reconciliation is still pending.
 Source correction, exact-source qualification, independent source/publication
 review, PR merge, release build, controlled deployment, supported runtime
 observation and thirteen fresh naming previews are complete. The bridge-selection
-P1 is corrected end to end without rewriting recorded identities. Independent
-deployed-evidence review and the historical before/apply/after/current census
-reconciliation remain pending. Current run `waiting_input` is freshness evidence,
+P1 is corrected end to end without rewriting recorded identities. The [independent deployed-checkpoint audit](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/actual-lsa-deployed-checkpoint.txt)
+and its [identity receipt](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/lsa-deployed-checkpoint-publication-receipt.json)
+confirm the bounded deployment and current naming claims. Its archived-count
+precision note is clarified above. Historical before/apply/after/current census
+reconciliation remains pending. Current run `waiting_input` is freshness evidence,
 not ASMA-8196 delivery settlement. ASMA-8196 task/workflow gates, ASMA-8120/8121
 acceptance, ASMA-8049/8190 epic acceptance and global Kontor trust remain uncredited.

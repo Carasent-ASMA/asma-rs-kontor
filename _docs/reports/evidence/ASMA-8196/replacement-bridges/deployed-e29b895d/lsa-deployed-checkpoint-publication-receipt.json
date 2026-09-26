@@ -1,0 +1,12 @@
+{
+  "recordedAt": "2026-09-26T11:12:31.266806+00:00",
+  "agentId": "6301c2d4-7fbd-4f08-b61c-9f12183ada82",
+  "nativeSessionId": "01a0a39b-2b2c-7c02-923b-89a13f6c622c",
+  "route": "codex-personal/gpt-5.6-sol@xhigh",
+  "activityUpdateCount": 2892,
+  "reviewedCheckpoint": "093aefb07a2bd560045fa38b810592cd339db267",
+  "artifact": "actual-lsa-deployed-checkpoint.txt",
+  "sha256": "cc8e22ace4b02e851d4979143560c8e05eb40a45d4b20bb4a77ac5d582af752d",
+  "actualTerminatorPresent": false,
+  "boundary": "Actual bounded deployed-checkpoint support. Non-blocking archived-count precision note retained; historical temporal census and workflow/task/epic acceptance remain pending."
+}

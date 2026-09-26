@@ -1,0 +1,30 @@
+---
+
+Bounded deployed-checkpoint audit: **PASS for the narrow deployment and current naming claims.** No source, runtime-identity, or evidence-integrity defect was found.
+
+Verified independently:
+
+- PR #276 merge `e29b895d0f045c499144870a2fa610fc642b6cc0`, tree `2105986a…`.
+- All seven executable source/test files equal qualified source `6b3654bc`; merged archive hash reproduces as `271ae936…`.
+- The encoded release log decodes to `acfa40e2…` and records exit 0.
+- Current installed hashes match the deployment receipt:
+  - daemon `0a187d5d…`
+  - MCP `54160cfa…`, through `kontor-mcp.e29b895d`
+  - CLI `a724ec68…`
+- Backup exists and matches `c8cfa96f…`; runtime/fleet configuration hashes remain unchanged.
+- Current read-only SQLite health: schema 119, `quick_check=ok`, zero FK violations, exact realm preserved, ASMA-8098 remains `Done@14`.
+- Current ASMA-8190 run, binding, parent, native, SeatBinding, and ASMA-8188 gate rows compare byte-equivalently with the pre-restart identity checkpoint.
+- Current verify run `01a0cf81…` is confirmed `waiting_input@rev6`, cursor 4868, with no terminal outcome. Receipt: `01a0dd53-3874-7ed3-bb86-ffa197d48739`.
+- ASMA-8190 preview selects exactly:
+  - run `01a0cf81-50ec-7822-8f3a-bd60690a9bfe`
+  - native `a526c5cc-e399-43c9-8a5e-830e5834a27b`
+  - SeatBinding `01a0b033-1d67-7bc2-b5e4-e5dd3ad9c72b`
+  - generation 1
+- Cancelled predecessor run/native are absent. Preview has 24 targets and zero `would_change`.
+- All 13 preview files independently match their summary hashes: HTTP 200, 99 total targets, zero changes.
+- The joined census reconciles 56 containers plus 43 current seat references. Every container/name and every seat/native/parent match; 15 of the 43 current seat references are archived and are not evidence of live occupancy.
+- All 110 manifest entries match; evidence-only checkpoint `093aefb0` is clean and `git diff --check e29b895d..093aefb0` exits 0.
+
+One non-blocking precision note: the 58 exact-ID native readbacks comprise 43 current seat IDs plus 15 additional historical IDs. Across all 58, 23 are archived; the report’s “15 archived” correctly describes the current 43-seat census, not the entire readback file. A wording clarification would remove that ambiguity without rerunning anything.
+
+The [owning report](</Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/_docs/reports/2026-09-26-11-08-report-asma-8196-abandoned-bridge-lineage-kontor-operational-gap.md:209>) accurately preserves the remaining boundary: historical 89/88 temporal reconciliation is pending, and `waiting_input` does not settle ASMA-8196 or any workflow, task, epic, or global gate.

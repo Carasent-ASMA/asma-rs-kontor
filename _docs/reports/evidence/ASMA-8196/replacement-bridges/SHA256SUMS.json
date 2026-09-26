@@ -110,6 +110,8 @@
     "store-green.txt": "9eb327da9f47befb438e34f240e580c60908416f10aa3d8b0dfaa67cc34e164c",
     "store-red.txt": "f3bd664dad7495ba224b673fa49a4d97b6dc811cabe6d537226ccc129bd2c8d9",
     "unbound-fork-checkpoint.json": "94d51fa51461fcca92e418d9261d8238d7bb50283b2aa550ac42f3fc37c7dfec",
-    "unbound-fork-red.txt": "9e92274f55a47ab7a2e6dc86b3b2f5b8a3a774596fb07a43cf20ba8cb038390b"
+    "unbound-fork-red.txt": "9e92274f55a47ab7a2e6dc86b3b2f5b8a3a774596fb07a43cf20ba8cb038390b",
+    "deployed-e29b895d/actual-lsa-deployed-checkpoint.txt": "cc8e22ace4b02e851d4979143560c8e05eb40a45d4b20bb4a77ac5d582af752d",
+    "deployed-e29b895d/lsa-deployed-checkpoint-publication-receipt.json": "82b8ff65877156cf836efa47a4352bffe6269171b504d0b13ba75e66321296a1"
   }
 }
