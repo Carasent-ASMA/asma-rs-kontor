@@ -1,0 +1,10 @@
+{
+  "scope": "Preliminary owned-working-tree logs, not an immutable source qualification; initial sccache refusal receives no test or mutation credit.",
+  "files": {
+    "initial-jira.txt.json": "30b7dd412b2fd3219fe1e03b0cca115eba570c49b84fb5b13e5e1678b5dee4b3",
+    "initial-jira-no-sccache.txt.json": "41bf1eeea6a6acb489221f6f3ae5913300e025096c4f6740a20e222d3dce2a05",
+    "credential-contracts.txt.json": "3d33cf4a8f1f3eac78cb0ac90fd3a5c6b2dbc71dd55ab6808c6e22aac9825551",
+    "operator-contracts.txt.json": "c66f089a751aab7878fd980211021ca8ae0d0a46c77858544957ef651e8648cb",
+    "strict-clippy.txt.json": "129ed4a52d51e6eb6706538104a11978837486025c16ceb7a8108b0cb4bd8386"
+  }
+}

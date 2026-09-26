@@ -15,6 +15,7 @@ use secrecy::ExposeSecret;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::credentials::{JiraCredentials, KEYCHAIN_SERVICE, parse_credentials, validate_alias};
 use crate::jira::{
     FieldWrite, JiraExchange, JiraIssueIdentity, JiraOperation, JiraOutcome, JiraRequest,
     JiraResponse, WireAssignment, WireConfirmation, WireEffects, WireFieldValue, WireObservation,
@@ -24,7 +25,6 @@ use crate::{JiraError, MaterializationConflict, UnavailableReason, WireTimestamp
 
 const CONFIG_SCHEMA: u32 = 1;
 const CONFIG_FILE: &str = "jira.json";
-const KEYCHAIN_SERVICE: &str = "kontor-jira";
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -210,9 +210,8 @@ impl JiraConnector {
         config: JiraProjectConfig,
         keychain: Arc<dyn KeychainBackend>,
     ) -> Result<Self, JiraError> {
-        if config.credential_alias.trim().is_empty() || config.credential_alias.len() > 128 {
-            return Err(configuration("credential_alias is empty or oversized"));
-        }
+        validate_alias(&config.credential_alias)
+            .map_err(|_| configuration("credential_alias is empty, oversized or unsupported"))?;
         let mut endpoint = Url::parse(&config.endpoint)
             .map_err(|_| configuration("endpoint is not an absolute URL"))?;
         let loopback = endpoint
@@ -282,13 +281,7 @@ impl JiraConnector {
                 "the configured keychain credential could not be resolved",
             )
         })?;
-        serde_json::from_str(secret.expose_secret()).map_err(|_| {
-            JiraError::unavailable(
-                "credential",
-                UnavailableReason::Credential,
-                "the keychain credential is not the supported document",
-            )
-        })
+        parse_credentials(&secret)
     }
 
     fn url(&self, path: &str) -> Result<Url, JiraError> {
@@ -318,7 +311,10 @@ impl JiraConnector {
         let mut request = self
             .client
             .request(method, self.url(path)?)
-            .basic_auth(credentials.email, Some(credentials.api_token))
+            .basic_auth(
+                credentials.email.expose_secret(),
+                Some(credentials.api_token.expose_secret()),
+            )
             .header(reqwest::header::ACCEPT, "application/json");
         if let Some(body) = body {
             request = request.json(body);
@@ -1039,13 +1035,6 @@ impl JiraExchange for JiraConnector {
             notes: Vec::new(),
         })
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct JiraCredentials {
-    email: String,
-    api_token: String,
 }
 
 struct LiveIssue {

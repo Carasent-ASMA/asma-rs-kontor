@@ -126,6 +126,19 @@ pub trait KeychainBackend: Send + Sync {
     fn secret(&self, target: &KeychainTarget) -> Result<SecretString, KeychainFailure>;
 }
 
+/// The operator-only write port; ordinary resolution remains read-only.
+pub trait KeychainWriter: KeychainBackend {
+    /// Persist one secret. Backend errors must remain closed, redacted codes.
+    ///
+    /// # Errors
+    /// Returns a [`KeychainFailure`] when persistence is unavailable or refused.
+    fn set_secret(
+        &self,
+        target: &KeychainTarget,
+        secret: &SecretString,
+    ) -> Result<(), KeychainFailure>;
+}
+
 /// The production backend: the OS keychain.
 ///
 /// # Why macOS shells out to `/usr/bin/security`
@@ -157,6 +170,197 @@ pub trait KeychainBackend: Send + Sync {
 pub struct SystemKeychain;
 
 #[cfg(target_os = "macos")]
+fn security_input(
+    target: &KeychainTarget,
+    secret: &SecretString,
+) -> Result<zeroize::Zeroizing<String>, KeychainFailure> {
+    // Apple's interactive parser is line-based, uses backslash quoting, and
+    // has a 4096-byte input buffer. Refuse before launch rather than allowing a
+    // truncated second command. The secret travels only through this pipe.
+    let mut input = zeroize::Zeroizing::new(String::from(
+        "add-generic-password -U -T /usr/bin/security -s ",
+    ));
+    for (index, value) in [target.service(), target.account(), secret.expose_secret()]
+        .into_iter()
+        .enumerate()
+    {
+        if value.chars().any(char::is_control) {
+            return Err(KeychainFailure::Unavailable);
+        }
+        input.push('"');
+        for ch in value.chars() {
+            if ch == '\\' || ch == '"' {
+                input.push('\\');
+            }
+            input.push(ch);
+        }
+        input.push('"');
+        match index {
+            0 => input.push_str(" -a "),
+            1 => input.push_str(" -w "),
+            _ => input.push('\n'),
+        }
+    }
+    if input.len() >= 4096 {
+        return Err(KeychainFailure::Unavailable);
+    }
+    Ok(input)
+}
+
+#[cfg(target_os = "macos")]
+fn bounded_security(
+    command: Command,
+    input: Option<&str>,
+) -> Result<std::process::Output, KeychainFailure> {
+    bounded_security_for(command, input, std::time::Duration::from_secs(5))
+}
+
+#[cfg(target_os = "macos")]
+fn bounded_security_for(
+    mut command: Command,
+    input: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, KeychainFailure> {
+    use std::io::Write;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    command.stderr(Stdio::null());
+    command.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+    let mut child = command.spawn().map_err(|_| KeychainFailure::Unavailable)?;
+    if let Some(input) = input {
+        let written = child
+            .stdin
+            .take()
+            .ok_or(KeychainFailure::Unavailable)
+            .and_then(|mut stdin| {
+                stdin
+                    .write_all(input.as_bytes())
+                    .map_err(|_| KeychainFailure::Unavailable)
+            });
+        if written.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(KeychainFailure::Unavailable);
+        }
+    }
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|_| KeychainFailure::Unavailable);
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(KeychainFailure::Unavailable);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn security_writer_command() -> Command {
+    let mut command = Command::new("/usr/bin/security");
+    command
+        .args(["-i", "-q"])
+        .stdout(std::process::Stdio::null());
+    command
+}
+
+#[cfg(target_os = "macos")]
+impl KeychainWriter for SystemKeychain {
+    fn set_secret(
+        &self,
+        target: &KeychainTarget,
+        secret: &SecretString,
+    ) -> Result<(), KeychainFailure> {
+        let input = security_input(target, secret)?;
+        let output = bounded_security(security_writer_command(), Some(&input))?;
+        if !output.status.success() {
+            return Err(KeychainFailure::Unavailable);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod security_transport_tests {
+    use super::*;
+
+    #[test]
+    fn the_writer_transports_quoted_secret_only_on_stdin() {
+        let target = KeychainTarget::new("kontor-jira", "work\"\\alias");
+        let secret = SecretString::from("synthetic\"\\canary");
+        let input = security_input(&target, &secret).unwrap();
+        assert!(input.contains("-a \"work\\\"\\\\alias\""));
+        assert!(input.contains("-w \"synthetic\\\"\\\\canary\""));
+        assert_eq!(input.matches('\n').count(), 1);
+        let command = security_writer_command();
+        assert_eq!(command.get_program(), "/usr/bin/security");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["-i", "-q"]);
+    }
+
+    #[test]
+    fn multiline_or_truncated_commands_are_refused_before_launch() {
+        for (account, secret) in [
+            ("work\nsecond-command", "synthetic-canary"),
+            ("work", "synthetic\nsecond-command"),
+            ("work", "synthetic\rsecond-command"),
+        ] {
+            assert!(
+                security_input(
+                    &KeychainTarget::new("kontor-jira", account),
+                    &SecretString::from(secret)
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            security_input(
+                &KeychainTarget::new("kontor-jira", "work"),
+                &SecretString::from("x".repeat(4096))
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_stalled_security_process_is_killed_and_reaped() {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30");
+        let start = std::time::Instant::now();
+        assert!(matches!(
+            bounded_security_for(command, None, std::time::Duration::from_millis(50)),
+            Err(KeychainFailure::Unavailable)
+        ));
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl KeychainWriter for SystemKeychain {
+    fn set_secret(
+        &self,
+        target: &KeychainTarget,
+        secret: &SecretString,
+    ) -> Result<(), KeychainFailure> {
+        let entry = keyring::Entry::new(target.service(), target.account())
+            .map_err(|_| KeychainFailure::Unavailable)?;
+        entry
+            .set_password(secret.expose_secret())
+            .map_err(|_| KeychainFailure::Unavailable)
+    }
+}
+
+#[cfg(target_os = "macos")]
 impl KeychainBackend for SystemKeychain {
     fn secret(&self, target: &KeychainTarget) -> Result<SecretString, KeychainFailure> {
         /// `security`'s exit status for "no such item" — the one outcome worth
@@ -165,7 +369,8 @@ impl KeychainBackend for SystemKeychain {
         /// stderr, and that text can name the service and account.
         const NOT_FOUND: i32 = 44;
 
-        let output = Command::new("/usr/bin/security")
+        let mut command = Command::new("/usr/bin/security");
+        command
             .args([
                 "find-generic-password",
                 "-s",
@@ -174,10 +379,11 @@ impl KeychainBackend for SystemKeychain {
                 target.account(),
                 "-w",
             ])
-            .output()
-            .map_err(|_| KeychainFailure::Unavailable)?;
+            .stdout(std::process::Stdio::piped());
+        let mut output = bounded_security(command, None)?;
 
         if !output.status.success() {
+            output.stdout.zeroize();
             return Err(match output.status.code() {
                 Some(NOT_FOUND) => KeychainFailure::NotFound,
                 _ => KeychainFailure::Unavailable,

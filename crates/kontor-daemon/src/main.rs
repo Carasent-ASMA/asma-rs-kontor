@@ -92,6 +92,32 @@ enum Command {
     /// A running daemon rotates its own credentials on `SIGHUP`, which swaps the
     /// in-memory set in the same operation.
     RotateCredentials,
+    /// Install a strict Jira credential from bounded stdin for a stopped realm.
+    InstallJiraCredential {
+        /// The non-secret alias referenced by this realm's `jira.json`.
+        #[arg(long)]
+        alias: String,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+enum OperatorError {
+    #[error(transparent)]
+    Recovery(#[from] recovery::RecoveryError),
+    #[error("another daemon holds the state root, or its lock is unavailable")]
+    CredentialLock,
+    #[error(transparent)]
+    Jira(#[from] kontor_jira::JiraError),
+}
+
+impl OperatorError {
+    fn category(&self) -> &'static str {
+        match self {
+            Self::Recovery(error) => error.category(),
+            Self::CredentialLock => "state_root_locked",
+            Self::Jira(_) => "jira_credential",
+        }
+    }
 }
 
 #[tokio::main]
@@ -117,7 +143,7 @@ async fn main() -> std::process::ExitCode {
 }
 
 /// Run one operator command against a state root.
-fn run(state_root: &Path, command: Command) -> Result<(), recovery::RecoveryError> {
+fn run(state_root: &Path, command: Command) -> Result<(), OperatorError> {
     let now = Timestamp::now();
     match command {
         Command::Snapshot { into } => {
@@ -132,7 +158,9 @@ fn run(state_root: &Path, command: Command) -> Result<(), recovery::RecoveryErro
             // directory, so a shared backup directory lists only this realm's.
             let store = kontor_store::SqliteStore::open(&recovery::database_in(state_root))
                 .map_err(|source| recovery::RecoveryError::Store { source })?;
-            for snapshot in kontor_store::backup::list_snapshots(&directory, store.realm_id())? {
+            for snapshot in kontor_store::backup::list_snapshots(&directory, store.realm_id())
+                .map_err(recovery::RecoveryError::from)?
+            {
                 println!(
                     "{}\t{}\t{} bytes",
                     snapshot.manifest.created_at,
@@ -149,7 +177,9 @@ fn run(state_root: &Path, command: Command) -> Result<(), recovery::RecoveryErro
         }
         Command::Export { out } => {
             let export = recovery::export(state_root, now)?;
-            let bytes = export.canonical_bytes()?;
+            let bytes = export
+                .canonical_bytes()
+                .map_err(recovery::RecoveryError::from)?;
             match out {
                 Some(path) => {
                     std::fs::write(&path, bytes).map_err(|source| recovery::RecoveryError::Io {
@@ -178,8 +208,28 @@ fn run(state_root: &Path, command: Command) -> Result<(), recovery::RecoveryErro
             println!("{}", report.import_id);
             Ok(())
         }
-        Command::RotateCredentials => recovery::rotate_credentials(state_root),
+        Command::RotateCredentials => {
+            recovery::rotate_credentials(state_root)?;
+            Ok(())
+        }
+        Command::InstallJiraCredential { alias } => {
+            install_jira_credential(state_root, std::io::stdin().lock(), |secret| {
+                kontor_jira::install_credentials(&alias, secret)
+            })
+        }
     }
+}
+
+fn install_jira_credential(
+    state_root: &Path,
+    reader: impl std::io::Read,
+    install: impl FnOnce(secrecy::SecretString) -> Result<(), kontor_jira::JiraError>,
+) -> Result<(), OperatorError> {
+    let _lock = kontor_daemon::lock::StateRootLock::acquire(state_root)
+        .map_err(|_| OperatorError::CredentialLock)?;
+    let secret = kontor_jira::read_credential_document(reader)?;
+    install(secret)?;
+    Ok(())
 }
 
 /// Keep the API live while the startup barrier is being settled.
@@ -390,6 +440,66 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+
+    #[test]
+    fn jira_credential_command_accepts_only_a_non_secret_alias() {
+        let args = Arguments::try_parse_from([
+            "kontor-daemon",
+            "--state-root",
+            "/tmp/synthetic-realm",
+            "install-jira-credential",
+            "--alias",
+            "work",
+        ])
+        .unwrap();
+        assert!(
+            matches!(args.command, Some(Command::InstallJiraCredential { alias }) if alias == "work")
+        );
+        assert!(
+            Arguments::try_parse_from([
+                "kontor-daemon",
+                "install-jira-credential",
+                "--alias",
+                "work",
+                "--api-token",
+                "synthetic-canary",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_running_realm_refuses_credential_installation_before_stdin_or_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let _held = kontor_daemon::lock::StateRootLock::acquire(root.path()).unwrap();
+        struct MustNotRead;
+        impl std::io::Read for MustNotRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("locked realm must refuse before reading credentials");
+            }
+        }
+        let result = install_jira_credential(root.path(), MustNotRead, |_| {
+            panic!("locked realm must refuse before credential effects");
+        });
+        assert!(matches!(result, Err(OperatorError::CredentialLock)));
+    }
+
+    #[test]
+    fn stopped_realm_installation_retains_its_lock_and_refuses_bad_input() {
+        let root = tempfile::tempdir().unwrap();
+        let valid = br#"{"email":"operator@example.test","api_token":"synthetic-canary"}"#;
+        install_jira_credential(root.path(), &valid[..], |_| {
+            assert!(kontor_daemon::lock::StateRootLock::acquire(root.path()).is_err());
+            Ok(())
+        })
+        .unwrap();
+        assert!(kontor_daemon::lock::StateRootLock::acquire(root.path()).is_ok());
+        let result = install_jira_credential(root.path(), &b"synthetic-canary"[..], |_| {
+            panic!("malformed credentials cannot reach the installer");
+        });
+        assert!(result.is_err());
+        assert!(!format!("{:?}", result.unwrap_err()).contains("synthetic-canary"));
+    }
 
     #[tokio::test]
     async fn the_server_is_polled_while_startup_reconciliation_is_pending() {
