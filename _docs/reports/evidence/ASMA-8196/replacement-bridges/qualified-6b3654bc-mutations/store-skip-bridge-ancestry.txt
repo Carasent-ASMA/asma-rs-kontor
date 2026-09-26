@@ -1,0 +1,25 @@
+QUALIFIED_SOURCE=6b3654bca823ac85ed7cc0bb1d6965bc730c4743
+   Compiling kontor-store v0.2.1 (/private/tmp/ASMA-8196-hydration-mutations-6b3654bc/source/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.06s
+     Running tests/team_definition_migration_completeness.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_migration_completeness-f7b8bbf4d0c6389a)
+
+running 1 test
+test abandoned_bridges_preserve_current_delivery_migration_record_and_confirmation ... FAILED
+
+failures:
+
+---- abandoned_bridges_preserve_current_delivery_migration_record_and_confirmation stdout ----
+
+thread 'abandoned_bridges_preserve_current_delivery_migration_record_and_confirmation' (57989650) panicked at crates/kontor-store/tests/team_definition_migration_completeness.rs:616:14:
+called `Result::unwrap()` on an `Err` value: Conflict { subject: "live native subject", rule: "a delivery role has ambiguous current replacement-chain leaves" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    abandoned_bridges_preserve_current_delivery_migration_record_and_confirmation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 23 filtered out; finished in 1.77s
+
+error: test failed, to rerun pass `-p kontor-store --test team_definition_migration_completeness`
+
+PROCESS_EXIT_CODE=101

@@ -1,0 +1,42 @@
+{
+  "recordedAt": "2026-09-26T10:21:38.990344+00:00",
+  "qualifiedSource": "3b9eb3a577cdb4c3beb92ba958b775f2e91307f9",
+  "qualifiedTree": "e9e70972df8d89f49293d17d2d9292ae845bdb9e",
+  "mode": "exact Git archive",
+  "log": "historical-3b9eb3a5-full-gate.txt.json",
+  "logSha256": "062d8b5bebbca793ca4bf7d271eade4250d317f15edec8d84eae148273ca6fad",
+  "exitCode": 0,
+  "startedAt": "2026-09-26T09:34:25.795437+00:00",
+  "finishedAt": "2026-09-26T09:58:22.156070+00:00",
+  "checks": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cargo test --workspace --locked",
+    "cargo audit",
+    "cargo deny check",
+    "/opt/homebrew/bin/pnpm install --frozen-lockfile",
+    "/opt/homebrew/bin/pnpm -r typecheck",
+    "/opt/homebrew/bin/pnpm -r test",
+    "/opt/homebrew/bin/pnpm audit --prod"
+  ],
+  "rustBinaries": 149,
+  "rustPassed": 2912,
+  "rustFailed": 0,
+  "rustIgnored": 9,
+  "consolePassed": 305,
+  "sourceAndTestSha256": {
+    "crates/kontor-daemon/src/applications.rs": "220483319fe4650a4dc2a17420d32ee78be2492e1b3dffeabac3e105e149d5da",
+    "crates/kontor-daemon/tests/loopback/replacement_bridges.rs": "f9b3382225fdc22d7e0f36af235241e83025b3243a448929ec0b6ff8e8e07f43",
+    "crates/kontor-daemon/tests/loopback_api.rs": "08ae762e58aedcd6869cacfba35359ce0860dedc256c7469d6d26ed827aedef6",
+    "crates/kontor-store/src/repository.rs": "9b7a69c8de5f3fb76b7ecdc6bad081693f832c997953a89ea9d959b349371efd",
+    "crates/kontor-store/tests/team_definition_migration_completeness.rs": "ee388872764cecbed473cfcb98d945bb50ee7e90a48aaa66aebab113b8fbaa4f"
+  },
+  "publicationHeadAtCapture": "5faa4b063ece650d7688bd3f40c4d39630bb4025",
+  "currentSourceQualification": false,
+  "buildCache": "Isolated full-gate target; prior 3b gate finished before 6b reused that cache; separate from mutation cache. Every check executed anew.",
+  "boundary": "Historical 3b gate only; the independent 3b audit retains a hydration P1. This run does not qualify the 6b correction.",
+  "decodedLogSha256": "396bcfdb2cac12db99a434dce0fd715fe7655e5de2fe451bb342a63b1e79d14f",
+  "logEncoding": "base64 JSON; decode rawBase64 without text normalization",
+  "originalReceipt": "original-historical-3b9eb3a5-source-qualification.json",
+  "originalReceiptSha256": "33f09e9cd106d6767bf7aa367ad1c287cacae34027dc6179923fff6551a848ff"
+}

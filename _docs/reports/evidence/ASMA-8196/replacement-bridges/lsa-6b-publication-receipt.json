@@ -1,0 +1,13 @@
+{
+  "recordedAt": "2026-09-26T10:11:12.328255+00:00",
+  "agentId": "6301c2d4-7fbd-4f08-b61c-9f12183ada82",
+  "nativeSessionId": "01a0a39b-2b2c-7c02-923b-89a13f6c622c",
+  "route": "codex-personal/gpt-5.6-sol@xhigh",
+  "activityUpdateCount": 2825,
+  "reviewedCommit": "6b3654bca823ac85ed7cc0bb1d6965bc730c4743",
+  "reviewedTree": "daaf541fbc0e66d5e960a6a5e1909e348528df3f",
+  "artifact": "actual-lsa-6b-audit.txt",
+  "sha256": "b216b3912c8e75d7e8ffb4257263f5d6182e9a5ccfc096191f8d8cd48e1029e5",
+  "actualTerminatorPresent": false,
+  "boundary": "Actual independent conditional source approval retained verbatim; no remaining P0/P1/P2 in bounded source. Exact-source mutation and full-gate completion required before merge support; no deployment, census, task or epic acceptance."
+}

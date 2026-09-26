@@ -1,0 +1,30 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.25s
+     Running tests/team_definition_migration_completeness.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_migration_completeness-f7b8bbf4d0c6389a)
+
+running 23 tests
+test a_migration_must_match_the_live_census_in_both_subject_and_identity_directions ... ok
+test a_genuine_delivery_fork_refuses_the_native_migration_census ... ok
+test a_migration_recorded_before_a_seatless_session_appears_cannot_confirm ... ok
+test a_target_definition_that_does_not_declare_a_live_node_kind_is_refused ... ok
+test a_migration_that_omits_a_live_native_subject_is_refused_before_any_mutation ... ok
+test a_terminal_team_run_makes_legacy_seatless_bound_sessions_history ... ok
+test a_delivery_replacement_census_uses_only_its_current_native_leaf ... ok
+test a_migration_that_omits_a_live_delivery_seat_is_refused ... ok
+test a_live_delivery_session_with_no_seat_at_its_slot_fails_closed ... ok
+test a_crash_between_the_pin_commit_and_the_receipt_recovers_from_the_same_key ... ok
+test an_exact_rename_pending_seat_can_be_retired_before_migration_confirmation ... ok
+test an_empty_native_census_can_upgrade_and_replay_after_reopen ... ok
+test an_empty_requested_census_cannot_hide_existing_native_subjects ... ok
+test an_unbound_delivery_leaf_never_substitutes_its_bound_predecessor ... ok
+test an_epic_team_run_with_no_seat_bindings_at_all_cannot_advance_the_pin ... ok
+test an_in_flight_migration_atomically_fences_node_and_seat_lifecycle ... ok
+test an_ordinary_multi_seat_team_run_censuses_each_seat_exactly_once ... ok
+test an_operator_abandoned_unbound_attempt_does_not_hide_the_current_native ... ok
+test an_inactive_delivery_seat_is_history_and_does_not_block_apply ... ok
+test confirmation_re_proves_parity_against_the_live_census ... ok
+test the_census_lists_every_live_native_bearing_subject_of_the_epic ... ok
+test consecutive_trailing_abandoned_attempts_keep_the_bound_predecessor_current ... ok
+test abandoned_bridges_preserve_current_delivery_migration_record_and_confirmation ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 87.20s

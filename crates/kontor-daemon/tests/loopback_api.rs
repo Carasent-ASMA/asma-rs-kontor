@@ -41,6 +41,9 @@ mod provider_refresh;
 #[path = "loopback/message_delivery_proofs.rs"]
 mod message_delivery_proofs;
 
+#[path = "loopback/replacement_bridges.rs"]
+mod replacement_bridges;
+
 #[tokio::test]
 async fn open_question_commands_preserve_authority_history_and_completion_blockers() {
     use kontor_core::id::OpenQuestionId;

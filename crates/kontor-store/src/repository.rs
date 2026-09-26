@@ -21901,7 +21901,49 @@ impl TeamDefinitionRepository for SqliteStore {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT 'container' AS subject_kind, node.id, NULL AS seat_binding_id, node.kind,
+                "WITH RECURSIVE
+                 meaningful_runs AS (
+                     SELECT run.id, run.project_id, run.team_run_id, run.role_key
+                       FROM agent_runs AS run
+                      WHERE run.project_id = ?1 AND NOT (
+                          run.terminal_outcome IS 'abandoned'
+                          AND run.terminal_source_kind IS 'operator_abandon'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM runtime_bindings AS binding
+                               WHERE binding.project_id = run.project_id
+                                 AND binding.agent_run_id = run.id
+                          )
+                      )
+                 ),
+                 ancestry(project_id, team_run_id, role_key, descendant_id, ancestor_id) AS (
+                     SELECT run.project_id, run.team_run_id, run.role_key,
+                            run.id, run.parent_agent_run_id
+                       FROM agent_runs AS run
+                      WHERE run.project_id = ?1 AND run.parent_agent_run_id IS NOT NULL
+                     UNION
+                     SELECT chain.project_id, chain.team_run_id, chain.role_key,
+                            chain.descendant_id, parent.parent_agent_run_id
+                       FROM ancestry AS chain
+                       JOIN agent_runs AS parent ON parent.id = chain.ancestor_id
+                        AND parent.project_id = chain.project_id
+                        AND parent.team_run_id = chain.team_run_id
+                        AND parent.role_key = chain.role_key
+                      WHERE parent.parent_agent_run_id IS NOT NULL
+                 ),
+                 current_delivery_runs AS (
+                     SELECT run.* FROM meaningful_runs AS run
+                      WHERE NOT EXISTS (
+                          SELECT 1 FROM ancestry AS chain
+                          JOIN meaningful_runs AS successor
+                            ON successor.id = chain.descendant_id
+                           AND successor.project_id = chain.project_id
+                           WHERE chain.project_id = run.project_id
+                             AND chain.team_run_id = run.team_run_id
+                             AND chain.role_key = run.role_key
+                             AND chain.ancestor_id = run.id
+                      )
+                 )
+                 SELECT 'container' AS subject_kind, node.id, NULL AS seat_binding_id, node.kind,
                         container.runtime_kind, container.host, container.generation,
                         container.native_id
                   FROM topology_node_containers AS container
@@ -21942,7 +21984,7 @@ impl TeamDefinitionRepository for SqliteStore {
                         binding.runtime_kind, binding.host,
                         binding.generation, binding.native_id
                    FROM runtime_bindings AS binding
-                   JOIN agent_runs AS run
+                   JOIN current_delivery_runs AS run
                      ON run.id = binding.agent_run_id AND run.project_id = binding.project_id
                    JOIN seat_bindings AS seat
                      ON seat.team_run_id = run.team_run_id
@@ -21956,23 +21998,26 @@ impl TeamDefinitionRepository for SqliteStore {
                     -- leaf. Bound ancestors remain immutable history, even
                     -- when the leaf has not acquired its own native yet.
                     -- Certified abandoned, never-bound attempts do not occupy
-                    -- this chain, matching the delivery-role projection.
-                    AND NOT EXISTS (
-                        SELECT 1 FROM agent_runs AS child
-                         WHERE child.project_id = run.project_id
-                           AND child.team_run_id = run.team_run_id
-                           AND child.role_key = run.role_key
-                           AND child.parent_agent_run_id = run.id
-                           AND NOT (
-                               child.terminal_outcome IS 'abandoned'
-                               AND child.terminal_source_kind IS 'operator_abandon'
-                               AND NOT EXISTS (
-                                   SELECT 1 FROM runtime_bindings AS child_binding
-                                    WHERE child_binding.project_id = child.project_id
-                                      AND child_binding.agent_run_id = child.id
-                               )
-                           )
-                    )
+                    -- the slot, but retain structural ancestry for meaningful
+                    -- descendants. A trailing abandoned-only chain does not
+                    -- hide its bound predecessor.
+                 UNION ALL
+                 -- A meaningful current leaf without a native is still a
+                 -- fork. Do not let its absence from runtime_bindings make
+                 -- migration accept a role that public preview refuses.
+                 SELECT 'ambiguous_delivery', node.id, seat.id, node.kind,
+                        NULL, NULL, NULL, NULL
+                   FROM seat_bindings AS seat
+                   JOIN topology_nodes AS node ON node.id = seat.topology_node_id
+                    AND node.project_id = seat.project_id
+                  WHERE seat.project_id = ?1 AND node.mini_project_id = ?2
+                    AND node.lifecycle = 'active' AND seat.lifecycle = 'active'
+                    AND (
+                        SELECT count(*) FROM current_delivery_runs AS run
+                         WHERE run.project_id = seat.project_id
+                           AND run.team_run_id = seat.team_run_id
+                           AND run.role_key = seat.role_slot_id
+                    ) > 1
                  ORDER BY 1, 8",
             )
             .map_err(backend)?;
@@ -21981,6 +22026,12 @@ impl TeamDefinitionRepository for SqliteStore {
             .map_err(backend)?;
         let mut subjects = Vec::new();
         while let Some(row) = rows.next().map_err(backend)? {
+            if row.get::<_, String>(0).map_err(backend)? == "ambiguous_delivery" {
+                return Err(conflict(
+                    "live native subject",
+                    "a delivery role has ambiguous current replacement-chain leaves",
+                ));
+            }
             let topology_node_id =
                 TopologyNodeId::parse(&row.get::<_, String>(1).map_err(backend)?)?;
             let seat: Option<String> = row.get(2).map_err(backend)?;
@@ -22017,9 +22068,19 @@ impl TeamDefinitionRepository for SqliteStore {
         // and both fail closed rather than skipping a live native.
         let mut owners: BTreeMap<(String, String, u64, String), TeamDefinitionMigrationSubject> =
             BTreeMap::new();
+        let mut occupied_seats = BTreeSet::new();
         for live in &subjects {
-            if !matches!(live.subject, TeamDefinitionMigrationSubject::Seat { .. }) {
+            let TeamDefinitionMigrationSubject::Seat {
+                seat_binding_id, ..
+            } = live.subject
+            else {
                 continue;
+            };
+            if !occupied_seats.insert(seat_binding_id) {
+                return Err(conflict(
+                    "live native subject",
+                    "one seat has ambiguous current native occupants",
+                ));
             }
             let key = (
                 live.identity.runtime_kind.as_str().to_owned(),

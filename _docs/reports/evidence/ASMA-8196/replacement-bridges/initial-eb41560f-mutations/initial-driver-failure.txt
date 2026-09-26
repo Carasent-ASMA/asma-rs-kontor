@@ -1,0 +1,8 @@
+baseline-daemon: exit 0
+baseline-store: exit 0
+daemon-skip-bridge-ancestry: exit 101
+Traceback (most recent call last):
+  File "/private/tmp/ASMA-8196-bridge-mutation-driver.py", line 46, in <module>
+    assert text.count(needle)==1
+           ^^^^^^^^^^^^^^^^^^^^^
+AssertionError

@@ -1,0 +1,87 @@
+---
+
+## Independent source audit — PR #276 at `3b9eb3a577cdb4c3beb92ba958b775f2e91307f9`
+
+Verdict: no P0. The two targeted selectors correctly repair the observed ASMA-8190 preview/migration defect, but unconditional source support is blocked by one adjacent P1 integration defect. Two P2 issues also remain.
+
+### P1 — two-bridge lineage still fails canonical TeamRun hydration
+
+The reviewed daemon and store selectors both handle:
+
+- One or two certified abandoned/unbound bridges.
+- Trailing abandoned-only attempts.
+- Bound/bound and bound/unbound forks.
+- Exact project/TeamRun/role ancestry.
+- Current-only migration record and confirmation.
+- Unchanged AgentRun parentage, SeatBinding and native identity.
+
+However, the canonical [`TeamRunSlots::hydrate`](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-teams/src/run.rs:883) retains only abandoned rows directly named by meaningful runs. For:
+
+```text
+A bound → B abandoned/unbound → C abandoned/unbound → D current
+```
+
+only `C` enters `referenced_parents`; `B` is discarded. Hydration then sees `C.parent = B` outside its retained ID set and refuses at [`run.rs:1010`](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-teams/src/run.rs:1010).
+
+This matters beyond an unused helper. Hydration controls:
+
+- Team certification at [`applications.rs:2714`](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon/src/applications.rs:2714).
+- Replacement recovery at [`applications.rs:33602`](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon/src/applications.rs:33602).
+- Planned succession at [`applications.rs:36566`](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon/src/applications.rs:36566).
+
+Thus preview and migration can accept the two-bridge chain while another supported orchestration route rejects the same immutable lineage.
+
+Smallest genuine remedy:
+
+1. Make `TeamRunSlots::hydrate` retain the transitive certified abandoned/unbound ancestor closure of every meaningful run.
+2. Continue rejecting cycles, missing parents, foreign team/role ancestry and genuine forks.
+3. Add a core two-bridge hydration regression and one daemon replacement/succession regression.
+4. Preserve the rule that unreferenced trailing abandoned attempts consume neither occupancy nor successor depth.
+
+### P2 — refusal action remains misleading
+
+The daemon now emits the correct structural rule, but it uses `StaleBinding`. Its default action remains:
+
+> `settle the run to learn what its runtime now reports`
+
+at [`error.rs:236`](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-api/src/error.rs:236). Settlement cannot change replacement ancestry. The preview regression asserts status and rule but not the incorrect action.
+
+Smallest remedy: add an operation-specific `.advising(...)` action for cyclic/no-leaf/ambiguous replacement lineage, directing the operator to repair or reconcile the lineage without rewriting identities.
+
+### P2 — committed evidence fails whitespace validation
+
+`git diff --check dddb7287..3b9eb3a5` exits `2`. The warnings are evidence-only:
+
+- Blank final lines in five green logs.
+- Trailing whitespace at line 6 of `initial-eb41560f-mutations/daemon-skip-bridge-ancestry.diff`.
+
+No Rust source has a whitespace defect. A docs-only publication may normalize the logs; the exact historical mutant patch should remain verifiable, for example through a clean encoded/raw artifact plus its existing digest. The manifest must then be regenerated.
+
+### Targeted source assessment
+
+The selector implementation itself is sound:
+
+- [`current_delivery_role_leaf`](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-daemon/src/applications.rs:2593) builds same-role ancestry before excluding certified abandoned/unbound candidates, detects cycles, refuses multiple meaningful leaves, and verifies that a binding names its selected AgentRun.
+- [`list_live_native_subjects`](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-store/src/repository.rs:21894) derives meaningful leaves before joining runtime bindings. Its explicit ambiguity row catches bound/bound and bound/unbound forks.
+- Active project, topology, seat, TeamRun and role-slot joins remain scoped. Unmatched or duplicate native ownership continues to fail closed.
+- Migration record and confirmation both call the same exact census through [`prove_migration_covers_live_natives`](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-store/src/repository.rs:21579).
+
+### Identity and evidence checks
+
+- Worktree clean; HEAD and branch exact.
+- Commit tree: `e9e70972df8d89f49293d17d2d9292ae845bdb9e`.
+- Base: deployed `dddb72870c6d58d5d6383a69227844dbc8dca45e`.
+- Source hashes match the `3b9` checkpoint:
+  - daemon `22048331…d5da`
+  - store `9b7a69c8…1efd`
+  - daemon test `f9b33822…7f43`
+  - store test `ee388872…a4f`
+- The [26-file manifest](/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/_docs/reports/evidence/ASMA-8196/replacement-bridges/SHA256SUMS.json) validates 26/26.
+- Preserved diagnosis hash is exactly `87d51e7308c52e8f115906c665393b35e253e0433b431f598d37e136d3a2c488`.
+- Focused evidence supports the reported 24 store and three daemon passes, including both fork shapes.
+- The four `eb41560f` mutants and restored greens receive no credit for changed store source.
+- No completed `3b9` mutation or full-gate receipt exists in the immutable checkpoint; none was inferred.
+
+Conditional qualification requires the P1 repair, renewed immutable source review, current-head mutation/restoration proof, an exact-source full gate exiting zero, and clean publication evidence. Merge, deployment, settlement, ASMA-8190 preview readback, all-thirteen census and workflow/epic acceptance remain separate.
+
+No files, HEAD, runtime, SQLite, Jira, Kontor or Paseo state were changed.

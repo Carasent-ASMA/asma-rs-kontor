@@ -1,0 +1,91 @@
+{
+  "recordedAt": "2026-09-26T09:42:24.972855+00:00",
+  "qualifiedSource": "3b9eb3a577cdb4c3beb92ba958b775f2e91307f9",
+  "tree": "e9e70972df8d89f49293d17d2d9292ae845bdb9e",
+  "archiveSha256": "f1fa780780228b818e210774fd65c3606c91bf19ac383dd211917f5e346b0b3c",
+  "baseline": [
+    {
+      "log": "baseline-daemon.txt",
+      "logSha256": "c512ecdd6542bcca8571ef5cb89d2adae32fe90d94942f009134982ae1062538",
+      "exitCode": 0,
+      "reusedExistingActualLog": false
+    },
+    {
+      "log": "baseline-store.txt",
+      "logSha256": "7c465191de43be68cca605f954c83f9a0f0f26eaa8784755c7e7d77fcc9abe77",
+      "exitCode": 0,
+      "reusedExistingActualLog": false
+    }
+  ],
+  "mutants": [
+    {
+      "log": "daemon-skip-bridge-ancestry.txt",
+      "logSha256": "d7eca069965dd955f72f6cfb7f4e41200be996b8d9f54bd2328fc5baeeecbab6",
+      "exitCode": 101,
+      "reusedExistingActualLog": false,
+      "name": "daemon-skip-bridge-ancestry",
+      "compiled": true,
+      "behavioralFailure": true,
+      "patch": "daemon-skip-bridge-ancestry.diff",
+      "patchSha256": "01c10c45f90e8985014f8bf650183fada6f2850a5c022f736ccbe3f76b0c2a9d",
+      "mutatedSourceSha256": "a13657b7b9ed98cf5e9ab62be02f0cd27d64dd4e8654fa561c41d7029a5e4104"
+    },
+    {
+      "log": "daemon-count-trailing-abandoned.txt",
+      "logSha256": "cbff2ce4c1f18dc6e7eb5b456ba3509a31d2dfda43060ad97a82e69bad25c176",
+      "exitCode": 101,
+      "reusedExistingActualLog": false,
+      "name": "daemon-count-trailing-abandoned",
+      "compiled": true,
+      "behavioralFailure": true,
+      "patch": "daemon-count-trailing-abandoned.diff",
+      "patchSha256": "34095e270f3a670c2faf75c1ab182a1258805a7ccdaecbad4120d76e0401a836",
+      "mutatedSourceSha256": "adf3cc785682ab795ab6856be14be74355263b7f765744b59db5e0fac79ea650"
+    },
+    {
+      "log": "store-skip-bridge-ancestry.txt",
+      "logSha256": "59e54aaa307752b1b5ed65afdb4f02cd77573c0c216e46d455669982d6f2a0f8",
+      "exitCode": 101,
+      "reusedExistingActualLog": false,
+      "name": "store-skip-bridge-ancestry",
+      "compiled": true,
+      "behavioralFailure": true,
+      "patch": "store-skip-bridge-ancestry.diff",
+      "patchSha256": "8613cb98c483b663db483f8ea0a27febef0f1e61f9504e347e7327f3b59ddb3f",
+      "mutatedSourceSha256": "3ad418b0fb2646c20947eac48e9653369f862d4bce915546b62d71fa05a0b57c"
+    },
+    {
+      "log": "store-skip-unbound-fork-fence.txt",
+      "logSha256": "48dddc6576ce43bfc0edb902491f99abcf4b175ef3e14a447e899e89db5d2533",
+      "exitCode": 101,
+      "reusedExistingActualLog": false,
+      "name": "store-skip-unbound-fork-fence",
+      "compiled": true,
+      "behavioralFailure": true,
+      "patch": "store-skip-unbound-fork-fence.diff",
+      "patchSha256": "3556b52d16e553ab6a6b5d3eed41398264e40c71d47ac719560ce958f4e5d23b",
+      "mutatedSourceSha256": "0b5245cbafdab0be7e1b68f6f3243efcfcc5b51ad8367d4e0f5cef5355937c38"
+    }
+  ],
+  "restored": [
+    {
+      "log": "restored-daemon.txt",
+      "logSha256": "b73666dca5cdc0a91e5243e1c230cfdcc4bb5d5a4316b8b7b2253b9a5970c55e",
+      "exitCode": 0,
+      "reusedExistingActualLog": false
+    },
+    {
+      "log": "restored-store.txt",
+      "logSha256": "7b42fcb1a6956c573f0e5477c1f3f9374cea1bfaa6c055fb387bb918690eabf1",
+      "exitCode": 0,
+      "reusedExistingActualLog": false
+    }
+  ],
+  "sourceSha256": {
+    "crates/kontor-daemon/src/applications.rs": "220483319fe4650a4dc2a17420d32ee78be2492e1b3dffeabac3e105e149d5da",
+    "crates/kontor-store/src/repository.rs": "9b7a69c8de5f3fb76b7ecdc6bad081693f832c997953a89ea9d959b349371efd"
+  },
+  "sourceSha256CaptureTime": "post-restoration",
+  "buildCache": "Shared _tools/asma-rs-kontor/target; isolated disposable source archive; all source restored and both green suites re-established after mutations",
+  "boundary": "Source behavioral mutation qualification only; production source, installed binaries, SQLite and native placement unchanged"
+}

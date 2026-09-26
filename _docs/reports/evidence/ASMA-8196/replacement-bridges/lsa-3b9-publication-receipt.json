@@ -1,0 +1,11 @@
+{
+  "recordedAt": "2026-09-26T09:51:02.494704+00:00",
+  "agentId": "6301c2d4-7fbd-4f08-b61c-9f12183ada82",
+  "activityUpdateCount": 2793,
+  "reviewedCommit": "3b9eb3a577cdb4c3beb92ba958b775f2e91307f9",
+  "reviewedTree": "e9e70972df8d89f49293d17d2d9292ae845bdb9e",
+  "artifact": "actual-lsa-3b9-audit.txt",
+  "sha256": "b8a49965de4192d75c58d4cb2c353b48ea9d8ed13831ae82ae3c643d56e98a77",
+  "actualTerminatorPresent": false,
+  "boundary": "Actual independent source audit retained verbatim: P1 hydration integration defect and two P2 findings. No merge, deployment, census or epic acceptance."
+}

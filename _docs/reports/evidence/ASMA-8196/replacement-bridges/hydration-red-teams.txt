@@ -1,0 +1,28 @@
+   Compiling kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-core)
+   Compiling kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-runtime)
+   Compiling kontor-context v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-context)
+   Compiling kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-teams)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.81s
+     Running tests/team_contract.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_contract-9e0ebfdb674ea778)
+
+running 2 tests
+test hydration_preserves_transitive_abandoned_bridges_without_spending_depth ... FAILED
+test malformed_transitive_abandoned_bridges_still_refuse_hydration ... ok
+
+failures:
+
+---- hydration_preserves_transitive_abandoned_bridges_without_spending_depth stdout ----
+
+thread 'hydration_preserves_transitive_abandoned_bridges_without_spending_depth' (57822117) panicked at crates/kontor-teams/tests/team_contract.rs:2242:10:
+two abandoned bridges retain the complete immutable ancestry: Invalid { subject: "TeamRunSlots", rule: "a successor names a parent outside its own role slot" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    hydration_preserves_transitive_abandoned_bridges_without_spending_depth
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 47 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p kontor-teams --test team_contract`
+
+PROCESS_EXIT_CODE=101

@@ -1,0 +1,42 @@
+{
+  "recordedAt": "2026-09-26T09:12:05.602908+00:00",
+  "deployedBase": "dddb72870c6d58d5d6383a69227844dbc8dca45e",
+  "diagnosisAgentId": "6301c2d4-7fbd-4f08-b61c-9f12183ada82",
+  "diagnosisActivityUpdateCount": 2694,
+  "actualTerminatorPresent": false,
+  "sourceSha256": {
+    "crates/kontor-daemon/src/applications.rs": "220483319fe4650a4dc2a17420d32ee78be2492e1b3dffeabac3e105e149d5da",
+    "crates/kontor-daemon/tests/loopback_api.rs": "08ae762e58aedcd6869cacfba35359ce0860dedc256c7469d6d26ed827aedef6",
+    "crates/kontor-daemon/tests/loopback/replacement_bridges.rs": "63b5c5194ff8e1d3ab039a920e730a205d9821ced6d8f039825e6ae8df0c4afb",
+    "crates/kontor-store/src/repository.rs": "4738fb0be278dc73428a115a26f21069e1c174eb2e0de13a06eb2cf50f3bd830",
+    "crates/kontor-store/tests/team_definition_migration_completeness.rs": "0cc93fa5fa4c4ebcccb4c95c724d873eab54b57dd680d24798978d8d24321352"
+  },
+  "outcomes": {
+    "daemonRed": {
+      "exitCode": 101,
+      "passed": 2,
+      "failed": 1,
+      "behavioralFailure": "exact live ambiguous replacement-chain leaves 409 instead of 200"
+    },
+    "storeRed": {
+      "exitCode": 101,
+      "passed": 21,
+      "failed": 2,
+      "behavioralFailures": [
+        "bound ancestor counted through abandoned bridge",
+        "genuine fork not refused"
+      ]
+    },
+    "daemonGreen": {
+      "exitCode": 0,
+      "passed": 3,
+      "failed": 0
+    },
+    "storeGreen": {
+      "exitCode": 0,
+      "passed": 23,
+      "failed": 0
+    }
+  },
+  "boundary": "Focused source regression only; absent current native fixture gives no launch evidence; full gate, mutations, deployment, all-thirteen census and settlement remain pending"
+}

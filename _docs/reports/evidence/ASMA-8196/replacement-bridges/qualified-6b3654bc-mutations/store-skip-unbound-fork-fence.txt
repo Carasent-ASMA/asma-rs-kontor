@@ -1,0 +1,25 @@
+QUALIFIED_SOURCE=6b3654bca823ac85ed7cc0bb1d6965bc730c4743
+   Compiling kontor-store v0.2.1 (/private/tmp/ASMA-8196-hydration-mutations-6b3654bc/source/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.33s
+     Running tests/team_definition_migration_completeness.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_migration_completeness-f7b8bbf4d0c6389a)
+
+running 1 test
+test a_fork_with_an_unbound_current_leaf_also_refuses_the_migration_census ... FAILED
+
+failures:
+
+---- a_fork_with_an_unbound_current_leaf_also_refuses_the_migration_census stdout ----
+
+thread 'a_fork_with_an_unbound_current_leaf_also_refuses_the_migration_census' (58000759) panicked at crates/kontor-store/tests/team_definition_migration_completeness.rs:746:10:
+a never-bound meaningful fork is still ambiguous current lineage: [LiveNativeSubject { subject: Container { topology_node_id: TopologyNodeId(01a0dd28-cf95-7472-a84e-4895bd9dd7ca) }, node_kind: TopologyKindKey("ECP"), identity: NativeRuntimeIdentity { runtime_kind: RuntimeKindKey("paseo"), host: ExternalName("localhost"), generation: 1, native_id: ExternalId("wks_ecp") } }, LiveNativeSubject { subject: Container { topology_node_id: TopologyNodeId(01a0dd28-cf93-75f2-b71e-925ca9d0f244) }, node_kind: TopologyKindKey("ESW"), identity: NativeRuntimeIdentity { runtime_kind: RuntimeKindKey("paseo"), host: ExternalName("localhost"), generation: 1, native_id: ExternalId("wks_esw") } }, LiveNativeSubject { subject: Container { topology_node_id: TopologyNodeId(01a0dd28-cf9e-7961-ba47-074bde03b269) }, node_kind: TopologyKindKey("TSW"), identity: NativeRuntimeIdentity { runtime_kind: RuntimeKindKey("paseo"), host: ExternalName("localhost"), generation: 1, native_id: ExternalId("wks_tsw") } }, LiveNativeSubject { subject: Seat { topology_node_id: TopologyNodeId(01a0dd28-cf9e-7961-ba47-074bde03b269), seat_binding_id: SeatBindingId(01a0dd28-cfa2-7042-8171-34388e1c76bd) }, node_kind: TopologyKindKey("TSW"), identity: NativeRuntimeIdentity { runtime_kind: RuntimeKindKey("paseo"), host: ExternalName("localhost"), generation: 1, native_id: ExternalId("agent_bound_fork") } }]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_fork_with_an_unbound_current_leaf_also_refuses_the_migration_census
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 23 filtered out; finished in 1.73s
+
+error: test failed, to rerun pass `-p kontor-store --test team_definition_migration_completeness`
+
+PROCESS_EXIT_CODE=101
