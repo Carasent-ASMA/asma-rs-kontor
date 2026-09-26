@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "1b99689d138aa1a4c1e406700f0a6be2316f5554",
+  "sourceTree": "738d887a11ab19c2e6039ca5dc74d20d5c255267",
+  "archiveSha256": "24f158bae75188a4e608fc1a02c7fa4049ba1975f1b820aa2152e5ebcb48b7d6",
+  "fullGateExitCode": 0,
+  "frozenAndApiExitCode": 0,
+  "fullGateFinishedAt": "2026-09-26T17:20:39.960927+00:00",
+  "frozenAndApiFinishedAt": "2026-09-26T17:21:26.335229+00:00",
+  "rustResultSummaries": 149,
+  "rustTestBinaries": 128,
+  "rustDoctestSuites": 21,
+  "rustPassed": 2917,
+  "rustFailed": 0,
+  "rustIgnored": 9,
+  "consolePassed": 305,
+  "frozenApiContractTestsPassed": 3,
+  "sourceObjects": {
+    "crates/kontor-daemon/src/applications.rs": {
+      "gitBlob": "17f130e31ea7499d817eadbbdf0757c267484cd3",
+      "sha256": "46de8c43aeb8d5619d26c274f9451edffb00f971d0f75aab490d8462d4e7350f",
+      "publicationAndRetainedApiArchiveByteEqual": true
+    },
+    "crates/kontor-daemon/tests/loopback_api.rs": {
+      "gitBlob": "23f6ba21ba07718e82ac57d0ca4801851899ad2d",
+      "sha256": "478a626a6405fff88946f42ca0c31227fbde29bb71c82633b5e49dc954d02d53",
+      "publicationAndRetainedApiArchiveByteEqual": true
+    },
+    "crates/kontor-daemon/tests/loopback/legacy_consultation_reads.rs": {
+      "gitBlob": "7b0f7dfcb75ea6a6d617f47150625e561dc847c2",
+      "sha256": "11b6a59217ed261948d679671b3eaca81c7602229bcb0f060ce5da4de020c32a",
+      "publicationAndRetainedApiArchiveByteEqual": true
+    },
+    "crates/kontor-api/src/applications.rs": {
+      "gitBlob": "13fec5bf9f5e9c9d47af1f9727c69cd868ddaf8a",
+      "sha256": "9490d0510ca1c435bdfb700ab3b2640c2f5fe105cdb8bf4b930176c2aeaa28ed",
+      "publicationAndRetainedApiArchiveByteEqual": true
+    },
+    "crates/kontor-api/contract/openapi.json": {
+      "gitBlob": "2a8d624d0e4c6849bbc6f4af369eb2a2ae68f53d",
+      "sha256": "894064dea0d4356da2843e16a8d2e4016f3f4af0f8744422b7d50197020a2a0e",
+      "publicationAndRetainedApiArchiveByteEqual": true
+    },
+    "apps/console/src/api/schema.d.ts": {
+      "gitBlob": "8391970efc3e8946abc6ade056cc017c367b95b3",
+      "sha256": "e9a7402053f7ad45e5a5383f24b3f800decf7fef4581f032dae82111a962a13b",
+      "publicationAndRetainedApiArchiveByteEqual": true
+    },
+    "Cargo.lock": {
+      "gitBlob": "c61dd05b40b206371d0924e471bc263b69907f29",
+      "sha256": "335170bb71701c908eaa82307eeb01cbb89afea186c0d590b79f4f44856b3c4b",
+      "publicationAndRetainedApiArchiveByteEqual": true
+    }
+  },
+  "logs": {
+    "full-gate.txt": {
+      "carrier": "qualified-1b99689d-full-gate.txt.json",
+      "carrierSha256": "db4132f55929dbc1a009adeffdb6e241d4c674d5babfc8f696a9fe029b348e3c",
+      "decodedSha256": "44a15be4ceda6671234469163c78df021ac00828c59e500d8290eaa7117eb8fd",
+      "decodedBytes": 735022,
+      "originalExecutionReceipt": "qualified-1b99689d-full-gate-execution-receipt.json",
+      "originalExecutionReceiptSha256": "526382a26c1641dcd2a85a2aa0b4f28af2479a5243f30ba008ebe8d79d03e8e4"
+    },
+    "frozen-and-api.txt": {
+      "carrier": "qualified-1b99689d-frozen-and-api.txt.json",
+      "carrierSha256": "4b20f3732da818e0ea862b3f8f9eb68aca79815022521e8900041f1eaf3d92f4",
+      "decodedSha256": "b1f61adc7355f7d2f627c3517d962e6354b3ab23a1574376c495d904c847f92a",
+      "decodedBytes": 3551,
+      "originalExecutionReceipt": "qualified-1b99689d-frozen-and-api-execution-receipt.json",
+      "originalExecutionReceiptSha256": "9c8e68d35e79aab3b6e4b345b64e3553d8c77ded4a222defa9db45cb0ed2cf07"
+    }
+  },
+  "runner": "integrated-1b99689d-full-gate-runner.py",
+  "runnerSha256": "e9360efe31cb0a9562db16508c031fe0f89ca5a67d1f297bc44b13485248d56d",
+  "privateBuildCache": "APFS clone of previous exact-51 private target; source archives independently exported from exact integrated 1b; no installed or primary paths mutated",
+  "earlierThreeMutationQualification": {
+    "sourceCommit": "51cfef9caaa1e2b12674ad932d0adfb0658d4777",
+    "receipt": "results.json",
+    "unchangedRuntimeAndRegressionPaths": [
+      "crates/kontor-daemon/src/applications.rs",
+      "crates/kontor-daemon/tests/loopback_api.rs",
+      "crates/kontor-daemon/tests/loopback/legacy_consultation_reads.rs",
+      "Cargo.lock"
+    ],
+    "relabelledAsExecutionAtIntegratedCommit": false
+  },
+  "scope": "Exact integrated source archive/frozen/API qualification. No merge, deployment, live historical GET, task/workflow or epic acceptance."
+}

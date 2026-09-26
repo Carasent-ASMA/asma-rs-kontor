@@ -1,0 +1,37 @@
+{
+  "label": "red-current-naming-fixtures",
+  "startedAt": "2026-09-26T16:19:31.854024+00:00",
+  "finishedAt": "2026-09-26T16:19:56.190666+00:00",
+  "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8113/asma-rs-kontor",
+  "runs": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "legacy_consultation_reads",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "startedAt": "2026-09-26T16:19:31.854264+00:00",
+      "finishedAt": "2026-09-26T16:19:56.187877+00:00",
+      "exitCode": 101
+    }
+  ],
+  "exitCode": 101,
+  "sourceSha256BeforeAndAfter": {
+    "crates/kontor-daemon/src/applications.rs": "e51070ad0958cfaba751cfdde9283e5bfc7dd39e6fd2e4ddeb8220c7f12a0049",
+    "crates/kontor-daemon/tests/loopback_api.rs": "478a626a6405fff88946f42ca0c31227fbde29bb71c82633b5e49dc954d02d53",
+    "crates/kontor-daemon/tests/loopback/legacy_consultation_reads.rs": "11b6a59217ed261948d679671b3eaca81c7602229bcb0f060ce5da4de020c32a",
+    "Cargo.lock": "335170bb71701c908eaa82307eeb01cbb89afea186c0d590b79f4f44856b3c4b"
+  },
+  "sourceUnchanged": true,
+  "logPath": "/private/tmp/ASMA-8114-legacy-read-qualification-20260926/red-current-naming-fixtures.txt",
+  "logSha256": "07a8b32de4ec59d5e8dfea1e9df40b28ce7a28e9ff93ec9118c74c4d60cc9810",
+  "scope": "Disposable synthetic Realms and a private cloned build cache; no live runtime or database writes."
+}

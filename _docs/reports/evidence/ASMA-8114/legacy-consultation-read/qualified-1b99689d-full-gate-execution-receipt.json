@@ -1,0 +1,18 @@
+{
+  "sourceCommit": "1b99689d138aa1a4c1e406700f0a6be2316f5554",
+  "sourceTree": "738d887a11ab19c2e6039ca5dc74d20d5c255267",
+  "archiveSha256": "24f158bae75188a4e608fc1a02c7fa4049ba1975f1b820aa2152e5ebcb48b7d6",
+  "command": [
+    "python3",
+    "-u",
+    "scripts/verify-tree.py",
+    "--mode",
+    "archive"
+  ],
+  "startedAt": "2026-09-26T16:58:30.377232+00:00",
+  "finishedAt": "2026-09-26T17:20:39.960927+00:00",
+  "exitCode": 0,
+  "logSha256": "44a15be4ceda6671234469163c78df021ac00828c59e500d8290eaa7117eb8fd",
+  "privateTarget": "/private/tmp/ASMA-8114-integrated-full-gate-1b99689d/target",
+  "scope": "Integrated exact-candidate archive qualification only. Earlier exact-51 evidence is not relabeled. No merge/deployment or task/epic acceptance."
+}

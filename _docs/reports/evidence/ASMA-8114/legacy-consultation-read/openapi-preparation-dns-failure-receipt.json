@@ -1,0 +1,21 @@
+{
+  "baseSourceCommit": "51cfef9caaa1e2b12674ad932d0adfb0658d4777",
+  "scope": "Private preparation of the adjacent OpenAPI response declaration correction. No tracked candidate modification or whole-source qualification credit.",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-api",
+    "--test",
+    "openapi_contract"
+  ],
+  "startedAt": "2026-09-26T16:45:22.121955+00:00",
+  "finishedAt": "2026-09-26T16:45:44.313859+00:00",
+  "exitCode": 101,
+  "logSha256": "8c06128a9e4b18316afc24ea802da85c7e684aecb597f581e4d9cdacacdb996c",
+  "files": {
+    "crates/kontor-api/src/applications.rs": "9490d0510ca1c435bdfb700ab3b2640c2f5fe105cdb8bf4b930176c2aeaa28ed",
+    "crates/kontor-api/contract/openapi.json": "6ef176e542ce03d4b6720ca1fad94a2443943760d55b5d516cf2440da289c462"
+  }
+}

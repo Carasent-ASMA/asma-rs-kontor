@@ -12954,13 +12954,14 @@ impl Services {
     }
 
     /// Render the complete native consultation-container name from the exact
-    /// pinned definition. Legacy rows without a topic or definition remain
-    /// readable and honestly expose no current canonical name.
+    /// pinned definition for a read DTO. Legacy rows without a subject, topic
+    /// or definition remain readable and expose no provable canonical name.
+    /// Native effects still use the strict renderer directly.
     fn consultation_container_name(
         &self,
         run: &StoredConsultationRun,
     ) -> Result<Option<ExternalName>, ApiError> {
-        if run.topic.is_none() {
+        if run.subject.is_none() || run.topic.is_none() {
             return Ok(None);
         }
         let Some(definition) = self.pinned_team_definition(run.project_id, run.mini_project_id)?
