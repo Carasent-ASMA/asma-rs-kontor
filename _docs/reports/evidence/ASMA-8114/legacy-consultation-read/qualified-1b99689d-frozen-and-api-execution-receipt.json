@@ -1,0 +1,43 @@
+{
+  "sourceCommit": "1b99689d138aa1a4c1e406700f0a6be2316f5554",
+  "sourceTree": "738d887a11ab19c2e6039ca5dc74d20d5c255267",
+  "archiveSha256": "24f158bae75188a4e608fc1a02c7fa4049ba1975f1b820aa2152e5ebcb48b7d6",
+  "startedAt": "2026-09-26T17:20:39.982005+00:00",
+  "finishedAt": "2026-09-26T17:21:26.335229+00:00",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "kontor-api",
+        "--test",
+        "openapi_contract"
+      ],
+      "exitCode": 0
+    },
+    {
+      "command": [
+        "node",
+        "/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/node_modules/.pnpm/openapi-typescript@7.13.0_typescript@5.9.3/node_modules/openapi-typescript/bin/cli.js",
+        "/private/tmp/ASMA-8114-integrated-full-gate-1b99689d/api-source/crates/kontor-api/contract/openapi.json",
+        "-o",
+        "/private/tmp/ASMA-8114-integrated-full-gate-1b99689d/schema-verify.d.ts"
+      ],
+      "exitCode": 0
+    },
+    {
+      "command": [
+        "diff",
+        "-u",
+        "/private/tmp/ASMA-8114-integrated-full-gate-1b99689d/api-source/apps/console/src/api/schema.d.ts",
+        "/private/tmp/ASMA-8114-integrated-full-gate-1b99689d/schema-verify.d.ts"
+      ],
+      "exitCode": 0
+    }
+  ],
+  "exitCode": 0,
+  "logSha256": "b1f61adc7355f7d2f627c3517d962e6354b3ab23a1574376c495d904c847f92a",
+  "scope": "Exact integrated-candidate frozen/API verification only; generation tool is read from the installed matching 7.13.0 dependency without modifying primary files."
+}
