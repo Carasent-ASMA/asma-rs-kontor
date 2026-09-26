@@ -1,8 +1,10 @@
 {
-  "scope": "ASMA-8015 exact-e53 source audit, nine mutations and full archive qualification complete; independent receipt review and all live effects remain pending",
+  "scope": "ASMA-8015 exact-e53 source and synthetic qualification independently verified; merge and all live credential/delivery/closure obligations pending",
   "files": {
     "audit-e53f19b7/actual-lsa-source-audit.txt.json": "a4ae47bf76768d80e874dce9c79bed8f58d9e820929765a44cc217d855154c7c",
     "audit-e53f19b7/publication-receipt.json": "27c7a7693fabf76f9343b44cfea3d119aa7ade927b194123e9cf1d2f881981a1",
+    "audit-qualified-e53f19b7/actual-lsa-qualification-audit.txt.json": "a215c71741c07d55c46c4317cd10e2771527a772d702807c438e23a217ea7063",
+    "audit-qualified-e53f19b7/publication-receipt.json": "b1ea8633fb6e970857836715227aeabc5d8cde50068df47fa7a1b53b250221f6",
     "mutations-e53f19b7/MUT-ABSOLUTE.diff.json": "2e70dbecb871a75632dcb91a27feed541babf60170319624ffa414c5cc527b12",
     "mutations-e53f19b7/MUT-ABSOLUTE.txt.json": "91f3094408a22447582d874c276fcf664c3f9266d5e9a5fd98779cef535531be",
     "mutations-e53f19b7/MUT-ALIAS.diff.json": "4ef9592a3dbd5e6628b0ffc8969bffbb0617eeb620537e7d891c8b5373b75fb6",

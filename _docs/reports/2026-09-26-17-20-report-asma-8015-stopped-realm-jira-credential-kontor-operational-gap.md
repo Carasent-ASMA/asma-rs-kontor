@@ -1,7 +1,7 @@
 ---
 title: ASMA-8015 stopped-realm Jira credential delivery
 date: 2026-09-26
-status: corrected-source-qualified-independent-receipt-review-pending
+status: corrected-source-qualified-independently-verified-live-delivery-pending
 jira: ASMA-8015
 orchestration: paseo-direct-recovery
 ---
@@ -103,4 +103,12 @@ The completed [full-gate carrier](evidence/ASMA-8015/credential-authority-correc
 
 Independent recomputation from the raw log totals 151 Rust summaries, **2,940 passed, zero failed, 9 ignored**, plus **305 console tests**. Formatting, strict workspace Clippy, locked workspace tests, audit, deny, frozen install, typecheck and production audit all completed. All nine allowed audit warnings (eight unmaintained and one unsound) and nine ignored tests are preserved; this is not universally warning-free or unignored. The exact archive SHA-256 is `0b0d9701d7471390439b8475017e255222686312bdac83c4034a274c4f6673b0`. The complete mutation before/after inventories remain the source-restoration proof; no additional final extracted-directory inventory is claimed for the full gate.
 
-The independently reviewed source design and completed synthetic qualification still require independent receipt verification before merge consideration. The authorized scope remains source and fake-backend tests only. No real Keychain operation, enrollment, credential extraction, installation, deployment, integration, workflow, gate, task, epic or closure credit is supplied. The operating-system/platform and future governed enrollment boundaries stated above remain pending.
+The independently reviewed source design and completed synthetic qualification have received the actual independent receipt verification recorded below; merge remains a separate authorized action. The authorized scope remains source and fake-backend tests only. No real Keychain operation, enrollment, credential extraction, installation, deployment, integration, workflow, gate, task, epic or closure credit is supplied. The operating-system/platform and future governed enrollment boundaries stated above remain pending.
+
+## Actual completed-qualification disposition
+
+The same persistent LSA independently verified the completed packet at `03c3eeec5c5aa618ed2ed7e00ab583f375e3db9f`. Its [complete actual native qualification finding](evidence/ASMA-8015/credential-authority-correction/audit-qualified-e53f19b7/actual-lsa-qualification-audit.txt.json) and adjacent [publication receipt](evidence/ASMA-8015/credential-authority-correction/audit-qualified-e53f19b7/publication-receipt.json) retain the exact leading horizontal rule, whitespace, native identity, absent final LF and absent terminator. Only the activity viewer wrapper was removed.
+
+The finding reports **P0/P1/P2 none** in the authorized source/fake-backend scope and supports source merge consideration for PR #278. It independently reproduces all 54 reviewed manifest hashes, 39 carriers, 16 immutable source objects, the exact archive, all nine compiled behavioral kills, 108 baseline/restored passes, complete source restoration, full-gate exit zero, 2,940 Rust and 305 console passes, nine ignored tests and all nine allowed audit warnings. Context policy remains best-effort `not_enforced`; no compaction success is claimed and the persistent native/session is unchanged.
+
+This completes the isolated source-and-test correction phase. Merge authorization/provenance, an exact merged archive build, governed enrollment at the canonical Realm/root/alias address, real macOS Keychain command-boundary/persistence/ACL/update/rollback proof, and controlled same-Realm restart/connector readback remain pending. Current authorization supplies no live credential access or extraction, installation, deployment, live Jira/SQLite/Kontor writes, task/workflow settlement, epic acceptance or closure. Historical rejected 3a35 findings and its interrupted gate are preserved; present resolutions do not rewrite that round.
