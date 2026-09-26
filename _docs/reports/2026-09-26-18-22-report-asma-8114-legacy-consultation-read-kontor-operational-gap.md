@@ -32,7 +32,7 @@ After the one read-projection guard changed, [five focused checks passed](eviden
 - Unknown-subject native-name preview still returns its strict 409 before effects.
 - Existing Committee and Advisor tests still render exact task/epic canonical names.
 
-The [executed focused runner](evidence/ASMA-8114/legacy-consultation-read/focused-runner.py) used disposable synthetic Realms and a private APFS-cloned cache. The [37-artifact manifest](evidence/ASMA-8114/legacy-consultation-read/SHA256SUMS.json) binds exact receipts and lossless log carriers. Decode `rawBase64` strictly without normalization.
+The [executed focused runner](evidence/ASMA-8114/legacy-consultation-read/focused-runner.py) used disposable synthetic Realms and a private APFS-cloned cache. The [39-artifact manifest](evidence/ASMA-8114/legacy-consultation-read/SHA256SUMS.json) binds exact receipts and lossless log carriers. Decode `rawBase64` strictly without normalization.
 
 ## Remaining qualification and delivery
 
@@ -50,3 +50,10 @@ The [immutable exact-51 gate log](evidence/ASMA-8114/legacy-consultation-read/qu
 The audit's P2 is now corrected: Advisor and Committee GET declarations advertise 409; the generated served OpenAPI document and console types agree. [Private regeneration](evidence/ASMA-8114/legacy-consultation-read/openapi-regeneration.txt.json) passed after its separately preserved [DNS failure](evidence/ASMA-8114/legacy-consultation-read/openapi-preparation-dns-failure.txt.json). [Frozen contract and API verification](evidence/ASMA-8114/legacy-consultation-read/openapi-frozen-verification.txt.json), with [actual receipt](evidence/ASMA-8114/legacy-consultation-read/openapi-frozen-verification-receipt.json), passed all three Rust contract tests and exact generated TypeScript comparison. The [identity receipt](evidence/ASMA-8114/legacy-consultation-read/openapi-correction-identity.json) records only two additional response declarations, with runtime handler bodies, read logic, strict renderer, tests and lockfile unchanged. The historical source audit is not rewritten or relabeled.
 
 The resulting integrated source still requires its own immutable qualification and corrective audit before merge/build/deployment. No later commit, installed binary, live historical GET, ASMA-8113/8114 workflow, epic or portfolio acceptance is credited by the exact-51 execution.
+
+
+## Actual corrective source audit at 1b99689d
+
+The same persistent LSA's [complete actual corrective finding](evidence/ASMA-8114/legacy-consultation-read/actual-lsa-corrective-audit-1b99689d.txt.json), with [adjacent publication receipt](evidence/ASMA-8114/legacy-consultation-read/lsa-corrective-audit-1b99689d-publication-receipt.json), records P0/P1/P2 none and confirms the 409 contract omission closed at exact `1b99689d138aa1a4c1e406700f0a6be2316f5554`. It verifies the three-path contract delta, unchanged runtime/permission bodies and read logic, all 37 evidence entries and the exact-51 qualification boundary. The finding is preserved verbatim; its use of `0fa98c9f` as a carrier SHA names the decoded raw-log hash, while the receipt explicitly binds both distinct hashes.
+
+Support remains conditional on actual terminal exit-zero exact-1b archive/frozen/API evidence. The audit did not inspect or credit those running jobs. No merge, deployment, supported historical GET, ASMA-8113/8114 task/workflow settlement, epic closure or portfolio acceptance follows from this finding. The preceding diagnosis, P2 audit and every execution failure remain unchanged.

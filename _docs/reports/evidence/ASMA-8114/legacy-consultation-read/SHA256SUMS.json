@@ -1,5 +1,5 @@
 {
-  "scope": "ASMA-8114 exact-51 qualification, actual audit and subsequent two-response OpenAPI correction; integrated-source qualification and deployment pending",
+  "scope": "ASMA-8114 exact-51 qualification and actual corrective integrated-source audit; exact-1b qualification and delivery pending",
   "files": {
     "actual-lsa-legacy-read-diagnosis.txt.json": "6ce1a3398aa9ccb3901c3f420b319bb5185368479d17b3ec69024eca559bdf54",
     "focused-runner.py": "65449ed5d72a0b7e13df4fcfa8b44ad026d6486f4837fe42f740f61b3c1fb3cd",
@@ -37,6 +37,8 @@
     "openapi-regeneration-receipt.json": "712c475182134d0b9c257d3c0aae933213817154b9b7ccbcf156a4aad919c496",
     "openapi-frozen-verification.txt.json": "7b495d76fcaa9933f4124cbbb6f730f2d9a47642d1f32bfd55619d657b5376c0",
     "openapi-frozen-verification-receipt.json": "3d19aaa8401ad70a30f715264dd346998980b6061803d52fd5a16746a48816ad",
-    "openapi-correction-identity.json": "c670ecfd3c58cba3334adeb5c45f8cc45a530f3b39078881d8ac6221f7163faf"
+    "openapi-correction-identity.json": "c670ecfd3c58cba3334adeb5c45f8cc45a530f3b39078881d8ac6221f7163faf",
+    "actual-lsa-corrective-audit-1b99689d.txt.json": "438fd83a49a90382265b63bb8adcc7085b67e1fa043319ffb1510489fbd38fe9",
+    "lsa-corrective-audit-1b99689d-publication-receipt.json": "25752ecf83198882ffe1dc1fea1e65efe38f79f146185d2fa66637bbe3ab4935"
   }
 }
