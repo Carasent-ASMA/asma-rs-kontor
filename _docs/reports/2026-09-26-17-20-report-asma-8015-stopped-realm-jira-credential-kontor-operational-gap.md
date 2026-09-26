@@ -1,7 +1,7 @@
 ---
 title: ASMA-8015 stopped-realm Jira credential delivery
 date: 2026-09-26
-status: corrected-source-qualification-pending
+status: corrected-source-qualified-independent-receipt-review-pending
 jira: ASMA-8015
 orchestration: paseo-direct-recovery
 ---
@@ -93,6 +93,14 @@ The [unchanged exact-e53 execution receipt](evidence/ASMA-8015/credential-author
 
 Baseline and restoration each passed 78 account, 19 Jira unit, two scope integration, seven daemon operator and two Realm preflight tests: **108 passed, zero failed or ignored**. The [before](evidence/ASMA-8015/credential-authority-correction/mutations-e53f19b7/source-entries-before.json) and [after](evidence/ASMA-8015/credential-authority-correction/mutations-e53f19b7/source-entries-after.json) inventories are byte-identical across all 2,849 extracted file contents and reproduce the immutable Git archive. Each decoded patch independently reproduces its recorded mutated-source hash. The mutation cache is a distinct private clone; source restoration does not imply source-to-binary provenance.
 
-Exact-e53 full-archive qualification remains running and receives no credit here. A completed exit-zero receipt and independent verification are still required before source merge consideration. The 4,096-byte Apple interactive-command platform limit, actual OS persistence/reader compatibility, enrollment at every configured scoped alias, verified rollback under actual OS failures, and controlled same-Realm restart remain separate live-boundary proof obligations. This authorized work performs no real Keychain operation, credential extraction, installation or deployment and grants no task, workflow, gate, epic or closure credit.
+The preceding audit/mutation publication took no credit for the then-running exact-e53 full gate. Its completed exit-zero receipt is recorded below; independent receipt verification remains required before source merge consideration. The 4,096-byte Apple interactive-command platform limit, actual OS persistence/reader compatibility, enrollment at every configured scoped alias, verified rollback under actual OS failures, and controlled same-Realm restart remain separate live-boundary proof obligations. This authorized work performs no real Keychain operation, credential extraction, installation or deployment and grants no task, workflow, gate, epic or closure credit.
 
 The [complete correction manifest](evidence/ASMA-8015/credential-authority-correction/SHA256SUMS.json) binds all preliminary, source-audit and exact-mutation publication files. Earlier 3a35 findings, six kills, interrupted gate and the initial automatic-approval hold remain unchanged history.
+
+## Completed exact-e53 full archive qualification
+
+The completed [full-gate carrier](evidence/ASMA-8015/credential-authority-correction/qualified-e53f19b7/full-gate.txt.json) strictly decodes to 758,762 bytes with SHA-256 `1e4afcd4d7f932c26e533343796460e3e51fcaaf67a16e78149047d895cd985f`. The [unchanged original execution receipt](evidence/ASMA-8015/credential-authority-correction/qualified-e53f19b7/execution-receipt.json), [runner](evidence/ASMA-8015/credential-authority-correction/qualified-e53f19b7/runner.py), and [source qualification](evidence/ASMA-8015/credential-authority-correction/qualified-e53f19b7/source-qualification.json) bind exact e53 commit/tree/archive and terminal exit **0** at `2026-09-26T19:32:22.062775+00:00`. Earlier statements that this gate was running describe the preceding publication, not this completed receipt.
+
+Independent recomputation from the raw log totals 151 Rust summaries, **2,940 passed, zero failed, 9 ignored**, plus **305 console tests**. Formatting, strict workspace Clippy, locked workspace tests, audit, deny, frozen install, typecheck and production audit all completed. All nine allowed audit warnings (eight unmaintained and one unsound) and nine ignored tests are preserved; this is not universally warning-free or unignored. The exact archive SHA-256 is `0b0d9701d7471390439b8475017e255222686312bdac83c4034a274c4f6673b0`. The complete mutation before/after inventories remain the source-restoration proof; no additional final extracted-directory inventory is claimed for the full gate.
+
+The independently reviewed source design and completed synthetic qualification still require independent receipt verification before merge consideration. The authorized scope remains source and fake-backend tests only. No real Keychain operation, enrollment, credential extraction, installation, deployment, integration, workflow, gate, task, epic or closure credit is supplied. The operating-system/platform and future governed enrollment boundaries stated above remain pending.
