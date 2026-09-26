@@ -8,7 +8,7 @@ orchestration: paseo-direct-recovery
 
 # ASMA-8015 stopped-realm Jira credential delivery
 
-The installed e29 native Jira connector reads `kontor-jira` credentials through the OS Keychain, but has no supported installation command. The historical `daf5149e3e1a0467a05f37105faa3b6a4057e3b9` installer is not in e29 and used a different macOS Keychain implementation. This candidate ports the operation to the current reader rather than crediting that historical patch as delivered.
+At the start of this work, the installed e29 native Jira connector read `kontor-jira` credentials through the OS Keychain, but has no supported installation command. The historical `daf5149e3e1a0467a05f37105faa3b6a4057e3b9` installer is not in e29 and used a different macOS Keychain implementation. This candidate ports the operation to the current reader rather than crediting that historical patch as delivered.
 
 ## Goal
 
@@ -82,3 +82,17 @@ The [preliminary receipt](evidence/ASMA-8015/credential-authority-correction/pre
 - [strict-clippy.txt.json](evidence/ASMA-8015/credential-authority-correction/preliminary/strict-clippy.txt.json)
 
 The existing 3a35 audit and all historical mutation/log carriers remain unchanged. Exact corrected-source mutation and archive qualification, independent source assessment and any subsequent merge/build/deployment remain pending.
+
+## Exact integrated e53 source audit and mutation evidence
+
+Integrated source `e53f19b744b80862b166b613dcb8992bcf371215`, tree `24a8970facd62418aa77e6def93c7ef65f31e2c5`, composes the isolated credential correction with deployed ASMA-8114 source `173d399bfd44ec598332b4fe1cdf882af024fe5c`. The archival-read guard, strict effect renderer, GET 409 contract and dedicated regressions are preserved. The installed daemon remains 173d; this composition is source only.
+
+The [complete actual independent LSA source finding](evidence/ASMA-8015/credential-authority-correction/audit-e53f19b7/actual-lsa-source-audit.txt.json) and [receipt](evidence/ASMA-8015/credential-authority-correction/audit-e53f19b7/publication-receipt.json) preserve its leading commentary and actual final-byte state. The finding reports no P0/P1/P2 and resolves the four earlier source defects within the stated boundary. Its review took no credit for then-running exact-e53 qualification and supplies no unconditional merge/deployment support.
+
+The [unchanged exact-e53 execution receipt](evidence/ASMA-8015/credential-authority-correction/mutations-e53f19b7/execution-results.json), [runner](evidence/ASMA-8015/credential-authority-correction/mutations-e53f19b7/runner.py), and [publication bindings](evidence/ASMA-8015/credential-authority-correction/mutations-e53f19b7/publication-receipt.json) now establish nine genuine compiled behavioral kills, each exit 101 with its intended assertion. The faults remove root namespace isolation, verified rollback, prior-state refusal, alias preflight, absolute-root refusal, subprocess deadline, bounded stdin delivery, child reaping, and read-only database opening. Actual contextual patch bytes and raw logs are losslessly encoded; their original private execution paths remain unchanged in the receipt.
+
+Baseline and restoration each passed 78 account, 19 Jira unit, two scope integration, seven daemon operator and two Realm preflight tests: **108 passed, zero failed or ignored**. The [before](evidence/ASMA-8015/credential-authority-correction/mutations-e53f19b7/source-entries-before.json) and [after](evidence/ASMA-8015/credential-authority-correction/mutations-e53f19b7/source-entries-after.json) inventories are byte-identical across all 2,849 extracted file contents and reproduce the immutable Git archive. Each decoded patch independently reproduces its recorded mutated-source hash. The mutation cache is a distinct private clone; source restoration does not imply source-to-binary provenance.
+
+Exact-e53 full-archive qualification remains running and receives no credit here. A completed exit-zero receipt and independent verification are still required before source merge consideration. The 4,096-byte Apple interactive-command platform limit, actual OS persistence/reader compatibility, enrollment at every configured scoped alias, verified rollback under actual OS failures, and controlled same-Realm restart remain separate live-boundary proof obligations. This authorized work performs no real Keychain operation, credential extraction, installation or deployment and grants no task, workflow, gate, epic or closure credit.
+
+The [complete correction manifest](evidence/ASMA-8015/credential-authority-correction/SHA256SUMS.json) binds all preliminary, source-audit and exact-mutation publication files. Earlier 3a35 findings, six kills, interrupted gate and the initial automatic-approval hold remain unchanged history.
