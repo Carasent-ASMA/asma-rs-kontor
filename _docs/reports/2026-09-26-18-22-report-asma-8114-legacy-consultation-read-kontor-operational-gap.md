@@ -1,7 +1,7 @@
 # ASMA-8114 legacy consultation archival-read correction
 
 > **Date:** 2026-09-26 18:22 Europe/Oslo
-> **Status:** 🟠 Source candidate — five focused checks pass; exact qualification and deployment pending
+> **Status:** 🟠 Source candidate — three exact-source mutants killed; full gate, API contract and deployment pending
 > **Category:** report
 > **Scope:** ASMA-8113 / ASMA-8114 archival Committee and Advisor reads
 > **Summary:** Omit an unprovable canonical name from a legacy read DTO while preserving strict native subject enforcement and every historical finding.
@@ -32,8 +32,12 @@ After the one read-projection guard changed, [five focused checks passed](eviden
 - Unknown-subject native-name preview still returns its strict 409 before effects.
 - Existing Committee and Advisor tests still render exact task/epic canonical names.
 
-The [executed focused runner](evidence/ASMA-8114/legacy-consultation-read/focused-runner.py) used disposable synthetic Realms and a private APFS-cloned cache. The [ten-artifact manifest](evidence/ASMA-8114/legacy-consultation-read/SHA256SUMS.json) binds exact receipts and lossless log carriers. Decode `rawBase64` strictly without normalization.
+The [executed focused runner](evidence/ASMA-8114/legacy-consultation-read/focused-runner.py) used disposable synthetic Realms and a private APFS-cloned cache. The [27-artifact manifest](evidence/ASMA-8114/legacy-consultation-read/SHA256SUMS.json) binds exact receipts and lossless log carriers. Decode `rawBase64` strictly without normalization.
 
 ## Remaining qualification and delivery
 
-Exact committed-source compiled behavioral mutations, the full archive gate and independent corrective source review remain pending. Running work receives no credit. Merge, build/deployment, the three actual supported historical GET readbacks, broader ASMA-8114 operational gaps and task/workflow/epic acceptance remain separate. No SQL subject backfill, topic correction, native retirement or historical-result rewrite is part of this remedy. ASMA-8015 credential-source edits remain held under their separate approval boundary.
+The [complete actual independent source audit](evidence/ASMA-8114/legacy-consultation-read/actual-lsa-source-audit-51cfef9c.txt.json) and [adjacent receipt](evidence/ASMA-8114/legacy-consultation-read/lsa-source-audit-51cfef9c-publication-receipt.json) preserve activity update 3066 exactly: no P0 or functional P1, with one adjacent P2. Both Advisor and Committee GET OpenAPI declarations must advertise their possible 409 for inconsistent subjectful naming state. The audit supports the bounded design conditionally and credits no running qualification work.
+
+The [exact-51 three-mutant receipt](evidence/ASMA-8114/legacy-consultation-read/results.json), [carrier bindings](evidence/ASMA-8114/legacy-consultation-read/mutation-publication-bindings.json) and [executed runner](evidence/ASMA-8114/legacy-consultation-read/mutant-runner.py) record three compiled behavioral kills with exit 101: removing the legacy read guard restores the production 409; reversing it loses a canonical name; weakening strict subject enforcement admits a prohibited native-name preview. [Baseline](evidence/ASMA-8114/legacy-consultation-read/baseline.txt.json) and [restoration](evidence/ASMA-8114/legacy-consultation-read/restored.txt.json) each passed all five focused tests. [Before](evidence/ASMA-8114/legacy-consultation-read/source-entries-before.json) and [after](evidence/ASMA-8114/legacy-consultation-read/source-entries-after.json) inventories are byte-identical across all 2,759 entries. Source commit `51cfef9caaa1e2b12674ad932d0adfb0658d4777`, tree `c63a37e6d0b0db8e6cfb495d044e02d33f62a698`, archive `a4a661119a5f5e5c6fa211a75397cd72c5b5f5a7e45bc4d84816b0fc96f7cebe` bind this qualification only.
+
+The first [full-gate attempt](evidence/ASMA-8114/legacy-consultation-read/full-gate-sandbox-dns-failure.txt.json) and [exit-1 receipt](evidence/ASMA-8114/legacy-consultation-read/full-gate-sandbox-dns-failure-receipt.json) remain immutable. Sandbox DNS refused `github.com` during the Swagger UI dependency build; that run earns no credit. The same-source network-enabled full archive gate is running and earns no completion credit. The API-contract correction and its subsequent frozen/API qualification remain pending. Merge, build/deployment, the three actual supported historical GET readbacks, broader ASMA-8114 operational gaps and task/workflow/epic acceptance remain separate. No SQL subject backfill, topic correction, native retirement or historical-result rewrite is part of this remedy. ASMA-8015 credential-source edits remain held under their separate approval boundary.

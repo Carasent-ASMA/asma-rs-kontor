@@ -1,5 +1,5 @@
 {
-  "scope": "ASMA-8114 archival-read source correction; preliminary focused evidence only",
+  "scope": "ASMA-8114 exact-51 source review and three-mutant qualification; full archive gate and adjacent API-contract correction pending",
   "files": {
     "actual-lsa-legacy-read-diagnosis.txt.json": "6ce1a3398aa9ccb3901c3f420b319bb5185368479d17b3ec69024eca559bdf54",
     "focused-runner.py": "65449ed5d72a0b7e13df4fcfa8b44ad026d6486f4837fe42f740f61b3c1fb3cd",
@@ -10,6 +10,23 @@
     "red-before-correction.txt.json": "12a32968d740c040c74f332cd3a88116997d7887b3e5441ea851d6878fd36261",
     "red-current-naming-fixtures.json": "9ab928dab5e471cb223704c82d4c4862c8912a78da84e6f901c3a8c8a15dc879",
     "red-current-naming-fixtures.txt.json": "c92b3bf3cf2cf1e7cb411e0770201e18bf6c9bfe35a220ce8db05bb7f1afce4c",
-    "source-and-evidence-boundary.json": "b801e7c0c1ee11a444b3247defd8d42540bb6952ddebbcfad5fe0ffab6601706"
+    "source-and-evidence-boundary.json": "b801e7c0c1ee11a444b3247defd8d42540bb6952ddebbcfad5fe0ffab6601706",
+    "MUT-CANONICAL-NAME.diff.json": "77fc38f6f9a4ffbac54dd152027b884e232d73f7efdf7f29e7ed6c699dedca3f",
+    "MUT-CANONICAL-NAME.txt.json": "84f5bd3704ad8ba224b7a37600163b321850ddc115b4fd3cb08416fd1487f0af",
+    "MUT-LEGACY-READ.diff.json": "b4792a69033142549d6abb5e3700c72adcfe25cb6234f85bdcbc9616d88e1c25",
+    "MUT-LEGACY-READ.txt.json": "95a415fd9d183f3dd849740a08908580549a000944dfd210445ea4b7456de29f",
+    "MUT-NATIVE-SUBJECT.diff.json": "541c5b50cbb23a85db81cb923f5b3284f04bbc92c4562d8e00435f53d855aa04",
+    "MUT-NATIVE-SUBJECT.txt.json": "51957c026c5d789bce8724fee47cb9d5174610acfacfea2c0fb3a31d5c52f552",
+    "actual-lsa-source-audit-51cfef9c.txt.json": "d5467fc79b128827be79784849951362e61f1ffc7054747f61e14ea7b76e110f",
+    "baseline.txt.json": "53794ececa584b96578658bf4678355ccb05f05308f37e2a055e9dd31fc09633",
+    "full-gate-sandbox-dns-failure-receipt.json": "b9ea2d8e4d0ac1063138012444866671daa44f75ec02e3e6cec24dff8ae4a234",
+    "full-gate-sandbox-dns-failure.txt.json": "1613827a9ff065ef1c42a36b8e1b4241d6f64b5e1c60beb5bc06d9d113611150",
+    "lsa-source-audit-51cfef9c-publication-receipt.json": "5e601740161816a24330bcff53c54222a098e36d18ae284642fc9d4e1a4b3833",
+    "mutant-runner.py": "fb52a549582eb64907177fa2762d8879c035a636f03418e4f544eb1fb0b937f5",
+    "mutation-publication-bindings.json": "f01771059b73a9f493bcc0108b1f50b9da317fe3bdd34803fc52f2be53c25882",
+    "restored.txt.json": "4f07416f893bed6aa8105fc78cc5efb1a7aeb2e9d8fa0373fc4a85e0f289f63e",
+    "results.json": "b9b9616df1ee3552e28591f439f4f68bbd4c1ecd442b6619d08ba4f5a5c909a4",
+    "source-entries-after.json": "1f84dca5da045051b3e84f605bba9d7bc0b8cc466bd75057c5c1061f50a520ca",
+    "source-entries-before.json": "1f84dca5da045051b3e84f605bba9d7bc0b8cc466bd75057c5c1061f50a520ca"
   }
 }
