@@ -32,6 +32,7 @@ The new crash fixture aborts the second intent installation after both native oc
 | Independent QA re-review | Existing Cursor QA `a526c5cc-e399-43c9-8a5e-830e5834a27b` confirmed its prior P1 closed in the candidate. Exact TSW `wks_8d363e5f3188d323` and provider session `656a511e-fd25-4acc-8425-39650f33fc11` preserved. |
 | Full archive verification of `ef1475c7` | Workspace Clippy passed; workspace tests stopped at one pre-existing schema rollback fixture collision |
 | Corrected legacy-schema fixture (`repository_roundtrip v115_`) | 3 passed; production guards and acceptance assertions preserved |
+| Full archive verification of `01f8ad93` | Workspace Clippy and the repaired migration suite passed; schema-shape suite found its deliberately pinned expected version still set to 118 (63 passed, 1 failed) |
 
 Independent QA's actual finding:
 
@@ -40,6 +41,8 @@ Independent QA's actual finding:
 The full loopback initially had six fixture failures: its Git artifact helper mistook an empty `.git` placement marker for an initialized repository. The isolated lifecycle test reproduced the same setup failure. The fixture now asks Git whether a repository exists before skipping initialization; lifecycle assertions and acceptance scope remain intact.
 
 Full archive verification then exposed the schema-v115 fixture's deliberate rollback from the current schema. It undid v116–v118 additions but left the two v119 publication-attestation triggers, so migration replay collided when recreating them. The fixture now removes both guards during rollback, allowing the original restart assertion to verify their installation again. Production migrations are unchanged. Full archive verification must pass on the corrected commit before merge.
+
+The next archive run passed that correction and reached the schema-shape suite. Its deliberate version pin still expected 118 despite merged publication-attestation migration 0119. The expected literal is updated to 119 with the migration purpose recorded; it remains an independent pin rather than being replaced with a tautological comparison. Full qualification remains pending on the new commit.
 
 Tested source SHA-256:
 
