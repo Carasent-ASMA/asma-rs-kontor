@@ -1,0 +1,17 @@
+{
+  "baseSourceCommit": "51cfef9caaa1e2b12674ad932d0adfb0658d4777",
+  "scope": "Private API contract preparation only; no tracked source or deployment credit. Prior DNS failure preserved.",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-api",
+    "--test",
+    "openapi_contract"
+  ],
+  "startedAt": "2026-09-26T16:46:19.171061+00:00",
+  "finishedAt": "2026-09-26T16:46:45.225121+00:00",
+  "exitCode": 0,
+  "logSha256": "5c223f0cdb813da06cad4a9c31aa02ee230fb951578a628187f6679aca84a327"
+}
