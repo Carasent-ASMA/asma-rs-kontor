@@ -418,6 +418,14 @@ fn add_linked_delivery_successor(w: &World, native: Option<&str>) -> AgentRunId 
         .list_agent_runs_for_team_run(w.project_id, w.team_run)
         .expect("the original role reads")[0]
         .agent_run_id;
+    add_delivery_successor_of(w, predecessor, native)
+}
+
+fn add_delivery_successor_of(
+    w: &World,
+    predecessor: AgentRunId,
+    native: Option<&str>,
+) -> AgentRunId {
     let id = AgentRunId::generate();
     w.store
         .create_agent_run(&NewAgentRun {
@@ -536,6 +544,27 @@ fn an_unbound_delivery_leaf_never_substitutes_its_bound_predecessor() {
 fn an_operator_abandoned_unbound_attempt_does_not_hide_the_current_native() {
     let w = world();
     let attempt = add_linked_delivery_successor(&w, None);
+    abandon_unbound_attempt(&w, attempt);
+    let census = w
+        .store
+        .list_live_native_subjects(w.project_id, w.mini_project_id)
+        .expect("the current census reads");
+    let seats: Vec<_> = census
+        .iter()
+        .filter(|entry| matches!(entry.subject, TeamDefinitionMigrationSubject::Seat { .. }))
+        .collect();
+    assert_eq!(seats.len(), 1);
+    assert_eq!(seats[0].identity.native_id.as_str(), "agent_delivery_aud");
+    w.store
+        .record_team_definition_migration(&migration(
+            &w,
+            "current-after-abandoned-attempt",
+            complete_targets(&w),
+        ))
+        .expect("the still-current native remains required and admissible");
+}
+
+fn abandon_unbound_attempt(w: &World, attempt: AgentRunId) {
     let intent = CanonicalDocument::from_serializable(&serde_json::json!({
         "schema_version": 1, "operation": "abandon", "run": attempt,
     }))
@@ -546,7 +575,7 @@ fn an_operator_abandoned_unbound_attempt_does_not_hide_the_current_native() {
         .record_abandon_receipt(&kontor_core::repository::NewAbandonReceipt {
             project_id: w.project_id,
             receipt_id: CommandReceiptId::generate(),
-            idempotency_key: IdempotencyKey::parse("abandoned-unbound-attempt").expect("a key"),
+            idempotency_key: IdempotencyKey::parse(&format!("abandon-{attempt}")).expect("a key"),
             target: AggregateRef::AgentRun {
                 agent_run_id: attempt,
             },
@@ -568,10 +597,104 @@ fn an_operator_abandoned_unbound_attempt_does_not_hide_the_current_native() {
             },
         })
         .expect("the never-bound attempt is certified abandoned");
+}
+
+#[test]
+fn abandoned_bridges_preserve_current_delivery_migration_record_and_confirmation() {
+    for bridge_count in [1, 2] {
+        let w = world();
+        let mut parent = add_linked_delivery_successor(&w, None);
+        abandon_unbound_attempt(&w, parent);
+        for _ in 1..bridge_count {
+            parent = add_delivery_successor_of(&w, parent, None);
+            abandon_unbound_attempt(&w, parent);
+        }
+        let current = add_delivery_successor_of(&w, parent, Some("agent_after_bridge"));
+        let census = w
+            .store
+            .list_live_native_subjects(w.project_id, w.mini_project_id)
+            .unwrap();
+        let seats: Vec<_> = census
+            .iter()
+            .filter(|entry| matches!(entry.subject, TeamDefinitionMigrationSubject::Seat { .. }))
+            .collect();
+        assert_eq!(
+            seats.len(),
+            1,
+            "structural bridges must not leave a second current native"
+        );
+        assert_eq!(seats[0].identity.native_id.as_str(), "agent_after_bridge");
+        assert!(
+            w.store
+                .record_team_definition_migration(&migration(
+                    &w,
+                    "bridge-stale-predecessor",
+                    complete_targets(&w)
+                ))
+                .is_err()
+        );
+        let mut targets = complete_targets(&w);
+        targets
+            .iter_mut()
+            .find(|target| matches!(target.subject, TeamDefinitionMigrationSubject::Seat { .. }))
+            .unwrap()
+            .identity = identity("agent_after_bridge");
+        let recorded = w
+            .store
+            .record_team_definition_migration(&migration(&w, "bridge-current-leaf", targets))
+            .unwrap();
+        for target in &recorded.targets {
+            w.store
+                .observe_team_definition_migration(
+                    w.project_id,
+                    recorded.id,
+                    &[TeamDefinitionMigrationObservation {
+                        subject: target.subject,
+                        identity: target.identity.clone(),
+                        observed: Some(target.desired.clone()),
+                        state: TeamDefinitionMigrationTargetState::Unchanged,
+                        observed_at: at("2026-09-02T11:00:00Z"),
+                    }],
+                    at("2026-09-02T11:00:00Z"),
+                )
+                .unwrap();
+        }
+        w.store
+            .confirm_team_definition_migration(
+                w.project_id,
+                recorded.id,
+                at("2026-09-02T11:05:00Z"),
+            )
+            .unwrap();
+        assert_eq!(
+            w.store
+                .get_agent_run(w.project_id, current)
+                .unwrap()
+                .unwrap()
+                .parent_agent_run_id,
+            Some(parent)
+        );
+        assert_eq!(
+            w.store
+                .list_agent_runs_for_team_run(w.project_id, w.team_run)
+                .unwrap()
+                .len(),
+            bridge_count + 2
+        );
+    }
+}
+
+#[test]
+fn consecutive_trailing_abandoned_attempts_keep_the_bound_predecessor_current() {
+    let w = world();
+    let first = add_linked_delivery_successor(&w, None);
+    abandon_unbound_attempt(&w, first);
+    let second = add_delivery_successor_of(&w, first, None);
+    abandon_unbound_attempt(&w, second);
     let census = w
         .store
         .list_live_native_subjects(w.project_id, w.mini_project_id)
-        .expect("the current census reads");
+        .unwrap();
     let seats: Vec<_> = census
         .iter()
         .filter(|entry| matches!(entry.subject, TeamDefinitionMigrationSubject::Seat { .. }))
@@ -581,10 +704,30 @@ fn an_operator_abandoned_unbound_attempt_does_not_hide_the_current_native() {
     w.store
         .record_team_definition_migration(&migration(
             &w,
-            "current-after-abandoned-attempt",
+            "trailing-abandoned-chain",
             complete_targets(&w),
         ))
-        .expect("the still-current native remains required and admissible");
+        .unwrap();
+}
+
+#[test]
+fn a_genuine_delivery_fork_refuses_the_native_migration_census() {
+    let w = world();
+    let bridge = add_linked_delivery_successor(&w, None);
+    abandon_unbound_attempt(&w, bridge);
+    add_delivery_successor_of(&w, bridge, Some("agent_fork_a"));
+    add_delivery_successor_of(&w, bridge, Some("agent_fork_b"));
+    assert!(
+        w.store
+            .list_live_native_subjects(w.project_id, w.mini_project_id)
+            .is_err(),
+        "two meaningful leaves cannot claim one persistent seat"
+    );
+    assert!(
+        w.store
+            .record_team_definition_migration(&migration(&w, "fork-census", complete_targets(&w)))
+            .is_err()
+    );
 }
 
 #[test]

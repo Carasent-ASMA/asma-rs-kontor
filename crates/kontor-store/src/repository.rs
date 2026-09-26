@@ -21956,20 +21956,33 @@ impl TeamDefinitionRepository for SqliteStore {
                     -- leaf. Bound ancestors remain immutable history, even
                     -- when the leaf has not acquired its own native yet.
                     -- Certified abandoned, never-bound attempts do not occupy
-                    -- this chain, matching the delivery-role projection.
+                    -- the slot, but retain structural ancestry for meaningful
+                    -- descendants. A trailing abandoned-only chain does not
+                    -- hide its bound predecessor.
                     AND NOT EXISTS (
-                        SELECT 1 FROM agent_runs AS child
-                         WHERE child.project_id = run.project_id
-                           AND child.team_run_id = run.team_run_id
-                           AND child.role_key = run.role_key
-                           AND child.parent_agent_run_id = run.id
-                           AND NOT (
-                               child.terminal_outcome IS 'abandoned'
-                               AND child.terminal_source_kind IS 'operator_abandon'
+                        WITH RECURSIVE descendants(id, terminal_outcome, terminal_source_kind) AS (
+                            SELECT child.id, child.terminal_outcome, child.terminal_source_kind
+                              FROM agent_runs AS child
+                             WHERE child.project_id = run.project_id
+                               AND child.team_run_id = run.team_run_id
+                               AND child.role_key = run.role_key
+                               AND child.parent_agent_run_id = run.id
+                            UNION
+                            SELECT child.id, child.terminal_outcome, child.terminal_source_kind
+                              FROM agent_runs AS child
+                              JOIN descendants AS parent ON child.parent_agent_run_id = parent.id
+                             WHERE child.project_id = run.project_id
+                               AND child.team_run_id = run.team_run_id
+                               AND child.role_key = run.role_key
+                        )
+                        SELECT 1 FROM descendants AS descendant
+                         WHERE NOT (
+                               descendant.terminal_outcome IS 'abandoned'
+                               AND descendant.terminal_source_kind IS 'operator_abandon'
                                AND NOT EXISTS (
                                    SELECT 1 FROM runtime_bindings AS child_binding
-                                    WHERE child_binding.project_id = child.project_id
-                                      AND child_binding.agent_run_id = child.id
+                                    WHERE child_binding.project_id = run.project_id
+                                      AND child_binding.agent_run_id = descendant.id
                                )
                            )
                     )
@@ -22017,9 +22030,19 @@ impl TeamDefinitionRepository for SqliteStore {
         // and both fail closed rather than skipping a live native.
         let mut owners: BTreeMap<(String, String, u64, String), TeamDefinitionMigrationSubject> =
             BTreeMap::new();
+        let mut occupied_seats = BTreeSet::new();
         for live in &subjects {
-            if !matches!(live.subject, TeamDefinitionMigrationSubject::Seat { .. }) {
+            let TeamDefinitionMigrationSubject::Seat {
+                seat_binding_id, ..
+            } = live.subject
+            else {
                 continue;
+            };
+            if !occupied_seats.insert(seat_binding_id) {
+                return Err(conflict(
+                    "live native subject",
+                    "one seat has ambiguous current native occupants",
+                ));
             }
             let key = (
                 live.identity.runtime_kind.as_str().to_owned(),

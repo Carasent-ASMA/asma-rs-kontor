@@ -1,0 +1,11 @@
+{
+  "scope": "ASMA-8196 replacement bridge focused source evidence; no deployment/closure",
+  "files": {
+    "actual-lsa-bridge-diagnosis.txt": "87d51e7308c52e8f115906c665393b35e253e0433b431f598d37e136d3a2c488",
+    "daemon-green.txt": "ccba99dce8cc143b65e67e107d9af129e06e7ea5945578af2d10ea8c7048487b",
+    "daemon-red.txt": "1f61e04989ccdd71ee3d871161c7620f990711c6e8cbf3c8f8420eacba6b7043",
+    "focused-checkpoint.json": "4a1704821215393f665ff9cf94271e53e094cbe062aa01d3a58fef4d5748f404",
+    "store-green.txt": "509d0146e6318918dcc0a0e3a106df4e28fd849e6946b52a89808f6f561e5891",
+    "store-red.txt": "f3bd664dad7495ba224b673fa49a4d97b6dc811cabe6d537226ccc129bd2c8d9"
+  }
+}

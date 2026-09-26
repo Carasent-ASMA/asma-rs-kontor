@@ -2620,25 +2620,45 @@ impl Services {
                     "a delivery role census row drifted from its team or role slot",
                 ));
             }
-            if !run.is_operator_abandoned_unbound() {
-                runs.push(run);
-            }
+            runs.push(run);
         }
 
         // A logical role slot is created before its first AgentRun. It has no
         // native title target yet; absence here is not a broken replacement
         // chain and must not block repair of the epic's existing containers.
-        if runs.is_empty() {
+        if runs.iter().all(|run| run.is_operator_abandoned_unbound()) {
             return Ok(None);
         }
 
-        let named_parents: BTreeSet<AgentRunId> = runs
+        // An abandoned, never-bound attempt is not a candidate occupant, but
+        // it can be a structural bridge to a real successor. Walk through all
+        // parents of meaningful runs before excluding abandoned candidates.
+        // Trailing abandoned attempts alone do not supersede a bound run.
+        let parents: BTreeMap<AgentRunId, Option<AgentRunId>> = runs
             .iter()
-            .filter_map(|run| run.parent_agent_run_id)
+            .map(|run| (run.id, run.parent_agent_run_id))
             .collect();
+        let mut named_parents = BTreeSet::new();
+        for run in runs
+            .iter()
+            .filter(|run| !run.is_operator_abandoned_unbound())
+        {
+            let mut parent = run.parent_agent_run_id;
+            let mut visited = BTreeSet::new();
+            while let Some(id) = parent {
+                if !visited.insert(id) {
+                    return Err(self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "a delivery role has a cyclic replacement chain",
+                    ));
+                }
+                named_parents.insert(id);
+                parent = parents.get(&id).copied().flatten();
+            }
+        }
         let mut leaves = runs
             .into_iter()
-            .filter(|run| !named_parents.contains(&run.id));
+            .filter(|run| !run.is_operator_abandoned_unbound() && !named_parents.contains(&run.id));
         let leaf = leaves.next().ok_or_else(|| {
             self.deny(
                 ApiErrorCode::StaleBinding,
