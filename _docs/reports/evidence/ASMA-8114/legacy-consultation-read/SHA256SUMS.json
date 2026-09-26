@@ -1,0 +1,15 @@
+{
+  "scope": "ASMA-8114 archival-read source correction; preliminary focused evidence only",
+  "files": {
+    "actual-lsa-legacy-read-diagnosis.txt.json": "6ce1a3398aa9ccb3901c3f420b319bb5185368479d17b3ec69024eca559bdf54",
+    "focused-runner.py": "65449ed5d72a0b7e13df4fcfa8b44ad026d6486f4837fe42f740f61b3c1fb3cd",
+    "green-after-correction.json": "b54e747e96311a80e98009df5a7b23f3c8749c63721b597bb632e87c706a92a6",
+    "green-after-correction.txt.json": "598cba7abd41224141edcad36cc7710c03d85000c150a65e2576e944773a1c59",
+    "lsa-diagnosis-publication-receipt.json": "33a6826cc7785fead15be8a8ba25ee5c6e977cd8ec0a03f8e28461b9c5722e70",
+    "red-before-correction.json": "d393a146a8884202e277bf2ce6623100a3b9265b10d0917da9d4d9c3cc26c2f0",
+    "red-before-correction.txt.json": "12a32968d740c040c74f332cd3a88116997d7887b3e5441ea851d6878fd36261",
+    "red-current-naming-fixtures.json": "9ab928dab5e471cb223704c82d4c4862c8912a78da84e6f901c3a8c8a15dc879",
+    "red-current-naming-fixtures.txt.json": "c92b3bf3cf2cf1e7cb411e0770201e18bf6c9bfe35a220ce8db05bb7f1afce4c",
+    "source-and-evidence-boundary.json": "b801e7c0c1ee11a444b3247defd8d42540bb6952ddebbcfad5fe0ffab6601706"
+  }
+}

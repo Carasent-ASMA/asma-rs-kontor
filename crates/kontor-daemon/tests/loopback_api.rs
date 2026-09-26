@@ -44,6 +44,9 @@ mod message_delivery_proofs;
 #[path = "loopback/replacement_bridges.rs"]
 mod replacement_bridges;
 
+#[path = "loopback/legacy_consultation_reads.rs"]
+mod legacy_consultation_reads;
+
 #[tokio::test]
 async fn open_question_commands_preserve_authority_history_and_completion_blockers() {
     use kontor_core::id::OpenQuestionId;
