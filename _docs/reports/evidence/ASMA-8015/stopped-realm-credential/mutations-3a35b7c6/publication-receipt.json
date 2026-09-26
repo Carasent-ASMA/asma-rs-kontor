@@ -1,0 +1,106 @@
+{
+  "recordedAt": "2026-09-26T15:26:33.656368+00:00",
+  "sourceCommit": "3a35b7c6db8ef65e51aaa14c7ba69df9bf1e1c0f",
+  "sourceTree": "ea784274c592100b9154f8c9a1fbd4a297ab7ffc",
+  "sourceArchiveSha256": "4930358d1439d381ea68f5676a3f90b5ae1c9ec0c934e12b3f9a2e8ba8423d37",
+  "originalExecutionResults": "mutations-3a35b7c6/execution-results.json",
+  "executionResultsSha256": "85c5f3538de64158835123c298b915254587dd27ce414d9a134644b4161902fc",
+  "executionResultsPreservedByteExact": true,
+  "originalLogFieldsReferToPrivateExecutionPaths": true,
+  "logPublication": [
+    {
+      "executionLog": "logs/MUT-LINE.txt",
+      "publishedCarrier": "mutations-3a35b7c6/MUT-LINE.txt.json",
+      "carrierSha256": "a48f41ec1e65fd644822716e47784acec369f7a3132d062368c449f14b9f0d71",
+      "decodedSha256": "dc7ba27dd9b0f225d5717d575bc8302058760ff0692908f6351b052bd015ef55",
+      "decodedBytes": 1431
+    },
+    {
+      "executionLog": "logs/MUT-LOCK.txt",
+      "publishedCarrier": "mutations-3a35b7c6/MUT-LOCK.txt.json",
+      "carrierSha256": "60dcef17423bed89d61a300c1dfb1c62d40caa1dba7990e3525b06fa9793e2b0",
+      "decodedSha256": "42ce3899d40440a5cb69b8f8f092279ddb92002ed342637b87455d002cb4d7cc",
+      "decodedBytes": 2216
+    },
+    {
+      "executionLog": "logs/MUT-QUOTE.txt",
+      "publishedCarrier": "mutations-3a35b7c6/MUT-QUOTE.txt.json",
+      "carrierSha256": "7999393d8c9016eb674913321e9c272d66a2f66922d467c9c049491c3b1b46e0",
+      "decodedSha256": "99a13e836beff3e0aaf08ebe961e0a2aec5bfbc12aa0e7106192158f4563980f",
+      "decodedBytes": 1326
+    },
+    {
+      "executionLog": "logs/MUT-READBACK.txt",
+      "publishedCarrier": "mutations-3a35b7c6/MUT-READBACK.txt.json",
+      "carrierSha256": "7037cd7a5fcb83f1ce8c739d366af6130bd53b190335698026c5ed027efdacd5",
+      "decodedSha256": "8867acf80fa02b91bb5d07870cc8e31f9c8ce52b2db0aa128201df0ec710a1fe",
+      "decodedBytes": 1282
+    },
+    {
+      "executionLog": "logs/MUT-STDIN.txt",
+      "publishedCarrier": "mutations-3a35b7c6/MUT-STDIN.txt.json",
+      "carrierSha256": "54e07e74faa227ce44c82e6f45b7e71736ec913aea1ff7552ab61b703f844f05",
+      "decodedSha256": "fe56f80bb4b1b597e78fc082b4d94449b9f138efc8d4ebf803c506e65a5539f5",
+      "decodedBytes": 1224
+    },
+    {
+      "executionLog": "logs/MUT-VALIDATE.txt",
+      "publishedCarrier": "mutations-3a35b7c6/MUT-VALIDATE.txt.json",
+      "carrierSha256": "b03d5451d4b886744919d4e26099adbb708f52dfdd4a456038c6706df01ce8f0",
+      "decodedSha256": "4fcfc7be90654611a1f22b6ddd220afea8596e99e5369577fc180985e867da49",
+      "decodedBytes": 1929
+    },
+    {
+      "executionLog": "logs/baseline-account-unit.txt",
+      "publishedCarrier": "mutations-3a35b7c6/baseline-account-unit.txt.json",
+      "carrierSha256": "2d12198b75620b324e581e4bfc96001b7c939ff539714597e3a391dc230ac34d",
+      "decodedSha256": "475dd1fde40243f7444f01f8ac7ef5b400b8867b202af65298eb26f3a30a64d5",
+      "decodedBytes": 8002
+    },
+    {
+      "executionLog": "logs/baseline-daemon-operator.txt",
+      "publishedCarrier": "mutations-3a35b7c6/baseline-daemon-operator.txt.json",
+      "carrierSha256": "4c6d3c67a4342a416e8d5f1919a565c54bc84f520b5230c62dda513746dd5222",
+      "decodedSha256": "674bc5484d836e0e21a8803b462ceb036daff48c82559caaa3ba12c1c9898b0f",
+      "decodedBytes": 2525
+    },
+    {
+      "executionLog": "logs/baseline-jira-unit.txt",
+      "publishedCarrier": "mutations-3a35b7c6/baseline-jira-unit.txt.json",
+      "carrierSha256": "cfe0cde28496bd62ad615b1436e3f08f92d16c11814a60b786324eb1c861d6c3",
+      "decodedSha256": "15887633774de8e9e67b6952ac47bf56074f56a8858ed7dad5bffc95ba8c4517",
+      "decodedBytes": 2255
+    },
+    {
+      "executionLog": "logs/restored-account-unit.txt",
+      "publishedCarrier": "mutations-3a35b7c6/restored-account-unit.txt.json",
+      "carrierSha256": "cb18b52385d66594e027d2331e317efa31e49d05ff316a80076b294fe827ae46",
+      "decodedSha256": "f1715206e3be982b06eb416a4847857d7b8bf06e4cf9db67f947d6e43e298fcb",
+      "decodedBytes": 7147
+    },
+    {
+      "executionLog": "logs/restored-daemon-operator.txt",
+      "publishedCarrier": "mutations-3a35b7c6/restored-daemon-operator.txt.json",
+      "carrierSha256": "b98ed765a5a558dc91239255c1a3d2c3a6cb018b611e3669b622c927a814bfcb",
+      "decodedSha256": "d7255d54cc2dfb9309b4882b6c519cb18fc20a1479ee9c6c3cab0626d759af73",
+      "decodedBytes": 1241
+    },
+    {
+      "executionLog": "logs/restored-jira-unit.txt",
+      "publishedCarrier": "mutations-3a35b7c6/restored-jira-unit.txt.json",
+      "carrierSha256": "adcd9be77cd5bcd45d21c689ea4d36b0c822dd6ab6e9e669a02f88e2ce82842d",
+      "decodedSha256": "c468174094f2bad459206f16a38a197e18bf4535ded2e2284baeef1908d9f2e7",
+      "decodedBytes": 1826
+    }
+  ],
+  "allSixCompiledBehavioralKills": true,
+  "baselinePassed": 96,
+  "restoredPassed": 96,
+  "sourceEntriesBeforeSha256": "25b835795381bc9680a98f79f397c35ad08b0f1040667f978de1ee16bfd7b1db",
+  "sourceEntriesAfterSha256": "25b835795381bc9680a98f79f397c35ad08b0f1040667f978de1ee16bfd7b1db",
+  "sourceRestoredByteExact": true,
+  "sourceEntryCount": 3200,
+  "cacheBoundary": "Private cloned cache; original QA and primary checkout caches are not modified. Source archive is disposable and isolated.",
+  "fullArchiveGateComplete": false,
+  "scope": "Focused mutation qualification at exact 3a35 source only. Full archive gate, independent source audit, real OS Keychain persistence/readback, deployment and closeout remain uncredited."
+}

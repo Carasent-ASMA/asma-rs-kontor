@@ -78,7 +78,7 @@ pub use profile::{
 };
 pub use quota::{ObservedQuota, QuotaBasis, QuotaSignal, classify};
 pub use resolver::{
-    AccountResolver, KeychainBackend, KeychainFailure, KeychainTarget, PolicyError,
+    AccountResolver, KeychainBackend, KeychainFailure, KeychainTarget, KeychainWriter, PolicyError,
     ResolutionError, ResolutionReason, ResolvedAccountEnvironment, ResolverPolicy,
     ResolverPolicyBuilder, SystemKeychain,
 };

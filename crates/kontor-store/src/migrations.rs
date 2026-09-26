@@ -895,7 +895,7 @@ fn table_exists(connection: &Connection, table: &str) -> Result<bool, StoreError
 }
 
 /// Load and validate the single Realm row. Never repairs, inserts or replaces.
-fn load_realm(connection: &Connection) -> Result<RealmMetadata, StoreError> {
+pub(crate) fn load_realm(connection: &Connection) -> Result<RealmMetadata, StoreError> {
     verify_applied(connection)?;
 
     let rows: i64 =

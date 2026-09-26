@@ -1,0 +1,12 @@
+{
+  "sourceCommit": "3a35b7c6db8ef65e51aaa14c7ba69df9bf1e1c0f",
+  "sourceTree": "ea784274c592100b9154f8c9a1fbd4a297ab7ffc",
+  "sourceArchiveSha256": "4930358d1439d381ea68f5676a3f90b5ae1c9ec0c934e12b3f9a2e8ba8423d37",
+  "startedAt": "2026-09-26T15:23:46.917185+00:00",
+  "finishedAt": "2026-09-26T15:33:28.591111+00:00",
+  "exitCode": 1,
+  "log": "/private/tmp/ASMA-8015-full-gate-3a35b7c6/full-gate.txt",
+  "logSha256": "d874eb5a4aa02d9003dd373af7acfad5352fd949098d1d1f9ac7f5e62a645b07",
+  "cacheBoundary": "Private clone of completed preliminary cache; distinct from mutation cache. All gate commands executed anew.",
+  "scope": "Source archive qualification only; no deployment, OS credential installation, integration, gate or closure claim."
+}

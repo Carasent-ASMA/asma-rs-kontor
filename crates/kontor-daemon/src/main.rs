@@ -92,6 +92,38 @@ enum Command {
     /// A running daemon rotates its own credentials on `SIGHUP`, which swaps the
     /// in-memory set in the same operation.
     RotateCredentials,
+    /// Install a strict Jira credential from bounded stdin for a stopped realm.
+    InstallJiraCredential {
+        /// The non-secret alias referenced by this realm's `jira.json`.
+        #[arg(long)]
+        alias: String,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+enum OperatorError {
+    #[error(transparent)]
+    Recovery(#[from] recovery::RecoveryError),
+    #[error("another daemon holds the state root, or its lock is unavailable")]
+    CredentialLock,
+    #[error(transparent)]
+    Jira(#[from] kontor_jira::JiraError),
+    #[error(
+        "credential installation requires an absolute initialized realm root and a configured alias"
+    )]
+    CredentialScope,
+    #[error(transparent)]
+    CredentialInstall(#[from] kontor_jira::CredentialInstallError),
+}
+
+impl OperatorError {
+    fn category(&self) -> &'static str {
+        match self {
+            Self::Recovery(error) => error.category(),
+            Self::CredentialLock => "state_root_locked",
+            Self::Jira(_) | Self::CredentialScope | Self::CredentialInstall(_) => "jira_credential",
+        }
+    }
 }
 
 #[tokio::main]
@@ -117,7 +149,7 @@ async fn main() -> std::process::ExitCode {
 }
 
 /// Run one operator command against a state root.
-fn run(state_root: &Path, command: Command) -> Result<(), recovery::RecoveryError> {
+fn run(state_root: &Path, command: Command) -> Result<(), OperatorError> {
     let now = Timestamp::now();
     match command {
         Command::Snapshot { into } => {
@@ -132,7 +164,9 @@ fn run(state_root: &Path, command: Command) -> Result<(), recovery::RecoveryErro
             // directory, so a shared backup directory lists only this realm's.
             let store = kontor_store::SqliteStore::open(&recovery::database_in(state_root))
                 .map_err(|source| recovery::RecoveryError::Store { source })?;
-            for snapshot in kontor_store::backup::list_snapshots(&directory, store.realm_id())? {
+            for snapshot in kontor_store::backup::list_snapshots(&directory, store.realm_id())
+                .map_err(recovery::RecoveryError::from)?
+            {
                 println!(
                     "{}\t{}\t{} bytes",
                     snapshot.manifest.created_at,
@@ -149,7 +183,9 @@ fn run(state_root: &Path, command: Command) -> Result<(), recovery::RecoveryErro
         }
         Command::Export { out } => {
             let export = recovery::export(state_root, now)?;
-            let bytes = export.canonical_bytes()?;
+            let bytes = export
+                .canonical_bytes()
+                .map_err(recovery::RecoveryError::from)?;
             match out {
                 Some(path) => {
                     std::fs::write(&path, bytes).map_err(|source| recovery::RecoveryError::Io {
@@ -178,8 +214,51 @@ fn run(state_root: &Path, command: Command) -> Result<(), recovery::RecoveryErro
             println!("{}", report.import_id);
             Ok(())
         }
-        Command::RotateCredentials => recovery::rotate_credentials(state_root),
+        Command::RotateCredentials => {
+            recovery::rotate_credentials(state_root)?;
+            Ok(())
+        }
+        Command::InstallJiraCredential { alias } => install_jira_credential(
+            state_root,
+            &alias,
+            std::io::stdin().lock(),
+            |scope, secret| kontor_jira::install_credentials(scope, &alias, secret),
+        ),
     }
+}
+
+fn install_jira_credential(
+    state_root: &Path,
+    alias: &str,
+    reader: impl std::io::Read,
+    install: impl FnOnce(
+        &kontor_jira::JiraCredentialScope,
+        secrecy::SecretString,
+    ) -> Result<(), kontor_jira::CredentialInstallError>,
+) -> Result<(), OperatorError> {
+    if !state_root.is_absolute() {
+        return Err(OperatorError::CredentialScope);
+    }
+    let root = state_root
+        .canonicalize()
+        .map_err(|_| OperatorError::CredentialScope)?;
+    if !root.is_dir() {
+        return Err(OperatorError::CredentialScope);
+    }
+    let _lock = kontor_daemon::lock::StateRootLock::acquire(&root)
+        .map_err(|_| OperatorError::CredentialLock)?;
+    // Read-only validation refuses missing/legacy/invalid databases without
+    // initializing, migrating, or replacing any realm. Read stdin only last.
+    let realm = kontor_store::SqliteStore::read_existing_realm(&recovery::database_in(&root))
+        .map_err(|_| OperatorError::CredentialScope)?;
+    let connectors = kontor_jira::JiraConnectors::read(&root, realm.realm_id)?;
+    if !connectors.references_alias(alias) {
+        return Err(OperatorError::CredentialScope);
+    }
+    let scope = kontor_jira::JiraCredentialScope::at(&root, realm.realm_id)?;
+    let secret = kontor_jira::read_credential_document(reader)?;
+    install(&scope, secret)?;
+    Ok(())
 }
 
 /// Keep the API live while the startup barrier is being settled.
@@ -390,6 +469,188 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+
+    #[test]
+    fn jira_credential_command_accepts_only_a_non_secret_alias() {
+        let args = Arguments::try_parse_from([
+            "kontor-daemon",
+            "--state-root",
+            "/tmp/synthetic-realm",
+            "install-jira-credential",
+            "--alias",
+            "work",
+        ])
+        .unwrap();
+        assert!(
+            matches!(args.command, Some(Command::InstallJiraCredential { alias }) if alias == "work")
+        );
+        assert!(
+            Arguments::try_parse_from([
+                "kontor-daemon",
+                "install-jira-credential",
+                "--alias",
+                "work",
+                "--api-token",
+                "synthetic-canary",
+            ])
+            .is_err()
+        );
+    }
+
+    fn configured_credential_root() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        let store = kontor_store::SqliteStore::open(&recovery::database_in(root.path())).unwrap();
+        drop(store);
+        std::fs::write(root.path().join("jira.json"), serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "projects": [{"project_id": ProjectId::generate(), "endpoint": "https://example.atlassian.net", "project_key": "ASMA", "credential_alias": "work"}]
+        })).unwrap()).unwrap();
+        root
+    }
+
+    #[test]
+    fn unknown_roots_aliases_and_relative_paths_refuse_before_stdin_or_effects() {
+        struct MustNotRead;
+        impl std::io::Read for MustNotRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("preflight must precede stdin");
+            }
+        }
+        let empty = tempfile::tempdir().unwrap();
+        let configured = configured_credential_root();
+        // A real initialized relative root distinguishes the absolute-path
+        // guard from an incidental missing-directory error.
+        let cwd = std::env::current_dir().unwrap();
+        let mut relative = PathBuf::new();
+        for _ in cwd.components().skip(1) {
+            relative.push("..");
+        }
+        relative.push(configured.path().strip_prefix("/").unwrap());
+        assert_eq!(
+            relative.canonicalize().unwrap(),
+            configured.path().canonicalize().unwrap()
+        );
+        for (root, alias) in [
+            (relative.as_path(), "work"),
+            (empty.path(), "work"),
+            (configured.path(), "unknown"),
+        ] {
+            assert!(
+                install_jira_credential(root, alias, MustNotRead, |_, _| panic!(
+                    "no credential effects"
+                ))
+                .is_err()
+            );
+        }
+        assert!(!recovery::database_in(empty.path()).exists());
+        std::fs::write(configured.path().join("jira.json"), b"{invalid}").unwrap();
+        assert!(
+            install_jira_credential(configured.path(), "work", MustNotRead, |_, _| panic!(
+                "no credential effects"
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_running_realm_refuses_credential_installation_before_stdin_or_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let _held = kontor_daemon::lock::StateRootLock::acquire(root.path()).unwrap();
+        struct MustNotRead;
+        impl std::io::Read for MustNotRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("locked realm must refuse before reading credentials");
+            }
+        }
+        let result = install_jira_credential(root.path(), "work", MustNotRead, |_, _| {
+            panic!("locked realm must refuse before credential effects");
+        });
+        assert!(matches!(result, Err(OperatorError::CredentialLock)));
+    }
+
+    #[test]
+    fn a_copied_realm_and_duplicate_alias_cannot_update_a_locked_roots_entry() {
+        use kontor_accounts::{KeychainBackend, KeychainFailure, KeychainTarget, KeychainWriter};
+        use secrecy::{ExposeSecret, SecretString};
+        #[derive(Default)]
+        struct Fake(Mutex<std::collections::BTreeMap<(String, String), SecretString>>);
+        impl KeychainBackend for Fake {
+            fn secret(&self, t: &KeychainTarget) -> Result<SecretString, KeychainFailure> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .get(&(t.service().to_owned(), t.account().to_owned()))
+                    .cloned()
+                    .ok_or(KeychainFailure::NotFound)
+            }
+        }
+        impl KeychainWriter for Fake {
+            fn set_secret(
+                &self,
+                t: &KeychainTarget,
+                s: &SecretString,
+            ) -> Result<(), KeychainFailure> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .insert((t.service().to_owned(), t.account().to_owned()), s.clone());
+                Ok(())
+            }
+            fn delete_secret(&self, t: &KeychainTarget) -> Result<(), KeychainFailure> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .remove(&(t.service().to_owned(), t.account().to_owned()));
+                Ok(())
+            }
+        }
+        let a = configured_credential_root();
+        let b = tempfile::tempdir().unwrap();
+        std::fs::copy(
+            recovery::database_in(a.path()),
+            recovery::database_in(b.path()),
+        )
+        .unwrap();
+        std::fs::copy(a.path().join("jira.json"), b.path().join("jira.json")).unwrap();
+        let fake = Fake::default();
+        let old = br#"{"email":"old@example.test","api_token":"old-synthetic-token"}"#;
+        install_jira_credential(a.path(), "work", &old[..], |scope, secret| {
+            kontor_jira::install_credentials_with(scope, "work", secret, &fake)
+        })
+        .unwrap();
+        let (old_key, old_value) = {
+            let v = fake.0.lock().unwrap();
+            let (k, v) = v.iter().next().unwrap();
+            (k.clone(), v.expose_secret().to_owned())
+        };
+        let _running = kontor_daemon::lock::StateRootLock::acquire(a.path()).unwrap();
+        let new = br#"{"email":"new@example.test","api_token":"new-synthetic-token"}"#;
+        install_jira_credential(b.path(), "work", &new[..], |scope, secret| {
+            kontor_jira::install_credentials_with(scope, "work", secret, &fake)
+        })
+        .unwrap();
+        let values = fake.0.lock().unwrap();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values.get(&old_key).unwrap().expose_secret(), old_value);
+    }
+
+    #[test]
+    fn stopped_realm_installation_retains_its_lock_and_refuses_bad_input() {
+        let root = configured_credential_root();
+        let valid = br#"{"email":"operator@example.test","api_token":"synthetic-canary"}"#;
+        install_jira_credential(root.path(), "work", &valid[..], |_, _| {
+            assert!(kontor_daemon::lock::StateRootLock::acquire(root.path()).is_err());
+            Ok(())
+        })
+        .unwrap();
+        assert!(kontor_daemon::lock::StateRootLock::acquire(root.path()).is_ok());
+        let result =
+            install_jira_credential(root.path(), "work", &b"synthetic-canary"[..], |_, _| {
+                panic!("malformed credentials cannot reach the installer");
+            });
+        assert!(result.is_err());
+        assert!(!format!("{:?}", result.unwrap_err()).contains("synthetic-canary"));
+    }
 
     #[tokio::test]
     async fn the_server_is_polled_while_startup_reconciliation_is_pending() {

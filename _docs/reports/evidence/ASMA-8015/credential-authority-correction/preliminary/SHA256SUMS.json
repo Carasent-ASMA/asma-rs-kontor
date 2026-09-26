@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "scope": "Preliminary authorized isolated credential-security correction; exact source and integrated archive qualification remain pending",
+  "files": {
+    "account-unit.txt.json": "c89c7f923eb790f06c0a18ca8ab3af1486871c140c93ebf1055c294bea60fbfb",
+    "check-after-test-fix.txt.json": "cdf4770c80bfd377668ada6d916198b9a3446dda6996eef3356ad527e6d6114d",
+    "check.txt.json": "8ace70824d4b83f44095227b71ce82f81412195dd588a1242af75aafc4ce1bd5",
+    "daemon-operator.txt.json": "25a9f611ccc95ea72adaede14964b57a761da45564bd2a6a5cc45529f8a40833",
+    "focused-results.json": "686c44ee6e8a430a0b2f6042f743f7be96c03edc8e3089159f56f80b58148e8d",
+    "historical-source-approval-hold.json": "1c61b9c4f0682d6a1284a720b9f529f1bff5e14e7a182339ef3d3f949f0af3be",
+    "isolated-source-authorization.json": "5924bf42312e45bd3033e5bfda83067d066959846ac01bb7785a009ad46a8912",
+    "jira-canonical-root-contracts.txt.json": "0ae572bb9c9b5a1be7dfa6b3473623a7d21c2de14704e3149ec5724ca6c5ddde",
+    "jira-contracts.txt.json": "1348d7484781697c22be04d956f8d8dc694a6151448baa6936429ca9dfb34fd5",
+    "preliminary-receipt.json": "06ec6d9f8fd159e60346f24ff4d7a6d2ef3302780a338173ec9534008659118a",
+    "realm-preflight.txt.json": "a12b5aab698310640afe075b63946c08177ded1625bd0e501e5381113a287d91",
+    "runner.py": "d8b2c916f2932bbdcb22ed754579ef8c621c44ccf9b88848b2ebd371f0741c98",
+    "strict-clippy-corrected.txt.json": "9c6d289a84f11b75908b642de7d01e171a73b075e82987fd301ef5570a843cc5",
+    "strict-clippy.txt.json": "fce73c1b666e881a7f09249c918985be20513c37ee7210b795daecc80c227030"
+  }
+}
