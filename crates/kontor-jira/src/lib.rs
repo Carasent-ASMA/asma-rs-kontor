@@ -15,7 +15,10 @@ mod connector;
 mod credentials;
 pub mod jira;
 
-pub use credentials::{install_credentials, install_credentials_with, read_credential_document};
+pub use credentials::{
+    CredentialInstallError, JiraCredentialScope, install_credentials, install_credentials_with,
+    read_credential_document,
+};
 
 pub use connector::{
     JiraComment, JiraConfig, JiraConnector, JiraConnectors, JiraCreateFields, JiraIssueKind,

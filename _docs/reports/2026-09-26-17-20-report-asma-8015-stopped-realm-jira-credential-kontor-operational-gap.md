@@ -1,7 +1,7 @@
 ---
 title: ASMA-8015 stopped-realm Jira credential delivery
 date: 2026-09-26
-status: source-correction-required
+status: corrected-source-qualification-pending
 jira: ASMA-8015
 orchestration: paseo-direct-recovery
 ---
@@ -49,3 +49,36 @@ The six focused kills qualify only the tested boundaries of 3a35. They do not co
 The [complete actual LSA finding](evidence/ASMA-8015/stopped-realm-credential/audit-3a35b7c6/actual-lsa-source-audit.txt.json), preserved without normalization with its [publication receipt](evidence/ASMA-8015/stopped-realm-credential/audit-3a35b7c6/publication-receipt.json), withholds source support: no P0, two P1 and two P2. Another directory's lock can authorize replacement of the same host-global alias, and failed verification can leave a changed credential installed. The five-second transport deadline and absolute-root claim are also incomplete. The initial behavior description above is therefore not proof of a sound stopped-realm effect fence or atomic installation.
 
 The obsolete full gate was stopped after that finding, by signalling only its identified cargo process and test child. Its [unchanged execution receipt](evidence/ASMA-8015/stopped-realm-credential/audit-3a35b7c6/receipt.json) records actual exit 1; the [operator cancellation](evidence/ASMA-8015/stopped-realm-credential/audit-3a35b7c6/operator-cancellation.json) and [raw log carrier](evidence/ASMA-8015/stopped-realm-credential/audit-3a35b7c6/interrupted-full-gate.txt.json) retain the actual outcome. No full-gate PASS is claimed. Corrected source requires new immutable qualification and another actual independent assessment.
+
+## Authorized isolated authority correction
+
+Igor explicitly authorized the isolated source correction and synthetic/fake-backend tests on 2026-09-26. The prior automatic-approval hold and rejected 3a35 source assessment remain historical evidence; this authorization permits no live Keychain mutation, credential extraction, installation or deployment.
+
+The corrected installer requires an absolute canonical directory, holds its canonical-root lock, reads an already-initialized Realm through a read-only store preflight, and requires the exact alias in strict `jira.json` before reading stdin. It creates no missing database and applies no migration. The credential address is `kontor-jira:<realm-id>:<SHA-256-of-canonical-root-bytes>` plus the exact alias. The production connector and installer derive that same address. A copied Realm database in another root, a different Realm, or a duplicate alias therefore cannot replace the original consumer's entry. Canonical symlink aliases resolve to the same root and lock. There is no fallback to the old host-global address; existing global entries are not read, moved or deleted by this repair. Separate stopped-realm enrollment must precede any future deployment that needs Jira credentials.
+
+Before a write, the installer establishes the previous state through the reader. Access failure refuses before mutation. If a write or exact validated readback fails, it restores the exact previous bytes, or deletes a newly created entry, and verifies restoration or absence. Typed redacted outcomes distinguish verified rollback from rollback that could not be proven; an uncertain rollback requires reconciliation before restart. This is verified rollback behavior, not a claim of a transactional OS Keychain API.
+
+The macOS transport now starts one deadline before spawn and uses safe nonblocking pipe operations for stdin and stdout, with a 16,384-byte output bound and checked child termination/reaping. Synthetic regressions block a large pipe write and a stalled child, then prove its PID is neither running nor still waitable. The deadline accounts for spawning, pipe delivery and response collection; OS process creation and cleanup are synchronous operations, so no hard real-time bound on an unresponsive operating system is claimed. The existing lockfile's `rustix` 1.1.5 is reused as an exact workspace dependency for safe nonblocking descriptors and process checks; no unsafe application code or secret-bearing command arguments are introduced.
+
+Fake-backend coverage includes denied previous-state reads, mismatched/malformed/denied post-write reads, write failure after an effect, restoration of an existing opaque value, deletion of a new value, failed rollback writes/deletes/verification, same-alias copied-Realm isolation, actual connector address agreement, global-address refusal, and preflight rejection before stdin. All test realms and subprocesses are disposable. Focused working-tree checks are preliminary until a new immutable archive is qualified; the six historical 3a35 kills supply no corrected-source qualification.
+
+### Corrected working-tree evidence
+
+The [preliminary receipt](evidence/ASMA-8015/credential-authority-correction/preliminary/preliminary-receipt.json) records 128 passing focused tests with no failures or ignored tests, followed by 41 passing Jira checks after canonical-path compatibility was added. Corrected strict scoped Clippy exited zero. The first Clippy failure and check failure remain preserved; they are not counted as passes. The [14-member manifest](evidence/ASMA-8015/credential-authority-correction/preliminary/SHA256SUMS.json) binds these preliminary files:
+
+- [account-unit.txt.json](evidence/ASMA-8015/credential-authority-correction/preliminary/account-unit.txt.json)
+- [check-after-test-fix.txt.json](evidence/ASMA-8015/credential-authority-correction/preliminary/check-after-test-fix.txt.json)
+- [check.txt.json](evidence/ASMA-8015/credential-authority-correction/preliminary/check.txt.json)
+- [daemon-operator.txt.json](evidence/ASMA-8015/credential-authority-correction/preliminary/daemon-operator.txt.json)
+- [focused-results.json](evidence/ASMA-8015/credential-authority-correction/preliminary/focused-results.json)
+- [historical-source-approval-hold.json](evidence/ASMA-8015/credential-authority-correction/preliminary/historical-source-approval-hold.json)
+- [isolated-source-authorization.json](evidence/ASMA-8015/credential-authority-correction/preliminary/isolated-source-authorization.json)
+- [jira-canonical-root-contracts.txt.json](evidence/ASMA-8015/credential-authority-correction/preliminary/jira-canonical-root-contracts.txt.json)
+- [jira-contracts.txt.json](evidence/ASMA-8015/credential-authority-correction/preliminary/jira-contracts.txt.json)
+- [preliminary-receipt.json](evidence/ASMA-8015/credential-authority-correction/preliminary/preliminary-receipt.json)
+- [realm-preflight.txt.json](evidence/ASMA-8015/credential-authority-correction/preliminary/realm-preflight.txt.json)
+- [runner.py](evidence/ASMA-8015/credential-authority-correction/preliminary/runner.py)
+- [strict-clippy-corrected.txt.json](evidence/ASMA-8015/credential-authority-correction/preliminary/strict-clippy-corrected.txt.json)
+- [strict-clippy.txt.json](evidence/ASMA-8015/credential-authority-correction/preliminary/strict-clippy.txt.json)
+
+The existing 3a35 audit and all historical mutation/log carriers remain unchanged. Exact corrected-source mutation and archive qualification, independent source assessment and any subsequent merge/build/deployment remain pending.

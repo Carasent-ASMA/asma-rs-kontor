@@ -137,6 +137,12 @@ pub trait KeychainWriter: KeychainBackend {
         target: &KeychainTarget,
         secret: &SecretString,
     ) -> Result<(), KeychainFailure>;
+
+    /// Delete an entry during rollback. Absence is an idempotent success.
+    ///
+    /// # Errors
+    /// Returns a redacted code when deletion cannot be established.
+    fn delete_secret(&self, target: &KeychainTarget) -> Result<(), KeychainFailure>;
 }
 
 /// The production backend: the OS keychain.
@@ -221,10 +227,14 @@ fn bounded_security_for(
     input: Option<&str>,
     timeout: std::time::Duration,
 ) -> Result<std::process::Output, KeychainFailure> {
-    use std::io::Write;
+    use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+    use std::io::{Read, Write};
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
+    // One deadline starts before spawn, covers pipe delivery and collection,
+    // and cannot be renewed by a slow or non-reading child.
+    let deadline = Instant::now() + timeout;
     command.stderr(Stdio::null());
     command.stdin(if input.is_some() {
         Stdio::piped()
@@ -232,38 +242,94 @@ fn bounded_security_for(
         Stdio::null()
     });
     let mut child = command.spawn().map_err(|_| KeychainFailure::Unavailable)?;
-    if let Some(input) = input {
-        let written = child
-            .stdin
-            .take()
-            .ok_or(KeychainFailure::Unavailable)
-            .and_then(|mut stdin| {
-                stdin
-                    .write_all(input.as_bytes())
-                    .map_err(|_| KeychainFailure::Unavailable)
-            });
-        if written.is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(KeychainFailure::Unavailable);
+    let result = (|| {
+        let mut stdin = child.stdin.take();
+        let mut stdout = child.stdout.take();
+        if let Some(pipe) = &stdin {
+            let flags = fcntl_getfl(pipe).map_err(|_| KeychainFailure::Unavailable)?;
+            fcntl_setfl(pipe, flags | OFlags::NONBLOCK)
+                .map_err(|_| KeychainFailure::Unavailable)?;
         }
-    }
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|_| KeychainFailure::Unavailable);
-            }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
+        if let Some(pipe) = &stdout {
+            let flags = fcntl_getfl(pipe).map_err(|_| KeychainFailure::Unavailable)?;
+            fcntl_setfl(pipe, flags | OFlags::NONBLOCK)
+                .map_err(|_| KeychainFailure::Unavailable)?;
+        }
+        let bytes = input.unwrap_or_default().as_bytes();
+        let mut offset = 0;
+        let mut output = zeroize::Zeroizing::new(Vec::new());
+        let mut status = None;
+        loop {
+            if Instant::now() >= deadline {
                 return Err(KeychainFailure::Unavailable);
             }
+            if offset < bytes.len() {
+                let pipe = stdin.as_mut().ok_or(KeychainFailure::Unavailable)?;
+                match pipe.write(&bytes[offset..]) {
+                    Ok(0) => return Err(KeychainFailure::Unavailable),
+                    Ok(n) => offset += n,
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(_) => return Err(KeychainFailure::Unavailable),
+                }
+            }
+            if offset == bytes.len() {
+                stdin.take();
+            }
+            if let Some(pipe) = stdout.as_mut() {
+                let mut chunk = zeroize::Zeroizing::new([0u8; 4096]);
+                match pipe.read(&mut *chunk) {
+                    Ok(0) => {
+                        stdout.take();
+                    }
+                    Ok(n) => {
+                        if output.len() + n > 16_384 {
+                            return Err(KeychainFailure::Unavailable);
+                        }
+                        output.extend_from_slice(&chunk[..n]);
+                    }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(_) => return Err(KeychainFailure::Unavailable),
+                }
+            }
+            if status.is_none() {
+                status = child.try_wait().map_err(|_| KeychainFailure::Unavailable)?;
+            }
+            if let Some(status) = status
+                && stdin.is_none()
+                && stdout.is_none()
+            {
+                return Ok(std::process::Output {
+                    status,
+                    stdout: std::mem::take(&mut *output),
+                    stderr: Vec::new(),
+                });
+            }
+            std::thread::sleep(
+                Duration::from_millis(2).min(deadline.saturating_duration_since(Instant::now())),
+            );
         }
+    })();
+    if result.is_err() {
+        // Never discard termination/reap failures. A raced exit is fine only
+        // if try_wait proves it; every other cleanup failure remains refusal.
+        if child
+            .try_wait()
+            .map_err(|_| KeychainFailure::Unavailable)?
+            .is_none()
+        {
+            child.kill().map_err(|_| KeychainFailure::Unavailable)?;
+        }
+        child.wait().map_err(|_| KeychainFailure::Unavailable)?;
     }
+    result
 }
 
 #[cfg(target_os = "macos")]
@@ -288,6 +354,25 @@ impl KeychainWriter for SystemKeychain {
             return Err(KeychainFailure::Unavailable);
         }
         Ok(())
+    }
+
+    fn delete_secret(&self, target: &KeychainTarget) -> Result<(), KeychainFailure> {
+        let mut command = Command::new("/usr/bin/security");
+        command
+            .args([
+                "delete-generic-password",
+                "-s",
+                target.service(),
+                "-a",
+                target.account(),
+            ])
+            .stdout(std::process::Stdio::null());
+        let output = bounded_security(command, None)?;
+        if output.status.success() || output.status.code() == Some(44) {
+            Ok(())
+        } else {
+            Err(KeychainFailure::Unavailable)
+        }
     }
 }
 
@@ -332,16 +417,50 @@ mod security_transport_tests {
         );
     }
 
-    #[test]
-    fn a_stalled_security_process_is_killed_and_reaped() {
-        let mut command = Command::new("/bin/sleep");
-        command.arg("30");
+    fn stalled_child(input: Option<&str>) {
+        let root = tempfile::tempdir().unwrap();
+        let pid_file = root.path().join("pid");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "echo $$ > \"$1\"; exec /bin/sleep 30",
+                "synthetic-child",
+            ])
+            .arg(&pid_file);
         let start = std::time::Instant::now();
         assert!(matches!(
-            bounded_security_for(command, None, std::time::Duration::from_millis(50)),
+            bounded_security_for(command, input, std::time::Duration::from_millis(100)),
             Err(KeychainFailure::Unavailable)
         ));
         assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        let pid: i32 = std::fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let pid = rustix::process::Pid::from_raw(pid).unwrap();
+        assert_eq!(
+            rustix::process::test_kill_process(pid),
+            Err(rustix::io::Errno::SRCH),
+            "timed-out child must no longer be running"
+        );
+        assert!(
+            matches!(
+                rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::NOHANG),
+                Err(rustix::io::Errno::CHILD)
+            ),
+            "timed-out child must already be reaped"
+        );
+    }
+    #[test]
+    fn a_stalled_security_process_is_killed_and_reaped() {
+        stalled_child(None);
+    }
+    #[test]
+    fn stdin_delivery_is_also_bounded_and_the_child_is_reaped() {
+        let synthetic_input = "x".repeat(2 * 1024 * 1024);
+        stalled_child(Some(&synthetic_input));
     }
 }
 
@@ -357,6 +476,15 @@ impl KeychainWriter for SystemKeychain {
         entry
             .set_password(secret.expose_secret())
             .map_err(|_| KeychainFailure::Unavailable)
+    }
+
+    fn delete_secret(&self, target: &KeychainTarget) -> Result<(), KeychainFailure> {
+        let entry = keyring::Entry::new(target.service(), target.account())
+            .map_err(|_| KeychainFailure::Unavailable)?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err(KeychainFailure::Unavailable),
+        }
     }
 }
 

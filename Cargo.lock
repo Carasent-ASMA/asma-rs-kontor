@@ -3098,6 +3098,7 @@ dependencies = [
  "kontor-scheduler",
  "kontor-store",
  "rusqlite",
+ "rustix",
  "secrecy",
  "serde",
  "serde_json",

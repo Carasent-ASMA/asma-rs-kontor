@@ -513,7 +513,10 @@ impl Daemon {
         let jira = config
             .jira_connectors
             .clone()
-            .map_or_else(|| kontor_jira::JiraConnectors::read(&config.state_root), Ok)
+            .map_or_else(
+                || kontor_jira::JiraConnectors::read(&config.state_root, realm_id),
+                Ok,
+            )
             .map_err(|source| StartupError::Connector { source })?;
         let usage_poller =
             usage_poller.unwrap_or_else(|| usage::UsagePoller::discover(&config.state_root));

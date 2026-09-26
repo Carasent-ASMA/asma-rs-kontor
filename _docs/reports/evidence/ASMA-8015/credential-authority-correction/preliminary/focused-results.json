@@ -1,0 +1,87 @@
+[
+  {
+    "name": "account-unit",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-accounts",
+      "--lib"
+    ],
+    "startedAt": "2026-09-26T18:54:35.985447+00:00",
+    "finishedAt": "2026-09-26T18:55:50.417644+00:00",
+    "exitCode": 0
+  },
+  {
+    "name": "jira-contracts",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-jira",
+      "--lib",
+      "--tests"
+    ],
+    "startedAt": "2026-09-26T18:55:50.418004+00:00",
+    "finishedAt": "2026-09-26T18:56:41.272820+00:00",
+    "exitCode": 0
+  },
+  {
+    "name": "daemon-operator",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-daemon",
+      "--bin",
+      "kontor-daemon"
+    ],
+    "startedAt": "2026-09-26T18:56:41.273323+00:00",
+    "finishedAt": "2026-09-26T18:58:09.875534+00:00",
+    "exitCode": 0
+  },
+  {
+    "name": "realm-preflight",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-store",
+      "--test",
+      "realm_preflight"
+    ],
+    "startedAt": "2026-09-26T18:58:09.876015+00:00",
+    "finishedAt": "2026-09-26T18:58:17.059618+00:00",
+    "exitCode": 0
+  },
+  {
+    "name": "strict-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--offline",
+      "--locked",
+      "-p",
+      "kontor-accounts",
+      "-p",
+      "kontor-jira",
+      "-p",
+      "kontor-daemon",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "startedAt": "2026-09-26T18:58:17.059966+00:00",
+    "finishedAt": "2026-09-26T18:58:34.480989+00:00",
+    "exitCode": 101
+  }
+]

@@ -2071,7 +2071,7 @@ impl Respond for HeldTaskJira {
 
 impl KeychainBackend for JiraFixtureKeychain {
     fn secret(&self, target: &KeychainTarget) -> Result<SecretString, KeychainFailure> {
-        assert_eq!(target.service(), "kontor-jira");
+        assert!(target.service().starts_with("kontor-jira:"));
         assert_eq!(target.account(), "work");
         Ok(SecretString::from(
             r#"{"email":"operator@example.test","api_token":"secret"}"#.to_owned(),
@@ -5626,6 +5626,7 @@ async fn a_kickoff_hold_lifts_itself_at_the_boundary_that_satisfies_its_terms() 
         .expect("Jira configuration is written");
         let connectors = kontor_jira::JiraConnectors::read_with_keychain(
             config_root.path(),
+            kontor_core::id::RealmId::generate(),
             Arc::new(JiraFixtureKeychain),
         )
         .expect("Jira configuration loads");
@@ -5927,6 +5928,7 @@ async fn kickoff_world(label: &str, epic_key: &str, task_key: &str) -> KickoffWo
     .expect("Jira configuration is written");
     let connectors = kontor_jira::JiraConnectors::read_with_keychain(
         config_root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::new(JiraFixtureKeychain),
     )
     .expect("Jira configuration loads");
@@ -12109,6 +12111,7 @@ async fn jira_link_apply_recovers_a_mixed_pending_batch_in_place() {
     .expect("Jira configuration is written");
     let connectors = kontor_jira::JiraConnectors::read_with_keychain(
         config_root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::new(JiraFixtureKeychain),
     )
     .expect("Jira configuration loads");
@@ -12815,6 +12818,7 @@ async fn identical_mixed_jira_apply_resumes_its_pending_create_in_place() {
     .expect("Jira configuration is written");
     let connectors = kontor_jira::JiraConnectors::read_with_keychain(
         config_root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::new(JiraFixtureKeychain),
     )
     .expect("Jira configuration loads");
@@ -18831,6 +18835,7 @@ async fn resident_jira_controller_confirms_each_epic_route_hop_once_and_replays_
     .expect("the Jira configuration is written");
     let connectors = kontor_jira::JiraConnectors::read_with_keychain(
         config_root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::new(JiraFixtureKeychain),
     )
     .expect("the Jira configuration loads");
@@ -18990,6 +18995,7 @@ async fn resident_jira_conflict_replay_waits_for_the_bounded_backstop() {
     .expect("the Jira configuration is written");
     let connectors = kontor_jira::JiraConnectors::read_with_keychain(
         config_root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::new(JiraFixtureKeychain),
     )
     .expect("the Jira configuration loads");
@@ -19120,6 +19126,7 @@ async fn automatic_jira_reconciliation_records_and_resolves_an_unfinished_held_e
     .expect("the Jira configuration is written");
     let connectors = kontor_jira::JiraConnectors::read_with_keychain(
         config_root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::new(JiraFixtureKeychain),
     )
     .expect("the Jira configuration loads");
@@ -19305,6 +19312,7 @@ async fn resolving_an_unchanged_held_task_conflict_allows_reconciliation_to_cont
     .expect("the Jira configuration is written");
     let connectors = kontor_jira::JiraConnectors::read_with_keychain(
         config_root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::new(JiraFixtureKeychain),
     )
     .expect("the Jira configuration loads");
@@ -19519,6 +19527,7 @@ async fn resident_failed_epic_apply_emits_no_immediate_replay_wake() {
     .expect("the Jira configuration is written");
     let connectors = kontor_jira::JiraConnectors::read_with_keychain(
         config_root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::new(JiraFixtureKeychain),
     )
     .expect("the Jira configuration loads");
@@ -19638,6 +19647,7 @@ async fn request_and_resident_jira_reconciliation_ignore_an_unrelated_connector_
     .expect("the Jira configuration is written");
     let connectors = kontor_jira::JiraConnectors::read_with_keychain(
         config_root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::new(JiraFixtureKeychain),
     )
     .expect("the Jira configuration loads");
@@ -57586,6 +57596,7 @@ async fn description_world(
     .expect("the Jira configuration is written");
     let connectors = kontor_jira::JiraConnectors::read_with_keychain(
         config_root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::new(JiraFixtureKeychain),
     )
     .expect("the Jira configuration loads");
@@ -57802,6 +57813,7 @@ async fn jira_configured_world(
     .expect("the Jira configuration is written");
     let connectors = kontor_jira::JiraConnectors::read_with_keychain(
         config_root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::new(JiraFixtureKeychain),
     )
     .expect("the Jira configuration loads");
@@ -58255,6 +58267,7 @@ async fn world_with_jira(server: &MockServer, project_id: ProjectId) -> (World, 
     .expect("the Jira configuration is written");
     let connectors = kontor_jira::JiraConnectors::read_with_keychain(
         config_root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::new(JiraFixtureKeychain),
     )
     .expect("the Jira configuration loads");
