@@ -1,0 +1,30 @@
+{
+  "sourceCommit": "dddb72870c6d58d5d6383a69227844dbc8dca45e",
+  "sourceTree": "538c219fcd826a40063308309c57eaa9c624442c",
+  "qualifiedSource": "79b07f31028704a6a98203b89877264fd179a535",
+  "publicationHead": "68bbc000e29485cde0dfa7cce7aa6531f74d41c0",
+  "sourceArchiveSha256": "e89cb88a0105ac26e6185572ac630435b8d0d8295d7f1f898ebc7ebe0197ed2c",
+  "acceptedExecutableSourceUnchanged": true,
+  "sourceMerge": {
+    "pr": 274,
+    "mergedAt": "2026-09-26T08:00:58Z"
+  },
+  "deployment": "not_installed",
+  "startedAt": "2026-09-26T08:03:02.184226+00:00",
+  "exitCode": 0,
+  "finishedAt": "2026-09-26T08:05:36.518418+00:00",
+  "binaries": {
+    "kontor-daemon": {
+      "sha256": "2249946d70d31bbd021b1eedb17daac9601cde09109ad39dcfe501d8eb1fa420",
+      "bytes": 44899280
+    },
+    "kontor-mcp": {
+      "sha256": "8f621e9dae400625ac0a238671e682df320ece9f7ab0b1c31a5cfaa2a4268576",
+      "bytes": 9750848
+    },
+    "kontor": {
+      "sha256": "6e52392b5876e5e2ddb3f1f823b8affb976cda217413124e054e9770d1e30575",
+      "bytes": 7082112
+    }
+  }
+}

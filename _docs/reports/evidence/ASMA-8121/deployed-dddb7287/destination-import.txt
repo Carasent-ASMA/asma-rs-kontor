@@ -1,0 +1,4 @@
+2026-09-26T08:09:17.814104Z  INFO kontor_daemon::recovery foreign export imported under a new destination receipt realm_id=01a0dcc1-2457-75e1-beb7-bd888c9c1e3e source_realm_id=01a00649-9ee6-73e0-ba1b-6a6c35cfd065 import_id=01a0dcc2-edd2-7c32-a41e-e79c098fc845 record_count=23711 materialized=14 reconciliation_required=true
+01a0dcc2-edd2-7c32-a41e-e79c098fc845
+
+PROCESS_EXIT_CODE=0

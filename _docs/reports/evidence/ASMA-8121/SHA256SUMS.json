@@ -1,5 +1,5 @@
 {
-  "scope": "ASMA-8121 actual snapshot/restore, export regression, source mutation and independent corrective evidence",
+  "scope": "ASMA-8121 historical regression/mutation/audits, actual qualified merge/build/deployment and unchanged-snapshot export/import continuity; joined census and workflow settlement remain separate",
   "files": {
     "79b07f31-full-gate.txt": "23cd33191706edc85a1124a97e62cadad8cbbd1b8f497e3dc37af0368a074178",
     "79b07f31-source-qualification.json": "917358f3bc5aa839214dcc9cfbdf98633592c6dbda06317ccb2c05e55dc6b674",
@@ -46,6 +46,23 @@
     "mutant-skip-canary.txt": "c6fcc7de04c211efe608d5299e5c6eb34376d5bc447aed19bce66427a6d9212e",
     "offline-restore.txt": "e0dbb735a42410245fa14a37554f4d4334527566edf074837985eb69dfff8676",
     "snapshot-restore-identity-receipt.json": "56896473f3b662fd0119a860aa6c68ca1e47d36bbc8e3f39f5a75579613052ea",
-    "store-clippy.txt": "f2877879954a04a23bb24b1abe9f6aa0710d8b6fb2965f51cb51a937107d44f7"
+    "store-clippy.txt": "f2877879954a04a23bb24b1abe9f6aa0710d8b6fb2965f51cb51a937107d44f7",
+    "deployed-dddb7287/build-receipt.json": "98ca90eef88f81b9ae3233c79a47f82f7c53b6a67c065ffc2de75d4059b4a038",
+    "deployed-dddb7287/deployment-apply.py": "c3a5d8ac33dcc5bc750fddcb3fc6e48a5e1aa647dd84d16dc31d3925679158f0",
+    "deployed-dddb7287/deployment-plan.json": "63a21230bf5bc9865e4a373f7fbf872a4e7afbd4646d4c32706f67517a2dbd0a",
+    "deployed-dddb7287/deployment-receipt.json": "b38d1d7949b86e8102b069c14fc156a44f0c9c0b3c39e7c0d004d1360ae2a812",
+    "deployed-dddb7287/destination-import.txt": "a71153c27990d94746dafc5d92e169a0ef7af81a5dd00f532c4cbc3dba03cf5d",
+    "deployed-dddb7287/destination-project-ensure-operator-refusal.txt": "8e8139105511e8e38a4f9f41e04d94e78a2688b7b65a4c1be9cc60cfa48bd24d",
+    "deployed-dddb7287/destination-project-ensure.txt": "3465e2c791ce05d4a25fb30b91064d186c7ef6123c4c258c218b6d26864b1121",
+    "deployed-dddb7287/destination-stopped.json": "2d71d3ee9cb911606704aad1db7962c87ba44bc7aef7e16cee42eb4773cd432a",
+    "deployed-dddb7287/foreign-continuity-receipt.json": "acb477a68fd3703461dc9b40c0cb69f0ab1836673734f0408cc7d80956d16b3f",
+    "deployed-dddb7287/historical-initial-export-receipt.json": "2fe7e6c71e3b5012ab1102820100fad440a2e57095bf4bfaf9c52d25b30a36ce",
+    "deployed-dddb7287/installed-binary-source-export.txt": "6f4fe24f5922bf9581126c842fd976684e7b8b8a1209751958ee476d06ea5517",
+    "deployed-dddb7287/installed-export-receipt.json": "70a81b1180f84ca68460229ace5b91a73329aa5f0ad56a0e9bb908a6f4aa45fa",
+    "deployed-dddb7287/merge-source-identity-receipt.json": "441fe3961d8db1d645fd4d03f0f9ff17f1cdfea02fdc71ee65dafd9dd885d0e5",
+    "deployed-dddb7287/postdeployment-read-only-live.txt": "a4cbc7fd5c0e71aea318a5e6d5959651cfcb4ea06c95a5a5b6265ad45932f6f3",
+    "deployed-dddb7287/release-build.txt": "0a1f7152f13f21a39c5072e10fe4ab5e0ce01edbeaa059525f2ee34d00f48fcb",
+    "deployed-dddb7287/source-export.txt": "4a6e6a2d29a4cca0ecaf15c72860c4571d534dfacc4faafd6b90b3b05c5c352e",
+    "authority-correction/actual-lsa-source-merge-support.txt": "053fa6ff7bda345ad619147e5c51268b0428fc77dbfc8eac47ad590d9c9e982b"
   }
 }

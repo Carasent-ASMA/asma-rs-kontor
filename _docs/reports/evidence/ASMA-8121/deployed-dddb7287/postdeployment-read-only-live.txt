@@ -1,0 +1,23 @@
+SOURCE=dddb72870c6d58d5d6383a69227844dbc8dca45e
+STARTED_AT=2026-09-26T08:21:18.725275+00:00
+   Compiling kontor-core v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-core)
+   Compiling kontor-runtime v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-runtime)
+   Compiling kontor-tests-contract v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/tests/contract)
+   Compiling kontor-runtime-paseo v0.2.1 (/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-runtime-paseo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.07s
+     Running tests/live.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/live-f4eac5862144d254)
+
+running 5 tests
+live Paseo announced version=Some("0.9.1") serverId=srv_xbEAfW_ifVnB
+test live_hello_is_accepted_and_the_daemon_pushes_a_pinned_identity ... ok
+test live_an_unknown_agent_is_refused_rather_than_answered_empty ... ok
+live Paseo holds 16 projects
+test live_a_correlated_session_read_round_trips ... ok
+live Paseo CLI reports 0.9.1
+test live_cli_reports_the_supported_baseline ... ok
+test live_the_status_readback_agrees_with_the_pushed_identity ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.42s
+
+
+PROCESS_EXIT_CODE=0

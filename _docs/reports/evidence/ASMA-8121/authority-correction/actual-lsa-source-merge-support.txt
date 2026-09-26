@@ -1,0 +1,36 @@
+---
+
+All prior conditional source-merge conditions are satisfied. Read-only verdict for publication head `68bbc000e29485cde0dfa7cce7aa6531f74d41c0`:
+
+- **P0:** none
+- **P1:** none
+- **P2:** none
+
+Verified:
+
+- `68bbc000` is a clean, synchronized docs-only child of source commit `79b07f31028704a6a98203b89877264fd179a535`.
+- No non-`_docs` paths changed.
+- `export.rs` and `backup_export.rs` Git blobs and SHA-256 values are identical between `79b07f31` and `68bbc000`.
+- [Qualification receipt](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/79b07f31-source-qualification.json) binds:
+  - commit `79b07f31`
+  - tree `ebd20eb03d5659b30747bc2202e2b2ee0896528d`
+  - full gate exit `0`
+  - API verification exit `0`
+- Independent recomputation from the [raw full-gate log](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/79b07f31-full-gate.txt):
+  - 149 Rust binaries
+  - 2,905 passed
+  - 0 failed
+  - 9 ignored
+  - 305 console tests passed
+  - fmt, strict workspace Clippy, locked workspace tests, audit, deny, frozen install, typecheck and production audit all recorded
+  - terminal `PROCESS_EXIT_CODE=0` at `2026-09-26T07:49:52.778749Z`
+- [API log](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/79b07f31-verify-api.txt) ends with exit `0`.
+- All 46 manifest artifacts hash correctly.
+- The prior b42 audit and the 79 corrective audit remain preserved verbatim.
+- The owning report now explicitly states that b42’s gate does not qualify the authority correction and separately records the exact-79 qualification.
+
+Therefore I support source merge of PR #274 at this publication head. ASMA-8098’s released hold removes the prior release dependency but supplies no test or deployment credit to ASMA-8121.
+
+Still uncredited: merge completion, build/deployment, actual repaired snapshot export, destination continuity comparison, restart, fresh all-13 census, ASMA-8120/8121 workflow gates or settlement, and epic PASS.
+
+No files, tests, processes, runtime, SQLite, Jira or Kontor state were changed.
