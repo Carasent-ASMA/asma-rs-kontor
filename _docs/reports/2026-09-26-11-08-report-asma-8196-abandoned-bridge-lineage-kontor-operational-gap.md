@@ -64,6 +64,33 @@ bind the source and actual outcomes.
 
 ## Worktree recovery disposition
 
+### Additional unbound-fork boundary
+
+The initial `eb41560f` archive has four genuine compiled behavioral kills and
+green baseline/restored suites, preserved in its
+[mutation receipt](evidence/ASMA-8196/replacement-bridges/initial-eb41560f-mutations/results.json).
+The [initial driver failure](evidence/ASMA-8196/replacement-bridges/initial-eb41560f-mutations/initial-driver-failure.txt)
+is a formatting-sensitive locator error after the first kill. Its source was
+restored exactly; the corrected driver reused only verified exact-pin actual
+logs and the identical patch. No infrastructure failure receives kill credit.
+
+One additional [regression](evidence/ASMA-8196/replacement-bridges/unbound-fork-red.txt)
+then fails on that source: a meaningful current leaf without a native hides a
+fork from the store while public preview refuses it. The corrected census now
+derives all meaningful current runs before selecting their runtime bindings,
+and refuses multiple leaves on an active exact slot, including unbound leaves.
+The [expanded store suite](evidence/ASMA-8196/replacement-bridges/store-expanded-green.txt)
+passes 24 contracts; [final fork refusal assertions](evidence/ASMA-8196/replacement-bridges/store-fork-refusal-green.txt)
+pass both cases and verify a semantic ambiguity error, not a generic failure.
+The [expanded preview suite](evidence/ASMA-8196/replacement-bridges/daemon-expanded-green.txt)
+passes all three tests with both bound/bound and bound/unbound forks. The
+[additional checkpoint receipt](evidence/ASMA-8196/replacement-bridges/unbound-fork-checkpoint.json)
+binds the source and actual outcomes. Earlier focused results and mutations
+retain their original subjects; no mutation or full-gate credit transfers from
+the initial store implementation to this changed source.
+
+## Worktree recovery disposition
+
 This Paseo-direct repair owns the existing ASMA-8190 module worktree. ASMA's
 generic checkout resolver refused its external child-worktree context, and
 the exact `asma worktree add ASMA-8190 --mod _tools/asma-rs-kontor` operation

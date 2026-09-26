@@ -1,0 +1,36 @@
+--- crates/kontor-daemon/src/applications.rs
++++ crates/kontor-daemon/src/applications.rs
+@@ -2630,32 +2630,7 @@
+             return Ok(None);
+         }
+ 
+-        // An abandoned, never-bound attempt is not a candidate occupant, but
+-        // it can be a structural bridge to a real successor. Walk through all
+-        // parents of meaningful runs before excluding abandoned candidates.
+-        // Trailing abandoned attempts alone do not supersede a bound run.
+-        let parents: BTreeMap<AgentRunId, Option<AgentRunId>> = runs
+-            .iter()
+-            .map(|run| (run.id, run.parent_agent_run_id))
+-            .collect();
+-        let mut named_parents = BTreeSet::new();
+-        for run in runs
+-            .iter()
+-            .filter(|run| !run.is_operator_abandoned_unbound())
+-        {
+-            let mut parent = run.parent_agent_run_id;
+-            let mut visited = BTreeSet::new();
+-            while let Some(id) = parent {
+-                if !visited.insert(id) {
+-                    return Err(self.deny(
+-                        ApiErrorCode::StaleBinding,
+-                        "a delivery role has a cyclic replacement chain",
+-                    ));
+-                }
+-                named_parents.insert(id);
+-                parent = parents.get(&id).copied().flatten();
+-            }
+-        }
++        let named_parents: BTreeSet<AgentRunId> = runs.iter().filter(|run| !run.is_operator_abandoned_unbound()).filter_map(|run| run.parent_agent_run_id).collect();
+         let mut leaves = runs
+             .into_iter()
+             .filter(|run| !run.is_operator_abandoned_unbound() && !named_parents.contains(&run.id));

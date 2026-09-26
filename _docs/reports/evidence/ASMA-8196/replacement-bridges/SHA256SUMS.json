@@ -2,10 +2,30 @@
   "scope": "ASMA-8196 replacement bridge focused source evidence; no deployment/closure",
   "files": {
     "actual-lsa-bridge-diagnosis.txt": "87d51e7308c52e8f115906c665393b35e253e0433b431f598d37e136d3a2c488",
+    "daemon-expanded-green.txt": "cd2d244237cd0c823126c65d5791c3b237de6f35625152dceb1d3accfe0509e9",
     "daemon-green.txt": "ccba99dce8cc143b65e67e107d9af129e06e7ea5945578af2d10ea8c7048487b",
     "daemon-red.txt": "1f61e04989ccdd71ee3d871161c7620f990711c6e8cbf3c8f8420eacba6b7043",
     "focused-checkpoint.json": "4a1704821215393f665ff9cf94271e53e094cbe062aa01d3a58fef4d5748f404",
+    "initial-eb41560f-mutations/baseline-daemon.txt": "306adc6a361ce287cece0f1352b39302f37671d5f019b1e2c46f50c575f1e125",
+    "initial-eb41560f-mutations/baseline-store.txt": "8420d341e91d504dbd221e8cef3aad6069c652c24bfec8734fed6be47e9f2370",
+    "initial-eb41560f-mutations/daemon-count-trailing-abandoned.diff": "34095e270f3a670c2faf75c1ab182a1258805a7ccdaecbad4120d76e0401a836",
+    "initial-eb41560f-mutations/daemon-count-trailing-abandoned.txt": "b09b2d981afdff0eb2f590e8a36acbf7db0463a931bf7ea9bd8ab6e8a14e48f5",
+    "initial-eb41560f-mutations/daemon-skip-bridge-ancestry.diff": "01c10c45f90e8985014f8bf650183fada6f2850a5c022f736ccbe3f76b0c2a9d",
+    "initial-eb41560f-mutations/daemon-skip-bridge-ancestry.txt": "0415ecfba4d928472a1a928c7b31298538a83db2f9a303a0376387293766b1ee",
+    "initial-eb41560f-mutations/initial-driver-failure.txt": "89d8d7577df3702bceded7e39889cacff49a7bd7528fcb509fed558eca4ed6f7",
+    "initial-eb41560f-mutations/restored-daemon.txt": "595d6d520552be6a67c976baf1a5c2e6e124acc0b6dafe65f35355930c96ed1c",
+    "initial-eb41560f-mutations/restored-store.txt": "1d435a316a9774038c760b833d1a7d80bd4362c345423d1a99ce02a4b679b1fc",
+    "initial-eb41560f-mutations/results.json": "1fd3a9fbc555142f3dc71f4e29efc9c1b869187b2994e0a6489b75e65cbe351c",
+    "initial-eb41560f-mutations/resumed-driver.py": "a198b21e8d6e8e5eab4756edf763523cdec06cab5d3aa8db69a013e49c8ea05b",
+    "initial-eb41560f-mutations/store-skip-bridge-descendants.diff": "56e495fdcb2b9a8ba813cb0762532333849442e869bbe5144e5c9fbf063767bf",
+    "initial-eb41560f-mutations/store-skip-bridge-descendants.txt": "134cc8c922ba0528a485a17b9094df52d2c961709e8ac2dfc06bdd6518cf870c",
+    "initial-eb41560f-mutations/store-skip-fork-fence.diff": "f5ddbba477cfe679bb0f93a4caf7c7c818c1890f81db47e31053525048cf3e90",
+    "initial-eb41560f-mutations/store-skip-fork-fence.txt": "9d7f2b453dff09e4c21d0eb49b8baf3b731c4c21f3d0ebe861c2aaa24b9ccb6e",
+    "store-expanded-green.txt": "69a0d62a3194beb2c816af915273e878fe8a6d9b7b03ddf0c91baf71dc14b636",
+    "store-fork-refusal-green.txt": "c454dab753c0bdd3fd661066d70c5cc76d64a22f42b77795469a08723648a853",
     "store-green.txt": "509d0146e6318918dcc0a0e3a106df4e28fd849e6946b52a89808f6f561e5891",
-    "store-red.txt": "f3bd664dad7495ba224b673fa49a4d97b6dc811cabe6d537226ccc129bd2c8d9"
+    "store-red.txt": "f3bd664dad7495ba224b673fa49a4d97b6dc811cabe6d537226ccc129bd2c8d9",
+    "unbound-fork-checkpoint.json": "94d51fa51461fcca92e418d9261d8238d7bb50283b2aa550ac42f3fc37c7dfec",
+    "unbound-fork-red.txt": "9e92274f55a47ab7a2e6dc86b3b2f5b8a3a774596fb07a43cf20ba8cb038390b"
   }
 }

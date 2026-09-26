@@ -1,0 +1,22 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.65s
+     Running tests/team_definition_migration_completeness.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/team_definition_migration_completeness-f7b8bbf4d0c6389a)
+
+running 1 test
+test a_fork_with_an_unbound_current_leaf_also_refuses_the_migration_census ... FAILED
+
+failures:
+
+---- a_fork_with_an_unbound_current_leaf_also_refuses_the_migration_census stdout ----
+
+thread 'a_fork_with_an_unbound_current_leaf_also_refuses_the_migration_census' (57456662) panicked at crates/kontor-store/tests/team_definition_migration_completeness.rs:740:5:
+a never-bound meaningful fork is still ambiguous current lineage
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_fork_with_an_unbound_current_leaf_also_refuses_the_migration_census
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 23 filtered out; finished in 1.69s
+
+error: test failed, to rerun pass `-p kontor-store --test team_definition_migration_completeness`

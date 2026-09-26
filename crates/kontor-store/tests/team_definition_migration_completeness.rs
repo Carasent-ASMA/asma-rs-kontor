@@ -717,16 +717,37 @@ fn a_genuine_delivery_fork_refuses_the_native_migration_census() {
     abandon_unbound_attempt(&w, bridge);
     add_delivery_successor_of(&w, bridge, Some("agent_fork_a"));
     add_delivery_successor_of(&w, bridge, Some("agent_fork_b"));
+    let refused = w
+        .store
+        .list_live_native_subjects(w.project_id, w.mini_project_id)
+        .expect_err("two meaningful leaves cannot claim one persistent seat");
     assert!(
-        w.store
-            .list_live_native_subjects(w.project_id, w.mini_project_id)
-            .is_err(),
-        "two meaningful leaves cannot claim one persistent seat"
+        refused
+            .to_string()
+            .contains("ambiguous current replacement-chain leaves")
     );
     assert!(
         w.store
             .record_team_definition_migration(&migration(&w, "fork-census", complete_targets(&w)))
             .is_err()
+    );
+}
+
+#[test]
+fn a_fork_with_an_unbound_current_leaf_also_refuses_the_migration_census() {
+    let w = world();
+    let bridge = add_linked_delivery_successor(&w, None);
+    abandon_unbound_attempt(&w, bridge);
+    add_delivery_successor_of(&w, bridge, Some("agent_bound_fork"));
+    add_delivery_successor_of(&w, bridge, None);
+    let refused = w
+        .store
+        .list_live_native_subjects(w.project_id, w.mini_project_id)
+        .expect_err("a never-bound meaningful fork is still ambiguous current lineage");
+    assert!(
+        refused
+            .to_string()
+            .contains("ambiguous current replacement-chain leaves")
     );
 }
 

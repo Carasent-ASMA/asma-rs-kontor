@@ -170,16 +170,18 @@ async fn trailing_abandoned_bridge_attempts_keep_the_bound_predecessor_named() {
 
 #[tokio::test]
 async fn genuine_bound_fork_after_an_abandoned_bridge_still_refuses_preview() {
-    let (world, project, epic, predecessor) = fixture("preview-fork-bridge").await;
-    let bridge = successor(&world, &predecessor, None);
-    abandon(&world, &bridge).await;
-    successor(&world, &bridge, Some("missing-fork-a"));
-    successor(&world, &bridge, Some("missing-fork-b"));
-    let response = preview(&world, &project, &epic).await;
-    assert_eq!(response.status, 409, "{}", response.body);
-    assert!(
-        response
-            .body
-            .contains("ambiguous current replacement-chain leaves")
-    );
+    for sibling_native in [Some("missing-fork-b"), None] {
+        let (world, project, epic, predecessor) = fixture("preview-fork-bridge").await;
+        let bridge = successor(&world, &predecessor, None);
+        abandon(&world, &bridge).await;
+        successor(&world, &bridge, Some("missing-fork-a"));
+        successor(&world, &bridge, sibling_native);
+        let response = preview(&world, &project, &epic).await;
+        assert_eq!(response.status, 409, "{}", response.body);
+        assert!(
+            response
+                .body
+                .contains("ambiguous current replacement-chain leaves")
+        );
+    }
 }
