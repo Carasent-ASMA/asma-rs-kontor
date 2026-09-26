@@ -1,0 +1,67 @@
+{
+  "tool": "kontor_native_names_preview",
+  "status": 200,
+  "body": {
+    "epic_id": "01a072f5-f35c-7cc2-8367-43cba653a951",
+    "preview_hash": "5d05dcb93e1ee0808ca7339e154572308bc2a3c0b843e04e6d90c238ac54e347",
+    "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+    "realm_id": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+    "snapshot_cursor": 4868,
+    "targets": [
+      {
+        "agent_run_id": null,
+        "canonical_cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a072f5-f35c-7cc2-8367-43cba653a951",
+        "capability": "unchanged",
+        "desired_title": "ESW • ASMA-8108",
+        "generation": 1,
+        "host": "paseo-local",
+        "native_id": "prj_fc87bc1f96af0ed3",
+        "native_kind": "project_container",
+        "observed_title": "ESW • ASMA-8108",
+        "parent_native_id": null,
+        "provider_session_id": null,
+        "runtime_kind": "paseo.agent",
+        "seat_binding_id": null,
+        "subject_kind": "container",
+        "topology_node_id": "01a072f5-f936-7073-906b-0fcfdeb5d1a1",
+        "would_change": false
+      },
+      {
+        "agent_run_id": null,
+        "canonical_cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a072f5-f35c-7cc2-8367-43cba653a951",
+        "capability": "unchanged",
+        "desired_title": "ECP • ASMA-8108",
+        "generation": 1,
+        "host": "paseo-local",
+        "native_id": "wks_2bb8868f11cb5595",
+        "native_kind": "workspace_container",
+        "observed_title": "ECP • ASMA-8108",
+        "parent_native_id": "prj_fc87bc1f96af0ed3",
+        "provider_session_id": null,
+        "runtime_kind": "paseo.agent",
+        "seat_binding_id": null,
+        "subject_kind": "container",
+        "topology_node_id": "01a072f5-f97e-7433-aa85-fd5923776664",
+        "would_change": false
+      },
+      {
+        "agent_run_id": null,
+        "canonical_cwd": null,
+        "capability": "unchanged",
+        "desired_title": "TPM",
+        "generation": 1,
+        "host": "paseo-local",
+        "native_id": "728c1c58-0bdf-4bf6-b5b3-6b9987eac765",
+        "native_kind": "seat",
+        "observed_title": "TPM",
+        "parent_native_id": "wks_2bb8868f11cb5595",
+        "provider_session_id": "ses_f8d0148ebffelBhoNSALPmov1T",
+        "runtime_kind": "paseo.agent",
+        "seat_binding_id": "01a072f5-f98d-77d2-8a95-5b5d076cd9c0",
+        "subject_kind": "seat",
+        "topology_node_id": "01a072f5-f97e-7433-aa85-fd5923776664",
+        "would_change": false
+      }
+    ]
+  }
+}

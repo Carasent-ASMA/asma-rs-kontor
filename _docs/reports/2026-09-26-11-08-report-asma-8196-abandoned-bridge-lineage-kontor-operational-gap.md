@@ -1,7 +1,7 @@
 ---
 title: ASMA-8196 abandoned replacement bridge selection
 type: report
-status: "🟡 Source qualification audited; publication correction and deployment pending"
+status: "🟡 Deployed lineage repair verified; census reconciliation and workflow acceptance pending"
 created: 2026-09-26
 jira: ASMA-8196
 ---
@@ -206,17 +206,66 @@ preserved unrelated untracked evidence and retained recovery stash
 `5b7b8fd648732ee1aeaac59f25544b1aa08e8dec`; it was not popped or dropped.
 Other worktrees and their changes remain untouched.
 
+## Merged deployment and fresh continuity — 2026-09-26
+
+The [actual final publication audit](evidence/ASMA-8196/replacement-bridges/actual-lsa-09f-publication-audit.txt)
+with its [identity receipt](evidence/ASMA-8196/replacement-bridges/lsa-09f-publication-receipt.json)
+closes the publication-only P2 and supports merging exact head `09f02b24`.
+The [merge readback](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/merge-receipt.json)
+records PR #276 merged at `e29b895d0f045c499144870a2fa610fc642b6cc0`.
+Its [release build receipt](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/build-receipt.json)
+and [encoded raw build log](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/release-build-log.json)
+record exit 0 from the exact merged-source archive, unchanged executable source
+relative to qualified 6b, and the three candidate binary hashes.
+
+The [guarded deployment plan](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/deployment-plan.json),
+[actual apply script](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/deployment-apply.py),
+and [deployment receipt](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/deployment-receipt.json)
+record the controlled restart at `2026-09-26T10:45:33.519752Z`, consistent DB
+backup, exact realm, schema 119, `quick_check=ok`, zero foreign-key violations,
+unchanged runtime/fleet configuration hashes and preserved ASMA-8098 Done@14.
+The [identity checkpoint](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/before-lineage-identity.json)
+binds unchanged run/parent/runtime/native/seat identities and ASMA-8188's actual
+verification-gate sequence 2 across the restart. No manual SQLite write occurred.
+
+Five fresh read-only Paseo conformance tests passed, zero failed, and the sole
+mutating test was filtered; [encoded raw output](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/postdeployment-read-only-live-log.json)
+binds exact e29 source and the live 0.9.1 identity. These are new postdeployment
+checks, not reused ASMA-8098 or earlier deployment test credit.
+
+The [ASMA-8190 preview before settlement](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/ASMA-8190-preview-before-settle.json)
+already returned HTTP 200. [Supported settlement](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/runtime-settle-current-verify.json)
+then recorded the current verify run as `waiting_input` at cursor 4868 without
+inventing a terminal result or closing its TeamRun. The fresh
+[ASMA-8190 preview](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/ASMA-8190-preview.json)
+selects only run `01a0cf81-50ec-7822-8f3a-bd60690a9bfe`, native
+`a526c5cc-e399-43c9-8a5e-830e5834a27b`, SeatBinding
+`01a0b033-1d67-7bc2-b5e4-e5dd3ad9c72b`, generation 1. The cancelled
+`5750a5be-8399-4360-a9af-4f9594eac006` is absent; no proposed change exists.
+The [current exact native readback](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/current-verify-native.json)
+confirms the preserved native is idle, unarchived, in Plan mode.
+
+All thirteen [fresh preview results](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/preview-summary.json)
+return HTTP 200, totaling 99 current targets and zero `would_change`.
+The [joined current census](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/joined-current-census.json)
+and [58 exact-ID native readbacks](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/native-exact-readbacks.json)
+find all requested natives and all 56 current project/workspace containers;
+43 distinct current seat references have matching names and present parents.
+Fifteen of the 43 current seat references are archived. The complete 58-ID
+readback also includes 15 historical IDs; 23 of all 58 are archived. These are
+naming/identity observations, not live-occupancy claims for archived sessions.
+The historical 89 applied targets and later 88-target readback are separate dated
+sets. Their before/apply/after/current temporal reconciliation is still pending.
+
 ## Remaining acceptance
 
-Focused source correction, six-mutant qualification and the exact-source full
-archive gate are complete. The independent qualification audit supports source
-merge and retains one publication-only P2. This publication corrects the stale
-gate wording and preserves both raw full-gate logs in encoded carriers. Final
-publication readback, merge/build/deployment and the fresh all-thirteen joined
-census remain pending. No live parents, run identities, native identities or
-SeatBindings were rewritten.
-After qualification/deployment, use supported settlement for the current run's
-fresh observation, require ASMA-8190 preview 200 with that exact current
-run/native/binding, no old native and zero `would_change`, then repeat all
-thirteen previews. ASMA-8196 task settlement, ASMA-8120/8121 workflow gates,
-ASMA-8049/8190 epic acceptance and global Kontor trust remain uncredited.
+Source correction, exact-source qualification, independent source/publication
+review, PR merge, release build, controlled deployment, supported runtime
+observation and thirteen fresh naming previews are complete. The bridge-selection
+P1 is corrected end to end without rewriting recorded identities. The [independent deployed-checkpoint audit](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/actual-lsa-deployed-checkpoint.txt)
+and its [identity receipt](evidence/ASMA-8196/replacement-bridges/deployed-e29b895d/lsa-deployed-checkpoint-publication-receipt.json)
+confirm the bounded deployment and current naming claims. Its archived-count
+precision note is clarified above. Historical before/apply/after/current census
+reconciliation remains pending. Current run `waiting_input` is freshness evidence,
+not ASMA-8196 delivery settlement. ASMA-8196 task/workflow gates, ASMA-8120/8121
+acceptance, ASMA-8049/8190 epic acceptance and global Kontor trust remain uncredited.

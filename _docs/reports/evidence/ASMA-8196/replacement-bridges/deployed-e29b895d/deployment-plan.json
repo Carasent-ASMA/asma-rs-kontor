@@ -1,0 +1,45 @@
+{
+  "recordedAt": "2026-09-26T10:45:17.932453+00:00",
+  "sourceCommit": "e29b895d0f045c499144870a2fa610fc642b6cc0",
+  "qualifiedSource": "6b3654bca823ac85ed7cc0bb1d6965bc730c4743",
+  "binaryChecks": [
+    {
+      "name": "kontor-daemon",
+      "candidate": "/private/tmp/kontor-ASMA-8196-release-e29b895d/bin/kontor-daemon",
+      "candidateSha256": "0a187d5d1ef2e94ddce575cac4a71a04309fb43b34bbd0cfad77124597219b35",
+      "installedPath": "/Users/igor/.local/bin/kontor-daemon",
+      "installedResolvedPath": "/Users/igor/.local/bin/kontor-daemon",
+      "installedIsSymlink": false,
+      "installedSha256": "2249946d70d31bbd021b1eedb17daac9601cde09109ad39dcfe501d8eb1fa420"
+    },
+    {
+      "name": "kontor-mcp",
+      "candidate": "/private/tmp/kontor-ASMA-8196-release-e29b895d/bin/kontor-mcp",
+      "candidateSha256": "54160cfaaf39a90cbc12b495359aabf331e30ff3f3d3e85a2322e33e6117faab",
+      "installedPath": "/Users/igor/.local/bin/kontor-mcp",
+      "installedResolvedPath": "/Users/igor/.local/bin/kontor-mcp.dddb7287",
+      "installedIsSymlink": true,
+      "installedSha256": "8f621e9dae400625ac0a238671e682df320ece9f7ab0b1c31a5cfaa2a4268576"
+    },
+    {
+      "name": "kontor",
+      "candidate": "/private/tmp/kontor-ASMA-8196-release-e29b895d/bin/kontor",
+      "candidateSha256": "a724ec68c9d793661cd05a4c099fc109e48614c599c9dcfb608e563cdd51979a",
+      "installedPath": "/Users/igor/.local/bin/kontor",
+      "installedResolvedPath": "/Users/igor/.local/bin/kontor",
+      "installedIsSymlink": false,
+      "installedSha256": "6e52392b5876e5e2ddb3f1f823b8affb976cda217413124e054e9770d1e30575"
+    }
+  ],
+  "buildReceiptSha256": "a14d42127bd48cedc29613f1c127fc83c200eadceb9296b464d98d637806c574",
+  "qualificationReceipt": "/Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/_docs/reports/evidence/ASMA-8196/replacement-bridges/qualified-6b3654bc-source-qualification.json",
+  "qualificationReceiptSha256": "4859983d4da2c2d1a6c067858200ae68c03c0a1aa73eed3da42913c0442084bb",
+  "backupDirectory": "/Users/igor/.local/state/kontor/asma/deployments/ASMA-8196-e29b895d-20260926",
+  "expectedSchema": 119,
+  "realmId": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+  "service": "com.asma.kontor.daemon",
+  "port": 7717,
+  "previousSource": "dddb72870c6d58d5d6383a69227844dbc8dca45e",
+  "rollback": "Stop same service, restore backed-up daemon/CLI and prior MCP symlink, restart same plist; retain consistent DB backup; no schema migration or direct SQLite writes.",
+  "qualificationBoundary": "Qualified replacement-lineage source only. ASMA-8098 remains Done14; ASMA-8188 fresh gate2 and historical completion failures preserved. Own postdeployment read-only tests, settlement and all13 census required."
+}

@@ -1,0 +1,38 @@
+{
+  "Id": "a526c5cc-e399-43c9-8a5e-830e5834a27b",
+  "Name": "QA",
+  "Provider": "cursor",
+  "Model": "auto-smart",
+  "Thinking": "high",
+  "Status": "idle",
+  "Archived": false,
+  "ArchivedAt": null,
+  "Mode": "plan",
+  "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-lsa-persona-launch",
+  "CreatedAt": "2026-09-23T18:23:44.606Z",
+  "UpdatedAt": "2026-09-26T02:54:31.655Z",
+  "LastUsage": null,
+  "Capabilities": {
+    "Streaming": true,
+    "Persistence": true,
+    "DynamicModes": true,
+    "McpServers": true
+  },
+  "AvailableModes": [
+    {
+      "id": "agent",
+      "label": "Agent"
+    },
+    {
+      "id": "plan",
+      "label": "Plan"
+    },
+    {
+      "id": "ask",
+      "label": "Ask"
+    }
+  ],
+  "PendingPermissions": [],
+  "Worktree": null,
+  "ParentAgentId": null
+}
