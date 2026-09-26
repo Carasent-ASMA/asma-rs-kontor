@@ -1,7 +1,7 @@
 # ASMA-8121 export event-kind operational gap
 
 > **Date:** 2026-09-26 08:28 Europe/Oslo
-> **Status:** 🟡 In Review — receipt-authority correction verified locally; fresh full qualification, corrective audit, continuity and deployment pending
+> **Status:** 🟡 In Review — source qualified and independently audited at 79b07f31; actual export, integration and deployed continuity pending
 > **Author:** Codex
 > **Category:** report
 > **Scope:** ASMA-8049 / ASMA-8121 snapshot, export and identity continuity
@@ -45,7 +45,7 @@ The new regression records a real `EnsureProject` local command with the observe
 
 Additional regressions require both observation kinds to refuse a planted runtime-content alias and require a planted command-intent secret to be refused by the recursive scan without echoing its value. The first suite run had one fixture collision with the one-event-per-receipt index; its [actual failed log](evidence/ASMA-8121/initial-backup-export-fixture-failure.txt) is retained and supplies no acceptance credit. The disposable corruption fixture now explicitly bypasses only its own append-only update trigger to plant the refused payload; production triggers remain unchanged.
 
-The corrected focused contracts pass. Three distinct source mutants compiled and failed the intended behavioral assertions, exit 101: rejecting valid commands, accepting runtime/census session content, and skipping the embedded canary scan. Exact candidate-relative patches, log hashes and post-restoration source/test hashes are in the [mutation receipt](evidence/ASMA-8121/export-mutation-results.json). After restoration, the [complete backup/export suite](evidence/ASMA-8121/backup-export-green-restored.txt) passes all 21 tests, zero failed, exit 0. Tests use the owned worktree and disposable SQLite; the compiler target cache is shared at `_tools/asma-rs-kontor/target`. The exact-candidate full gate now passes; actual snapshot export and deployed continuity remain pending.
+The corrected focused contracts pass. Three distinct source mutants compiled and failed the intended behavioral assertions, exit 101: rejecting valid commands, accepting runtime/census session content, and skipping the embedded canary scan. Exact candidate-relative patches, log hashes and post-restoration source/test hashes are in the [mutation receipt](evidence/ASMA-8121/export-mutation-results.json). After restoration, the [complete backup/export suite](evidence/ASMA-8121/backup-export-green-restored.txt) passes all 21 tests, zero failed, exit 0. Tests use the owned worktree and disposable SQLite; the compiler target cache is shared at `_tools/asma-rs-kontor/target`. The b42 candidate’s full gate passed; it does not qualify the later authority correction. Actual snapshot export and deployed continuity remain pending.
 
 Separately, ASMA-8049's MUT-003 was actually executed on installed-source bytes: removing confirmation-time live-census parity compiled and failed `confirmation_re_proves_parity_against_the_live_census`, exit 101. Baseline and restored runs passed. The [receipt](evidence/ASMA-8121/jira-migration-mut003-results.json) and [baseline](evidence/ASMA-8121/jira-migration-mut003-baseline.txt), [mutant](evidence/ASMA-8121/jira-migration-mut003.txt), [restored](evidence/ASMA-8121/jira-migration-mut003-restored.txt) logs preserve that proof. It supplies only this mutant's qualification.
 
@@ -63,8 +63,19 @@ Three corruption regressions [failed against c08](evidence/ASMA-8121/authority-c
 
 The new foreign-realm case binds exact source event payload/hash through the exported row digest and preserves source realm, record identity and non-executable import lineage. Imported commands/events do not become destination runtime authority or re-exported local commands. No claim is made that foreign import stores the raw source payload.
 
-The PR title now follows the required key-plus-space grammar; its new publication check succeeded. Fresh qualification of the corrected immutable candidate and independent corrective review remain required.
+The PR title now follows the required key-plus-space grammar; its new publication check succeeded. The corrected candidate received its own complete qualification and independent corrective audit; actual integration and deployment remain separate.
 
 ## Remaining acceptance
 
 Complete independent review and actual export on the preserved offline snapshot; then integrate, build and deploy the qualified candidate. Repeat actual export on the unchanged snapshot and offline restore and compare the preserved record identities and digests. Obtain a fresh all-thirteen joined post-restart census, current runtime identity/health and genuine ASMA-8120/8121 verification/audit evidence. Preserve all historical failures and the 89-versus-88 temporal lifecycle distinction. [SHA256SUMS.json](evidence/ASMA-8121/SHA256SUMS.json) anchors every raw receipt and log in this checkpoint.
+
+The [actual corrective LSA audit](evidence/ASMA-8121/authority-correction/actual-lsa-79-audit.txt)
+confirms the prior P1 authority and P2 foreign-round-trip gaps are resolved at
+`79b07f31028704a6a98203b89877264fd179a535`. It found no P0/P1 and conditionally
+supports merge after that candidate's own full gate exits 0. Its wording P2 is
+addressed above by explicitly naming b42; the historical finding is unchanged.
+Deployment and actual snapshot/export/restart qualification remain uncredited.
+
+## Corrected exact-source qualification
+
+Candidate `79b07f31028704a6a98203b89877264fd179a535`, tree `ebd20eb03d5659b30747bc2202e2b2ee0896528d`, passed its own archive gate with actual exit 0: formatting, strict workspace Clippy, 2,905 Rust tests across 149 binaries, zero failed and 9 ignored, dependency audit/deny, frozen installation, typecheck, 305 console tests and production audit. Separate API-generation verification exited 0. The [exact qualification receipt](evidence/ASMA-8121/79b07f31-source-qualification.json), [raw archive log](evidence/ASMA-8121/79b07f31-full-gate.txt) and [API log](evidence/ASMA-8121/79b07f31-verify-api.txt) bind these outcomes to the source candidate. These results satisfy the corrective LSA's full-gate condition; its historical finding remains unchanged. ASMA-8098's verified Jira/SQLite Done closeout releases its installed-7ffd hold for qualified repairs, but supplies no test credit to this source. Actual snapshot export, merge/build/deployment and fresh joined post-restart census remain pending.
