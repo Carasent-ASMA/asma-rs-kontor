@@ -756,7 +756,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v118 records bounded runtime-message delivery proof steps.
     // v119 makes publication attestations immutable, append-only evidence
     // (ASMA-8102); both guards must survive migration and reopen.
-    assert_eq!(SCHEMA_VERSION, 119);
+    // v120 binds fleet policy publication and activation keys realm-wide and
+    // restores the binding permanence triggers the v28 rebuild dropped
+    // (ASMA-8280).
+    assert_eq!(SCHEMA_VERSION, 120);
 }
 
 #[test]
@@ -6101,6 +6104,72 @@ fn issuance_boundary_is_frozen_across_replay_and_reopen() {
             reopened.message_issuance(id).unwrap().unwrap().boundary_at,
             boundary,
             "a retry must neither move an original boundary nor invent one for a legacy issuance"
+        );
+    }
+}
+
+/// v120: fleet policy publication and activation bind their keys realm-wide,
+/// once, and a binding can no longer be rebound or released (ASMA-8280).
+#[test]
+fn v120_fleet_policy_keys_bind_once_and_stay_bound() {
+    let directory = temp();
+    let store = open(&directory);
+    let binding =
+        |key: &str, operation: &'static str, fingerprint: &[u8]| kontor_store::IdempotencyBinding {
+            key: key.to_owned(),
+            operation,
+            fingerprint: kontor_core::id::ContentHash::of(fingerprint),
+            bound_at: kontor_core::id::parse_utc_timestamp("2026-09-27T12:00:00Z")
+                .expect("a timestamp"),
+        };
+    for operation in ["publish_fleet_policy", "activate_fleet_policy"] {
+        let key = format!("{operation}-key");
+        assert_eq!(
+            store
+                .bind_realm_operation(&binding(&key, operation, b"one"))
+                .expect("a first use binds"),
+            kontor_store::Applied::Created
+        );
+        assert_eq!(
+            store
+                .bind_realm_operation(&binding(&key, operation, b"one"))
+                .expect("an exact replay is answered"),
+            kontor_store::Applied::Unchanged
+        );
+        assert!(
+            store
+                .bind_realm_operation(&binding(&key, operation, b"two"))
+                .is_err(),
+            "one key cannot name a second {operation}"
+        );
+    }
+    assert!(
+        store
+            .bind_realm_operation(&binding(
+                "publish_fleet_policy-key",
+                "activate_fleet_policy",
+                b"one"
+            ))
+            .is_err(),
+        "one key cannot name a second operation"
+    );
+    drop(store);
+
+    let connection = raw(&directory);
+    let unknown = connection.execute(
+        "INSERT INTO realm_idempotency_bindings (idempotency_key, operation, fingerprint, bound_at)
+         VALUES ('unknown', 'rewrite_fleet_policy', ?1, '2026-09-27T12:00:00Z')",
+        [kontor_core::id::ContentHash::of(b"x").as_str()],
+    );
+    assert!(unknown.is_err(), "the operation list stays closed");
+    for statement in [
+        "UPDATE realm_idempotency_bindings SET fingerprint = fingerprint
+         WHERE idempotency_key = 'activate_fleet_policy-key'",
+        "DELETE FROM realm_idempotency_bindings WHERE idempotency_key = 'activate_fleet_policy-key'",
+    ] {
+        assert!(
+            connection.execute(statement, []).is_err(),
+            "a binding is permanent: {statement}"
         );
     }
 }

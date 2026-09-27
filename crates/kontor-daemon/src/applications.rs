@@ -146,6 +146,11 @@ use kontor_api::applications::{
     WorktreeClaimCorrectionAppliedDto, WorktreeClaimCorrectionApplyRequest,
     WorktreeClaimCorrectionPreviewDto, WorktreeClaimCorrectionRequest,
 };
+use kontor_api::applications::{
+    FleetActivationDto, FleetPolicyActivateRequest, FleetPolicyActivatedDto, FleetPolicyDto,
+    FleetPolicyPreviewDto, FleetPolicyPreviewRequest, FleetPolicyPublishRequest,
+    FleetPolicyPublishedDto, FleetPolicySelectionDto,
+};
 use kontor_api::dto::JiraBindingDto;
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::ApiState;
@@ -15116,6 +15121,20 @@ fn parse_runtime_model_route(
 /// The runtime effort vocabulary, parsed once for requests and fleet policy.
 pub(crate) use kontor_fleet::parse_effort;
 
+/// The realm-scoped idempotency operation of a fleet policy publication.
+const PUBLISH_FLEET_POLICY: &str = "publish_fleet_policy";
+
+/// The realm-scoped idempotency operation of a fleet policy activation.
+const ACTIVATE_FLEET_POLICY: &str = "activate_fleet_policy";
+
+fn fleet_activation_dto(record: &crate::fleet::FleetActivation) -> FleetActivationDto {
+    FleetActivationDto {
+        policy_hash: record.policy_hash.clone(),
+        policy_schema_version: record.policy_schema_version,
+        activated_at: record.activated_at.clone(),
+    }
+}
+
 fn validate_team_draft_routes(request: &TeamDraftRequest) -> kontor_core::DomainResult<()> {
     for slot in &request.slots {
         let Some(chain) = slot.capabilities.get("chain") else {
@@ -23751,6 +23770,120 @@ impl ApplicationOperations for Services {
             stored_ceilings: None,
             revision: stored.revision,
             snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    fn fleet_policy_selection(&self) -> Result<FleetPolicyDto, ApiError> {
+        let state = self.state()?;
+        let status = self.fleet.status();
+        Ok(FleetPolicyDto {
+            realm_id: state.realm_id(),
+            selection: if status.activation {
+                FleetPolicySelectionDto::Activation
+            } else {
+                FleetPolicySelectionDto::FleetYml
+            },
+            activation: status.record.as_ref().map(fleet_activation_dto),
+            active_policy_hash: status.active.as_ref().map(|active| active.hash().clone()),
+            active_schema_version: status.active.as_ref().map(|active| active.schema_version()),
+            refusal: status.refusal,
+        })
+    }
+
+    fn preview_fleet_policy(
+        &self,
+        request: &FleetPolicyPreviewRequest,
+    ) -> Result<FleetPolicyPreviewDto, ApiError> {
+        let state = self.state()?;
+        let candidate = crate::fleet::FleetSnapshot::parse_policy(&request.document)
+            .map_err(|error| self.refuse_fleet_policy(&error))?;
+        Ok(FleetPolicyPreviewDto {
+            realm_id: state.realm_id(),
+            policy_hash: candidate.hash().clone(),
+            schema_version: candidate.schema_version(),
+            preview_hash: self.fleet_policy_preview_hash(candidate.hash())?,
+        })
+    }
+
+    async fn publish_fleet_policy(
+        &self,
+        key: &IdempotencyKey,
+        request: &FleetPolicyPublishRequest,
+    ) -> Result<FleetPolicyPublishedDto, ApiError> {
+        let state = self.state()?;
+        // Validated here from the exact bytes that will be written, not from
+        // the preview: the preview hash only proves the caller saw these bytes
+        // validate, and publication re-proves it before anything is bound.
+        let candidate = crate::fleet::FleetSnapshot::parse_policy(&request.document)
+            .map_err(|error| self.refuse_fleet_policy(&error))?;
+        if self.fleet_policy_preview_hash(candidate.hash())? != request.preview_hash {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the fleet policy does not match the bytes its preview validated",
+            ));
+        }
+        let fingerprint = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": PUBLISH_FLEET_POLICY,
+            "policy_hash": candidate.hash().as_str(),
+        }))?;
+        self.bind_realm_operation(key, PUBLISH_FLEET_POLICY, &fingerprint)?;
+        let published = self
+            .fleet
+            .publish(&request.document)
+            .map_err(|error| self.refuse_fleet_policy(&error))?;
+        Ok(FleetPolicyPublishedDto {
+            realm_id: state.realm_id(),
+            policy_hash: published.hash,
+            schema_version: published.schema_version,
+            applied: if published.created {
+                AppliedDto::Created
+            } else {
+                AppliedDto::Unchanged
+            },
+        })
+    }
+
+    async fn activate_fleet_policy(
+        &self,
+        key: &IdempotencyKey,
+        request: &FleetPolicyActivateRequest,
+    ) -> Result<FleetPolicyActivatedDto, ApiError> {
+        let state = self.state()?;
+        let fingerprint = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": ACTIVATE_FLEET_POLICY,
+            "policy_hash": request.policy_hash.as_str(),
+            "expected_active_policy_hash": request
+                .expected_active_policy_hash
+                .as_ref()
+                .map(ContentHash::as_str),
+        }))?;
+        self.bind_realm_operation(key, ACTIVATE_FLEET_POLICY, &fingerprint)?;
+        // A replay whose first attempt already activated this policy finds it
+        // standing and changes nothing; one whose first attempt died before the
+        // record moved converges now, under the same fence.
+        let activated = self
+            .fleet
+            .activate(
+                &request.policy_hash,
+                request.expected_active_policy_hash.as_ref(),
+            )
+            .map_err(|refusal| match refusal {
+                crate::fleet::ActivationRefusal::Moved => self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the active fleet policy moved since the caller read it",
+                ),
+                crate::fleet::ActivationRefusal::Policy(error) => self.refuse_fleet_policy(&error),
+            })?;
+        Ok(FleetPolicyActivatedDto {
+            realm_id: state.realm_id(),
+            activation: fleet_activation_dto(&activated.record),
+            applied: if activated.changed {
+                AppliedDto::Created
+            } else {
+                AppliedDto::Unchanged
+            },
         })
     }
 
@@ -37478,6 +37611,65 @@ impl Services {
                 rungs: chain.rungs.clone(),
                 fleet: None,
             }))
+    }
+
+    /// The preview hash one fleet policy's publication must name.
+    fn fleet_policy_preview_hash(
+        &self,
+        policy_hash: &ContentHash,
+    ) -> Result<ContentHash, ApiError> {
+        self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "fleet_policy_preview",
+            "policy_hash": policy_hash.as_str(),
+        }))
+    }
+
+    /// Bind one realm-scoped key to the fleet operation it names, before the
+    /// state-root effect: the key is judged first, so one key can never stand
+    /// for two publications or two activations.
+    fn bind_realm_operation(
+        &self,
+        key: &IdempotencyKey,
+        operation: &'static str,
+        fingerprint: &CanonicalDocument,
+    ) -> Result<(), ApiError> {
+        let binding = IdempotencyBinding {
+            key: key.as_str().to_owned(),
+            operation,
+            fingerprint: fingerprint.hash().clone(),
+            bound_at: kontor_api::now(),
+        };
+        self.state()?
+            .with_store(|store| store.bind_realm_operation(&binding))
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
+    }
+
+    /// One fleet policy refusal, naming its rule and never a configured value.
+    fn refuse_fleet_policy(&self, error: &crate::fleet::FleetError) -> ApiError {
+        match error {
+            crate::fleet::FleetError::Invalid { rule } => {
+                let code = if *rule == crate::fleet::UNPUBLISHED_POLICY {
+                    ApiErrorCode::NotFound
+                } else {
+                    ApiErrorCode::InvalidRequest
+                };
+                self.deny(code, rule).about("FleetPolicy")
+            }
+            crate::fleet::FleetError::Read { .. } | crate::fleet::FleetError::Write { .. } => self
+                .deny(
+                    ApiErrorCode::Unavailable,
+                    "the fleet policy could not be read or written in the Realm state root",
+                )
+                .about("FleetPolicy"),
+            _ => self
+                .deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the fleet policy is not a valid schema_version 1 or 2 document",
+                )
+                .about("FleetPolicy"),
+        }
     }
 
     /// The fleet policy a seat binding resolves against.

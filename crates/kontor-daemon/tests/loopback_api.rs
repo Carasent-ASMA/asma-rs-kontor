@@ -35504,6 +35504,394 @@ async fn an_advisor_freezes_from_the_activated_policy_and_fails_closed() {
     assert_eq!(seat["model_route"]["model"], "grok-4.7", "{seat}");
 }
 
+// ---------------------------------------------------------------------------
+// ASMA-8280 slice two: the registered fleet policy operations, and the
+// consultation seats that must fail closed on an unverifiable activation.
+// ---------------------------------------------------------------------------
+
+/// ASMA-8280: the fleet policy is published and activated through registered
+/// operations. Publication selects nothing, activation is fenced on what the
+/// caller read, and each key names one logical operation.
+#[tokio::test]
+async fn the_fleet_policy_is_published_and_activated_through_registered_operations() {
+    let composed = compose_realm("/tmp/kontor-asma8280-policy-operations").await;
+    let world = &composed.world;
+    let yaml = fleet_yaml(&["team/t/s"], CLAUDE_THEN_CODEX);
+    let other = fleet_yaml(&["team/t/s"], CODEX_THEN_CLAUDE);
+
+    let initial = Call::get("/v1/fleet/policy")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(initial.status, 200, "{}", initial.body);
+    assert_eq!(initial.json()["selection"], "fleet_yml");
+    assert!(
+        initial.json().get("activation").is_none(),
+        "{}",
+        initial.body
+    );
+    let operator = Call::get("/v1/fleet/policy")
+        .signed_as(world, "operator")
+        .send(world)
+        .await;
+    assert_eq!(operator.status, 403, "fleet policy is admin configuration");
+
+    let invalid = Call::post(
+        "/v1/fleet/policy:preview",
+        &serde_json::json!({"document": yaml.replacen("team/t/s", "core/lsa", 1)}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(invalid.status, 400, "{}", invalid.body);
+    assert!(
+        invalid.body.contains("a binding key must be"),
+        "{}",
+        invalid.body
+    );
+
+    let previewed = Call::post(
+        "/v1/fleet/policy:preview",
+        &serde_json::json!({"document": yaml}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let hash = ContentHash::of(yaml.as_bytes()).to_string();
+    assert_eq!(previewed.json()["policy_hash"], hash.as_str());
+    assert_eq!(previewed.json()["schema_version"], 1);
+
+    let unseen = Call::post(
+        "/v1/fleet/policy:publish",
+        &serde_json::json!({"document": other, "preview_hash": previewed.json()["preview_hash"]}),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-publish-unseen")
+    .send(world)
+    .await;
+    assert_eq!(
+        unseen.status, 400,
+        "publishing bytes the preview never saw: {}",
+        unseen.body
+    );
+
+    let publish = |key: &'static str, document: String| {
+        let preview_hash = previewed.json()["preview_hash"].clone();
+        async move {
+            Call::post(
+                "/v1/fleet/policy:publish",
+                &serde_json::json!({"document": document, "preview_hash": preview_hash}),
+            )
+            .signed_as(world, "admin")
+            .with_key(key)
+            .send(world)
+            .await
+        }
+    };
+    let published = publish("asma8280-publish", yaml.clone()).await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    assert_eq!(published.json()["applied"], "created");
+    assert_eq!(published.json()["policy_hash"], hash.as_str());
+    let replayed = publish("asma8280-publish", yaml.clone()).await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["applied"], "unchanged");
+
+    // One key names one publication: reusing it for other valid bytes, under
+    // their own preview, publishes nothing.
+    let other_hash = ContentHash::of(other.as_bytes()).to_string();
+    let other_artifact = world
+        .directory
+        .path()
+        .join("fleet-history")
+        .join(format!("{other_hash}.yml"));
+    let other_preview = Call::post(
+        "/v1/fleet/policy:preview",
+        &serde_json::json!({"document": other}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(other_preview.status, 200, "{}", other_preview.body);
+    let publish_other = |key: &'static str| {
+        let body = serde_json::json!({
+            "document": other,
+            "preview_hash": other_preview.json()["preview_hash"],
+        });
+        async move {
+            Call::post("/v1/fleet/policy:publish", &body)
+                .signed_as(world, "admin")
+                .with_key(key)
+                .send(world)
+                .await
+        }
+    };
+    let reused_publication = publish_other("asma8280-publish").await;
+    assert_eq!(
+        reused_publication.status, 409,
+        "one key names one publication: {}",
+        reused_publication.body
+    );
+    assert!(!other_artifact.exists(), "the reused key published nothing");
+    let other_published = publish_other("asma8280-publish-other").await;
+    assert_eq!(other_published.status, 200, "{}", other_published.body);
+    assert!(other_artifact.exists());
+
+    let after_publication = Call::get("/v1/fleet/policy")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(
+        after_publication.json()["selection"],
+        "fleet_yml",
+        "publication selects nothing: {}",
+        after_publication.body
+    );
+
+    let activate = |key: &'static str, policy: &str, expected: Option<&str>| {
+        let body = serde_json::json!({
+            "policy_hash": policy,
+            "expected_active_policy_hash": expected,
+        });
+        async move {
+            Call::post("/v1/fleet/policy:activate", &body)
+                .signed_as(world, "admin")
+                .with_key(key)
+                .send(world)
+                .await
+        }
+    };
+    let unpublished = activate(
+        "asma8280-activate-unpublished",
+        ContentHash::of(b"never published").as_str(),
+        None,
+    )
+    .await;
+    assert_eq!(unpublished.status, 404, "{}", unpublished.body);
+    let stale = activate("asma8280-activate-stale", &hash, Some(&hash)).await;
+    assert_eq!(
+        stale.status, 409,
+        "the caller read an activation that never was: {}",
+        stale.body
+    );
+
+    let activated = activate("asma8280-activate", &hash, None).await;
+    assert_eq!(activated.status, 200, "{}", activated.body);
+    assert_eq!(activated.json()["applied"], "created");
+    assert_eq!(activated.json()["activation"]["policy_hash"], hash.as_str());
+    let again = activate("asma8280-activate", &hash, None).await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.json()["applied"], "unchanged");
+    // Reusing the key for an otherwise valid activation of another published
+    // policy, under the correct fence, activates nothing.
+    let reused = activate("asma8280-activate", &other_hash, Some(&hash)).await;
+    assert_eq!(
+        reused.status, 409,
+        "one key names one activation: {}",
+        reused.body
+    );
+
+    let selected = Call::get("/v1/fleet/policy")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(
+        selected.json()["selection"],
+        "activation",
+        "{}",
+        selected.body
+    );
+    assert_eq!(selected.json()["active_policy_hash"], hash.as_str());
+    assert_eq!(selected.json()["activation"]["policy_hash"], hash.as_str());
+    assert_eq!(selected.json()["active_schema_version"], 1);
+}
+
+/// ASMA-8280: a Committee seat recovery reads the activated policy, and while
+/// the activated bytes do not verify it refuses with the failed check before
+/// the predecessor is fenced or retired.
+#[tokio::test]
+async fn a_committee_seat_recovery_fails_closed_on_an_unverifiable_activation() {
+    let realm = consultation_realm(
+        "/tmp/kontor-asma8280-committee-recovery",
+        &[("Cursor", "cursor")],
+    )
+    .await;
+    let world = &realm.world;
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Activated seat recovery",
+        "asma8280-recovery-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let readback = committee_readback(world, &realm.project, &run).await;
+    let reviewer_a = readback["seats"]
+        .as_array()
+        .expect("Committee seats")
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "reviewer-a")
+        .expect("reviewer-a")
+        .clone();
+    let binding = SeatBindingId::parse(
+        reviewer_a["seat_binding_id"]
+            .as_str()
+            .expect("the reviewer-a SeatBinding"),
+    )
+    .expect("a SeatBinding");
+    let predecessor = reviewer_a["observed_binding"]["native_id"].clone();
+
+    let activated = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    let hash = activate_fleet_policy(world, &activated);
+    let unactivated =
+        committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "claude-then-codex")]);
+    write_fleet(world, &unactivated);
+    tamper_published_policy(world, &hash, &unactivated);
+    let calls_before = world.fake.calls();
+    let recover = |key: &'static str| {
+        let body = serde_json::json!({
+            "expected_revision": readback["revision"],
+            "expected_native_id": predecessor,
+            "reason": "provider_unavailable",
+            "recovery_profile": [],
+        });
+        let project = realm.project.clone();
+        let run = run.clone();
+        async move {
+            Call::post(
+                format!("/v1/projects/{project}/committee-runs/{run}/seats/{binding}/recover"),
+                &body,
+            )
+            .signed_as(world, "admin")
+            .with_key(key)
+            .send(world)
+            .await
+        }
+    };
+    let refused = recover("asma8280-recovery-refused").await;
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    assert!(
+        refused
+            .body
+            .contains("a published fleet policy does not hash to its content address"),
+        "the refusal names the failed check: {}",
+        refused.body
+    );
+    assert_eq!(
+        world.fake.calls(),
+        calls_before,
+        "nothing was retired or launched on an unverifiable policy"
+    );
+
+    tamper_published_policy(world, &hash, &activated);
+    let recovered = recover("asma8280-recovery-admitted").await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(
+        recovered.json()["active_model_route"]["provider"],
+        "cursor",
+        "the recovery took the activated chain, not fleet.yml: {}",
+        recovered.body
+    );
+}
+
+/// ASMA-8280: a native-less consultation reroute reads the activated policy
+/// and refuses with the failed check while the activated bytes do not verify.
+#[tokio::test]
+async fn a_native_less_consultation_reroute_fails_closed_on_an_unverifiable_activation() {
+    let realm = consultation_realm(
+        "/tmp/kontor-asma8280-native-less-reroute",
+        &[("Cursor", "cursor")],
+    )
+    .await;
+    let world = &realm.world;
+    let reviewer_a = RoleSlotId::parse("reviewer-a").expect("a role slot");
+    world.fake.refusing_launch_of(&reviewer_a);
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Activated native-less reroute",
+        "asma8280-reroute-invoke",
+    )
+    .await;
+    assert_eq!(invoked.status, 503, "{}", invoked.body);
+    let stuck = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run_by_key(
+                project_id_of(&realm.project),
+                &IdempotencyKey::parse("asma8280-reroute-invoke").expect("the invoke key"),
+            )
+            .expect("the materializing run reads")
+            .expect("the run was frozen before launch")
+    });
+    assert_eq!(stuck.state, ConsultationRunState::Materializing);
+    let stuck_id = match stuck.id {
+        ConsultationRunId::Committee(id) => id,
+        _ => unreachable!(),
+    };
+    let read = committee_readback(world, &realm.project, &stuck_id.to_string()).await;
+    let stuck_seat = read["seats"]
+        .as_array()
+        .expect("seats")
+        .iter()
+        .find(|seat| seat["role_slot_id"] == "reviewer-a")
+        .expect("reviewer-a")
+        .clone();
+    assert!(stuck_seat.get("observed_binding").is_none(), "{stuck_seat}");
+
+    let activated = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    let hash = activate_fleet_policy(world, &activated);
+    let unactivated =
+        committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "claude-then-codex")]);
+    write_fleet(world, &unactivated);
+    tamper_published_policy(world, &hash, &unactivated);
+    let before = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run(project_id_of(&realm.project), stuck.id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    let refused = Call::post(
+        format!(
+            "/v1/projects/{}/committee-runs/{stuck_id}/seats/{}/reroute-unmaterialized",
+            realm.project,
+            stuck_seat["seat_binding_id"].as_str().expect("binding")
+        ),
+        &serde_json::json!({
+            "expected_revision": stuck.revision,
+            "expected_occupancy_generation": 1,
+            "expected_model_route": stuck_seat["model_route"],
+            "reason": "permission_mode_unsupported",
+            "recovery_profile": [
+                {"provider": "cursor", "model": "grok-4.7"}
+            ]
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-reroute-refused")
+    .send(world)
+    .await;
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    assert!(
+        refused
+            .body
+            .contains("a published fleet policy does not hash to its content address"),
+        "the refusal names the failed check: {}",
+        refused.body
+    );
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .get_consultation_run(project_id_of(&realm.project), stuck.id)
+            .expect("the run reads")
+            .expect("the run exists")
+    });
+    assert_eq!(
+        after.revision, before.revision,
+        "the refused reroute wrote nothing"
+    );
+}
+
 /// LF-04: an empty `provider_unavailable` recovery profile takes its candidate
 /// chain from the live fleet when the fleet binds the seat, not from the
 /// pinned template.

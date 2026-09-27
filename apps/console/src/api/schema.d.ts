@@ -290,6 +290,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/fleet/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The Realm's fleet policy selection. */
+        get: operations["fleet_policy_selection"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/policy:activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Activate one published fleet policy under the expected current selection. */
+        post: operations["activate_fleet_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/policy:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate one candidate fleet policy. Writes nothing. */
+        post: operations["preview_fleet_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/policy:publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one previewed fleet policy. Selects nothing. */
+        post: operations["publish_fleet_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/health": {
         parameters: {
             query?: never;
@@ -6466,6 +6534,111 @@ export interface components {
             /** @description The existing team envelope. */
             team_run_id: string;
         };
+        /** @description One activation record: the published policy placement reads. */
+        FleetActivationDto: {
+            /** @description When activation replaced the record. */
+            activated_at: string;
+            /** @description SHA-256 of exactly the activated policy bytes. */
+            policy_hash: string;
+            /**
+             * Format: int32
+             * @description The schema those bytes validate under.
+             */
+            policy_schema_version: number;
+        };
+        /** @description Select one published policy for every later placement. */
+        FleetPolicyActivateRequest: {
+            /** @description The policy the caller read as active; omit when none was. */
+            expected_active_policy_hash?: string | null;
+            /** @description The published policy to activate. */
+            policy_hash: string;
+        };
+        /** @description The activation one activate call left standing. */
+        FleetPolicyActivatedDto: {
+            /** @description The standing activation record. */
+            activation: components["schemas"]["FleetActivationDto"];
+            /**
+             * @description `created` when this call replaced the record, `unchanged` when the
+             *     policy was already active.
+             */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description The Realm it governs. */
+            realm_id: string;
+        };
+        /**
+         * @description The Realm's fleet policy selection (ASMA-8280).
+         *
+         *     Exactly one source decides fleet routing: an activation record naming one
+         *     published policy by content hash, or — when none exists — the unmigrated
+         *     state-root `fleet.yml`. An activation that cannot be verified is reported
+         *     here and refuses placement; it never falls back.
+         */
+        FleetPolicyDto: {
+            activation?: null | components["schemas"]["FleetActivationDto"];
+            /** @description SHA-256 of the policy bytes placement reads now, when there is one. */
+            active_policy_hash?: string | null;
+            /**
+             * Format: int32
+             * @description The schema version of that policy.
+             */
+            active_schema_version?: number | null;
+            /** @description The Realm it governs. */
+            realm_id: string;
+            /** @description Why the selected activation cannot be served, when it cannot. */
+            refusal?: string | null;
+            /** @description Which source decides fleet routing. */
+            selection: components["schemas"]["FleetPolicySelectionDto"];
+        };
+        /** @description What a candidate policy is, before anything is written. */
+        FleetPolicyPreviewDto: {
+            /** @description SHA-256 of exactly the validated bytes: the policy's identity. */
+            policy_hash: string;
+            /** @description The hash the corresponding publish must name. */
+            preview_hash: string;
+            /** @description The Realm it was validated for. */
+            realm_id: string;
+            /**
+             * Format: int32
+             * @description The schema those bytes validate under.
+             */
+            schema_version: number;
+        };
+        /** @description One candidate fleet policy, as authored. */
+        FleetPolicyPreviewRequest: {
+            /** @description The exact YAML bytes of a schema_version 1 or 2 fleet policy. */
+            document: string;
+        };
+        /**
+         * @description Publish one previewed policy as an immutable, content-addressed artifact.
+         *
+         *     Publication selects nothing: placement keeps reading the current selection
+         *     until an activation names this policy.
+         */
+        FleetPolicyPublishRequest: {
+            /** @description The exact YAML bytes that were previewed. */
+            document: string;
+            /** @description The hash preview returned for these bytes. */
+            preview_hash: string;
+        };
+        /** @description One published policy. */
+        FleetPolicyPublishedDto: {
+            /** @description Whether this call wrote the artifact or found it already published. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description SHA-256 of exactly the published bytes. */
+            policy_hash: string;
+            /** @description The Realm it was published in. */
+            realm_id: string;
+            /**
+             * Format: int32
+             * @description The schema those bytes validate under.
+             */
+            schema_version: number;
+        };
+        /**
+         * @description Which source decides a Realm's fleet routing.
+         * @enum {string}
+         */
+        FleetPolicySelectionDto: "activation" | "fleet_yml";
         /** @description A recorded discontinuity a reader is owed. */
         GapDto: {
             /**
@@ -11346,6 +11519,178 @@ export interface operations {
             };
             /** @description The position is outside the retained history */
             410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    fleet_policy_selection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    activate_fleet_policy: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetPolicyActivateRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyActivatedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_fleet_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetPolicyPreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyPreviewDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    publish_fleet_policy: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetPolicyPublishRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyPublishedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

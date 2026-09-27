@@ -82,6 +82,10 @@ const A05: &str = "fleet-activation.json changed while it was being read";
 const A06: &str = "fleet-activation.json is not UTF-8";
 const A07: &str = "fleet-activation.json is not a schema_version 1 activation record";
 const A08: &str = "the activated fleet policy is not published";
+
+/// The refusal that means "no such published policy", which the read and
+/// activate operations answer as not found rather than as invalid.
+pub(crate) const UNPUBLISHED_POLICY: &str = A08;
 const A09: &str = "the activated fleet policy's schema_version differs from its activation record";
 
 /// The refusals one guarded read names, in the order the checks run.
@@ -153,6 +157,48 @@ pub(crate) struct FleetActivation {
     pub(crate) policy_schema_version: u32,
     /// When activation replaced the record.
     pub(crate) activated_at: String,
+}
+
+/// What one publication wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Published {
+    /// SHA-256 of exactly the published bytes.
+    pub(crate) hash: ContentHash,
+    /// The schema those bytes validate under.
+    pub(crate) schema_version: u32,
+    /// Whether this call wrote the artifact rather than finding it.
+    pub(crate) created: bool,
+}
+
+/// What one activation left selected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Activated {
+    /// The standing activation record.
+    pub(crate) record: FleetActivation,
+    /// Whether this call replaced the record rather than finding it.
+    pub(crate) changed: bool,
+}
+
+/// Why an activation changed nothing.
+#[derive(Debug)]
+pub(crate) enum ActivationRefusal {
+    /// The published artifact did not verify, or the record was not written.
+    Policy(FleetError),
+    /// The record selects another policy than the one the caller read.
+    Moved,
+}
+
+/// The Realm's fleet selection as the read operation reports it.
+#[derive(Debug)]
+pub(crate) struct FleetPolicyStatus {
+    /// Whether an activation record exists and so decides placement.
+    pub(crate) activation: bool,
+    /// The record as written, when it can be read.
+    pub(crate) record: Option<FleetActivation>,
+    /// The snapshot placement reads now: activated, legacy, or none.
+    pub(crate) active: Option<Arc<FleetSnapshot>>,
+    /// Why an existing activation cannot be served, when it cannot.
+    pub(crate) refusal: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,53 +357,70 @@ impl FleetSource {
     /// # Errors
     /// Returns the policy's first refusal, a stored copy that no longer
     /// verifies, or the write failure.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ASMA-8280 slice one: the registered publication operation is not yet chosen"
-        )
-    )]
-    pub(crate) fn publish(&self, document: &str) -> Result<ContentHash, FleetError> {
+    pub(crate) fn publish(&self, document: &str) -> Result<Published, FleetError> {
         let snapshot = FleetSnapshot::parse_policy(document)?;
-        if std::fs::symlink_metadata(self.published_path(snapshot.hash())).is_ok() {
+        let created = if std::fs::symlink_metadata(self.published_path(snapshot.hash())).is_ok() {
             self.verify_published(snapshot.hash())?;
+            false
         } else {
             self.store_history(&snapshot)
                 .map_err(|source| FleetError::Write { source })?;
-        }
-        Ok(snapshot.hash().clone())
+            true
+        };
+        Ok(Published {
+            hash: snapshot.hash().clone(),
+            schema_version: snapshot.schema_version(),
+            created,
+        })
     }
 
     /// Select one published policy for every later placement.
     ///
-    /// The artifact is verified in full before the record changes, and the
-    /// record is replaced atomically, so a reader sees the previous activation
-    /// or this one and never a partial record. A refused activation changes
-    /// nothing.
+    /// `expected` is the policy the caller read as active, `None` for none; a
+    /// record naming anything else refuses with [`ActivationRefusal::Moved`].
+    /// Selecting the policy already active answers with the standing record
+    /// and writes nothing, which is also how a replay converges. Otherwise the
+    /// artifact is verified in full before the record changes, and the record
+    /// is replaced atomically, so a reader sees the previous activation or this
+    /// one and never a partial record. A refused activation changes nothing.
     ///
     /// # Errors
-    /// Returns the published artifact's first failed check or the write
-    /// failure.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ASMA-8280 slice one: the registered activation operation is not yet chosen"
-        )
-    )]
-    pub(crate) fn activate(&self, hash: &ContentHash) -> Result<FleetActivation, FleetError> {
+    /// Returns [`ActivationRefusal::Moved`] for a stale `expected`, and the
+    /// published artifact's first failed check or the write failure otherwise.
+    pub(crate) fn activate(
+        &self,
+        hash: &ContentHash,
+        expected: Option<&ContentHash>,
+    ) -> Result<Activated, ActivationRefusal> {
         // One writer at a time in this process, and no read in between.
         let _cache = self.lock();
-        let snapshot = self.verify_published(hash)?;
+        let standing = self.recorded_activation();
+        if let Some(record) = standing.as_ref()
+            && &record.policy_hash == hash
+        {
+            self.verify_published(hash)
+                .map_err(ActivationRefusal::Policy)?;
+            return Ok(Activated {
+                record: record.clone(),
+                changed: false,
+            });
+        }
+        if standing.as_ref().map(|record| &record.policy_hash) != expected {
+            return Err(ActivationRefusal::Moved);
+        }
+        let snapshot = self
+            .verify_published(hash)
+            .map_err(ActivationRefusal::Policy)?;
         let record = FleetActivation {
             schema_version: ACTIVATION_SCHEMA_VERSION,
             policy_hash: hash.clone(),
             policy_schema_version: snapshot.schema_version(),
             activated_at: format_utc_timestamp(Timestamp::now()),
         };
-        let bytes = serde_json::to_vec_pretty(&record).map_err(|error| FleetError::Write {
-            source: std::io::Error::other(error),
+        let bytes = serde_json::to_vec_pretty(&record).map_err(|error| {
+            ActivationRefusal::Policy(FleetError::Write {
+                source: std::io::Error::other(error),
+            })
         })?;
         let temporary = self.state_root.join(format!(
             "{FLEET_ACTIVATION_FILE}.{}.tmp",
@@ -367,9 +430,31 @@ impl FleetSource {
             .and_then(|()| std::fs::rename(&temporary, self.state_root.join(FLEET_ACTIVATION_FILE)))
             .map_err(|source| {
                 let _ = std::fs::remove_file(&temporary);
-                FleetError::Write { source }
+                ActivationRefusal::Policy(FleetError::Write { source })
             })?;
-        Ok(record)
+        Ok(Activated {
+            record,
+            changed: true,
+        })
+    }
+
+    /// What the Realm's fleet selection currently is, for the read operation.
+    pub(crate) fn status(&self) -> FleetPolicyStatus {
+        let selected = std::fs::symlink_metadata(self.state_root.join(FLEET_ACTIVATION_FILE))
+            .map_or_else(
+                |error| error.kind() != std::io::ErrorKind::NotFound,
+                |_| true,
+            );
+        let (active, refusal) = match self.policy() {
+            Ok(active) => (active, None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        FleetPolicyStatus {
+            activation: selected,
+            record: self.recorded_activation(),
+            active,
+            refusal,
+        }
     }
 
     /// Append one admitted placement to the run's decision log and the `info` log.
@@ -496,6 +581,19 @@ impl FleetSource {
 
     fn load(&self, path: &Path) -> Result<FleetSnapshot, FleetError> {
         FleetSnapshot::parse(&self.read_guarded(path, &FLEET_GUARD)?)
+    }
+
+    /// The standing activation record as written, or `None` when there is no
+    /// record or it cannot be read. Only the activation fence uses it: an
+    /// unreadable record selects nothing a caller could have read.
+    fn recorded_activation(&self) -> Option<FleetActivation> {
+        let text = self
+            .read_guarded(
+                &self.state_root.join(FLEET_ACTIVATION_FILE),
+                &ACTIVATION_GUARD,
+            )
+            .ok()?;
+        serde_json::from_str(&text).ok()
     }
 
     /// The activation record and the exact policy it names, both verified.
@@ -1388,8 +1486,11 @@ bindings:
 
     /// Publish and activate `yaml`, as the registered operation will.
     fn activate(source: &FleetSource, yaml: &str) -> ContentHash {
-        let hash = source.publish(yaml).expect("publish");
-        source.activate(&hash).expect("activate");
+        let hash = source.publish(yaml).expect("publish").hash;
+        let standing = source
+            .recorded_activation()
+            .map(|record| record.policy_hash);
+        source.activate(&hash, standing.as_ref()).expect("activate");
         hash
     }
 
@@ -1429,7 +1530,7 @@ bindings:
         // and a published-but-unactivated candidate: none of them is read.
         std::fs::write(&authoring, V1_CLAUDE_FIRST).expect("edit authoring");
         write_fleet(root.path(), V1_CLAUDE_FIRST);
-        let candidate = source.publish(V1_CLAUDE_FIRST).expect("publish only");
+        let candidate = source.publish(V1_CLAUDE_FIRST).expect("publish only").hash;
         assert_ne!(candidate, activated);
 
         for _ in 0..2 {
@@ -1440,7 +1541,9 @@ bindings:
         }
 
         // Only activation moves the next placement.
-        source.activate(&candidate).expect("activate the candidate");
+        source
+            .activate(&candidate, Some(&activated))
+            .expect("activate the candidate");
         assert_eq!(
             source
                 .policy()
@@ -1568,8 +1671,8 @@ bindings:
         ] {
             assert!(source.publish(&invalid_policy).is_err(), "{invalid_policy}");
         }
-        match source.activate(&ContentHash::of(b"never published")) {
-            Err(FleetError::Invalid { rule }) => assert_eq!(rule, A08),
+        match source.activate(&ContentHash::of(b"never published"), Some(&hash)) {
+            Err(ActivationRefusal::Policy(FleetError::Invalid { rule })) => assert_eq!(rule, A08),
             other => panic!("expected an unpublished refusal, got {other:?}"),
         }
 
@@ -1594,8 +1697,8 @@ bindings:
     fn the_activation_record_is_an_owner_only_atomic_projection() {
         let root = tempfile::tempdir().expect("temporary state root");
         let source = FleetSource::at(root.path());
-        let hash = source.publish(&codex_first()).expect("publish");
-        let record = source.activate(&hash).expect("activate");
+        let hash = source.publish(&codex_first()).expect("publish").hash;
+        let record = source.activate(&hash, None).expect("activate").record;
         assert_eq!(record.schema_version, 1);
         assert_eq!(record.policy_hash, hash);
         assert_eq!(record.policy_schema_version, 1);
@@ -1727,5 +1830,72 @@ bindings:
             policy.routes_for(keys[0].as_str()).is_none(),
             "the leadership key is not resolvable from its text"
         );
+    }
+
+    #[test]
+    fn activation_is_fenced_on_the_policy_the_caller_read() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        let source = FleetSource::at(root.path());
+        let first = source.publish(&codex_first()).expect("publish");
+        assert!(first.created);
+        assert!(
+            !source.publish(&codex_first()).expect("republish").created,
+            "publishing the same bytes again writes nothing"
+        );
+        let second = source.publish(V1_CLAUDE_FIRST).expect("publish").hash;
+
+        assert!(matches!(
+            source.activate(&first.hash, Some(&second)),
+            Err(ActivationRefusal::Moved)
+        ));
+        let activated = source.activate(&first.hash, None).expect("activate");
+        assert!(activated.changed);
+        assert!(matches!(
+            source.activate(&second, None),
+            Err(ActivationRefusal::Moved)
+        ));
+        let record = std::fs::read(activation_path(root.path())).expect("record");
+
+        // Selecting what is already selected is the replay answer, whatever the
+        // caller last read, and it rewrites nothing.
+        let again = source
+            .activate(&first.hash, Some(&second))
+            .expect("already active");
+        assert!(!again.changed);
+        assert_eq!(again.record, activated.record);
+        assert_eq!(
+            std::fs::read(activation_path(root.path())).expect("record"),
+            record
+        );
+
+        let moved = source
+            .activate(&second, Some(&first.hash))
+            .expect("activate the second");
+        assert!(moved.changed);
+        assert_eq!(moved.record.policy_hash, second);
+    }
+
+    #[test]
+    fn the_status_names_the_selection_and_why_it_cannot_be_served() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        write_fleet(root.path(), V1_CLAUDE_FIRST);
+        let source = FleetSource::at(root.path());
+        let legacy = source.status();
+        assert!(!legacy.activation);
+        assert!(legacy.record.is_none());
+        assert!(legacy.active.is_some());
+        assert!(legacy.refusal.is_none());
+
+        let hash = activate(&source, &codex_first());
+        let active = source.status();
+        assert!(active.activation);
+        assert_eq!(active.record.expect("record").policy_hash, hash);
+        assert_eq!(active.active.expect("activated").hash(), &hash);
+
+        std::fs::remove_file(published(root.path(), &hash)).expect("remove artifact");
+        let blocked = source.status();
+        assert!(blocked.activation);
+        assert!(blocked.active.is_none(), "fleet.yml is not served instead");
+        assert!(blocked.refusal.is_some_and(|refusal| refusal.contains(A08)));
     }
 }

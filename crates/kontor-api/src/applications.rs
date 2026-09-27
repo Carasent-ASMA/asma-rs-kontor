@@ -2596,6 +2596,135 @@ pub struct CapacityConfigurationPreviewDto {
     pub preview_hash: ContentHash,
 }
 
+/// The Realm's fleet policy selection (ASMA-8280).
+///
+/// Exactly one source decides fleet routing: an activation record naming one
+/// published policy by content hash, or — when none exists — the unmigrated
+/// state-root `fleet.yml`. An activation that cannot be verified is reported
+/// here and refuses placement; it never falls back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetPolicyDto {
+    /// The Realm it governs.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Which source decides fleet routing.
+    pub selection: FleetPolicySelectionDto,
+    /// The activation record, when one exists and can be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<FleetActivationDto>,
+    /// SHA-256 of the policy bytes placement reads now, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub active_policy_hash: Option<ContentHash>,
+    /// The schema version of that policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_schema_version: Option<u32>,
+    /// Why the selected activation cannot be served, when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+}
+
+/// Which source decides a Realm's fleet routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FleetPolicySelectionDto {
+    /// An activation record selects one published policy.
+    Activation,
+    /// No activation record exists; the unmigrated `fleet.yml`, if any, decides.
+    FleetYml,
+}
+
+/// One activation record: the published policy placement reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetActivationDto {
+    /// SHA-256 of exactly the activated policy bytes.
+    #[schema(value_type = String)]
+    pub policy_hash: ContentHash,
+    /// The schema those bytes validate under.
+    pub policy_schema_version: u32,
+    /// When activation replaced the record.
+    pub activated_at: String,
+}
+
+/// One candidate fleet policy, as authored.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetPolicyPreviewRequest {
+    /// The exact YAML bytes of a schema_version 1 or 2 fleet policy.
+    pub document: String,
+}
+
+/// What a candidate policy is, before anything is written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetPolicyPreviewDto {
+    /// The Realm it was validated for.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// SHA-256 of exactly the validated bytes: the policy's identity.
+    #[schema(value_type = String)]
+    pub policy_hash: ContentHash,
+    /// The schema those bytes validate under.
+    pub schema_version: u32,
+    /// The hash the corresponding publish must name.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Publish one previewed policy as an immutable, content-addressed artifact.
+///
+/// Publication selects nothing: placement keeps reading the current selection
+/// until an activation names this policy.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetPolicyPublishRequest {
+    /// The exact YAML bytes that were previewed.
+    pub document: String,
+    /// The hash preview returned for these bytes.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// One published policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetPolicyPublishedDto {
+    /// The Realm it was published in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// SHA-256 of exactly the published bytes.
+    #[schema(value_type = String)]
+    pub policy_hash: ContentHash,
+    /// The schema those bytes validate under.
+    pub schema_version: u32,
+    /// Whether this call wrote the artifact or found it already published.
+    pub applied: AppliedDto,
+}
+
+/// Select one published policy for every later placement.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetPolicyActivateRequest {
+    /// The published policy to activate.
+    #[schema(value_type = String)]
+    pub policy_hash: ContentHash,
+    /// The policy the caller read as active; omit when none was.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub expected_active_policy_hash: Option<ContentHash>,
+}
+
+/// The activation one activate call left standing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetPolicyActivatedDto {
+    /// The Realm it governs.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The standing activation record.
+    pub activation: FleetActivationDto,
+    /// `created` when this call replaced the record, `unchanged` when the
+    /// policy was already active.
+    pub applied: AppliedDto,
+}
+
 /// One provider account's availability, as the realm currently reads it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct AccountAvailabilityDto {
@@ -7427,6 +7556,29 @@ pub trait ApplicationOperations: Send + Sync {
         request: &CapacityConfigurationRequest,
     ) -> Result<CapacityConfigurationDto, ApiError>;
 
+    /// The Realm's fleet policy selection.
+    fn fleet_policy_selection(&self) -> Result<FleetPolicyDto, ApiError>;
+
+    /// Validate one candidate fleet policy without writing anything.
+    fn preview_fleet_policy(
+        &self,
+        request: &FleetPolicyPreviewRequest,
+    ) -> Result<FleetPolicyPreviewDto, ApiError>;
+
+    /// Publish one previewed policy; this selects nothing.
+    async fn publish_fleet_policy(
+        &self,
+        key: &IdempotencyKey,
+        request: &FleetPolicyPublishRequest,
+    ) -> Result<FleetPolicyPublishedDto, ApiError>;
+
+    /// Activate one published policy under the expected current selection.
+    async fn activate_fleet_policy(
+        &self,
+        key: &IdempotencyKey,
+        request: &FleetPolicyActivateRequest,
+    ) -> Result<FleetPolicyActivatedDto, ApiError>;
+
     /// One project's admission picture.
     fn project_capacity(&self, project_id: ProjectId) -> Result<ProjectCapacityDto, ApiError>;
 
@@ -9903,6 +10055,80 @@ pub async fn apply_capacity_configuration(
         state
             .applications()
             .apply_capacity_configuration(&key, &request)
+            .await?,
+    ))
+}
+
+/// The Realm's fleet policy selection.
+#[utoipa::path(
+    get, path = "/v1/fleet/policy", tag = "applications",
+    responses((status = 200, body = FleetPolicyDto), (status = 401), (status = 403))
+)]
+pub async fn fleet_policy_selection(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<FleetPolicyDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(state.applications().fleet_policy_selection()?))
+}
+
+/// Validate one candidate fleet policy. Writes nothing.
+#[utoipa::path(
+    post, path = "/v1/fleet/policy:preview", tag = "applications",
+    request_body = FleetPolicyPreviewRequest,
+    responses((status = 200, body = FleetPolicyPreviewDto), (status = 400), (status = 401), (status = 403))
+)]
+pub async fn preview_fleet_policy(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Json(request): Json<FleetPolicyPreviewRequest>,
+) -> Result<Json<FleetPolicyPreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(state.applications().preview_fleet_policy(&request)?))
+}
+
+/// Publish one previewed fleet policy. Selects nothing.
+#[utoipa::path(
+    post, path = "/v1/fleet/policy:publish", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = FleetPolicyPublishRequest,
+    responses((status = 200, body = FleetPolicyPublishedDto), (status = 400), (status = 401), (status = 403), (status = 409))
+)]
+pub async fn publish_fleet_policy(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<FleetPolicyPublishRequest>,
+) -> Result<Json<FleetPolicyPublishedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .publish_fleet_policy(&key, &request)
+            .await?,
+    ))
+}
+
+/// Activate one published fleet policy under the expected current selection.
+#[utoipa::path(
+    post, path = "/v1/fleet/policy:activate", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = FleetPolicyActivateRequest,
+    responses((status = 200, body = FleetPolicyActivatedDto), (status = 400), (status = 401), (status = 403), (status = 409))
+)]
+pub async fn activate_fleet_policy(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<FleetPolicyActivateRequest>,
+) -> Result<Json<FleetPolicyActivatedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .activate_fleet_policy(&key, &request)
             .await?,
     ))
 }

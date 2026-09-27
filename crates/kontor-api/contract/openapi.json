@@ -561,6 +561,181 @@
         }
       }
     },
+    "/v1/fleet/policy": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "The Realm's fleet policy selection.",
+        "operationId": "fleet_policy_selection",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetPolicyDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/policy:activate": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Activate one published fleet policy under the expected current selection.",
+        "operationId": "activate_fleet_policy",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetPolicyActivateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetPolicyActivatedDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/policy:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Validate one candidate fleet policy. Writes nothing.",
+        "operationId": "preview_fleet_policy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetPolicyPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetPolicyPreviewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/policy:publish": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish one previewed fleet policy. Selects nothing.",
+        "operationId": "publish_fleet_policy",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetPolicyPublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetPolicyPublishedDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/health": {
       "get": {
         "tags": [
@@ -17784,6 +17959,228 @@
             "description": "The existing team envelope."
           }
         }
+      },
+      "FleetActivationDto": {
+        "type": "object",
+        "description": "One activation record: the published policy placement reads.",
+        "required": [
+          "policy_hash",
+          "policy_schema_version",
+          "activated_at"
+        ],
+        "properties": {
+          "activated_at": {
+            "type": "string",
+            "description": "When activation replaced the record."
+          },
+          "policy_hash": {
+            "type": "string",
+            "description": "SHA-256 of exactly the activated policy bytes."
+          },
+          "policy_schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The schema those bytes validate under.",
+            "minimum": 0
+          }
+        }
+      },
+      "FleetPolicyActivateRequest": {
+        "type": "object",
+        "description": "Select one published policy for every later placement.",
+        "required": [
+          "policy_hash"
+        ],
+        "properties": {
+          "expected_active_policy_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The policy the caller read as active; omit when none was."
+          },
+          "policy_hash": {
+            "type": "string",
+            "description": "The published policy to activate."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetPolicyActivatedDto": {
+        "type": "object",
+        "description": "The activation one activate call left standing.",
+        "required": [
+          "realm_id",
+          "activation",
+          "applied"
+        ],
+        "properties": {
+          "activation": {
+            "$ref": "#/components/schemas/FleetActivationDto",
+            "description": "The standing activation record."
+          },
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "`created` when this call replaced the record, `unchanged` when the\npolicy was already active."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it governs."
+          }
+        }
+      },
+      "FleetPolicyDto": {
+        "type": "object",
+        "description": "The Realm's fleet policy selection (ASMA-8280).\n\nExactly one source decides fleet routing: an activation record naming one\npublished policy by content hash, or — when none exists — the unmigrated\nstate-root `fleet.yml`. An activation that cannot be verified is reported\nhere and refuses placement; it never falls back.",
+        "required": [
+          "realm_id",
+          "selection"
+        ],
+        "properties": {
+          "activation": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetActivationDto",
+                "description": "The activation record, when one exists and can be read."
+              }
+            ]
+          },
+          "active_policy_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SHA-256 of the policy bytes placement reads now, when there is one."
+          },
+          "active_schema_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The schema version of that policy.",
+            "minimum": 0
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it governs."
+          },
+          "refusal": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the selected activation cannot be served, when it cannot."
+          },
+          "selection": {
+            "$ref": "#/components/schemas/FleetPolicySelectionDto",
+            "description": "Which source decides fleet routing."
+          }
+        }
+      },
+      "FleetPolicyPreviewDto": {
+        "type": "object",
+        "description": "What a candidate policy is, before anything is written.",
+        "required": [
+          "realm_id",
+          "policy_hash",
+          "schema_version",
+          "preview_hash"
+        ],
+        "properties": {
+          "policy_hash": {
+            "type": "string",
+            "description": "SHA-256 of exactly the validated bytes: the policy's identity."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the corresponding publish must name."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was validated for."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The schema those bytes validate under.",
+            "minimum": 0
+          }
+        }
+      },
+      "FleetPolicyPreviewRequest": {
+        "type": "object",
+        "description": "One candidate fleet policy, as authored.",
+        "required": [
+          "document"
+        ],
+        "properties": {
+          "document": {
+            "type": "string",
+            "description": "The exact YAML bytes of a schema_version 1 or 2 fleet policy."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetPolicyPublishRequest": {
+        "type": "object",
+        "description": "Publish one previewed policy as an immutable, content-addressed artifact.\n\nPublication selects nothing: placement keeps reading the current selection\nuntil an activation names this policy.",
+        "required": [
+          "document",
+          "preview_hash"
+        ],
+        "properties": {
+          "document": {
+            "type": "string",
+            "description": "The exact YAML bytes that were previewed."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash preview returned for these bytes."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetPolicyPublishedDto": {
+        "type": "object",
+        "description": "One published policy.",
+        "required": [
+          "realm_id",
+          "policy_hash",
+          "schema_version",
+          "applied"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call wrote the artifact or found it already published."
+          },
+          "policy_hash": {
+            "type": "string",
+            "description": "SHA-256 of exactly the published bytes."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was published in."
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The schema those bytes validate under.",
+            "minimum": 0
+          }
+        }
+      },
+      "FleetPolicySelectionDto": {
+        "type": "string",
+        "description": "Which source decides a Realm's fleet routing.",
+        "enum": [
+          "activation",
+          "fleet_yml"
+        ]
       },
       "GapDto": {
         "type": "object",

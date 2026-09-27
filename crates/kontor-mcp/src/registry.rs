@@ -5495,6 +5495,80 @@ pub static REGISTRY: &[ToolSpec] = &[
         ],
         about: "Apply a full capacity replacement under the expected revision.",
     },
+    // ---- Fleet policy: publication selects nothing; activation selects -----
+    //
+    // Realm-wide like capacity: the key is bound to a fingerprint of the logical
+    // operation, not carried by a project receipt. The policy text is authored
+    // in the project checkout; Kontor only validates, publishes and selects it.
+    ToolSpec {
+        name: "kontor_fleet_policy_get",
+        tier: CallerTier::Admin,
+        method: Method::Get,
+        path: "/v1/fleet/policy",
+        kind: OpKind::Read,
+        args: &[],
+        about: "Which fleet policy decides routing: the activation record and its hash, or the unmigrated fleet.yml.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_policy_preview",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/fleet/policy:preview",
+        kind: OpKind::Read,
+        args: &[req(
+            "document",
+            Place::Body,
+            ArgType::Text,
+            "The exact YAML bytes of a schema_version 1 or 2 fleet policy.",
+        )],
+        about: "Validate one fleet policy and return its content hash. Writes nothing.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_policy_publish",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/fleet/policy:publish",
+        kind: OpKind::Write,
+        args: &[
+            IDEMPOTENCY,
+            req(
+                "document",
+                Place::Body,
+                ArgType::Text,
+                "The exact YAML bytes that were previewed.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash preview returned for these bytes.",
+            ),
+        ],
+        about: "Publish one previewed fleet policy as an immutable artifact. Selects nothing.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_policy_activate",
+        tier: CallerTier::Admin,
+        method: Method::Post,
+        path: "/v1/fleet/policy:activate",
+        kind: OpKind::Write,
+        args: &[
+            IDEMPOTENCY,
+            req(
+                "policy_hash",
+                Place::Body,
+                ArgType::Text,
+                "The content hash of the published policy to activate.",
+            ),
+            opt(
+                "expected_active_policy_hash",
+                Place::Body,
+                ArgType::Text,
+                "The policy hash the caller read as active; omit when none was.",
+            ),
+        ],
+        about: "Select one published fleet policy for every later placement, under the expected current selection.",
+    },
     ToolSpec {
         name: "kontor_capacity_get",
         tier: CallerTier::Observer,

@@ -562,6 +562,22 @@ pub fn router(state: ApiState) -> Router {
                 "/v1/capacity/configuration:apply",
                 post(applications::apply_capacity_configuration),
             )
+            // The Realm's fleet policy (ASMA-8280). Publication and activation
+            // are separate boundaries: a published policy selects nothing until
+            // an activation names its content hash.
+            .route("/v1/fleet/policy", get(applications::fleet_policy_selection))
+            .route(
+                "/v1/fleet/policy:preview",
+                post(applications::preview_fleet_policy),
+            )
+            .route(
+                "/v1/fleet/policy:publish",
+                post(applications::publish_fleet_policy),
+            )
+            .route(
+                "/v1/fleet/policy:activate",
+                post(applications::activate_fleet_policy),
+            )
             .route(
                 "/v1/projects/{project_id}/capacity",
                 get(applications::project_capacity),

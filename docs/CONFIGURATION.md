@@ -23,6 +23,7 @@ system behaviour instead of instructions somebody has to remember.
 | `<state-root>/supervision.yml` | Optional seat supervision policy. Schema v1 is validation/classification only; schema v2 can explicitly enable resident bounded succession (see below) |
 | `<state-root>/quota-signals.yml` | Vendor exhaustion wording, applied to a seat's own refusal text (optional; see below) |
 | `<state-root>/fleet.yml` | Live model routing — domains, accounts, models, chains and seat bindings, read at every placement (optional; see below) |
+| `<state-root>/fleet-activation.json` | Generated: which published fleet policy placement reads, by content hash. Written only by the activate operation; while it exists, `fleet.yml` is not read (see below) |
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600` |
 | `<state-root>/endpoint.json` | Where the realm listens, when not on the default loopback port |
 | `<state-root>/provider-homes/` | One credential home per provider account — `CODEX_HOME` for Codex, `CLAUDE_CONFIG_DIR` for Claude |
@@ -539,6 +540,28 @@ explicit-route commands (bridge moves, `replace_seat` with a named route, and
 consultation seat recovery naming the frozen route) re-check that exact route
 against the catalog when they run. Automatic quota takeover walks the declared
 chain and is not affected.
+
+### Activated fleet policy (ASMA-8280)
+
+The policy both orchestration modes share is authored in the project checkout
+and handed to Kontor through four admin operations, which the CLI and MCP
+registry serve from the same route table:
+
+| Operation | Effect |
+| --- | --- |
+| `kontor_fleet_policy_get` | Which source decides routing (`activation` or `fleet_yml`), the activation record, the hash placement reads now, and why an activation cannot be served. |
+| `kontor_fleet_policy_preview` | Validates one document (schema_version 1 or 2) and returns its content hash. Writes nothing. |
+| `kontor_fleet_policy_publish` | Writes the previewed bytes, unchanged, to `fleet-history/<hash>.yml`. **Selects nothing.** |
+| `kontor_fleet_policy_activate` | Atomically replaces the owner-only `fleet-activation.json` with the named published hash, fenced on `expected_active_policy_hash`. |
+
+Once a record exists, placement reads exactly the artifact it names, and the
+record and artifact are both re-verified on every read: file rules, content
+hash and schema. Editing `fleet.yml`, a checkout, or publishing without
+activating has no effect. A record or artifact that fails verification refuses
+every placement that resolves a fleet binding, naming the failed check; it
+never falls back to `fleet.yml` or to template routing. Deleting the record
+returns the Realm to the unmigrated `fleet.yml` behaviour above. Rollback is
+activating a recorded hash.
 
 ## Provider quota signals
 

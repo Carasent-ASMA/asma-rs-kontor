@@ -11494,6 +11494,63 @@ impl SqliteStore {
         transaction.commit().map_err(backend)?;
         Ok(stored)
     }
+
+    /// Bind one realm-scoped key to the logical operation it names, before the
+    /// effect that operation has outside this database.
+    ///
+    /// For an operation whose state lives in the Realm state root — fleet
+    /// policy publication and activation — there is no row to write in the same
+    /// transaction, so the key is judged on its own: `Created` for a first use,
+    /// `Unchanged` for an exact replay, and a conflict for a key already bound
+    /// to anything else. The caller performs its idempotent effect after either
+    /// answer, so a replay whose first attempt died before the effect converges.
+    ///
+    /// # Errors
+    /// A conflict when the key is bound to a different operation or fingerprint.
+    pub fn bind_realm_operation(&self, binding: &IdempotencyBinding) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let bound: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT operation, fingerprint FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![binding.key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let applied = match bound {
+            Some((operation, fingerprint))
+                if operation == binding.operation
+                    && fingerprint == binding.fingerprint.as_str() =>
+            {
+                Applied::Unchanged
+            }
+            Some(_) => {
+                return Err(conflict(
+                    "idempotency key",
+                    "this key is already bound to a different operation",
+                ));
+            }
+            None => {
+                transaction
+                    .execute(
+                        "INSERT INTO realm_idempotency_bindings
+                             (idempotency_key, operation, fingerprint, bound_at)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            binding.key,
+                            binding.operation,
+                            binding.fingerprint.as_str(),
+                            text(binding.bound_at)
+                        ],
+                    )
+                    .map_err(backend)?;
+                Applied::Created
+            }
+        };
+        transaction.commit().map_err(backend)?;
+        Ok(applied)
+    }
 }
 
 // ---------------------------------------------------------------------------
