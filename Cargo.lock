@@ -3210,6 +3210,7 @@ dependencies = [
  "kontor-api",
  "kontor-context",
  "kontor-core",
+ "kontor-fleet",
  "kontor-jira",
  "kontor-mcp",
  "kontor-policy",
@@ -3247,6 +3248,16 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-stronghold",
  "tinyvec",
+]
+
+[[package]]
+name = "kontor-fleet"
+version = "0.2.1"
+dependencies = [
+ "kontor-core",
+ "serde",
+ "serde_yaml_ng",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

@@ -14639,19 +14639,9 @@ impl QuotaOutlook<'_> {
     }
 }
 
-/// The built-in family behind a selectable Paseo account alias.
-pub(crate) fn provider_family(provider: &str) -> &str {
-    for family in ["claude", "codex", "copilot", "opencode", "pi", "omp"] {
-        if provider == family
-            || provider
-                .strip_prefix(family)
-                .is_some_and(|suffix| suffix.starts_with('-'))
-        {
-            return family;
-        }
-    }
-    provider
-}
+/// The built-in family behind a selectable Paseo account alias; the fleet
+/// resolver's independence lookup reads the same one.
+pub(crate) use kontor_fleet::provider_family;
 
 /// Resolve an explicit provider alias to the one enabled account that owns it.
 ///
@@ -15105,22 +15095,8 @@ fn parse_runtime_model_route(
     Ok(rung)
 }
 
-pub(crate) fn parse_effort(effort: &str) -> kontor_core::DomainResult<EffortLevel> {
-    match effort {
-        "off" => Ok(EffortLevel::Off),
-        "low" => Ok(EffortLevel::Low),
-        "medium" => Ok(EffortLevel::Medium),
-        "high" => Ok(EffortLevel::High),
-        "xhigh" => Ok(EffortLevel::Xhigh),
-        "max" => Ok(EffortLevel::Max),
-        "ultra" => Ok(EffortLevel::Ultra),
-        "ultracode" => Ok(EffortLevel::Ultracode),
-        _ => Err(kontor_core::DomainError::invalid(
-            "ModelRung",
-            "effort is not in the runtime effort vocabulary",
-        )),
-    }
-}
+/// The runtime effort vocabulary, parsed once for requests and fleet policy.
+pub(crate) use kontor_fleet::parse_effort;
 
 fn validate_team_draft_routes(request: &TeamDraftRequest) -> kontor_core::DomainResult<()> {
     for slot in &request.slots {

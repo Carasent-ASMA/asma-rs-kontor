@@ -33,6 +33,9 @@ kontor-store = { path = "../kontor-store", version = "=0.2.1" }
 # same hand as the store and the adapters.
 kontor-profiles = { path = "../kontor-profiles", version = "=0.2.1" }
 kontor-teams = { path = "../kontor-teams", version = "=0.2.1" }
+# ASMA-8280: the one fleet policy parser and resolver. The daemon keeps only the
+# state-root half — reading, history and decision evidence.
+kontor-fleet = { path = "../kontor-fleet", version = "=0.2.1" }
 # KON-OP-06: the completion ticket-gate/closeout vocabulary and the mandatory
 # `NEEDS_HUMAN` payload are decided in `kontor-policy`; this crate composes them
 # and never re-implements a rule. Same split as `kontor-scheduler` above.
