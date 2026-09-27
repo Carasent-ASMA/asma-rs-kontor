@@ -76,12 +76,13 @@ use kontor_api::applications::{
     CoreTeamApplyRequest, CoreTeamDto, CoreTeamLaunchIntentSupersedeRequest,
     CoreTeamLaunchIntentSupersessionDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
     CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
+    CoreTeamRouteCredentialDto, CoreTeamRouteEffectsDto, CoreTeamRouteOccupantDto,
     CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest,
-    CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto, CoreTeamSeatClaimPreviewDto,
-    CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto, CoreTeamSeatPersonaDto,
-    CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto, CoreTeamSeatTitleConflictDto,
-    DeliberationStepDto, EnsureQuickSessionRequest, HostedSeatMessageDto,
-    HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeAdvisorRequest,
+    CoreTeamRouteSuccessionReadbackDto, CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto,
+    CoreTeamSeatClaimPreviewDto, CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto,
+    CoreTeamSeatPersonaDto, CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto,
+    CoreTeamSeatTitleConflictDto, DeliberationStepDto, EnsureQuickSessionRequest,
+    HostedSeatMessageDto, HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeAdvisorRequest,
     InvokeConsultationRequest, NeedsHumanDto, PartialAdmissionSeatDto, ProfileApplyRequest,
     ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto,
     PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
@@ -185,24 +186,26 @@ use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
-    CommandRepository, CompletionWrite, CredentialReference, CredentialReferenceKind,
+    CommandRepository, CompletionWrite, CoreTeamRouteSuccessionCommit,
+    CoreTeamRouteSuccessionEffects, CredentialReference, CredentialReferenceKind,
     HostedSeatLaunchIntentState, HostedSeatLaunchIntentSupersession, IntakeOutcome,
     IntakeRepository, LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection,
     MigrationObjectKind, MiniProject, MiniProjectTeamDefinitionSnapshot,
     MiniProjectTopologySnapshot, NativePlacement, NewAccountProfile, NewAdaptiveAdmissionState,
     NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
-    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt, NewGateEvaluation,
-    NewLocalCommand, NewMiniProject, NewNativeContainerBinding, NewProviderQuotaState,
-    NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTeamDefinitionMigration,
-    NewTeamDefinitionMigrationTarget, NewTeamRun, OpenQuestionRepository, ProjectRepository,
-    ProjectTeamDefinitionDefault, ProjectTopologyDefault, ProviderUsageObservation,
-    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
-    SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
-    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationProfileRevision,
-    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
-    StoredEpicRoster, StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredPromotion,
-    StoredQuickSession, StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest,
-    TaskWorkflow, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt,
+    NewCoreTeamRouteSuccessionClaim, NewGateEvaluation, NewLocalCommand, NewMiniProject,
+    NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode,
+    NewSourceEvent, NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, NewTeamRun,
+    OpenQuestionRepository, ProjectRepository, ProjectTeamDefinitionDefault,
+    ProjectTopologyDefault, ProviderUsageObservation, RealmRepository, RepositoryError,
+    RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition, SpecRepository,
+    StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
+    StoredCompletionWakeDelivery, StoredConsultationProfileRevision, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
+    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
+    StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest, TaskWorkflow,
+    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
     TicketLink, TicketRepository, TopologyContainerRecovery, TopologyContainerRecoveryDisposition,
     TopologyRepository, WorkflowRepository,
@@ -8428,6 +8431,200 @@ impl Services {
                 "the occupancy and the launch intent name different natives for one generation",
             ),
         }
+    }
+
+    /// The non-secret subject one generation-scoped seat grant is bound to.
+    ///
+    /// A seat credential is derived from the operator secret, so neither it nor
+    /// a digest of it is recorded anywhere. The subject is the public pair the
+    /// grant is scoped to — this logical seat and this occupancy generation —
+    /// and the digest is taken over exactly that pair. A reader can prove which
+    /// generation's grant the successor derived without the record ever having
+    /// held anything secret, and a predecessor's grant cannot be copied through
+    /// it because the predecessor's generation is a different subject.
+    fn credential_subject(
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+    ) -> CoreTeamRouteCredentialDto {
+        let mut subject = Vec::new();
+        subject.extend_from_slice(b"kontor-core-team-seat-grant-subject-v1\0");
+        subject.extend_from_slice(seat_binding_id.to_string().as_bytes());
+        subject.push(0);
+        subject.extend_from_slice(occupancy_generation.to_string().as_bytes());
+        CoreTeamRouteCredentialDto {
+            generation: occupancy_generation,
+            subject_seat_binding_id: seat_binding_id,
+            subject_digest: ContentHash::of(&subject),
+        }
+    }
+
+    /// The complete evidence one succession produced, as one document.
+    fn core_team_route_readback(
+        seat_binding_id: SeatBindingId,
+        predecessor: &StoredHostedTopologySeat,
+        predecessor_occupancy: u64,
+        successor: &StoredHostedTopologySeat,
+        successor_occupancy: u64,
+        retired_at: Timestamp,
+        effects: CoreTeamRouteEffectsDto,
+    ) -> CoreTeamRouteSuccessionReadbackDto {
+        let occupant = |seat: &StoredHostedTopologySeat, occupancy: u64| CoreTeamRouteOccupantDto {
+            native_id: seat.native_identity.native_id.clone(),
+            runtime_kind: seat.native_identity.runtime_kind.as_str().to_owned(),
+            host: seat.native_identity.host.as_str().to_owned(),
+            generation: seat.native_identity.generation,
+            provider_session_id: seat.provider_session_id.clone(),
+            occupancy_generation: occupancy,
+            model_route: runtime_model_route_dto(&seat.model_rung),
+        };
+        CoreTeamRouteSuccessionReadbackDto {
+            seat_binding_id,
+            predecessor: occupant(predecessor, predecessor_occupancy),
+            successor: occupant(successor, successor_occupancy),
+            credential: Self::credential_subject(seat_binding_id, successor_occupancy),
+            retired_at: retired_at.to_string(),
+            effects,
+        }
+    }
+
+    /// Land the trailing effects a committed succession still owes.
+    ///
+    /// The route transition commits with its evidence, but the launch intent
+    /// installation and the SeatBinding observation follow it. A process lost
+    /// between them leaves a succession whose route is durable and whose
+    /// pending effects are not, and reporting that as complete would be a
+    /// misleading result built from a partial one.
+    ///
+    /// Reconciliation is attempted only while the recorded successor is still
+    /// the seat's active occupant. Once a later succession has moved the seat
+    /// on, these effects can no longer be landed for *this* command, and the
+    /// record keeps saying so rather than claiming otherwise.
+    async fn reconcile_succession_effects(
+        &self,
+        project_id: ProjectId,
+        recorded: &kontor_core::repository::StoredCoreTeamRouteSuccession,
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let Some(successor_native_id) = recorded.successor_native_id.clone() else {
+            return Ok(());
+        };
+        let Some(active) = state
+            .with_store(|store| {
+                store.get_hosted_topology_seat(project_id, recorded.seat_binding_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(());
+        };
+        if active.native_identity.native_id != successor_native_id {
+            return Ok(());
+        }
+        if !recorded.effects.launch_intent_installed {
+            state
+                .with_store(|store| {
+                    store.install_hosted_seat_launch_intent(
+                        project_id,
+                        recorded.seat_binding_id,
+                        recorded.successor_occupancy_generation,
+                        &successor_native_id,
+                        active.observed_at,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        if !recorded.effects.seat_binding_observed {
+            state
+                .with_store(|store| {
+                    store.observe_seat_binding(
+                        project_id,
+                        recorded.seat_binding_id,
+                        &SeatLivenessObservation {
+                            attached_at: Some(active.observed_at),
+                            runtime_reported: Some(kontor_core::state::ObservedRunState::Running),
+                            ..SeatLivenessObservation::default()
+                        },
+                        active.observed_at,
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
+        state
+            .with_store(|store| {
+                store.mark_core_team_route_succession_effects(
+                    &recorded.idempotency_key,
+                    CoreTeamRouteSuccessionEffects {
+                        launch_intent_installed: true,
+                        seat_binding_observed: true,
+                    },
+                )
+            })
+            .map_err(|error| self.refuse(&error))?;
+        Ok(())
+    }
+
+    /// Answer one recorded succession from its durable evidence.
+    fn recorded_succession_outcome(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        recorded: &kontor_core::repository::StoredCoreTeamRouteSuccession,
+        receipt_id: CommandReceiptId,
+        revision: AggregateRevision,
+        roster: &FrozenRoster,
+    ) -> Result<CoreTeamRouteOutcomeDto, ApiError> {
+        let state = self.state()?;
+        let readback: CoreTeamRouteSuccessionReadbackDto = recorded
+            .readback
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the recorded Core Team succession readback could not be decoded",
+                )
+            })?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the recorded Core Team succession has no committed readback",
+                )
+            })?;
+        // Verified, not merely decoded. The readback and the ledger's own
+        // columns are written by different layers, so their agreement is
+        // evidence rather than a restatement.
+        if readback.seat_binding_id != recorded.seat_binding_id
+            || readback.predecessor.native_id != recorded.predecessor_native_id
+            || Some(&readback.successor.native_id) != recorded.successor_native_id.as_ref()
+            || readback.successor.occupancy_generation != recorded.successor_occupancy_generation
+            || readback.credential.generation != recorded.successor_credential_generation
+        {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the recorded Core Team succession readback does not match its own ledger row",
+            ));
+        }
+        let successor_native_id = recorded.successor_native_id.clone().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::Unavailable,
+                "the recorded Core Team succession has no committed successor",
+            )
+        })?;
+        Ok(CoreTeamRouteOutcomeDto {
+            core_team: self.epic_core_team_dto(project_id, epic_id, roster)?,
+            seat_binding_id: recorded.seat_binding_id,
+            predecessor_native_id: recorded.predecessor_native_id.clone(),
+            successor_native_id,
+            readback: Some(readback),
+            readback_hash: recorded.readback_hash.clone(),
+            receipt: MutationReceiptDto {
+                realm_id: state.realm_id(),
+                receipt_id: receipt_id.to_string(),
+                applied: AppliedDto::Unchanged,
+                revision,
+                snapshot_cursor: self.cursor()?,
+            },
+        })
     }
 
     async fn core_team_route_plan(
@@ -24867,6 +25064,86 @@ impl ApplicationOperations for Services {
     ) -> Result<CoreTeamRouteOutcomeDto, ApiError> {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
+        // Derived from the request rather than the plan, so the succession
+        // ledger can be consulted *before* re-planning. A completed succession
+        // has moved the seat the plan would fence on, so a replay that planned
+        // first would refuse its own recorded effect.
+        let intent = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "core_team_route_correction",
+            "project": project_id.to_string(),
+            "epic": epic_id.to_string(),
+            "seat_binding": request.seat_binding_id.to_string(),
+            "predecessor": request.expected_native_id.as_str(),
+            "preview": request.preview_hash.as_str(),
+        }))?;
+        let target = AggregateRef::MiniProject {
+            mini_project_id: epic_id,
+        };
+        let recorded = state
+            .with_store(|store| store.get_core_team_route_succession(key))
+            .map_err(|error| self.refuse(&error))?;
+        if let Some(recorded) = recorded {
+            if recorded.intent_hash != *intent.hash()
+                || recorded.project_id != project_id
+                || recorded.mini_project_id != epic_id
+                || recorded.seat_binding_id != request.seat_binding_id
+            {
+                return Err(self.deny(
+                    ApiErrorCode::IdempotencyConflict,
+                    "the idempotency key already claimed a different Core Team succession",
+                ));
+            }
+            if recorded.route_committed_at.is_some() {
+                // The transition committed. Its trailing effects may not have:
+                // a route commit alone is not the whole succession, and
+                // answering as though it were is the misleading complete result
+                // this reconciliation exists to prevent.
+                let epic = self.epic_row(project_id, epic_id)?;
+                let roster = self.frozen_roster(project_id, epic_id)?;
+                if !recorded.is_complete() {
+                    self.reconcile_succession_effects(project_id, &recorded)
+                        .await?;
+                }
+                let receipt_id = self.record(
+                    key,
+                    project_id,
+                    CommandKind::CorrectCoreTeamRoute,
+                    target,
+                    epic.revision,
+                    &intent,
+                )?;
+                state
+                    .with_store(|store| {
+                        store.bind_core_team_route_succession_receipt(
+                            key,
+                            intent.hash(),
+                            receipt_id,
+                            kontor_api::now(),
+                        )
+                    })
+                    .map_err(|error| self.refuse(&error))?;
+                let settled = state
+                    .with_store(|store| store.get_core_team_route_succession(key))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "the recorded Core Team succession disappeared mid-reconciliation",
+                        )
+                    })?;
+                return self.recorded_succession_outcome(
+                    project_id,
+                    epic_id,
+                    &settled,
+                    receipt_id,
+                    epic.revision,
+                    &roster,
+                );
+            }
+            // Claimed and not committed: this key still owns the succession and
+            // resumes it below. Nothing else may.
+        }
         let plan = self
             .core_team_route_plan(project_id, epic_id, &request.correction())
             .await?;
@@ -24876,21 +25153,11 @@ impl ApplicationOperations for Services {
                 "the Core Team route correction no longer matches its preview",
             ));
         }
-        let intent = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "core_team_route_correction",
-            "project": project_id.to_string(),
-            "epic": epic_id.to_string(),
-            "seat_binding": plan.binding.id.to_string(),
-            "predecessor": plan.predecessor.native_identity.native_id.as_str(),
-            "preview": request.preview_hash.as_str(),
-        }))?;
-        let target = AggregateRef::MiniProject {
-            mini_project_id: epic_id,
-        };
         let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
 
         let replaced_native = plan.needs_native_replacement();
+        let mut succession_readback: Option<(CoreTeamRouteSuccessionReadbackDto, ContentHash)> =
+            None;
         let successor = if let Some(successor) = plan.successor.clone() {
             successor
         } else if !replaced_native {
@@ -24903,6 +25170,54 @@ impl ApplicationOperations for Services {
                     "the hosted seat runtime is not configured in this daemon",
                 )
             })?;
+            // Exclusivity, taken before the retire and the launch.
+            //
+            // The launch is the duplicable effect: two callers holding two
+            // fresh idempotency keys would each create a native and the seat
+            // would end with two owners. Serialising on the native-activity
+            // lock does not prevent that — both proceed in turn — and a
+            // compare-and-swap after the launch is too late, because the second
+            // native already exists. The claim's uniqueness index is what makes
+            // exactly one caller proceed; the loser refuses having launched
+            // nothing (ASMA-8187).
+            let predecessor_occupancy = state
+                .with_store(|store| {
+                    store.hosted_topology_seat_occupancy_generation(project_id, plan.binding.id)
+                })
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::StaleBinding,
+                        "the hosted-seat predecessor has no active occupancy generation",
+                    )
+                })?;
+            let claimed_successor_occupancy =
+                predecessor_occupancy.checked_add(1).ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the hosted-seat occupancy generation overflowed",
+                    )
+                })?;
+            state
+                .with_store(|store| {
+                    store.claim_core_team_route_succession(&NewCoreTeamRouteSuccessionClaim {
+                        idempotency_key: key.clone(),
+                        intent_hash: intent.hash().clone(),
+                        project_id,
+                        mini_project_id: epic_id,
+                        seat_binding_id: plan.binding.id,
+                        predecessor_native_id: plan.predecessor.native_identity.native_id.clone(),
+                        predecessor_generation: plan.predecessor.native_identity.generation,
+                        predecessor_occupancy_generation: predecessor_occupancy,
+                        successor_occupancy_generation: claimed_successor_occupancy,
+                        // The successor derives its own generation-scoped grant.
+                        // The predecessor's is neither copied nor widened; it is
+                        // not recorded here at all.
+                        successor_credential_generation: claimed_successor_occupancy,
+                        claimed_at: kontor_api::now(),
+                    })
+                })
+                .map_err(|error| self.refuse(&error))?;
             // The same closed classification the plan used, re-asked here
             // because the answer may have changed since it was previewed. A
             // predecessor the runtime proves gone has nothing left to archive,
@@ -25137,6 +25452,30 @@ impl ApplicationOperations for Services {
                 provider_session_id: outcome.provider_session_id,
                 observed_at: outcome.observed_at,
             };
+            // Assembled before the transition, so the bytes that prove what
+            // this command did commit together with the command doing it.
+            let readback = Self::core_team_route_readback(
+                plan.binding.id,
+                &plan.predecessor,
+                predecessor_occupancy,
+                &successor,
+                successor_occupancy_generation,
+                retired_at,
+                CoreTeamRouteEffectsDto {
+                    launch_intent_installed: false,
+                    seat_binding_observed: false,
+                },
+            );
+            let readback_value = serde_json::to_value(&readback).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the Core Team succession readback could not be encoded",
+                )
+            })?;
+            let readback_document = self.intent(&serde_json::json!({
+                "schema_version": 1,
+                "readback": readback_value,
+            }))?;
             state
                 .with_store(|store| {
                     store.replace_hosted_topology_seat_route(
@@ -25144,6 +25483,12 @@ impl ApplicationOperations for Services {
                         &successor,
                         retired_at,
                         retirement_reason,
+                        Some(&CoreTeamRouteSuccessionCommit {
+                            idempotency_key: key.clone(),
+                            readback: readback_value.clone(),
+                            readback_hash: readback_document.hash().clone(),
+                            route_committed_at: kontor_api::now(),
+                        }),
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
@@ -25172,6 +25517,20 @@ impl ApplicationOperations for Services {
                     )
                 })
                 .map_err(|error| self.refuse(&error))?;
+            // Both trailing effects have now landed, so the succession is
+            // complete and a replay may report it as such.
+            state
+                .with_store(|store| {
+                    store.mark_core_team_route_succession_effects(
+                        key,
+                        CoreTeamRouteSuccessionEffects {
+                            launch_intent_installed: true,
+                            seat_binding_observed: true,
+                        },
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+            succession_readback = Some((readback, readback_document.hash().clone()));
             successor
         };
         let receipt_id = self.record(
@@ -25182,12 +25541,35 @@ impl ApplicationOperations for Services {
             plan.epic.revision,
             &intent,
         )?;
+        if succession_readback.is_some() {
+            state
+                .with_store(|store| {
+                    store.bind_core_team_route_succession_receipt(
+                        key,
+                        intent.hash(),
+                        receipt_id,
+                        kontor_api::now(),
+                    )
+                })
+                .map_err(|error| self.refuse(&error))?;
+        }
         self.try_drain_completion_wake(project_id, epic_id).await;
         Ok(CoreTeamRouteOutcomeDto {
             core_team: self.epic_core_team_dto(project_id, epic_id, &plan.roster)?,
             seat_binding_id: plan.binding.id,
             predecessor_native_id: plan.predecessor.native_identity.native_id,
             successor_native_id: successor.native_identity.native_id,
+            readback: succession_readback.as_ref().map(|(readback, _)| {
+                let mut answered = readback.clone();
+                // Answered with both effects latched, which is the state the
+                // ledger now records.
+                answered.effects = CoreTeamRouteEffectsDto {
+                    launch_intent_installed: true,
+                    seat_binding_observed: true,
+                };
+                answered
+            }),
+            readback_hash: succession_readback.as_ref().map(|(_, hash)| hash.clone()),
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
                 receipt_id: receipt_id.to_string(),
@@ -25318,6 +25700,9 @@ impl ApplicationOperations for Services {
                             &successor,
                             successor.observed_at,
                             "authorized existing-session Core Team seat claim",
+                            // A seat claim adopts a running native rather than
+                            // producing a new occupancy, so it records none.
+                            None,
                         )
                     })
                     .map_err(|error| self.refuse(&error))?;

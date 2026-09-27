@@ -52,13 +52,14 @@ use kontor_core::repository::{
     AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AdoptionWrite, AgentRun,
     AttestationWrite, AvailabilityOverride, CalendarRepository, CapacityObservation,
     CapacityRepository, CommandRepository, CompletionWrite, ConnectorSpecSelector,
-    CredentialReference, CredentialReferenceKind, GateEvaluation, GateRejectionRecovery,
-    GateRejectionRoute, GateRouteOrigin, HistoryGapKind, HistoryGapMarker,
-    HostedSeatLaunchIntentState, HostedSeatLaunchIntentSupersession, IntakeCreatedWork,
-    IntakeDecisionRecord, IntakeOutcome, IntakeRepository, MiniProject,
-    MiniProjectTopologySnapshot, NewAbandonReceipt, NewAccountProfile, NewAdaptiveAdmissionState,
-    NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
-    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt, NewGateEvaluation,
+    CoreTeamRouteSuccessionCommit, CoreTeamRouteSuccessionEffects, CredentialReference,
+    CredentialReferenceKind, GateEvaluation, GateRejectionRecovery, GateRejectionRoute,
+    GateRouteOrigin, HistoryGapKind, HistoryGapMarker, HostedSeatLaunchIntentState,
+    HostedSeatLaunchIntentSupersession, IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome,
+    IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
+    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
+    NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
+    NewConsultationRecoveryAttempt, NewCoreTeamRouteSuccessionClaim, NewGateEvaluation,
     NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation, NewLocalCommand,
     NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState,
     NewProviderUsageObservation, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
@@ -72,13 +73,13 @@ use kontor_core::repository::{
     StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
     StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
     StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedSeatLaunchIntent,
-    StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection, StoredPromotion,
-    StoredQuickSession, StoredRemediationProposal, StoredRetiredEvaluatorAttestation,
-    StoredTeamRunAdmissionAdoption, StoredTopologyContainerRecovery, SuccessionRepository, Task,
-    TaskInspection, TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure,
-    TicketLink, TicketRepository, TopologyRepository, WorkflowRepository,
-    validate_dependency_graph,
+    StoredCoreTeamRevision, StoredCoreTeamRouteSuccession, StoredEpicCompletion, StoredEpicRoster,
+    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection,
+    StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    StoredRetiredEvaluatorAttestation, StoredTeamRunAdmissionAdoption,
+    StoredTopologyContainerRecovery, SuccessionRepository, Task, TaskInspection,
+    TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
+    TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
 };
 use kontor_core::repository::{
     LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection, LiveNativeSubject,
@@ -5353,12 +5354,17 @@ impl SqliteStore {
 
     /// Atomically move the exact predecessor to history and make its successor
     /// the active native filler of the same logical SeatBinding.
+    /// `succession`, when supplied, is committed in this same transaction. The
+    /// transition and the evidence that reconstructs it therefore commit
+    /// together or not at all, which is what removes the window a process lost
+    /// between them used to leave open (ASMA-8187).
     pub fn replace_hosted_topology_seat_route(
         &self,
         predecessor: &StoredHostedTopologySeat,
         successor: &StoredHostedTopologySeat,
         retired_at: Timestamp,
         reason: &str,
+        succession: Option<&CoreTeamRouteSuccessionCommit>,
     ) -> RepositoryResult<Applied> {
         if predecessor.project_id != successor.project_id
             || predecessor.seat_binding_id != successor.seat_binding_id
@@ -5463,8 +5469,320 @@ impl SqliteStore {
                 ],
             )
             .map_err(backend)?;
+        if let Some(succession) = succession {
+            let readback = serde_json::to_string(&succession.readback).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!("a succession readback could not be encoded: {error}"),
+                }
+            })?;
+            // The claim must already exist, name this exact seat, and not yet
+            // be committed. Anything else is a caller committing an outcome
+            // onto a claim that is not the one it took.
+            let updated = transaction
+                .execute(
+                    "UPDATE core_team_route_successions
+                        SET successor_native_id = ?2, successor_generation = ?3,
+                            readback = ?4, readback_hash = ?5, route_committed_at = ?6
+                      WHERE idempotency_key = ?1
+                        AND project_id = ?7
+                        AND seat_binding_id = ?8
+                        AND predecessor_native_id = ?9
+                        AND route_committed_at IS NULL",
+                    params![
+                        succession.idempotency_key.as_str(),
+                        successor.native_identity.native_id.as_str(),
+                        i64::try_from(successor.native_identity.generation).unwrap_or(i64::MAX),
+                        readback,
+                        succession.readback_hash.as_str(),
+                        text(succession.route_committed_at),
+                        predecessor.project_id.to_string(),
+                        predecessor.seat_binding_id.to_string(),
+                        predecessor.native_identity.native_id.as_str(),
+                    ],
+                )
+                .map_err(backend)?;
+            if updated != 1 {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the claimed succession is already committed or names another seat",
+                });
+            }
+        }
         transaction.commit().map_err(backend)?;
         Ok(Applied::Updated)
+    }
+
+    /// Take exclusive ownership of one Core Team route succession.
+    ///
+    /// This runs *before* the retire and the launch, and its uniqueness index is
+    /// the exclusivity itself. A second caller arriving with a second fresh
+    /// idempotency key for the same (project, seat, predecessor occupancy)
+    /// cannot insert, so it never reaches an effect: the seat cannot acquire two
+    /// natives claiming one logical owner.
+    ///
+    /// Re-claiming under the same key and the same intent is `Unchanged`, which
+    /// is what lets an exact replay continue. The same key with a different
+    /// intent, or a different key against a live claim, is a conflict.
+    pub fn claim_core_team_route_succession(
+        &self,
+        claim: &NewCoreTeamRouteSuccessionClaim,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let existing: Option<(String, String, i64)> = transaction
+            .query_row(
+                "SELECT idempotency_key, intent_hash, predecessor_occupancy_generation
+                   FROM core_team_route_successions
+                  WHERE project_id = ?1 AND seat_binding_id = ?2
+                    AND predecessor_occupancy_generation = ?3",
+                params![
+                    claim.project_id.to_string(),
+                    claim.seat_binding_id.to_string(),
+                    i64::try_from(claim.predecessor_occupancy_generation).unwrap_or(i64::MAX),
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((key, intent_hash, _)) = existing {
+            transaction.rollback().map_err(backend)?;
+            if key != claim.idempotency_key.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "another idempotency key already owns this seat's succession",
+                });
+            }
+            if intent_hash != claim.intent_hash.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the idempotency key already claimed a different succession",
+                });
+            }
+            return Ok(Applied::Unchanged);
+        }
+        transaction
+            .execute(
+                "INSERT INTO core_team_route_successions
+                     (idempotency_key, intent_hash, project_id, mini_project_id,
+                      seat_binding_id, predecessor_native_id, predecessor_generation,
+                      predecessor_occupancy_generation, successor_occupancy_generation,
+                      successor_credential_generation, claimed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    claim.idempotency_key.as_str(),
+                    claim.intent_hash.as_str(),
+                    claim.project_id.to_string(),
+                    claim.mini_project_id.to_string(),
+                    claim.seat_binding_id.to_string(),
+                    claim.predecessor_native_id.as_str(),
+                    i64::try_from(claim.predecessor_generation).unwrap_or(i64::MAX),
+                    i64::try_from(claim.predecessor_occupancy_generation).unwrap_or(i64::MAX),
+                    i64::try_from(claim.successor_occupancy_generation).unwrap_or(i64::MAX),
+                    i64::try_from(claim.successor_credential_generation).unwrap_or(i64::MAX),
+                    text(claim.claimed_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(Applied::Created)
+    }
+
+    /// Latch one committed succession's trailing effects.
+    ///
+    /// Forward-only and idempotent: marking an effect that has already landed
+    /// changes nothing, and nothing here can unmark one. A succession is
+    /// complete only once both have latched.
+    pub fn mark_core_team_route_succession_effects(
+        &self,
+        key: &IdempotencyKey,
+        effects: CoreTeamRouteSuccessionEffects,
+    ) -> RepositoryResult<Applied> {
+        let updated = self
+            .connection
+            .execute(
+                "UPDATE core_team_route_successions
+                    SET launch_intent_installed =
+                            MAX(launch_intent_installed, ?2),
+                        seat_binding_observed =
+                            MAX(seat_binding_observed, ?3)
+                  WHERE idempotency_key = ?1 AND route_committed_at IS NOT NULL",
+                params![
+                    key.as_str(),
+                    i64::from(effects.launch_intent_installed),
+                    i64::from(effects.seat_binding_observed),
+                ],
+            )
+            .map_err(backend)?;
+        if updated == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "core team route succession",
+            });
+        }
+        Ok(Applied::Updated)
+    }
+
+    /// Bind one recorded succession to the receipt that completed it.
+    ///
+    /// One-time and exact on key *and* intent: a receipt is evidence for one
+    /// specific command, and binding it to another would make the ledger assert
+    /// something it never saw. Re-binding the identical receipt is unchanged,
+    /// which is what lets a lost acknowledgement finish.
+    pub fn bind_core_team_route_succession_receipt(
+        &self,
+        key: &IdempotencyKey,
+        intent_hash: &ContentHash,
+        receipt_id: CommandReceiptId,
+        receipted_at: Timestamp,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let row: Option<(String, Option<String>)> = transaction
+            .query_row(
+                "SELECT intent_hash, receipt_id FROM core_team_route_successions
+                  WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((recorded_hash, bound)) = row else {
+            return Err(RepositoryError::NotFound {
+                subject: "core team route succession",
+            });
+        };
+        if recorded_hash != intent_hash.as_str() {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the receipt names a different succession intent",
+            });
+        }
+        if let Some(bound) = bound {
+            transaction.rollback().map_err(backend)?;
+            return if bound == receipt_id.to_string() {
+                Ok(Applied::Unchanged)
+            } else {
+                Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the succession is already bound to another receipt",
+                })
+            };
+        }
+        transaction
+            .execute(
+                "UPDATE core_team_route_successions
+                    SET receipt_id = ?2, receipted_at = ?3
+                  WHERE idempotency_key = ?1",
+                params![key.as_str(), receipt_id.to_string(), text(receipted_at)],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(Applied::Updated)
+    }
+
+    /// Read one recorded succession by the key a replay arrives holding.
+    pub fn get_core_team_route_succession(
+        &self,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<StoredCoreTeamRouteSuccession>> {
+        self.read_core_team_route_succession("WHERE idempotency_key = ?1", params![key.as_str()])
+    }
+
+    /// Read the exclusive owner of one seat's succession, if it has one.
+    pub fn core_team_route_succession_owner(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        predecessor_occupancy_generation: u64,
+    ) -> RepositoryResult<Option<StoredCoreTeamRouteSuccession>> {
+        self.read_core_team_route_succession(
+            "WHERE project_id = ?1 AND seat_binding_id = ?2
+               AND predecessor_occupancy_generation = ?3",
+            params![
+                project_id.to_string(),
+                seat_binding_id.to_string(),
+                i64::try_from(predecessor_occupancy_generation).unwrap_or(i64::MAX),
+            ],
+        )
+    }
+
+    fn read_core_team_route_succession(
+        &self,
+        predicate: &str,
+        parameters: &[&dyn rusqlite::ToSql],
+    ) -> RepositoryResult<Option<StoredCoreTeamRouteSuccession>> {
+        let Some(row) = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT idempotency_key, intent_hash, project_id, mini_project_id,
+                            seat_binding_id, predecessor_native_id, predecessor_generation,
+                            predecessor_occupancy_generation, successor_occupancy_generation,
+                            successor_credential_generation, claimed_at, successor_native_id,
+                            successor_generation, readback, readback_hash, route_committed_at,
+                            launch_intent_installed, seat_binding_observed, receipt_id,
+                            receipted_at
+                       FROM core_team_route_successions {predicate}"
+                ),
+                parameters,
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, i64>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, Option<i64>>(12)?,
+                        row.get::<_, Option<String>>(13)?,
+                        row.get::<_, Option<String>>(14)?,
+                        row.get::<_, Option<String>>(15)?,
+                        row.get::<_, i64>(16)?,
+                        row.get::<_, i64>(17)?,
+                        row.get::<_, Option<String>>(18)?,
+                        row.get::<_, Option<String>>(19)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(StoredCoreTeamRouteSuccession {
+            idempotency_key: IdempotencyKey::parse(&row.0)?,
+            intent_hash: ContentHash::parse(&row.1)?,
+            project_id: ProjectId::parse(&row.2)?,
+            mini_project_id: MiniProjectId::parse(&row.3)?,
+            seat_binding_id: SeatBindingId::parse(&row.4)?,
+            predecessor_native_id: ExternalId::parse(&row.5)?,
+            predecessor_generation: u64::try_from(row.6).unwrap_or_default(),
+            predecessor_occupancy_generation: u64::try_from(row.7).unwrap_or_default(),
+            successor_occupancy_generation: u64::try_from(row.8).unwrap_or_default(),
+            successor_credential_generation: u64::try_from(row.9).unwrap_or_default(),
+            claimed_at: read_timestamp(&row.10)?,
+            successor_native_id: row.11.as_deref().map(ExternalId::parse).transpose()?,
+            successor_generation: row.12.map(|value| u64::try_from(value).unwrap_or_default()),
+            readback: row
+                .13
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|error| RepositoryError::Backend {
+                    detail: format!("a succession readback could not be decoded: {error}"),
+                })?,
+            readback_hash: row.14.as_deref().map(ContentHash::parse).transpose()?,
+            route_committed_at: row.15.as_deref().map(read_timestamp).transpose()?,
+            effects: CoreTeamRouteSuccessionEffects {
+                launch_intent_installed: row.16 != 0,
+                seat_binding_observed: row.17 != 0,
+            },
+            receipt_id: row.18.as_deref().map(CommandReceiptId::parse).transpose()?,
+            receipted_at: row.19.as_deref().map(read_timestamp).transpose()?,
+        }))
     }
 
     /// Read the one advice artifact a single-seat Advisor run produced.

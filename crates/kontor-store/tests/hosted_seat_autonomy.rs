@@ -372,6 +372,8 @@ fn a_changed_default_applies_to_the_successor_and_not_the_predecessor() {
             &successor,
             at("2026-09-17T02:04:00Z"),
             "authorized Core Team provider/model route correction",
+            // This suite proves frozen autonomy, not the succession ledger.
+            None,
         )
         .expect("the route is replaced");
 

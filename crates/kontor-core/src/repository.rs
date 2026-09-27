@@ -634,6 +634,133 @@ pub struct NewConsultationMaterializationReroute {
     pub rerouted_at: Timestamp,
 }
 
+/// One caller's exclusive claim on a Core Team route succession.
+///
+/// Recorded *before* the retire and the launch, because the launch is the
+/// duplicable effect: two callers holding two fresh idempotency keys would each
+/// create a native and the seat would end with two owners. The claim's
+/// uniqueness per (project, seat, predecessor occupancy) is what makes exactly
+/// one of them proceed, and the loser refuses having launched nothing
+/// (ASMA-8187).
+///
+/// Nothing here is a credential. `successor_credential_generation` is a number
+/// identifying which generation-scoped grant the successor will derive, so the
+/// predecessor's authority is neither copied nor widened — it is not recorded
+/// at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewCoreTeamRouteSuccessionClaim {
+    /// The apply key a replay arrives holding.
+    pub idempotency_key: IdempotencyKey,
+    /// Digest of the exact pre-effect intent this claim was admitted under.
+    pub intent_hash: ContentHash,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Epic whose control plane hosts the seat.
+    pub mini_project_id: MiniProjectId,
+    /// The logical seat the succession preserves.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact predecessor native this succession retires.
+    pub predecessor_native_id: ExternalId,
+    /// Runtime generation of that predecessor.
+    pub predecessor_generation: u64,
+    /// Occupancy generation the predecessor holds.
+    pub predecessor_occupancy_generation: u64,
+    /// Occupancy generation this command will install.
+    pub successor_occupancy_generation: u64,
+    /// Credential generation the successor derives its own grant under.
+    pub successor_credential_generation: u64,
+    /// Claim instant.
+    pub claimed_at: Timestamp,
+}
+
+/// The committed outcome of one claimed succession.
+///
+/// Written in the same transaction as the history append and the active-row
+/// replacement, so the transition and the evidence that reconstructs it commit
+/// together or not at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreTeamRouteSuccessionCommit {
+    /// The claim this commits.
+    pub idempotency_key: IdempotencyKey,
+    /// The complete final readback, persisted rather than recomputed.
+    pub readback: serde_json::Value,
+    /// Digest of that readback.
+    pub readback_hash: ContentHash,
+    /// Commit instant.
+    pub route_committed_at: Timestamp,
+}
+
+/// Which of a committed succession's trailing effects have landed.
+///
+/// A route commit alone is not the whole succession: the launch intent still
+/// has to be installed and the SeatBinding observed. Recording them separately
+/// is what stops a replay reporting a complete result whose pending effects
+/// never happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreTeamRouteSuccessionEffects {
+    /// The launch intent has been reconciled against the native it produced.
+    pub launch_intent_installed: bool,
+    /// The SeatBinding has been observed against the successor.
+    pub seat_binding_observed: bool,
+}
+
+/// One recorded Core Team route succession, at whatever stage it has reached.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCoreTeamRouteSuccession {
+    /// The apply key this succession was admitted under.
+    pub idempotency_key: IdempotencyKey,
+    /// Digest of the exact pre-effect intent.
+    pub intent_hash: ContentHash,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// Epic whose control plane hosts the seat.
+    pub mini_project_id: MiniProjectId,
+    /// The preserved logical seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact predecessor this succession retires.
+    pub predecessor_native_id: ExternalId,
+    /// Runtime generation of that predecessor.
+    pub predecessor_generation: u64,
+    /// Occupancy generation the predecessor held.
+    pub predecessor_occupancy_generation: u64,
+    /// Occupancy generation this command installs.
+    pub successor_occupancy_generation: u64,
+    /// Credential generation the successor derives under.
+    pub successor_credential_generation: u64,
+    /// Claim instant.
+    pub claimed_at: Timestamp,
+    /// Exact installed successor, once the transition committed.
+    pub successor_native_id: Option<ExternalId>,
+    /// Runtime generation of that successor.
+    pub successor_generation: Option<u64>,
+    /// The complete final readback this command produced.
+    pub readback: Option<serde_json::Value>,
+    /// Digest of that readback.
+    pub readback_hash: Option<ContentHash>,
+    /// Commit instant of the route transition.
+    pub route_committed_at: Option<Timestamp>,
+    /// Which trailing effects have landed.
+    pub effects: CoreTeamRouteSuccessionEffects,
+    /// The receipt this succession was finally bound to.
+    pub receipt_id: Option<CommandReceiptId>,
+    /// Instant the receipt binding completed.
+    pub receipted_at: Option<Timestamp>,
+}
+
+impl StoredCoreTeamRouteSuccession {
+    /// Whether every effect this succession owes has landed.
+    ///
+    /// A committed route with a pending launch intent or an unobserved
+    /// SeatBinding is *not* complete, and answering a replay as though it were
+    /// is the misleading result this distinction exists to prevent.
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        self.route_committed_at.is_some()
+            && self.effects.launch_intent_installed
+            && self.effects.seat_binding_observed
+    }
+}
+
 /// Exact runtime readback filling a persistent non-delivery topology seat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredHostedTopologySeat {

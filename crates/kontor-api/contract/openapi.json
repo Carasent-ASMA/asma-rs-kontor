@@ -16198,6 +16198,98 @@
         },
         "additionalProperties": false
       },
+      "CoreTeamRouteCredentialDto": {
+        "type": "object",
+        "description": "The successor's credential binding, as non-secret identity only.\n\nA seat credential is bearer material derived from the operator secret, so\nneither it nor any digest *of it* appears here or anywhere else. What is\nrecorded is the subject the grant is scoped to — the logical seat and the\noccupancy generation — and a digest over exactly that public pair. A reader\ncan therefore prove which generation-scoped grant the successor derived\nwithout the record ever having held anything secret (ASMA-8187).",
+        "required": [
+          "generation",
+          "subject_seat_binding_id",
+          "subject_digest"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The generation this successor's grant is scoped to.",
+            "minimum": 0
+          },
+          "subject_digest": {
+            "type": "string",
+            "description": "Digest over the non-secret (seat, generation) subject pair. Never over\ncredential material."
+          },
+          "subject_seat_binding_id": {
+            "type": "string",
+            "description": "The logical seat the grant is scoped to."
+          }
+        }
+      },
+      "CoreTeamRouteEffectsDto": {
+        "type": "object",
+        "description": "Which trailing effects of a committed succession have landed.",
+        "required": [
+          "launch_intent_installed",
+          "seat_binding_observed"
+        ],
+        "properties": {
+          "launch_intent_installed": {
+            "type": "boolean",
+            "description": "The launch intent has been reconciled against the native it produced."
+          },
+          "seat_binding_observed": {
+            "type": "boolean",
+            "description": "The SeatBinding has been observed against the successor."
+          }
+        }
+      },
+      "CoreTeamRouteOccupantDto": {
+        "type": "object",
+        "description": "One exact native occupant of a logical Core Team seat.",
+        "required": [
+          "native_id",
+          "runtime_kind",
+          "host",
+          "generation",
+          "occupancy_generation",
+          "model_route"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Runtime generation of this native.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "Host it was placed on."
+          },
+          "model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "Frozen provider/model/effort route it runs on."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "Exact native session identity."
+          },
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Which occupancy of the logical seat this native is.",
+            "minimum": 0
+          },
+          "provider_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Provider conversation, when the runtime exposes one."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "Runtime that holds it."
+          }
+        }
+      },
       "CoreTeamRouteOutcomeDto": {
         "type": "object",
         "description": "Completed in-place route correction with exact identity readback.",
@@ -16216,6 +16308,24 @@
           "predecessor_native_id": {
             "type": "string",
             "description": "Archived predecessor native identity."
+          },
+          "readback": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CoreTeamRouteSuccessionReadbackDto",
+                "description": "The complete durable readback this succession produced.\n\nPresent for every succession that replaced a native, including an exact\nreplay of one: the bytes come from the succession ledger rather than\nfrom the seat's current state. An unchanged-route correction replaced\nnothing and carries none."
+              }
+            ]
+          },
+          "readback_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Digest of that readback."
           },
           "receipt": {
             "$ref": "#/components/schemas/MutationReceiptDto",
@@ -16327,6 +16437,44 @@
           }
         },
         "additionalProperties": false
+      },
+      "CoreTeamRouteSuccessionReadbackDto": {
+        "type": "object",
+        "description": "The complete durable evidence one Core Team succession produced.\n\nPersisted in the same transaction as the route transition and answered with\nverbatim thereafter. Recomputing it would describe the seat's *current*\noccupant, which is precisely the wrong answer to \"what did this command do\"\nonce a later succession has moved the seat on.",
+        "required": [
+          "seat_binding_id",
+          "predecessor",
+          "successor",
+          "credential",
+          "retired_at",
+          "effects"
+        ],
+        "properties": {
+          "credential": {
+            "$ref": "#/components/schemas/CoreTeamRouteCredentialDto",
+            "description": "The successor's generation-scoped credential subject, never its value."
+          },
+          "effects": {
+            "$ref": "#/components/schemas/CoreTeamRouteEffectsDto",
+            "description": "Which trailing effects had landed when this readback was answered."
+          },
+          "predecessor": {
+            "$ref": "#/components/schemas/CoreTeamRouteOccupantDto",
+            "description": "Exact archived predecessor."
+          },
+          "retired_at": {
+            "type": "string",
+            "description": "Instant the predecessor was retired."
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The preserved logical seat."
+          },
+          "successor": {
+            "$ref": "#/components/schemas/CoreTeamRouteOccupantDto",
+            "description": "Exact installed successor."
+          }
+        }
       },
       "CoreTeamSeatClaimApplyRequest": {
         "type": "object",

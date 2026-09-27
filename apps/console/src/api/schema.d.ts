@@ -5647,12 +5647,69 @@ export interface components {
             /** @description Logical SeatBinding that must be preserved. */
             seat_binding_id: string;
         };
+        /**
+         * @description The successor's credential binding, as non-secret identity only.
+         *
+         *     A seat credential is bearer material derived from the operator secret, so
+         *     neither it nor any digest *of it* appears here or anywhere else. What is
+         *     recorded is the subject the grant is scoped to — the logical seat and the
+         *     occupancy generation — and a digest over exactly that public pair. A reader
+         *     can therefore prove which generation-scoped grant the successor derived
+         *     without the record ever having held anything secret (ASMA-8187).
+         */
+        CoreTeamRouteCredentialDto: {
+            /**
+             * Format: int64
+             * @description The generation this successor's grant is scoped to.
+             */
+            generation: number;
+            /**
+             * @description Digest over the non-secret (seat, generation) subject pair. Never over
+             *     credential material.
+             */
+            subject_digest: string;
+            /** @description The logical seat the grant is scoped to. */
+            subject_seat_binding_id: string;
+        };
+        /** @description Which trailing effects of a committed succession have landed. */
+        CoreTeamRouteEffectsDto: {
+            /** @description The launch intent has been reconciled against the native it produced. */
+            launch_intent_installed: boolean;
+            /** @description The SeatBinding has been observed against the successor. */
+            seat_binding_observed: boolean;
+        };
+        /** @description One exact native occupant of a logical Core Team seat. */
+        CoreTeamRouteOccupantDto: {
+            /**
+             * Format: int64
+             * @description Runtime generation of this native.
+             */
+            generation: number;
+            /** @description Host it was placed on. */
+            host: string;
+            /** @description Frozen provider/model/effort route it runs on. */
+            model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            /** @description Exact native session identity. */
+            native_id: string;
+            /**
+             * Format: int64
+             * @description Which occupancy of the logical seat this native is.
+             */
+            occupancy_generation: number;
+            /** @description Provider conversation, when the runtime exposes one. */
+            provider_session_id?: string | null;
+            /** @description Runtime that holds it. */
+            runtime_kind: string;
+        };
         /** @description Completed in-place route correction with exact identity readback. */
         CoreTeamRouteOutcomeDto: {
             /** @description Core Team projection after correction. */
             core_team: components["schemas"]["CoreTeamDto"];
             /** @description Archived predecessor native identity. */
             predecessor_native_id: string;
+            readback?: null | components["schemas"]["CoreTeamRouteSuccessionReadbackDto"];
+            /** @description Digest of that readback. */
+            readback_hash?: string | null;
             /** @description Audited mutation receipt. */
             receipt: components["schemas"]["MutationReceiptDto"];
             /** @description Preserved logical SeatBinding. */
@@ -5704,6 +5761,28 @@ export interface components {
             expected_revision: number;
             /** @description Logical SeatBinding that must be preserved. */
             seat_binding_id: string;
+        };
+        /**
+         * @description The complete durable evidence one Core Team succession produced.
+         *
+         *     Persisted in the same transaction as the route transition and answered with
+         *     verbatim thereafter. Recomputing it would describe the seat's *current*
+         *     occupant, which is precisely the wrong answer to "what did this command do"
+         *     once a later succession has moved the seat on.
+         */
+        CoreTeamRouteSuccessionReadbackDto: {
+            /** @description The successor's generation-scoped credential subject, never its value. */
+            credential: components["schemas"]["CoreTeamRouteCredentialDto"];
+            /** @description Which trailing effects had landed when this readback was answered. */
+            effects: components["schemas"]["CoreTeamRouteEffectsDto"];
+            /** @description Exact archived predecessor. */
+            predecessor: components["schemas"]["CoreTeamRouteOccupantDto"];
+            /** @description Instant the predecessor was retired. */
+            retired_at: string;
+            /** @description The preserved logical seat. */
+            seat_binding_id: string;
+            /** @description Exact installed successor. */
+            successor: components["schemas"]["CoreTeamRouteOccupantDto"];
         };
         /** @description Apply one still-current existing-session Core Team claim. */
         CoreTeamSeatClaimApplyRequest: {

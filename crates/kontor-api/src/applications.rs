@@ -1045,6 +1045,81 @@ impl CoreTeamRouteApplyRequest {
     }
 }
 
+/// One exact native occupant of a logical Core Team seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteOccupantDto {
+    /// Exact native session identity.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+    /// Runtime that holds it.
+    pub runtime_kind: String,
+    /// Host it was placed on.
+    pub host: String,
+    /// Runtime generation of this native.
+    pub generation: u64,
+    /// Provider conversation, when the runtime exposes one.
+    #[schema(value_type = Option<String>)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<ExternalId>,
+    /// Which occupancy of the logical seat this native is.
+    pub occupancy_generation: u64,
+    /// Frozen provider/model/effort route it runs on.
+    pub model_route: RuntimeModelRouteRequest,
+}
+
+/// The successor's credential binding, as non-secret identity only.
+///
+/// A seat credential is bearer material derived from the operator secret, so
+/// neither it nor any digest *of it* appears here or anywhere else. What is
+/// recorded is the subject the grant is scoped to — the logical seat and the
+/// occupancy generation — and a digest over exactly that public pair. A reader
+/// can therefore prove which generation-scoped grant the successor derived
+/// without the record ever having held anything secret (ASMA-8187).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteCredentialDto {
+    /// The generation this successor's grant is scoped to.
+    pub generation: u64,
+    /// The logical seat the grant is scoped to.
+    #[schema(value_type = String)]
+    pub subject_seat_binding_id: SeatBindingId,
+    /// Digest over the non-secret (seat, generation) subject pair. Never over
+    /// credential material.
+    #[schema(value_type = String)]
+    pub subject_digest: ContentHash,
+}
+
+/// Which trailing effects of a committed succession have landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteEffectsDto {
+    /// The launch intent has been reconciled against the native it produced.
+    pub launch_intent_installed: bool,
+    /// The SeatBinding has been observed against the successor.
+    pub seat_binding_observed: bool,
+}
+
+/// The complete durable evidence one Core Team succession produced.
+///
+/// Persisted in the same transaction as the route transition and answered with
+/// verbatim thereafter. Recomputing it would describe the seat's *current*
+/// occupant, which is precisely the wrong answer to "what did this command do"
+/// once a later succession has moved the seat on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CoreTeamRouteSuccessionReadbackDto {
+    /// The preserved logical seat.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// Exact archived predecessor.
+    pub predecessor: CoreTeamRouteOccupantDto,
+    /// Exact installed successor.
+    pub successor: CoreTeamRouteOccupantDto,
+    /// The successor's generation-scoped credential subject, never its value.
+    pub credential: CoreTeamRouteCredentialDto,
+    /// Instant the predecessor was retired.
+    pub retired_at: String,
+    /// Which trailing effects had landed when this readback was answered.
+    pub effects: CoreTeamRouteEffectsDto,
+}
+
 /// Completed in-place route correction with exact identity readback.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CoreTeamRouteOutcomeDto {
@@ -1059,6 +1134,18 @@ pub struct CoreTeamRouteOutcomeDto {
     /// Active successor native identity; equal to predecessor for an unchanged route.
     #[schema(value_type = String)]
     pub successor_native_id: ExternalId,
+    /// The complete durable readback this succession produced.
+    ///
+    /// Present for every succession that replaced a native, including an exact
+    /// replay of one: the bytes come from the succession ledger rather than
+    /// from the seat's current state. An unchanged-route correction replaced
+    /// nothing and carries none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readback: Option<CoreTeamRouteSuccessionReadbackDto>,
+    /// Digest of that readback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub readback_hash: Option<ContentHash>,
     /// Audited mutation receipt.
     pub receipt: MutationReceiptDto,
 }

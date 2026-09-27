@@ -49193,6 +49193,8 @@ async fn advance_and_remediate_judge_the_key_before_the_revision() {
                 &lsa_successor,
                 at("2026-08-18T09:01:00Z"),
                 "test the remediation authority generation fence",
+                // Staged directly; no succession is claimed for it.
+                None,
             )
         })
         .expect("the LSA occupancy is replaced");

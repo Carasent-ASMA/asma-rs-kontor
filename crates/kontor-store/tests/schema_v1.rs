@@ -67,6 +67,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "advisor_advice_artifacts",
     "context_packs",
     "core_team_revisions",
+    "core_team_route_successions",
     // Schema v32 (KON-OP-06): published Completion Profile revisions, one durable
     // completion run per epic, and the TPM wake outbox.
     "completion_profile_revisions",
@@ -756,7 +757,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v118 records bounded runtime-message delivery proof steps.
     // v119 makes publication attestations immutable, append-only evidence
     // (ASMA-8102); both guards must survive migration and reopen.
-    assert_eq!(SCHEMA_VERSION, 119);
+    // v120 gives one Core Team route succession an exclusive per-seat owner
+    // claimed before its first duplicable effect, and a durable readback plus
+    // pending-effect record so a replay converges instead of re-planning
+    // against a seat that has moved (ASMA-8187).
+    assert_eq!(SCHEMA_VERSION, 120);
 }
 
 #[test]
@@ -2094,6 +2099,7 @@ fn the_deployed_op03_v31_lineage_converges_without_losing_its_receipts() {
     let connection = raw(&directory);
     for table in [
         "core_team_revisions",
+        "core_team_route_successions",
         "quick_sessions",
         "quick_session_promotions",
         "epic_rosters",

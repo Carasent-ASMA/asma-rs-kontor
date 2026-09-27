@@ -49,13 +49,29 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 12;
+pub const EXPORT_SCHEMA_VERSION: u32 = 13;
 
 /// The database generation that introduced the launch-intent supersession ledger.
 const LAUNCH_INTENT_SUPERSESSION_SCHEMA_VERSION: i64 = 109;
 
 /// The export generation that first carried it.
 const LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION: u32 = 11;
+
+/// The database generation that introduced the Core Team route succession ledger.
+const CORE_TEAM_ROUTE_SUCCESSION_SCHEMA_VERSION: i64 = 120;
+
+/// The export generation that first carried it.
+///
+/// Named for the same reason as its neighbours: adding a generation must not
+/// silently reclassify an older document as unable to prove what it does carry,
+/// and must not let a newer database export through a generation that cannot
+/// represent its succession ledger. Without this the receipt and readback a
+/// succession is reconstructed from would be dropped by a round trip, and the
+/// idempotency they provide would be silently lost (ASMA-8187).
+const CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION: u32 = 13;
+
+/// The record array introduced in generation 13.
+const CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS: [&str; 1] = ["core_team_route_successions"];
 
 /// The record array introduced in generation 11.
 const LAUNCH_INTENT_SUPERSESSION_RECORD_FIELDS: [&str; 1] =
@@ -496,6 +512,20 @@ impl KontorExportV1 {
         {
             return Err(BackupError::Verification {
                 detail: "the legacy export generation carries launch-intent supersessions it did not define",
+            });
+        }
+        if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION
+            && !self.records.core_team_route_successions.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries Core Team route successions it did not define",
+            });
+        }
+        if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION
+            && self.database_schema_version >= CORE_TEAM_ROUTE_SUCCESSION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove Core Team route succession completeness",
             });
         }
         if self.schema_version < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION
@@ -1015,6 +1045,25 @@ impl KontorExportV1 {
                     detail: "the export has no records object",
                 })?;
             for field in TEAM_RUN_ADMISSION_ADOPTION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        // A document written before generation 13 carries no succession array,
+        // and its absence is not a malformed document — it is a document from
+        // before the ledger existed. Back-filling it empty is what lets that
+        // older generation still parse; the completeness guards above are what
+        // stop an older generation claiming to represent a database that could
+        // store one.
+        if found < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS {
                 records
                     .entry(field.to_owned())
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
@@ -1836,6 +1885,28 @@ exported_tables! {
         agent_run_id: Option<String>,
         reviewer_principal: Option<String>,
         policy_evaluation_id: Option<String>,
+    }
+    core_team_route_successions: CoreTeamRouteSuccessionsRow from "core_team_route_successions" key(idempotency_key) {
+        idempotency_key: String,
+        intent_hash: String,
+        project_id: String,
+        mini_project_id: String,
+        seat_binding_id: String,
+        predecessor_native_id: String,
+        predecessor_generation: i64,
+        predecessor_occupancy_generation: i64,
+        successor_occupancy_generation: i64,
+        successor_credential_generation: i64,
+        claimed_at: String,
+        successor_native_id: Option<String>,
+        successor_generation: Option<i64>,
+        readback: Option<String>,
+        readback_hash: Option<String>,
+        route_committed_at: Option<String>,
+        launch_intent_installed: i64,
+        seat_binding_observed: i64,
+        receipt_id: Option<String>,
+        receipted_at: Option<String>,
     }
     hosted_seat_launch_intent_supersessions: HostedSeatLaunchIntentSupersessionsRow from "hosted_seat_launch_intent_supersessions" key(idempotency_key) {
         idempotency_key: String,
