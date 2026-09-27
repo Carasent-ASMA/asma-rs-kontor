@@ -1,24 +1,35 @@
-//! Live fleet model routing: read, validate, flatten and reload `fleet.yml`.
+//! Live fleet model routing: read, validate, flatten and reload `fleet.yml`,
+//! or serve the one activated fleet policy.
 //!
 //! The model route of a seat used to be frozen into a template version and then
 //! copied into every team run that started from it. This module replaces that
-//! for the seats a live `fleet.yml` binds: an operator edits one file in the
-//! Realm state root and the next placement reads it, with no rebuild, restart or
-//! republish.
+//! for the seats a live fleet binds, with no rebuild, restart or republish.
 //!
 //! Parsing, validation, flattening, key construction and vendor lookup are
-//! [`kontor_fleet`], the one implementation that can also be read without the
-//! daemon. This module owns only what touches the Realm state root: the file
-//! security checks, the last-valid state, the history copies, the status
-//! projection and the decision receipts.
+//! [`kontor_fleet`], the one implementation shared with direct-mode
+//! orchestration. This module owns only what touches the Realm state root: the
+//! file security checks, the last-valid state, the history copies, activation,
+//! the status projection and the decision receipts.
+//!
+//! Two selections exist, and the activation record decides which one applies:
+//!
+//! - **No `fleet-activation.json`:** the unmigrated ASMA-8255 behaviour, byte
+//!   for byte. An operator edits `fleet.yml`, the next placement reads it, an
+//!   invalid edit keeps the last valid snapshot, and a missing file means
+//!   legacy template routing.
+//! - **A `fleet-activation.json`:** the generated record names one published,
+//!   immutable `fleet-history/<policy-content-hash>.yml`, and placement reads
+//!   exactly that. `fleet.yml`, any checkout and any unactivated publication
+//!   have no effect. A record or artifact that cannot be verified refuses
+//!   placement; it never falls back to `fleet.yml` or to template routing.
 
 use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
-use kontor_core::id::{Timestamp, format_utc_timestamp};
+use kontor_core::id::{ContentHash, Timestamp, format_utc_timestamp};
 use kontor_core::spec::ModelRung;
 use kontor_fleet::MAX_FILE_BYTES;
 use kontor_fleet::rule::F04;
@@ -30,7 +41,8 @@ pub(crate) use kontor_fleet::{FleetRoute, advisor_key, committee_key, independen
 /// The fleet configuration file name inside a Realm state root.
 pub(crate) const FLEET_FILE: &str = "fleet.yml";
 
-/// One immutable copy of every accepted fleet configuration.
+/// One immutable copy of every accepted fleet configuration, and every
+/// published fleet policy, named by its content hash.
 pub(crate) const FLEET_HISTORY_DIR: &str = "fleet-history";
 
 /// One JSON-lines decision log per team run.
@@ -39,22 +51,108 @@ pub(crate) const FLEET_DECISIONS_DIR: &str = "fleet-decisions";
 /// Whether the last edit was accepted, and why not when it was not.
 pub(crate) const FLEET_STATUS_FILE: &str = "fleet-status.json";
 
+/// The generated record naming the activated fleet policy.
+pub(crate) const FLEET_ACTIVATION_FILE: &str = "fleet-activation.json";
+
+/// Largest activation record this build reads, in bytes.
+pub(crate) const MAX_ACTIVATION_BYTES: u64 = 4 * 1024;
+
+/// The only activation record format this build reads.
+const ACTIVATION_SCHEMA_VERSION: u32 = 1;
+
 const F01: &str = "fleet.yml must be a regular file, not a symlink";
 const F02: &str = "fleet.yml must not be writable by group or others";
 const F03: &str = "fleet.yml must be owned by the state root's owner";
 const F05: &str = "fleet.yml changed while it was being read";
 const F06: &str = "fleet.yml is not UTF-8";
 
+const P01: &str = "a published fleet policy must be a regular file, not a symlink";
+const P02: &str = "a published fleet policy must not be writable by group or others";
+const P03: &str = "a published fleet policy must be owned by the state root's owner";
+const P04: &str = "a published fleet policy exceeds 256 KiB";
+const P05: &str = "a published fleet policy changed while it was being read";
+const P06: &str = "a published fleet policy is not UTF-8";
+const P07: &str = "a published fleet policy does not hash to its content address";
+
+const A01: &str = "fleet-activation.json must be a regular file, not a symlink";
+const A02: &str = "fleet-activation.json must not be writable by group or others";
+const A03: &str = "fleet-activation.json must be owned by the state root's owner";
+const A04: &str = "fleet-activation.json exceeds 4 KiB";
+const A05: &str = "fleet-activation.json changed while it was being read";
+const A06: &str = "fleet-activation.json is not UTF-8";
+const A07: &str = "fleet-activation.json is not a schema_version 1 activation record";
+const A08: &str = "the activated fleet policy is not published";
+const A09: &str = "the activated fleet policy's schema_version differs from its activation record";
+
+/// The refusals one guarded read names, in the order the checks run.
+struct Guard {
+    symlink: &'static str,
+    writable: &'static str,
+    owner: &'static str,
+    oversized: &'static str,
+    swapped: &'static str,
+    utf8: &'static str,
+    limit: u64,
+}
+
+const FLEET_GUARD: Guard = Guard {
+    symlink: F01,
+    writable: F02,
+    owner: F03,
+    oversized: F04,
+    swapped: F05,
+    utf8: F06,
+    limit: MAX_FILE_BYTES,
+};
+
+const POLICY_GUARD: Guard = Guard {
+    symlink: P01,
+    writable: P02,
+    owner: P03,
+    oversized: P04,
+    swapped: P05,
+    utf8: P06,
+    limit: MAX_FILE_BYTES,
+};
+
+const ACTIVATION_GUARD: Guard = Guard {
+    symlink: A01,
+    writable: A02,
+    owner: A03,
+    oversized: A04,
+    swapped: A05,
+    utf8: A06,
+    limit: MAX_ACTIVATION_BYTES,
+};
+
 /// The rungs one delivery seat may walk, and the fleet binding they came from.
 ///
-/// `fleet` is `Some` exactly when the rungs came from the live `fleet.yml`
-/// snapshot rather than the frozen template chain: it carries that snapshot and
-/// the binding key so an admitted placement can be recorded against the exact
+/// `fleet` is `Some` exactly when the rungs came from the live fleet snapshot
+/// rather than the frozen template chain: it carries that snapshot and the
+/// binding key so an admitted placement can be recorded against the exact
 /// version that authorised it.
 #[derive(Debug)]
 pub(crate) struct DeclaredRungs {
     pub(crate) rungs: Vec<ModelRung>,
     pub(crate) fleet: Option<(Arc<FleetSnapshot>, String)>,
+}
+
+/// The generated activation record: which published policy placement reads.
+///
+/// A runtime projection, never authoring input. It names the policy by content
+/// hash and carries the schema needed to verify that artifact; the artifact
+/// itself is the immutable `fleet-history/<policy_hash>.yml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FleetActivation {
+    /// The format of this record.
+    pub(crate) schema_version: u32,
+    /// SHA-256 of exactly the activated policy bytes.
+    pub(crate) policy_hash: ContentHash,
+    /// The schema those bytes validate under.
+    pub(crate) policy_schema_version: u32,
+    /// When activation replaced the record.
+    pub(crate) activated_at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,12 +174,24 @@ impl Stamp {
     }
 }
 
+/// What the last read of an activation record concluded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ActivationOutcome {
+    Active {
+        hash: ContentHash,
+        activated_at: String,
+    },
+    Blocked(String),
+}
+
 #[derive(Debug, Default)]
 struct Cache {
     stamp: Option<Stamp>,
     good: Option<Arc<FleetSnapshot>>,
     last_error: Option<String>,
     loaded_at: Option<String>,
+    /// `Some` exactly while an activation record exists.
+    activation: Option<ActivationOutcome>,
 }
 
 /// One placement decision, written to the decision log and the `info` log.
@@ -108,13 +218,16 @@ struct StatusFile<'a> {
     loaded_at: Option<&'a str>,
     last_error: Option<&'a str>,
     checked_at: String,
+    /// Written only while an activation record selects the policy, so the
+    /// unmigrated status file keeps its exact shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection: Option<&'static str>,
 }
 
 /// The live, stamp-tracked fleet configuration for one Realm.
 ///
 /// One process holds one of these per Realm, on [`crate::applications::Services`].
-/// It never watches the file; every placement asks it for the current snapshot,
-/// and the file is re-parsed only when its stamp changed.
+/// It never watches a file; every placement asks it for the current snapshot.
 #[derive(Debug)]
 pub struct FleetSource {
     state_root: PathBuf,
@@ -130,65 +243,133 @@ impl FleetSource {
         }
     }
 
-    /// The current valid snapshot, or `None` when no valid file is present.
+    /// The current valid snapshot, or `None` when there is none to read.
     ///
-    /// A missing file clears the cache and means "legacy routing". A changed
-    /// file is re-read; an invalid edit keeps the last valid snapshot and is
-    /// reported in `fleet-status.json`.
+    /// Without an activation record this is the unmigrated behaviour: a
+    /// missing file clears the cache and means "legacy routing", a changed file
+    /// is re-read, and an invalid edit keeps the last valid snapshot and is
+    /// reported in `fleet-status.json`. With one, it is the activated policy,
+    /// and `None` when that policy cannot be verified. `None` only narrows a
+    /// route check to the compiled catalog: resolving a seat binding must use
+    /// [`Self::policy`], which refuses instead of falling back.
     pub fn current(&self) -> Option<Arc<FleetSnapshot>> {
-        let mut cache = self
-            .cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let path = self.state_root.join(FLEET_FILE);
-        let metadata = match std::fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let was_tracking =
-                    cache.stamp.is_some() || cache.good.is_some() || cache.last_error.is_some();
-                cache.stamp = None;
-                cache.good = None;
-                cache.last_error = None;
-                cache.loaded_at = None;
-                if was_tracking {
-                    self.write_status_file(&cache);
-                }
-                return None;
+        self.policy().ok().flatten()
+    }
+
+    /// The policy a seat binding resolves against.
+    ///
+    /// `Ok(None)` is legacy routing with no fleet, which only the unmigrated
+    /// selection can answer. While an activation record exists, the answer is
+    /// the activated policy or a refusal: the record and its artifact are both
+    /// verified on every call, and nothing else is read.
+    ///
+    /// # Errors
+    /// Returns the first check the activation record or its published
+    /// artifact fails.
+    pub(crate) fn policy(&self) -> Result<Option<Arc<FleetSnapshot>>, FleetError> {
+        let mut cache = self.lock();
+        if let Err(error) = std::fs::symlink_metadata(self.state_root.join(FLEET_ACTIVATION_FILE))
+            && error.kind() == std::io::ErrorKind::NotFound
+        {
+            if cache.activation.is_some() {
+                // The unmigrated file is read afresh, not from a stamp taken
+                // before the activation record appeared.
+                *cache = Cache::default();
             }
-            Err(error) => {
-                cache.last_error = Some(format!(
-                    "the fleet configuration could not be read: {error}"
-                ));
-                return cache.good.clone();
-            }
+            return Ok(self.legacy(&mut cache));
+        }
+        let verified = self.verify_activation();
+        let outcome = match &verified {
+            Ok((record, _)) => ActivationOutcome::Active {
+                hash: record.policy_hash.clone(),
+                activated_at: record.activated_at.clone(),
+            },
+            Err(error) => ActivationOutcome::Blocked(error.to_string()),
         };
-        let stamp = Stamp::of(&metadata);
-        if cache.stamp == Some(stamp) {
-            return cache.good.clone();
-        }
-        cache.stamp = Some(stamp);
-        match self.load(&path) {
-            Ok(snapshot) => {
-                let snapshot = Arc::new(snapshot);
-                let changed = cache
-                    .good
-                    .as_ref()
-                    .is_none_or(|good| good.hash() != snapshot.hash());
-                if changed {
-                    self.write_history(&snapshot);
-                    tracing::info!(fleet_hash = %snapshot.hash(), "fleet.loaded");
-                    cache.good = Some(snapshot);
-                    cache.loaded_at = Some(format_utc_timestamp(Timestamp::now()));
+        if cache.activation.as_ref() != Some(&outcome) {
+            match &outcome {
+                ActivationOutcome::Active { hash, .. } => {
+                    tracing::info!(fleet_hash = %hash, "fleet.activated");
                 }
-                cache.last_error = None;
+                ActivationOutcome::Blocked(error) => {
+                    tracing::warn!(error = %error, "fleet.activation_refused");
+                }
             }
-            Err(error) => {
-                tracing::warn!(error = %error, "fleet.rejected");
-                cache.last_error = Some(error.to_string());
-            }
+            self.write_activation_status(&outcome);
+            cache.activation = Some(outcome);
         }
-        self.write_status_file(&cache);
-        cache.good.clone()
+        verified.map(|(_, snapshot)| Some(snapshot))
+    }
+
+    /// Publish one validated policy as an immutable, content-addressed artifact.
+    ///
+    /// The bytes validated are the bytes written, under their own hash.
+    /// Publishing an already published policy re-verifies the stored copy and
+    /// writes nothing. Publication never changes what placement reads; only
+    /// [`Self::activate`] does.
+    ///
+    /// # Errors
+    /// Returns the policy's first refusal, a stored copy that no longer
+    /// verifies, or the write failure.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ASMA-8280 slice one: the registered publication operation is not yet chosen"
+        )
+    )]
+    pub(crate) fn publish(&self, document: &str) -> Result<ContentHash, FleetError> {
+        let snapshot = FleetSnapshot::parse_policy(document)?;
+        if std::fs::symlink_metadata(self.published_path(snapshot.hash())).is_ok() {
+            self.verify_published(snapshot.hash())?;
+        } else {
+            self.store_history(&snapshot)
+                .map_err(|source| FleetError::Write { source })?;
+        }
+        Ok(snapshot.hash().clone())
+    }
+
+    /// Select one published policy for every later placement.
+    ///
+    /// The artifact is verified in full before the record changes, and the
+    /// record is replaced atomically, so a reader sees the previous activation
+    /// or this one and never a partial record. A refused activation changes
+    /// nothing.
+    ///
+    /// # Errors
+    /// Returns the published artifact's first failed check or the write
+    /// failure.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ASMA-8280 slice one: the registered activation operation is not yet chosen"
+        )
+    )]
+    pub(crate) fn activate(&self, hash: &ContentHash) -> Result<FleetActivation, FleetError> {
+        // One writer at a time in this process, and no read in between.
+        let _cache = self.lock();
+        let snapshot = self.verify_published(hash)?;
+        let record = FleetActivation {
+            schema_version: ACTIVATION_SCHEMA_VERSION,
+            policy_hash: hash.clone(),
+            policy_schema_version: snapshot.schema_version(),
+            activated_at: format_utc_timestamp(Timestamp::now()),
+        };
+        let bytes = serde_json::to_vec_pretty(&record).map_err(|error| FleetError::Write {
+            source: std::io::Error::other(error),
+        })?;
+        let temporary = self.state_root.join(format!(
+            "{FLEET_ACTIVATION_FILE}.{}.tmp",
+            std::process::id()
+        ));
+        write_owner_only(&temporary, &bytes)
+            .and_then(|()| std::fs::rename(&temporary, self.state_root.join(FLEET_ACTIVATION_FILE)))
+            .map_err(|source| {
+                let _ = std::fs::remove_file(&temporary);
+                FleetError::Write { source }
+            })?;
+        Ok(record)
     }
 
     /// Append one admitted placement to the run's decision log and the `info` log.
@@ -254,68 +435,191 @@ impl FleetSource {
         vendor
     }
 
+    fn lock(&self) -> MutexGuard<'_, Cache> {
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The unmigrated selection: stamp-tracked `fleet.yml` with last-valid.
+    fn legacy(&self, cache: &mut Cache) -> Option<Arc<FleetSnapshot>> {
+        let path = self.state_root.join(FLEET_FILE);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let was_tracking =
+                    cache.stamp.is_some() || cache.good.is_some() || cache.last_error.is_some();
+                cache.stamp = None;
+                cache.good = None;
+                cache.last_error = None;
+                cache.loaded_at = None;
+                if was_tracking {
+                    self.write_status_file(cache);
+                }
+                return None;
+            }
+            Err(error) => {
+                cache.last_error = Some(format!(
+                    "the fleet configuration could not be read: {error}"
+                ));
+                return cache.good.clone();
+            }
+        };
+        let stamp = Stamp::of(&metadata);
+        if cache.stamp == Some(stamp) {
+            return cache.good.clone();
+        }
+        cache.stamp = Some(stamp);
+        match self.load(&path) {
+            Ok(snapshot) => {
+                let snapshot = Arc::new(snapshot);
+                let changed = cache
+                    .good
+                    .as_ref()
+                    .is_none_or(|good| good.hash() != snapshot.hash());
+                if changed {
+                    self.write_history(&snapshot);
+                    tracing::info!(fleet_hash = %snapshot.hash(), "fleet.loaded");
+                    cache.good = Some(snapshot);
+                    cache.loaded_at = Some(format_utc_timestamp(Timestamp::now()));
+                }
+                cache.last_error = None;
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "fleet.rejected");
+                cache.last_error = Some(error.to_string());
+            }
+        }
+        self.write_status_file(cache);
+        cache.good.clone()
+    }
+
     fn load(&self, path: &Path) -> Result<FleetSnapshot, FleetError> {
+        FleetSnapshot::parse(&self.read_guarded(path, &FLEET_GUARD)?)
+    }
+
+    /// The activation record and the exact policy it names, both verified.
+    fn verify_activation(&self) -> Result<(FleetActivation, Arc<FleetSnapshot>), FleetError> {
+        let text = self.read_guarded(
+            &self.state_root.join(FLEET_ACTIVATION_FILE),
+            &ACTIVATION_GUARD,
+        )?;
+        let record: FleetActivation = serde_json::from_str(&text).map_err(|_| invalid(A07))?;
+        if record.schema_version != ACTIVATION_SCHEMA_VERSION {
+            return Err(invalid(A07));
+        }
+        let snapshot = self.verify_published(&record.policy_hash)?;
+        if snapshot.schema_version() != record.policy_schema_version {
+            return Err(invalid(A09));
+        }
+        Ok((record, Arc::new(snapshot)))
+    }
+
+    /// The published artifact for `hash`, re-read, re-hashed and re-validated.
+    fn verify_published(&self, hash: &ContentHash) -> Result<FleetSnapshot, FleetError> {
+        let text = match self.read_guarded(&self.published_path(hash), &POLICY_GUARD) {
+            Err(FleetError::Read { source }) if source.kind() == std::io::ErrorKind::NotFound => {
+                return Err(invalid(A08));
+            }
+            other => other?,
+        };
+        if ContentHash::of(text.as_bytes()) != *hash {
+            return Err(invalid(P07));
+        }
+        FleetSnapshot::parse_policy(&text)
+    }
+
+    fn published_path(&self, hash: &ContentHash) -> PathBuf {
+        self.state_root
+            .join(FLEET_HISTORY_DIR)
+            .join(format!("{hash}.yml"))
+    }
+
+    /// Read one state-root file under its own refusal texts.
+    fn read_guarded(&self, path: &Path, guard: &Guard) -> Result<String, FleetError> {
         let metadata =
             std::fs::symlink_metadata(path).map_err(|source| FleetError::Read { source })?;
         if !metadata.file_type().is_file() {
-            return Err(invalid(F01));
+            return Err(invalid(guard.symlink));
         }
         if metadata.mode() & 0o022 != 0 {
-            return Err(invalid(F02));
+            return Err(invalid(guard.writable));
         }
         let root = std::fs::symlink_metadata(&self.state_root)
             .map_err(|source| FleetError::Read { source })?;
         if metadata.uid() != root.uid() {
-            return Err(invalid(F03));
+            return Err(invalid(guard.owner));
         }
-        if metadata.len() > MAX_FILE_BYTES {
-            return Err(invalid(F04));
+        if metadata.len() > guard.limit {
+            return Err(invalid(guard.oversized));
         }
         let file = std::fs::File::open(path).map_err(|source| FleetError::Read { source })?;
         let opened = file
             .metadata()
             .map_err(|source| FleetError::Read { source })?;
         if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
-            return Err(invalid(F05));
+            return Err(invalid(guard.swapped));
         }
         let mut bytes = Vec::new();
-        file.take(MAX_FILE_BYTES + 1)
+        file.take(guard.limit + 1)
             .read_to_end(&mut bytes)
             .map_err(|source| FleetError::Read { source })?;
-        if bytes.len() as u64 > MAX_FILE_BYTES {
-            return Err(invalid(F04));
+        if bytes.len() as u64 > guard.limit {
+            return Err(invalid(guard.oversized));
         }
-        let document = std::str::from_utf8(&bytes).map_err(|_| invalid(F06))?;
-        FleetSnapshot::parse(document)
+        String::from_utf8(bytes).map_err(|_| invalid(guard.utf8))
     }
 
     fn write_history(&self, snapshot: &FleetSnapshot) {
-        let directory = self.state_root.join(FLEET_HISTORY_DIR);
-        if let Err(error) = create_private_dir(&directory) {
+        if let Err(error) = self.store_history(snapshot) {
             tracing::warn!(error = %error, "fleet.history_write_failed");
-            return;
         }
+    }
+
+    fn store_history(&self, snapshot: &FleetSnapshot) -> std::io::Result<()> {
+        let directory = self.state_root.join(FLEET_HISTORY_DIR);
+        create_private_dir(&directory)?;
         let target = directory.join(format!("{}.yml", snapshot.hash()));
         if target.exists() {
-            return;
+            return Ok(());
         }
         let temporary = directory.join(format!("{}.yml.tmp", snapshot.hash()));
         let result = write_owner_only(&temporary, snapshot.raw().as_bytes())
             .and_then(|()| std::fs::rename(&temporary, &target));
-        if let Err(error) = result {
-            tracing::warn!(error = %error, "fleet.history_write_failed");
+        if result.is_err() {
             let _ = std::fs::remove_file(&temporary);
         }
+        result
     }
 
     fn write_status_file(&self, cache: &Cache) {
-        let status = StatusFile {
+        self.write_status_logged(&StatusFile {
             active_hash: cache.good.as_ref().map(|good| good.hash().as_str()),
             loaded_at: cache.loaded_at.as_deref(),
             last_error: cache.last_error.as_deref(),
             checked_at: format_utc_timestamp(Timestamp::now()),
+            selection: None,
+        });
+    }
+
+    fn write_activation_status(&self, outcome: &ActivationOutcome) {
+        let (active_hash, loaded_at, last_error) = match outcome {
+            ActivationOutcome::Active { hash, activated_at } => {
+                (Some(hash.as_str()), Some(activated_at.as_str()), None)
+            }
+            ActivationOutcome::Blocked(error) => (None, None, Some(error.as_str())),
         };
-        if let Err(error) = self.write_status(&status) {
+        self.write_status_logged(&StatusFile {
+            active_hash,
+            loaded_at,
+            last_error,
+            checked_at: format_utc_timestamp(Timestamp::now()),
+            selection: Some("activation"),
+        });
+    }
+
+    fn write_status_logged(&self, status: &StatusFile<'_>) {
+        if let Err(error) = self.write_status(status) {
             tracing::warn!(error = %error, "fleet.status_write_failed");
         }
     }
@@ -1022,6 +1326,406 @@ bindings:
         assert_eq!(
             V30,
             "independent_of pairs must be two seats of the same team template"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // ASMA-8280: one activated policy, and nothing else, reaches placement.
+    // ---------------------------------------------------------------------
+
+    const V1_CLAUDE_FIRST: &str = "\
+schema_version: 1
+domains:
+  codex: { provider: codex, accounts: [codex-work] }
+  claude: { provider: claude, accounts: [claude-personal] }
+models:
+  sol: { domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }
+  opus: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }
+chains:
+  c:
+    - [opus@xhigh]
+    - [sol@xhigh]
+bindings:
+  team/t/s: c
+";
+
+    fn codex_first() -> String {
+        V1_CLAUDE_FIRST.replacen(
+            "    - [opus@xhigh]\n    - [sol@xhigh]",
+            "    - [sol@xhigh]\n    - [opus@xhigh]",
+            1,
+        )
+    }
+
+    fn first_provider(snapshot: &FleetSnapshot) -> String {
+        snapshot.routes_for("team/t/s").expect("bound")[0]
+            .rung
+            .provider
+            .0
+            .clone()
+    }
+
+    fn activation_path(root: &Path) -> PathBuf {
+        root.join(FLEET_ACTIVATION_FILE)
+    }
+
+    fn published(root: &Path, hash: &ContentHash) -> PathBuf {
+        root.join(FLEET_HISTORY_DIR).join(format!("{hash}.yml"))
+    }
+
+    fn refusal(source: &FleetSource) -> &'static str {
+        match source.policy() {
+            Err(FleetError::Invalid { rule }) => rule,
+            other => panic!("expected a fail-closed refusal, got {other:?}"),
+        }
+    }
+
+    fn write_private(path: &Path, contents: &[u8]) {
+        std::fs::write(path, contents).expect("write");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .expect("owner-only mode");
+    }
+
+    /// Publish and activate `yaml`, as the registered operation will.
+    fn activate(source: &FleetSource, yaml: &str) -> ContentHash {
+        let hash = source.publish(yaml).expect("publish");
+        source.activate(&hash).expect("activate");
+        hash
+    }
+
+    #[test]
+    fn an_activated_policy_replaces_fleet_yml_for_placement() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        write_fleet(root.path(), V1_CLAUDE_FIRST);
+        let source = FleetSource::at(root.path());
+        assert_eq!(
+            first_provider(&source.current().expect("legacy")),
+            "claude-personal"
+        );
+
+        let hash = activate(&source, &codex_first());
+        let active = source.policy().expect("verified").expect("activated");
+        assert_eq!(active.hash(), &hash);
+        assert_eq!(first_provider(&active), "codex-work");
+        let status = read_status(root.path());
+        assert_eq!(status["active_hash"].as_str(), Some(hash.as_str()));
+        assert_eq!(status["selection"].as_str(), Some("activation"));
+        assert!(status["last_error"].is_null());
+    }
+
+    #[test]
+    fn an_unactivated_edit_or_publication_has_no_live_effect() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        let checkout = tempfile::tempdir().expect("temporary authoring checkout");
+        let authoring = checkout.path().join("fleet.yml");
+        std::fs::write(&authoring, codex_first()).expect("author");
+        let source = FleetSource::at(root.path());
+        let activated = activate(
+            &source,
+            &std::fs::read_to_string(&authoring).expect("read authoring"),
+        );
+
+        // A dirty checkout, a branch switch, a hand edit of the state-root file
+        // and a published-but-unactivated candidate: none of them is read.
+        std::fs::write(&authoring, V1_CLAUDE_FIRST).expect("edit authoring");
+        write_fleet(root.path(), V1_CLAUDE_FIRST);
+        let candidate = source.publish(V1_CLAUDE_FIRST).expect("publish only");
+        assert_ne!(candidate, activated);
+
+        for _ in 0..2 {
+            let active = source.policy().expect("verified").expect("activated");
+            assert_eq!(active.hash(), &activated);
+            assert_eq!(first_provider(&active), "codex-work");
+            assert_eq!(source.current().expect("activated").hash(), &activated);
+        }
+
+        // Only activation moves the next placement.
+        source.activate(&candidate).expect("activate the candidate");
+        assert_eq!(
+            source
+                .policy()
+                .expect("verified")
+                .expect("activated")
+                .hash(),
+            &candidate
+        );
+    }
+
+    #[test]
+    fn a_tampered_published_policy_fails_closed_without_falling_back() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        write_fleet(root.path(), V1_CLAUDE_FIRST);
+        let source = FleetSource::at(root.path());
+        let hash = activate(&source, &codex_first());
+        assert!(source.policy().is_ok());
+
+        // Valid YAML, wrong bytes for its address.
+        write_private(&published(root.path(), &hash), V1_CLAUDE_FIRST.as_bytes());
+        assert_eq!(refusal(&source), P07);
+        assert!(
+            source.current().is_none(),
+            "neither the activated snapshot nor fleet.yml is served"
+        );
+        let status = read_status(root.path());
+        assert!(status["active_hash"].is_null());
+        assert_eq!(status["selection"].as_str(), Some("activation"));
+        assert!(
+            status["last_error"]
+                .as_str()
+                .is_some_and(|error| error.contains(P07))
+        );
+    }
+
+    #[test]
+    fn a_missing_published_policy_fails_closed() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        write_fleet(root.path(), V1_CLAUDE_FIRST);
+        let source = FleetSource::at(root.path());
+        let hash = activate(&source, &codex_first());
+        std::fs::remove_file(published(root.path(), &hash)).expect("remove artifact");
+        assert_eq!(refusal(&source), A08);
+        assert!(source.current().is_none());
+    }
+
+    #[test]
+    fn an_unsupported_activation_record_fails_closed() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        write_fleet(root.path(), V1_CLAUDE_FIRST);
+        let source = FleetSource::at(root.path());
+        let hash = activate(&source, &codex_first());
+        let record = |schema: u32, policy_schema: u32, extra: &str| {
+            format!(
+                "{{\"schema_version\": {schema}, \"policy_hash\": \"{hash}\", \
+                 \"policy_schema_version\": {policy_schema}, \
+                 \"activated_at\": \"2026-09-27T00:00:00Z\"{extra}}}"
+            )
+        };
+        for (contents, expected) in [
+            (record(2, 1, ""), A07),
+            (record(1, 1, ", \"source\": \"checkout\""), A07),
+            ("{\"schema_version\": 1}".to_owned(), A07),
+            (record(1, 1, "").replace(hash.as_str(), "../fleet"), A07),
+            (record(1, 2, ""), A09),
+        ] {
+            write_private(&activation_path(root.path()), contents.as_bytes());
+            assert_eq!(refusal(&source), expected, "{contents}");
+            assert!(source.current().is_none(), "{contents}");
+        }
+        write_private(&activation_path(root.path()), record(1, 1, "").as_bytes());
+        assert_eq!(
+            source
+                .policy()
+                .expect("verified")
+                .expect("activated")
+                .hash(),
+            &hash,
+            "a corrected record is read again at once"
+        );
+    }
+
+    #[test]
+    fn an_unsafe_activation_record_or_artifact_fails_closed() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        let source = FleetSource::at(root.path());
+        let hash = activate(&source, &codex_first());
+        let record = activation_path(root.path());
+        let good = std::fs::read(&record).expect("record");
+
+        std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o664)).expect("mode");
+        assert_eq!(refusal(&source), A02);
+        write_private(&record, &[0xff, 0xfe]);
+        assert_eq!(refusal(&source), A06);
+        write_private(
+            &record,
+            " ".repeat(MAX_ACTIVATION_BYTES as usize + 1).as_bytes(),
+        );
+        assert_eq!(refusal(&source), A04);
+        let real = root.path().join("record.json");
+        write_private(&real, &good);
+        std::fs::remove_file(&record).expect("remove record");
+        std::os::unix::fs::symlink(&real, &record).expect("symlink");
+        assert_eq!(refusal(&source), A01);
+
+        std::fs::remove_file(&record).expect("remove symlink");
+        write_private(&record, &good);
+        assert!(source.policy().is_ok());
+        let artifact = published(root.path(), &hash);
+        std::fs::set_permissions(&artifact, std::fs::Permissions::from_mode(0o666)).expect("mode");
+        assert_eq!(refusal(&source), P02);
+    }
+
+    #[test]
+    fn a_refused_publication_or_activation_changes_nothing() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        let source = FleetSource::at(root.path());
+        let hash = activate(&source, &codex_first());
+        let record = std::fs::read(activation_path(root.path())).expect("record");
+
+        for invalid_policy in [
+            codex_first().replacen("schema_version: 1", "schema_version: 3", 1),
+            codex_first().replacen("team/t/s", "core/lsa", 1),
+            "schema_version: [".to_owned(),
+        ] {
+            assert!(source.publish(&invalid_policy).is_err(), "{invalid_policy}");
+        }
+        match source.activate(&ContentHash::of(b"never published")) {
+            Err(FleetError::Invalid { rule }) => assert_eq!(rule, A08),
+            other => panic!("expected an unpublished refusal, got {other:?}"),
+        }
+
+        assert_eq!(
+            std::fs::read(activation_path(root.path())).expect("record"),
+            record,
+            "the previous activation stands"
+        );
+        let entries: Vec<String> = std::fs::read_dir(root.path().join(FLEET_HISTORY_DIR))
+            .expect("history")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            entries,
+            [format!("{hash}.yml")],
+            "nothing else was published"
+        );
+    }
+
+    #[test]
+    fn the_activation_record_is_an_owner_only_atomic_projection() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        let source = FleetSource::at(root.path());
+        let hash = source.publish(&codex_first()).expect("publish");
+        let record = source.activate(&hash).expect("activate");
+        assert_eq!(record.schema_version, 1);
+        assert_eq!(record.policy_hash, hash);
+        assert_eq!(record.policy_schema_version, 1);
+
+        let path = activation_path(root.path());
+        let metadata = std::fs::symlink_metadata(&path).expect("record");
+        assert!(metadata.file_type().is_file());
+        assert_eq!(metadata.mode() & 0o777, 0o600);
+        let written: FleetActivation =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("record JSON");
+        assert_eq!(written, record);
+        let artifact = std::fs::symlink_metadata(published(root.path(), &hash)).expect("artifact");
+        assert_eq!(artifact.mode() & 0o777, 0o600);
+        assert!(
+            std::fs::read_dir(root.path())
+                .expect("state root")
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp")),
+            "no temporary file is left behind"
+        );
+    }
+
+    #[test]
+    fn removing_the_activation_record_restores_the_unmigrated_behaviour() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        write_fleet(root.path(), V1_CLAUDE_FIRST);
+        let source = FleetSource::at(root.path());
+        let legacy = source.current().expect("legacy").hash().clone();
+        let activated = activate(&source, &codex_first());
+        assert_eq!(source.current().expect("activated").hash(), &activated);
+
+        std::fs::remove_file(activation_path(root.path())).expect("remove record");
+        assert_eq!(source.current().expect("legacy again").hash(), &legacy);
+        assert!(read_status(root.path()).get("selection").is_none());
+    }
+
+    #[test]
+    fn one_activated_policy_resolves_leadership_delivery_and_consultation() {
+        use kontor_core::id::SpecVersion;
+        use kontor_fleet::LeadershipKey;
+        use kontor_teams::CoreTeamRevision;
+
+        let catalog = kontor_profiles::seeds::bundled_operational_domain()
+            .expect("the bundled domain loads")
+            .role_catalogs
+            .remove(0);
+        let roster =
+            CoreTeamRevision::resolve(SpecVersion::FIRST, &catalog, &[]).expect("LSA and TPM");
+        let pinned = roster.canonicalize().expect("canonical roster");
+        let keys: Vec<LeadershipKey> = roster
+            .seats
+            .iter()
+            .map(|seat| {
+                LeadershipKey::for_pinned_seat(&pinned, &seat.role_slot_id, &seat.role)
+                    .expect("the pinned seat proves its key")
+            })
+            .collect();
+        assert_eq!(
+            keys.iter()
+                .map(|key| key.role_slot_id().as_str())
+                .collect::<Vec<_>>(),
+            ["lsa", "tpm"]
+        );
+        let delivery = team_key("01936f5a-0000-7000-8000-000000000102", "implement");
+        let reviewer = committee_key("01991c00-0000-7000-8000-000000000001", "reviewer-a");
+        let advisor = advisor_key("01a02d00-0000-7000-8000-00000000ad01");
+        let yaml = format!(
+            "\
+schema_version: 2
+domains:
+  codex: {{ provider: codex, accounts: [codex-work] }}
+  claude: {{ provider: claude, accounts: [claude-personal] }}
+models:
+  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}
+  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}
+chains:
+  codex-first:
+    - [sol@xhigh]
+    - [opus@xhigh]
+  claude-first:
+    - [opus@xhigh]
+    - [sol@xhigh]
+bindings:
+  {lsa}: codex-first
+  {tpm}: claude-first
+  {delivery}: claude-first
+  {reviewer}: codex-first
+  {advisor}: claude-first
+",
+            lsa = keys[0],
+            tpm = keys[1],
+        );
+        let root = tempfile::tempdir().expect("temporary state root");
+        let source = FleetSource::at(root.path());
+        let hash = activate(&source, &yaml);
+        let record: FleetActivation =
+            serde_json::from_slice(&std::fs::read(activation_path(root.path())).expect("record"))
+                .expect("record JSON");
+        let policy = source.policy().expect("verified").expect("activated");
+
+        let resolutions = [
+            policy.resolve_leadership(&keys[0]).expect("LSA"),
+            policy.resolve_leadership(&keys[1]).expect("TPM"),
+            policy.resolve(&delivery).expect("delivery"),
+            policy.resolve(&reviewer).expect("committee"),
+            policy.resolve(&advisor).expect("advisor"),
+        ];
+        let expected = [
+            (keys[0].as_str(), "codex-first", "codex-work"),
+            (keys[1].as_str(), "claude-first", "claude-personal"),
+            (delivery.as_str(), "claude-first", "claude-personal"),
+            (reviewer.as_str(), "codex-first", "codex-work"),
+            (advisor.as_str(), "claude-first", "claude-personal"),
+        ];
+        for (resolution, (key, chain, first)) in resolutions.iter().zip(expected) {
+            // Every slot class names the same activated bytes, its own key and
+            // its own chain; none is inferred from anything but the policy.
+            assert_eq!(resolution.provenance.policy_hash, hash, "{key}");
+            assert_eq!(
+                resolution.provenance.policy_hash, record.policy_hash,
+                "{key}"
+            );
+            assert_eq!(resolution.provenance.schema_version, 2, "{key}");
+            assert_eq!(resolution.provenance.binding_key, key);
+            assert_eq!(resolution.provenance.chain, chain, "{key}");
+            assert_eq!(resolution.routes[0].rung.provider.0, first, "{key}");
+        }
+        assert!(
+            policy.routes_for(keys[0].as_str()).is_none(),
+            "the leadership key is not resolvable from its text"
         );
     }
 }

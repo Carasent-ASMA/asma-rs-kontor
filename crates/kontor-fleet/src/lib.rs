@@ -3,20 +3,33 @@
 //! A fleet policy names model domains, models, ordered chains and the seat keys
 //! bound to them. This crate reads that YAML, enforces every rule on it, and
 //! turns a bound seat key into its ordered routes. Nothing here touches the
-//! filesystem, a store or a runtime: the daemon owns reading, history and
-//! decision evidence, so the same code can serve a reader that has no daemon.
-//! There is no second interpreter.
+//! filesystem, a store or a runtime: the daemon owns reading, activation,
+//! history and decision evidence, and direct-mode orchestration reads the same
+//! activated bytes through this same code. There is no second interpreter.
 //!
-//! The binding contract is Appendix B of the live-fleet plan (ASMA-8255): every
-//! rule text below is copied verbatim from that table, and rules are checked in
-//! table order so the first refusal is deterministic.
+//! Two schema versions are read:
+//!
+//! - **schema_version 1** is the live-fleet document of ASMA-8255. The rules
+//!   are Appendix B of the live-fleet plan, copied verbatim and checked in table
+//!   order so the first refusal is deterministic. [`FleetSnapshot::parse`] reads
+//!   only this version and is what the unmigrated state-root `fleet.yml` uses.
+//! - **schema_version 2** is its successor for one activated policy shared by
+//!   both orchestration modes (ASMA-8280). It keeps every v1 section, rule and
+//!   binding family and adds exactly one key family,
+//!   `leadership/<core-team-revision-hash>/<role-slot-id>`, which only
+//!   [`LeadershipKey::for_pinned_seat`] can build. [`FleetSnapshot::parse_policy`]
+//!   reads either version and is what activation uses.
+
+mod leadership;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use kontor_core::id::ContentHash;
+use kontor_core::id::{ContentHash, RoleSlotId};
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::{DomainError, DomainResult};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+pub use leadership::LeadershipKey;
 
 /// Largest fleet document this build accepts, in bytes.
 pub const MAX_FILE_BYTES: u64 = 256 * 1024;
@@ -27,8 +40,11 @@ pub const MAX_STEPS: usize = 16;
 /// Sanity ceiling on the number of flattened routes in one chain.
 pub const MAX_ROUTES: usize = 64;
 
-/// The stable rule texts a refusal names: Appendix B of the live-fleet plan,
-/// verbatim.
+/// The stable rule texts a refusal names.
+///
+/// `F04` and `V01`–`V30` are Appendix B of the live-fleet plan, verbatim. `V31`
+/// and `V32` are the schema_version 2 successor's; `L01`–`L03` refuse a
+/// leadership key whose pinned Core Team seat cannot be proved.
 #[allow(
     missing_docs,
     reason = "each Appendix B constant is documented by the verbatim text it holds"
@@ -71,11 +87,26 @@ pub mod rule {
     pub const V28: &str = "a rule names a seat key that has no binding";
     pub const V29: &str = "a seat cannot be independent of itself";
     pub const V30: &str = "independent_of pairs must be two seats of the same team template";
+
+    /// A policy names a schema this build does not read.
+    pub const V31: &str = "schema_version must be 1 or 2";
+    /// A schema_version 2 binding key is outside the five families.
+    pub const V32: &str = "a binding key must be team/<id>/<slot>, committee/<id>/<slot>, advisor/<id> or leadership/<core-team-revision-hash>/<role-slot-id>";
+
+    /// The document handed in is not a canonical Core Team revision.
+    pub const L01: &str =
+        "a leadership key needs the canonical document of a complete Core Team revision";
+    /// The slot is absent from, or repeated in, the pinned revision.
+    pub const L02: &str =
+        "a leadership seat must occur exactly once in its pinned Core Team revision";
+    /// The seat's role is not the frozen role snapshot the revision pins.
+    pub const L03: &str =
+        "a leadership seat's role must match the frozen role snapshot of its slot";
 }
 
 use rule::{
     F04, V01, V02, V03, V04, V05, V06, V07, V08, V09, V10, V11, V12, V13, V14, V15, V16, V17, V18,
-    V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30,
+    V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32,
 };
 
 /// Why a fleet document could not be used as written.
@@ -89,15 +120,55 @@ pub enum FleetError {
         #[source]
         source: std::io::Error,
     },
+    /// A validated policy or its activation record could not be written.
+    #[error("the fleet policy could not be written")]
+    Write {
+        /// The underlying I/O failure.
+        #[source]
+        source: std::io::Error,
+    },
     /// The document is not valid YAML for schema version 1.
     #[error("the fleet configuration is not a valid schema_version 1 document")]
     Document,
+    /// The policy is not valid YAML for a schema version this build reads.
+    #[error("the fleet policy is not a valid schema_version 1 or 2 document")]
+    PolicyDocument,
     /// The document is structurally valid but unsafe or contradictory.
     #[error("the fleet configuration is invalid: {rule}")]
     Invalid {
         /// The stable rule, never a configured value.
         rule: &'static str,
     },
+}
+
+/// Which entry point is reading: the v1-only `fleet.yml` or a published policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reader {
+    Fleet,
+    Policy,
+}
+
+/// The schema a document was validated under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Schema {
+    V1,
+    V2,
+}
+
+impl Schema {
+    fn accepts_key(self, key: &str) -> bool {
+        match self {
+            Self::V1 => is_binding_key(key),
+            Self::V2 => is_binding_key(key) || is_leadership_key(key),
+        }
+    }
+
+    fn key_rule(self) -> &'static str {
+        match self {
+            Self::V1 => V23,
+            Self::V2 => V32,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,7 +230,7 @@ struct RulesSpec {
 }
 
 /// One admissible flattened route of a fleet chain.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FleetRoute {
     /// The exact account alias, model and effort.
     pub rung: ModelRung,
@@ -171,6 +242,31 @@ pub struct FleetRoute {
     pub vendor: String,
 }
 
+/// Which policy bytes and which binding produced a resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FleetProvenance {
+    /// SHA-256 of exactly the policy bytes that were validated.
+    pub policy_hash: ContentHash,
+    /// The schema those bytes were validated under.
+    pub schema_version: u32,
+    /// The seat key that was looked up.
+    pub binding_key: String,
+    /// The chain that key is bound to.
+    pub chain: String,
+}
+
+/// The ordered routes one bound seat key may walk, and where they came from.
+///
+/// `routes` may be empty when the unavailable, calibration and vision rules
+/// removed every route; the caller turns that into its placement refusal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FleetResolution {
+    /// The exact policy and binding that selected these routes.
+    pub provenance: FleetProvenance,
+    /// Model-major, then account, in declared order.
+    pub routes: Vec<FleetRoute>,
+}
+
 /// A validated, hashed view of one fleet document.
 #[derive(Debug)]
 pub struct FleetSnapshot {
@@ -180,18 +276,48 @@ pub struct FleetSnapshot {
 }
 
 impl FleetSnapshot {
-    /// Parse and fully validate a fleet document.
+    /// Parse and fully validate a schema_version 1 document.
+    ///
+    /// This is the unmigrated `fleet.yml` reader, and it reads no successor:
+    /// any other `schema_version` is refused with V-01.
     ///
     /// # Errors
     /// Returns [`FleetError::Document`] for malformed YAML or unknown fields and
     /// [`FleetError::Invalid`] for the first violated rule of Appendix B.
     pub fn parse(document: &str) -> Result<Self, FleetError> {
+        Self::read(document, Reader::Fleet)
+    }
+
+    /// Parse and fully validate a published policy of schema_version 1 or 2.
+    ///
+    /// A version 1 document is held to exactly the checks [`Self::parse`]
+    /// applies. A version 2 document is held to the same checks and may also
+    /// bind `leadership/<core-team-revision-hash>/<role-slot-id>` keys.
+    ///
+    /// # Errors
+    /// Returns [`FleetError::PolicyDocument`] for malformed YAML or unknown
+    /// fields, V-31 for any other version, and [`FleetError::Invalid`] for the
+    /// first violated rule.
+    pub fn parse_policy(document: &str) -> Result<Self, FleetError> {
+        Self::read(document, Reader::Policy)
+    }
+
+    fn read(document: &str, reader: Reader) -> Result<Self, FleetError> {
         if document.len() as u64 > MAX_FILE_BYTES {
             return Err(invalid(F04));
         }
         let parsed: FleetDocument =
-            serde_yaml_ng::from_str(document).map_err(|_| FleetError::Document)?;
-        parsed.validate()?;
+            serde_yaml_ng::from_str(document).map_err(|_| match reader {
+                Reader::Fleet => FleetError::Document,
+                Reader::Policy => FleetError::PolicyDocument,
+            })?;
+        let schema = match (parsed.schema_version, reader) {
+            (1, _) => Schema::V1,
+            (2, Reader::Policy) => Schema::V2,
+            (_, Reader::Policy) => return Err(invalid(V31)),
+            (_, Reader::Fleet) => return Err(invalid(V01)),
+        };
+        parsed.validate(schema)?;
         Ok(Self {
             document: parsed,
             raw: document.to_owned(),
@@ -211,13 +337,44 @@ impl FleetSnapshot {
         &self.raw
     }
 
-    /// The flattened routes bound to `key`, or `None` when nothing binds it.
+    /// The schema version the document was validated under.
+    #[must_use]
+    pub fn schema_version(&self) -> u32 {
+        self.document.schema_version
+    }
+
+    /// The flattened routes bound to a team, committee or advisor key, or
+    /// `None` when nothing binds it.
     ///
     /// The result may be `Some(vec![])` when every route was filtered out; the
     /// caller turns that into the R-01 placement refusal.
     #[must_use]
     pub fn routes_for(&self, key: &str) -> Option<Vec<FleetRoute>> {
-        let chain = self.document.chains.get(self.document.bindings.get(key)?)?;
+        self.resolve(key).map(|resolution| resolution.routes)
+    }
+
+    /// Resolve a team, committee or advisor key, with its provenance.
+    ///
+    /// A leadership key is never resolved from text: the string form of one is
+    /// `None` here even when the policy binds it. Use
+    /// [`Self::resolve_leadership`] with a key built from the pinned seat.
+    #[must_use]
+    pub fn resolve(&self, key: &str) -> Option<FleetResolution> {
+        if !is_binding_key(key) {
+            return None;
+        }
+        self.resolve_bound(key)
+    }
+
+    /// Resolve one proved leadership seat, with its provenance.
+    #[must_use]
+    pub fn resolve_leadership(&self, key: &LeadershipKey) -> Option<FleetResolution> {
+        self.resolve_bound(key.as_str())
+    }
+
+    fn resolve_bound(&self, key: &str) -> Option<FleetResolution> {
+        let chain_name = self.document.bindings.get(key)?;
+        let chain = self.document.chains.get(chain_name)?;
         let calibration_required = self
             .document
             .rules
@@ -282,7 +439,15 @@ impl FleetSnapshot {
                 }
             }
         }
-        Some(routes)
+        Some(FleetResolution {
+            provenance: FleetProvenance {
+                policy_hash: self.hash.clone(),
+                schema_version: self.document.schema_version,
+                binding_key: key.to_owned(),
+                chain: chain_name.clone(),
+            },
+            routes,
+        })
     }
 
     /// Whether the snapshot lists this route: matching account, model and effort.
@@ -332,14 +497,11 @@ impl FleetSnapshot {
 }
 
 impl FleetDocument {
-    fn validate(&self) -> Result<(), FleetError> {
-        if self.schema_version != 1 {
-            return Err(invalid(V01));
-        }
+    fn validate(&self, schema: Schema) -> Result<(), FleetError> {
         self.validate_domains()?;
         self.validate_models()?;
         self.validate_chains()?;
-        self.validate_bindings()?;
+        self.validate_bindings(schema)?;
         self.validate_unavailable()?;
         self.validate_rules()
     }
@@ -549,10 +711,10 @@ impl FleetDocument {
         Ok(())
     }
 
-    fn validate_bindings(&self) -> Result<(), FleetError> {
+    fn validate_bindings(&self, schema: Schema) -> Result<(), FleetError> {
         for key in self.bindings.keys() {
-            if !is_binding_key(key) {
-                return Err(invalid(V23));
+            if !schema.accepts_key(key) {
+                return Err(invalid(schema.key_rule()));
             }
         }
         for chain in self.bindings.values() {
@@ -780,6 +942,20 @@ fn is_binding_key(key: &str) -> bool {
     }
 }
 
+/// `leadership/<core-team-revision-hash>/<role-slot-id>`, and nothing shorter.
+///
+/// The hash must be a full canonical content hash, so a role code, a slot id or
+/// a display label in that position is refused rather than read as a roster.
+fn is_leadership_key(key: &str) -> bool {
+    let mut parts = key.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("leadership"), Some(hash), Some(slot), None) => {
+            ContentHash::parse(hash).is_ok() && RoleSlotId::parse(slot).is_ok()
+        }
+        _ => false,
+    }
+}
+
 fn is_key_segment(segment: &str) -> bool {
     !segment.is_empty()
         && segment.chars().all(|character| {
@@ -801,3 +977,6 @@ fn same_team_template(first: &str, second: &str) -> bool {
         (Some(one), Some(two)) if one == two
     )
 }
+
+#[cfg(test)]
+mod tests;

@@ -1321,6 +1321,20 @@ impl Services {
                     "edit fleet.yml so the bound chain keeps an admissible route, then retry",
                 );
         }
+        // ASMA-8280: while an activation record selects the policy, `fleet.yml`
+        // is not read, so the answer names the failed check and the one fix.
+        if let kontor_core::DomainError::MissingEvidence {
+            subject: "FleetActivation",
+            rule,
+        } = error
+        {
+            return self
+                .deny(ApiErrorCode::PlacementBlocked, rule)
+                .about("FleetActivation")
+                .advising(
+                    "activate a published fleet policy that verifies, then retry; fleet-status.json names the failed check",
+                );
+        }
         ApiError::from_domain(self.realm_id, error)
     }
 
@@ -12394,7 +12408,9 @@ impl Services {
         })?;
         // One snapshot for the whole invocation: an edit between two slots must
         // not mix two fleet versions into one allocation.
-        let fleet = self.fleet.current();
+        let fleet = self
+            .fleet_policy()
+            .map_err(|error| self.refuse_domain(&error))?;
         let quota_states = self.admission_quota_states(project_id)?;
         let accounts = self.eligible_accounts(project_id)?;
         let quota = QuotaOutlook {
@@ -12623,7 +12639,9 @@ impl Services {
         // One snapshot for the whole invocation: the context records which
         // policy supplied the route, and the freeze below must not disagree
         // with it because an edit landed in between.
-        let fleet = self.fleet.current();
+        let fleet = self
+            .fleet_policy()
+            .map_err(|error| self.refuse_domain(&error))?;
         let fleet_routes = fleet.as_deref().and_then(|fleet| {
             fleet
                 .routes_for(&crate::fleet::advisor_key(&revision.profile_id))
@@ -27059,7 +27077,9 @@ impl ApplicationOperations for Services {
         })?;
         // One snapshot for the whole recovery: an edit between the candidate
         // list and the provenance would record a policy the file never held.
-        let fleet = self.fleet.current();
+        let fleet = self
+            .fleet_policy()
+            .map_err(|error| self.refuse_domain(&error))?;
         let fleet_routes = fleet.as_deref().and_then(|fleet| {
             fleet
                 .routes_for(&crate::fleet::committee_key(
@@ -27447,7 +27467,9 @@ impl ApplicationOperations for Services {
                     "the Committee has no such logical consultation seat",
                 )
             })?;
-        let fleet = self.fleet.current();
+        let fleet = self
+            .fleet_policy()
+            .map_err(|error| self.refuse_domain(&error))?;
         let expected_rung =
             parse_runtime_model_route(&request.expected_model_route, fleet.as_deref())
                 .map_err(|error| self.refuse_domain(&error))?;
@@ -37405,7 +37427,7 @@ impl Services {
         slot: &RoleSlotId,
     ) -> kontor_core::DomainResult<Option<crate::fleet::DeclaredRungs>> {
         let key = crate::fleet::team_key(&snapshot.template_id.to_string(), slot.as_str());
-        if let Some(fleet) = self.fleet.current()
+        if let Some(fleet) = self.fleet_policy()?
             && let Some(routes) = fleet.routes_for(&key)
         {
             if routes.is_empty() {
@@ -37456,6 +37478,29 @@ impl Services {
                 rungs: chain.rungs.clone(),
                 fleet: None,
             }))
+    }
+
+    /// The fleet policy a seat binding resolves against.
+    ///
+    /// `None` is legacy routing with no fleet. An activated policy that cannot
+    /// be verified refuses: falling back to the template chain would place the
+    /// seat on routes the selected policy never authorised.
+    ///
+    /// # Errors
+    /// Returns [`kontor_core::DomainError::MissingEvidence`] naming the first
+    /// check the activation record or its published policy fails.
+    fn fleet_policy(
+        &self,
+    ) -> kontor_core::DomainResult<Option<std::sync::Arc<crate::fleet::FleetSnapshot>>> {
+        self.fleet
+            .policy()
+            .map_err(|error| kontor_core::DomainError::MissingEvidence {
+                subject: "FleetActivation",
+                rule: match error {
+                    crate::fleet::FleetError::Invalid { rule } => rule,
+                    _ => "the activated fleet policy cannot be read",
+                },
+            })
     }
 
     /// Append one admitted fleet placement to the run's decision log.
@@ -43144,6 +43189,110 @@ mod tests {
             }),
             "a fleet-listed route is nameable while the snapshot lists it"
         );
+    }
+
+    /// ASMA-8280: the ASMA-8255 operator exception — Codex's model through the
+    /// bare Cursor plan (2026-09-23) — is historical compiled compatibility. The
+    /// activated policy successor gives it no new slot, provider, model, effort,
+    /// activation path or YAML rule.
+    #[test]
+    fn the_historical_cursor_exception_gains_nothing_from_an_activated_policy() {
+        use EffortLevel::{High, Low, Max, Medium, Off, Ultra, Ultracode, Xhigh};
+        let route = |provider: &str, model: &str, effort: Option<EffortLevel>| ModelRung {
+            provider: ProviderRef(provider.to_owned()),
+            model: ModelRef(model.to_owned()),
+            effort,
+        };
+        let efforts = [
+            None,
+            Some(Off),
+            Some(Low),
+            Some(Medium),
+            Some(High),
+            Some(Xhigh),
+            Some(Max),
+            Some(Ultra),
+            Some(Ultracode),
+        ];
+        // The compiled exception is exactly the bare `cursor` alias at five
+        // efforts; no named Cursor account reaches that model.
+        for effort in efforts {
+            let admitted = matches!(effort, None | Some(Low | Medium | High | Xhigh | Max));
+            assert_eq!(
+                super::compiled_route_is_catalogued(&route("cursor", "gpt-5.6-sol", effort)),
+                admitted,
+                "{effort:?}"
+            );
+            for alias in ["cursor-work", "cursor-personal"] {
+                assert!(!super::compiled_route_is_catalogued(&route(
+                    alias,
+                    "gpt-5.6-sol",
+                    effort
+                )));
+            }
+        }
+
+        // An activated schema_version 2 policy binding a delivery seat, a
+        // reviewer and a leadership slot on Cursor lists what it lists and no
+        // more: every route off its own list keeps its compiled answer.
+        let leadership = format!("leadership/{}/lsa", ContentHash::of(b"pinned roster"));
+        let policy = crate::fleet::FleetSnapshot::parse_policy(&format!(
+            "\
+schema_version: 2
+domains:
+  cursor: {{ provider: cursor, accounts: [cursor] }}
+models:
+  grok: {{ domain: cursor, id: grok-4.6, vendor: xai, efforts: [high], vision: true, calibrated: true }}
+chains:
+  cursor-only:
+    - [grok@high]
+bindings:
+  team/01936f5a-0000-7000-8000-000000000102/verify: cursor-only
+  committee/01991c00-0000-7000-8000-000000000001/reviewer-a: cursor-only
+  {leadership}: cursor-only
+"
+        ))
+        .expect("the policy parses");
+        for effort in efforts {
+            for alias in ["cursor", "cursor-work", "cursor-personal"] {
+                let rung = route(alias, "gpt-5.6-sol", effort);
+                assert_eq!(
+                    super::model_route_is_catalogued(&rung, Some(&policy)),
+                    super::compiled_route_is_catalogued(&rung),
+                    "{alias} {effort:?}"
+                );
+            }
+        }
+
+        // No successor field can author the exception.
+        for extension in [
+            (
+                "schema_version: 2",
+                "schema_version: 2\noperator_exceptions: [cursor]",
+            ),
+            (
+                "bindings:",
+                "rules:\n  operator_accepted: [cursor]\nbindings:",
+            ),
+            (
+                "calibrated: true }",
+                "calibrated: true, operator_accepted: true }",
+            ),
+            (
+                "accounts: [cursor] }",
+                "accounts: [cursor], recovery_profile: true }",
+            ),
+        ] {
+            let yaml = policy.raw().replacen(extension.0, extension.1, 1);
+            assert!(
+                matches!(
+                    crate::fleet::FleetSnapshot::parse_policy(&yaml),
+                    Err(crate::fleet::FleetError::PolicyDocument)
+                ),
+                "{}",
+                extension.1
+            );
+        }
     }
 
     /// ASMA-8237 / OQ-002: the routes the catalog advertises are the routes a

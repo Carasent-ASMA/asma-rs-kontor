@@ -34411,6 +34411,99 @@ async fn deleting_fleet_yml_restores_template_routing() {
     );
 }
 
+/// Lay out one activated fleet policy as the generated projection does: the
+/// immutable `fleet-history/<hash>.yml` and the owner-only record naming it.
+fn activate_fleet_policy(world: &World, yaml: &str) -> String {
+    let root = world.directory.path();
+    let hash = kontor_core::id::ContentHash::of(yaml.as_bytes()).to_string();
+    let history = root.join("fleet-history");
+    std::fs::create_dir_all(&history).expect("the history directory is created");
+    std::fs::set_permissions(&history, std::fs::Permissions::from_mode(0o700))
+        .expect("the history directory is private");
+    let artifact = history.join(format!("{hash}.yml"));
+    std::fs::write(&artifact, yaml).expect("the policy is published");
+    std::fs::set_permissions(&artifact, std::fs::Permissions::from_mode(0o600))
+        .expect("the published policy is owner-only");
+    let record = root.join("fleet-activation.json");
+    let body = serde_json::json!({
+        "schema_version": 1,
+        "policy_hash": hash,
+        "policy_schema_version": 1,
+        "activated_at": "2026-09-27T00:00:00Z",
+    });
+    std::fs::write(&record, body.to_string()).expect("the activation record is written");
+    std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600))
+        .expect("the activation record is owner-only");
+    hash
+}
+
+/// ASMA-8280: an activation record selects the one published policy the next
+/// placement reads, so `fleet.yml` saying otherwise changes nothing. Once the
+/// activated bytes stop verifying, the next placement is refused with the
+/// failed check instead of falling back to `fleet.yml` or the template chain.
+#[tokio::test]
+async fn an_activated_policy_places_the_next_seat_and_fails_closed_when_unverifiable() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    let binding = fleet_binding_key(&fixture, "implement");
+    write_fleet(&fixture.world, &fleet_yaml(&[&binding], CLAUDE_THEN_CODEX));
+    let hash = activate_fleet_policy(&fixture.world, &fleet_yaml(&[&binding], CODEX_THEN_CLAUDE));
+
+    let predecessor = delivery_member(&fixture, "implement");
+    let first = take_over_blocked_seat(
+        &fixture,
+        predecessor.id,
+        "implement",
+        "fleet-activated-first",
+    )
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let first_successor = replaced_successor(&first);
+    assert_eq!(
+        launched_route(&fixture, first_successor),
+        ("codex-work".to_owned(), "gpt-5.6-sol".to_owned()),
+        "the activated policy's first route, not fleet.yml's"
+    );
+    let decisions = fleet_decisions(&fixture);
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    assert_eq!(decisions[0]["fleet_hash"], hash.as_str());
+
+    // Valid YAML under the activated address, but not the activated bytes.
+    let artifact = fixture
+        .world
+        .directory
+        .path()
+        .join("fleet-history")
+        .join(format!("{hash}.yml"));
+    std::fs::write(&artifact, fleet_yaml(&[&binding], CLAUDE_THEN_CODEX))
+        .expect("the published policy is overwritten");
+    std::fs::set_permissions(&artifact, std::fs::Permissions::from_mode(0o600))
+        .expect("the overwrite stays owner-only");
+    let second = take_over_blocked_seat(
+        &fixture,
+        first_successor,
+        "implement",
+        "fleet-activated-second",
+    )
+    .await;
+    assert_ne!(second.status, 200, "{}", second.body);
+    assert!(
+        second
+            .body
+            .contains("a published fleet policy does not hash to its content address"),
+        "the refusal names the failed check: {}",
+        second.body
+    );
+    // The refusal above is what excludes the template chain, which records no
+    // decision; the log excludes a fleet placement on either set of bytes.
+    assert_eq!(
+        fleet_decisions(&fixture).len(),
+        1,
+        "no second fleet placement was recorded"
+    );
+}
+
 /// Account before rung: a blocked login walks to the next sub-step in the same
 /// step before the chain descends to the next domain.
 #[tokio::test]
@@ -35215,6 +35308,200 @@ async fn a_fleet_bound_advisor_keeps_its_fleet_provenance_through_materializatio
         Some("fleet_configuration"),
         "materialization launched the seat without the fleet's provenance"
     );
+}
+
+/// Overwrite one published policy with valid YAML that is not its own bytes.
+fn tamper_published_policy(world: &World, hash: &str, yaml: &str) {
+    let artifact = world
+        .directory
+        .path()
+        .join("fleet-history")
+        .join(format!("{hash}.yml"));
+    std::fs::write(&artifact, yaml).expect("the published policy is overwritten");
+    std::fs::set_permissions(&artifact, std::fs::Permissions::from_mode(0o600))
+        .expect("the overwrite stays owner-only");
+}
+
+/// ASMA-8280: a Committee allocation reads the activated policy, never
+/// `fleet.yml`, and while the activated bytes do not verify it is refused
+/// before anything is frozen, rather than allocated from `fleet.yml` or the
+/// pinned template.
+#[tokio::test]
+async fn a_committee_allocates_from_the_activated_policy_and_fails_closed() {
+    let realm = consultation_realm(
+        "/tmp/kontor-asma8280-committee-activation",
+        &[("Cursor", "cursor")],
+    )
+    .await;
+    let world = &realm.world;
+    let unactivated =
+        committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "claude-then-codex")]);
+    write_fleet(world, &unactivated);
+    let activated = committee_fleet_yaml(&[(&committee_fleet_key("reviewer-a"), "cursor-grok")]);
+    let hash = activate_fleet_policy(world, &activated);
+
+    tamper_published_policy(world, &hash, &unactivated);
+    let refused = invoke_fleet_committee(
+        &realm,
+        "Activated committee policy",
+        "asma8280-committee-refused",
+    )
+    .await;
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    assert!(
+        refused
+            .body
+            .contains("a published fleet policy does not hash to its content address"),
+        "the refusal names the failed check: {}",
+        refused.body
+    );
+
+    tamper_published_policy(world, &hash, &activated);
+    let invoked = invoke_fleet_committee(
+        &realm,
+        "Activated committee policy",
+        "asma8280-committee-admitted",
+    )
+    .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.json()["committee_run_id"]
+        .as_str()
+        .expect("a Committee run")
+        .to_owned();
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Committee(
+            kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+        ),
+    );
+    let routes = context["admission"]["routes"]
+        .as_array()
+        .expect("frozen admission routes");
+    let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
+    assert_eq!(
+        reviewer_a["model_route"]["provider"], "cursor",
+        "{reviewer_a}"
+    );
+    assert_eq!(
+        reviewer_a["model_route"]["model"], "grok-4.7",
+        "{reviewer_a}"
+    );
+    assert_eq!(reviewer_a["source"], "fleet_configuration", "{reviewer_a}");
+    assert_eq!(
+        reviewer_a["profile_hash"],
+        hash.as_str(),
+        "the frozen route names the activated bytes: {reviewer_a}"
+    );
+}
+
+/// Invoke the fixture Advisor once under `key`, reading the epic revision first.
+async fn invoke_activated_advisor(realm: &ConsultationRealm, key: &str) -> Answer {
+    let world = &realm.world;
+    let epic_read = Call::get(format!(
+        "/v1/projects/{}/epics/{}",
+        realm.project, realm.epic
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(epic_read.status, 200, "{}", epic_read.body);
+    Call::post(
+        format!(
+            "/v1/projects/{}/epics/{}/advisor-runs:invoke",
+            realm.project, realm.epic
+        ),
+        &serde_json::json!({
+            "profile": {"id": ADVISOR_PROFILE, "version": 1},
+            "topic": "Activated advisor policy",
+            "question": "Which route did the activated policy freeze for this Advisor?",
+            "caller_seat_binding_id": realm.caller,
+            "expected_revision": epic_read.json()["revision"],
+        }),
+    )
+    .signed_as(world, "operator")
+    .with_key(key)
+    .send(world)
+    .await
+}
+
+/// ASMA-8280: an Advisor freezes its route from the activated policy and is
+/// refused, not seated on `fleet.yml` or its template chain, while the
+/// activated bytes do not verify.
+#[tokio::test]
+async fn an_advisor_freezes_from_the_activated_policy_and_fails_closed() {
+    let realm = consultation_realm(
+        "/tmp/kontor-asma8280-advisor-activation",
+        &[("Cursor", "cursor")],
+    )
+    .await;
+    let world = &realm.world;
+    let mut advisor = advisor_definition(ADVISOR_PROFILE, 1);
+    advisor["allowed_caller_roles"] = serde_json::json!(["lsa"]);
+    let previewed = Call::post(
+        format!("/v1/projects/{}/advisor-profiles:preview", realm.project),
+        &serde_json::json!({"definition": advisor}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let applied = Call::post(
+        format!("/v1/projects/{}/advisor-profiles:apply", realm.project),
+        &serde_json::json!({
+            "definition": advisor,
+            "preview_hash": previewed.json()["preview_hash"],
+            "expected_revision": 1,
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-advisor-apply")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+
+    let unactivated = committee_fleet_yaml(&[(&advisor_fleet_key(), "claude-then-codex")]);
+    write_fleet(world, &unactivated);
+    let activated = committee_fleet_yaml(&[(&advisor_fleet_key(), "cursor-grok")]);
+    let hash = activate_fleet_policy(world, &activated);
+    tamper_published_policy(world, &hash, &unactivated);
+    let refused = invoke_activated_advisor(&realm, "asma8280-advisor-refused").await;
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    assert!(
+        refused
+            .body
+            .contains("a published fleet policy does not hash to its content address"),
+        "the refusal names the failed check: {}",
+        refused.body
+    );
+
+    tamper_published_policy(world, &hash, &activated);
+    let invoked = invoke_activated_advisor(&realm, "asma8280-advisor-admitted").await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let invoked_json = invoked.json();
+    let advisor_run = kontor_core::id::AdvisorRunId::parse(
+        invoked_json["advisor_run_id"]
+            .as_str()
+            .expect("an Advisor run"),
+    )
+    .expect("an Advisor run id");
+    let context = frozen_consultation_context(
+        world,
+        &realm.project,
+        ConsultationRunId::Advisor(advisor_run),
+    );
+    assert_eq!(
+        context["admission"]["source"], "fleet_configuration",
+        "{context}"
+    );
+    assert_eq!(
+        context["admission"]["profile_hash"],
+        hash.as_str(),
+        "the admission block names the activated bytes: {context}"
+    );
+    let seat = &invoked_json["seats"][0];
+    assert_eq!(seat["model_route"]["provider"], "cursor", "{seat}");
+    assert_eq!(seat["model_route"]["model"], "grok-4.7", "{seat}");
 }
 
 /// LF-04: an empty `provider_unavailable` recovery profile takes its candidate
