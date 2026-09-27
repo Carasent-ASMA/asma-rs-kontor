@@ -701,8 +701,40 @@ struct CoreTeamRoutePlan {
     predecessor: StoredHostedTopologySeat,
     successor: Option<StoredHostedTopologySeat>,
     desired: ModelRung,
+    /// The activated policy's authority for `desired`, when a policy binds
+    /// this leadership seat.
+    leadership: Option<LeadershipRoute>,
     stale_native_recovery: bool,
     preview_hash: ContentHash,
+}
+
+/// One leadership route the activated fleet policy authorises (ASMA-8280).
+///
+/// Built only by [`Services::leadership_route`]: from the pinned Core Team
+/// revision and its exact seat, through the one shared resolver, and only for a
+/// requested route the bound chain offers.
+#[derive(Debug, Clone)]
+struct LeadershipRoute {
+    key: kontor_fleet::LeadershipKey,
+    provenance: kontor_fleet::FleetProvenance,
+    route: kontor_fleet::FleetRoute,
+}
+
+impl LeadershipRoute {
+    /// The provenance a preview or decision names: which policy bytes, which
+    /// binding and chain, which roster revision and slot, which position.
+    fn evidence(&self) -> serde_json::Value {
+        serde_json::json!({
+            "policy_hash": self.provenance.policy_hash.as_str(),
+            "schema_version": self.provenance.schema_version,
+            "binding_key": self.provenance.binding_key,
+            "chain": self.provenance.chain,
+            "core_team_revision_hash": self.key.core_team_revision_hash().as_str(),
+            "role_slot_id": self.key.role_slot_id().as_str(),
+            "step": self.route.step,
+            "sub_step": self.route.sub_step,
+        })
+    }
 }
 
 impl CoreTeamRoutePlan {
@@ -8490,16 +8522,22 @@ impl Services {
                     "the SeatBinding is not hosted by this epic's control plane",
                 )
             })?;
-        if !roster.revision.seats.iter().any(|seat| {
-            seat.presence != EpicPresence::OnDemand
-                && seat.role_slot_id == binding.role_slot_id
-                && seat.role.role_code == binding.role.role_code
-        }) {
+        let Some(frozen_seat) = roster
+            .revision
+            .seats
+            .iter()
+            .find(|seat| {
+                seat.presence != EpicPresence::OnDemand
+                    && seat.role_slot_id == binding.role_slot_id
+                    && seat.role.role_code == binding.role.role_code
+            })
+            .cloned()
+        else {
             return Err(self.deny(
                 ApiErrorCode::PlacementBlocked,
                 "the SeatBinding is not one of this epic's frozen Core Team roles",
             ));
-        }
+        };
         let active = state
             .with_store(|store| store.get_hosted_topology_seat(project_id, request.seat_binding_id))
             .map_err(|error| self.refuse(&error))?
@@ -8514,6 +8552,10 @@ impl Services {
             self.fleet.current().as_deref(),
         )
         .map_err(|error| self.refuse_domain(&error))?;
+        // Asked before anything is adopted, retired or probed: a leadership
+        // seat the activated policy binds may only move to a route its chain
+        // offers, and the answer is part of what the preview hash pins.
+        let leadership = self.leadership_route(&roster.revision, &frozen_seat, &desired)?;
         let (predecessor, successor) = if active.native_identity.native_id
             == request.expected_native_id
             && active.native_identity.generation == request.expected_generation
@@ -8660,6 +8702,14 @@ impl Services {
         if stale_native_recovery {
             preview_document["stale_native_recovery"] = serde_json::Value::Bool(true);
         }
+        // Only a policy-bound seat carries this, so an unbound seat's preview
+        // hash is byte-identical to the one it had before policies existed. A
+        // bound seat's apply re-plans against the activation standing then: a
+        // policy activated in between expires the preview instead of placing
+        // the seat on authority nobody previewed.
+        if let Some(placed) = leadership.as_ref() {
+            preview_document["fleet"] = placed.evidence();
+        }
         let preview_hash = self.preview_hash(&preview_document)?;
         Ok(CoreTeamRoutePlan {
             epic,
@@ -8668,6 +8718,7 @@ impl Services {
             predecessor,
             successor,
             desired,
+            leadership,
             stale_native_recovery,
             preview_hash,
         })
@@ -24359,14 +24410,23 @@ impl ApplicationOperations for Services {
                 "a Core Team role may be routed only once",
             ));
         }
-        for role_code in routes.keys() {
-            if !roster.revision.seats.iter().any(|seat| {
+        // Every requested route is judged against the activated policy before
+        // anything is recorded, created or launched — on a replay too, because
+        // a replay still launches the seats its first attempt did not.
+        let mut leadership: BTreeMap<String, LeadershipRoute> = BTreeMap::new();
+        for (role_code, model_rung) in &routes {
+            let Some(frozen_seat) = roster.revision.seats.iter().find(|seat| {
                 seat.presence != EpicPresence::OnDemand && seat.role.role_code.as_str() == role_code
-            }) {
+            }) else {
                 return Err(self.deny(
                     ApiErrorCode::InvalidRequest,
                     "a native Core Team route names no materialized role in the frozen roster",
                 ));
+            };
+            if let Some(placed) =
+                self.leadership_route(&roster.revision, frozen_seat, model_rung)?
+            {
+                leadership.insert(role_code.clone(), placed);
             }
         }
         let mut intent_document = serde_json::json!({
@@ -24577,6 +24637,16 @@ impl ApplicationOperations for Services {
                         })
                         .map_err(|error| self.refuse(&error))?;
                 }
+                if let Some(placed) = leadership.get(seat.role.role_code.as_str()) {
+                    self.record_leadership_decision(
+                        "materialize_core_team",
+                        project_id,
+                        epic_id,
+                        seat_binding_id,
+                        FIRST_HOSTED_OCCUPANCY,
+                        placed,
+                    )?;
+                }
                 let outcome = adapter
                     .launch_hosted_seat(&HostedSeatLaunchRequest {
                         seat_binding_id,
@@ -24744,16 +24814,22 @@ impl ApplicationOperations for Services {
                     "the SeatBinding is not hosted by this epic's control plane",
                 )
             })?;
-        if !roster.revision.seats.iter().any(|seat| {
-            seat.presence != EpicPresence::OnDemand
-                && seat.role_slot_id == binding.role_slot_id
-                && seat.role.role_code == binding.role.role_code
-        }) {
+        let Some(frozen_seat) = roster
+            .revision
+            .seats
+            .iter()
+            .find(|seat| {
+                seat.presence != EpicPresence::OnDemand
+                    && seat.role_slot_id == binding.role_slot_id
+                    && seat.role.role_code == binding.role.role_code
+            })
+            .cloned()
+        else {
             return Err(self.deny(
                 ApiErrorCode::PlacementBlocked,
                 "the SeatBinding is not one of this epic's frozen Core Team roles",
             ));
-        }
+        };
         let superseded = parse_runtime_model_route(
             &request.expected_model_route,
             self.fleet.current().as_deref(),
@@ -24778,6 +24854,9 @@ impl ApplicationOperations for Services {
                 "the replacement route must be a different, non-OpenCode approved route",
             ));
         }
+        // The replacement is the route this seat's next launch will take, so a
+        // seat the activated policy binds may only be repointed onto its chain.
+        let leadership = self.leadership_route(&roster.revision, &frozen_seat, &replacement)?;
         // Catalog-approved, proved the same way every other governed launch
         // proves it: the runtime offers the provider and exactly one enabled
         // account may select it.
@@ -24937,6 +25016,17 @@ impl ApplicationOperations for Services {
             None
         };
 
+        // An exact replay swaps nothing, so it records no second decision.
+        if !replayed && let Some(placed) = leadership.as_ref() {
+            self.record_leadership_decision(
+                "supersede_core_team_launch_intent",
+                project_id,
+                epic_id,
+                request.seat_binding_id,
+                request.occupancy_generation,
+                placed,
+            )?;
+        }
         // The whole compare-and-swap, and every absence it rests on, is proved
         // inside one transaction. Nothing is checked out here that the store
         // does not re-prove under the lock it writes with.
@@ -25225,6 +25315,16 @@ impl ApplicationOperations for Services {
                         )
                     })
                     .map_err(|error| self.refuse(&error))?;
+            }
+            if let Some(placed) = plan.leadership.as_ref() {
+                self.record_leadership_decision(
+                    "core_team_route_correction",
+                    project_id,
+                    epic_id,
+                    plan.binding.id,
+                    successor_occupancy_generation,
+                    placed,
+                )?;
             }
             let outcome = adapter
                 .launch_hosted_seat(&HostedSeatLaunchRequest {
@@ -37611,6 +37711,116 @@ impl Services {
                 rungs: chain.rungs.clone(),
                 fleet: None,
             }))
+    }
+
+    /// The leadership route the activated fleet policy authorises for one
+    /// frozen Core Team seat, or `None` when no policy binds that seat.
+    ///
+    /// `None` leaves the caller's route standing exactly as it did before a
+    /// policy existed. A bound seat is different: the key is proved from the
+    /// pinned revision and this exact seat, resolved through the shared
+    /// resolver, and the requested route must be one its chain still offers.
+    /// Anything else refuses — an activation that cannot be verified, a seat
+    /// the pinned revision does not prove, an exhausted chain or a route off
+    /// it — and nothing falls back to the caller's route, a Team Definition or
+    /// the historical operator exception.
+    ///
+    /// # Errors
+    /// `PlacementBlocked` for an unverifiable activation, an exhausted chain or
+    /// an unoffered route; `InvalidRequest` when the roster cannot prove its seat.
+    fn leadership_route(
+        &self,
+        roster: &CoreTeamRevision,
+        seat: &CoreTeamSeat,
+        requested: &ModelRung,
+    ) -> Result<Option<LeadershipRoute>, ApiError> {
+        let Some(fleet) = self
+            .fleet_policy()
+            .map_err(|error| self.refuse_domain(&error))?
+        else {
+            return Ok(None);
+        };
+        let pinned = roster
+            .canonicalize()
+            .map_err(|error| self.refuse_domain(&error))?;
+        let key =
+            kontor_fleet::LeadershipKey::for_pinned_seat(&pinned, &seat.role_slot_id, &seat.role)
+                .map_err(|error| self.refuse_fleet_policy(&error))?;
+        let Some(resolution) = fleet.resolve_leadership(&key) else {
+            return Ok(None);
+        };
+        if resolution.routes.is_empty() {
+            return Err(self
+                .deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the fleet chain bound to this leadership seat has no route left after the unavailable, calibration and vision rules",
+                )
+                .about("FleetConfiguration"));
+        }
+        let Some(route) = resolution.route_for(requested).cloned() else {
+            return Err(self
+                .deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the requested route is not in the chain the activated fleet policy binds to this leadership seat",
+                )
+                .about("FleetConfiguration")
+                .advising("name a route the bound chain offers, or activate a policy that offers this one"));
+        };
+        Ok(Some(LeadershipRoute {
+            key,
+            provenance: resolution.provenance,
+            route,
+        }))
+    }
+
+    /// Append the decision behind one leadership effect before it happens.
+    ///
+    /// # Errors
+    /// `Unavailable` when the decision cannot be recorded: an effect whose
+    /// policy could not be traced afterwards is not taken.
+    #[allow(clippy::too_many_arguments)]
+    fn record_leadership_decision(
+        &self,
+        operation: &'static str,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+        placed: &LeadershipRoute,
+    ) -> Result<(), ApiError> {
+        let decision = crate::fleet::LeadershipDecision {
+            operation: operation.to_owned(),
+            project_id: project_id.to_string(),
+            epic_id: epic_id.to_string(),
+            seat_binding_id: seat_binding_id.to_string(),
+            occupancy_generation,
+            core_team_revision_hash: placed.key.core_team_revision_hash().as_str().to_owned(),
+            core_team_version: placed.key.core_team_version().get(),
+            role_slot_id: placed.key.role_slot_id().as_str().to_owned(),
+            binding_key: placed.provenance.binding_key.clone(),
+            fleet_hash: placed.provenance.policy_hash.as_str().to_owned(),
+            policy_schema_version: placed.provenance.schema_version,
+            chain: placed.provenance.chain.clone(),
+            step: placed.route.step,
+            sub_step: placed.route.sub_step,
+            provider: placed.route.rung.provider.0.clone(),
+            model: placed.route.rung.model.0.clone(),
+            effort: placed
+                .route
+                .rung
+                .effort
+                .map(|effort| effort.as_str().to_owned()),
+            vendor: placed.route.vendor.clone(),
+            decided_at: kontor_api::now().to_string(),
+        };
+        self.fleet
+            .record_leadership_decision(&decision)
+            .map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the leadership placement decision could not be recorded",
+                )
+            })
     }
 
     /// The preview hash one fleet policy's publication must name.

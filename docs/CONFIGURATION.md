@@ -563,6 +563,17 @@ never falls back to `fleet.yml` or to template routing. Deleting the record
 returns the Realm to the unmigrated `fleet.yml` behaviour above. Rollback is
 activating a recorded hash.
 
+Schema version 2 keeps every v1 section and rule and adds one binding family,
+`leadership/<core-team-revision-hash>/<role-slot-id>`, for epic leadership
+seats. The hash is the canonical content hash of the epic's pinned Core Team
+revision, so a roster change is a new key. `leadership/lsa`,
+`leadership/<slot>` and `core/<role_code>` are rejected. For a bound LSA or TPM
+seat, Core Team materialization, route correction and launch-intent
+supersession refuse any caller route the bound chain does not offer, and each
+admitted leadership effect appends its policy hash, binding, chain position and
+occupancy generation to `fleet-decisions/leadership/<seat_binding_id>.jsonl`.
+A leadership seat no policy binds keeps its caller-supplied route.
+
 ## Provider quota signals
 
 Copy [`config/examples/quota-signals.yml`](../config/examples/quota-signals.yml)

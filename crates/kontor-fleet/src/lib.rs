@@ -267,6 +267,19 @@ pub struct FleetResolution {
     pub routes: Vec<FleetRoute>,
 }
 
+impl FleetResolution {
+    /// The resolved route that is exactly `rung`, or `None` when the bound
+    /// chain does not admit it.
+    ///
+    /// This is the one answer to "may a caller name this route for this seat":
+    /// the account alias, model and effort must all match a route the chain
+    /// still offers after the unavailable, calibration and vision rules.
+    #[must_use]
+    pub fn route_for(&self, rung: &ModelRung) -> Option<&FleetRoute> {
+        self.routes.iter().find(|route| route.rung == *rung)
+    }
+}
+
 /// A validated, hashed view of one fleet document.
 #[derive(Debug)]
 pub struct FleetSnapshot {

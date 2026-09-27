@@ -54,6 +54,10 @@ pub(crate) const FLEET_STATUS_FILE: &str = "fleet-status.json";
 /// The generated record naming the activated fleet policy.
 pub(crate) const FLEET_ACTIVATION_FILE: &str = "fleet-activation.json";
 
+/// One JSON-lines leadership decision log per SeatBinding, inside
+/// [`FLEET_DECISIONS_DIR`].
+pub(crate) const LEADERSHIP_DECISIONS_DIR: &str = "leadership";
+
 /// Largest activation record this build reads, in bytes.
 pub(crate) const MAX_ACTIVATION_BYTES: u64 = 4 * 1024;
 
@@ -199,6 +203,30 @@ pub(crate) struct FleetPolicyStatus {
     pub(crate) active: Option<Arc<FleetSnapshot>>,
     /// Why an existing activation cannot be served, when it cannot.
     pub(crate) refusal: Option<String>,
+}
+
+/// One leadership placement, as its decision log records it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LeadershipDecision {
+    pub(crate) operation: String,
+    pub(crate) project_id: String,
+    pub(crate) epic_id: String,
+    pub(crate) seat_binding_id: String,
+    pub(crate) occupancy_generation: u64,
+    pub(crate) core_team_revision_hash: String,
+    pub(crate) core_team_version: u32,
+    pub(crate) role_slot_id: String,
+    pub(crate) binding_key: String,
+    pub(crate) fleet_hash: String,
+    pub(crate) policy_schema_version: u32,
+    pub(crate) chain: String,
+    pub(crate) step: u16,
+    pub(crate) sub_step: u16,
+    pub(crate) provider: String,
+    pub(crate) model: String,
+    pub(crate) effort: Option<String>,
+    pub(crate) vendor: String,
+    pub(crate) decided_at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -455,6 +483,53 @@ impl FleetSource {
             active,
             refusal,
         }
+    }
+
+    /// Append one leadership placement the activated policy authorised.
+    ///
+    /// Written before the effect it authorises, per SeatBinding, so an auditor
+    /// can reconstruct which policy bytes placed which occupancy of which slot
+    /// of which pinned Core Team revision.
+    ///
+    /// # Errors
+    /// Returns the I/O failure so the caller refuses the placement: an
+    /// unrecorded leadership route could not be traced to its policy.
+    pub(crate) fn record_leadership_decision(
+        &self,
+        decision: &LeadershipDecision,
+    ) -> std::io::Result<()> {
+        let directory = self
+            .state_root
+            .join(FLEET_DECISIONS_DIR)
+            .join(LEADERSHIP_DECISIONS_DIR);
+        create_private_dir(&self.state_root.join(FLEET_DECISIONS_DIR))?;
+        create_private_dir(&directory)?;
+        let path = directory.join(format!("{}.jsonl", decision.seat_binding_id));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path)?;
+        let line = serde_json::to_string(decision).map_err(std::io::Error::other)?;
+        file.write_all(line.as_bytes())?;
+        file.write_all(b"\n")?;
+        file.sync_data()?;
+        tracing::info!(
+            operation = %decision.operation,
+            seat_binding_id = %decision.seat_binding_id,
+            occupancy_generation = decision.occupancy_generation,
+            binding_key = %decision.binding_key,
+            fleet_hash = %decision.fleet_hash,
+            step = decision.step,
+            sub_step = decision.sub_step,
+            provider = %decision.provider,
+            model = %decision.model,
+            "fleet.leadership_route_decided"
+        );
+        Ok(())
     }
 
     /// Append one admitted placement to the run's decision log and the `info` log.
@@ -1897,5 +1972,59 @@ bindings:
         assert!(blocked.activation);
         assert!(blocked.active.is_none(), "fleet.yml is not served instead");
         assert!(blocked.refusal.is_some_and(|refusal| refusal.contains(A08)));
+    }
+
+    #[test]
+    fn a_leadership_decision_is_appended_per_seat_binding() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        let source = FleetSource::at(root.path());
+        let decision = |generation: u64| LeadershipDecision {
+            operation: "materialize_core_team".to_owned(),
+            project_id: "project".to_owned(),
+            epic_id: "epic".to_owned(),
+            seat_binding_id: "binding-1".to_owned(),
+            occupancy_generation: generation,
+            core_team_revision_hash: "roster".to_owned(),
+            core_team_version: 1,
+            role_slot_id: "lsa".to_owned(),
+            binding_key: "leadership/roster/lsa".to_owned(),
+            fleet_hash: "policy".to_owned(),
+            policy_schema_version: 2,
+            chain: "codex-first".to_owned(),
+            step: 1,
+            sub_step: 1,
+            provider: "codex-work".to_owned(),
+            model: "gpt-5.6-sol".to_owned(),
+            effort: Some("xhigh".to_owned()),
+            vendor: "openai".to_owned(),
+            decided_at: "2026-09-27T00:00:00Z".to_owned(),
+        };
+        source
+            .record_leadership_decision(&decision(1))
+            .expect("record");
+        source
+            .record_leadership_decision(&decision(2))
+            .expect("record");
+        let path = root
+            .path()
+            .join(FLEET_DECISIONS_DIR)
+            .join(LEADERSHIP_DECISIONS_DIR)
+            .join("binding-1.jsonl");
+        let lines: Vec<LeadershipDecision> = std::fs::read_to_string(&path)
+            .expect("the log")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a decision line"))
+            .collect();
+        assert_eq!(lines, [decision(1), decision(2)]);
+        assert_eq!(
+            std::fs::symlink_metadata(&path).expect("log").mode() & 0o777,
+            0o600
+        );
+        assert!(
+            source
+                .last_vendor("binding-1", "leadership/roster/lsa")
+                .is_none(),
+            "leadership decisions are not a TeamRun's delivery log"
+        );
     }
 }

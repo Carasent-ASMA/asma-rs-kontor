@@ -35505,9 +35505,232 @@ async fn an_advisor_freezes_from_the_activated_policy_and_fails_closed() {
 }
 
 // ---------------------------------------------------------------------------
-// ASMA-8280 slice two: the registered fleet policy operations, and the
-// consultation seats that must fail closed on an unverifiable activation.
+// ASMA-8280 slice two: the registered fleet policy operations, and leadership
+// seats resolved through the same activated policy as every other seat.
 // ---------------------------------------------------------------------------
+
+/// Preview, publish and activate one policy through the registered operations,
+/// fenced on whatever the Realm reports as active. Returns its content hash.
+async fn activate_through_the_registry(world: &World, yaml: &str, key: &str) -> String {
+    let standing = Call::get("/v1/fleet/policy")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(standing.status, 200, "{}", standing.body);
+    let hash = publish_through_the_registry(world, yaml, key).await;
+    let activated = Call::post(
+        "/v1/fleet/policy:activate",
+        &serde_json::json!({
+            "policy_hash": hash,
+            "expected_active_policy_hash": standing.json()["active_policy_hash"],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{key}-activate"))
+    .send(world)
+    .await;
+    assert_eq!(activated.status, 200, "{}", activated.body);
+    hash
+}
+
+/// Preview and publish one policy, activating nothing.
+async fn publish_through_the_registry(world: &World, yaml: &str, key: &str) -> String {
+    let previewed = Call::post(
+        "/v1/fleet/policy:preview",
+        &serde_json::json!({"document": yaml}),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let published = Call::post(
+        "/v1/fleet/policy:publish",
+        &serde_json::json!({
+            "document": yaml,
+            "preview_hash": previewed.json()["preview_hash"],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key(format!("{key}-publish"))
+    .send(world)
+    .await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    published.json()["policy_hash"]
+        .as_str()
+        .expect("the published hash")
+        .to_owned()
+}
+
+/// The leadership keys of an epic's frozen roster, proved exactly as the
+/// daemon proves them: from the canonical revision and each pinned seat.
+fn leadership_keys(
+    world: &World,
+    project: &str,
+    epic: &str,
+) -> BTreeMap<String, kontor_fleet::LeadershipKey> {
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_epic_roster(project_id_of(project), epic_id_of(epic))
+            .expect("the roster reads")
+            .expect("the epic froze a roster")
+    });
+    let roster = kontor_teams::CoreTeamRevision {
+        version: stored.core_team_version,
+        catalog_hash: stored.catalog_hash,
+        seats: serde_json::from_value(stored.seats).expect("the frozen seats read"),
+    };
+    let pinned = roster.canonicalize().expect("the roster canonicalizes");
+    roster
+        .seats
+        .iter()
+        .map(|seat| {
+            (
+                seat.role_slot_id.as_str().to_owned(),
+                kontor_fleet::LeadershipKey::for_pinned_seat(
+                    &pinned,
+                    &seat.role_slot_id,
+                    &seat.role,
+                )
+                .expect("the pinned seat proves its key"),
+            )
+        })
+        .collect()
+}
+
+/// A schema_version 2 policy binding the LSA and TPM slots of one roster.
+fn leadership_policy(lsa: &str, lsa_chain: &str, tpm: &str, tpm_chain: &str) -> String {
+    format!(
+        "schema_version: 2\n\
+         domains:\n  codex: {{ provider: codex, accounts: [codex] }}\n\
+         models:\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [high, xhigh] }}\n\
+         chains:\n  lsa-chain:\n    - [{lsa_chain}]\n  tpm-chain:\n    - [{tpm_chain}]\n\
+         bindings:\n  {lsa}: lsa-chain\n  {tpm}: tpm-chain\n"
+    )
+}
+
+/// Every leadership decision one SeatBinding's log holds, in order.
+fn leadership_decisions(world: &World, binding: &str) -> Vec<serde_json::Value> {
+    let path = world
+        .directory
+        .path()
+        .join("fleet-decisions")
+        .join("leadership")
+        .join(format!("{binding}.jsonl"));
+    std::fs::read_to_string(path)
+        .map(|text| {
+            text.lines()
+                .map(|line| serde_json::from_str(line).expect("every decision line is JSON"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The shared resolver's own answer for one leadership key and route, read
+/// straight from the activated artifact as a direct-mode reader would.
+fn direct_resolution(
+    world: &World,
+    hash: &str,
+    key: &kontor_fleet::LeadershipKey,
+    route: &ModelRung,
+) -> (kontor_fleet::FleetProvenance, kontor_fleet::FleetRoute) {
+    let artifact = world
+        .directory
+        .path()
+        .join("fleet-history")
+        .join(format!("{hash}.yml"));
+    let bytes = std::fs::read_to_string(artifact).expect("the activated artifact reads");
+    let snapshot =
+        kontor_fleet::FleetSnapshot::parse_policy(&bytes).expect("the activated bytes validate");
+    assert_eq!(
+        snapshot.hash().as_str(),
+        hash,
+        "the artifact is its address"
+    );
+    let resolution = snapshot
+        .resolve_leadership(key)
+        .expect("the activated policy binds the seat");
+    let placed = resolution
+        .route_for(route)
+        .expect("the chain offers the route")
+        .clone();
+    (resolution.provenance, placed)
+}
+
+fn codex_sol(effort: EffortLevel) -> ModelRung {
+    ModelRung {
+        provider: ProviderRef("codex".to_owned()),
+        model: ModelRef("gpt-5.6-sol".to_owned()),
+        effort: Some(effort),
+    }
+}
+
+fn hosted_launches(world: &World) -> usize {
+    world
+        .fake
+        .calls()
+        .into_iter()
+        .filter(|call| {
+            matches!(
+                call,
+                AdapterCall::LaunchHostedSeat(_) | AdapterCall::RetireHostedSeat(_)
+            )
+        })
+        .count()
+}
+
+/// The recorded decision agrees field for field with the shared resolver's own
+/// answer for the same activated bytes, key and route.
+fn assert_decision_is_the_shared_resolution(
+    decision: &serde_json::Value,
+    provenance: &kontor_fleet::FleetProvenance,
+    route: &kontor_fleet::FleetRoute,
+    key: &kontor_fleet::LeadershipKey,
+) {
+    assert_eq!(
+        decision["fleet_hash"],
+        provenance.policy_hash.as_str(),
+        "{decision}"
+    );
+    assert_eq!(
+        decision["policy_schema_version"], provenance.schema_version,
+        "{decision}"
+    );
+    assert_eq!(
+        decision["binding_key"],
+        provenance.binding_key.as_str(),
+        "{decision}"
+    );
+    assert_eq!(decision["binding_key"], key.as_str(), "{decision}");
+    assert_eq!(decision["chain"], provenance.chain.as_str(), "{decision}");
+    assert_eq!(
+        decision["core_team_revision_hash"],
+        key.core_team_revision_hash().as_str(),
+        "{decision}"
+    );
+    assert_eq!(
+        decision["role_slot_id"],
+        key.role_slot_id().as_str(),
+        "{decision}"
+    );
+    assert_eq!(decision["step"], route.step, "{decision}");
+    assert_eq!(decision["sub_step"], route.sub_step, "{decision}");
+    assert_eq!(
+        decision["provider"],
+        route.rung.provider.0.as_str(),
+        "{decision}"
+    );
+    assert_eq!(decision["model"], route.rung.model.0.as_str(), "{decision}");
+    assert_eq!(
+        decision["effort"],
+        route
+            .rung
+            .effort
+            .map(EffortLevel::as_str)
+            .unwrap_or_default(),
+        "{decision}"
+    );
+    assert_eq!(decision["vendor"], route.vendor.as_str(), "{decision}");
+}
 
 /// ASMA-8280: the fleet policy is published and activated through registered
 /// operations. Publication selects nothing, activation is fenced on what the
@@ -35704,6 +35927,464 @@ async fn the_fleet_policy_is_published_and_activated_through_registered_operatio
     assert_eq!(selected.json()["active_policy_hash"], hash.as_str());
     assert_eq!(selected.json()["activation"]["policy_hash"], hash.as_str());
     assert_eq!(selected.json()["active_schema_version"], 1);
+}
+
+/// ASMA-8280: Core Team materialization resolves LSA and TPM through the
+/// activated policy. A caller route off the bound chain refuses before any
+/// seat exists; an unverifiable activation refuses with its failed check; an
+/// unactivated publication or `fleet.yml` edit changes nothing; and every
+/// admitted launch records the exact revision, slot and position the shared
+/// resolver itself answers from the activated bytes.
+#[tokio::test]
+async fn leadership_materialization_is_resolved_through_the_activated_policy() {
+    let composed = compose_realm("/tmp/kontor-asma8280-leadership-materialize").await;
+    let world = &composed.world;
+    let project = composed.project.clone();
+    let epic = composed.epic.clone();
+    adopt_session_base(world, &project, composed.project_revision).await;
+    publish_core_team(
+        world,
+        &project,
+        serde_json::json!([seat("SA", "default", true)]),
+    )
+    .await;
+    let keys = leadership_keys(world, &project, &epic);
+    let (lsa, tpm) = (&keys["lsa"], &keys["tpm"]);
+
+    // The activated policy: LSA on xhigh only, TPM on xhigh or high.
+    let hash = activate_through_the_registry(
+        world,
+        &leadership_policy(
+            lsa.as_str(),
+            "sol@xhigh",
+            tpm.as_str(),
+            "sol@xhigh, sol@high",
+        ),
+        "asma8280-materialize-policy",
+    )
+    .await;
+    // Two unactivated sources say the opposite for the LSA. Neither is read.
+    publish_through_the_registry(
+        world,
+        &leadership_policy(lsa.as_str(), "sol@high", tpm.as_str(), "sol@high"),
+        "asma8280-materialize-unactivated",
+    )
+    .await;
+    write_fleet(world, &fleet_yaml(&["team/t/s"], CLAUDE_THEN_CODEX));
+
+    let materialize = |key: &'static str, lsa_effort: &str, tpm_effort: &str| {
+        let body = serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                {"role_code": "LSA", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": lsa_effort
+                }},
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": tpm_effort
+                }}
+            ]
+        });
+        let project = project.clone();
+        let epic = epic.clone();
+        async move {
+            Call::post(
+                format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+                &body,
+            )
+            .signed_as(world, "admin")
+            .with_key(key)
+            .send(world)
+            .await
+        }
+    };
+
+    let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+    let control_seats = |world: &World| -> usize {
+        world.daemon.state().with_store(|store| {
+            store
+                .list_topology_nodes(project_id_of(&project), Some(epic_id_of(&epic)))
+                .expect("the epic's nodes read")
+                .into_iter()
+                .filter(|node| node.kind == domain.delivery.control_kind)
+                .map(|node| {
+                    store
+                        .list_seat_bindings(project_id_of(&project), node.id)
+                        .expect("the seats read")
+                        .len()
+                })
+                .sum()
+        })
+    };
+    let seats_before = control_seats(world);
+
+    tamper_published_policy(world, &hash, &fleet_yaml(&["team/t/s"], CODEX_THEN_CLAUDE));
+    let unverifiable = materialize("asma8280-materialize-tampered", "xhigh", "xhigh").await;
+    assert_eq!(unverifiable.status, 409, "{}", unverifiable.body);
+    assert!(
+        unverifiable
+            .body
+            .contains("a published fleet policy does not hash to its content address"),
+        "{}",
+        unverifiable.body
+    );
+    assert_eq!(
+        hosted_launches(world),
+        0,
+        "nothing launched on an unverifiable policy"
+    );
+    tamper_published_policy(
+        world,
+        &hash,
+        &leadership_policy(
+            lsa.as_str(),
+            "sol@xhigh",
+            tpm.as_str(),
+            "sol@xhigh, sol@high",
+        ),
+    );
+
+    let off_chain = materialize("asma8280-materialize-off-chain", "high", "high").await;
+    assert_eq!(off_chain.status, 409, "{}", off_chain.body);
+    assert_eq!(off_chain.code(), "placement_blocked");
+    assert!(
+        off_chain
+            .body
+            .contains("the requested route is not in the chain the activated fleet policy binds"),
+        "{}",
+        off_chain.body
+    );
+    assert_eq!(
+        hosted_launches(world),
+        0,
+        "a refused route launches nothing"
+    );
+    assert_eq!(
+        control_seats(world),
+        seats_before,
+        "the refusals came before any logical seat was written"
+    );
+
+    let admitted = materialize("asma8280-materialize-admitted", "xhigh", "high").await;
+    assert_eq!(admitted.status, 200, "{}", admitted.body);
+    let seats = admitted.json()["core_team"]["seats"]
+        .as_array()
+        .expect("the Core Team seats")
+        .clone();
+    for (role_code, slot, effort) in [
+        ("LSA", "lsa", EffortLevel::Xhigh),
+        ("TPM", "tpm", EffortLevel::High),
+    ] {
+        let seat = seats
+            .iter()
+            .find(|seat| seat["role"]["role_code"] == role_code)
+            .unwrap_or_else(|| panic!("the {role_code} seat: {seats:?}"));
+        let binding = seat["seat_binding_id"].as_str().expect("the SeatBinding");
+        let native = seat["native_seat"]["native_id"]
+            .as_str()
+            .expect("a launched native");
+        assert_eq!(seat["native_seat"]["generation"], 1, "{seat}");
+        let hosted = world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_topology_seat(
+                    project_id_of(&project),
+                    SeatBindingId::parse(binding).expect("a SeatBinding"),
+                )
+                .expect("the hosted seat reads")
+                .expect("the hosted seat exists")
+        });
+        assert_eq!(hosted.native_identity.native_id.as_str(), native);
+        assert_eq!(hosted.model_rung, codex_sol(effort), "{role_code}");
+
+        let decisions = leadership_decisions(world, binding);
+        assert_eq!(decisions.len(), 1, "{decisions:?}");
+        let decision = &decisions[0];
+        assert_eq!(decision["operation"], "materialize_core_team");
+        assert_eq!(decision["occupancy_generation"], 1);
+        assert_eq!(decision["seat_binding_id"], binding);
+        assert_eq!(decision["epic_id"], epic.as_str());
+        let (provenance, route) = direct_resolution(world, &hash, &keys[slot], &codex_sol(effort));
+        assert_eq!(provenance.policy_hash.as_str(), hash, "the activated bytes");
+        assert_decision_is_the_shared_resolution(decision, &provenance, &route, &keys[slot]);
+    }
+}
+
+/// ASMA-8280: a Core Team route correction is held to the activated chain.
+/// Off-chain moves refuse before any native effect, an unactivated publication
+/// or `fleet.yml` edit between preview and apply changes nothing, and a new
+/// activation between them expires the preview.
+#[tokio::test]
+async fn a_leadership_route_correction_is_held_to_the_activated_chain() {
+    let (composed, binding, predecessor, generation) = hosted_tpm_seat(
+        "/tmp/kontor-asma8280-leadership-route",
+        "asma8280-route-seat",
+    )
+    .await;
+    let world = &composed.world;
+    let project = composed.project.clone();
+    let epic = composed.epic.clone();
+    let keys = leadership_keys(world, &project, &epic);
+    let (lsa, tpm) = (&keys["lsa"], &keys["tpm"]);
+    let hash = activate_through_the_registry(
+        world,
+        &leadership_policy(
+            lsa.as_str(),
+            "sol@xhigh",
+            tpm.as_str(),
+            "sol@xhigh, sol@high",
+        ),
+        "asma8280-route-policy",
+    )
+    .await;
+    let launches_before = hosted_launches(world);
+    let body = |native: &ExternalId, generation: u64, model: &str, effort: &str| {
+        serde_json::json!({
+            "expected_revision": 1,
+            "seat_binding_id": binding,
+            "expected_native_id": native,
+            "expected_generation": generation,
+            "desired_model_route": {"provider": "codex", "model": model, "effort": effort},
+        })
+    };
+    let preview = |request: serde_json::Value| {
+        let (project, epic) = (project.clone(), epic.clone());
+        async move {
+            Call::post(
+                format!("/v1/projects/{project}/epics/{epic}/core-team/routes:preview"),
+                &request,
+            )
+            .signed_as(world, "admin")
+            .send(world)
+            .await
+        }
+    };
+
+    let off_chain = preview(body(&predecessor, generation, "gpt-5.6-terra", "xhigh")).await;
+    assert_eq!(off_chain.status, 409, "{}", off_chain.body);
+    assert!(
+        off_chain
+            .body
+            .contains("the requested route is not in the chain the activated fleet policy binds"),
+        "{}",
+        off_chain.body
+    );
+    assert_eq!(hosted_launches(world), launches_before);
+
+    let on_chain = preview(body(&predecessor, generation, "gpt-5.6-sol", "high")).await;
+    assert_eq!(on_chain.status, 200, "{}", on_chain.body);
+
+    // Unactivated edits between preview and apply: neither moves anything.
+    publish_through_the_registry(
+        world,
+        &leadership_policy(lsa.as_str(), "sol@xhigh", tpm.as_str(), "sol@xhigh"),
+        "asma8280-route-unactivated",
+    )
+    .await;
+    write_fleet(world, &fleet_yaml(&["team/t/s"], CLAUDE_THEN_CODEX));
+
+    let mut apply_body = body(&predecessor, generation, "gpt-5.6-sol", "high");
+    apply_body["preview_hash"] = on_chain.json()["preview_hash"].clone();
+    let applied = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &apply_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-route-apply")
+    .send(world)
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["seat_binding_id"], binding.as_str());
+    assert_eq!(
+        applied.json()["predecessor_native_id"],
+        predecessor.as_str()
+    );
+    let successor = ExternalId::parse(
+        applied.json()["successor_native_id"]
+            .as_str()
+            .expect("the successor native"),
+    )
+    .expect("a native id");
+    assert_ne!(successor, predecessor, "a route correction is a new native");
+    let hosted = world.daemon.state().with_store(|store| {
+        store
+            .get_hosted_topology_seat(
+                project_id_of(&project),
+                SeatBindingId::parse(&binding).expect("a SeatBinding"),
+            )
+            .expect("the hosted seat reads")
+            .expect("the hosted seat exists")
+    });
+    assert_eq!(hosted.native_identity.native_id, successor);
+    assert_eq!(hosted.model_rung, codex_sol(EffortLevel::High));
+    // The SeatBinding keeps its identity; the occupancy is the new generation.
+    let occupancy = world.daemon.state().with_store(|store| {
+        store
+            .hosted_topology_seat_occupancy_generation(
+                project_id_of(&project),
+                SeatBindingId::parse(&binding).expect("a SeatBinding"),
+            )
+            .expect("the occupancy reads")
+            .expect("the seat is occupied")
+    });
+    assert_eq!(occupancy, 2, "the correction opened the second occupancy");
+
+    let decisions = leadership_decisions(world, &binding);
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    assert_eq!(decisions[0]["operation"], "core_team_route_correction");
+    assert_eq!(decisions[0]["occupancy_generation"], occupancy);
+    let (provenance, route) = direct_resolution(world, &hash, tpm, &codex_sol(EffortLevel::High));
+    assert_decision_is_the_shared_resolution(&decisions[0], &provenance, &route, tpm);
+    assert_eq!((route.step, route.sub_step), (1, 2));
+
+    // A new *activation* between preview and apply is a routing change, so the
+    // preview it did not see expires instead of being applied.
+    let successor_generation = hosted.native_identity.generation;
+    let back = preview(body(
+        &successor,
+        successor_generation,
+        "gpt-5.6-sol",
+        "xhigh",
+    ))
+    .await;
+    assert_eq!(back.status, 200, "{}", back.body);
+    let narrower = leadership_policy(lsa.as_str(), "sol@xhigh", tpm.as_str(), "sol@xhigh");
+    let narrower_hash = ContentHash::of(narrower.as_bytes()).to_string();
+    let reactivated = Call::post(
+        "/v1/fleet/policy:activate",
+        &serde_json::json!({"policy_hash": narrower_hash, "expected_active_policy_hash": hash}),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-route-reactivate")
+    .send(world)
+    .await;
+    assert_eq!(reactivated.status, 200, "{}", reactivated.body);
+    let launches_after_first = hosted_launches(world);
+    let mut stale_body = body(&successor, successor_generation, "gpt-5.6-sol", "xhigh");
+    stale_body["preview_hash"] = back.json()["preview_hash"].clone();
+    let stale = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/routes:apply"),
+        &stale_body,
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-route-apply-stale")
+    .send(world)
+    .await;
+    assert_eq!(stale.status, 400, "{}", stale.body);
+    assert!(
+        stale.body.contains("no longer matches its preview"),
+        "{}",
+        stale.body
+    );
+    assert_eq!(
+        hosted_launches(world),
+        launches_after_first,
+        "nothing was retired or launched"
+    );
+    assert_eq!(leadership_decisions(world, &binding).len(), 1);
+}
+
+/// ASMA-8280: superseding a wedged leadership launch intent is held to the
+/// activated chain, and the admitted replacement records its decision once.
+#[tokio::test]
+async fn a_leadership_launch_intent_supersession_is_held_to_the_activated_chain() {
+    let (composed, binding, revision) = wedged_launch_intent_seat(
+        "/tmp/kontor-asma8280-leadership-supersede",
+        "asma8280-supersede-seat",
+    )
+    .await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let keys = leadership_keys(world, project, epic);
+    let (lsa, tpm) = (&keys["lsa"], &keys["tpm"]);
+    let high_only = activate_through_the_registry(
+        world,
+        &leadership_policy(lsa.as_str(), "sol@xhigh", tpm.as_str(), "sol@high"),
+        "asma8280-supersede-high",
+    )
+    .await;
+
+    let refused = supersede(
+        world,
+        project,
+        epic,
+        &supersede_body(&binding, revision),
+        "asma8280-supersede-refused",
+    )
+    .await;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert!(
+        refused
+            .body
+            .contains("the requested route is not in the chain the activated fleet policy binds"),
+        "{}",
+        refused.body
+    );
+    let intent = |world: &World| {
+        world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_seat_launch_intent(
+                    project_id_of(project),
+                    SeatBindingId::parse(&binding).expect("a SeatBinding"),
+                    1,
+                )
+                .expect("the intent reads")
+                .expect("the intent exists")
+        })
+    };
+    assert_eq!(
+        intent(world).model_rung.provider.0,
+        "opencode",
+        "nothing was swapped"
+    );
+    assert!(leadership_decisions(world, &binding).is_empty());
+
+    let xhigh = leadership_policy(lsa.as_str(), "sol@xhigh", tpm.as_str(), "sol@xhigh");
+    publish_through_the_registry(world, &xhigh, "asma8280-supersede-xhigh").await;
+    let xhigh_hash = ContentHash::of(xhigh.as_bytes()).to_string();
+    let activated = Call::post(
+        "/v1/fleet/policy:activate",
+        &serde_json::json!({"policy_hash": xhigh_hash, "expected_active_policy_hash": high_only}),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-supersede-xhigh-activate")
+    .send(world)
+    .await;
+    assert_eq!(activated.status, 200, "{}", activated.body);
+
+    let applied = supersede(
+        world,
+        project,
+        epic,
+        &supersede_body(&binding, revision),
+        "asma8280-supersede-admitted",
+    )
+    .await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(intent(world).model_rung, codex_sol(EffortLevel::Xhigh));
+    let replay = supersede(
+        world,
+        project,
+        epic,
+        &supersede_body(&binding, revision),
+        "asma8280-supersede-admitted",
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+
+    let decisions = leadership_decisions(world, &binding);
+    assert_eq!(
+        decisions.len(),
+        1,
+        "an exact replay records no second decision"
+    );
+    assert_eq!(
+        decisions[0]["operation"],
+        "supersede_core_team_launch_intent"
+    );
+    assert_eq!(decisions[0]["occupancy_generation"], 1);
+    let (provenance, route) =
+        direct_resolution(world, &xhigh_hash, tpm, &codex_sol(EffortLevel::Xhigh));
+    assert_decision_is_the_shared_resolution(&decisions[0], &provenance, &route, tpm);
 }
 
 /// ASMA-8280: a Committee seat recovery reads the activated policy, and while

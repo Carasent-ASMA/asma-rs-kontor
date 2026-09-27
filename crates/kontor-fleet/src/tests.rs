@@ -467,3 +467,38 @@ fn every_successor_rule_string_is_stable() {
         "a leadership seat's role must match the frozen role snapshot of its slot"
     );
 }
+
+#[test]
+fn a_requested_route_is_admitted_only_as_the_chain_offers_it() {
+    let seats = leadership_seats();
+    let roster = revision(SpecVersion::FIRST, &seats);
+    let (tpm, lsa) = (key(&roster, &seats[0]), key(&roster, &seats[1]));
+    let snapshot =
+        FleetSnapshot::parse_policy(&policy(lsa.as_str(), tpm.as_str())).expect("valid policy");
+    let resolution = snapshot.resolve_leadership(&lsa).expect("LSA is bound");
+    let rung = |provider: &str, model: &str, effort: Option<EffortLevel>| ModelRung {
+        provider: ProviderRef(provider.to_owned()),
+        model: ModelRef(model.to_owned()),
+        effort,
+    };
+    let offered = resolution
+        .route_for(&rung(
+            "claude-work",
+            "claude-opus-5",
+            Some(EffortLevel::Xhigh),
+        ))
+        .expect("step 2 offers Opus 5 on the work login");
+    assert_eq!((offered.step, offered.sub_step), (2, 2));
+    for refused in [
+        // The chain's own model on an effort it does not name.
+        rung("claude-work", "claude-opus-5", Some(EffortLevel::High)),
+        // A model the chain lists but the LSA's calibration rule removed.
+        rung("claude-work", "claude-opus-5-5", Some(EffortLevel::Xhigh)),
+        // A listed model on an account the domain does not declare.
+        rung("claude", "claude-opus-5", Some(EffortLevel::Xhigh)),
+        // A route no chain binds to this seat.
+        rung("cursor", "grok-4.6", Some(EffortLevel::High)),
+    ] {
+        assert!(resolution.route_for(&refused).is_none(), "{refused:?}");
+    }
+}
