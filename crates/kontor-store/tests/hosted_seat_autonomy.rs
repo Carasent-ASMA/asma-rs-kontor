@@ -17,13 +17,15 @@
 mod support;
 
 use kontor_core::id::{
-    ExternalId, ExternalName, MiniProjectId, ProjectId, RoleCode, RoleSlotId, RuntimeKindKey,
-    SeatBindingId, Timestamp, TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
+    CanonicalDocument, ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId,
+    ProjectId, RoleCode, RoleSlotId, RuntimeKindKey, SeatBindingId, Timestamp, TopologyKindKey,
+    TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::repository::{
-    HostedSeatLaunchIntentState, MiniProjectTopologySnapshot, NewMiniProject, NewProject,
-    NewSeatBinding, NewSessionTopologyNode, ProjectRepository, ProjectTopologyDefault,
-    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, TopologyRepository,
+    CoreTeamRouteSuccessionCommit, HostedSeatLaunchIntentState, MiniProjectTopologySnapshot,
+    NewMiniProject, NewProject, NewSeatBinding, NewSessionTopologyNode, ProjectRepository,
+    ProjectTopologyDefault, StoredHostedSeatLaunchIntent, StoredHostedTopologySeat,
+    TopologyRepository,
 };
 use kontor_core::spec::{
     CatalogRoleRef, ModelRef, ModelRung, ProviderRef, SeatAutonomy, Shareability, ShareabilityTier,
@@ -65,6 +67,7 @@ struct Fixture {
     db_path: std::path::PathBuf,
     store: SqliteStore,
     project_id: ProjectId,
+    mini_project_id: MiniProjectId,
     ecp_id: TopologyNodeId,
     catalog_id: kontor_core::id::RoleCatalogId,
     catalog_version: kontor_core::id::SpecVersion,
@@ -173,6 +176,7 @@ impl Fixture {
             db_path,
             store,
             project_id,
+            mini_project_id,
             ecp_id,
             catalog_id: catalog.catalog_id,
             catalog_version: catalog.version,
@@ -909,4 +913,121 @@ fn seat_launch_intents_read_back_across_every_generation() {
     // is evidence a launch was *intended* and never that one happened.
     assert_eq!(intents[1].state, HostedSeatLaunchIntentState::Prepared);
     assert!(intents[1].observed_native_id.is_none());
+}
+
+/// The succession readback is validated where it is persisted, not only where
+/// it is built.
+///
+/// `CoreTeamRouteSuccessionCommit.readback` is free JSON. The production daemon
+/// constructs a typed document and canonicalizes it first, but the store method
+/// is the boundary that makes bytes durable, and a boundary that trusts its
+/// caller is not a boundary. A nested forbidden key and a digest that does not
+/// describe the bytes must each refuse — and refuse *without* committing the
+/// route, so nothing half-written is left for a later export to trip over
+/// (ASMA-8187 P2).
+#[test]
+fn a_succession_readback_is_refused_at_the_store_boundary() {
+    let fixture = Fixture::build();
+    let (seat, predecessor) = fixture.lsa(SeatAutonomy::Supervised);
+    let successor = StoredHostedTopologySeat {
+        native_identity: identity("lsa-second", 2),
+        observed_at: at("2026-09-17T02:05:00Z"),
+        ..predecessor.clone()
+    };
+    let key = IdempotencyKey::parse("asma-8187-boundary").expect("a key");
+    let committed_at = at("2026-09-17T02:04:00Z");
+    let intent_hash = ContentHash::of(b"asma-8187 boundary intent");
+    // Claim first. Without an owned claim the commit refuses on the missing
+    // row and never reaches the validation under test — which is exactly how a
+    // weaker version of this test passed while proving nothing.
+    fixture
+        .store
+        .claim_core_team_route_succession(
+            &kontor_core::repository::NewCoreTeamRouteSuccessionClaim {
+                idempotency_key: key.clone(),
+                intent_hash: intent_hash.clone(),
+                project_id: fixture.project_id,
+                mini_project_id: fixture.mini_project_id,
+                seat_binding_id: seat,
+                predecessor_native_id: predecessor.native_identity.native_id.clone(),
+                predecessor_generation: predecessor.native_identity.generation,
+                predecessor_occupancy_generation: 1,
+                successor_occupancy_generation: 2,
+                successor_credential_generation: 2,
+                claimed_at: at("2026-09-17T02:03:00Z"),
+            },
+        )
+        .expect("the claim is taken");
+
+    let honest = serde_json::json!({
+        "seat_binding_id": seat.to_string(),
+        "note": "ordinary readback",
+    });
+    let honest_hash = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "readback": honest,
+    }))
+    .expect("the honest readback canonicalizes")
+    .hash()
+    .clone();
+
+    // A nested forbidden key is refused before anything is written. It is
+    // nested deliberately: a guard that only inspects top-level keys would let
+    // this through.
+    let hidden = serde_json::json!({
+        "seat_binding_id": seat.to_string(),
+        "placement": {"detail": {"credential": "anything at all"}},
+    });
+    assert!(
+        CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "readback": hidden,
+        }))
+        .is_err(),
+        "a nested forbidden key canonicalized at all"
+    );
+    let refused = fixture.store.replace_hosted_topology_seat_route(
+        &predecessor,
+        &successor,
+        committed_at,
+        "boundary test",
+        Some(&CoreTeamRouteSuccessionCommit {
+            idempotency_key: key.clone(),
+            readback: hidden,
+            readback_hash: honest_hash.clone(),
+            route_committed_at: committed_at,
+        }),
+    );
+    assert!(
+        refused.is_err(),
+        "the store persisted a readback carrying a nested forbidden key"
+    );
+
+    // A truthful document under a digest that does not describe it is equally
+    // refused: the hash is re-derived here rather than believed.
+    let lied = fixture.store.replace_hosted_topology_seat_route(
+        &predecessor,
+        &successor,
+        committed_at,
+        "boundary test",
+        Some(&CoreTeamRouteSuccessionCommit {
+            idempotency_key: key.clone(),
+            readback: honest.clone(),
+            readback_hash: ContentHash::of(b"a digest of something else"),
+            route_committed_at: committed_at,
+        }),
+    );
+    assert!(lied.is_err(), "a mismatched declared hash was persisted");
+
+    // Neither refusal moved the seat: the predecessor is still the occupant and
+    // no retirement was written.
+    let active = fixture
+        .store
+        .get_hosted_topology_seat(fixture.project_id, seat)
+        .expect("the seat reads")
+        .expect("the seat exists");
+    assert_eq!(
+        active.native_identity.native_id, predecessor.native_identity.native_id,
+        "a refused readback still replaced the occupant"
+    );
 }

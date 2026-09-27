@@ -5470,6 +5470,22 @@ impl SqliteStore {
             )
             .map_err(backend)?;
         if let Some(succession) = succession {
+            // Validated here, at the boundary that persists it, and not only by
+            // whichever caller happened to build it. The readback arrives as
+            // free JSON, so this is the last place a nested forbidden key or a
+            // bearer-shaped value can be refused before it is durable — and the
+            // declared hash is re-derived rather than trusted, so a caller
+            // cannot record bytes under a digest that does not describe them.
+            let canonical = CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "readback": succession.readback,
+            }))?;
+            if canonical.hash() != &succession.readback_hash {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the succession readback does not match its declared hash",
+                });
+            }
             let readback = serde_json::to_string(&succession.readback).map_err(|error| {
                 RepositoryError::Backend {
                     detail: format!("a succession readback could not be encoded: {error}"),
