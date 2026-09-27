@@ -5647,8 +5647,15 @@ export interface components {
             /** @description Logical SeatBinding that must be preserved. */
             seat_binding_id: string;
         };
+        /** @description Which trailing effects of a committed succession have landed. */
+        CoreTeamRouteEffectsDto: {
+            /** @description The launch intent has been reconciled against the native it produced. */
+            launch_intent_installed: boolean;
+            /** @description The SeatBinding has been observed against the successor. */
+            seat_binding_observed: boolean;
+        };
         /**
-         * @description The successor's credential binding, as non-secret identity only.
+         * @description The successor's grant subject, as non-secret identity only.
          *
          *     A seat credential is bearer material derived from the operator secret, so
          *     neither it nor any digest *of it* appears here or anywhere else. What is
@@ -5657,7 +5664,7 @@ export interface components {
          *     can therefore prove which generation-scoped grant the successor derived
          *     without the record ever having held anything secret (ASMA-8187).
          */
-        CoreTeamRouteCredentialDto: {
+        CoreTeamRouteGrantSubjectDto: {
             /**
              * Format: int64
              * @description The generation this successor's grant is scoped to.
@@ -5670,13 +5677,6 @@ export interface components {
             subject_digest: string;
             /** @description The logical seat the grant is scoped to. */
             subject_seat_binding_id: string;
-        };
-        /** @description Which trailing effects of a committed succession have landed. */
-        CoreTeamRouteEffectsDto: {
-            /** @description The launch intent has been reconciled against the native it produced. */
-            launch_intent_installed: boolean;
-            /** @description The SeatBinding has been observed against the successor. */
-            seat_binding_observed: boolean;
         };
         /** @description One exact native occupant of a logical Core Team seat. */
         CoreTeamRouteOccupantDto: {
@@ -5708,12 +5708,20 @@ export interface components {
             /** @description Archived predecessor native identity. */
             predecessor_native_id: string;
             readback?: null | components["schemas"]["CoreTeamRouteSuccessionReadbackDto"];
-            /** @description Digest of that readback. */
+            /**
+             * @description Digest of that readback.
+             *
+             *     Covers the immutable outcome only. The trailing effects below are live
+             *     ledger state rather than evidence of what the command did, so they are
+             *     deliberately outside the hashed document — a digest that moved when an
+             *     effect landed would not be a digest of the outcome.
+             */
             readback_hash?: string | null;
             /** @description Audited mutation receipt. */
             receipt: components["schemas"]["MutationReceiptDto"];
             /** @description Preserved logical SeatBinding. */
             seat_binding_id: string;
+            succession_effects?: null | components["schemas"]["CoreTeamRouteEffectsDto"];
             /** @description Active successor native identity; equal to predecessor for an unchanged route. */
             successor_native_id: string;
         };
@@ -5771,10 +5779,14 @@ export interface components {
          *     once a later succession has moved the seat on.
          */
         CoreTeamRouteSuccessionReadbackDto: {
-            /** @description The successor's generation-scoped credential subject, never its value. */
-            credential: components["schemas"]["CoreTeamRouteCredentialDto"];
-            /** @description Which trailing effects had landed when this readback was answered. */
-            effects: components["schemas"]["CoreTeamRouteEffectsDto"];
+            /**
+             * @description The successor's generation-scoped grant subject, never any credential.
+             *
+             *     Named `grant_subject` rather than `credential` deliberately: the realm's
+             *     canonical-document guard forbids a node called `credential` outright, and
+             *     this node is the subject a grant is scoped to rather than a grant.
+             */
+            grant_subject: components["schemas"]["CoreTeamRouteGrantSubjectDto"];
             /** @description Exact archived predecessor. */
             predecessor: components["schemas"]["CoreTeamRouteOccupantDto"];
             /** @description Instant the predecessor was retired. */

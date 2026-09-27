@@ -1067,7 +1067,7 @@ pub struct CoreTeamRouteOccupantDto {
     pub model_route: RuntimeModelRouteRequest,
 }
 
-/// The successor's credential binding, as non-secret identity only.
+/// The successor's grant subject, as non-secret identity only.
 ///
 /// A seat credential is bearer material derived from the operator secret, so
 /// neither it nor any digest *of it* appears here or anywhere else. What is
@@ -1076,7 +1076,7 @@ pub struct CoreTeamRouteOccupantDto {
 /// can therefore prove which generation-scoped grant the successor derived
 /// without the record ever having held anything secret (ASMA-8187).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct CoreTeamRouteCredentialDto {
+pub struct CoreTeamRouteGrantSubjectDto {
     /// The generation this successor's grant is scoped to.
     pub generation: u64,
     /// The logical seat the grant is scoped to.
@@ -1112,12 +1112,14 @@ pub struct CoreTeamRouteSuccessionReadbackDto {
     pub predecessor: CoreTeamRouteOccupantDto,
     /// Exact installed successor.
     pub successor: CoreTeamRouteOccupantDto,
-    /// The successor's generation-scoped credential subject, never its value.
-    pub credential: CoreTeamRouteCredentialDto,
+    /// The successor's generation-scoped grant subject, never any credential.
+    ///
+    /// Named `grant_subject` rather than `credential` deliberately: the realm's
+    /// canonical-document guard forbids a node called `credential` outright, and
+    /// this node is the subject a grant is scoped to rather than a grant.
+    pub grant_subject: CoreTeamRouteGrantSubjectDto,
     /// Instant the predecessor was retired.
     pub retired_at: String,
-    /// Which trailing effects had landed when this readback was answered.
-    pub effects: CoreTeamRouteEffectsDto,
 }
 
 /// Completed in-place route correction with exact identity readback.
@@ -1143,9 +1145,21 @@ pub struct CoreTeamRouteOutcomeDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readback: Option<CoreTeamRouteSuccessionReadbackDto>,
     /// Digest of that readback.
+    ///
+    /// Covers the immutable outcome only. The trailing effects below are live
+    /// ledger state rather than evidence of what the command did, so they are
+    /// deliberately outside the hashed document — a digest that moved when an
+    /// effect landed would not be a digest of the outcome.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<String>)]
     pub readback_hash: Option<ContentHash>,
+    /// Which trailing effects have landed, read at answer time.
+    ///
+    /// A committed route with a pending launch intent or an unobserved
+    /// SeatBinding is not a complete succession, and this is where a caller
+    /// sees that rather than inferring it from a readback that cannot change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub succession_effects: Option<CoreTeamRouteEffectsDto>,
     /// Audited mutation receipt.
     pub receipt: MutationReceiptDto,
 }

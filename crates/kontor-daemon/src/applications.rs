@@ -76,7 +76,7 @@ use kontor_api::applications::{
     CoreTeamApplyRequest, CoreTeamDto, CoreTeamLaunchIntentSupersedeRequest,
     CoreTeamLaunchIntentSupersessionDto, CoreTeamMaterializeRequest, CoreTeamNativeSeatDto,
     CoreTeamOutcomeDto, CoreTeamPreviewDto, CoreTeamPreviewRequest, CoreTeamRouteApplyRequest,
-    CoreTeamRouteCredentialDto, CoreTeamRouteEffectsDto, CoreTeamRouteOccupantDto,
+    CoreTeamRouteEffectsDto, CoreTeamRouteGrantSubjectDto, CoreTeamRouteOccupantDto,
     CoreTeamRouteOutcomeDto, CoreTeamRoutePreviewDto, CoreTeamRoutePreviewRequest,
     CoreTeamRouteSuccessionReadbackDto, CoreTeamSeatClaimApplyRequest, CoreTeamSeatClaimOutcomeDto,
     CoreTeamSeatClaimPreviewDto, CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto,
@@ -8445,13 +8445,13 @@ impl Services {
     fn credential_subject(
         seat_binding_id: SeatBindingId,
         occupancy_generation: u64,
-    ) -> CoreTeamRouteCredentialDto {
+    ) -> CoreTeamRouteGrantSubjectDto {
         let mut subject = Vec::new();
         subject.extend_from_slice(b"kontor-core-team-seat-grant-subject-v1\0");
         subject.extend_from_slice(seat_binding_id.to_string().as_bytes());
         subject.push(0);
         subject.extend_from_slice(occupancy_generation.to_string().as_bytes());
-        CoreTeamRouteCredentialDto {
+        CoreTeamRouteGrantSubjectDto {
             generation: occupancy_generation,
             subject_seat_binding_id: seat_binding_id,
             subject_digest: ContentHash::of(&subject),
@@ -8466,7 +8466,6 @@ impl Services {
         successor: &StoredHostedTopologySeat,
         successor_occupancy: u64,
         retired_at: Timestamp,
-        effects: CoreTeamRouteEffectsDto,
     ) -> CoreTeamRouteSuccessionReadbackDto {
         let occupant = |seat: &StoredHostedTopologySeat, occupancy: u64| CoreTeamRouteOccupantDto {
             native_id: seat.native_identity.native_id.clone(),
@@ -8481,9 +8480,8 @@ impl Services {
             seat_binding_id,
             predecessor: occupant(predecessor, predecessor_occupancy),
             successor: occupant(successor, successor_occupancy),
-            credential: Self::credential_subject(seat_binding_id, successor_occupancy),
+            grant_subject: Self::credential_subject(seat_binding_id, successor_occupancy),
             retired_at: retired_at.to_string(),
-            effects,
         }
     }
 
@@ -8597,7 +8595,7 @@ impl Services {
             || readback.predecessor.native_id != recorded.predecessor_native_id
             || Some(&readback.successor.native_id) != recorded.successor_native_id.as_ref()
             || readback.successor.occupancy_generation != recorded.successor_occupancy_generation
-            || readback.credential.generation != recorded.successor_credential_generation
+            || readback.grant_subject.generation != recorded.successor_credential_generation
         {
             return Err(self.deny(
                 ApiErrorCode::Unavailable,
@@ -8617,6 +8615,10 @@ impl Services {
             successor_native_id,
             readback: Some(readback),
             readback_hash: recorded.readback_hash.clone(),
+            succession_effects: Some(CoreTeamRouteEffectsDto {
+                launch_intent_installed: recorded.effects.launch_intent_installed,
+                seat_binding_observed: recorded.effects.seat_binding_observed,
+            }),
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
                 receipt_id: receipt_id.to_string(),
@@ -25461,10 +25463,6 @@ impl ApplicationOperations for Services {
                 &successor,
                 successor_occupancy_generation,
                 retired_at,
-                CoreTeamRouteEffectsDto {
-                    launch_intent_installed: false,
-                    seat_binding_observed: false,
-                },
             );
             let readback_value = serde_json::to_value(&readback).map_err(|_| {
                 self.deny(
@@ -25559,17 +25557,17 @@ impl ApplicationOperations for Services {
             seat_binding_id: plan.binding.id,
             predecessor_native_id: plan.predecessor.native_identity.native_id,
             successor_native_id: successor.native_identity.native_id,
-            readback: succession_readback.as_ref().map(|(readback, _)| {
-                let mut answered = readback.clone();
-                // Answered with both effects latched, which is the state the
-                // ledger now records.
-                answered.effects = CoreTeamRouteEffectsDto {
+            readback: succession_readback
+                .as_ref()
+                .map(|(readback, _)| readback.clone()),
+            readback_hash: succession_readback.as_ref().map(|(_, hash)| hash.clone()),
+            // Both latched on this path, which is the state the ledger records.
+            succession_effects: succession_readback
+                .as_ref()
+                .map(|_| CoreTeamRouteEffectsDto {
                     launch_intent_installed: true,
                     seat_binding_observed: true,
-                };
-                answered
-            }),
-            readback_hash: succession_readback.as_ref().map(|(_, hash)| hash.clone()),
+                }),
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
                 receipt_id: receipt_id.to_string(),

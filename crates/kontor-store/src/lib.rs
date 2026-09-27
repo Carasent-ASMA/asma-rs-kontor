@@ -174,12 +174,39 @@ impl From<StoreError> for RepositoryError {
 #[derive(Debug)]
 pub struct SqliteStore {
     connection: Connection,
+    /// Armed crash points, under the `fault-injection` feature only.
+    #[cfg(feature = "fault-injection")]
+    faults: StoreFaults,
     /// Loaded once at open and never mutated, so every ingress check compares
     /// against the same value for the lifetime of the store.
     realm: RealmMetadata,
 }
 
+/// Deterministic crash points a recovery test can stand in.
+///
+/// Some durable intervals are only reachable by losing the process inside them.
+/// Arming a crash point is how a test stands there deliberately instead of
+/// hoping to. The whole type is behind `fault-injection`, which nothing but a
+/// dev-dependency edge turns on.
+#[cfg(feature = "fault-injection")]
+#[derive(Debug, Default)]
+pub(crate) struct StoreFaults {
+    /// Fail immediately after a succession's route transition commits, before
+    /// the effects that follow it are latched.
+    pub(crate) lose_next_succession_effects: std::cell::Cell<bool>,
+}
+
 impl SqliteStore {
+    /// Arm a single deterministic loss of the next succession's trailing effects.
+    ///
+    /// The route transition still commits; only the latch that follows it is
+    /// lost, which is exactly what a process death in that interval looks like
+    /// from the daemon.
+    #[cfg(feature = "fault-injection")]
+    pub fn lose_next_succession_effects(&self) {
+        self.faults.lose_next_succession_effects.set(true);
+    }
+
     /// Open (creating if needed) and migrate a database file.
     ///
     /// A `user_version` of 0 applies migration 0001; 1 is an idempotent open;
@@ -194,7 +221,12 @@ impl SqliteStore {
         let mut connection = Connection::open(path)?;
         migrations::configure_connection(&connection)?;
         let realm = migrations::migrate(&mut connection)?;
-        Ok(Self { connection, realm })
+        Ok(Self {
+            connection,
+            realm,
+            #[cfg(feature = "fault-injection")]
+            faults: StoreFaults::default(),
+        })
     }
 
     /// This database's immutable Realm identity.

@@ -5596,6 +5596,15 @@ impl SqliteStore {
         key: &IdempotencyKey,
         effects: CoreTeamRouteSuccessionEffects,
     ) -> RepositoryResult<Applied> {
+        // A crash here is indistinguishable, from the caller, from the latch
+        // never having happened — which is the interval the pending-effect
+        // columns exist to survive. Production builds never compile this.
+        #[cfg(feature = "fault-injection")]
+        if self.faults.lose_next_succession_effects.replace(false) {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault before the succession effect latch".to_owned(),
+            });
+        }
         let updated = self
             .connection
             .execute(

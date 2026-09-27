@@ -384,7 +384,7 @@ impl Modify for RealmBearer {
         crate::applications::CoreTeamRoutePreviewRequest,
         crate::applications::CoreTeamRoutePreviewDto,
         crate::applications::CoreTeamRouteApplyRequest,
-        crate::applications::CoreTeamRouteCredentialDto,
+        crate::applications::CoreTeamRouteGrantSubjectDto,
         crate::applications::CoreTeamRouteEffectsDto,
         crate::applications::CoreTeamRouteOccupantDto,
         crate::applications::CoreTeamRouteOutcomeDto,

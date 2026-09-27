@@ -16198,9 +16198,27 @@
         },
         "additionalProperties": false
       },
-      "CoreTeamRouteCredentialDto": {
+      "CoreTeamRouteEffectsDto": {
         "type": "object",
-        "description": "The successor's credential binding, as non-secret identity only.\n\nA seat credential is bearer material derived from the operator secret, so\nneither it nor any digest *of it* appears here or anywhere else. What is\nrecorded is the subject the grant is scoped to — the logical seat and the\noccupancy generation — and a digest over exactly that public pair. A reader\ncan therefore prove which generation-scoped grant the successor derived\nwithout the record ever having held anything secret (ASMA-8187).",
+        "description": "Which trailing effects of a committed succession have landed.",
+        "required": [
+          "launch_intent_installed",
+          "seat_binding_observed"
+        ],
+        "properties": {
+          "launch_intent_installed": {
+            "type": "boolean",
+            "description": "The launch intent has been reconciled against the native it produced."
+          },
+          "seat_binding_observed": {
+            "type": "boolean",
+            "description": "The SeatBinding has been observed against the successor."
+          }
+        }
+      },
+      "CoreTeamRouteGrantSubjectDto": {
+        "type": "object",
+        "description": "The successor's grant subject, as non-secret identity only.\n\nA seat credential is bearer material derived from the operator secret, so\nneither it nor any digest *of it* appears here or anywhere else. What is\nrecorded is the subject the grant is scoped to — the logical seat and the\noccupancy generation — and a digest over exactly that public pair. A reader\ncan therefore prove which generation-scoped grant the successor derived\nwithout the record ever having held anything secret (ASMA-8187).",
         "required": [
           "generation",
           "subject_seat_binding_id",
@@ -16220,24 +16238,6 @@
           "subject_seat_binding_id": {
             "type": "string",
             "description": "The logical seat the grant is scoped to."
-          }
-        }
-      },
-      "CoreTeamRouteEffectsDto": {
-        "type": "object",
-        "description": "Which trailing effects of a committed succession have landed.",
-        "required": [
-          "launch_intent_installed",
-          "seat_binding_observed"
-        ],
-        "properties": {
-          "launch_intent_installed": {
-            "type": "boolean",
-            "description": "The launch intent has been reconciled against the native it produced."
-          },
-          "seat_binding_observed": {
-            "type": "boolean",
-            "description": "The SeatBinding has been observed against the successor."
           }
         }
       },
@@ -16325,7 +16325,7 @@
               "string",
               "null"
             ],
-            "description": "Digest of that readback."
+            "description": "Digest of that readback.\n\nCovers the immutable outcome only. The trailing effects below are live\nledger state rather than evidence of what the command did, so they are\ndeliberately outside the hashed document — a digest that moved when an\neffect landed would not be a digest of the outcome."
           },
           "receipt": {
             "$ref": "#/components/schemas/MutationReceiptDto",
@@ -16334,6 +16334,17 @@
           "seat_binding_id": {
             "type": "string",
             "description": "Preserved logical SeatBinding."
+          },
+          "succession_effects": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CoreTeamRouteEffectsDto",
+                "description": "Which trailing effects have landed, read at answer time.\n\nA committed route with a pending launch intent or an unobserved\nSeatBinding is not a complete succession, and this is where a caller\nsees that rather than inferring it from a readback that cannot change."
+              }
+            ]
           },
           "successor_native_id": {
             "type": "string",
@@ -16445,18 +16456,13 @@
           "seat_binding_id",
           "predecessor",
           "successor",
-          "credential",
-          "retired_at",
-          "effects"
+          "grant_subject",
+          "retired_at"
         ],
         "properties": {
-          "credential": {
-            "$ref": "#/components/schemas/CoreTeamRouteCredentialDto",
-            "description": "The successor's generation-scoped credential subject, never its value."
-          },
-          "effects": {
-            "$ref": "#/components/schemas/CoreTeamRouteEffectsDto",
-            "description": "Which trailing effects had landed when this readback was answered."
+          "grant_subject": {
+            "$ref": "#/components/schemas/CoreTeamRouteGrantSubjectDto",
+            "description": "The successor's generation-scoped grant subject, never any credential.\n\nNamed `grant_subject` rather than `credential` deliberately: the realm's\ncanonical-document guard forbids a node called `credential` outright, and\nthis node is the subject a grant is scoped to rather than a grant."
           },
           "predecessor": {
             "$ref": "#/components/schemas/CoreTeamRouteOccupantDto",
