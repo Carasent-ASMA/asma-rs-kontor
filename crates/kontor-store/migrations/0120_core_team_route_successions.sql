@@ -93,6 +93,16 @@ CREATE TABLE core_team_route_successions (
     ),
     CHECK ((receipt_id IS NULL AND receipted_at IS NULL)
            OR (receipt_id IS NOT NULL AND receipted_at IS NOT NULL)),
+    -- A receipt is the statement that this command finished. A row may only
+    -- carry one once the route has committed *and* both trailing effects have
+    -- landed, because a receipt on a half-landed succession is exactly the
+    -- misleading complete result the pending columns exist to prevent. The
+    -- storage rule stands beside the binder's own predicate: an application
+    -- check that is the only guard is a guard that one caller can forget.
+    CHECK (receipt_id IS NULL
+           OR (route_committed_at IS NOT NULL
+               AND launch_intent_installed = 1
+               AND seat_binding_observed = 1)),
     -- Pending effects cannot be marked landed before the route they follow.
     CHECK (route_committed_at IS NOT NULL
            OR (launch_intent_installed = 0 AND seat_binding_observed = 0))

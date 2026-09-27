@@ -61695,6 +61695,117 @@ async fn two_fresh_keys_converge_on_one_core_team_successor_and_one_transition()
     });
 }
 
+/// A pending succession the seat has outrun must not be receipted.
+///
+/// This is the reachable shape the earlier pending-effects test never built: a
+/// route commits, its trailing effects are lost, and *then* a later succession
+/// moves the seat to another occupancy. Those effects can now never land — the
+/// native they describe is no longer the occupant — so reconciliation has
+/// nothing to do and must say so rather than quietly succeeding. A receipt
+/// minted here would assert that a half-landed command finished
+/// (ASMA-8187 P1).
+#[tokio::test]
+async fn a_pending_succession_the_seat_outran_is_refused_rather_than_receipted() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-outrun", "asma-8187-outrun-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let key = IdempotencyKey::parse("asma-8187-outrun").expect("a key");
+
+    // First succession: the route commits and the latch is lost.
+    world.fake.archive_hosted_seat(&native);
+    let first_body =
+        previewed_succession(world, project, epic, &binding, &native, generation).await;
+    world
+        .daemon
+        .state()
+        .with_store(kontor_store::SqliteStore::lose_next_succession_effects);
+    let lost = apply_succession(world, project, epic, &first_body, "asma-8187-outrun").await;
+    assert_ne!(lost.status, 200, "the injected loss returned success");
+    let pending = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    assert!(pending.route_committed_at.is_some());
+    assert!(!pending.is_complete());
+    assert!(pending.receipt_id.is_none());
+    let stranded_successor = pending
+        .successor_native_id
+        .clone()
+        .expect("the committed row names its successor");
+
+    // The seat is then succeeded again, by another key, to a third occupancy.
+    let (second_active, _, second_occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(second_active, stranded_successor.as_str());
+    assert_eq!(second_occupancy, 2);
+    world
+        .fake
+        .archive_hosted_seat(&ExternalId::parse(&second_active).expect("a native id"));
+    let second_body = previewed_succession(
+        world,
+        project,
+        epic,
+        &binding,
+        &ExternalId::parse(&second_active).expect("a native id"),
+        1,
+    )
+    .await;
+    let second =
+        apply_succession(world, project, epic, &second_body, "asma-8187-outrun-next").await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let (third_active, _, third_occupancy) = succession_shape(world, project_id, binding_id);
+    assert_eq!(
+        third_occupancy, 3,
+        "the seat did not reach a third occupancy"
+    );
+    assert_ne!(third_active, stranded_successor.as_str());
+
+    // The first command is now unreconcilable. Replaying it must refuse.
+    let refused = apply_succession(world, project, epic, &first_body, "asma-8187-outrun").await;
+    assert_ne!(
+        refused.status, 200,
+        "an unreconcilable pending succession was reported as complete: {}",
+        refused.body
+    );
+
+    // And it must have minted nothing: no receipt on the row, still incomplete.
+    let after = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_core_team_route_succession(&key))
+        .expect("the ledger reads")
+        .expect("the succession exists");
+    assert!(
+        after.receipt_id.is_none(),
+        "a receipt was bound to an incomplete succession"
+    );
+    assert!(
+        !after.is_complete(),
+        "an unreconcilable succession was marked complete"
+    );
+
+    // The store binder refuses it directly too, so the guard does not depend on
+    // the caller having checked.
+    world.daemon.state().with_store(|store| {
+        assert!(
+            store
+                .bind_core_team_route_succession_receipt(
+                    &key,
+                    &after.intent_hash,
+                    CommandReceiptId::generate(),
+                    kontor_api::now(),
+                )
+                .is_err(),
+            "the binder accepted a receipt for an incomplete succession"
+        );
+    });
+}
+
 /// A seat already owned by another key refuses before it retires or launches.
 ///
 /// This is the concurrent half of exclusivity. The sequential caller converges

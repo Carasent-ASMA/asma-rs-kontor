@@ -5643,16 +5643,26 @@ impl SqliteStore {
         receipted_at: Timestamp,
     ) -> RepositoryResult<Applied> {
         let transaction = self.begin()?;
-        let row: Option<(String, Option<String>)> = transaction
+        let row: Option<(String, Option<String>, Option<String>, i64, i64)> = transaction
             .query_row(
-                "SELECT intent_hash, receipt_id FROM core_team_route_successions
+                "SELECT intent_hash, receipt_id, route_committed_at,
+                        launch_intent_installed, seat_binding_observed
+                   FROM core_team_route_successions
                   WHERE idempotency_key = ?1",
                 params![key.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()
             .map_err(backend)?;
-        let Some((recorded_hash, bound)) = row else {
+        let Some((recorded_hash, bound, committed, launch_installed, seat_observed)) = row else {
             return Err(RepositoryError::NotFound {
                 subject: "core team route succession",
             });
@@ -5661,6 +5671,15 @@ impl SqliteStore {
             return Err(RepositoryError::Conflict {
                 subject: "core team route succession",
                 rule: "the receipt names a different succession intent",
+            });
+        }
+        // Completeness is a precondition of the receipt, not a consequence of
+        // it. A caller that reconciled nothing must not be able to mint the
+        // statement that everything landed.
+        if committed.is_none() || launch_installed != 1 || seat_observed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "a receipt cannot bind a succession whose effects have not all landed",
             });
         }
         if let Some(bound) = bound {

@@ -8504,19 +8504,32 @@ impl Services {
     ) -> Result<(), ApiError> {
         let state = self.state()?;
         let Some(successor_native_id) = recorded.successor_native_id.clone() else {
-            return Ok(());
+            // A committed row must name its successor. One that does not cannot
+            // be reconciled or reported, and saying so is the only honest
+            // answer available.
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the recorded Core Team succession has no successor to reconcile",
+            ));
         };
-        let Some(active) = state
+        let active = state
             .with_store(|store| {
                 store.get_hosted_topology_seat(project_id, recorded.seat_binding_id)
             })
-            .map_err(|error| self.refuse(&error))?
-        else {
-            return Ok(());
-        };
-        if active.native_identity.native_id != successor_native_id {
-            return Ok(());
-        }
+            .map_err(|error| self.refuse(&error))?;
+        // The effects can only land while this succession's successor is still
+        // the seat's occupant. Once the seat is empty, or a later succession has
+        // moved it on, they never can — and answering that with success would
+        // mint a receipt for effects that will never happen. The refusal is
+        // typed so a caller can tell "not yet" from "not ever".
+        let active = active
+            .filter(|seat| seat.native_identity.native_id == successor_native_id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the recorded Core Team succession can no longer land its pending effects",
+                )
+            })?;
         if !recorded.effects.launch_intent_installed {
             state
                 .with_store(|store| {
@@ -25106,6 +25119,24 @@ impl ApplicationOperations for Services {
                 if !recorded.is_complete() {
                     self.reconcile_succession_effects(project_id, &recorded)
                         .await?;
+                }
+                // Reloaded rather than assumed. Reconciliation reports what it
+                // attempted; only the durable row says what landed, and no
+                // receipt may be recorded until it says everything did.
+                let reloaded = state
+                    .with_store(|store| store.get_core_team_route_succession(key))
+                    .map_err(|error| self.refuse(&error))?
+                    .ok_or_else(|| {
+                        self.deny(
+                            ApiErrorCode::Unavailable,
+                            "the recorded Core Team succession disappeared mid-reconciliation",
+                        )
+                    })?;
+                if !reloaded.is_complete() {
+                    return Err(self.deny(
+                        ApiErrorCode::RevisionConflict,
+                        "the recorded Core Team succession is not complete and cannot be receipted",
+                    ));
                 }
                 let receipt_id = self.record(
                     key,
