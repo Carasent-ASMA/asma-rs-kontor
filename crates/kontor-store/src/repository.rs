@@ -5525,6 +5525,17 @@ impl SqliteStore {
             }
         }
         transaction.commit().map_err(backend)?;
+        // The transition and its ledger row are durable and the caller is about
+        // to learn nothing about them. This is the *earliest* incomplete shape a
+        // replay can find — route committed, neither trailing effect attempted —
+        // and it is distinct from losing the latch after both have landed.
+        // Production builds never compile this.
+        #[cfg(feature = "fault-injection")]
+        if self.faults.lose_next_succession_route_ack.replace(false) {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault after the succession route commit".to_owned(),
+            });
+        }
         Ok(Applied::Updated)
     }
 
@@ -5602,11 +5613,6 @@ impl SqliteStore {
         Ok(Applied::Created)
     }
 
-    /// Latch one committed succession's trailing effects.
-    ///
-    /// Forward-only and idempotent: marking an effect that has already landed
-    /// changes nothing, and nothing here can unmark one. A succession is
-    /// complete only once both have latched.
     /// Commit a succession's trailing effects by *proving* them.
     ///
     /// The previous shape took two booleans and trusted them, which meant the
@@ -5715,6 +5721,20 @@ impl SqliteStore {
         receipt_id: CommandReceiptId,
         receipted_at: Timestamp,
     ) -> RepositoryResult<Applied> {
+        // The command receipt is already recorded by the time this runs, so a
+        // loss here leaves a realm holding a receipt no ledger row points at.
+        // A replay must rebind that same receipt rather than mint a second.
+        // Production builds never compile this.
+        #[cfg(feature = "fault-injection")]
+        if self
+            .faults
+            .lose_next_succession_receipt_binding
+            .replace(false)
+        {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault before the succession receipt binding".to_owned(),
+            });
+        }
         let transaction = self.begin()?;
         let row: Option<(String, Option<String>, Option<String>, i64, i64)> = transaction
             .query_row(

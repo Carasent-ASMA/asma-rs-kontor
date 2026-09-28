@@ -191,20 +191,49 @@ pub struct SqliteStore {
 #[cfg(feature = "fault-injection")]
 #[derive(Debug, Default)]
 pub(crate) struct StoreFaults {
-    /// Fail immediately after a succession's route transition commits, before
-    /// the effects that follow it are latched.
+    /// Fail after a succession's trailing effects have landed but before the
+    /// latch that records them.
     pub(crate) lose_next_succession_effects: std::cell::Cell<bool>,
+    /// Fail immediately after a succession's route transition and ledger row
+    /// commit, before either trailing effect is even attempted.
+    pub(crate) lose_next_succession_route_ack: std::cell::Cell<bool>,
+    /// Fail before a complete succession binds the receipt already recorded
+    /// for it.
+    pub(crate) lose_next_succession_receipt_binding: std::cell::Cell<bool>,
 }
 
 impl SqliteStore {
     /// Arm a single deterministic loss of the next succession's trailing effects.
     ///
-    /// The route transition still commits; only the latch that follows it is
-    /// lost, which is exactly what a process death in that interval looks like
-    /// from the daemon.
+    /// The route transition still commits and both effects still land; only the
+    /// latch that records them is lost, which is exactly what a process death in
+    /// that interval looks like from the daemon.
     #[cfg(feature = "fault-injection")]
     pub fn lose_next_succession_effects(&self) {
         self.faults.lose_next_succession_effects.set(true);
+    }
+
+    /// Arm a single deterministic loss of the next succession's route
+    /// acknowledgement.
+    ///
+    /// The transition and the ledger row are durable; the caller never learns
+    /// it. This is the earliest incomplete shape a replay can find — neither
+    /// trailing effect has been attempted — and it is a different interval from
+    /// [`Self::lose_next_succession_effects`], which loses only the latch after
+    /// both have already landed.
+    #[cfg(feature = "fault-injection")]
+    pub fn lose_next_succession_route_ack(&self) {
+        self.faults.lose_next_succession_route_ack.set(true);
+    }
+
+    /// Arm a single deterministic loss of the next succession receipt binding.
+    ///
+    /// The command receipt is recorded before this point, so the loss leaves a
+    /// realm holding a receipt that no ledger row points at. A replay must find
+    /// and rebind that same receipt rather than record a second one.
+    #[cfg(feature = "fault-injection")]
+    pub fn lose_next_succession_receipt_binding(&self) {
+        self.faults.lose_next_succession_receipt_binding.set(true);
     }
 
     /// Open (creating if needed) and migrate a database file.

@@ -791,6 +791,14 @@ struct FakeState {
     /// exist until that same call creates it, so a caller arming this failure
     /// cannot name it in advance.
     lose_hosted_launch_ack_once: bool,
+    /// One provider catalog key the next hosted launch refuses under, before it
+    /// has created anything.
+    ///
+    /// A refusal is not a lost acknowledgement: nothing native exists
+    /// afterwards, so a replay has to create the successor rather than converge
+    /// on one. Keeping the two arrangeable separately is what lets a test tell
+    /// the recoveries apart.
+    refuse_hosted_launch_once: Option<String>,
     /// One exact `StaleBinding` rule every hosted-seat inspection answers with.
     hosted_inspect_stale_rule: Option<&'static str>,
     /// The seat is restored for terminal readback only: no placement, so it
@@ -1430,6 +1438,7 @@ impl ScriptedFakeRuntime {
                 lose_archive_ack_once: BTreeSet::new(),
                 lose_hosted_retire_ack_once: BTreeSet::new(),
                 lose_hosted_launch_ack_once: false,
+                refuse_hosted_launch_once: None,
                 hosted_inspect_stale_rule: None,
                 readback_only: false,
                 pause_hosted_retire_once: None,
@@ -2193,6 +2202,16 @@ impl ScriptedFakeRuntime {
     /// intent exists to survive.
     pub fn lose_next_hosted_launch_ack(&self) {
         self.lock().lose_hosted_launch_ack_once = true;
+    }
+
+    /// Refuse the next hosted launch outright, before any native is created.
+    ///
+    /// The distinction from [`Self::lose_next_hosted_launch_ack`] is the whole
+    /// point: there, the seat exists and only the answer is gone, so a replay
+    /// must converge on it; here nothing was created, so a replay must still
+    /// create one — with the retirement that preceded it already irreversible.
+    pub fn refuse_next_hosted_launch(&self, provider: &str) {
+        self.lock().refuse_hosted_launch_once = Some(provider.to_owned());
     }
 
     /// Report this runtime as reachable but not drivable, the shape a seat has
@@ -3987,6 +4006,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 context_policy: Some(&request.context_policy),
             },
         )?;
+        // Before the call is recorded and before anything is minted: a refused
+        // launch is a launch that did not happen.
+        if let Some(provider) = state.refuse_hosted_launch_once.take() {
+            return Err(RuntimeError::ProviderUnavailable { provider });
+        }
         state
             .calls
             .push(AdapterCall::LaunchHostedSeat(request.seat_binding_id));

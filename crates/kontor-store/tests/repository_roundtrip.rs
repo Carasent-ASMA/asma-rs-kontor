@@ -2812,7 +2812,13 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
     let connection = Connection::open(&fixture.path).expect("migration connection");
     connection
         .execute_batch(
-            "DROP TABLE local_command_results;
+            // Every artefact introduced after v114 has to go, or reopening
+            // re-applies its migration onto a schema that already has it. A new
+            // table is one `DROP TABLE`: SQLite takes its indexes and triggers
+            // with it, and a `DROP TABLE` does not fire the row triggers that
+            // make the rows themselves undeletable.
+            "DROP TABLE core_team_route_successions;
+         DROP TABLE local_command_results;
          DROP TABLE legacy_dispatch_local_confirmation_provenance;
          DROP TABLE hosted_seat_role_personas;
          ALTER TABLE runtime_message_issuances DROP COLUMN boundary_epoch;
