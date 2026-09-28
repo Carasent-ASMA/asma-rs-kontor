@@ -33,7 +33,10 @@ close TASK-002, and claims no mutation acceptance.
 | Policy-chosen route | ✓ delivery/consultation, ✗ leadership | ◐ | `FleetResolution::select` returns the first route the stated eligibility admits (this slice). |
 | Explicit eligibility | ◐ | ✓ library | `Eligibility` (unavailable accounts, excluded vendors) and `ExclusionReason` for every passed route (this slice). Governed placement derives eligibility from quota evidence, not from this type (G-4). |
 | Matching provenance | ✓ records | ✓ library | Delivery `FleetDecision`, leadership `LeadershipDecision`, consultation admission `profile_hash`; library `FleetSelection`. Field mapping in the table under "Launch specification". |
-| Policy hash on the native launch receipt | ✗ | ✗ | `HostedSeatLaunchRequest` and consultation launch carry no policy hash; correlation is by decision log (G-3). |
+| Policy hash on the consultation launch request | ✓ | ✗ | `ConsultationLaunchRequest.route_provenance` (`crates/kontor-runtime/src/adapter.rs:459`) carries `source = fleet_configuration` and `evidence_hash = fleet.hash()`. It is set at the Advisor freeze (`crates/kontor-daemon/src/applications.rs:12708`) and Committee seat recovery (`:27446`). Committee admission freezes `source` and `profile_hash`, which `consultation_route_provenance` (`:407`) re-creates for each `launch_consultation`. Direct: no consumer (B-1). |
+| Policy hash on the consultation native outcome and readback | ✗ | ✗ | `ConsultationLaunchOutcome` (`adapter.rs:495`) carries identity, provider session, time and `created`, and no provenance. The Paseo adapter writes `evidence_hash` to a native label only for an OpenCode route (`label::OPERATOR_ACCEPTED_FALLBACK`, `crates/kontor-runtime-paseo/src/adapter.rs:5360`); every other provider gets `read_only = true` and no hash. Launch readback checks route and permission mode, not the hash (`:5518`). |
+| Policy hash on the hosted-leadership launch | ✗ | ✗ | `HostedSeatLaunchRequest` (`adapter.rs:548`) has no provenance field, and its outcome is the same `ConsultationLaunchOutcome`. Correlation is only by `fleet-decisions/leadership/<seat_binding_id>.jsonl` (seat binding plus occupancy generation). |
+| Policy hash on the delivery launch | ✗ | ✗ | `LaunchParts` (`crates/kontor-runtime/src/request.rs:269`) has no provenance field. Correlation is only by `fleet-decisions/<team_run_id>.jsonl` (`agent_run_id`, `fleet_hash`). |
 | No live effect from unactivated edits | ✓ | ✓ library | Slice-one and slice-two loopbacks; this slice's cross-mode test covers `fleet.yml`, an unactivated publication and a rewritten artifact. |
 | Real provider or Paseo launch | ✗ | ✗ | Later supervised effect; specification below. |
 
@@ -87,7 +90,10 @@ schema/source decision.
 
 ## Remaining gaps after the decisions
 
-- G-3: carry the policy hash and binding key on the native launch request and read them back.
+- G-3: provenance on the native launch, per surface:
+  - Consultation: the request already carries the policy hash (`route_provenance.evidence_hash`). Absent: the binding key on the request, the hash on `ConsultationLaunchOutcome`, and a native label or readback of the hash for providers other than OpenCode.
+  - Hosted leadership: absent on the request, the outcome and the readback.
+  - Delivery: absent on the request, the outcome and the readback.
 - G-4: governed leadership should choose its route through `select` when the caller names none, and governed eligibility should be expressible as an `Eligibility`.
 - G-5: move Committee vendor-distinct allocation into `kontor-fleet`, so both modes allocate a Committee identically.
 - G-6: create the `config/orchestration/` authoring bundle and record source-bundle hashes.
