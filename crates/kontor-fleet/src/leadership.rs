@@ -68,25 +68,64 @@ impl LeadershipKey {
         role_slot_id: &RoleSlotId,
         role: &CatalogRoleRef,
     ) -> Result<Self, FleetError> {
-        let pinned: PinnedRevision = revision.deserialize().map_err(|_| invalid(L01))?;
-        let mut matching = pinned
-            .value
-            .seats
-            .iter()
-            .filter(|seat| &seat.role_slot_id == role_slot_id);
-        let (Some(seat), None) = (matching.next(), matching.next()) else {
-            return Err(invalid(L02));
-        };
+        let (pinned, seat) = pinned_seat(revision, role_slot_id)?;
         if &seat.role != role {
             return Err(invalid(L03));
         }
+        Ok(Self::of(revision, &pinned, role_slot_id))
+    }
+
+    /// Build the key for one stable slot of one verified Core Team revision,
+    /// taking the seat's frozen role from the revision itself.
+    ///
+    /// For a reader that holds the selected roster artifact and a slot id but
+    /// no separate seat snapshot — the direct-mode reader. The revision is
+    /// still the only source of the seat: the slot must occur exactly once in
+    /// it, so a slot the roster does not pin, or pins twice, builds nothing.
+    ///
+    /// # Errors
+    /// L-01 when the document is not a Core Team revision, L-02 when the slot
+    /// is absent or occurs more than once.
+    pub fn for_pinned_slot(
+        revision: &CanonicalDocument,
+        role_slot_id: &RoleSlotId,
+    ) -> Result<Self, FleetError> {
+        let (pinned, _) = pinned_seat(revision, role_slot_id)?;
+        Ok(Self::of(revision, &pinned, role_slot_id))
+    }
+
+    /// The stable slots a canonical Core Team revision pins, in its order.
+    ///
+    /// # Errors
+    /// L-01 when the document is not a Core Team revision, L-02 when a slot
+    /// occurs more than once.
+    pub fn pinned_slots(revision: &CanonicalDocument) -> Result<Vec<RoleSlotId>, FleetError> {
+        let pinned: PinnedRevision = revision.deserialize().map_err(|_| invalid(L01))?;
+        let slots: Vec<RoleSlotId> = pinned
+            .value
+            .seats
+            .into_iter()
+            .map(|seat| seat.role_slot_id)
+            .collect();
+        let unique: std::collections::BTreeSet<&RoleSlotId> = slots.iter().collect();
+        if unique.len() != slots.len() {
+            return Err(invalid(L02));
+        }
+        Ok(slots)
+    }
+
+    fn of(
+        revision: &CanonicalDocument,
+        pinned: &PinnedRevision,
+        role_slot_id: &RoleSlotId,
+    ) -> Self {
         let core_team_revision_hash = revision.hash().clone();
-        Ok(Self {
+        Self {
             text: format!("leadership/{core_team_revision_hash}/{role_slot_id}"),
             core_team_revision_hash,
             core_team_version: pinned.value.version,
             role_slot_id: role_slot_id.clone(),
-        })
+        }
     }
 
     /// The canonical content hash of the pinned Core Team revision.
@@ -112,6 +151,26 @@ impl LeadershipKey {
     pub fn as_str(&self) -> &str {
         &self.text
     }
+}
+
+/// The pinned revision's view and its one seat for `role_slot_id`.
+fn pinned_seat(
+    revision: &CanonicalDocument,
+    role_slot_id: &RoleSlotId,
+) -> Result<(PinnedRevision, PinnedSeat), FleetError> {
+    let mut pinned: PinnedRevision = revision.deserialize().map_err(|_| invalid(L01))?;
+    let mut positions = pinned
+        .value
+        .seats
+        .iter()
+        .enumerate()
+        .filter(|(_, seat)| &seat.role_slot_id == role_slot_id)
+        .map(|(position, _)| position);
+    let (Some(position), None) = (positions.next(), positions.next()) else {
+        return Err(invalid(L02));
+    };
+    let seat = pinned.value.seats.swap_remove(position);
+    Ok((pinned, seat))
 }
 
 impl fmt::Display for LeadershipKey {

@@ -144,9 +144,16 @@ fn documented() -> Vec<Documented> {
     operations
 }
 
-/// The registry's spelling of one tool's operation.
-fn route_of(tool: &ToolSpec) -> (String, String) {
-    (tool.method.as_str().to_owned(), tool.path.to_owned())
+/// The registry's spelling of one tool's operation, and `None` for a local
+/// operation, which has no route.
+fn route_of(tool: &ToolSpec) -> Option<(String, String)> {
+    tool.route()
+        .map(|(method, path)| (method.as_str().to_owned(), path.to_owned()))
+}
+
+/// Every operation served over HTTP: the MCP vocabulary, less nothing.
+fn http() -> impl Iterator<Item = &'static ToolSpec> {
+    REGISTRY.iter().filter(|tool| tool.route().is_some())
 }
 
 #[test]
@@ -154,7 +161,7 @@ fn every_documented_operation_is_mapped_once_or_allowlisted_once() {
     let documented = documented();
     let mapped: BTreeMap<(String, String), &'static str> = REGISTRY
         .iter()
-        .map(|tool| (route_of(tool), tool.name))
+        .filter_map(|tool| Some((route_of(tool)?, tool.name)))
         .collect();
     let allowlisted: BTreeSet<(String, String)> = NON_AGENT_ROUTES
         .iter()
@@ -189,8 +196,8 @@ fn every_tool_targets_an_operation_that_exists() {
         .into_iter()
         .map(|operation| (operation.method, operation.path))
         .collect();
-    for tool in REGISTRY {
-        let route = route_of(tool);
+    for tool in http() {
+        let route = route_of(tool).expect("an HTTP operation");
         assert!(
             existing.contains(&route),
             "{} targets {} {}, which the contract does not declare",
@@ -199,7 +206,7 @@ fn every_tool_targets_an_operation_that_exists() {
             route.1
         );
         assert!(
-            tool.path.starts_with("/v1/"),
+            route.1.starts_with("/v1/"),
             "{} targets a route outside /v1",
             tool.name
         );
@@ -238,8 +245,8 @@ fn the_allowlist_holds_only_real_routes_and_the_contract_document_itself() {
 #[test]
 fn every_tool_declares_the_same_parameters_the_contract_does() {
     let documented = documented();
-    for tool in REGISTRY {
-        let route = route_of(tool);
+    for tool in http() {
+        let route = route_of(tool).expect("an HTTP operation");
         let operation = documented
             .iter()
             .find(|candidate| (candidate.method.clone(), candidate.path.clone()) == route)
@@ -294,8 +301,8 @@ fn every_tool_declares_the_same_parameters_the_contract_does() {
 #[test]
 fn every_tool_declares_the_same_body_properties_the_contract_does() {
     let documented = documented();
-    for tool in REGISTRY {
-        let route = route_of(tool);
+    for tool in http() {
+        let route = route_of(tool).expect("an HTTP operation");
         let operation = documented
             .iter()
             .find(|candidate| (candidate.method.clone(), candidate.path.clone()) == route)
@@ -399,12 +406,12 @@ fn every_tool_schema_is_closed_and_types_its_properties() {
 fn every_declared_nested_object_matches_the_contracts_own_dto() {
     let document = contract();
     let mut checked = 0_usize;
-    for tool in REGISTRY {
-        let route = route_of(tool);
+    for tool in http() {
+        let route = route_of(tool).expect("an HTTP operation");
         let Some(schema) = document
             .pointer(&format!(
                 "/paths/{}/{}/requestBody/content/application~1json/schema",
-                tool.path.replace('/', "~1"),
+                route.1.replace('/', "~1"),
                 route.0.to_lowercase()
             ))
             .map(|schema| resolve(&document, schema))
@@ -541,15 +548,23 @@ fn the_snapshot_canary_holds_at_this_base() {
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
-        REGISTRY.len(),
+        http().count(),
         196,
         "the mapped-operation count changed; map the new operation or record a deferral"
+    );
+    // ASMA-8280 B-1: the registry's local operations — in-process handlers
+    // of the `kontor` CLI with no route — are counted apart, so one cannot
+    // stand in for a route or slip onto the MCP surface.
+    assert_eq!(
+        REGISTRY.len() - http().count(),
+        1,
+        "the local-operation count changed; a local operation is a registry decision"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
     // from `tools/list` and nowhere else, so this second number is what a seat's
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
-        REGISTRY.len() - CLI_ONLY.len(),
+        http().count() - CLI_ONLY.len(),
         195,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
@@ -787,6 +802,9 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_fleet_policy_preview", CallerTier::Admin),
         ("kontor_fleet_policy_publish", CallerTier::Admin),
         ("kontor_fleet_policy_activate", CallerTier::Admin),
+        // The local read has no route; its tier is the fleet policy family's,
+        // enforced by the CLI before it reads the state root.
+        ("kontor_fleet_policy_resolve", CallerTier::Admin),
         ("kontor_capacity_get", CallerTier::Observer),
         ("kontor_capacity_refresh", CallerTier::Operator),
         ("kontor_capacity_observation_get", CallerTier::Observer),

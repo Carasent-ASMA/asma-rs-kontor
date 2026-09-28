@@ -718,13 +718,26 @@ struct LeadershipRoute {
     key: kontor_fleet::LeadershipKey,
     provenance: kontor_fleet::FleetProvenance,
     route: kontor_fleet::FleetRoute,
+    /// The orchestration bundle an aligned activation names, whose roster is
+    /// `key`'s revision byte for byte.
+    source_bundle_hash: Option<ContentHash>,
+    /// `Some` exactly when the policy chose the route: the eligibility the
+    /// caller stated and the choice was made under (ASMA-8280 G-4).
+    eligibility: Option<kontor_fleet::Eligibility>,
+}
+
+/// One frozen Core Team seat the activated fleet policy binds, resolved.
+struct LeadershipBinding {
+    key: kontor_fleet::LeadershipKey,
+    resolution: kontor_fleet::FleetResolution,
+    source_bundle_hash: Option<ContentHash>,
 }
 
 impl LeadershipRoute {
     /// The provenance a preview or decision names: which policy bytes, which
     /// binding and chain, which roster revision and slot, which position.
     fn evidence(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut evidence = serde_json::json!({
             "policy_hash": self.provenance.policy_hash.as_str(),
             "schema_version": self.provenance.schema_version,
             "binding_key": self.provenance.binding_key,
@@ -733,7 +746,16 @@ impl LeadershipRoute {
             "role_slot_id": self.key.role_slot_id().as_str(),
             "step": self.route.step,
             "sub_step": self.route.sub_step,
-        })
+        });
+        // Only an aligned activation names a bundle; a schema_version 1
+        // activation keeps its exact evidence and so its preview hashes.
+        if let Some(bundle) = &self.source_bundle_hash {
+            evidence["source_bundle_hash"] = serde_json::json!(bundle.as_str());
+        }
+        if let Some(eligibility) = &self.eligibility {
+            evidence["eligibility"] = serde_json::json!(eligibility);
+        }
+        evidence
     }
 }
 
@@ -15183,6 +15205,8 @@ fn fleet_activation_dto(record: &crate::fleet::FleetActivation) -> FleetActivati
         policy_hash: record.policy_hash.clone(),
         policy_schema_version: record.policy_schema_version,
         activated_at: record.activated_at.clone(),
+        source_bundle_hash: record.source_bundle_hash.clone(),
+        core_team_revision_hash: record.core_team_revision_hash.clone(),
     }
 }
 
@@ -24393,28 +24417,26 @@ impl ApplicationOperations for Services {
         // staffed from whatever the project happens to say today would quietly
         // acquire roles decided after it started.
         let roster = self.frozen_roster(project_id, epic_id)?;
-        let routes: BTreeMap<String, ModelRung> = request
+        let roles: BTreeSet<&str> = request
             .routes
             .iter()
-            .map(|route: &CoreTeamSeatRouteRequest| {
-                Ok((
-                    route.role_code.clone(),
-                    parse_runtime_model_route(&route.model_route, self.fleet.current().as_deref())?,
-                ))
-            })
-            .collect::<kontor_core::DomainResult<_>>()
-            .map_err(|error| self.refuse_domain(&error))?;
-        if routes.len() != request.routes.len() {
+            .map(|route: &CoreTeamSeatRouteRequest| route.role_code.as_str())
+            .collect();
+        if roles.len() != request.routes.len() {
             return Err(self.deny(
                 ApiErrorCode::InvalidRequest,
                 "a Core Team role may be routed only once",
             ));
         }
-        // Every requested route is judged against the activated policy before
-        // anything is recorded, created or launched — on a replay too, because
-        // a replay still launches the seats its first attempt did not.
+        // Every route is judged against the activated policy before anything
+        // is recorded, created or launched — on a replay too, because a replay
+        // still launches the seats its first attempt did not. A named route is
+        // admitted or refused, never replaced; a role named with eligibility
+        // instead is routed by the policy's own choice (ASMA-8280 G-4).
+        let mut routes: BTreeMap<String, ModelRung> = BTreeMap::new();
         let mut leadership: BTreeMap<String, LeadershipRoute> = BTreeMap::new();
-        for (role_code, model_rung) in &routes {
+        for route in &request.routes {
+            let role_code = &route.role_code;
             let Some(frozen_seat) = roster.revision.seats.iter().find(|seat| {
                 seat.presence != EpicPresence::OnDemand && seat.role.role_code.as_str() == role_code
             }) else {
@@ -24423,10 +24445,44 @@ impl ApplicationOperations for Services {
                     "a native Core Team route names no materialized role in the frozen roster",
                 ));
             };
-            if let Some(placed) =
-                self.leadership_route(&roster.revision, frozen_seat, model_rung)?
-            {
-                leadership.insert(role_code.clone(), placed);
+            match (&route.model_route, &route.eligibility) {
+                (Some(model_route), None) => {
+                    let model_rung =
+                        parse_runtime_model_route(model_route, self.fleet.current().as_deref())
+                            .map_err(|error| self.refuse_domain(&error))?;
+                    if let Some(placed) =
+                        self.leadership_route(&roster.revision, frozen_seat, &model_rung)?
+                    {
+                        leadership.insert(role_code.clone(), placed);
+                    }
+                    routes.insert(role_code.clone(), model_rung);
+                }
+                (None, Some(eligibility)) => {
+                    let placed = self.leadership_choice(
+                        &roster.revision,
+                        frozen_seat,
+                        kontor_fleet::Eligibility {
+                            unavailable_accounts: eligibility
+                                .unavailable_accounts
+                                .iter()
+                                .cloned()
+                                .collect(),
+                            excluded_vendors: eligibility
+                                .excluded_vendors
+                                .iter()
+                                .cloned()
+                                .collect(),
+                        },
+                    )?;
+                    routes.insert(role_code.clone(), placed.route.rung.clone());
+                    leadership.insert(role_code.clone(), placed);
+                }
+                _ => {
+                    return Err(self.deny(
+                        ApiErrorCode::InvalidRequest,
+                        "a native Core Team route names exactly one of model_route and eligibility",
+                    ));
+                }
             }
         }
         let mut intent_document = serde_json::json!({
@@ -37734,8 +37790,87 @@ impl Services {
         seat: &CoreTeamSeat,
         requested: &ModelRung,
     ) -> Result<Option<LeadershipRoute>, ApiError> {
-        let Some(fleet) = self
-            .fleet_policy()
+        let Some(bound) = self.leadership_binding(roster, seat)? else {
+            return Ok(None);
+        };
+        let Some(route) = bound.resolution.route_for(requested).cloned() else {
+            return Err(self
+                .deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the requested route is not in the chain the activated fleet policy binds to this leadership seat",
+                )
+                .about("FleetConfiguration")
+                .advising("name a route the bound chain offers, or activate a policy that offers this one"));
+        };
+        Ok(Some(LeadershipRoute {
+            key: bound.key,
+            provenance: bound.resolution.provenance,
+            route,
+            source_bundle_hash: bound.source_bundle_hash,
+            eligibility: None,
+        }))
+    }
+
+    /// The route the activated fleet policy chooses for one frozen Core Team
+    /// seat the caller names no route for, under the eligibility the caller
+    /// states (ASMA-8280 G-4).
+    ///
+    /// The choice is [`kontor_fleet::FleetResolution::select`]: the first
+    /// route in chain order the eligibility admits, so the same policy bytes,
+    /// roster, seat and eligibility choose the same route in either mode. It
+    /// needs a policy that binds the seat — there is no caller route to fall
+    /// back to — and a chain with an eligible route.
+    ///
+    /// # Errors
+    /// As [`Self::leadership_route`], and `PlacementBlocked` when nothing binds
+    /// the seat or no bound route is eligible.
+    fn leadership_choice(
+        &self,
+        roster: &CoreTeamRevision,
+        seat: &CoreTeamSeat,
+        eligibility: kontor_fleet::Eligibility,
+    ) -> Result<LeadershipRoute, ApiError> {
+        let Some(bound) = self.leadership_binding(roster, seat)? else {
+            return Err(self
+                .deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "no activated fleet policy binds this leadership seat, so it cannot choose a route",
+                )
+                .about("FleetConfiguration")
+                .advising("name a model_route, or activate a policy that binds this seat"));
+        };
+        let selection = bound.resolution.select(&eligibility);
+        let Some(route) = selection.selected else {
+            return Err(self
+                .deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "no route in the chain the activated fleet policy binds to this leadership seat is eligible under the stated eligibility",
+                )
+                .about("FleetConfiguration"));
+        };
+        Ok(LeadershipRoute {
+            key: bound.key,
+            provenance: selection.provenance,
+            route,
+            source_bundle_hash: bound.source_bundle_hash,
+            eligibility: Some(eligibility),
+        })
+    }
+
+    /// The activated policy's binding for one frozen Core Team seat, or `None`
+    /// when no policy is in force or none binds the seat.
+    ///
+    /// # Errors
+    /// `PlacementBlocked` for an unverifiable activation, a pinned revision
+    /// that is not the roster an aligned activation selects, or a bound chain
+    /// with no route left; `InvalidRequest` when the roster cannot prove its seat.
+    fn leadership_binding(
+        &self,
+        roster: &CoreTeamRevision,
+        seat: &CoreTeamSeat,
+    ) -> Result<Option<LeadershipBinding>, ApiError> {
+        let Some(placement) = self
+            .fleet_placement()
             .map_err(|error| self.refuse_domain(&error))?
         else {
             return Ok(None);
@@ -37743,10 +37878,26 @@ impl Services {
         let pinned = roster
             .canonicalize()
             .map_err(|error| self.refuse_domain(&error))?;
+        // ASMA-8280 B-2: an aligned activation selects one exact roster, and a
+        // governed leadership launch consumes only those bytes. An epic pinned
+        // to any other revision keeps its pin — it is never retargeted — and
+        // its leadership launch is blocked rather than routed without the
+        // selected policy's authority.
+        if let Some(selected) = placement.roster.as_deref()
+            && (selected.hash() != pinned.hash() || selected.json() != pinned.json())
+        {
+            return Err(self
+                .deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the epic's pinned Core Team revision is not the roster the activated orchestration bundle selects",
+                )
+                .about("FleetActivation")
+                .advising("activate a bundle whose Core Team revision is this epic's pinned roster"));
+        }
         let key =
             kontor_fleet::LeadershipKey::for_pinned_seat(&pinned, &seat.role_slot_id, &seat.role)
                 .map_err(|error| self.refuse_fleet_policy(&error))?;
-        let Some(resolution) = fleet.resolve_leadership(&key) else {
+        let Some(resolution) = placement.policy.resolve_leadership(&key) else {
             return Ok(None);
         };
         if resolution.routes.is_empty() {
@@ -37757,19 +37908,10 @@ impl Services {
                 )
                 .about("FleetConfiguration"));
         }
-        let Some(route) = resolution.route_for(requested).cloned() else {
-            return Err(self
-                .deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "the requested route is not in the chain the activated fleet policy binds to this leadership seat",
-                )
-                .about("FleetConfiguration")
-                .advising("name a route the bound chain offers, or activate a policy that offers this one"));
-        };
-        Ok(Some(LeadershipRoute {
+        Ok(Some(LeadershipBinding {
             key,
-            provenance: resolution.provenance,
-            route,
+            resolution,
+            source_bundle_hash: placement.source_bundle_hash,
         }))
     }
 
@@ -37812,6 +37954,11 @@ impl Services {
                 .map(|effort| effort.as_str().to_owned()),
             vendor: placed.route.vendor.clone(),
             decided_at: kontor_api::now().to_string(),
+            source_bundle_hash: placed
+                .source_bundle_hash
+                .as_ref()
+                .map(|bundle| bundle.as_str().to_owned()),
+            eligibility: placed.eligibility.clone(),
         };
         self.fleet
             .record_leadership_decision(&decision)
@@ -37894,8 +38041,17 @@ impl Services {
     fn fleet_policy(
         &self,
     ) -> kontor_core::DomainResult<Option<std::sync::Arc<crate::fleet::FleetSnapshot>>> {
+        Ok(self.fleet_placement()?.map(|placement| placement.policy))
+    }
+
+    /// The fleet policy and, under an aligned activation, the Core Team
+    /// revision it selects, from one verified read.
+    ///
+    /// # Errors
+    /// As [`Self::fleet_policy`].
+    fn fleet_placement(&self) -> kontor_core::DomainResult<Option<crate::fleet::Placement>> {
         self.fleet
-            .policy()
+            .placement()
             .map_err(|error| kontor_core::DomainError::MissingEvidence {
                 subject: "FleetActivation",
                 rule: match error {

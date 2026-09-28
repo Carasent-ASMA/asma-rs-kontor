@@ -23,27 +23,31 @@
 //!   have no effect. A record or artifact that cannot be verified refuses
 //!   placement; it never falls back to `fleet.yml` or to template routing.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
-use kontor_core::id::{ContentHash, Timestamp, format_utc_timestamp};
+use kontor_core::id::{CanonicalDocument, ContentHash, Timestamp, format_utc_timestamp};
 use kontor_core::spec::ModelRung;
 use kontor_fleet::MAX_FILE_BYTES;
 use kontor_fleet::rule::F04;
+use kontor_fleet_activation::{
+    ACTIVATION_V1, ACTIVATION_V2, BundleManifest, CORE_TEAM_HISTORY_DIR, Guard,
+    ORCHESTRATION_HISTORY_DIR,
+};
 use serde::{Deserialize, Serialize};
 
 pub use kontor_fleet::{FleetError, FleetSnapshot};
 pub(crate) use kontor_fleet::{FleetRoute, advisor_key, committee_key, independence_key, team_key};
+// The record, its file name and the history directory are the shared reader's:
+// one spelling for the daemon and the CLI's local resolution (ASMA-8280 B-1).
+pub use kontor_fleet_activation::FleetActivation;
+pub(crate) use kontor_fleet_activation::{FLEET_ACTIVATION_FILE, FLEET_HISTORY_DIR};
 
 /// The fleet configuration file name inside a Realm state root.
 pub(crate) const FLEET_FILE: &str = "fleet.yml";
-
-/// One immutable copy of every accepted fleet configuration, and every
-/// published fleet policy, named by its content hash.
-pub(crate) const FLEET_HISTORY_DIR: &str = "fleet-history";
 
 /// One JSON-lines decision log per team run.
 pub(crate) const FLEET_DECISIONS_DIR: &str = "fleet-decisions";
@@ -51,18 +55,9 @@ pub(crate) const FLEET_DECISIONS_DIR: &str = "fleet-decisions";
 /// Whether the last edit was accepted, and why not when it was not.
 pub(crate) const FLEET_STATUS_FILE: &str = "fleet-status.json";
 
-/// The generated record naming the activated fleet policy.
-pub(crate) const FLEET_ACTIVATION_FILE: &str = "fleet-activation.json";
-
 /// One JSON-lines leadership decision log per SeatBinding, inside
 /// [`FLEET_DECISIONS_DIR`].
 pub(crate) const LEADERSHIP_DECISIONS_DIR: &str = "leadership";
-
-/// Largest activation record this build reads, in bytes.
-pub(crate) const MAX_ACTIVATION_BYTES: u64 = 4 * 1024;
-
-/// The only activation record format this build reads.
-const ACTIVATION_SCHEMA_VERSION: u32 = 1;
 
 const F01: &str = "fleet.yml must be a regular file, not a symlink";
 const F02: &str = "fleet.yml must not be writable by group or others";
@@ -70,37 +65,12 @@ const F03: &str = "fleet.yml must be owned by the state root's owner";
 const F05: &str = "fleet.yml changed while it was being read";
 const F06: &str = "fleet.yml is not UTF-8";
 
-const P01: &str = "a published fleet policy must be a regular file, not a symlink";
-const P02: &str = "a published fleet policy must not be writable by group or others";
-const P03: &str = "a published fleet policy must be owned by the state root's owner";
-const P04: &str = "a published fleet policy exceeds 256 KiB";
-const P05: &str = "a published fleet policy changed while it was being read";
-const P06: &str = "a published fleet policy is not UTF-8";
-
-const A01: &str = "fleet-activation.json must be a regular file, not a symlink";
-const A02: &str = "fleet-activation.json must not be writable by group or others";
-const A03: &str = "fleet-activation.json must be owned by the state root's owner";
-const A04: &str = "fleet-activation.json exceeds 4 KiB";
-const A05: &str = "fleet-activation.json changed while it was being read";
-const A06: &str = "fleet-activation.json is not UTF-8";
-const A07: &str = "fleet-activation.json is not a schema_version 1 activation record";
-const A08: &str = "the activated fleet policy is not published";
-
 /// The refusal that means "no such published policy", which the read and
 /// activate operations answer as not found rather than as invalid.
-pub(crate) const UNPUBLISHED_POLICY: &str = A08;
+pub(crate) const UNPUBLISHED_POLICY: &str = kontor_fleet_activation::rule::A08;
 
-/// The refusals one guarded read names, in the order the checks run.
-struct Guard {
-    symlink: &'static str,
-    writable: &'static str,
-    owner: &'static str,
-    oversized: &'static str,
-    swapped: &'static str,
-    utf8: &'static str,
-    limit: u64,
-}
-
+/// The unmigrated `fleet.yml`'s own file rules, read by the shared guarded
+/// reader so every state-root file is checked the same way.
 const FLEET_GUARD: Guard = Guard {
     symlink: F01,
     writable: F02,
@@ -109,26 +79,6 @@ const FLEET_GUARD: Guard = Guard {
     swapped: F05,
     utf8: F06,
     limit: MAX_FILE_BYTES,
-};
-
-const POLICY_GUARD: Guard = Guard {
-    symlink: P01,
-    writable: P02,
-    owner: P03,
-    oversized: P04,
-    swapped: P05,
-    utf8: P06,
-    limit: MAX_FILE_BYTES,
-};
-
-const ACTIVATION_GUARD: Guard = Guard {
-    symlink: A01,
-    writable: A02,
-    owner: A03,
-    oversized: A04,
-    swapped: A05,
-    utf8: A06,
-    limit: MAX_ACTIVATION_BYTES,
 };
 
 /// The rungs one delivery seat may walk, and the fleet binding they came from.
@@ -141,24 +91,6 @@ const ACTIVATION_GUARD: Guard = Guard {
 pub(crate) struct DeclaredRungs {
     pub(crate) rungs: Vec<ModelRung>,
     pub(crate) fleet: Option<(Arc<FleetSnapshot>, String)>,
-}
-
-/// The generated activation record: which published policy placement reads.
-///
-/// A runtime projection, never authoring input. It names the policy by content
-/// hash and carries the schema needed to verify that artifact; the artifact
-/// itself is the immutable `fleet-history/<policy_hash>.yml`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct FleetActivation {
-    /// The format of this record.
-    pub(crate) schema_version: u32,
-    /// SHA-256 of exactly the activated policy bytes.
-    pub(crate) policy_hash: ContentHash,
-    /// The schema those bytes validate under.
-    pub(crate) policy_schema_version: u32,
-    /// When activation replaced the record.
-    pub(crate) activated_at: String,
 }
 
 /// What one publication wrote.
@@ -174,20 +106,65 @@ pub(crate) struct Published {
 
 /// What one activation left selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Activated {
+pub struct Activated {
     /// The standing activation record.
-    pub(crate) record: FleetActivation,
+    pub record: FleetActivation,
     /// Whether this call replaced the record rather than finding it.
-    pub(crate) changed: bool,
+    pub changed: bool,
 }
 
 /// Why an activation changed nothing.
 #[derive(Debug)]
-pub(crate) enum ActivationRefusal {
+pub enum ActivationRefusal {
     /// The published artifact did not verify, or the record was not written.
     Policy(FleetError),
     /// The record selects another policy than the one the caller read.
     Moved,
+}
+
+/// The standing selection an activation must name to replace it: the policy
+/// and, for an aligned activation, the bundle the caller read. `None` in both
+/// is "no activation record".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ActivationFence {
+    /// The policy the standing record names.
+    pub policy_hash: Option<ContentHash>,
+    /// The bundle the standing record names, for a schema_version 2 record.
+    pub source_bundle_hash: Option<ContentHash>,
+}
+
+impl ActivationFence {
+    fn of(record: Option<&FleetActivation>) -> Self {
+        Self {
+            policy_hash: record.map(|record| record.policy_hash.clone()),
+            source_bundle_hash: record.and_then(|record| record.source_bundle_hash.clone()),
+        }
+    }
+}
+
+/// What one bundle publication left published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedBundle {
+    /// The canonical manifest's content hash: the bundle's identity.
+    pub bundle_hash: ContentHash,
+    /// The manifest as written.
+    pub manifest: BundleManifest,
+    /// Whether this call wrote any artifact rather than finding all of them.
+    pub created: bool,
+}
+
+/// What placement reads: the policy, and for an aligned activation the exact
+/// canonical Core Team revision it selects.
+#[derive(Debug, Clone)]
+pub(crate) struct Placement {
+    /// The policy a seat binding resolves against.
+    pub(crate) policy: Arc<FleetSnapshot>,
+    /// `Some` exactly for a schema_version 2 activation: the roster whose hash
+    /// every leadership binding names. A governed leadership launch confirms
+    /// its pinned revision against these bytes before it resolves a route.
+    pub(crate) roster: Option<Arc<CanonicalDocument>>,
+    /// The bundle a schema_version 2 activation names, for the evidence.
+    pub(crate) source_bundle_hash: Option<ContentHash>,
 }
 
 /// The Realm's fleet selection as the read operation reports it.
@@ -225,6 +202,14 @@ pub(crate) struct LeadershipDecision {
     pub(crate) effort: Option<String>,
     pub(crate) vendor: String,
     pub(crate) decided_at: String,
+    /// The orchestration bundle an aligned activation names; absent under a
+    /// schema_version 1 activation, so those rows keep their exact shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_bundle_hash: Option<String>,
+    /// The eligibility the policy chose this route under, when the caller
+    /// named no route; absent for an admitted caller route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) eligibility: Option<kontor_fleet::Eligibility>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,6 +324,16 @@ impl FleetSource {
     /// Returns the first check the activation record or its published
     /// artifact fails.
     pub(crate) fn policy(&self) -> Result<Option<Arc<FleetSnapshot>>, FleetError> {
+        Ok(self.placement()?.map(|placement| placement.policy))
+    }
+
+    /// The policy placement reads and, under an aligned activation, the Core
+    /// Team revision it selects — both from one verified read, so a leadership
+    /// launch never pairs a policy with a roster from another activation.
+    ///
+    /// # Errors
+    /// As [`Self::policy`].
+    pub(crate) fn placement(&self) -> Result<Option<Placement>, FleetError> {
         let mut cache = self.lock();
         if let Err(error) = std::fs::symlink_metadata(self.state_root.join(FLEET_ACTIVATION_FILE))
             && error.kind() == std::io::ErrorKind::NotFound
@@ -348,13 +343,20 @@ impl FleetSource {
                 // before the activation record appeared.
                 *cache = Cache::default();
             }
-            return Ok(self.legacy(&mut cache));
+            return Ok(self.legacy(&mut cache).map(|policy| Placement {
+                policy,
+                roster: None,
+                source_bundle_hash: None,
+            }));
         }
-        let verified = self.verify_activation();
+        // The one verified reader, shared with the CLI's local resolution:
+        // the record, then the bundle manifest it names, then exactly the
+        // policy and roster that manifest names. Nothing else is read.
+        let verified = kontor_fleet_activation::load(&self.state_root);
         let outcome = match &verified {
-            Ok((record, _)) => ActivationOutcome::Active {
-                hash: record.policy_hash.clone(),
-                activated_at: record.activated_at.clone(),
+            Ok(activated) => ActivationOutcome::Active {
+                hash: activated.record.policy_hash.clone(),
+                activated_at: activated.record.activated_at.clone(),
             },
             Err(error) => ActivationOutcome::Blocked(error.to_string()),
         };
@@ -370,7 +372,13 @@ impl FleetSource {
             self.write_activation_status(&outcome);
             cache.activation = Some(outcome);
         }
-        verified.map(|(_, snapshot)| Some(snapshot))
+        verified.map(|activated| {
+            Some(Placement {
+                policy: Arc::new(activated.policy),
+                roster: activated.bundle.map(|bundle| Arc::new(bundle.roster)),
+                source_bundle_hash: activated.record.source_bundle_hash,
+            })
+        })
     }
 
     /// Publish one validated policy as an immutable, content-addressed artifact.
@@ -385,7 +393,12 @@ impl FleetSource {
     /// verifies, or the write failure.
     pub(crate) fn publish(&self, document: &str) -> Result<Published, FleetError> {
         let snapshot = FleetSnapshot::parse_policy(document)?;
-        let created = if std::fs::symlink_metadata(self.published_path(snapshot.hash())).is_ok() {
+        let created = if std::fs::symlink_metadata(kontor_fleet_activation::policy_path(
+            &self.state_root,
+            snapshot.hash(),
+        ))
+        .is_ok()
+        {
             self.verify_published(snapshot.hash())?;
             false
         } else {
@@ -438,12 +451,126 @@ impl FleetSource {
             .verify_published(hash)
             .map_err(ActivationRefusal::Policy)?;
         let record = FleetActivation {
-            schema_version: ACTIVATION_SCHEMA_VERSION,
+            schema_version: ACTIVATION_V1,
+            source_bundle_hash: None,
             policy_hash: hash.clone(),
             policy_schema_version: snapshot.schema_version(),
+            core_team_revision_hash: None,
             activated_at: format_utc_timestamp(Timestamp::now()),
         };
-        let bytes = serde_json::to_vec_pretty(&record).map_err(|error| {
+        self.replace_activation(&record)?;
+        Ok(Activated {
+            record,
+            changed: true,
+        })
+    }
+
+    /// Publish one resolved orchestration bundle: its policy, its canonical
+    /// Core Team revision and its manifest, each immutable and addressed by
+    /// its own content hash.
+    ///
+    /// Every artifact already present is re-verified rather than rewritten,
+    /// and the bundle is then read back in full through the shared reader, so
+    /// a publication that returns has left exactly what an activation will
+    /// verify. Publication selects nothing; only [`Self::activate_bundle`]
+    /// does.
+    ///
+    /// # Errors
+    /// The first artifact that does not verify, or the write failure.
+    pub fn publish_bundle(
+        &self,
+        bundle: &crate::orchestration::ResolvedBundle,
+    ) -> Result<PublishedBundle, FleetError> {
+        let policy = self.publish(bundle.policy.raw())?;
+        let roster_path =
+            kontor_fleet_activation::roster_path(&self.state_root, bundle.roster.hash());
+        let roster_created = if std::fs::symlink_metadata(&roster_path).is_ok() {
+            kontor_fleet_activation::verify_roster(&self.state_root, bundle.roster.hash())?;
+            false
+        } else {
+            store_immutable(
+                &self.state_root.join(CORE_TEAM_HISTORY_DIR),
+                &roster_path,
+                bundle.roster.json().as_bytes(),
+            )
+            .map_err(|source| FleetError::Write { source })?;
+            true
+        };
+        let manifest = bundle.manifest.canonicalize()?;
+        let manifest_path =
+            kontor_fleet_activation::manifest_path(&self.state_root, manifest.hash());
+        let manifest_created = if std::fs::symlink_metadata(&manifest_path).is_ok() {
+            false
+        } else {
+            store_immutable(
+                &self.state_root.join(ORCHESTRATION_HISTORY_DIR),
+                &manifest_path,
+                manifest.json().as_bytes(),
+            )
+            .map_err(|source| FleetError::Write { source })?;
+            true
+        };
+        let verified = kontor_fleet_activation::verify_bundle(&self.state_root, manifest.hash())?;
+        Ok(PublishedBundle {
+            bundle_hash: manifest.hash().clone(),
+            manifest: verified.manifest,
+            created: policy.created || roster_created || manifest_created,
+        })
+    }
+
+    /// Select one published bundle — its policy and its Core Team roster
+    /// together — for every later placement, with a schema_version 2 record.
+    ///
+    /// `expected` is the standing selection the caller read; a record naming
+    /// anything else refuses with [`ActivationRefusal::Moved`]. Selecting the
+    /// bundle already active re-verifies it and writes nothing. Otherwise every
+    /// artifact the bundle names is verified before the one pointer is
+    /// replaced atomically; a refused activation changes nothing. Running and
+    /// frozen epics keep their pins: this changes only what the next placement
+    /// reads.
+    ///
+    /// # Errors
+    /// As [`Self::activate`].
+    pub fn activate_bundle(
+        &self,
+        bundle_hash: &ContentHash,
+        expected: &ActivationFence,
+    ) -> Result<Activated, ActivationRefusal> {
+        let _cache = self.lock();
+        let standing = self.recorded_activation();
+        if let Some(record) = standing.as_ref()
+            && record.source_bundle_hash.as_ref() == Some(bundle_hash)
+        {
+            kontor_fleet_activation::verify_bundle(&self.state_root, bundle_hash)
+                .map_err(ActivationRefusal::Policy)?;
+            return Ok(Activated {
+                record: record.clone(),
+                changed: false,
+            });
+        }
+        if &ActivationFence::of(standing.as_ref()) != expected {
+            return Err(ActivationRefusal::Moved);
+        }
+        let verified = kontor_fleet_activation::verify_bundle(&self.state_root, bundle_hash)
+            .map_err(ActivationRefusal::Policy)?;
+        let record = FleetActivation {
+            schema_version: ACTIVATION_V2,
+            source_bundle_hash: Some(bundle_hash.clone()),
+            policy_hash: verified.manifest.policy_hash.clone(),
+            policy_schema_version: verified.manifest.policy_schema_version,
+            core_team_revision_hash: Some(verified.manifest.core_team_revision_hash.clone()),
+            activated_at: format_utc_timestamp(Timestamp::now()),
+        };
+        self.replace_activation(&record)?;
+        Ok(Activated {
+            record,
+            changed: true,
+        })
+    }
+
+    /// Replace the one activation pointer atomically, owner-only.
+    fn replace_activation(&self, record: &FleetActivation) -> Result<(), ActivationRefusal> {
+        let bytes = serde_json::to_vec_pretty(record).map_err(|error| {
             ActivationRefusal::Policy(FleetError::Write {
                 source: std::io::Error::other(error),
             })
@@ -457,11 +584,7 @@ impl FleetSource {
             .map_err(|source| {
                 let _ = std::fs::remove_file(&temporary);
                 ActivationRefusal::Policy(FleetError::Write { source })
-            })?;
-        Ok(Activated {
-            record,
-            changed: true,
-        })
+            })
     }
 
     /// What the Realm's fleet selection currently is, for the read operation.
@@ -653,96 +776,23 @@ impl FleetSource {
     }
 
     fn load(&self, path: &Path) -> Result<FleetSnapshot, FleetError> {
-        FleetSnapshot::parse(&self.read_guarded(path, &FLEET_GUARD)?)
+        FleetSnapshot::parse(&kontor_fleet_activation::read_guarded(
+            &self.state_root,
+            path,
+            &FLEET_GUARD,
+        )?)
     }
 
     /// The standing activation record as written, or `None` when there is no
     /// record or it cannot be read. Only the activation fence uses it: an
     /// unreadable record selects nothing a caller could have read.
     fn recorded_activation(&self) -> Option<FleetActivation> {
-        let text = self
-            .read_guarded(
-                &self.state_root.join(FLEET_ACTIVATION_FILE),
-                &ACTIVATION_GUARD,
-            )
-            .ok()?;
-        serde_json::from_str(&text).ok()
-    }
-
-    /// The activation record and the exact policy it names, both verified.
-    fn verify_activation(&self) -> Result<(FleetActivation, Arc<FleetSnapshot>), FleetError> {
-        let text = self.read_guarded(
-            &self.state_root.join(FLEET_ACTIVATION_FILE),
-            &ACTIVATION_GUARD,
-        )?;
-        let record: FleetActivation = serde_json::from_str(&text).map_err(|_| invalid(A07))?;
-        if record.schema_version != ACTIVATION_SCHEMA_VERSION {
-            return Err(invalid(A07));
-        }
-        // The one activation decision, shared with every direct-mode reader:
-        // only the bytes at the record's address, under the record's schema.
-        let snapshot = FleetSnapshot::activated(
-            &record.policy_hash,
-            record.policy_schema_version,
-            &self.read_published(&record.policy_hash)?,
-        )?;
-        Ok((record, Arc::new(snapshot)))
+        kontor_fleet_activation::read_activation(&self.state_root).ok()
     }
 
     /// The published artifact for `hash`, re-read, re-hashed and re-validated.
     fn verify_published(&self, hash: &ContentHash) -> Result<FleetSnapshot, FleetError> {
-        FleetSnapshot::published(hash, &self.read_published(hash)?)
-    }
-
-    /// The bytes published under `hash`, under the artifact's own file rules.
-    fn read_published(&self, hash: &ContentHash) -> Result<String, FleetError> {
-        match self.read_guarded(&self.published_path(hash), &POLICY_GUARD) {
-            Err(FleetError::Read { source }) if source.kind() == std::io::ErrorKind::NotFound => {
-                Err(invalid(A08))
-            }
-            other => other,
-        }
-    }
-
-    fn published_path(&self, hash: &ContentHash) -> PathBuf {
-        self.state_root
-            .join(FLEET_HISTORY_DIR)
-            .join(format!("{hash}.yml"))
-    }
-
-    /// Read one state-root file under its own refusal texts.
-    fn read_guarded(&self, path: &Path, guard: &Guard) -> Result<String, FleetError> {
-        let metadata =
-            std::fs::symlink_metadata(path).map_err(|source| FleetError::Read { source })?;
-        if !metadata.file_type().is_file() {
-            return Err(invalid(guard.symlink));
-        }
-        if metadata.mode() & 0o022 != 0 {
-            return Err(invalid(guard.writable));
-        }
-        let root = std::fs::symlink_metadata(&self.state_root)
-            .map_err(|source| FleetError::Read { source })?;
-        if metadata.uid() != root.uid() {
-            return Err(invalid(guard.owner));
-        }
-        if metadata.len() > guard.limit {
-            return Err(invalid(guard.oversized));
-        }
-        let file = std::fs::File::open(path).map_err(|source| FleetError::Read { source })?;
-        let opened = file
-            .metadata()
-            .map_err(|source| FleetError::Read { source })?;
-        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
-            return Err(invalid(guard.swapped));
-        }
-        let mut bytes = Vec::new();
-        file.take(guard.limit + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|source| FleetError::Read { source })?;
-        if bytes.len() as u64 > guard.limit {
-            return Err(invalid(guard.oversized));
-        }
-        String::from_utf8(bytes).map_err(|_| invalid(guard.utf8))
+        kontor_fleet_activation::verify_policy(&self.state_root, hash)
     }
 
     fn write_history(&self, snapshot: &FleetSnapshot) {
@@ -809,8 +859,18 @@ impl FleetSource {
     }
 }
 
-fn invalid(rule: &'static str) -> FleetError {
-    FleetError::Invalid { rule }
+/// Write one immutable, content-addressed artifact the way [`FleetSource`]
+/// writes a published policy: owner-only, through a temporary file and one
+/// rename, so a reader sees no artifact or the whole one.
+fn store_immutable(directory: &Path, target: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    create_private_dir(directory)?;
+    let temporary = target.with_extension("json.tmp");
+    let result =
+        write_owner_only(&temporary, bytes).and_then(|()| std::fs::rename(&temporary, target));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn create_private_dir(path: &Path) -> std::io::Result<()> {
@@ -841,6 +901,8 @@ mod tests {
     use super::*;
     use kontor_core::spec::{ModelRef, ProviderRef};
     use kontor_fleet::rule::*;
+    use kontor_fleet_activation::MAX_ACTIVATION_BYTES;
+    use kontor_fleet_activation::rule::*;
     use std::os::unix::fs::PermissionsExt;
 
     const EXAMPLE: &str = include_str!("../../../config/examples/fleet.yml");
@@ -2000,6 +2062,8 @@ bindings:
             effort: Some("xhigh".to_owned()),
             vendor: "openai".to_owned(),
             decided_at: "2026-09-27T00:00:00Z".to_owned(),
+            source_bundle_hash: None,
+            eligibility: None,
         };
         source
             .record_leadership_decision(&decision(1))
@@ -2183,5 +2247,228 @@ bindings:
             .activate(&candidate, Some(&hash))
             .expect("activate the candidate");
         compare(&candidate);
+    }
+
+    /// Publish one resolved authoring bundle and return what was published.
+    fn publish_bundle(
+        source: &FleetSource,
+        authoring: &crate::orchestration::fixture::Authoring,
+    ) -> (PublishedBundle, crate::orchestration::ResolvedBundle) {
+        let resolved =
+            crate::orchestration::resolve_bundle(&authoring.sources(), &authoring.catalog)
+                .expect("the bundle resolves");
+        (
+            source.publish_bundle(&resolved).expect("published"),
+            resolved,
+        )
+    }
+
+    fn standing(root: &Path) -> ActivationFence {
+        ActivationFence::of(kontor_fleet_activation::read_activation(root).ok().as_ref())
+    }
+
+    #[test]
+    fn an_aligned_bundle_is_published_then_activated_as_one_selection() {
+        use crate::orchestration::fixture::{ADVISOR, DELIVERY, REVIEWER, authoring};
+        use kontor_fleet::Eligibility;
+
+        let root = tempfile::tempdir().expect("temporary state root");
+        let source = FleetSource::at(root.path());
+        let authoring = authoring();
+        let (published, resolved) = publish_bundle(&source, &authoring);
+        assert!(published.created);
+        assert_eq!(published.manifest, resolved.manifest);
+        for artifact in [
+            kontor_fleet_activation::manifest_path(root.path(), &published.bundle_hash),
+            kontor_fleet_activation::roster_path(root.path(), resolved.roster.hash()),
+            kontor_fleet_activation::policy_path(root.path(), resolved.policy.hash()),
+        ] {
+            let metadata = std::fs::symlink_metadata(&artifact).expect("the artifact exists");
+            assert!(metadata.file_type().is_file(), "{}", artifact.display());
+            assert_eq!(metadata.mode() & 0o777, 0o600, "{}", artifact.display());
+        }
+        assert_eq!(
+            std::fs::read_to_string(kontor_fleet_activation::roster_path(
+                root.path(),
+                resolved.roster.hash()
+            ))
+            .expect("the roster"),
+            resolved.roster.json(),
+            "the published roster is the exact canonical revision"
+        );
+        // Publication selects nothing, and republishing writes nothing.
+        assert!(!activation_path(root.path()).exists());
+        assert!(source.policy().expect("no activation").is_none());
+        assert!(!publish_bundle(&source, &authoring).0.created);
+
+        let activated = source
+            .activate_bundle(&published.bundle_hash, &ActivationFence::default())
+            .expect("activate");
+        assert!(activated.changed);
+        let record = &activated.record;
+        assert_eq!(record.schema_version, ACTIVATION_V2);
+        assert_eq!(
+            record.source_bundle_hash.as_ref(),
+            Some(&published.bundle_hash)
+        );
+        assert_eq!(&record.policy_hash, resolved.policy.hash());
+        assert_eq!(record.policy_schema_version, 2);
+        assert_eq!(
+            record.core_team_revision_hash.as_ref(),
+            Some(resolved.roster.hash())
+        );
+        let written: FleetActivation =
+            serde_json::from_slice(&std::fs::read(activation_path(root.path())).expect("record"))
+                .expect("record JSON");
+        assert_eq!(&written, record);
+        assert_eq!(
+            std::fs::symlink_metadata(activation_path(root.path()))
+                .expect("record")
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        // The daemon's placement read and the direct reader are one read.
+        let placement = source.placement().expect("verified").expect("activated");
+        assert_eq!(placement.policy.hash(), resolved.policy.hash());
+        assert_eq!(placement.roster.as_deref(), Some(&resolved.roster));
+        assert_eq!(
+            placement.source_bundle_hash.as_ref(),
+            Some(&published.bundle_hash)
+        );
+        let eligibility = Eligibility::default();
+        for seat in &resolved.revision.seats {
+            let key =
+                kontor_fleet::LeadershipKey::for_pinned_slot(&resolved.roster, &seat.role_slot_id)
+                    .expect("the selected roster proves its slot");
+            let governed = placement
+                .policy
+                .resolve_leadership(&key)
+                .expect("bound")
+                .select(&eligibility);
+            let direct = kontor_fleet_activation::resolve(root.path(), key.as_str(), &eligibility)
+                .expect("the direct reader resolves");
+            assert_eq!(governed, direct, "{key}");
+            assert!(direct.selected.is_some());
+        }
+        for key in [DELIVERY, REVIEWER, ADVISOR] {
+            let governed = placement
+                .policy
+                .resolve(key)
+                .expect("bound")
+                .select(&eligibility);
+            let direct = kontor_fleet_activation::resolve(root.path(), key, &eligibility)
+                .expect("the direct reader resolves");
+            assert_eq!(governed, direct, "{key}");
+        }
+
+        // Re-activating the standing bundle is the unchanged replay answer.
+        let replay = source
+            .activate_bundle(&published.bundle_hash, &ActivationFence::default())
+            .expect("replay");
+        assert!(!replay.changed);
+        assert_eq!(&replay.record, record);
+
+        // Another bundle needs the fence the caller read.
+        let mut next = crate::orchestration::fixture::authoring();
+        next.fleet = next.fleet.replace("lsa: codex-first", "lsa: claude-first");
+        let (candidate, _) = publish_bundle(&source, &next);
+        assert_ne!(candidate.bundle_hash, published.bundle_hash);
+        assert!(matches!(
+            source.activate_bundle(&candidate.bundle_hash, &ActivationFence::default()),
+            Err(ActivationRefusal::Moved)
+        ));
+        assert_eq!(
+            source
+                .placement()
+                .expect("verified")
+                .expect("activated")
+                .source_bundle_hash
+                .as_ref(),
+            Some(&published.bundle_hash),
+            "a refused activation changes nothing"
+        );
+        let moved = source
+            .activate_bundle(&candidate.bundle_hash, &standing(root.path()))
+            .expect("activate the candidate");
+        assert!(moved.changed);
+        assert_eq!(
+            moved.record.source_bundle_hash.as_ref(),
+            Some(&candidate.bundle_hash)
+        );
+    }
+
+    #[test]
+    fn a_bundle_that_does_not_verify_is_never_activated_and_never_served() {
+        use crate::orchestration::fixture::authoring;
+
+        let root = tempfile::tempdir().expect("temporary state root");
+        // An unmigrated fleet.yml is present throughout; it is never a fallback.
+        write_fleet(root.path(), V1_CLAUDE_FIRST);
+        let source = FleetSource::at(root.path());
+        let authoring = authoring();
+        let (published, resolved) = publish_bundle(&source, &authoring);
+        let roster = kontor_fleet_activation::roster_path(root.path(), resolved.roster.hash());
+        let good = std::fs::read(&roster).expect("roster");
+
+        // A rewritten roster refuses activation and writes no record.
+        write_private(&roster, b"{\"schema_version\":1,\"value\":\"lsa\"}");
+        match source.activate_bundle(&published.bundle_hash, &ActivationFence::default()) {
+            Err(ActivationRefusal::Policy(FleetError::Invalid { rule })) => assert_eq!(rule, C08),
+            other => panic!("expected C-08, got {other:?}"),
+        }
+        assert!(!activation_path(root.path()).exists());
+        write_private(&roster, &good);
+
+        // An unpublished bundle refuses activation.
+        let unpublished = ContentHash::of(b"no such bundle");
+        match source.activate_bundle(&unpublished, &ActivationFence::default()) {
+            Err(ActivationRefusal::Policy(FleetError::Invalid { rule })) => assert_eq!(rule, M07),
+            other => panic!("expected M-07, got {other:?}"),
+        }
+        assert!(!activation_path(root.path()).exists());
+
+        // Once active, a roster rewritten under it blocks placement; fleet.yml
+        // and last-valid are not served instead.
+        source
+            .activate_bundle(&published.bundle_hash, &ActivationFence::default())
+            .expect("activate");
+        write_private(&roster, b"{}");
+        assert_eq!(refusal(&source), C08);
+        assert!(source.current().is_none());
+        assert!(source.placement().is_err());
+        std::fs::remove_file(&roster).expect("remove the roster");
+        assert_eq!(refusal(&source), C07);
+        write_private(&roster, &good);
+        assert!(source.placement().expect("verified").is_some());
+    }
+
+    #[test]
+    fn a_schema_version_1_record_keeps_its_exact_shape() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        let source = FleetSource::at(root.path());
+        activate(&source, V1_CLAUDE_FIRST);
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(activation_path(root.path())).expect("record"))
+                .expect("record JSON");
+        assert_eq!(
+            written
+                .as_object()
+                .expect("an object")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "activated_at",
+                "policy_hash",
+                "policy_schema_version",
+                "schema_version"
+            ]
+        );
+        assert_eq!(written["schema_version"], 1);
+        let placement = source.placement().expect("verified").expect("activated");
+        assert!(placement.roster.is_none(), "a v1 record selects no roster");
+        assert!(placement.source_bundle_hash.is_none());
     }
 }

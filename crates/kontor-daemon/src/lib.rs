@@ -50,6 +50,7 @@ pub mod github_publication;
 pub mod jira_sync;
 pub mod lock;
 pub mod logging;
+pub mod orchestration;
 pub mod provider_config;
 pub mod quota_observation;
 pub mod recovery;

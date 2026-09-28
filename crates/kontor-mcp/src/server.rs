@@ -458,11 +458,35 @@ mod tests {
         assert!(observer.get_tool("kontor_realm_get").is_some());
 
         let admin = server(CallerTier::Admin);
+        let local = REGISTRY
+            .iter()
+            .filter(|tool| tool.route().is_none())
+            .count();
+        assert!(local > 0, "the registry declares a local operation");
         assert_eq!(
             admin.served().len(),
-            REGISTRY.len() - CLI_ONLY.len(),
-            "an admin server serves the whole vocabulary less what is held off the listing"
+            REGISTRY.len() - CLI_ONLY.len() - local,
+            "an admin server serves every routed tool less what is held off the listing"
         );
+        // A local operation has no route: it is neither listed nor declared,
+        // at any authority, and it is not on the hiding list.
+        for tool in REGISTRY.iter().filter(|tool| tool.route().is_none()) {
+            assert!(
+                !CLI_ONLY.contains(&tool.name),
+                "{} is hidden, not local",
+                tool.name
+            );
+            assert!(
+                admin.get_tool(tool.name).is_none(),
+                "{} is declared",
+                tool.name
+            );
+            assert!(
+                !admin.served().iter().any(|served| served.name == tool.name),
+                "{} is listed",
+                tool.name
+            );
+        }
         // The lever is subtracted from the *listing* and nowhere else, so a
         // held-back tool is still a real tool the CLI generates a command for.
         for name in CLI_ONLY {

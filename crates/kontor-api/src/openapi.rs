@@ -394,6 +394,7 @@ impl Modify for RealmBearer {
         crate::applications::CoreTeamApplyRequest,
         crate::applications::CoreTeamMaterializeRequest,
         crate::applications::CoreTeamSeatRouteRequest,
+        crate::applications::FleetEligibilityRequest,
         crate::applications::CoreTeamRoutePreviewRequest,
         crate::applications::CoreTeamRoutePreviewDto,
         crate::applications::CoreTeamRouteApplyRequest,

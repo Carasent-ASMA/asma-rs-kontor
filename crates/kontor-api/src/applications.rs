@@ -949,13 +949,36 @@ pub struct CoreTeamMaterializeRequest {
 }
 
 /// One authorized native route for a persistent Core Team role.
+///
+/// Exactly one of `model_route` and `eligibility`: the caller's exact route,
+/// which the activated fleet policy may admit or refuse but never replaces, or
+/// — when the caller names none — the policy's own choice under the
+/// eligibility the caller states (ASMA-8280).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamSeatRouteRequest {
     /// Stable role code in the epic's frozen Core Team roster.
     pub role_code: String,
     /// Exact provider/model/effort route to launch or recover.
-    pub model_route: RuntimeModelRouteRequest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_route: Option<RuntimeModelRouteRequest>,
+    /// The runtime facts the activated fleet policy chooses this seat's route
+    /// under, when no `model_route` is named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eligibility: Option<FleetEligibilityRequest>,
+}
+
+/// The runtime facts one fleet policy choice is made under: stated by the
+/// caller, applied in chain order, and recorded with the decision.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetEligibilityRequest {
+    /// Account aliases that cannot take the seat now.
+    #[serde(default)]
+    pub unavailable_accounts: Vec<String>,
+    /// Vendors the seat must avoid.
+    #[serde(default)]
+    pub excluded_vendors: Vec<String>,
 }
 
 /// Exact in-place route correction or stale-native recovery for one persistent Core Team seat.
@@ -2644,6 +2667,16 @@ pub struct FleetActivationDto {
     pub policy_schema_version: u32,
     /// When activation replaced the record.
     pub activated_at: String,
+    /// The orchestration bundle an aligned (schema_version 2) activation
+    /// names; absent for a schema_version 1 record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
+    /// The Core Team revision an aligned activation selects; absent for a
+    /// schema_version 1 record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub core_team_revision_hash: Option<ContentHash>,
 }
 
 /// One candidate fleet policy, as authored.

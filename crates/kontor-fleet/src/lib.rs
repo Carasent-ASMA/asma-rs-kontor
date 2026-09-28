@@ -313,7 +313,8 @@ pub struct PolicyExclusion {
 /// The runtime facts one selection is made under. None of this is policy:
 /// it is what the caller observes now, stated explicitly so the choice can be
 /// reproduced from the receipt.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Eligibility {
     /// Account aliases that cannot take a seat right now — exhausted, signed
     /// out or blocked by an operator.

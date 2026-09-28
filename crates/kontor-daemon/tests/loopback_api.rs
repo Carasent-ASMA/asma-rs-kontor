@@ -36108,6 +36108,360 @@ async fn leadership_materialization_is_resolved_through_the_activated_policy() {
     }
 }
 
+/// The epic's frozen roster written as the explicit Core Team source an
+/// aligned bundle declares, at `version` (ASMA-8280 B-2).
+fn core_team_source_for(world: &World, project: &str, epic: &str, version: SpecVersion) -> String {
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_epic_roster(project_id_of(project), epic_id_of(epic))
+            .expect("the roster reads")
+            .expect("the epic froze a roster")
+    });
+    let seats: Vec<kontor_teams::CoreTeamSeat> =
+        serde_json::from_value(stored.seats).expect("the frozen seats read");
+    let catalog = bundled_role_catalog();
+    let catalog_hash = catalog.canonicalize().expect("the catalog").hash().clone();
+    assert_eq!(
+        stored.catalog_hash, catalog_hash,
+        "the epic froze the bundled catalog"
+    );
+    serde_yaml_ng::to_string(&kontor_daemon::orchestration::CoreTeamSource {
+        schema_version: kontor_daemon::orchestration::SOURCE_SCHEMA_VERSION,
+        version,
+        role_catalog: kontor_fleet_activation::RoleCatalogPin {
+            catalog_id: catalog.catalog_id,
+            version: catalog.version,
+            content_hash: catalog_hash,
+        },
+        seats: seats
+            .iter()
+            .map(|seat| kontor_daemon::orchestration::CoreTeamSourceSeat {
+                role_slot_id: seat.role_slot_id.clone(),
+                role_code: seat.role.role_code.clone(),
+                custom_display_name: seat.role.custom_display_name.clone(),
+                presence: seat.presence,
+                ad_hoc_allowed: seat.ad_hoc_allowed,
+            })
+            .collect(),
+    })
+    .expect("the Core Team source")
+}
+
+fn bundled_role_catalog() -> kontor_core::spec::RoleCatalogRevision {
+    kontor_profiles::bundled_operational_domain()
+        .expect("the bundled domain")
+        .role_catalogs
+        .remove(0)
+}
+
+/// Resolve, publish and activate one aligned bundle through the daemon's own
+/// seams, fenced on the standing record. Returns the bundle and roster hashes.
+fn activate_aligned_bundle(
+    world: &World,
+    core_team: &str,
+    fleet: &str,
+) -> (ContentHash, ContentHash) {
+    let root = world.directory.path();
+    let orchestration =
+        kontor_daemon::orchestration::propose_orchestration().expect("the selector");
+    let resolved = kontor_daemon::orchestration::resolve_bundle(
+        &kontor_daemon::orchestration::BundleSources {
+            orchestration: &orchestration,
+            fleet,
+            core_team,
+        },
+        &bundled_role_catalog(),
+    )
+    .expect("the bundle resolves");
+    let source = kontor_daemon::fleet::FleetSource::at(root);
+    let published = source
+        .publish_bundle(&resolved)
+        .expect("the bundle publishes");
+    let standing = kontor_fleet_activation::read_activation(root).ok();
+    let fence = kontor_daemon::fleet::ActivationFence {
+        policy_hash: standing.as_ref().map(|record| record.policy_hash.clone()),
+        source_bundle_hash: standing.and_then(|record| record.source_bundle_hash),
+    };
+    source
+        .activate_bundle(&published.bundle_hash, &fence)
+        .expect("the bundle activates");
+    (published.bundle_hash, resolved.roster.hash().clone())
+}
+
+/// ASMA-8280 B-2: under an aligned activation a governed leadership launch
+/// consumes exactly the selected roster. While the bundle selects another
+/// revision — even one whose policy binds this epic's keys — the launch is
+/// blocked before any seat or native effect and the epic keeps its pin. Once a
+/// bundle selecting the epic's own revision is active, the launch resolves
+/// through that bundle's policy and the decision names the bundle.
+#[tokio::test]
+async fn an_aligned_activation_leads_only_the_epic_pinned_to_its_roster() {
+    let composed = compose_realm("/tmp/kontor-asma8280-aligned-leadership").await;
+    let world = &composed.world;
+    let project = composed.project.clone();
+    let epic = composed.epic.clone();
+    adopt_session_base(world, &project, composed.project_revision).await;
+    let keys = leadership_keys(world, &project, &epic);
+    let (lsa, tpm) = (&keys["lsa"], &keys["tpm"]);
+    let fleet = leadership_policy(lsa.as_str(), "sol@xhigh", tpm.as_str(), "sol@high");
+
+    let materialize = |key: &'static str| {
+        let body = serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                {"role_code": "LSA", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }},
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "high"
+                }}
+            ]
+        });
+        let project = project.clone();
+        let epic = epic.clone();
+        async move {
+            Call::post(
+                format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+                &body,
+            )
+            .signed_as(world, "admin")
+            .with_key(key)
+            .send(world)
+            .await
+        }
+    };
+
+    // Another revision of the same seats, under a policy that binds this
+    // epic's own keys: the policy alone would admit the launch.
+    let other = core_team_source_for(
+        world,
+        &project,
+        &epic,
+        SpecVersion::FIRST.next().expect("a second revision"),
+    );
+    let (_, other_roster) = activate_aligned_bundle(world, &other, &fleet);
+    assert_ne!(&other_roster, lsa.core_team_revision_hash());
+    let blocked = materialize("asma8280-aligned-other-roster").await;
+    assert_eq!(blocked.status, 409, "{}", blocked.body);
+    assert_eq!(blocked.code(), "placement_blocked");
+    assert!(
+        blocked.body.contains(
+            "the epic's pinned Core Team revision is not the roster the activated orchestration bundle selects"
+        ),
+        "{}",
+        blocked.body
+    );
+    assert_eq!(hosted_launches(world), 0, "nothing launched");
+    assert_eq!(
+        leadership_keys(world, &project, &epic)["lsa"].as_str(),
+        lsa.as_str(),
+        "the epic keeps its pin"
+    );
+
+    // The bundle selecting the epic's own revision leads it.
+    let own = core_team_source_for(world, &project, &epic, SpecVersion::FIRST);
+    let (bundle, roster) = activate_aligned_bundle(world, &own, &fleet);
+    assert_eq!(&roster, lsa.core_team_revision_hash());
+    let admitted = materialize("asma8280-aligned-own-roster").await;
+    assert_eq!(admitted.status, 200, "{}", admitted.body);
+    let seats = admitted.json()["core_team"]["seats"]
+        .as_array()
+        .expect("the Core Team seats")
+        .clone();
+    let policy_hash = kontor_core::id::ContentHash::of(fleet.as_bytes());
+    for (role_code, slot, effort) in [
+        ("LSA", "lsa", EffortLevel::Xhigh),
+        ("TPM", "tpm", EffortLevel::High),
+    ] {
+        let seat = seats
+            .iter()
+            .find(|seat| seat["role"]["role_code"] == role_code)
+            .unwrap_or_else(|| panic!("the {role_code} seat: {seats:?}"));
+        let binding = seat["seat_binding_id"].as_str().expect("the SeatBinding");
+        let decisions = leadership_decisions(world, binding);
+        assert_eq!(decisions.len(), 1, "{decisions:?}");
+        let decision = &decisions[0];
+        assert_eq!(
+            decision["source_bundle_hash"],
+            bundle.as_str(),
+            "{decision}"
+        );
+        let (provenance, route) =
+            direct_resolution(world, policy_hash.as_str(), &keys[slot], &codex_sol(effort));
+        assert_decision_is_the_shared_resolution(decision, &provenance, &route, &keys[slot]);
+    }
+}
+
+/// ASMA-8280 G-4: a leadership seat the caller names no route for is routed
+/// by the activated policy's own choice under the eligibility the caller
+/// states — the shared resolver's `select`, recorded with that eligibility —
+/// while a named route beside it is admitted exactly as named. With no policy
+/// binding the seat, or nothing eligible, the launch is refused before any
+/// seat or native effect; a route request naming both or neither is invalid.
+#[tokio::test]
+async fn a_leadership_seat_without_a_caller_route_is_routed_by_the_policy_choice() {
+    let composed = compose_realm("/tmp/kontor-asma8280-leadership-choice").await;
+    let world = &composed.world;
+    let project = composed.project.clone();
+    let epic = composed.epic.clone();
+    adopt_session_base(world, &project, composed.project_revision).await;
+    let keys = leadership_keys(world, &project, &epic);
+    let (lsa, tpm) = (&keys["lsa"], &keys["tpm"]);
+
+    let materialize = |key: &'static str, lsa_route: serde_json::Value| {
+        let mut lsa_route = lsa_route;
+        lsa_route["role_code"] = serde_json::json!("LSA");
+        let body = serde_json::json!({
+            "expected_revision": 1,
+            "routes": [
+                lsa_route,
+                {"role_code": "TPM", "model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }}
+            ]
+        });
+        let project = project.clone();
+        let epic = epic.clone();
+        async move {
+            Call::post(
+                format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+                &body,
+            )
+            .signed_as(world, "admin")
+            .with_key(key)
+            .send(world)
+            .await
+        }
+    };
+    let chosen = || serde_json::json!({"eligibility": {}});
+
+    // No policy is in force: there is nothing to choose with.
+    let unbound = materialize("asma8280-choice-unbound", chosen()).await;
+    assert_eq!(unbound.status, 409, "{}", unbound.body);
+    assert_eq!(unbound.code(), "placement_blocked");
+    assert!(
+        unbound
+            .body
+            .contains("no activated fleet policy binds this leadership seat"),
+        "{}",
+        unbound.body
+    );
+
+    let hash = activate_through_the_registry(
+        world,
+        &leadership_policy(
+            lsa.as_str(),
+            "sol@high, sol@xhigh",
+            tpm.as_str(),
+            "sol@xhigh",
+        ),
+        "asma8280-choice-policy",
+    )
+    .await;
+
+    for (key, route) in [
+        ("asma8280-choice-neither", serde_json::json!({})),
+        (
+            "asma8280-choice-both",
+            serde_json::json!({
+                "eligibility": {},
+                "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "high"},
+            }),
+        ),
+    ] {
+        let invalid = materialize(key, route).await;
+        assert_eq!(invalid.status, 400, "{}", invalid.body);
+        assert!(
+            invalid
+                .body
+                .contains("names exactly one of model_route and eligibility"),
+            "{}",
+            invalid.body
+        );
+    }
+    let ineligible = materialize(
+        "asma8280-choice-ineligible",
+        serde_json::json!({"eligibility": {"unavailable_accounts": ["codex"]}}),
+    )
+    .await;
+    assert_eq!(ineligible.status, 409, "{}", ineligible.body);
+    assert_eq!(ineligible.code(), "placement_blocked");
+    assert!(
+        ineligible
+            .body
+            .contains("is eligible under the stated eligibility"),
+        "{}",
+        ineligible.body
+    );
+    assert_eq!(hosted_launches(world), 0, "no refusal launched anything");
+
+    let admitted = materialize("asma8280-choice-admitted", chosen()).await;
+    assert_eq!(admitted.status, 200, "{}", admitted.body);
+    let seats = admitted.json()["core_team"]["seats"]
+        .as_array()
+        .expect("the Core Team seats")
+        .clone();
+    // The shared resolver's own choice for the same bytes, key and eligibility.
+    let artifact = world
+        .directory
+        .path()
+        .join("fleet-history")
+        .join(format!("{hash}.yml"));
+    let snapshot = kontor_fleet::FleetSnapshot::parse_policy(
+        &std::fs::read_to_string(artifact).expect("the activated artifact"),
+    )
+    .expect("the activated bytes validate");
+    let expected = snapshot
+        .resolve_leadership(lsa)
+        .expect("the policy binds the LSA")
+        .select(&kontor_fleet::Eligibility::default());
+    let chosen_route = expected.selected.clone().expect("an eligible route");
+    assert_eq!(
+        chosen_route.rung,
+        codex_sol(EffortLevel::High),
+        "chain order"
+    );
+    for (role_code, slot, effort) in [
+        ("LSA", "lsa", EffortLevel::High),
+        ("TPM", "tpm", EffortLevel::Xhigh),
+    ] {
+        let seat = seats
+            .iter()
+            .find(|seat| seat["role"]["role_code"] == role_code)
+            .unwrap_or_else(|| panic!("the {role_code} seat: {seats:?}"));
+        let binding = seat["seat_binding_id"].as_str().expect("the SeatBinding");
+        let hosted = world.daemon.state().with_store(|store| {
+            store
+                .get_hosted_topology_seat(
+                    project_id_of(&project),
+                    SeatBindingId::parse(binding).expect("a SeatBinding"),
+                )
+                .expect("the hosted seat reads")
+                .expect("the hosted seat exists")
+        });
+        assert_eq!(hosted.model_rung, codex_sol(effort), "{role_code}");
+        let decisions = leadership_decisions(world, binding);
+        assert_eq!(decisions.len(), 1, "{decisions:?}");
+        let decision = &decisions[0];
+        let (provenance, route) = direct_resolution(world, &hash, &keys[slot], &codex_sol(effort));
+        assert_decision_is_the_shared_resolution(decision, &provenance, &route, &keys[slot]);
+        if role_code == "LSA" {
+            assert_eq!(provenance, expected.provenance);
+            assert_eq!(route, chosen_route);
+            assert_eq!(
+                decision["eligibility"],
+                serde_json::json!({"unavailable_accounts": [], "excluded_vendors": []}),
+                "the choice records the eligibility it was made under"
+            );
+        } else {
+            assert!(
+                decision.get("eligibility").is_none(),
+                "an admitted caller route records no choice: {decision}"
+            );
+        }
+    }
+}
+
 /// ASMA-8280: a Core Team route correction is held to the activated chain.
 /// Off-chain moves refuse before any native effect, an unactivated publication
 /// or `fleet.yml` edit between preview and apply changes nothing, and a new

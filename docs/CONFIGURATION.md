@@ -23,7 +23,8 @@ system behaviour instead of instructions somebody has to remember.
 | `<state-root>/supervision.yml` | Optional seat supervision policy. Schema v1 is validation/classification only; schema v2 can explicitly enable resident bounded succession (see below) |
 | `<state-root>/quota-signals.yml` | Vendor exhaustion wording, applied to a seat's own refusal text (optional; see below) |
 | `<state-root>/fleet.yml` | Live model routing — domains, accounts, models, chains and seat bindings, read at every placement (optional; see below) |
-| `<state-root>/fleet-activation.json` | Generated: which published fleet policy placement reads, by content hash. Written only by the activate operation; while it exists, `fleet.yml` is not read (see below) |
+| `<state-root>/fleet-activation.json` | Generated: which published fleet policy placement reads, by content hash — and, for an aligned (schema_version 2) activation, which orchestration bundle and Core Team roster. Written only by activation; while it exists, `fleet.yml` is not read (see below) |
+| `<state-root>/core-team-history/`, `<state-root>/orchestration-history/` | Generated, immutable: canonical Core Team revisions and orchestration bundle manifests, each named by its content hash (see below) |
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600` |
 | `<state-root>/endpoint.json` | Where the realm listens, when not on the default loopback port |
 | `<state-root>/provider-homes/` | One credential home per provider account — `CODEX_HOME` for Codex, `CLAUDE_CONFIG_DIR` for Claude |
@@ -586,6 +587,75 @@ supersession refuse any caller route the bound chain does not offer, and each
 admitted leadership effect appends its policy hash, binding, chain position and
 occupancy generation to `fleet-decisions/leadership/<seat_binding_id>.jsonl`.
 A leadership seat no policy binds keeps its caller-supplied route.
+
+A materialization route may name `eligibility`
+(`{unavailable_accounts, excluded_vendors}`) instead of `model_route`. The
+activated policy then chooses: the first route in chain order the stated
+eligibility admits, the same choice a direct-mode reader makes, and the
+decision records that eligibility. A named `model_route` is admitted or refused,
+never replaced. A route naming both or neither is invalid; a seat no policy
+binds, or whose bound routes are all ineligible, is refused before any seat
+exists.
+
+#### Aligned activation: the orchestration bundle
+
+A schema_version 2 activation record names one orchestration bundle as well as
+its policy. The bundle is authored in `config/orchestration/`:
+`orchestration.yml` (`schema_version: 1`, `fleet: fleet.yml`,
+`core_team: teams/core-team.yml`) selects the policy and the explicit Core Team
+source. `teams/core-team.yml` pins one role catalog by `catalog_id`, `version`
+and `content_hash`, and declares every seat in order — the mandatory LSA and
+TPM included — with its `role_slot_id`, `role_code`, `presence` and
+`ad_hoc_allowed`. The publisher resolves it through the Core Team resolver, and
+the canonical revision bytes it produces define the `core_team_revision_hash`
+every `leadership/<hash>/<slot>` binding names. An initial proposal holding
+only the mandatory roles can be generated for review
+(`kontor_daemon::orchestration::propose_core_team`); it is never read at
+runtime until it is published and activated.
+
+In this build bundle publication and activation are daemon seams
+(`FleetSource::publish_bundle`, `FleetSource::activate_bundle`) with no
+registered operation yet, so nothing below happens except through them.
+
+Publication writes three immutable artifacts: the policy under
+`fleet-history/`, the canonical roster under
+`core-team-history/<core-team-revision-hash>.json`, and a canonical manifest
+under `orchestration-history/<source-bundle-hash>.json` recording the resolver,
+the hash of each source file, the policy hash and schema, the role-catalog pin
+and the roster hash. Activation verifies every artifact first and then replaces
+the one pointer:
+
+```json
+{
+  "schema_version": 2,
+  "source_bundle_hash": "<manifest hash>",
+  "policy_hash": "<policy hash>",
+  "policy_schema_version": 2,
+  "core_team_revision_hash": "<roster hash>",
+  "activated_at": "<timestamp>"
+}
+```
+
+Readers verify the pointer, then the manifest (which must agree with it), then
+exactly the policy and roster it names, and that the roster was resolved against
+the catalog the manifest pins. Under an aligned activation a governed leadership
+launch consumes only the selected roster: an epic whose pinned revision is not
+those exact bytes keeps its pin, is never retargeted, and its leadership launch
+is refused. A schema_version 1 record keeps its exact shape and behaviour and
+selects no roster.
+
+#### Direct-mode resolution without a daemon
+
+`kontor --state-root <root> --tier admin fleet-policy-resolve --binding-key <key>`
+(optionally `--unavailable-accounts '[...]'` and `--excluded-vendors '[...]'`) is
+the registry's one local operation. It runs in the CLI before any connection —
+no daemon, credential file, base URL or network — through the same verified
+reader the daemon uses, and prints `{tool, status: 200, body: FleetSelection}`.
+Nothing eligible prints the selection under `status: 409`,
+`placement_blocked`. Anything missing, unsafe, mismatched or malformed is a
+local refusal naming its rule; there is no `fleet.yml` and no last-valid
+fallback, and a schema_version 1 activation resolves no leadership key. MCP
+neither lists nor dispatches it: it has no `/v1` route.
 
 ## Provider quota signals
 

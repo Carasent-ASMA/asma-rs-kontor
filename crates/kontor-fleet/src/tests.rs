@@ -824,3 +824,27 @@ fn every_direct_mode_rule_string_is_stable() {
         "the activated fleet policy's schema_version differs from its activation record"
     );
 }
+
+#[test]
+fn a_verified_roster_and_a_slot_build_the_same_key_as_the_pinned_seat() {
+    let seats = leadership_seats();
+    let roster = revision(SpecVersion::FIRST, &seats);
+    for seat in &seats {
+        let from_slot =
+            LeadershipKey::for_pinned_slot(&roster, &seat.role_slot_id).expect("a pinned slot");
+        assert_eq!(from_slot, key(&roster, seat), "{}", seat.role_slot_id);
+    }
+    let absent = RoleSlotId::parse("qa").expect("slot");
+    assert!(matches!(
+        LeadershipKey::for_pinned_slot(&roster, &absent),
+        Err(FleetError::Invalid { rule }) if rule == L02
+    ));
+    let twice = revision(
+        SpecVersion::FIRST,
+        &[seats[0].clone(), seats[1].clone(), seats[1].clone()],
+    );
+    assert!(matches!(
+        LeadershipKey::for_pinned_slot(&twice, &seats[1].role_slot_id),
+        Err(FleetError::Invalid { rule }) if rule == L02
+    ));
+}

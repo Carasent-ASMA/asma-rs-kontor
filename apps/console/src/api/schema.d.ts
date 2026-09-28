@@ -5900,10 +5900,17 @@ export interface components {
             /** @description The catalog role whose persona was delivered. */
             role_code: string;
         };
-        /** @description One authorized native route for a persistent Core Team role. */
+        /**
+         * @description One authorized native route for a persistent Core Team role.
+         *
+         *     Exactly one of `model_route` and `eligibility`: the caller's exact route,
+         *     which the activated fleet policy may admit or refuse but never replaces, or
+         *     — when the caller names none — the policy's own choice under the
+         *     eligibility the caller states (ASMA-8280).
+         */
         CoreTeamSeatRouteRequest: {
-            /** @description Exact provider/model/effort route to launch or recover. */
-            model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            eligibility?: null | components["schemas"]["FleetEligibilityRequest"];
+            model_route?: null | components["schemas"]["RuntimeModelRouteRequest"];
             /** @description Stable role code in the epic's frozen Core Team roster. */
             role_code: string;
         };
@@ -6538,6 +6545,11 @@ export interface components {
         FleetActivationDto: {
             /** @description When activation replaced the record. */
             activated_at: string;
+            /**
+             * @description The Core Team revision an aligned activation selects; absent for a
+             *     schema_version 1 record.
+             */
+            core_team_revision_hash?: string | null;
             /** @description SHA-256 of exactly the activated policy bytes. */
             policy_hash: string;
             /**
@@ -6545,6 +6557,21 @@ export interface components {
              * @description The schema those bytes validate under.
              */
             policy_schema_version: number;
+            /**
+             * @description The orchestration bundle an aligned (schema_version 2) activation
+             *     names; absent for a schema_version 1 record.
+             */
+            source_bundle_hash?: string | null;
+        };
+        /**
+         * @description The runtime facts one fleet policy choice is made under: stated by the
+         *     caller, applied in chain order, and recorded with the decision.
+         */
+        FleetEligibilityRequest: {
+            /** @description Vendors the seat must avoid. */
+            excluded_vendors?: string[];
+            /** @description Account aliases that cannot take the seat now. */
+            unavailable_accounts?: string[];
         };
         /** @description Select one published policy for every later placement. */
         FleetPolicyActivateRequest: {

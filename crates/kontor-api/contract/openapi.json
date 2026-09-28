@@ -16783,15 +16783,32 @@
       },
       "CoreTeamSeatRouteRequest": {
         "type": "object",
-        "description": "One authorized native route for a persistent Core Team role.",
+        "description": "One authorized native route for a persistent Core Team role.\n\nExactly one of `model_route` and `eligibility`: the caller's exact route,\nwhich the activated fleet policy may admit or refuse but never replaces, or\n— when the caller names none — the policy's own choice under the\neligibility the caller states (ASMA-8280).",
         "required": [
-          "role_code",
-          "model_route"
+          "role_code"
         ],
         "properties": {
+          "eligibility": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetEligibilityRequest",
+                "description": "The runtime facts the activated fleet policy chooses this seat's route\nunder, when no `model_route` is named."
+              }
+            ]
+          },
           "model_route": {
-            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
-            "description": "Exact provider/model/effort route to launch or recover."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+                "description": "Exact provider/model/effort route to launch or recover."
+              }
+            ]
           },
           "role_code": {
             "type": "string",
@@ -17973,6 +17990,13 @@
             "type": "string",
             "description": "When activation replaced the record."
           },
+          "core_team_revision_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Core Team revision an aligned activation selects; absent for a\nschema_version 1 record."
+          },
           "policy_hash": {
             "type": "string",
             "description": "SHA-256 of exactly the activated policy bytes."
@@ -17982,8 +18006,36 @@
             "format": "int32",
             "description": "The schema those bytes validate under.",
             "minimum": 0
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The orchestration bundle an aligned (schema_version 2) activation\nnames; absent for a schema_version 1 record."
           }
         }
+      },
+      "FleetEligibilityRequest": {
+        "type": "object",
+        "description": "The runtime facts one fleet policy choice is made under: stated by the\ncaller, applied in chain order, and recorded with the decision.",
+        "properties": {
+          "excluded_vendors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Vendors the seat must avoid."
+          },
+          "unavailable_accounts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Account aliases that cannot take the seat now."
+          }
+        },
+        "additionalProperties": false
       },
       "FleetPolicyActivateRequest": {
         "type": "object",
