@@ -106,8 +106,12 @@ Each is reversible and none is presented as a substitute decision.
    should consume the bundle's roster artifact is left to review (S-3).
 5. **Bundle consistency.** The publisher does not refuse a policy whose leadership
    keys name another revision or leave a roster slot unbound. The direct reader
-   refuses those keys at resolution (D-02, D-03), and the governed path refuses the
-   launch. A publication-time rule is a possible later V-rule.
+   refuses those keys at resolution (D-02, D-03). On the governed path the two
+   route forms differ: for a seat the policy does not bind, an explicit caller
+   `model_route` stands unchanged (`leadership_route` answers `None`), and only a
+   route that names `eligibility` instead is refused `placement_blocked`, because
+   `leadership_choice` has no binding to choose from. A publication-time rule is a
+   possible later V-rule.
 6. **G-4 scope.** Only materialization can omit a route. Route correction and
    launch-intent supersession name a route by contract and still admit only
    on-chain routes.
