@@ -1347,3 +1347,623 @@ fn a_readback_naming_another_successor_is_refused_before_binding() {
         "the refusal did not come from the readback verification: {refused:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ASMA-8187 remedy 5 — a succession crossing a Realm boundary.
+//
+// The disposition these tests hold to: the complete succession row, receipt and
+// readback included, must survive an import as inspectable evidence, and must
+// restore no live succession, idempotency, credential, grant, placement or
+// materialization authority in the destination. Preservation and authority are
+// separate questions, and the tests below ask them separately.
+// ---------------------------------------------------------------------------
+
+/// Build three successions on one seat, in the three states one can be left in.
+///
+/// Successive rather than parallel, because exclusivity permits exactly one
+/// claim per (project, seat, predecessor occupancy): the seat walks 1→2→3→4 and
+/// each step is left at a different point. Built through the store's own
+/// boundary rather than planted, so the rows that cross the Realm boundary are
+/// the rows the domain actually produces.
+fn three_succession_states(
+    fixture: &Fixture,
+    seat: SeatBindingId,
+    first: &StoredHostedTopologySeat,
+) -> [IdempotencyKey; 3] {
+    let completed = IdempotencyKey::parse("asma-8187-crossing-complete").expect("a key");
+    let committed = IdempotencyKey::parse("asma-8187-crossing-committed").expect("a key");
+    let claimed = IdempotencyKey::parse("asma-8187-crossing-claimed").expect("a key");
+
+    let step = |key: &IdempotencyKey,
+                predecessor: &StoredHostedTopologySeat,
+                successor_native: &str,
+                predecessor_occupancy: u64| {
+        let successor = StoredHostedTopologySeat {
+            native_identity: identity(successor_native, predecessor_occupancy + 1),
+            observed_at: at("2026-09-17T03:0{}:00Z"
+                .replace("{}", &predecessor_occupancy.to_string())
+                .as_str()),
+            ..predecessor.clone()
+        };
+        fixture
+            .store
+            .claim_core_team_route_succession(
+                &kontor_core::repository::NewCoreTeamRouteSuccessionClaim {
+                    idempotency_key: key.clone(),
+                    intent_hash: ContentHash::of(successor_native.as_bytes()),
+                    project_id: fixture.project_id,
+                    mini_project_id: fixture.mini_project_id,
+                    seat_binding_id: seat,
+                    predecessor_native_id: predecessor.native_identity.native_id.clone(),
+                    predecessor_generation: predecessor.native_identity.generation,
+                    predecessor_occupancy_generation: predecessor_occupancy,
+                    successor_occupancy_generation: predecessor_occupancy + 1,
+                    successor_credential_generation: predecessor_occupancy + 1,
+                    claimed_at: at("2026-09-17T03:00:00Z"),
+                },
+            )
+            .expect("the claim is taken");
+        successor
+    };
+
+    // 1 → 2, carried all the way to a bound receipt.
+    let second = step(&completed, first, "lsa-second", 1);
+    let readback = serde_json::json!({
+        "seat_binding_id": seat.to_string(),
+        "predecessor": {
+            "native_id": first.native_identity.native_id.as_str(),
+            "generation": first.native_identity.generation,
+            "occupancy_generation": 1,
+        },
+        "successor": {
+            "native_id": second.native_identity.native_id.as_str(),
+            "generation": second.native_identity.generation,
+            "occupancy_generation": 2,
+        },
+        "grant_subject": {"generation": 2, "subject_seat_binding_id": seat.to_string()},
+    });
+    let readback_hash = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "readback": readback,
+    }))
+    .expect("the readback canonicalizes")
+    .hash()
+    .clone();
+    let committed_at = at("2026-09-17T03:01:30Z");
+    fixture
+        .store
+        .replace_hosted_topology_seat_route(
+            first,
+            &second,
+            committed_at,
+            "crossing fixture",
+            Some(&CoreTeamRouteSuccessionCommit {
+                idempotency_key: completed.clone(),
+                readback,
+                readback_hash,
+                route_committed_at: committed_at,
+            }),
+        )
+        .expect("the first transition commits");
+    land_effects(fixture, seat, &second, 2);
+    fixture
+        .store
+        .commit_core_team_route_succession_effects(&completed)
+        .expect("the proved effects commit");
+    // A real command receipt: the ledger's `receipt_id` is a foreign key, and a
+    // fabricated identifier would refuse before anything under test is reached.
+    let receipt = kontor_core::repository::CommandRepository::record_local_command(
+        &fixture.store,
+        &kontor_core::repository::NewLocalCommand {
+            project_id: fixture.project_id,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: completed.clone(),
+            kind: kontor_core::receipt::CommandKind::CorrectCoreTeamRoute,
+            target: kontor_core::receipt::AggregateRef::MiniProject {
+                mini_project_id: fixture.mini_project_id,
+            },
+            target_revision: kontor_core::id::AggregateRevision::INITIAL,
+            intent: CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "operation": "core_team_route_correction",
+            }))
+            .expect("the intent canonicalizes"),
+            created_at: at("2026-09-17T03:01:50Z"),
+        },
+    )
+    .expect("the destination-local command receipt is recorded");
+    fixture
+        .store
+        .bind_core_team_route_succession_receipt(
+            &completed,
+            &ContentHash::of(b"lsa-second"),
+            receipt.id,
+            at("2026-09-17T03:02:00Z"),
+        )
+        .expect("the completed succession binds its receipt");
+
+    // 2 → 3, committed with both effects still owed.
+    let third = step(&committed, &second, "lsa-third", 2);
+    let second_readback = serde_json::json!({"seat_binding_id": seat.to_string(), "step": 2});
+    let second_hash = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "readback": second_readback,
+    }))
+    .expect("it canonicalizes")
+    .hash()
+    .clone();
+    let second_at = at("2026-09-17T03:03:00Z");
+    fixture
+        .store
+        .replace_hosted_topology_seat_route(
+            &second,
+            &third,
+            second_at,
+            "crossing fixture",
+            Some(&CoreTeamRouteSuccessionCommit {
+                idempotency_key: committed.clone(),
+                readback: second_readback,
+                readback_hash: second_hash,
+                route_committed_at: second_at,
+            }),
+        )
+        .expect("the second transition commits");
+
+    // 3 → 4, claimed and nothing more.
+    let _ = step(&claimed, &third, "lsa-fourth", 3);
+
+    [completed, committed, claimed]
+}
+
+/// Land both trailing effects for one successor, honestly.
+fn land_effects(
+    fixture: &Fixture,
+    seat: SeatBindingId,
+    successor: &StoredHostedTopologySeat,
+    occupancy: u64,
+) {
+    fixture
+        .store
+        .prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
+            project_id: fixture.project_id,
+            seat_binding_id: seat,
+            occupancy_generation: occupancy,
+            autonomy: SeatAutonomy::Supervised,
+            model_rung: rung(),
+            state: HostedSeatLaunchIntentState::Prepared,
+            observed_native_id: None,
+            prepared_at: at("2026-09-17T03:01:40Z"),
+            installed_at: None,
+        })
+        .expect("the intent prepares");
+    fixture
+        .store
+        .install_hosted_seat_launch_intent(
+            fixture.project_id,
+            seat,
+            occupancy,
+            &successor.native_identity.native_id,
+            successor.observed_at,
+        )
+        .expect("the intent installs");
+    fixture
+        .store
+        .observe_seat_binding(
+            fixture.project_id,
+            seat,
+            &kontor_core::repository::SeatLivenessObservation {
+                attached_at: Some(successor.observed_at),
+                ..kontor_core::repository::SeatLivenessObservation::default()
+            },
+            successor.observed_at,
+        )
+        .expect("the binding is observed");
+}
+
+/// Count one table through a read-only connection.
+fn rows(path: &std::path::Path, table: &str) -> i64 {
+    let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("the database opens");
+    connection
+        .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .expect("the table is readable")
+}
+
+/// A succession crosses a Realm boundary as evidence and as nothing else.
+///
+/// Both halves matter and they pull in opposite directions. The row has to
+/// survive *whole* — a digest over bytes an investigator cannot read proves
+/// only that somebody had them — and it must confer nothing: no live
+/// succession, no exclusivity token, no replayable key, no receipt, no
+/// placement, no launch intent, no seat (ASMA-8187 acceptance 5).
+#[test]
+fn a_succession_crosses_a_realm_boundary_as_evidence_and_not_as_authority() {
+    let source = Fixture::build();
+    let (seat, first) = source.lsa(SeatAutonomy::Supervised);
+    let keys = three_succession_states(&source, seat, &first);
+
+    let export = kontor_store::backup::export_realm(&source.store, at("2026-09-17T04:00:00Z"))
+        .expect("the source Realm exports");
+    assert_eq!(
+        export.schema_version,
+        kontor_store::backup::EXPORT_SCHEMA_VERSION
+    );
+    assert_eq!(
+        export.records.core_team_route_successions.len(),
+        3,
+        "an export that drops a succession state cannot preserve one"
+    );
+    // The three states are genuinely distinct in the document, not three copies
+    // of the easy one.
+    let receipted = export
+        .records
+        .core_team_route_successions
+        .iter()
+        .filter(|row| row.receipt_id.is_some())
+        .count();
+    let committed = export
+        .records
+        .core_team_route_successions
+        .iter()
+        .filter(|row| row.route_committed_at.is_some() && row.receipt_id.is_none())
+        .count();
+    let claimed = export
+        .records
+        .core_team_route_successions
+        .iter()
+        .filter(|row| row.route_committed_at.is_none())
+        .count();
+    assert_eq!((receipted, committed, claimed), (1, 1, 1));
+
+    // The document survives its own serialization at this generation.
+    let bytes = serde_json::to_vec(&export).expect("the export serializes");
+    let parsed = kontor_store::backup::KontorExportV1::parse(&bytes)
+        .expect("the current generation parses its own document");
+    assert_eq!(
+        parsed.records.core_team_route_successions,
+        export.records.core_team_route_successions
+    );
+
+    // A separately initialized destination Realm, with its own project.
+    // Genuinely created rather than cloned from the suite's template: every
+    // clone shares the template's Realm identity, and an import into the Realm
+    // that produced the document is refused as a restore.
+    let destination_home = support::created_state_root();
+    let destination_path = destination_home.path().join("kontor.db");
+    let destination = support::open_created_realm(&destination_path);
+    let destination_project = ProjectId::generate();
+    destination
+        .create_project(&NewProject {
+            id: destination_project,
+            name: name("Receiving project"),
+            root_path: name("/tmp/hosted-seat-crossing"),
+            created_at: at("2026-09-17T04:10:00Z"),
+        })
+        .expect("the destination project is created");
+
+    let report = kontor_store::backup::import_export(
+        &destination,
+        &parsed,
+        &kontor_store::backup::ImportPlan::redacted_import_into(destination_project),
+        at("2026-09-17T04:20:00Z"),
+    )
+    .expect("the export imports");
+    assert!(report.reconciliation_required);
+
+    // --- preserved -------------------------------------------------------
+    let lineage: Vec<_> = destination
+        .imported_records(&report.import_id.as_hyphenated().to_string())
+        .expect("the lineage reads")
+        .into_iter()
+        .filter(|row| row.record_kind == "core_team_route_successions")
+        .collect();
+    assert_eq!(lineage.len(), 3);
+    assert!(
+        lineage.iter().all(|row| row.disposition == "recorded"),
+        "a succession was imported as something other than non-live lineage"
+    );
+
+    let evidence = destination
+        .imported_record_evidence(&report.import_id.as_hyphenated().to_string())
+        .expect("the evidence reads");
+    assert_eq!(
+        evidence.len(),
+        3,
+        "the succession content did not survive the crossing"
+    );
+    for row in &evidence {
+        assert_eq!(row.record_kind, "core_team_route_successions");
+        let content: serde_json::Value =
+            serde_json::from_str(&row.content).expect("the evidence is readable JSON");
+        // The digest describes these exact bytes, recomputed here rather than
+        // trusted: evidence whose hash is merely copied proves nothing.
+        let mut canonical = serde_json::to_vec(&content).expect("the content re-serializes");
+        canonical.push(b'\n');
+        assert_eq!(
+            ContentHash::of(&canonical).to_string(),
+            row.content_hash,
+            "the preserved content does not match its preserved digest"
+        );
+        let matching = lineage
+            .iter()
+            .find(|entry| entry.source_identity == row.source_identity)
+            .expect("the evidence names a lineage row");
+        assert_eq!(matching.source_hash, row.content_hash);
+    }
+
+    // The completed succession is readable *whole* — receipt and readback
+    // included. That is the part a digest alone cannot give an investigator.
+    let complete = evidence
+        .iter()
+        .find(|row| row.source_identity == keys[0].as_str())
+        .expect("the completed succession survived");
+    let content: serde_json::Value =
+        serde_json::from_str(&complete.content).expect("readable JSON");
+    assert!(content["receipt_id"].is_string(), "{content}");
+    assert!(content["receipted_at"].is_string(), "{content}");
+    assert_eq!(content["launch_intent_installed"], serde_json::json!(1));
+    assert_eq!(content["seat_binding_observed"], serde_json::json!(1));
+    assert_eq!(
+        content["successor_occupancy_generation"],
+        serde_json::json!(2)
+    );
+    // The readback is a JSON document stored as text, so it crosses as text and
+    // is read back the same way. What matters is that the whole of it is here.
+    let readback: serde_json::Value = serde_json::from_str(
+        content["readback"]
+            .as_str()
+            .expect("the readback crossed as its stored text"),
+    )
+    .expect("the preserved readback is readable JSON");
+    assert_eq!(
+        readback["successor"]["native_id"],
+        serde_json::json!("lsa-second")
+    );
+    assert_eq!(
+        readback["predecessor"]["occupancy_generation"],
+        serde_json::json!(1)
+    );
+    assert_eq!(
+        readback["grant_subject"]["generation"],
+        serde_json::json!(2)
+    );
+    assert!(content["readback_hash"].is_string(), "{content}");
+    // And the readback still answers for its own digest, across the boundary.
+    assert_eq!(
+        CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "readback": readback,
+        }))
+        .expect("the preserved readback canonicalizes")
+        .hash()
+        .to_string(),
+        content["readback_hash"]
+            .as_str()
+            .expect("the digest crossed")
+            .to_owned(),
+        "the preserved readback no longer matches the digest its source recorded"
+    );
+
+    // --- and not live ----------------------------------------------------
+    for table in [
+        "core_team_route_successions",
+        "hosted_topology_seats",
+        "hosted_topology_seat_launch_intents",
+        "hosted_topology_seat_history",
+        "seat_bindings",
+        "command_receipts",
+    ] {
+        assert_eq!(
+            rows(&destination_path, table),
+            0,
+            "the import created live `{table}` state in the destination"
+        );
+    }
+    for key in &keys {
+        assert!(
+            destination
+                .get_core_team_route_succession(key)
+                .expect("the destination ledger reads")
+                .is_none(),
+            "an imported key resolves to a live succession in the destination"
+        );
+        assert!(
+            kontor_core::repository::CommandRepository::get_receipt_by_key(&destination, key)
+                .expect("the destination receipts read")
+                .is_none(),
+            "an imported key authorizes a destination command"
+        );
+    }
+    // No exclusivity token either: the destination seat is unclaimed, so an
+    // imported succession cannot fence a local one.
+    assert!(
+        destination
+            .core_team_route_succession_owner(destination_project, seat, 1)
+            .expect("the destination ledger reads")
+            .is_none(),
+        "an imported succession owns a destination seat's occupancy"
+    );
+
+    // --- and not forwarded onward ----------------------------------------
+    // The destination can export itself, and what it exports is its own. An
+    // imported succession must not reappear in that document: forwarding it
+    // would put a second Realm's account of an event into a third one under
+    // this Realm's name, with this Realm's digest over it.
+    let onward = kontor_store::backup::export_realm(&destination, at("2026-09-17T05:00:00Z"))
+        .expect("the destination Realm exports");
+    assert_eq!(onward.source_realm_id, destination.realm_id());
+    assert!(
+        onward.records.core_team_route_successions.is_empty(),
+        "an imported succession was forwarded as a destination record"
+    );
+    assert!(
+        onward
+            .redaction_summary
+            .excluded_tables
+            .contains_key("imported_record_evidence"),
+        "the evidence exclusion must be disclosed rather than inferred from an absence"
+    );
+
+    // --- and unforgeable afterwards --------------------------------------
+    let writable = Connection::open(&destination_path).expect("the destination opens");
+    assert!(
+        writable
+            .execute("UPDATE imported_record_evidence SET content = '{}'", [])
+            .is_err(),
+        "imported evidence was rewritten"
+    );
+    assert!(
+        writable
+            .execute("DELETE FROM imported_record_evidence", [])
+            .is_err(),
+        "imported evidence was deleted"
+    );
+}
+
+/// Evidence may only stand beside lineage the import declared non-live.
+///
+/// The disposition is the whole guarantee, so it is enforced where it cannot be
+/// forgotten. A record that became destination state, or one that was refused,
+/// must not also carry a second unreconciled copy of itself.
+#[test]
+fn imported_evidence_cannot_accompany_a_live_disposition() {
+    let home = support::state_root();
+    let path = home.path().join("kontor.db");
+    let store = SqliteStore::open(&path).expect("the destination opens");
+    let project = ProjectId::generate();
+    store
+        .create_project(&NewProject {
+            id: project,
+            name: name("Disposition project"),
+            root_path: name("/tmp/hosted-seat-disposition"),
+            created_at: at("2026-09-17T04:00:00Z"),
+        })
+        .expect("the project is created");
+
+    let connection = Connection::open(&path).expect("the database opens");
+    connection
+        .execute_batch(&format!(
+            "INSERT INTO import_receipts
+                 (id, project_id, source_realm_id, export_schema_version, source_schema_version,
+                  records_hash, exported_at, imported_at, record_count, materialized_count)
+             VALUES ('01a0e000-0000-7000-8000-000000000001', '{project}',
+                     '01a0e000-0000-7000-8000-0000000000ff', 13, 121, '{hash}',
+                     '2026-09-17T04:00:00Z', '2026-09-17T04:01:00Z', 2, 0);
+             INSERT INTO imported_records
+                 (import_id, record_kind, source_identity, source_hash, disposition,
+                  reason_code, recorded_at)
+             VALUES ('01a0e000-0000-7000-8000-000000000001', 'core_team_route_successions',
+                     'live-one', '{hash}', 'materialized', NULL, '2026-09-17T04:01:00Z'),
+                    ('01a0e000-0000-7000-8000-000000000001', 'core_team_route_successions',
+                     'refused-one', '{hash}', 'refused', 'unsupported', '2026-09-17T04:01:00Z');",
+            project = project,
+            hash = "0".repeat(64),
+        ))
+        .expect("the lineage is planted");
+
+    for identity in ["live-one", "refused-one"] {
+        let refused = connection.execute(
+            "INSERT INTO imported_record_evidence
+                 (import_id, record_kind, source_identity, content, content_hash, recorded_at)
+             VALUES ('01a0e000-0000-7000-8000-000000000001', 'core_team_route_successions',
+                     ?1, '{\"a\":1}', ?2, '2026-09-17T04:01:00Z')",
+            rusqlite::params![identity, "0".repeat(64)],
+        );
+        assert!(
+            refused.is_err(),
+            "evidence was admitted beside a `{identity}` disposition"
+        );
+    }
+
+    // And a lineage row that does not exist at all cannot acquire evidence.
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO imported_record_evidence
+                     (import_id, record_kind, source_identity, content, content_hash, recorded_at)
+                 VALUES ('01a0e000-0000-7000-8000-000000000001', 'core_team_route_successions',
+                         'no-such-record', '{\"a\":1}', ?1, '2026-09-17T04:01:00Z')",
+                rusqlite::params![&"0".repeat(64)],
+            )
+            .is_err(),
+        "evidence was admitted for a record no import ever saw"
+    );
+}
+
+/// An export generation that never defined successions cannot carry or hide one.
+///
+/// Both directions are the same rule read from two sides. A v12 document must
+/// not carry succession rows it has no fields for, and a v12 document must not
+/// be offered by a database new enough to hold them — because then its silence
+/// is indistinguishable from there being none, and the receipt and readback a
+/// succession is reconstructed from would vanish in a round trip.
+#[test]
+fn a_legacy_export_generation_can_neither_carry_nor_conceal_a_succession() {
+    let fixture = Fixture::build();
+    let (seat, first) = fixture.lsa(SeatAutonomy::Supervised);
+    three_succession_states(&fixture, seat, &first);
+
+    let export = kontor_store::backup::export_realm(&fixture.store, at("2026-09-17T04:00:00Z"))
+        .expect("the export");
+    assert!(!export.records.core_team_route_successions.is_empty());
+    let base = serde_json::to_value(&export).expect("the export serializes");
+
+    let rehash = |document: &mut serde_json::Value| {
+        let mut records = serde_json::to_vec(
+            document
+                .get("records")
+                .expect("the document carries records"),
+        )
+        .expect("the records serialize");
+        records.push(b'\n');
+        document["records_hash"] = serde_json::json!(ContentHash::of(&records).to_string());
+    };
+
+    // Carrying them under a generation that never defined them.
+    let mut carrying = base.clone();
+    carrying["schema_version"] = serde_json::json!(12);
+    carrying["database_schema_version"] = serde_json::json!(119);
+    rehash(&mut carrying);
+    match kontor_store::backup::KontorExportV1::parse(
+        &serde_json::to_vec(&carrying).expect("the bytes"),
+    ) {
+        Err(kontor_store::backup::BackupError::Verification { detail }) => assert_eq!(
+            detail,
+            "the legacy export generation carries Core Team route successions it did not define",
+        ),
+        other => panic!("a v12 document cannot carry successions, got {other:?}"),
+    }
+
+    // Concealing them: a database that holds the ledger offering a generation
+    // that cannot represent it.
+    let mut concealing = base.clone();
+    concealing["schema_version"] = serde_json::json!(12);
+    concealing["records"]["core_team_route_successions"] = serde_json::json!([]);
+    concealing["continuity_summary"]["record_counts"]["core_team_route_successions"] =
+        serde_json::json!(0);
+    rehash(&mut concealing);
+    match kontor_store::backup::KontorExportV1::parse(
+        &serde_json::to_vec(&concealing).expect("the bytes"),
+    ) {
+        Err(kontor_store::backup::BackupError::Verification { detail }) => assert_eq!(
+            detail,
+            "the legacy export generation cannot prove Core Team route succession completeness",
+        ),
+        other => panic!("a succession-capable database cannot export as v12, got {other:?}"),
+    }
+
+    // And the continuity summary must disclose every one of them.
+    let mut understated = base;
+    understated["continuity_summary"]["record_counts"]["core_team_route_successions"] =
+        serde_json::json!(1);
+    rehash(&mut understated);
+    assert!(
+        kontor_store::backup::KontorExportV1::parse(
+            &serde_json::to_vec(&understated).expect("the bytes")
+        )
+        .is_err(),
+        "an export understated how many successions it carries"
+    );
+}

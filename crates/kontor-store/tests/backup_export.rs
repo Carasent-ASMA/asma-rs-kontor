@@ -945,6 +945,11 @@ fn an_export_carries_no_credential_reference_no_comment_body_and_no_secret() {
         "import_receipts",
         "imported_records",
         "imported_profile_selection_outcomes",
+        // ASMA-8187: imported testimony about another Realm's records. It is
+        // readable here and is not this Realm's to forward; exporting it would
+        // put a second Realm's account of an event into a third one under this
+        // Realm's name.
+        "imported_record_evidence",
     ] {
         assert!(
             export

@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 120;
+pub const SCHEMA_VERSION: i64 = 121;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -419,6 +419,9 @@ const MIGRATIONS: &[&str] = &[
     // its first duplicable effect and stays recoverable across every interval
     // those effects span.
     include_str!("../migrations/0120_core_team_route_successions.sql"),
+    // Schema v121. The content of an imported record, kept beside its lineage as
+    // inspectable evidence and never as destination authority.
+    include_str!("../migrations/0121_imported_record_evidence.sql"),
 ];
 
 const _: () = assert!(

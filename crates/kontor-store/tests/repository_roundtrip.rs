@@ -2817,7 +2817,8 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
             // table is one `DROP TABLE`: SQLite takes its indexes and triggers
             // with it, and a `DROP TABLE` does not fire the row triggers that
             // make the rows themselves undeletable.
-            "DROP TABLE core_team_route_successions;
+            "DROP TABLE imported_record_evidence;
+         DROP TABLE core_team_route_successions;
          DROP TABLE local_command_results;
          DROP TABLE legacy_dispatch_local_confirmation_provenance;
          DROP TABLE hosted_seat_role_personas;

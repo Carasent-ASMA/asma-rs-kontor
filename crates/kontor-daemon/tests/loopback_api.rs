@@ -62820,6 +62820,179 @@ async fn a_lost_receipt_binding_rebinds_the_same_receipt() {
     assert_eq!(occupancy, 2);
 }
 
+/// A successor authenticates where its predecessor no longer can.
+///
+/// The succession's whole point, from a credential's side. The predecessor's
+/// bearer is not revoked, forged or expired — it is still a genuine signature
+/// over a genuine seat — and it must stop working anyway, because the occupancy
+/// it names is over. The successor derives its own, and neither inherits the
+/// other's. A shared Realm credential is a third thing again: it carries no
+/// seat identity at all, so it cannot stand in for either
+/// (ASMA-8187 acceptance 1 and 2).
+#[tokio::test]
+async fn a_successor_seat_authenticates_where_its_predecessor_no_longer_can() {
+    let (composed, binding, native, generation) =
+        hosted_tpm_seat("/tmp/kontor-8187-bearer", "asma-8187-bearer-seats").await;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a canonical project id");
+    let binding_id = SeatBindingId::parse(&binding).expect("a canonical SeatBinding id");
+    let path = format!("/v1/projects/{project}/epics/{epic}/open-questions:record");
+    let bearer = |generation: u64| {
+        world
+            .daemon
+            .state()
+            .credentials()
+            .seat_credential_for_generation(binding_id, generation)
+    };
+    let raise = |question: kontor_core::id::OpenQuestionId, subject: &str| {
+        serde_json::json!({
+            "question_id": question, "expected_revision": 0,
+            "action": {
+                "action": "raise", "subject": subject, "scope": "architecture",
+                "attachment": {"record": {"kind": "mini_project", "mini_project_id": epic}},
+                "why_ambiguous": "The route correction left two readings of the contract.",
+                "options": ["Retain the original", "Record a supersession"],
+            }
+        })
+    };
+
+    // Generation one is the seat's current occupancy, and its bearer works.
+    let first_question = kontor_core::id::OpenQuestionId::generate();
+    let before = Call::post(&path, &raise(first_question, "Before the succession"))
+        .with_token(bearer(1))
+        .with_key("asma-8187-bearer-before")
+        .send(world)
+        .await;
+    assert_eq!(before.status, 200, "{}", before.body);
+
+    // The seat succeeds to occupancy two.
+    world.fake.archive_hosted_seat(&native);
+    let body = previewed_succession(world, project, epic, &binding, &native, generation).await;
+    let applied = apply_succession(world, project, epic, &body, "asma-8187-bearer").await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(succession_shape(world, project_id, binding_id).2, 2);
+    assert_eq!(
+        applied.json()["readback"]["grant_subject"]["generation"],
+        serde_json::json!(2),
+        "the successor did not derive its own grant generation"
+    );
+
+    // The predecessor's bearer still verifies — it is a real signature over a
+    // real seat — and is refused on the occupancy it names. That distinction is
+    // the whole mechanism: nothing was revoked, the generation simply moved.
+    let predecessor = Call::post(
+        &path,
+        &raise(
+            kontor_core::id::OpenQuestionId::generate(),
+            "From the predecessor",
+        ),
+    )
+    .with_token(bearer(1))
+    .with_key("asma-8187-bearer-predecessor")
+    .send(world)
+    .await;
+    assert_eq!(predecessor.status, 409, "{}", predecessor.body);
+    assert_eq!(predecessor.json()["code"], "stale_binding");
+    assert!(
+        predecessor
+            .body
+            .contains("no matching current hosted occupancy"),
+        "the predecessor was refused for some other reason: {}",
+        predecessor.body
+    );
+
+    // The successor's own bearer is accepted.
+    let successor = Call::post(
+        &path,
+        &raise(
+            kontor_core::id::OpenQuestionId::generate(),
+            "From the successor",
+        ),
+    )
+    .with_token(bearer(2))
+    .with_key("asma-8187-bearer-successor")
+    .send(world)
+    .await;
+    assert_eq!(successor.status, 200, "{}", successor.body);
+
+    // A generation the seat has never reached is refused the same way, so
+    // acceptance is of *this* occupancy and not merely of "not the predecessor".
+    let unreached = Call::post(
+        &path,
+        &raise(kontor_core::id::OpenQuestionId::generate(), "From nowhere"),
+    )
+    .with_token(bearer(3))
+    .with_key("asma-8187-bearer-unreached")
+    .send(world)
+    .await;
+    assert_eq!(unreached.status, 409, "{}", unreached.body);
+
+    // A bearer that is not this Realm's signature never authenticates as a seat
+    // at all, which is a different refusal from a fenced one.
+    let forged = Call::post(
+        &path,
+        &raise(kontor_core::id::OpenQuestionId::generate(), "Forged"),
+    )
+    .with_token(format!("kontor-seat-v2.{binding_id}.2.{}", "f".repeat(64)))
+    .with_key("asma-8187-bearer-forged")
+    .send(world)
+    .await;
+    assert_ne!(forged.status, 200, "{}", forged.body);
+    assert_ne!(
+        forged.json()["code"],
+        "stale_binding",
+        "a forged bearer was treated as a fenced occupancy: {}",
+        forged.body
+    );
+
+    // And an ordinary Realm credential is not a seat. It carries no seat
+    // identity to fence, so it has to name the seat it reports for — and it
+    // still cannot close a question, which is the act reserved to the seat's
+    // own scoped bearer.
+    let anonymous = Call::post(
+        &path,
+        &raise(
+            kontor_core::id::OpenQuestionId::generate(),
+            "From the Realm",
+        ),
+    )
+    .signed_as(world, "operator")
+    .with_key("asma-8187-bearer-realm")
+    .send(world)
+    .await;
+    assert_eq!(anonymous.status, 400, "{}", anonymous.body);
+    assert!(
+        anonymous
+            .body
+            .contains("operator reporting must name the active author seat"),
+        "{}",
+        anonymous.body
+    );
+    let closing = serde_json::json!({
+        "question_id": first_question,
+        "expected_revision": 1,
+        "action": {"action": "dispose", "outcome": {"deferred": {
+            "key": "asma-8187-reviewed",
+            "condition": "The route correction is reviewed."
+        }}}
+    });
+    let realm_closure = Call::post(&path, &closing)
+        .signed_as(world, "operator")
+        .with_key("asma-8187-bearer-realm-close")
+        .send(world)
+        .await;
+    assert_eq!(realm_closure.status, 403, "{}", realm_closure.body);
+    assert!(
+        realm_closure
+            .body
+            .contains("requires its configured leadership seat's scoped credential"),
+        "{}",
+        realm_closure.body
+    );
+}
+
 /// The live ASMA-8098 shape: a closed predecessor the runtime calls stale.
 ///
 /// The TPM recovery previewed cleanly and then refused at apply with 409

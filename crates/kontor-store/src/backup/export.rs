@@ -1350,6 +1350,10 @@ fn redaction_summary() -> RedactionSummary {
             "imported_profile_selection_outcomes",
             "destination-local exact selection lineage is preserved by snapshot and readback, but is not forwarded as live source authority",
         ),
+        (
+            "imported_record_evidence",
+            "imported testimony about another Realm's records is inspectable here and is never forwarded onward as though this Realm were its source",
+        ),
     ];
     let excluded_columns = [
         (
@@ -1390,11 +1394,19 @@ fn redaction_summary() -> RedactionSummary {
     }
 }
 
-/// One exported record's source identity and digest.
+/// One exported record's source identity, digest and canonical content.
 ///
 /// This is what an import records as lineage: enough to say *which* source
 /// record a destination row came from, and to prove the bytes have not changed
-/// since, without carrying the record itself into the destination's authority.
+/// since.
+///
+/// `content` is the record itself, and carrying it is deliberate rather than
+/// incidental. It is what an import keeps for the kinds whose *account* of an
+/// event has to remain readable in another Realm — a Core Team route
+/// succession, above all. Keeping the bytes is not the same as granting them
+/// authority: the import writes them into `imported_record_evidence`, which no
+/// destination effect resolves against, and only ever beside a lineage row
+/// recorded as non-live.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordLineage {
     /// The record kind, which is the source table's name.
@@ -1403,6 +1415,12 @@ pub struct RecordLineage {
     pub identity: String,
     /// SHA-256 over the record's canonical JSON.
     pub hash: ContentHash,
+    /// The exact canonical JSON [`RecordLineage::hash`] was taken over.
+    ///
+    /// Retained rather than re-encoded on demand: a second encoding agrees with
+    /// the digest only by convention, and the digest is the reason this is
+    /// evidence rather than a copy.
+    pub content: serde_json::Value,
 }
 
 /// One exported table's contract.
@@ -1421,10 +1439,12 @@ trait ExportRow: Sized + Serialize {
 
     /// This record's lineage entry.
     fn lineage(&self) -> Result<RecordLineage, BackupError> {
+        let content = canonical_value(self)?;
         Ok(RecordLineage {
             kind: Self::KIND,
             identity: self.identity(),
-            hash: ContentHash::of(&canonical_bytes(&canonical_value(self)?)?),
+            hash: ContentHash::of(&canonical_bytes(&content)?),
+            content,
         })
     }
 }

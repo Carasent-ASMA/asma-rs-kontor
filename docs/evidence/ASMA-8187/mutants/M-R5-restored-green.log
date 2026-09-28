@@ -1,0 +1,6 @@
+     Running tests/backup_export.rs (target/debug/deps/backup_export-86507a0c15daf53a)
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 180.96s
+     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-37350dd3fcfb6d32)
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.28s
+     Running tests/schema_v1.rs (target/debug/deps/schema_v1-31c4c1b44e8419d0)
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 198.22s

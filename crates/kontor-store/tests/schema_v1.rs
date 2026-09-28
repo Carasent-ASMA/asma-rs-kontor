@@ -111,6 +111,7 @@ const EXPECTED_TABLES: &[&str] = &[
     // Schema v5 (KON-MVP-19): the destination half of a redacted import.
     "import_receipts",
     "imported_profile_selection_outcomes",
+    "imported_record_evidence",
     "imported_records",
     // Schema v6 (KON-MVP-22): the terminal half of intake and its work lineage.
     "intake_created_work",
@@ -761,7 +762,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // claimed before its first duplicable effect, and a durable readback plus
     // pending-effect record so a replay converges instead of re-planning
     // against a seat that has moved (ASMA-8187).
-    assert_eq!(SCHEMA_VERSION, 120);
+    assert_eq!(SCHEMA_VERSION, 121);
 }
 
 #[test]
