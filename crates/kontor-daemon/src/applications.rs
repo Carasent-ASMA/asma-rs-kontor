@@ -186,26 +186,25 @@ use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
-    CommandRepository, CompletionWrite, CoreTeamRouteSuccessionCommit,
-    CoreTeamRouteSuccessionEffects, CredentialReference, CredentialReferenceKind,
-    HostedSeatLaunchIntentState, HostedSeatLaunchIntentSupersession, IntakeOutcome,
-    IntakeRepository, LegacyConsultationTopicCorrection, LegacyEpicBacklogCodeCorrection,
-    MigrationObjectKind, MiniProject, MiniProjectTeamDefinitionSnapshot,
-    MiniProjectTopologySnapshot, NativePlacement, NewAccountProfile, NewAdaptiveAdmissionState,
-    NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
-    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt,
-    NewCoreTeamRouteSuccessionClaim, NewGateEvaluation, NewLocalCommand, NewMiniProject,
-    NewNativeContainerBinding, NewProviderQuotaState, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTeamDefinitionMigration, NewTeamDefinitionMigrationTarget, NewTeamRun,
-    OpenQuestionRepository, ProjectRepository, ProjectTeamDefinitionDefault,
-    ProjectTopologyDefault, ProviderUsageObservation, RealmRepository, RepositoryError,
-    RunRepository, RuntimeBinding, SeatLivenessObservation, SourceDisposition, SpecRepository,
-    StoredCommitteeFinding, StoredCompletionProfile, StoredCompletionWake,
-    StoredCompletionWakeDelivery, StoredConsultationProfileRevision, StoredConsultationRun,
-    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredPromotion, StoredQuickSession,
-    StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest, TaskWorkflow,
-    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    CommandRepository, CompletionWrite, CoreTeamRouteSuccessionCommit, CredentialReference,
+    CredentialReferenceKind, HostedSeatLaunchIntentState, HostedSeatLaunchIntentSupersession,
+    IntakeOutcome, IntakeRepository, LegacyConsultationTopicCorrection,
+    LegacyEpicBacklogCodeCorrection, MigrationObjectKind, MiniProject,
+    MiniProjectTeamDefinitionSnapshot, MiniProjectTopologySnapshot, NativePlacement,
+    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
+    NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
+    NewConsultationRecoveryAttempt, NewCoreTeamRouteSuccessionClaim, NewGateEvaluation,
+    NewLocalCommand, NewMiniProject, NewNativeContainerBinding, NewProviderQuotaState,
+    NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTeamDefinitionMigration,
+    NewTeamDefinitionMigrationTarget, NewTeamRun, OpenQuestionRepository, ProjectRepository,
+    ProjectTeamDefinitionDefault, ProjectTopologyDefault, ProviderUsageObservation,
+    RealmRepository, RepositoryError, RunRepository, RuntimeBinding, SeatLivenessObservation,
+    SourceDisposition, SpecRepository, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationProfileRevision,
+    StoredConsultationRun, StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion,
+    StoredEpicRoster, StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredPromotion,
+    StoredQuickSession, StoredRemediationProposal, SuccessionRepository, TaskTransitionRequest,
+    TaskWorkflow, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTargetState, TeamDefinitionRepository,
     TicketLink, TicketRepository, TopologyContainerRecovery, TopologyContainerRecoveryDisposition,
     TopologyRepository, WorkflowRepository,
@@ -8561,13 +8560,7 @@ impl Services {
         }
         state
             .with_store(|store| {
-                store.mark_core_team_route_succession_effects(
-                    &recorded.idempotency_key,
-                    CoreTeamRouteSuccessionEffects {
-                        launch_intent_installed: true,
-                        seat_binding_observed: true,
-                    },
-                )
+                store.commit_core_team_route_succession_effects(&recorded.idempotency_key)
             })
             .map_err(|error| self.refuse(&error))?;
         Ok(())
@@ -25549,15 +25542,7 @@ impl ApplicationOperations for Services {
             // Both trailing effects have now landed, so the succession is
             // complete and a replay may report it as such.
             state
-                .with_store(|store| {
-                    store.mark_core_team_route_succession_effects(
-                        key,
-                        CoreTeamRouteSuccessionEffects {
-                            launch_intent_installed: true,
-                            seat_binding_observed: true,
-                        },
-                    )
-                })
+                .with_store(|store| store.commit_core_team_route_succession_effects(key))
                 .map_err(|error| self.refuse(&error))?;
             succession_readback = Some((readback, readback_document.hash().clone()));
             successor

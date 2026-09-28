@@ -5607,10 +5607,25 @@ impl SqliteStore {
     /// Forward-only and idempotent: marking an effect that has already landed
     /// changes nothing, and nothing here can unmark one. A succession is
     /// complete only once both have latched.
-    pub fn mark_core_team_route_succession_effects(
+    /// Commit a succession's trailing effects by *proving* them.
+    ///
+    /// The previous shape took two booleans and trusted them, which meant the
+    /// persistence boundary recorded the caller's opinion rather than what
+    /// durable state actually says. Both latches are now derived here from the
+    /// exact rows the effects were supposed to write:
+    ///
+    /// * the launch intent for this occupancy is `installed` and names this
+    ///   succession's exact successor native — not merely some native;
+    /// * the seat's active occupant *is* that successor, and the SeatBinding's
+    ///   attachment instant is the successor's own observation instant, which
+    ///   is what ties the generic liveness write to this succession rather than
+    ///   to whatever last touched the seat.
+    ///
+    /// Anything short of both refuses and latches nothing, so a half-landed
+    /// succession cannot be talked into looking complete (ASMA-8187 P2).
+    pub fn commit_core_team_route_succession_effects(
         &self,
         key: &IdempotencyKey,
-        effects: CoreTeamRouteSuccessionEffects,
     ) -> RepositoryResult<Applied> {
         // A crash here is indistinguishable, from the caller, from the latch
         // never having happened — which is the interval the pending-effect
@@ -5621,20 +5636,62 @@ impl SqliteStore {
                 detail: "injected fault before the succession effect latch".to_owned(),
             });
         }
+        let recorded =
+            self.get_core_team_route_succession(key)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "core team route succession",
+                })?;
+        let (Some(successor_native_id), Some(_)) = (
+            recorded.successor_native_id.clone(),
+            recorded.route_committed_at,
+        ) else {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "a succession cannot commit effects before its route",
+            });
+        };
+
+        // Effect one: the launch intent, installed against this exact native.
+        let intent = self.get_hosted_seat_launch_intent(
+            recorded.project_id,
+            recorded.seat_binding_id,
+            recorded.successor_occupancy_generation,
+        )?;
+        let launch_intent_installed = intent.is_some_and(|intent| {
+            intent.state == HostedSeatLaunchIntentState::Installed
+                && intent.observed_native_id.as_ref() == Some(&successor_native_id)
+        });
+
+        // Effect two: the observation, bound to this exact successor. The
+        // active occupant proves which native the seat holds; the attachment
+        // instant proves the observation was written for *that* native and not
+        // inherited from an earlier one.
+        let active =
+            self.get_hosted_topology_seat(recorded.project_id, recorded.seat_binding_id)?;
+        let seat_binding_observed = match (
+            active,
+            self.get_seat_binding(recorded.project_id, recorded.seat_binding_id)?,
+        ) {
+            (Some(active), Some(binding)) => {
+                active.native_identity.native_id == successor_native_id
+                    && binding.last_attached_at == Some(active.observed_at)
+            }
+            _ => false,
+        };
+
+        if !launch_intent_installed || !seat_binding_observed {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession's trailing effects are not both proved against its successor",
+            });
+        }
         let updated = self
             .connection
             .execute(
                 "UPDATE core_team_route_successions
-                    SET launch_intent_installed =
-                            MAX(launch_intent_installed, ?2),
-                        seat_binding_observed =
-                            MAX(seat_binding_observed, ?3)
+                    SET launch_intent_installed = 1, seat_binding_observed = 1
                   WHERE idempotency_key = ?1 AND route_committed_at IS NOT NULL",
-                params![
-                    key.as_str(),
-                    i64::from(effects.launch_intent_installed),
-                    i64::from(effects.seat_binding_observed),
-                ],
+                params![key.as_str()],
             )
             .map_err(backend)?;
         if updated == 0 {
@@ -5709,6 +5766,14 @@ impl SqliteStore {
                 })
             };
         }
+        // The receipt is the last moment anything reads this row before it
+        // becomes the answer to every replay, so the evidence is re-proved
+        // here rather than assumed from the write that produced it. The digest
+        // is recomputed from the stored bytes, and every value the readback
+        // repeats from a ledger column is compared against that column: two
+        // layers wrote them, and agreement between the two is evidence rather
+        // than a restatement.
+        self.verify_succession_readback(&transaction, key)?;
         transaction
             .execute(
                 "UPDATE core_team_route_successions
@@ -5719,6 +5784,95 @@ impl SqliteStore {
             .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(Applied::Updated)
+    }
+
+    /// Re-prove a committed succession's readback against its own ledger row.
+    fn verify_succession_readback(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<()> {
+        let row: (
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            String,
+            i64,
+            i64,
+            i64,
+            String,
+        ) = transaction
+            .query_row(
+                "SELECT readback, readback_hash, predecessor_native_id, predecessor_generation,
+                        predecessor_occupancy_generation, successor_native_id,
+                        successor_generation, successor_occupancy_generation,
+                        successor_credential_generation, seat_binding_id
+                   FROM core_team_route_successions WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                    ))
+                },
+            )
+            .map_err(backend)?;
+        let readback: serde_json::Value =
+            serde_json::from_str(&row.0).map_err(|error| RepositoryError::Backend {
+                detail: format!("a succession readback could not be decoded: {error}"),
+            })?;
+        let declared = ContentHash::parse(&row.1)?;
+        let recomputed = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "readback": readback,
+        }))?;
+        if recomputed.hash() != &declared {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the stored succession readback no longer matches its recorded digest",
+            });
+        }
+        let text_at = |pointer: &str| {
+            readback
+                .pointer(pointer)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let u64_at = |pointer: &str| {
+            readback
+                .pointer(pointer)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(u64::MAX)
+        };
+        let agrees = text_at("/seat_binding_id") == row.9
+            && text_at("/predecessor/native_id") == row.2
+            && u64_at("/predecessor/generation") == u64::try_from(row.3).unwrap_or(u64::MAX)
+            && u64_at("/predecessor/occupancy_generation")
+                == u64::try_from(row.4).unwrap_or(u64::MAX)
+            && text_at("/successor/native_id") == row.5
+            && u64_at("/successor/generation") == u64::try_from(row.6).unwrap_or(u64::MAX)
+            && u64_at("/successor/occupancy_generation")
+                == u64::try_from(row.7).unwrap_or(u64::MAX)
+            && u64_at("/grant_subject/generation") == u64::try_from(row.8).unwrap_or(u64::MAX)
+            && text_at("/grant_subject/subject_seat_binding_id") == row.9;
+        if !agrees {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession readback disagrees with its own ledger identity",
+            });
+        }
+        Ok(())
     }
 
     /// Read one recorded succession by the key a replay arrives holding.
