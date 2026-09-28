@@ -90,8 +90,17 @@ pub mod rule {
 
     /// A policy names a schema this build does not read.
     pub const V31: &str = "schema_version must be 1 or 2";
+    /// A published policy names a value that could identify or authenticate
+    /// an account, or locate a provider home.
+    pub const V33: &str = "a fleet policy value must not carry credential material, a filesystem path or an email address";
     /// A schema_version 2 binding key is outside the five families.
     pub const V32: &str = "a binding key must be team/<id>/<slot>, committee/<id>/<slot>, advisor/<id> or leadership/<core-team-revision-hash>/<role-slot-id>";
+
+    /// Policy bytes do not hash to the content address they are read under.
+    pub const P07: &str = "a published fleet policy does not hash to its content address";
+    /// Activated bytes validate under another schema than the record names.
+    pub const A09: &str =
+        "the activated fleet policy's schema_version differs from its activation record";
 
     /// The document handed in is not a canonical Core Team revision.
     pub const L01: &str =
@@ -105,8 +114,8 @@ pub mod rule {
 }
 
 use rule::{
-    F04, V01, V02, V03, V04, V05, V06, V07, V08, V09, V10, V11, V12, V13, V14, V15, V16, V17, V18,
-    V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32,
+    A09, F04, P07, V01, V02, V03, V04, V05, V06, V07, V08, V09, V10, V11, V12, V13, V14, V15, V16,
+    V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33,
 };
 
 /// Why a fleet document could not be used as written.
@@ -265,9 +274,126 @@ pub struct FleetResolution {
     pub provenance: FleetProvenance,
     /// Model-major, then account, in declared order.
     pub routes: Vec<FleetRoute>,
+    /// What the policy itself removed from the chain, and why, in chain order.
+    pub excluded: Vec<PolicyExclusion>,
+}
+
+/// Why a chain entry offers no route, or why a route was passed over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExclusionReason {
+    /// The policy lists the model's domain under `unavailable.domains`.
+    UnavailableDomain,
+    /// The policy lists the account under `unavailable.accounts`.
+    UnavailableAccount,
+    /// The seat is calibration-scoped and the model is not calibrated.
+    NotCalibrated,
+    /// The seat is vision-scoped and the model has no vision.
+    NoVision,
+    /// The caller observed the account unavailable for this selection.
+    AccountUnavailableNow,
+    /// The seat must avoid the model's vendor for this selection.
+    VendorExcluded,
+}
+
+/// One chain entry, or one of its accounts, that the policy removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PolicyExclusion {
+    /// The chain step, counted from one.
+    pub step: u16,
+    /// The provider-native model id.
+    pub model: String,
+    /// The account alias, when one account alone was removed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// Why it offers no route.
+    pub reason: ExclusionReason,
+}
+
+/// The runtime facts one selection is made under. None of this is policy:
+/// it is what the caller observes now, stated explicitly so the choice can be
+/// reproduced from the receipt.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Eligibility {
+    /// Account aliases that cannot take a seat right now — exhausted, signed
+    /// out or blocked by an operator.
+    pub unavailable_accounts: BTreeSet<String>,
+    /// Vendors the seat must avoid, such as the vendor of the seat it must be
+    /// independent of.
+    pub excluded_vendors: BTreeSet<String>,
+}
+
+/// One route a selection considered, and why it was passed over if it was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsideredRoute {
+    /// The route, in chain order.
+    pub route: FleetRoute,
+    /// `None` for the route selected or any eligible route after it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excluded: Option<ExclusionReason>,
+}
+
+/// The policy's choice for one seat under stated eligibility: what a launch
+/// receipt records.
+///
+/// `selected` is the first route in chain order that the eligibility admits;
+/// `None` is the defined block result, and `considered` then says why every
+/// route was passed over.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FleetSelection {
+    /// The exact policy and binding the choice came from.
+    pub provenance: FleetProvenance,
+    /// The eligibility the choice was made under.
+    pub eligibility: Eligibility,
+    /// The chosen route, or `None` when nothing is eligible.
+    pub selected: Option<FleetRoute>,
+    /// Every resolved route, in chain order, with its verdict.
+    pub considered: Vec<ConsideredRoute>,
+    /// What the policy removed before any selection.
+    pub excluded_by_policy: Vec<PolicyExclusion>,
 }
 
 impl FleetResolution {
+    /// Choose the first route the stated eligibility admits.
+    ///
+    /// Deterministic: equal policy bytes, key and eligibility give an equal
+    /// selection in every mode, because the order is the chain's and nothing
+    /// else is read.
+    #[must_use]
+    pub fn select(&self, eligibility: &Eligibility) -> FleetSelection {
+        let mut selected = None;
+        let considered = self
+            .routes
+            .iter()
+            .map(|route| {
+                let excluded = if eligibility
+                    .unavailable_accounts
+                    .contains(&route.rung.provider.0)
+                {
+                    Some(ExclusionReason::AccountUnavailableNow)
+                } else if eligibility.excluded_vendors.contains(&route.vendor) {
+                    Some(ExclusionReason::VendorExcluded)
+                } else {
+                    None
+                };
+                if excluded.is_none() && selected.is_none() {
+                    selected = Some(route.clone());
+                }
+                ConsideredRoute {
+                    route: route.clone(),
+                    excluded,
+                }
+            })
+            .collect();
+        FleetSelection {
+            provenance: self.provenance.clone(),
+            eligibility: eligibility.clone(),
+            selected,
+            considered,
+            excluded_by_policy: self.excluded.clone(),
+        }
+    }
+
     /// The resolved route that is exactly `rung`, or `None` when the bound
     /// chain does not admit it.
     ///
@@ -315,6 +441,41 @@ impl FleetSnapshot {
         Self::read(document, Reader::Policy)
     }
 
+    /// Re-admit policy bytes read back under the content address they were
+    /// published at.
+    ///
+    /// # Errors
+    /// P-07 when the bytes are not that address, then as [`Self::parse_policy`].
+    pub fn published(hash: &ContentHash, document: &str) -> Result<Self, FleetError> {
+        if ContentHash::of(document.as_bytes()) != *hash {
+            return Err(invalid(P07));
+        }
+        Self::parse_policy(document)
+    }
+
+    /// Admit the policy an activation record selects: exactly the bytes at its
+    /// content address, validating under the schema it names.
+    ///
+    /// This is the one activation decision every reader shares — the daemon
+    /// and any direct-mode reader alike. Bytes that are not the activated
+    /// ones, however valid, are refused, so an edited authoring file, an
+    /// unactivated publication or a rewritten artifact never becomes the
+    /// policy a placement reads.
+    ///
+    /// # Errors
+    /// As [`Self::published`], and A-09 when the schema differs from the record.
+    pub fn activated(
+        hash: &ContentHash,
+        schema_version: u32,
+        document: &str,
+    ) -> Result<Self, FleetError> {
+        let snapshot = Self::published(hash, document)?;
+        if snapshot.schema_version() != schema_version {
+            return Err(invalid(A09));
+        }
+        Ok(snapshot)
+    }
+
     fn read(document: &str, reader: Reader) -> Result<Self, FleetError> {
         if document.len() as u64 > MAX_FILE_BYTES {
             return Err(invalid(F04));
@@ -331,6 +492,9 @@ impl FleetSnapshot {
             (_, Reader::Fleet) => return Err(invalid(V01)),
         };
         parsed.validate(schema)?;
+        if reader == Reader::Policy {
+            parsed.validate_publishable()?;
+        }
         Ok(Self {
             document: parsed,
             raw: document.to_owned(),
@@ -401,6 +565,7 @@ impl FleetSnapshot {
             .iter()
             .any(|listed| listed == key);
         let mut routes = Vec::new();
+        let mut excluded = Vec::new();
         for (index, step) in chain.iter().enumerate() {
             let step_number = u16::try_from(index + 1).unwrap_or(u16::MAX);
             let mut sub_step = 0u16;
@@ -409,19 +574,28 @@ impl FleetSnapshot {
                 let Some(model) = self.document.models.get(name) else {
                     continue;
                 };
-                if self
+                let whole_model = if self
                     .document
                     .unavailable
                     .domains
                     .iter()
                     .any(|domain| domain == &model.domain)
                 {
-                    continue;
-                }
-                if calibration_required && !model.calibrated {
-                    continue;
-                }
-                if vision_required && !model.vision {
+                    Some(ExclusionReason::UnavailableDomain)
+                } else if calibration_required && !model.calibrated {
+                    Some(ExclusionReason::NotCalibrated)
+                } else if vision_required && !model.vision {
+                    Some(ExclusionReason::NoVision)
+                } else {
+                    None
+                };
+                if let Some(reason) = whole_model {
+                    excluded.push(PolicyExclusion {
+                        step: step_number,
+                        model: model.id.clone(),
+                        account: None,
+                        reason,
+                    });
                     continue;
                 }
                 let Some(domain) = self.document.domains.get(&model.domain) else {
@@ -435,6 +609,12 @@ impl FleetSnapshot {
                         .iter()
                         .any(|listed| listed == account)
                     {
+                        excluded.push(PolicyExclusion {
+                            step: step_number,
+                            model: model.id.clone(),
+                            account: Some(account.clone()),
+                            reason: ExclusionReason::UnavailableAccount,
+                        });
                         continue;
                     }
                     sub_step = sub_step.saturating_add(1);
@@ -460,6 +640,7 @@ impl FleetSnapshot {
                 chain: chain_name.clone(),
             },
             routes,
+            excluded,
         })
     }
 
@@ -803,6 +984,57 @@ impl FleetDocument {
         for (key, value) in &self.rules.independent_of {
             if !same_team_template(key, value) {
                 return Err(invalid(V30));
+            }
+        }
+        Ok(())
+    }
+
+    /// The publication rule: no value a published policy carries may be a
+    /// credential, a filesystem path (a provider home) or an email address (a
+    /// provider-native account identity). Account aliases, model ids and keys
+    /// are names; anything that authenticates or locates an account stays in
+    /// the Realm's credential homes, never in shared policy.
+    fn validate_publishable(&self) -> Result<(), FleetError> {
+        let mut values: Vec<&str> = Vec::new();
+        for (name, domain) in &self.domains {
+            values.extend([name.as_str(), domain.provider.as_str()]);
+            values.extend(domain.accounts.iter().map(String::as_str));
+            values.extend(domain.model_prefix.as_deref());
+        }
+        values.extend(self.unavailable.domains.iter().map(String::as_str));
+        values.extend(self.unavailable.accounts.iter().map(String::as_str));
+        for (name, model) in &self.models {
+            values.extend([
+                name.as_str(),
+                model.domain.as_str(),
+                model.id.as_str(),
+                model.vendor.as_str(),
+            ]);
+            values.extend(model.efforts.iter().map(String::as_str));
+        }
+        for (name, steps) in &self.chains {
+            values.push(name.as_str());
+            for entry in steps.iter().flatten() {
+                let (model, effort) = entry_parts(entry);
+                values.push(model);
+                values.extend(effort);
+            }
+        }
+        for (key, chain) in &self.bindings {
+            values.extend([key.as_str(), chain.as_str()]);
+        }
+        values.extend(self.rules.calibration_required.iter().map(String::as_str));
+        values.extend(self.rules.vision_required.iter().map(String::as_str));
+        for (key, other) in &self.rules.independent_of {
+            values.extend([key.as_str(), other.as_str()]);
+        }
+        for value in values {
+            let located = value.starts_with('/') || value.starts_with('~') || value.contains('\\');
+            if located
+                || value.contains('@')
+                || kontor_core::id::reject_sensitive_text("fleet", value).is_err()
+            {
+                return Err(invalid(V33));
             }
         }
         Ok(())

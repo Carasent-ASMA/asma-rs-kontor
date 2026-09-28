@@ -4,6 +4,7 @@ use kontor_core::id::{
 };
 use kontor_core::spec::{CatalogRoleRef, EffortLevel};
 use serde::Serialize;
+use std::collections::BTreeSet;
 
 use super::rule::*;
 use super::*;
@@ -501,4 +502,325 @@ fn a_requested_route_is_admitted_only_as_the_chain_offers_it() {
     ] {
         assert!(resolution.route_for(&refused).is_none(), "{refused:?}");
     }
+}
+
+/// A policy with one route of every exclusion kind, for selection tests.
+fn selection_policy(lsa: &str) -> String {
+    format!(
+        "\
+schema_version: 2
+domains:
+  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}
+  codex: {{ provider: codex, accounts: [codex-work, codex-personal] }}
+  cursor: {{ provider: cursor, accounts: [cursor] }}
+unavailable:
+  domains: [cursor]
+  accounts: [codex-personal]
+models:
+  opus-5.5: {{ domain: claude, id: claude-opus-5-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: false }}
+  opus-5: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}
+  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}
+  grok-4.6: {{ domain: cursor, id: grok-4.6, vendor: xai, efforts: [high], vision: true, calibrated: true }}
+chains:
+  lead:
+    - [opus-5.5@xhigh, opus-5@xhigh]
+    - [sol@xhigh]
+    - [grok-4.6@high]
+bindings:
+  {lsa}: lead
+  {TEAM}: lead
+  {ADVISOR}: lead
+rules:
+  calibration_required: [{lsa}]
+"
+    )
+}
+
+/// Provider, model, step and sub-step of one route.
+type Position<'a> = (&'a str, &'a str, u16, u16);
+
+/// Step, model, account and reason of one policy exclusion.
+type Removed<'a> = (u16, &'a str, Option<&'a str>, ExclusionReason);
+
+fn route_of(route: &FleetRoute) -> Position<'_> {
+    (
+        route.rung.provider.0.as_str(),
+        route.rung.model.0.as_str(),
+        route.step,
+        route.sub_step,
+    )
+}
+
+#[test]
+fn the_policy_explains_every_route_it_removed() {
+    let seats = leadership_seats();
+    let roster = revision(SpecVersion::FIRST, &seats);
+    let lsa = key(&roster, &seats[1]);
+    let snapshot = FleetSnapshot::parse_policy(&selection_policy(lsa.as_str())).expect("valid");
+    let resolution = snapshot.resolve_leadership(&lsa).expect("bound");
+    let excluded: Vec<Removed<'_>> = resolution
+        .excluded
+        .iter()
+        .map(|exclusion| {
+            (
+                exclusion.step,
+                exclusion.model.as_str(),
+                exclusion.account.as_deref(),
+                exclusion.reason,
+            )
+        })
+        .collect();
+    assert_eq!(
+        excluded,
+        [
+            (1, "claude-opus-5-5", None, ExclusionReason::NotCalibrated),
+            (
+                2,
+                "gpt-5.6-sol",
+                Some("codex-personal"),
+                ExclusionReason::UnavailableAccount
+            ),
+            (3, "grok-4.6", None, ExclusionReason::UnavailableDomain),
+        ]
+    );
+    // The same chain on an unscoped key keeps the uncalibrated model.
+    let team = snapshot.resolve(TEAM).expect("bound");
+    assert!(
+        team.excluded
+            .iter()
+            .all(|exclusion| exclusion.reason != ExclusionReason::NotCalibrated)
+    );
+    assert_eq!(
+        route_of(&team.routes[0]),
+        ("claude-personal", "claude-opus-5-5", 1, 1)
+    );
+}
+
+#[test]
+fn a_policy_chooses_the_first_eligible_route_and_says_why_it_passed_the_rest() {
+    let seats = leadership_seats();
+    let roster = revision(SpecVersion::FIRST, &seats);
+    let lsa = key(&roster, &seats[1]);
+    let snapshot = FleetSnapshot::parse_policy(&selection_policy(lsa.as_str())).expect("valid");
+    let resolution = snapshot.resolve_leadership(&lsa).expect("bound");
+
+    let open = resolution.select(&Eligibility::default());
+    assert_eq!(
+        open.selected.as_ref().map(route_of),
+        Some(("claude-personal", "claude-opus-5", 1, 1)),
+        "with nothing unavailable the chain's first route is the choice"
+    );
+    assert_eq!(open.provenance, resolution.provenance);
+    assert_eq!(open.excluded_by_policy, resolution.excluded);
+
+    let eligibility = Eligibility {
+        unavailable_accounts: BTreeSet::from(["claude-personal".to_owned()]),
+        excluded_vendors: BTreeSet::new(),
+    };
+    let degraded = resolution.select(&eligibility);
+    assert_eq!(
+        degraded.selected.as_ref().map(route_of),
+        Some(("claude-work", "claude-opus-5", 1, 2)),
+        "the next account of the same step before the next step"
+    );
+    assert_eq!(degraded.eligibility, eligibility);
+    let verdicts: Vec<(Position<'_>, Option<ExclusionReason>)> = degraded
+        .considered
+        .iter()
+        .map(|considered| (route_of(&considered.route), considered.excluded))
+        .collect();
+    assert_eq!(
+        verdicts,
+        [
+            (
+                ("claude-personal", "claude-opus-5", 1, 1),
+                Some(ExclusionReason::AccountUnavailableNow)
+            ),
+            (("claude-work", "claude-opus-5", 1, 2), None),
+            (("codex-work", "gpt-5.6-sol", 2, 1), None),
+        ]
+    );
+
+    let independent = resolution.select(&Eligibility {
+        unavailable_accounts: BTreeSet::new(),
+        excluded_vendors: BTreeSet::from(["anthropic".to_owned()]),
+    });
+    assert_eq!(
+        independent.selected.as_ref().map(route_of),
+        Some(("codex-work", "gpt-5.6-sol", 2, 1)),
+        "a seat that must avoid a vendor descends past it"
+    );
+}
+
+#[test]
+fn an_eligibility_that_admits_nothing_is_the_defined_block() {
+    let seats = leadership_seats();
+    let roster = revision(SpecVersion::FIRST, &seats);
+    let lsa = key(&roster, &seats[1]);
+    let snapshot = FleetSnapshot::parse_policy(&selection_policy(lsa.as_str())).expect("valid");
+    let resolution = snapshot.resolve_leadership(&lsa).expect("bound");
+    let blocked = resolution.select(&Eligibility {
+        unavailable_accounts: BTreeSet::from(["codex-work".to_owned()]),
+        excluded_vendors: BTreeSet::from(["anthropic".to_owned()]),
+    });
+    assert!(blocked.selected.is_none(), "no fallback to any other route");
+    assert!(
+        blocked
+            .considered
+            .iter()
+            .all(|considered| considered.excluded.is_some()),
+        "every passed route says why"
+    );
+    assert_eq!(blocked.considered.len(), resolution.routes.len());
+}
+
+#[test]
+fn equal_policy_bytes_and_eligibility_choose_identically() {
+    let seats = leadership_seats();
+    let roster = revision(SpecVersion::FIRST, &seats);
+    let lsa = key(&roster, &seats[1]);
+    let yaml = selection_policy(lsa.as_str());
+    let eligibility = Eligibility {
+        unavailable_accounts: BTreeSet::from(["claude-personal".to_owned()]),
+        excluded_vendors: BTreeSet::new(),
+    };
+    let choose = |key: &str| {
+        let snapshot = FleetSnapshot::parse_policy(&yaml).expect("valid");
+        (
+            snapshot
+                .resolve_leadership(&lsa)
+                .expect("LSA")
+                .select(&eligibility),
+            snapshot.resolve(key).expect("bound").select(&eligibility),
+        )
+    };
+    for key in [TEAM, ADVISOR] {
+        assert_eq!(choose(key), choose(key), "{key}");
+    }
+}
+
+#[test]
+fn only_the_activated_bytes_are_admitted() {
+    let seats = leadership_seats();
+    let roster = revision(SpecVersion::FIRST, &seats);
+    let lsa = key(&roster, &seats[1]);
+    let activated = selection_policy(lsa.as_str());
+    let hash = ContentHash::of(activated.as_bytes());
+
+    let admitted = FleetSnapshot::activated(&hash, 2, &activated).expect("the activated bytes");
+    assert_eq!(admitted.hash(), &hash);
+
+    // An authoring edit, however valid, is not the activated policy.
+    let edited = activated.replacen("    - [sol@xhigh]\n", "", 1);
+    assert!(
+        FleetSnapshot::parse_policy(&edited).is_ok(),
+        "the edit is valid"
+    );
+    for (candidate, schema, rule) in [
+        (edited.as_str(), 2, P07),
+        (EXAMPLE, 2, P07),
+        (activated.as_str(), 1, A09),
+    ] {
+        assert!(matches!(
+            FleetSnapshot::activated(&hash, schema, candidate),
+            Err(FleetError::Invalid { rule: refused }) if refused == rule
+        ));
+    }
+    assert!(matches!(
+        FleetSnapshot::published(&ContentHash::of(b"schema_version: ["), "schema_version: ["),
+        Err(FleetError::PolicyDocument)
+    ));
+}
+
+#[test]
+fn a_published_policy_carries_no_credential_path_or_email() {
+    let yaml = |account: &str, prefix: &str, model: &str| {
+        format!(
+            "schema_version: 2\n\
+             domains:\n  codex: {{ provider: codex, accounts: [{account}]{prefix} }}\n\
+             models:\n  sol: {{ domain: codex, id: {model}, vendor: openai, efforts: [xhigh] }}\n\
+             chains:\n  c:\n    - [sol@xhigh]\n\
+             bindings:\n  team/t/s: c\n"
+        )
+    };
+    assert!(FleetSnapshot::parse_policy(&yaml("codex", "", "gpt-5.6-sol")).is_ok());
+    for (account, prefix, model) in [
+        ("codex-sk-abcdefghijklmnopqrstuvwxyz0123", "", "gpt-5.6-sol"),
+        ("codex-igor@carasent.com", "", "gpt-5.6-sol"),
+        (
+            "codex",
+            ", model_prefix: \"/Users/igor/provider-homes/\"",
+            "/Users/igor/provider-homes/sol",
+        ),
+        ("codex", "", "~/.codex/sol"),
+        ("codex", "", "ghp_abcdefghijklmnopqrstuvwxyz0123"),
+        ("codex", "", "gpt-5.6-sol@work"),
+    ] {
+        let published = yaml(account, prefix, model);
+        assert_eq!(
+            refused(FleetSnapshot::parse_policy(&published)),
+            V33,
+            "{published}"
+        );
+        // The unmigrated fleet.yml reader keeps its exact v1 checks.
+        assert!(
+            FleetSnapshot::parse(&published.replacen("schema_version: 2", "schema_version: 1", 1))
+                .is_ok(),
+            "{published}"
+        );
+    }
+    // No section or field exists to carry a credential in the first place.
+    for field in ["token", "credential", "api_key", "provider_home", "quota"] {
+        let extended = yaml("codex", &format!(", {field}: x"), "gpt-5.6-sol");
+        assert!(matches!(
+            FleetSnapshot::parse_policy(&extended),
+            Err(FleetError::PolicyDocument)
+        ));
+    }
+}
+
+#[test]
+fn an_older_roster_revision_keeps_its_own_leadership_binding() {
+    let seats = leadership_seats();
+    let first = revision(SpecVersion::FIRST, &seats);
+    let second = revision(SpecVersion::FIRST.next().expect("next"), &seats);
+    let (old_lsa, new_lsa) = (key(&first, &seats[1]), key(&second, &seats[1]));
+    let yaml = format!(
+        "schema_version: 2\n\
+         domains:\n  codex: {{ provider: codex, accounts: [codex-work] }}\n  claude: {{ provider: claude, accounts: [claude-work] }}\n\
+         models:\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh] }}\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh] }}\n\
+         chains:\n  old:\n    - [sol@xhigh]\n  new:\n    - [opus@xhigh]\n\
+         bindings:\n  {old_lsa}: old\n  {new_lsa}: new\n"
+    );
+    let snapshot = FleetSnapshot::parse_policy(&yaml).expect("valid");
+    let chosen = |key: &LeadershipKey| {
+        snapshot
+            .resolve_leadership(key)
+            .expect("bound")
+            .select(&Eligibility::default())
+            .selected
+            .map(|route| route.rung.provider.0)
+    };
+    assert_eq!(
+        chosen(&old_lsa).as_deref(),
+        Some("codex-work"),
+        "the pinned epic keeps its route"
+    );
+    assert_eq!(chosen(&new_lsa).as_deref(), Some("claude-work"));
+}
+
+#[test]
+fn every_direct_mode_rule_string_is_stable() {
+    assert_eq!(
+        V33,
+        "a fleet policy value must not carry credential material, a filesystem path or an email address"
+    );
+    assert_eq!(
+        P07,
+        "a published fleet policy does not hash to its content address"
+    );
+    assert_eq!(
+        A09,
+        "the activated fleet policy's schema_version differs from its activation record"
+    );
 }

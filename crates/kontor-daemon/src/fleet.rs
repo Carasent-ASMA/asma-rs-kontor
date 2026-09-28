@@ -76,7 +76,6 @@ const P03: &str = "a published fleet policy must be owned by the state root's ow
 const P04: &str = "a published fleet policy exceeds 256 KiB";
 const P05: &str = "a published fleet policy changed while it was being read";
 const P06: &str = "a published fleet policy is not UTF-8";
-const P07: &str = "a published fleet policy does not hash to its content address";
 
 const A01: &str = "fleet-activation.json must be a regular file, not a symlink";
 const A02: &str = "fleet-activation.json must not be writable by group or others";
@@ -90,7 +89,6 @@ const A08: &str = "the activated fleet policy is not published";
 /// The refusal that means "no such published policy", which the read and
 /// activate operations answer as not found rather than as invalid.
 pub(crate) const UNPUBLISHED_POLICY: &str = A08;
-const A09: &str = "the activated fleet policy's schema_version differs from its activation record";
 
 /// The refusals one guarded read names, in the order the checks run.
 struct Guard {
@@ -681,25 +679,29 @@ impl FleetSource {
         if record.schema_version != ACTIVATION_SCHEMA_VERSION {
             return Err(invalid(A07));
         }
-        let snapshot = self.verify_published(&record.policy_hash)?;
-        if snapshot.schema_version() != record.policy_schema_version {
-            return Err(invalid(A09));
-        }
+        // The one activation decision, shared with every direct-mode reader:
+        // only the bytes at the record's address, under the record's schema.
+        let snapshot = FleetSnapshot::activated(
+            &record.policy_hash,
+            record.policy_schema_version,
+            &self.read_published(&record.policy_hash)?,
+        )?;
         Ok((record, Arc::new(snapshot)))
     }
 
     /// The published artifact for `hash`, re-read, re-hashed and re-validated.
     fn verify_published(&self, hash: &ContentHash) -> Result<FleetSnapshot, FleetError> {
-        let text = match self.read_guarded(&self.published_path(hash), &POLICY_GUARD) {
+        FleetSnapshot::published(hash, &self.read_published(hash)?)
+    }
+
+    /// The bytes published under `hash`, under the artifact's own file rules.
+    fn read_published(&self, hash: &ContentHash) -> Result<String, FleetError> {
+        match self.read_guarded(&self.published_path(hash), &POLICY_GUARD) {
             Err(FleetError::Read { source }) if source.kind() == std::io::ErrorKind::NotFound => {
-                return Err(invalid(A08));
+                Err(invalid(A08))
             }
-            other => other?,
-        };
-        if ContentHash::of(text.as_bytes()) != *hash {
-            return Err(invalid(P07));
+            other => other,
         }
-        FleetSnapshot::parse_policy(&text)
     }
 
     fn published_path(&self, hash: &ContentHash) -> PathBuf {
@@ -2026,5 +2028,160 @@ bindings:
                 .is_none(),
             "leadership decisions are not a TeamRun's delivery log"
         );
+    }
+
+    /// ASMA-8280 direct mode: a reader that follows only the activation
+    /// record's two files through `kontor-fleet` — what a Paseo-direct consumer
+    /// does without the daemon — chooses exactly what governed placement
+    /// chooses, for leadership, delivery and consultation keys alike, and its
+    /// choice is a receipt that names the activated bytes and carries no
+    /// secret material.
+    #[test]
+    fn a_direct_reader_of_the_activation_chooses_what_placement_chooses() {
+        use kontor_core::id::{CanonicalDocument, SpecVersion};
+        use kontor_fleet::{Eligibility, LeadershipKey};
+        use kontor_teams::CoreTeamRevision;
+        use std::collections::BTreeSet;
+
+        let catalog = kontor_profiles::seeds::bundled_operational_domain()
+            .expect("the bundled domain loads")
+            .role_catalogs
+            .remove(0);
+        let roster =
+            CoreTeamRevision::resolve(SpecVersion::FIRST, &catalog, &[]).expect("LSA and TPM");
+        let pinned = roster.canonicalize().expect("canonical roster");
+        let leadership: Vec<LeadershipKey> = roster
+            .seats
+            .iter()
+            .map(|seat| {
+                LeadershipKey::for_pinned_seat(&pinned, &seat.role_slot_id, &seat.role)
+                    .expect("the pinned seat proves its key")
+            })
+            .collect();
+        let delivery = team_key("01936f5a-0000-7000-8000-000000000102", "implement");
+        let reviewer = committee_key("01991c00-0000-7000-8000-000000000001", "reviewer-a");
+        let advisor = advisor_key("01a02d00-0000-7000-8000-00000000ad01");
+        let policy = |first: &str, second: &str| {
+            format!(
+                "schema_version: 2\n\
+                 domains:\n  codex: {{ provider: codex, accounts: [codex-work, codex-personal] }}\n  claude: {{ provider: claude, accounts: [claude-personal] }}\n\
+                 models:\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}\n\
+                 chains:\n  lead:\n    - [{first}@xhigh]\n    - [{second}@xhigh]\n\
+                 bindings:\n  {lsa}: lead\n  {tpm}: lead\n  {delivery}: lead\n  {reviewer}: lead\n  {advisor}: lead\n",
+                lsa = leadership[0],
+                tpm = leadership[1],
+            )
+        };
+        let root = tempfile::tempdir().expect("temporary state root");
+        let source = FleetSource::at(root.path());
+        let hash = activate(&source, &policy("sol", "opus"));
+
+        // What a direct reader holds: the two files, and nothing of the daemon.
+        let direct = || {
+            let record: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(activation_path(root.path())).expect("the activation record"),
+            )
+            .expect("the record is JSON");
+            let named = ContentHash::parse(record["policy_hash"].as_str().expect("a hash"))
+                .expect("a content hash");
+            let schema = u32::try_from(record["policy_schema_version"].as_u64().expect("a schema"))
+                .expect("a schema version");
+            let bytes = std::fs::read_to_string(published(root.path(), &named))
+                .expect("the activated artifact");
+            FleetSnapshot::activated(&named, schema, &bytes)
+        };
+        let eligibilities = [
+            Eligibility::default(),
+            Eligibility {
+                unavailable_accounts: BTreeSet::from(["codex-work".to_owned()]),
+                excluded_vendors: BTreeSet::new(),
+            },
+            Eligibility {
+                unavailable_accounts: BTreeSet::new(),
+                excluded_vendors: BTreeSet::from(["openai".to_owned()]),
+            },
+        ];
+        let compare = |expected_hash: &ContentHash| {
+            let governed = source.policy().expect("verified").expect("activated");
+            let direct = direct().expect("the direct reader admits the activation");
+            assert_eq!(direct.hash(), expected_hash);
+            assert_eq!(governed.hash(), direct.hash(), "one activated hash");
+            for eligibility in &eligibilities {
+                let pairs = leadership
+                    .iter()
+                    .map(|key| {
+                        (
+                            governed.resolve_leadership(key).expect("leadership"),
+                            direct.resolve_leadership(key).expect("leadership"),
+                        )
+                    })
+                    .chain([&delivery, &reviewer, &advisor].into_iter().map(|key| {
+                        (
+                            governed.resolve(key).expect("bound"),
+                            direct.resolve(key).expect("bound"),
+                        )
+                    }));
+                for (governed, direct) in pairs {
+                    let (governed, direct) =
+                        (governed.select(eligibility), direct.select(eligibility));
+                    assert_eq!(governed, direct, "{eligibility:?}");
+                    assert_eq!(&direct.provenance.policy_hash, expected_hash);
+                    // The receipt is canonical evidence: no credential, token or
+                    // provider home survives into it.
+                    CanonicalDocument::from_serializable(&serde_json::json!({
+                        "schema_version": 1,
+                        "selection": direct,
+                    }))
+                    .expect("the selection is admissible evidence");
+                }
+            }
+        };
+        compare(&hash);
+        let chosen = direct()
+            .expect("admitted")
+            .resolve_leadership(&leadership[0])
+            .expect("LSA")
+            .select(&Eligibility::default())
+            .selected
+            .expect("a route");
+        assert_eq!(
+            (
+                chosen.rung.provider.0.as_str(),
+                chosen.step,
+                chosen.sub_step
+            ),
+            ("codex-work", 1, 1),
+            "the policy, not the caller, chooses the route"
+        );
+
+        // Unactivated edits: fleet.yml, a published candidate, a checkout copy.
+        write_fleet(root.path(), V1_CLAUDE_FIRST);
+        let candidate = source
+            .publish(&policy("opus", "sol"))
+            .expect("publish only")
+            .hash;
+        assert_ne!(candidate, hash);
+        compare(&hash);
+
+        // A rewritten artifact fails closed for both readers alike.
+        write_private(
+            &published(root.path(), &hash),
+            policy("opus", "sol").as_bytes(),
+        );
+        assert!(matches!(
+            direct(),
+            Err(FleetError::Invalid { rule }) if rule == P07
+        ));
+        assert_eq!(refusal(&source), P07);
+        write_private(
+            &published(root.path(), &hash),
+            policy("sol", "opus").as_bytes(),
+        );
+
+        // Only activation moves both readers, and both move together.
+        source
+            .activate(&candidate, Some(&hash))
+            .expect("activate the candidate");
+        compare(&candidate);
     }
 }

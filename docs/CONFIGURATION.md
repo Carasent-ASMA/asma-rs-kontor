@@ -563,6 +563,19 @@ never falls back to `fleet.yml` or to template routing. Deleting the record
 returns the Realm to the unmigrated `fleet.yml` behaviour above. Rollback is
 activating a recorded hash.
 
+A published policy names accounts, models and seats; it never locates or
+authenticates them. Preview and publish refuse any value that carries
+credential material, a filesystem path (such as a provider home) or an email
+address (V-33); the unmigrated `fleet.yml` reader keeps its v1 checks.
+
+Every reader takes the same activation decision from `kontor-fleet`: only the
+bytes at the record's content address, validating under the record's schema,
+are the policy. A reader outside the daemon that follows the record's two files
+therefore resolves exactly what placement resolves, and its choice for a seat —
+the first route in chain order that the stated eligibility admits, with the
+reason every other route was passed over — is the same record for the same
+policy bytes, key and eligibility.
+
 Schema version 2 keeps every v1 section and rule and adds one binding family,
 `leadership/<core-team-revision-hash>/<role-slot-id>`, for epic leadership
 seats. The hash is the canonical content hash of the epic's pinned Core Team
