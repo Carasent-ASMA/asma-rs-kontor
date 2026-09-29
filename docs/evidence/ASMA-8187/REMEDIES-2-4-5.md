@@ -178,3 +178,102 @@ Stated rather than implied.
   retirement. No seam stands inside the store transaction itself, so a loss
   *between* the route write and the ledger write in the same transaction is
   covered by atomicity rather than by a test.
+
+
+---
+
+# Audit remediation — candidate `9ac33c19`, findings P1×3 and P2×3
+
+Date: 2026-09-29
+Audit target: exact `9ac33c196069eae4978068296c30802e0f5e5fd0`
+(tree `d986be64b7c56cf85d164d98e641d6d7194c325e`), LSA native 21ad40fb update 325.
+Remediation baseline: `a088e037c083b2e6c2c2ddff670df4ea2d918371`.
+
+Everything above is unchanged. The immutable HIGH-VERIFICATION `FAIL` on the old
+lineage and the 408e audit are untouched.
+
+## P1 — effect completion proves the whole successor
+
+`native_id` is an external identifier a provider may reissue. Comparing it alone
+let a later occupancy stand in for an abandoned succession's own successor and
+collect a receipt for work belonging to its successor's successor. Three sites
+now agree on what identity means:
+
+* the effect latch fences on the occupancy this command produced and compares
+  the successor's recorded runtime generation;
+* reconciliation filters on the same pair before it writes anything, so a
+  refused command does not leave the earlier occupancy's launch intent installed
+  against a later native on its way out;
+* the route transition decides "already done" by runtime kind, host, generation
+  and id rather than by name.
+
+## P1 — this Realm's own bearers are credential material
+
+`kontor-seat-v1.` and `kontor-seat-v2.` carry no `Bearer ` prefix and matched no
+provider marker, so the scanner that refuses every other credential did not know
+them. They are now refused *by value*, which is what matters: the key a caller
+chooses is the caller's, and after the readback became typed there were no
+free-form keys left to forbid anyway.
+
+Separately, a foreign document was believed on its digest. `verify` now rescans
+the complete document, embedded JSON included, before an import opens a
+transaction — construction scans what this Realm publishes, and this scans what
+another Realm hands us.
+
+## P1 — an authentic schema-12 document survives being read
+
+The generation-13 field injected on parse survived into the canonical bytes and
+the continuity vocabulary, so a genuine v12 export failed its own digest for
+having been read. It is stripped from both below 13.
+
+This is also where the two regressions came from, and both are the same class:
+legacy-document *fixtures* in other suites that had silently agreed with the old
+strip list. A new export generation therefore touches **eight** places, not six:
+the migration, the `migrations.rs` registry and `SCHEMA_VERSION`, `schema_v1.rs`'s
+table registry and version assertion, `backup/export.rs`, the
+publication-attestation version assertion, the v115 rewind — and now
+`backup_export.rs`'s generation-2 fixture and `event_replay.rs`'s generation-7
+one.
+
+## P2 — the readback is one strict type
+
+`kontor_core::repository::CoreTeamRouteSuccessionReadback`, `deny_unknown_fields`
+throughout, shared by the daemon that builds it, the store that persists it and
+the API projection derived from it. Missing and unknown fields are refused where
+the document is written, not only where it is read, and the grant-subject digest
+is recomputed from the subject it describes rather than carried.
+
+## P2 — a receipt is provably this command's
+
+Migration 0122. The binder joins `command_receipts` inside its own transaction
+and requires project, idempotency key, command kind, target epic and intent to
+agree; `receipt_id` is unique so one receipt cannot complete two successions;
+and `receipted_at` is frozen alongside it.
+
+## Qualification frontier
+
+* **`M-P11a` is a weak kill.** Removing the occupancy fence does not change
+  whether the abandoned row is refused — the identity comparison refuses it
+  anyway — so the test fails only on the rule it names. A byte-identical native
+  identity at two occupancies is unreachable, because
+  `hosted_topology_seat_history` is keyed `(project, seat, native_id)`. The
+  fence's independent value is against a row written by another path, and this
+  suite cannot demonstrate that without planting one. Recorded, not papered over.
+* **The daemon-level id-reuse variant is unreachable in the fake.** Its runtime
+  holds one generation; advancing it invalidates the container binding snapshot,
+  so the request refuses earlier at `ensure_generation` for an unrelated and
+  correct reason. The reuse case is proved at the store, which owns the latch and
+  the receipt. A fake knob added for this was reverted rather than contrived.
+* **Runtime kind and host are not ledger columns**, so the binder proves they are
+  *present and well-formed* in the readback, and proves the native id and runtime
+  generation against the ledger. Their correctness rests on the write that
+  produced them.
+* **The `target` and `kind` limbs of the receipt join are defence in depth.**
+  `command_receipts.idempotency_key` is unique, so a receipt bearing this
+  succession's key cannot also bear another target or kind; only the foreign-key
+  case is independently reachable, and that is what the regression exercises.
+* **An earlier weak assertion was found and fixed, not preserved.**
+  `a_readback_naming_another_successor_is_refused_before_binding` had been
+  passing on a foreign-key error and never reached the check it claimed to prove;
+  it now presents a genuine receipt. Several store fixtures used partial
+  readbacks, exactly as the audit said, and have been rebuilt complete.

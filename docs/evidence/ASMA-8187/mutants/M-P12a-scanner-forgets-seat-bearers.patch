@@ -1,0 +1,14 @@
+diff --git a/crates/kontor-core/src/id.rs b/crates/kontor-core/src/id.rs
+index 2de28e77..b21455c3 100644
+--- a/crates/kontor-core/src/id.rs
++++ b/crates/kontor-core/src/id.rs
+@@ -1624,8 +1624,7 @@ const SECRET_MARKERS: &[(&str, usize)] = &[
+     // being read as a credential, while a real bearer carries a binding, a
+     // generation and a sixty-four character signature after the prefix
+     // (ASMA-8187 P1).
+-    ("kontor-seat-v1.", 40),
+-    ("kontor-seat-v2.", 40),
++    // MUTANT M-P12a: this Realm's own bearers are not credential material.
+ ];
+ 
+ /// Inline assignments that carry a credential in an otherwise ordinary string,
