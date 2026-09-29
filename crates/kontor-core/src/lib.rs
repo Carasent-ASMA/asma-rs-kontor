@@ -100,6 +100,7 @@ pub mod epic_seat;
 pub mod id;
 pub mod naming;
 pub mod open_question;
+pub mod planning_pair;
 pub mod publication;
 pub mod quota;
 pub mod realm;

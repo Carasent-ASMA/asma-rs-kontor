@@ -682,6 +682,261 @@ fn a_joint_request_that_is_empty_repeated_or_unresolvable_fails_closed() {
     );
 }
 
+fn pair(value: serde_json::Value) -> PlanningPairRequest {
+    serde_json::from_value(value).expect("a planning pair request")
+}
+
+/// A state root whose v1 activation names exactly `yaml`.
+fn activated_policy(yaml: &str) -> tempfile::TempDir {
+    let root = tempfile::tempdir().expect("state root");
+    let hash = ContentHash::of(yaml.as_bytes());
+    private(&policy_path(root.path(), &hash), yaml.as_bytes());
+    let record = FleetActivation {
+        schema_version: ACTIVATION_V1,
+        source_bundle_hash: None,
+        policy_hash: hash,
+        policy_schema_version: 2,
+        core_team_revision_hash: None,
+        activated_at: "2026-09-29T00:00:00Z".to_owned(),
+    };
+    private(
+        &root.path().join(FLEET_ACTIVATION_FILE),
+        &serde_json::to_vec_pretty(&record).expect("record JSON"),
+    );
+    root
+}
+
+/// Cursor routes to an Anthropic model and to Cursor Auto, whose maker the
+/// policy does not know; Claude routes to Anthropic directly.
+const CROSS_HARNESS: &str = "\
+schema_version: 2
+domains:
+  cursor: { provider: cursor, accounts: [cursor] }
+  claude: { provider: claude, accounts: [claude-personal] }
+models:
+  auto: { domain: cursor, id: auto, vendor: unknown }
+  sonnet: { domain: cursor, id: claude-sonnet-5, vendor: anthropic }
+  opus: { domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh] }
+chains:
+  cursor-auto:
+    - [auto]
+  cursor-anthropic:
+    - [sonnet]
+  claude:
+    - [opus@xhigh]
+bindings:
+  team/01936f5a-0000-7000-8000-000000000103/auto: cursor-auto
+  team/01936f5a-0000-7000-8000-000000000103/cursor: cursor-anthropic
+  team/01936f5a-0000-7000-8000-000000000103/claude: claude
+";
+
+fn cross_harness_key(slot: &str) -> String {
+    format!("team/01936f5a-0000-7000-8000-000000000103/{slot}")
+}
+
+#[test]
+fn a_planning_pair_is_one_joint_allocation_on_two_actual_vendors() {
+    let bundle = published_bundle();
+    let activated = load(bundle.path()).expect("the bundle verifies");
+    // Both members name the same existing binding; the shared allocator, not
+    // the caller, keeps them on different makers.
+    let request = pair(serde_json::json!({"members": [
+        {"slot": "seat-a", "binding_key": TEAM},
+        {"slot": "seat-b", "binding_key": TEAM},
+    ]}));
+    let placement = activated.place_planning_pair(&request).expect("placed");
+    assert!(placement.is_complete());
+    assert_eq!(placement.protocol, ConsultationProtocol::PlanningPair);
+    // The receipt is the shared allocator's own answer for the same two slots.
+    let same = joint(serde_json::json!({
+        "diversity": "distinct_vendor_per_reviewer",
+        "slots": [
+            {"slot_id": "seat-a", "role": "reviewer", "binding_key": TEAM},
+            {"slot_id": "seat-b", "role": "reviewer", "binding_key": TEAM},
+        ],
+    }));
+    assert_eq!(
+        placement.selection,
+        activated.allocate(&same).expect("allocates")
+    );
+    assert_eq!(
+        placement.selection.provenance,
+        ActivationProvenance {
+            policy_hash: bundle.policy_hash.clone(),
+            policy_schema_version: 2,
+            source_bundle_hash: Some(bundle.bundle_hash.clone()),
+            core_team_revision_hash: Some(bundle.roster.hash().clone()),
+        }
+    );
+    let members = placement.members.as_ref().expect("frozen");
+    assert_eq!(members.placement_hash(), &placement.placement_hash);
+    let picked: Vec<(PlanningPairSlot, &str, &str, &str)> = members
+        .members()
+        .iter()
+        .map(|member| {
+            (
+                member.slot,
+                member.binding_key.as_str(),
+                member.route.provider.0.as_str(),
+                member.vendor.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        picked,
+        [
+            (PlanningPairSlot::SeatA, TEAM, "codex-work", "openai"),
+            (
+                PlanningPairSlot::SeatB,
+                TEAM,
+                "claude-personal",
+                "anthropic"
+            ),
+        ]
+    );
+    let passed_over = &placement.selection.slots[1].allocation.considered[0];
+    assert_eq!(
+        (passed_over.excluded, passed_over.conflicts_with.as_deref()),
+        (
+            Some(kontor_fleet::AllocationExclusion::VendorHeld),
+            Some("seat-a")
+        )
+    );
+    // One snapshot, one answer, from either entry point.
+    assert_eq!(
+        place_planning_pair(bundle.path(), &request).expect("placed"),
+        placement
+    );
+    let receipt = serde_json::to_value(&placement).expect("JSON");
+    assert_eq!(receipt["protocol"], "planning_pair@1");
+    assert_eq!(receipt["members"]["members"][1]["vendor"], "anthropic");
+    assert_eq!(
+        receipt["selection"]["provenance"]["policy_hash"],
+        bundle.policy_hash.as_str()
+    );
+}
+
+#[test]
+fn a_planning_pair_on_one_actual_vendor_is_blocked() {
+    let bundle = published_bundle();
+    let cross = activated_policy(CROSS_HARNESS);
+    for (root, request) in [
+        // One Anthropic-only chain for both members.
+        (
+            bundle.path(),
+            serde_json::json!({"members": [
+                {"slot": "seat-a", "binding_key": COMMITTEE},
+                {"slot": "seat-b", "binding_key": COMMITTEE},
+            ]}),
+        ),
+        // Two OpenAI accounts: different aliases, one maker.
+        (
+            bundle.path(),
+            serde_json::json!({"members": [
+                {"slot": "seat-a", "binding_key": TEAM, "excluded_vendors": ["anthropic"]},
+                {"slot": "seat-b", "binding_key": TEAM, "excluded_vendors": ["anthropic"]},
+            ]}),
+        ),
+        // Cursor and Claude: different harnesses, one maker.
+        (
+            cross.path(),
+            serde_json::json!({"members": [
+                {"slot": "seat-a", "binding_key": cross_harness_key("cursor")},
+                {"slot": "seat-b", "binding_key": cross_harness_key("claude")},
+            ]}),
+        ),
+    ] {
+        let placement =
+            place_planning_pair(root, &pair(request.clone())).expect("the defined block result");
+        assert!(!placement.is_complete(), "{request}");
+        assert_eq!(
+            placement.selection.blocked,
+            Some(AllocationFailure::NoDistinctReviewerVendors),
+            "{request}"
+        );
+        assert!(
+            placement
+                .selection
+                .slots
+                .iter()
+                .all(|slot| slot.allocation.selected.is_none())
+        );
+        assert!(
+            serde_json::to_value(&placement).expect("JSON")["members"].is_null(),
+            "nothing is frozen from a blocked placement"
+        );
+    }
+}
+
+#[test]
+fn a_planning_pair_member_with_an_unknown_vendor_is_not_placed() {
+    let cross = activated_policy(CROSS_HARNESS);
+    let placement = place_planning_pair(
+        cross.path(),
+        &pair(serde_json::json!({"members": [
+            {"slot": "seat-a", "binding_key": cross_harness_key("auto")},
+            {"slot": "seat-b", "binding_key": cross_harness_key("claude")},
+        ]})),
+    )
+    .expect("the defined block result");
+    assert!(!placement.is_complete());
+    assert_eq!(
+        placement.selection.blocked,
+        Some(AllocationFailure::NoEligibleCandidate)
+    );
+    assert_eq!(
+        placement.selection.slots[0].allocation.considered[0].excluded,
+        Some(kontor_fleet::AllocationExclusion::VendorUnknown)
+    );
+}
+
+#[test]
+fn a_planning_pair_missing_or_repeating_a_member_is_refused() {
+    let bundle = published_bundle();
+    let a = serde_json::json!({"slot": "seat-a", "binding_key": TEAM});
+    let b = serde_json::json!({"slot": "seat-b", "binding_key": COMMITTEE});
+    for members in [
+        serde_json::json!([a]),
+        serde_json::json!([b]),
+        serde_json::json!([]),
+        serde_json::json!([b, a]),
+        serde_json::json!([a, a]),
+        serde_json::json!([a, b, b]),
+    ] {
+        assert_eq!(
+            refused(place_planning_pair(
+                bundle.path(),
+                &pair(serde_json::json!({"members": members}))
+            )),
+            PP01,
+            "{members}"
+        );
+    }
+    // A member whose binding the activation cannot resolve refuses the pair.
+    assert_eq!(
+        refused(place_planning_pair(
+            bundle.path(),
+            &pair(serde_json::json!({"members": [
+                a,
+                {"slot": "seat-b", "binding_key": "team/01936f5a-0000-7000-8000-000000000999/implement"},
+            ]}))
+        )),
+        D03
+    );
+    // The request cannot waive distinct vendors, cast a member as a Judge or
+    // add a third slot.
+    for request in [
+        serde_json::json!({"diversity": "none", "members": [a, b]}),
+        serde_json::json!({"members": [a, {"slot": "seat-b", "binding_key": COMMITTEE, "role": "judge"}]}),
+        serde_json::json!({"members": [a, {"slot": "judge", "binding_key": COMMITTEE}]}),
+    ] {
+        assert!(
+            serde_json::from_value::<PlanningPairRequest>(request.clone()).is_err(),
+            "{request}"
+        );
+    }
+}
+
 #[test]
 fn every_rule_string_is_stable() {
     assert_eq!(
@@ -710,4 +965,8 @@ fn every_rule_string_is_stable() {
     assert_eq!(D03, "the activated policy binds no chain to this key");
     assert_eq!(J01, "name exactly one of binding_key and allocation");
     assert_eq!(J04, "a joint allocation names each slot_id once");
+    assert_eq!(
+        PP01,
+        "a planning pair names exactly two members, seat-a then seat-b"
+    );
 }

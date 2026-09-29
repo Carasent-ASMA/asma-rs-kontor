@@ -891,7 +891,7 @@ pub struct RecordedFinding {
 ///
 /// A linear scan: these lists are bounded in the tens, so a hash set would cost
 /// more in `Hash` bounds on every key type than it saves in comparisons.
-fn has_duplicate<T: PartialEq>(values: &[T]) -> bool {
+pub(crate) fn has_duplicate<T: PartialEq>(values: &[T]) -> bool {
     values
         .iter()
         .enumerate()

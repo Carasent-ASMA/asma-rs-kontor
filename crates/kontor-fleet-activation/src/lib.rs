@@ -25,6 +25,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use kontor_core::id::{CanonicalDocument, ContentHash, RoleCatalogId, RoleSlotId, SpecVersion};
+use kontor_core::planning_pair::{
+    ConsultationProtocol, PlanningPairMember, PlanningPairMembers, PlanningPairSlot,
+};
 use kontor_fleet::{
     AllocationCandidate, AllocationDiversity, AllocationFailure, AllocationRole, AllocationSlot,
     Eligibility, FleetError, FleetResolution, FleetSelection, FleetSnapshot, LeadershipKey,
@@ -118,12 +121,15 @@ pub mod rule {
     pub const J02: &str = "a joint allocation takes each slot's own eligibility; unavailable_accounts and excluded_vendors at the top level belong to a single binding";
     pub const J03: &str = "a joint allocation names at least one slot";
     pub const J04: &str = "a joint allocation names each slot_id once";
+
+    pub const PP01: &str = "a planning pair names exactly two members, seat-a then seat-b";
+    pub const PP02: &str = "a planning pair's placement could not be frozen as one canonical receipt with two distinct actual vendors";
 }
 
 use rule::{
     A01, A02, A03, A04, A05, A06, A07, A08, A10, A11, C01, C02, C03, C04, C05, C06, C07, C08, D01,
     D02, D03, J03, J04, M01, M02, M03, M04, M05, M06, M07, M08, M09, M10, P01, P02, P03, P04, P05,
-    P06,
+    P06, PP01, PP02,
 };
 
 /// The refusals one guarded read names, in the order the checks run.
@@ -793,6 +799,159 @@ pub fn allocate(
     request: &JointAllocationRequest,
 ) -> Result<JointSelection, FleetError> {
     load(state_root)?.allocate(request)
+}
+
+/// One planning pair's placement request (ASMA-8282): the existing binding
+/// key the caller names for each member, and that member's eligibility.
+///
+/// It names no diversity rule and no role. Both members are always held to
+/// distinct actual vendors, so no request can waive that, and neither member
+/// is a Committee reviewer or Judge.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningPairRequest {
+    /// Exactly two members, `seat-a` then `seat-b`.
+    pub members: Vec<PlanningPairMemberRequest>,
+}
+
+/// One member of a planning pair's placement request.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningPairMemberRequest {
+    /// The member slot.
+    pub slot: PlanningPairSlot,
+    /// The existing canonical binding the member resolves.
+    pub binding_key: String,
+    /// Account aliases that cannot take this member now.
+    #[serde(default)]
+    pub unavailable_accounts: BTreeSet<String>,
+    /// Vendors this member must avoid.
+    #[serde(default)]
+    pub excluded_vendors: BTreeSet<String>,
+}
+
+/// A planning pair's placement from one activated snapshot.
+///
+/// `selection` is the shared allocator's receipt, exactly as a joint
+/// allocation of the two members answers it. `members` is present only when
+/// that allocation placed both; otherwise the placement is the defined block
+/// result and nothing may be launched from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlanningPairPlacement {
+    /// Always [`ConsultationProtocol::PlanningPair`].
+    pub protocol: ConsultationProtocol,
+    /// The shared allocator's receipt.
+    pub selection: JointSelection,
+    /// The canonical hash of the protocol and that receipt, which the frozen
+    /// members and every finding they record are bound to.
+    pub placement_hash: ContentHash,
+    /// The two frozen members, when both were placed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub members: Option<PlanningPairMembers>,
+}
+
+impl PlanningPairPlacement {
+    /// Whether both members were placed.
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        self.members.is_some()
+    }
+}
+
+impl Activated {
+    /// Place one planning pair's two members against this one verified
+    /// snapshot.
+    ///
+    /// This is a joint allocation and nothing else: each member's binding is
+    /// resolved through [`Self::resolve`], and [`Self::allocate`] runs
+    /// [`kontor_fleet::allocate`] with both members as reviewers under
+    /// [`AllocationDiversity::DistinctVendorPerReviewer`]. So the members
+    /// never share an actual vendor — the policy's model maker, not the
+    /// account alias or the harness — and a member whose only routes have an
+    /// unknown maker is not placed.
+    ///
+    /// # Errors
+    /// PP-01 unless the request names `seat-a` then `seat-b`; as
+    /// [`Self::allocate`] for a member binding that cannot be resolved; PP-02
+    /// when the receipt cannot be canonical or the placed members cannot be
+    /// frozen.
+    pub fn place_planning_pair(
+        &self,
+        request: &PlanningPairRequest,
+    ) -> Result<PlanningPairPlacement, FleetError> {
+        let slots: Vec<PlanningPairSlot> =
+            request.members.iter().map(|member| member.slot).collect();
+        if slots != PlanningPairSlot::ALL {
+            return Err(invalid(PP01));
+        }
+        let joint = JointAllocationRequest {
+            diversity: AllocationDiversity::DistinctVendorPerReviewer,
+            slots: request
+                .members
+                .iter()
+                .map(|member| JointSlotRequest {
+                    slot_id: member.slot.as_str().to_owned(),
+                    role: AllocationRole::Reviewer,
+                    binding_key: member.binding_key.clone(),
+                    unavailable_accounts: member.unavailable_accounts.clone(),
+                    excluded_vendors: member.excluded_vendors.clone(),
+                })
+                .collect(),
+        };
+        let selection = self.allocate(&joint)?;
+        let receipt = serde_json::to_value(&selection).map_err(|_| invalid(PP02))?;
+        let placement_hash = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "protocol": ConsultationProtocol::PlanningPair.as_str(),
+            "selection": receipt,
+        }))
+        .map_err(|_| invalid(PP02))?
+        .hash()
+        .clone();
+        let members = if selection.is_complete() {
+            let members = request
+                .members
+                .iter()
+                .zip(&selection.slots)
+                .map(|(member, slot)| {
+                    slot.allocation
+                        .selected
+                        .as_ref()
+                        .map(|selected| PlanningPairMember {
+                            slot: member.slot,
+                            binding_key: slot.binding_key.clone(),
+                            route: selected.rung.clone(),
+                            vendor: selected.independence.clone().unwrap_or_default(),
+                        })
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| invalid(PP02))?;
+            Some(
+                PlanningPairMembers::freeze(placement_hash.clone(), members)
+                    .map_err(|_| invalid(PP02))?,
+            )
+        } else {
+            None
+        };
+        Ok(PlanningPairPlacement {
+            protocol: ConsultationProtocol::PlanningPair,
+            selection,
+            placement_hash,
+            members,
+        })
+    }
+}
+
+/// The direct-mode planning pair read: load and verify the activation once,
+/// then place both members against that one snapshot.
+///
+/// # Errors
+/// As [`load`] and [`Activated::place_planning_pair`].
+pub fn place_planning_pair(
+    state_root: &Path,
+    request: &PlanningPairRequest,
+) -> Result<PlanningPairPlacement, FleetError> {
+    load(state_root)?.place_planning_pair(request)
 }
 
 /// The direct-mode read: load and verify the activation, resolve one binding
