@@ -40,7 +40,7 @@ use kontor_fleet_activation::{
 use serde::{Deserialize, Serialize};
 
 pub use kontor_fleet::{FleetError, FleetSnapshot};
-pub(crate) use kontor_fleet::{FleetRoute, advisor_key, committee_key, independence_key, team_key};
+pub(crate) use kontor_fleet::{advisor_key, committee_key, independence_key, team_key};
 // The record, its file name and the history directory are the shared reader's:
 // one spelling for the daemon and the CLI's local resolution (ASMA-8280 B-1).
 pub use kontor_fleet_activation::FleetActivation;
@@ -84,13 +84,27 @@ const FLEET_GUARD: Guard = Guard {
 /// The rungs one delivery seat may walk, and the fleet binding they came from.
 ///
 /// `fleet` is `Some` exactly when the rungs came from the live fleet snapshot
-/// rather than the frozen template chain: it carries that snapshot and the
-/// binding key so an admitted placement can be recorded against the exact
-/// version that authorised it.
+/// rather than the frozen template chain: it carries that snapshot, the
+/// binding key and its resolution, so the placement is chosen by the shared
+/// resolver and recorded against the exact version that authorised it.
 #[derive(Debug)]
 pub(crate) struct DeclaredRungs {
     pub(crate) rungs: Vec<ModelRung>,
-    pub(crate) fleet: Option<(Arc<FleetSnapshot>, String)>,
+    pub(crate) fleet: Option<FleetBinding>,
+}
+
+/// One delivery seat a fleet policy binds (ASMA-8280 G-4).
+#[derive(Debug)]
+pub(crate) struct FleetBinding {
+    /// The snapshot the binding was resolved against.
+    pub(crate) snapshot: Arc<FleetSnapshot>,
+    /// The canonical binding key.
+    pub(crate) binding_key: String,
+    /// The bound chain, flattened, with its provenance.
+    pub(crate) resolution: kontor_fleet::FleetResolution,
+    /// The vendor the seat must avoid under `rules.independent_of`: part of
+    /// the explicit eligibility the placement is chosen under.
+    pub(crate) excluded_vendors: std::collections::BTreeSet<String>,
 }
 
 /// What one publication wrote.
@@ -267,6 +281,11 @@ pub(crate) struct FleetDecision {
     pub(crate) vendor: String,
     pub(crate) account_profile_id: Option<String>,
     pub(crate) decided_at: String,
+    /// The explicit eligibility the shared resolver chose this route under,
+    /// translated from the exact quota observation (ASMA-8280 G-4). Absent
+    /// only on rows written before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) eligibility: Option<kontor_fleet::Eligibility>,
 }
 
 #[derive(Serialize)]
@@ -935,6 +954,7 @@ mod tests {
             vendor: vendor.to_owned(),
             account_profile_id: None,
             decided_at: "2026-09-24T00:00:00Z".to_owned(),
+            eligibility: None,
         }
     }
 

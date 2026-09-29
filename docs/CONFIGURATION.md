@@ -597,6 +597,19 @@ never replaced. A route naming both or neither is invalid; a seat no policy
 binds, or whose bound routes are all ineligible, is refused before any seat
 exists.
 
+Governed delivery and consultation seats a fleet policy binds are chosen the
+same way. The exact quota observation is first stated as an explicit
+eligibility — an account alias with no account whose headroom admits a new seat
+now is unavailable, and a seat under `rules.independent_of` excludes the vendor
+its partner ran on — and the shared resolver (or, for a Committee, the shared
+allocator) chooses under it. The scheduler's rules still decide whether that
+choice launches now, waits for a near reset on a route it would rather have, or
+escalates. The eligibility is recorded with the decision: on each
+`fleet-decisions/<team_run_id>.jsonl` line, on a fleet-routed Committee or
+Advisor admission, and on a fleet-routed Committee seat recovery profile. A
+seat with no fleet binding, and an explicitly named caller route, walk the
+unchanged headroom chain and record no eligibility.
+
 #### Aligned activation: the orchestration bundle
 
 A schema_version 2 activation record names one orchestration bundle as well as
@@ -646,16 +659,46 @@ selects no roster.
 
 #### Direct-mode resolution without a daemon
 
-`kontor --state-root <root> --tier admin fleet-policy-resolve --binding-key <key>`
+`kontor --state-root <root> --tier operator fleet-policy-resolve --binding-key <key>`
 (optionally `--unavailable-accounts '[...]'` and `--excluded-vendors '[...]'`) is
-the registry's one local operation. It runs in the CLI before any connection —
-no daemon, credential file, base URL or network — through the same verified
-reader the daemon uses, and prints `{tool, status: 200, body: FleetSelection}`.
-Nothing eligible prints the selection under `status: 409`,
-`placement_blocked`. Anything missing, unsafe, mismatched or malformed is a
-local refusal naming its rule; there is no `fleet.yml` and no last-valid
-fallback, and a schema_version 1 activation resolves no leadership key. MCP
-neither lists nor dispatches it: it has no `/v1` route.
+the registry's one local operation. It is operator work, which admin inherits;
+an observer is refused. It runs in the CLI before any connection — no daemon,
+credential file, base URL or network — through the same verified reader the
+daemon uses, and prints `{tool, status: 200, body: FleetSelection}`. Nothing
+eligible prints the selection under `status: 409`, `placement_blocked`.
+Anything missing, unsafe, mismatched or malformed is a local refusal naming its
+rule; there is no `fleet.yml` and no last-valid fallback, and a schema_version 1
+activation resolves no leadership key. MCP neither lists nor dispatches it: it
+has no `/v1` route.
+
+The same operation allocates a whole Committee jointly when it is given
+`--allocation` instead of `--binding-key` — exactly one of the two:
+
+```json
+{
+  "diversity": "distinct_vendor_per_reviewer",
+  "slots": [
+    {"slot_id": "reviewer-a", "role": "reviewer", "binding_key": "committee/<template>/reviewer-a"},
+    {"slot_id": "reviewer-b", "role": "reviewer", "binding_key": "committee/<template>/reviewer-b",
+     "unavailable_accounts": ["codex-work"]},
+    {"slot_id": "judge", "role": "judge", "binding_key": "committee/<template>/judge"}
+  ]
+}
+```
+
+Each slot states its own eligibility; the top-level `--unavailable-accounts`
+and `--excluded-vendors` belong to single mode. Slot ids are unique. The
+activation is loaded and verified once, every slot is resolved against that
+snapshot, and the allocation is the shared allocator's: slots in the order
+given, then each chain in policy order; no two reviewers share a policy vendor,
+and a reviewer route whose vendor is `unknown` is not eligible; the judge is
+held only to its own eligibility. The answer is one complete ordered allocation
+under one shared provenance (policy, and for an aligned activation bundle and
+roster) with each slot's binding, chain, eligibility, every candidate
+considered and why it was passed over, and the chosen step, sub-step and vendor
+— or, under `status: 409` `placement_blocked`, the same receipt with no slot
+selected and the reason. There is no partial allocation. Governed Committee
+admission calls the same allocator.
 
 ## Provider quota signals
 

@@ -64,19 +64,46 @@ pub(crate) fn run(
     }
 }
 
-/// Resolve one binding against the activated bundle and choose under the
-/// stated eligibility.
+/// Resolve one binding, or allocate one Committee jointly, against the
+/// activated bundle.
+///
+/// The request names exactly one mode (J-01). Single mode takes `binding_key`
+/// and the top-level eligibility, and answers the `FleetSelection`. Joint mode
+/// takes `allocation` alone — each slot states its own eligibility (J-02) —
+/// and answers the joint selection from one verified snapshot.
 ///
 /// The answer is the envelope every command prints: `status` 200 and the
-/// `FleetSelection` verbatim as the body. A selection with no eligible route
-/// is the defined block result; it is printed in full, but as a refusal —
-/// `status` 409, `placement_blocked` — so no caller can mistake it for a route
-/// to launch. Anything unverifiable is refused before a selection exists.
+/// result verbatim as the body. A result with no eligible route, or no
+/// complete joint allocation, is the defined block result; it is printed in
+/// full, but as a refusal — `status` 409, `placement_blocked` — so no caller
+/// can mistake it for a route to launch. Anything unverifiable is refused
+/// before a result exists.
 fn fleet_policy_resolve(
     tool: &'static ToolSpec,
     state_root: &Path,
     arguments: &serde_json::Value,
 ) -> ExitClass {
+    let present = |name: &str| arguments.get(name).is_some_and(|value| !value.is_null());
+    let joint = present("allocation");
+    if joint == present("binding_key") {
+        return output::emit_local(
+            tool.name,
+            "invalid_request",
+            rule::J01,
+            "name either --binding-key or --allocation, not both and not neither",
+        );
+    }
+    if joint {
+        if present("unavailable_accounts") || present("excluded_vendors") {
+            return output::emit_local(
+                tool.name,
+                "invalid_request",
+                rule::J02,
+                "state each slot's eligibility inside --allocation",
+            );
+        }
+        return fleet_policy_allocate(tool, state_root, &arguments["allocation"]);
+    }
     let binding_key = arguments
         .get("binding_key")
         .and_then(serde_json::Value::as_str)
@@ -100,59 +127,111 @@ fn fleet_policy_resolve(
     };
     let selection = match kontor_fleet_activation::resolve(state_root, binding_key, &eligibility) {
         Ok(selection) => selection,
-        Err(FleetError::Invalid { rule }) if ABSENT.contains(&rule) => {
-            return output::emit_local(
-                tool.name,
-                "not_found",
-                rule,
-                "activate a bundle whose policy binds this key, or name a key it binds",
-            );
-        }
-        Err(FleetError::Invalid { rule }) => {
-            return output::emit_local(
-                tool.name,
-                "invalid_request",
-                rule,
-                "repair or re-activate the state root's fleet activation; nothing past the first failed check was read",
-            );
-        }
-        Err(FleetError::Read { .. }) => {
-            return output::emit_local(
-                tool.name,
-                "unavailable",
-                "the activated fleet policy could not be read in the state root",
-                "check the state root and retry; nothing was resolved",
-            );
-        }
-        Err(_) => {
-            return output::emit_local(
-                tool.name,
-                "invalid_request",
-                "the activated fleet policy is not a valid schema_version 1 or 2 document",
-                "repair or re-activate the state root's fleet activation",
-            );
-        }
+        Err(error) => return refuse(tool, &error),
     };
     let Ok(document) = serde_json::to_value(&selection) else {
         output::note("the selection could not be rendered as JSON");
         return ExitClass::Unexpected;
     };
-    let envelope = if selection.selected.is_some() {
+    answer(
+        tool,
+        selection.selected.is_some(),
+        document,
+        "selection",
+        "no route in the bound chain is eligible under the stated eligibility",
+    )
+}
+
+/// Joint mode: every slot from one verified snapshot, through the one
+/// allocator the daemon's Committee admission also uses.
+fn fleet_policy_allocate(
+    tool: &'static ToolSpec,
+    state_root: &Path,
+    allocation: &serde_json::Value,
+) -> ExitClass {
+    let Ok(request) = serde_json::from_value::<kontor_fleet_activation::JointAllocationRequest>(
+        allocation.clone(),
+    ) else {
+        return output::emit_local(
+            tool.name,
+            "invalid_request",
+            "the allocation is not a joint allocation request",
+            "send diversity and the ordered slots the schema declares",
+        );
+    };
+    let selection = match kontor_fleet_activation::allocate(state_root, &request) {
+        Ok(selection) => selection,
+        Err(error) => return refuse(tool, &error),
+    };
+    let Ok(document) = serde_json::to_value(&selection) else {
+        output::note("the allocation could not be rendered as JSON");
+        return ExitClass::Unexpected;
+    };
+    answer(
+        tool,
+        selection.is_complete(),
+        document,
+        "allocation",
+        "no complete allocation gives every slot an eligible route under the diversity rule",
+    )
+}
+
+/// Print one result: 200 with the body verbatim, or the defined block result
+/// under 409 `placement_blocked`.
+fn answer(
+    tool: &'static ToolSpec,
+    placed: bool,
+    document: serde_json::Value,
+    key: &str,
+    message: &str,
+) -> ExitClass {
+    let envelope = if placed {
         Envelope {
             tool: tool.name.to_owned(),
             status: 200,
             body: document,
         }
     } else {
+        let mut body = serde_json::json!({
+            "code": "placement_blocked",
+            "message": message,
+        });
+        body[key] = document;
         Envelope {
             tool: tool.name.to_owned(),
             status: 409,
-            body: serde_json::json!({
-                "code": "placement_blocked",
-                "message": "no route in the bound chain is eligible under the stated eligibility",
-                "selection": document,
-            }),
+            body,
         }
     };
     output::emit(&envelope)
+}
+
+/// One verification refusal, as the CLI's local refusal document.
+fn refuse(tool: &'static ToolSpec, error: &FleetError) -> ExitClass {
+    match error {
+        FleetError::Invalid { rule } if ABSENT.contains(rule) => output::emit_local(
+            tool.name,
+            "not_found",
+            rule,
+            "activate a bundle whose policy binds this key, or name a key it binds",
+        ),
+        FleetError::Invalid { rule } => output::emit_local(
+            tool.name,
+            "invalid_request",
+            rule,
+            "repair or re-activate the state root's fleet activation, or correct the request; nothing past the first failed check was read",
+        ),
+        FleetError::Read { .. } => output::emit_local(
+            tool.name,
+            "unavailable",
+            "the activated fleet policy could not be read in the state root",
+            "check the state root and retry; nothing was resolved",
+        ),
+        _ => output::emit_local(
+            tool.name,
+            "invalid_request",
+            "the activated fleet policy is not a valid schema_version 1 or 2 document",
+            "repair or re-activate the state root's fleet activation",
+        ),
+    }
 }

@@ -182,6 +182,49 @@ pub struct FieldSpec {
     pub about: &'static str,
 }
 
+/// One slot of a joint fleet allocation (`kontor_fleet_policy_resolve`).
+const FLEET_ALLOCATION_SLOT: &[FieldSpec] = &[
+    field(
+        "slot_id",
+        ArgType::OpenKey,
+        "The slot's stable id; unique within the allocation.",
+    ),
+    field(
+        "role",
+        ArgType::Enum(&["reviewer", "judge"]),
+        "reviewer slots are held to the diversity rule; a judge only to its own eligibility.",
+    ),
+    field(
+        "binding_key",
+        ArgType::Text,
+        "The canonical binding this slot resolves, such as committee/<template>/<seat>.",
+    ),
+    optional_field(
+        "unavailable_accounts",
+        ArgType::TextArray,
+        "Account aliases that cannot take this slot now.",
+    ),
+    optional_field(
+        "excluded_vendors",
+        ArgType::TextArray,
+        "Vendors this slot must avoid.",
+    ),
+];
+
+/// A joint fleet allocation: the diversity rule and the ordered slots.
+const FLEET_ALLOCATION: &[FieldSpec] = &[
+    field(
+        "diversity",
+        ArgType::Enum(&["distinct_vendor_per_reviewer"]),
+        "Every reviewer's policy vendor is known and no two reviewers share one.",
+    ),
+    field(
+        "slots",
+        ArgType::ObjectArray(FLEET_ALLOCATION_SLOT),
+        "The slots, in the order the allocation is decided.",
+    ),
+];
+
 /// A shorthand for one required field of a declared object.
 const fn field(name: &'static str, ty: ArgType, about: &'static str) -> FieldSpec {
     FieldSpec {
@@ -5933,30 +5976,38 @@ pub static REGISTRY: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "kontor_fleet_policy_resolve",
-        tier: CallerTier::Admin,
+        // Actionable placement selection is operator work: an observer reads
+        // the realm but does not choose where a seat runs. Admin inherits it.
+        tier: CallerTier::Operator,
         execution: Execution::Local(LocalOperation::FleetPolicyResolve),
         kind: OpKind::Read,
         args: &[
-            req(
+            opt(
                 "binding_key",
                 Place::Body,
                 ArgType::Text,
-                "The canonical binding: team/<template>/<slot>, committee/<template>/<seat>, advisor/<profile> or leadership/<core-team-revision-hash>/<role-slot-id>.",
+                "Single mode: the canonical binding team/<template>/<slot>, committee/<template>/<seat>, advisor/<profile> or leadership/<core-team-revision-hash>/<role-slot-id>. Exactly one of binding_key and allocation.",
             ),
             opt(
                 "unavailable_accounts",
                 Place::Body,
                 ArgType::TextArray,
-                "Account aliases that cannot take the seat now, as observed by the caller.",
+                "Single mode only: account aliases that cannot take the seat now, as observed by the caller.",
             ),
             opt(
                 "excluded_vendors",
                 Place::Body,
                 ArgType::TextArray,
-                "Vendors the seat must avoid, such as the vendor of the seat it must be independent of.",
+                "Single mode only: vendors the seat must avoid, such as the vendor of the seat it must be independent of.",
+            ),
+            opt(
+                "allocation",
+                Place::Body,
+                ArgType::Object(FLEET_ALLOCATION),
+                "Joint mode: allocate every slot of one Committee together, each under its own eligibility. Exactly one of binding_key and allocation.",
             ),
         ],
-        about: "Resolve one binding against the activated fleet policy in --state-root, with no daemon: the policy's choice under the stated eligibility and its provenance. Refuses anything unverifiable; never reads fleet.yml.",
+        about: "Resolve one binding, or allocate one Committee jointly, against the activated fleet policy in --state-root, with no daemon: the policy's choice under the stated eligibility and its provenance. Refuses anything unverifiable; never reads fleet.yml.",
     },
     ToolSpec {
         name: "kontor_capacity_get",
@@ -7955,7 +8006,34 @@ mod tests {
             Execution::Local(LocalOperation::FleetPolicyResolve)
         );
         assert_eq!(resolve.kind, OpKind::Read);
+        assert_eq!(resolve.tier, CallerTier::Operator);
         assert_eq!(resolve.args_in(Place::Header).count(), 0);
+        // Exactly one of the two modes is required, so neither argument is.
+        for mode in ["binding_key", "allocation"] {
+            let argument = resolve
+                .args
+                .iter()
+                .find(|argument| argument.name == mode)
+                .unwrap_or_else(|| panic!("{mode} is declared"));
+            assert!(!argument.required, "{mode}");
+        }
+        // The joint mode is a declared nested object, advertised in full.
+        let schema = resolve.input_schema();
+        let allocation = &schema["properties"]["allocation"];
+        assert_eq!(allocation["additionalProperties"], false);
+        assert_eq!(
+            allocation["properties"]["diversity"]["enum"],
+            serde_json::json!(["distinct_vendor_per_reviewer"])
+        );
+        let slot = &allocation["properties"]["slots"]["items"];
+        assert_eq!(
+            slot["properties"]["role"]["enum"],
+            serde_json::json!(["reviewer", "judge"])
+        );
+        assert_eq!(
+            slot["required"],
+            serde_json::json!(["slot_id", "role", "binding_key"])
+        );
         assert!(!CLI_ONLY.contains(&resolve.name));
     }
 

@@ -299,8 +299,8 @@ fn the_local_read_fails_closed_and_never_falls_back() {
 fn the_local_read_keeps_its_tier_its_schema_and_takes_no_base_url() {
     let realm = Realm::aligned();
     let key = realm.leadership("lsa");
-    for tier in ["observer", "operator"] {
-        let (exit, document) = kontor(
+    let at = |tier: &str| {
+        kontor(
             realm.path(),
             &[
                 "--tier",
@@ -309,11 +309,21 @@ fn the_local_read_keeps_its_tier_its_schema_and_takes_no_base_url() {
                 "--binding-key",
                 &key,
             ],
-        );
-        assert_eq!(exit, 3, "{document}");
-        assert_eq!(document["code"], "forbidden", "{document}");
-        assert_eq!(document["dispatched"], false);
-    }
+        )
+    };
+    // An observer is not admitted to actionable placement selection.
+    let (exit, document) = at("observer");
+    assert_eq!(exit, 3, "{document}");
+    assert_eq!(document["code"], "forbidden", "{document}");
+    assert_eq!(document["dispatched"], false);
+    // Operator is the declared tier, and admin inherits it; both answer the
+    // same selection without a credential file, a daemon or a base URL.
+    let (exit, operator) = at("operator");
+    assert_eq!(exit, 0, "{operator}");
+    let (exit, admin) = at("admin");
+    assert_eq!(exit, 0, "{admin}");
+    assert_eq!(operator, admin);
+    assert!(!realm.path().join("credentials.json").exists());
     let (exit, document) = resolve(realm.path(), &key, &["--base-url", "http://127.0.0.1:1"]);
     assert_eq!(exit, 2, "{document}");
     assert_eq!(document["code"], "invalid_request");
@@ -330,4 +340,187 @@ fn the_local_read_keeps_its_tier_its_schema_and_takes_no_base_url() {
             .is_some_and(|rule| rule.contains("unavailable_accounts")),
         "{document}"
     );
+}
+
+/// Joint mode at the operator tier.
+fn allocate(
+    root: &Path,
+    allocation: &serde_json::Value,
+    extra: &[&str],
+) -> (i32, serde_json::Value) {
+    let allocation = allocation.to_string();
+    let mut arguments = vec![
+        "--tier",
+        "operator",
+        "fleet-policy-resolve",
+        "--allocation",
+        allocation.as_str(),
+    ];
+    arguments.extend_from_slice(extra);
+    kontor(root, &arguments)
+}
+
+#[test]
+fn a_joint_allocation_is_one_snapshot_through_the_shared_allocator() {
+    let realm = Realm::aligned();
+    let request = serde_json::json!({
+        "diversity": "distinct_vendor_per_reviewer",
+        "slots": [
+            {"slot_id": "reviewer-a", "role": "reviewer", "binding_key": TEAM},
+            {"slot_id": "reviewer-b", "role": "reviewer", "binding_key": realm.leadership("lsa")},
+            {"slot_id": "judge", "role": "judge", "binding_key": realm.leadership("tpm")},
+        ],
+    });
+    let (exit, envelope) = allocate(realm.path(), &request, &[]);
+    assert_eq!(exit, 0, "{envelope}");
+    assert_eq!(envelope["status"], 200);
+    let expected = kontor_fleet_activation::allocate(
+        realm.path(),
+        &serde_json::from_value(request.clone()).expect("a joint request"),
+    )
+    .expect("the shared reader allocates");
+    assert_eq!(
+        envelope["body"],
+        serde_json::to_value(&expected).expect("JSON"),
+        "the CLI prints the one allocator's answer verbatim"
+    );
+    let providers: Vec<_> = envelope["body"]["slots"]
+        .as_array()
+        .expect("slots")
+        .iter()
+        .map(|slot| slot["selected"]["rung"]["provider"].clone())
+        .collect();
+    assert_eq!(
+        providers,
+        [
+            serde_json::json!("codex-work"),
+            serde_json::json!("claude-personal"),
+            serde_json::json!("codex-work"),
+        ],
+        "reviewers take distinct vendors; the judge is unconstrained"
+    );
+    assert_eq!(
+        envelope["body"]["slots"][1]["considered"][0]["excluded"],
+        "vendor_held"
+    );
+    assert_eq!(
+        envelope["body"]["slots"][1]["considered"][0]["conflicts_with"],
+        "reviewer-a"
+    );
+    assert!(envelope["body"]["provenance"]["source_bundle_hash"].is_string());
+
+    // Both reviewers forced onto one vendor: blocked whole, with every reason.
+    let request = serde_json::json!({
+        "diversity": "distinct_vendor_per_reviewer",
+        "slots": [
+            {"slot_id": "reviewer-a", "role": "reviewer", "binding_key": TEAM,
+             "unavailable_accounts": ["claude-personal"]},
+            {"slot_id": "reviewer-b", "role": "reviewer", "binding_key": realm.leadership("lsa"),
+             "unavailable_accounts": ["claude-personal"]},
+        ],
+    });
+    let (exit, envelope) = allocate(realm.path(), &request, &[]);
+    assert_eq!(exit, 1, "{envelope}");
+    assert_eq!(envelope["status"], 409);
+    assert_eq!(envelope["body"]["code"], "placement_blocked");
+    assert_eq!(
+        envelope["body"]["allocation"]["blocked"],
+        "no_distinct_reviewer_vendors"
+    );
+    assert!(
+        envelope["body"]["allocation"]["slots"]
+            .as_array()
+            .expect("slots")
+            .iter()
+            .all(|slot| slot["selected"].is_null())
+    );
+}
+
+#[test]
+fn a_joint_request_names_one_mode_and_the_declared_shape() {
+    let realm = Realm::aligned();
+    let slots = |extra: serde_json::Value| {
+        let mut slot = serde_json::json!({"slot_id": "a", "role": "reviewer", "binding_key": TEAM});
+        for (name, value) in extra.as_object().expect("an object") {
+            slot[name] = value.clone();
+        }
+        serde_json::json!({"diversity": "distinct_vendor_per_reviewer", "slots": [slot]})
+    };
+
+    // Both modes, then neither.
+    let (exit, document) = allocate(
+        realm.path(),
+        &slots(serde_json::json!({})),
+        &["--binding-key", TEAM],
+    );
+    assert_refused(&(exit, document), 2, "invalid_request", rule::J01);
+    let (exit, document) = kontor(
+        realm.path(),
+        &["--tier", "operator", "fleet-policy-resolve"],
+    );
+    assert_refused(&(exit, document), 2, "invalid_request", rule::J01);
+    // Top-level eligibility belongs to a single binding.
+    let (exit, document) = allocate(
+        realm.path(),
+        &slots(serde_json::json!({})),
+        &["--unavailable-accounts", r#"["codex-work"]"#],
+    );
+    assert_refused(&(exit, document), 2, "invalid_request", rule::J02);
+    // A repeated slot id is ambiguous.
+    let repeated = serde_json::json!({"diversity": "distinct_vendor_per_reviewer", "slots": [
+        {"slot_id": "a", "role": "reviewer", "binding_key": TEAM},
+        {"slot_id": "a", "role": "judge", "binding_key": TEAM},
+    ]});
+    assert_refused(
+        &allocate(realm.path(), &repeated, &[]),
+        2,
+        "invalid_request",
+        rule::J04,
+    );
+
+    // The declared nested schema refuses an unknown field, an unknown role,
+    // another diversity rule and a missing binding before anything is read.
+    for (request, property) in [
+        (
+            slots(serde_json::json!({"weight": 1})),
+            "allocation.slots[0].weight",
+        ),
+        (
+            slots(serde_json::json!({"role": "chair"})),
+            "allocation.slots[0].role",
+        ),
+        (
+            serde_json::json!({"diversity": "none", "slots": []}),
+            "allocation.diversity",
+        ),
+        (
+            serde_json::json!({"diversity": "distinct_vendor_per_reviewer",
+                               "slots": [{"slot_id": "a", "role": "reviewer"}]}),
+            "allocation.slots[0].binding_key",
+        ),
+    ] {
+        let (exit, document) = allocate(realm.path(), &request, &[]);
+        assert_eq!(exit, 2, "{document}");
+        assert_eq!(document["code"], "invalid_request", "{document}");
+        assert!(
+            document["rule"]
+                .as_str()
+                .is_some_and(|rule| rule.contains(property)),
+            "{property}: {document}"
+        );
+    }
+
+    // An observer is refused joint mode too.
+    let (exit, document) = kontor(
+        realm.path(),
+        &[
+            "--tier",
+            "observer",
+            "fleet-policy-resolve",
+            "--allocation",
+            &slots(serde_json::json!({})).to_string(),
+        ],
+    );
+    assert_eq!(exit, 3, "{document}");
+    assert_eq!(document["code"], "forbidden");
 }

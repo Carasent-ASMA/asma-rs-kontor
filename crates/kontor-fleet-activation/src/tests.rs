@@ -518,6 +518,170 @@ fn every_named_file_is_read_under_its_own_guard() {
     }
 }
 
+fn joint(value: serde_json::Value) -> JointAllocationRequest {
+    serde_json::from_value(value).expect("a joint request")
+}
+
+#[test]
+fn a_joint_allocation_resolves_every_slot_from_one_snapshot() {
+    let bundle = published_bundle();
+    let activated = load(bundle.path()).expect("the bundle verifies");
+    let request = joint(serde_json::json!({
+        "diversity": "distinct_vendor_per_reviewer",
+        "slots": [
+            {"slot_id": "reviewer-a", "role": "reviewer", "binding_key": COMMITTEE},
+            {"slot_id": "reviewer-b", "role": "reviewer", "binding_key": TEAM},
+            {"slot_id": "lead", "role": "judge", "binding_key": bundle.key("lsa"),
+             "unavailable_accounts": ["codex-work"]},
+        ],
+    }));
+    let selection = activated.allocate(&request).expect("allocates");
+    assert!(selection.is_complete());
+    assert_eq!(
+        selection.provenance,
+        ActivationProvenance {
+            policy_hash: bundle.policy_hash.clone(),
+            policy_schema_version: 2,
+            source_bundle_hash: Some(bundle.bundle_hash.clone()),
+            core_team_revision_hash: Some(bundle.roster.hash().clone()),
+        }
+    );
+    let picked: Vec<(&str, &str, &str)> = selection
+        .slots
+        .iter()
+        .map(|slot| {
+            let selected = slot.allocation.selected.as_ref().expect("selected");
+            (
+                slot.binding_key.as_str(),
+                slot.chain.as_str(),
+                selected.rung.provider.0.as_str(),
+            )
+        })
+        .collect();
+    let lsa = bundle.key("lsa");
+    assert_eq!(
+        picked,
+        [
+            (COMMITTEE, "review", "claude-personal"),
+            (TEAM, "lead", "codex-work"),
+            (lsa.as_str(), "lead", "codex-personal"),
+        ]
+    );
+    assert_eq!(
+        selection.slots[2]
+            .allocation
+            .eligibility
+            .unavailable_accounts,
+        BTreeSet::from(["codex-work".to_owned()])
+    );
+    // The same snapshot through the one-call path: equal answer.
+    assert_eq!(
+        allocate(bundle.path(), &request).expect("allocates"),
+        selection
+    );
+    let receipt = serde_json::to_value(&selection).expect("JSON");
+    assert_eq!(receipt["slots"][0]["selected"]["vendor"], "anthropic");
+    assert_eq!(receipt["slots"][1]["selected"]["step"], 1);
+    assert_eq!(
+        receipt["provenance"]["policy_hash"],
+        bundle.policy_hash.as_str()
+    );
+}
+
+#[test]
+fn a_joint_allocation_is_whole_or_blocked_with_every_reason() {
+    let bundle = published_bundle();
+    // Reviewer A may not use either OpenAI account, so it takes Anthropic;
+    // reviewer B's only route is Anthropic too.
+    let request = joint(serde_json::json!({
+        "diversity": "distinct_vendor_per_reviewer",
+        "slots": [
+            {"slot_id": "reviewer-a", "role": "reviewer", "binding_key": TEAM,
+             "unavailable_accounts": ["codex-work", "codex-personal"]},
+            {"slot_id": "reviewer-b", "role": "reviewer", "binding_key": COMMITTEE},
+        ],
+    }));
+    let selection = allocate(bundle.path(), &request).expect("a defined block result");
+    assert_eq!(
+        selection.blocked,
+        Some(AllocationFailure::NoDistinctReviewerVendors)
+    );
+    assert!(
+        selection
+            .slots
+            .iter()
+            .all(|slot| slot.allocation.selected.is_none())
+    );
+    assert_eq!(
+        selection.slots[0].allocation.considered[0].excluded,
+        Some(kontor_fleet::AllocationExclusion::AccountUnavailableNow)
+    );
+    assert_eq!(selection.provenance.policy_hash, bundle.policy_hash);
+}
+
+#[test]
+fn a_joint_request_that_is_empty_repeated_or_unresolvable_fails_closed() {
+    let bundle = published_bundle();
+    let refuse = |value: serde_json::Value| refused(allocate(bundle.path(), &joint(value)));
+    assert_eq!(
+        refuse(serde_json::json!({"diversity": "distinct_vendor_per_reviewer", "slots": []})),
+        J03
+    );
+    assert_eq!(
+        refuse(
+            serde_json::json!({"diversity": "distinct_vendor_per_reviewer", "slots": [
+                {"slot_id": "a", "role": "reviewer", "binding_key": TEAM},
+                {"slot_id": "a", "role": "judge", "binding_key": COMMITTEE},
+            ]})
+        ),
+        J04
+    );
+    // One slot that cannot be resolved refuses every slot.
+    for (key, rule) in [
+        ("leadership/lsa".to_owned(), V32),
+        (
+            format!("leadership/{}/lsa", ContentHash::of(b"other roster")),
+            D02,
+        ),
+        (
+            "team/01936f5a-0000-7000-8000-000000000999/implement".to_owned(),
+            D03,
+        ),
+    ] {
+        assert_eq!(
+            refuse(
+                serde_json::json!({"diversity": "distinct_vendor_per_reviewer", "slots": [
+                    {"slot_id": "a", "role": "reviewer", "binding_key": TEAM},
+                    {"slot_id": "b", "role": "reviewer", "binding_key": key},
+                ]})
+            ),
+            rule,
+            "{key}"
+        );
+    }
+    // The request shape is closed.
+    assert!(
+        serde_json::from_value::<JointAllocationRequest>(serde_json::json!({
+            "diversity": "distinct_vendor_per_reviewer",
+            "slots": [{"slot_id": "a", "role": "reviewer", "binding_key": TEAM, "weight": 1}],
+        }))
+        .is_err()
+    );
+    // An unverifiable activation refuses before any slot is resolved.
+    private(
+        &policy_path(bundle.path(), &bundle.policy_hash),
+        policy("leadership/x/lsa", "leadership/x/tpm").as_bytes(),
+    );
+    assert_eq!(
+        refuse(
+            serde_json::json!({"diversity": "distinct_vendor_per_reviewer", "slots": [
+                {"slot_id": "a", "role": "reviewer", "binding_key": TEAM},
+            ]})
+        ),
+        P07
+    );
+}
+
 #[test]
 fn every_rule_string_is_stable() {
     assert_eq!(
@@ -544,4 +708,6 @@ fn every_rule_string_is_stable() {
         "the leadership binding names a Core Team revision the activation does not select"
     );
     assert_eq!(D03, "the activated policy binds no chain to this key");
+    assert_eq!(J01, "name exactly one of binding_key and allocation");
+    assert_eq!(J04, "a joint allocation names each slot_id once");
 }

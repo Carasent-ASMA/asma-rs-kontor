@@ -802,9 +802,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_fleet_policy_preview", CallerTier::Admin),
         ("kontor_fleet_policy_publish", CallerTier::Admin),
         ("kontor_fleet_policy_activate", CallerTier::Admin),
-        // The local read has no route; its tier is the fleet policy family's,
-        // enforced by the CLI before it reads the state root.
-        ("kontor_fleet_policy_resolve", CallerTier::Admin),
+        // The local read has no route. Choosing where a seat runs is operator
+        // work, which admin inherits; an observer is not admitted. The CLI
+        // enforces it before it reads the state root.
+        ("kontor_fleet_policy_resolve", CallerTier::Operator),
         ("kontor_capacity_get", CallerTier::Observer),
         ("kontor_capacity_refresh", CallerTier::Operator),
         ("kontor_capacity_observation_get", CallerTier::Observer),

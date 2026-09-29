@@ -34685,6 +34685,30 @@ async fn every_admitted_fleet_placement_is_recorded() {
         launched, decided,
         "the log names the exact route each launch was admitted on"
     );
+    // ASMA-8280 G-4: each decision records the explicit eligibility the
+    // shared resolver chose under, translated from the quota observation. The
+    // second takeover saw the first successor's account unavailable, so it
+    // took the next account on the same step.
+    for decision in &decisions {
+        let unavailable = decision["eligibility"]["unavailable_accounts"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the decision records its eligibility: {decision}"));
+        assert!(
+            !unavailable.contains(&decision["provider"]),
+            "a route was chosen on an account its own eligibility names unavailable: {decision}"
+        );
+        assert_eq!(
+            decision["eligibility"]["excluded_vendors"],
+            serde_json::json!([])
+        );
+    }
+    assert!(
+        decisions[1]["eligibility"]["unavailable_accounts"]
+            .as_array()
+            .expect("an eligibility")
+            .contains(&serde_json::json!("claude-personal")),
+        "{decisions:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -34968,6 +34992,18 @@ async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
         .expect("frozen admission routes");
     let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
     let reviewer_b = admission_route_for_slot(routes, "reviewer-b");
+    // ASMA-8280 G-4: a fleet-routed slot records the explicit eligibility the
+    // shared allocator allocated it under.
+    for route in [reviewer_a, reviewer_b] {
+        assert!(
+            route["eligibility"]["unavailable_accounts"].is_array(),
+            "{route}"
+        );
+        assert!(
+            route["eligibility"]["excluded_vendors"].is_array(),
+            "{route}"
+        );
+    }
 
     // Both chains open on step 1 of the Claude domain, so the first-ordered
     // reviewer keeps that step -- a route the pinned template never declares,
@@ -35269,6 +35305,12 @@ async fn a_fleet_bound_advisor_keeps_its_fleet_provenance_through_materializatio
     assert_eq!(
         context["admission"]["source"], "fleet_configuration",
         "the run context does not record the fleet as the route's policy: {context}"
+    );
+    // ASMA-8280 G-4: the fleet-routed Advisor records the explicit
+    // eligibility its route was chosen under.
+    assert!(
+        context["admission"]["eligibility"]["unavailable_accounts"].is_array(),
+        "{context}"
     );
     assert_eq!(
         context["admission"]["profile_hash"],
@@ -37045,6 +37087,12 @@ async fn a_fleet_bound_reviewer_that_loses_its_provider_recovers_on_the_fleet_ch
         "{}",
         recorded
     );
+    // ASMA-8280 G-4: the fleet-routed recovery records the explicit
+    // eligibility the shared resolver chose its successor under.
+    assert!(
+        recorded["eligibility"]["unavailable_accounts"].is_array(),
+        "{recorded}"
+    );
 }
 
 /// LF-04: with no `fleet.yml`, Committee allocation is exactly the pinned
@@ -37070,6 +37118,12 @@ async fn without_fleet_yml_committee_allocation_is_unchanged() {
     let routes = context["admission"]["routes"]
         .as_array()
         .expect("frozen admission routes");
+    assert!(
+        routes
+            .iter()
+            .all(|route| route.get("eligibility").is_none()),
+        "a template-routed admission keeps its exact shape: {routes:?}"
+    );
     let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
     assert_eq!(
         reviewer_a["model_route"]["provider"], "claude-work",

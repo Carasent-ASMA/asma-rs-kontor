@@ -20,6 +20,7 @@
 //!   [`LeadershipKey::for_pinned_seat`] can build. [`FleetSnapshot::parse_policy`]
 //!   reads either version and is what activation uses.
 
+mod allocation;
 mod leadership;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,6 +30,10 @@ use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
 
+pub use allocation::{
+    AllocationCandidate, AllocationDiversity, AllocationExclusion, AllocationFailure,
+    AllocationRole, AllocationSlot, ConsideredCandidate, JointAllocation, SlotAllocation, allocate,
+};
 pub use leadership::LeadershipKey;
 
 /// Largest fleet document this build accepts, in bytes.

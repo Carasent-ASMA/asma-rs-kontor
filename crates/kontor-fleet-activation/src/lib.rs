@@ -19,15 +19,16 @@
 //! It writes nothing, caches nothing and has no legacy behaviour: there is no
 //! `fleet.yml` fallback and no last-valid snapshot here. Those are the daemon's.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use kontor_core::id::{CanonicalDocument, ContentHash, RoleCatalogId, RoleSlotId, SpecVersion};
 use kontor_fleet::{
+    AllocationCandidate, AllocationDiversity, AllocationFailure, AllocationRole, AllocationSlot,
     Eligibility, FleetError, FleetResolution, FleetSelection, FleetSnapshot, LeadershipKey,
-    MAX_FILE_BYTES,
+    MAX_FILE_BYTES, PolicyExclusion, SlotAllocation,
 };
 use serde::{Deserialize, Serialize};
 
@@ -112,11 +113,17 @@ pub mod rule {
     pub const D02: &str =
         "the leadership binding names a Core Team revision the activation does not select";
     pub const D03: &str = "the activated policy binds no chain to this key";
+
+    pub const J01: &str = "name exactly one of binding_key and allocation";
+    pub const J02: &str = "a joint allocation takes each slot's own eligibility; unavailable_accounts and excluded_vendors at the top level belong to a single binding";
+    pub const J03: &str = "a joint allocation names at least one slot";
+    pub const J04: &str = "a joint allocation names each slot_id once";
 }
 
 use rule::{
     A01, A02, A03, A04, A05, A06, A07, A08, A10, A11, C01, C02, C03, C04, C05, C06, C07, C08, D01,
-    D02, D03, M01, M02, M03, M04, M05, M06, M07, M08, M09, M10, P01, P02, P03, P04, P05, P06,
+    D02, D03, J03, J04, M01, M02, M03, M04, M05, M06, M07, M08, M09, M10, P01, P02, P03, P04, P05,
+    P06,
 };
 
 /// The refusals one guarded read names, in the order the checks run.
@@ -600,6 +607,192 @@ impl Activated {
         }
         self.policy.resolve(binding_key).ok_or_else(|| invalid(D03))
     }
+}
+
+/// One joint direct-mode allocation request, as the CLI's `allocation`
+/// argument declares it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JointAllocationRequest {
+    /// The rule the reviewers are held to.
+    pub diversity: AllocationDiversity,
+    /// The slots, in the order the allocation is decided.
+    pub slots: Vec<JointSlotRequest>,
+}
+
+/// One slot of a joint allocation request.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JointSlotRequest {
+    /// The slot's stable id, unique within the request.
+    pub slot_id: String,
+    /// What the slot does.
+    pub role: AllocationRole,
+    /// The canonical binding the slot resolves.
+    pub binding_key: String,
+    /// Account aliases that cannot take this slot now.
+    #[serde(default)]
+    pub unavailable_accounts: BTreeSet<String>,
+    /// Vendors this slot must avoid.
+    #[serde(default)]
+    pub excluded_vendors: BTreeSet<String>,
+}
+
+impl JointSlotRequest {
+    /// The eligibility this slot is allocated under.
+    #[must_use]
+    pub fn eligibility(&self) -> Eligibility {
+        Eligibility {
+            unavailable_accounts: self.unavailable_accounts.clone(),
+            excluded_vendors: self.excluded_vendors.clone(),
+        }
+    }
+}
+
+/// The activation one joint allocation was decided under: one policy and,
+/// for an aligned activation, one bundle and roster, shared by every slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActivationProvenance {
+    /// SHA-256 of exactly the activated policy bytes.
+    pub policy_hash: ContentHash,
+    /// The schema those bytes validate under.
+    pub policy_schema_version: u32,
+    /// The orchestration bundle, for a schema_version 2 activation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_bundle_hash: Option<ContentHash>,
+    /// The selected Core Team revision, for a schema_version 2 activation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub core_team_revision_hash: Option<ContentHash>,
+}
+
+/// One slot of a joint allocation: its exact binding and the allocator's
+/// verdict for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct JointSlotSelection {
+    /// The canonical binding the slot resolved.
+    pub binding_key: String,
+    /// The chain that binding is bound to.
+    pub chain: String,
+    /// What the policy removed from that chain before any allocation.
+    pub excluded_by_policy: Vec<PolicyExclusion>,
+    /// The allocator's verdict: eligibility, considered candidates, selection.
+    #[serde(flatten)]
+    pub allocation: SlotAllocation,
+}
+
+/// A whole Committee's direct-mode allocation from one activated snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct JointSelection {
+    /// The one activation every slot was resolved against.
+    pub provenance: ActivationProvenance,
+    /// The rule the reviewers were held to.
+    pub diversity: AllocationDiversity,
+    /// Every slot, in request order.
+    pub slots: Vec<JointSlotSelection>,
+    /// `Some` exactly when no complete allocation exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<AllocationFailure>,
+}
+
+impl JointSelection {
+    /// Whether every slot has a route.
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        self.blocked.is_none()
+    }
+}
+
+impl Activated {
+    /// The activation every resolution against this snapshot names.
+    #[must_use]
+    pub fn provenance(&self) -> ActivationProvenance {
+        ActivationProvenance {
+            policy_hash: self.record.policy_hash.clone(),
+            policy_schema_version: self.record.policy_schema_version,
+            source_bundle_hash: self.record.source_bundle_hash.clone(),
+            core_team_revision_hash: self.record.core_team_revision_hash.clone(),
+        }
+    }
+
+    /// Allocate one Committee's slots together against this one verified
+    /// snapshot, through [`kontor_fleet::allocate`].
+    ///
+    /// Every slot's binding is resolved first, exactly as a single binding is,
+    /// and any slot that cannot be resolved refuses the whole request: there
+    /// is no partial allocation. Each route carries the policy's vendor; a
+    /// vendor the policy names `unknown` gives a reviewer no independence key.
+    ///
+    /// # Errors
+    /// J-03 for no slot, J-04 for a repeated `slot_id`, then as
+    /// [`Self::resolve`] for the first slot that cannot be resolved.
+    pub fn allocate(&self, request: &JointAllocationRequest) -> Result<JointSelection, FleetError> {
+        if request.slots.is_empty() {
+            return Err(invalid(J03));
+        }
+        let ids: BTreeSet<&str> = request
+            .slots
+            .iter()
+            .map(|slot| slot.slot_id.as_str())
+            .collect();
+        if ids.len() != request.slots.len() {
+            return Err(invalid(J04));
+        }
+        let resolutions = request
+            .slots
+            .iter()
+            .map(|slot| self.resolve(&slot.binding_key))
+            .collect::<Result<Vec<_>, _>>()?;
+        let slots: Vec<AllocationSlot> = request
+            .slots
+            .iter()
+            .zip(&resolutions)
+            .map(|(slot, resolution)| AllocationSlot {
+                slot_id: slot.slot_id.clone(),
+                role: slot.role,
+                eligibility: slot.eligibility(),
+                candidates: resolution
+                    .routes
+                    .iter()
+                    .map(|route| AllocationCandidate {
+                        rung: route.rung.clone(),
+                        step: route.step,
+                        sub_step: route.sub_step,
+                        vendor: Some(route.vendor.clone()),
+                        independence: (route.vendor != "unknown").then(|| route.vendor.clone()),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let allocation = kontor_fleet::allocate(request.diversity, &slots);
+        Ok(JointSelection {
+            provenance: self.provenance(),
+            diversity: allocation.diversity,
+            blocked: allocation.blocked,
+            slots: allocation
+                .slots
+                .into_iter()
+                .zip(resolutions)
+                .map(|(allocation, resolution)| JointSlotSelection {
+                    binding_key: resolution.provenance.binding_key,
+                    chain: resolution.provenance.chain,
+                    excluded_by_policy: resolution.excluded,
+                    allocation,
+                })
+                .collect(),
+        })
+    }
+}
+
+/// The direct-mode joint read: load and verify the activation once, then
+/// allocate every slot against that one snapshot.
+///
+/// # Errors
+/// As [`load`] and [`Activated::allocate`].
+pub fn allocate(
+    state_root: &Path,
+    request: &JointAllocationRequest,
+) -> Result<JointSelection, FleetError> {
+    load(state_root)?.allocate(request)
 }
 
 /// The direct-mode read: load and verify the activation, resolve one binding

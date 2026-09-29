@@ -848,3 +848,249 @@ fn a_verified_roster_and_a_slot_build_the_same_key_as_the_pinned_seat() {
         Err(FleetError::Invalid { rule }) if rule == L02
     ));
 }
+
+// --- ASMA-8280 G-5: the one joint allocator ---------------------------------
+
+fn candidate(provider: &str, step: u16, vendor: Option<&str>) -> AllocationCandidate {
+    AllocationCandidate {
+        rung: ModelRung {
+            provider: ProviderRef(provider.to_owned()),
+            model: ModelRef(format!("{provider}-model")),
+            effort: Some(EffortLevel::Xhigh),
+        },
+        step,
+        sub_step: 1,
+        vendor: vendor.map(ToOwned::to_owned),
+        independence: vendor.map(ToOwned::to_owned),
+    }
+}
+
+fn slot(id: &str, role: AllocationRole, candidates: Vec<AllocationCandidate>) -> AllocationSlot {
+    AllocationSlot {
+        slot_id: id.to_owned(),
+        role,
+        eligibility: Eligibility::default(),
+        candidates,
+    }
+}
+
+fn chosen_providers(allocation: &JointAllocation) -> Vec<String> {
+    allocation
+        .slots
+        .iter()
+        .map(|slot| {
+            slot.selected
+                .as_ref()
+                .map_or_else(String::new, |selected| selected.rung.provider.0.clone())
+        })
+        .collect()
+}
+
+#[test]
+fn reviewers_take_distinct_vendors_and_the_judge_is_unconstrained() {
+    let slots = [
+        slot(
+            "reviewer-a",
+            AllocationRole::Reviewer,
+            vec![candidate("codex-work", 1, Some("openai"))],
+        ),
+        slot(
+            "reviewer-b",
+            AllocationRole::Reviewer,
+            vec![
+                candidate("codex-personal", 1, Some("openai")),
+                candidate("claude-personal", 2, Some("anthropic")),
+            ],
+        ),
+        slot(
+            "judge",
+            AllocationRole::Judge,
+            vec![candidate("codex-personal", 1, Some("openai"))],
+        ),
+    ];
+    let allocation = allocate(AllocationDiversity::DistinctVendorPerReviewer, &slots);
+    assert!(allocation.is_complete());
+    assert_eq!(
+        chosen_providers(&allocation),
+        ["codex-work", "claude-personal", "codex-personal"]
+    );
+    assert_eq!(allocation.chosen(), Some(vec![0, 1, 0]));
+    // The passed-over candidate names the slot that holds its vendor.
+    let passed = &allocation.slots[1].considered[0];
+    assert_eq!(passed.excluded, Some(AllocationExclusion::VendorHeld));
+    assert_eq!(passed.conflicts_with.as_deref(), Some("reviewer-a"));
+    assert_eq!(allocation.slots[1].considered[1].excluded, None);
+
+    // Without a diversity rule the same reviewers may share a vendor.
+    let shared = allocate(AllocationDiversity::None, &slots);
+    assert_eq!(
+        chosen_providers(&shared),
+        ["codex-work", "codex-personal", "codex-personal"]
+    );
+}
+
+#[test]
+fn the_search_backtracks_and_slot_order_breaks_the_tie() {
+    // A's first route would leave B without a vendor of its own.
+    let a = slot(
+        "reviewer-a",
+        AllocationRole::Reviewer,
+        vec![
+            candidate("codex-work", 1, Some("openai")),
+            candidate("claude-personal", 2, Some("anthropic")),
+        ],
+    );
+    let b = slot(
+        "reviewer-b",
+        AllocationRole::Reviewer,
+        vec![candidate("codex-personal", 1, Some("openai"))],
+    );
+    let allocation = allocate(
+        AllocationDiversity::DistinctVendorPerReviewer,
+        &[a.clone(), b.clone()],
+    );
+    assert_eq!(
+        chosen_providers(&allocation),
+        ["claude-personal", "codex-personal"]
+    );
+    assert_eq!(
+        allocation.slots[0].considered[0].excluded,
+        Some(AllocationExclusion::NoCompleteAllocation)
+    );
+
+    // The same slots in the other order: B is decided first.
+    let reordered = allocate(AllocationDiversity::DistinctVendorPerReviewer, &[b, a]);
+    assert_eq!(
+        chosen_providers(&reordered),
+        ["codex-personal", "claude-personal"]
+    );
+    assert_eq!(
+        reordered.slots[1].considered[0].conflicts_with.as_deref(),
+        Some("reviewer-b")
+    );
+
+    // Deterministic: equal input, equal allocation.
+    assert_eq!(
+        allocate(
+            AllocationDiversity::DistinctVendorPerReviewer,
+            &[slot(
+                "reviewer-a",
+                AllocationRole::Reviewer,
+                vec![candidate("codex-work", 1, Some("openai"))]
+            ),]
+        ),
+        allocate(
+            AllocationDiversity::DistinctVendorPerReviewer,
+            &[slot(
+                "reviewer-a",
+                AllocationRole::Reviewer,
+                vec![candidate("codex-work", 1, Some("openai"))]
+            ),]
+        )
+    );
+}
+
+#[test]
+fn each_slot_is_judged_by_its_own_eligibility_and_an_unknown_vendor() {
+    let mut reviewer = slot(
+        "reviewer-a",
+        AllocationRole::Reviewer,
+        vec![
+            candidate("opencode", 1, None),
+            candidate("codex-work", 1, Some("openai")),
+            candidate("claude-personal", 2, Some("anthropic")),
+            candidate("claude-work", 2, Some("anthropic")),
+        ],
+    );
+    reviewer.eligibility = Eligibility {
+        unavailable_accounts: BTreeSet::from(["claude-personal".to_owned()]),
+        excluded_vendors: BTreeSet::from(["openai".to_owned()]),
+    };
+    let judge = slot(
+        "judge",
+        AllocationRole::Judge,
+        vec![candidate("opencode", 1, None)],
+    );
+    let allocation = allocate(
+        AllocationDiversity::DistinctVendorPerReviewer,
+        &[reviewer, judge],
+    );
+    assert_eq!(chosen_providers(&allocation), ["claude-work", "opencode"]);
+    let verdicts: Vec<_> = allocation.slots[0]
+        .considered
+        .iter()
+        .map(|considered| considered.excluded)
+        .collect();
+    assert_eq!(
+        verdicts,
+        [
+            Some(AllocationExclusion::VendorUnknown),
+            Some(AllocationExclusion::VendorExcluded),
+            Some(AllocationExclusion::AccountUnavailableNow),
+            None,
+        ]
+    );
+    assert_eq!(
+        allocation.slots[0].eligibility.excluded_vendors,
+        BTreeSet::from(["openai".to_owned()]),
+        "the receipt carries the exact eligibility"
+    );
+}
+
+#[test]
+fn there_is_no_partial_allocation() {
+    // One slot with nothing eligible blocks every slot.
+    let mut empty = slot(
+        "reviewer-b",
+        AllocationRole::Reviewer,
+        vec![candidate("claude-personal", 1, Some("anthropic"))],
+    );
+    empty.eligibility.unavailable_accounts = BTreeSet::from(["claude-personal".to_owned()]);
+    let a = slot(
+        "reviewer-a",
+        AllocationRole::Reviewer,
+        vec![candidate("codex-work", 1, Some("openai"))],
+    );
+    let blocked = allocate(
+        AllocationDiversity::DistinctVendorPerReviewer,
+        &[a.clone(), empty],
+    );
+    assert_eq!(
+        blocked.blocked,
+        Some(AllocationFailure::NoEligibleCandidate)
+    );
+    assert!(blocked.slots.iter().all(|slot| slot.selected.is_none()));
+    assert_eq!(blocked.chosen(), None);
+    assert_eq!(blocked.slots[0].failure, None);
+    assert_eq!(
+        blocked.slots[1].failure,
+        Some(AllocationFailure::NoEligibleCandidate)
+    );
+    assert_eq!(
+        blocked.slots[0].considered[0].excluded,
+        Some(AllocationExclusion::NoCompleteAllocation)
+    );
+
+    // Two reviewers with one vendor between them cannot both be seated.
+    let b = slot(
+        "reviewer-b",
+        AllocationRole::Reviewer,
+        vec![candidate("codex-personal", 1, Some("openai"))],
+    );
+    let collision = allocate(AllocationDiversity::DistinctVendorPerReviewer, &[a, b]);
+    assert_eq!(
+        collision.blocked,
+        Some(AllocationFailure::NoDistinctReviewerVendors)
+    );
+    assert!(collision.slots.iter().all(|slot| slot.selected.is_none()
+        && slot.failure == Some(AllocationFailure::NoDistinctReviewerVendors)));
+    let receipt = serde_yaml_ng::to_string(&collision).expect("the receipt serializes");
+    assert!(
+        receipt.contains("blocked: no_distinct_reviewer_vendors"),
+        "{receipt}"
+    );
+    assert!(
+        receipt.contains("diversity: distinct_vendor_per_reviewer"),
+        "{receipt}"
+    );
+}
