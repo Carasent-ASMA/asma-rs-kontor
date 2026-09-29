@@ -34,6 +34,7 @@ use crate::container::{
     ContainerRecoveryOutcome, ContainerRecoveryRequest,
 };
 use crate::observation::{ControlPlaneObservation, NativeSession, ReconciliationReport};
+use crate::provenance::{FleetLaunchProvenance, FleetProvenanceObservation};
 use crate::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationChallengeCompletionRequest,
     CorrelationChallengeRequest, HistoryRequest, InspectRequest, LaunchRequest,
@@ -317,6 +318,9 @@ pub struct LaunchOutcome {
     /// The first normalized fact about the session. A launch acknowledgement is
     /// an acknowledgement, not a completion.
     pub observation: ControlPlaneObservation,
+    /// The fleet provenance read back from the native surface, or why none
+    /// could be (ASMA-8280 G-3). Never the request's own value.
+    pub fleet_provenance: FleetProvenanceObservation,
 }
 
 /// Source of one consultation route, frozen before native construction.
@@ -457,6 +461,9 @@ pub struct ConsultationLaunchRequest {
     pub model_rung: ModelRung,
     /// Immutable policy and disposition that selected the route.
     pub route_provenance: ConsultationRouteProvenance,
+    /// The fleet policy's authority for this route, when the activated policy
+    /// chose it (ASMA-8280 G-3).
+    pub fleet_provenance: Option<FleetLaunchProvenance>,
     /// Immutable context-window policy.
     pub context_policy: ContextPolicySnapshot,
     /// Invocation instant.
@@ -502,6 +509,9 @@ pub struct ConsultationLaunchOutcome {
     /// Whether this call created the session or recovered the existing exact
     /// labelled one after a lost acknowledgement/restart.
     pub created: bool,
+    /// The fleet provenance read back from the native surface, or why none
+    /// could be (ASMA-8280 G-3). Never the request's own value.
+    pub fleet_provenance: FleetProvenanceObservation,
 }
 
 /// Retire the exact native filler of one consultation SeatBinding before a
@@ -571,6 +581,9 @@ pub struct HostedSeatLaunchRequest {
     pub fenced_predecessor_native_ids: Vec<ExternalId>,
     /// Exact provider/model/effort route authorized for this seat.
     pub model_rung: ModelRung,
+    /// The activated fleet policy's authority for `model_rung`, when a policy
+    /// binds this leadership seat (ASMA-8280 G-3).
+    pub fleet_provenance: Option<FleetLaunchProvenance>,
     /// How much this leadership seat may do before it has to ask a human,
     /// frozen at launch exactly as a delivery seat's is.
     ///

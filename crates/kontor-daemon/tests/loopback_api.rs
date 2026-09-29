@@ -34173,6 +34173,75 @@ fn fleet_decisions(fixture: &SeatFillWorld) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// Every launch-provenance line one launch subject has recorded (ASMA-8280
+/// G-3): a SeatBinding for leadership and consultation, an AgentRun for
+/// delivery.
+fn launch_provenance_records(world: &World, subject: &str) -> Vec<serde_json::Value> {
+    let path = world
+        .directory
+        .path()
+        .join("fleet-decisions")
+        .join("launches")
+        .join(format!("{subject}.jsonl"));
+    std::fs::read_to_string(path)
+        .map(|text| {
+            text.lines()
+                .map(|line| serde_json::from_str(line).expect("every launch line is JSON"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The one launch `subject` recorded requested exactly `expected` and was
+/// observed by the fake runtime, which has no native surface for fleet
+/// provenance: unsupported, with the native id the launch produced, and so
+/// not proven. The request is never its own observation.
+fn assert_one_unproven_fleet_launch(
+    world: &World,
+    subject: &str,
+    launch: &str,
+    expected: &serde_json::Value,
+) {
+    let records = launch_provenance_records(world, subject);
+    assert_eq!(records.len(), 1, "{records:?}");
+    let record = &records[0];
+    assert_eq!(record["launch"], launch, "{record}");
+    assert_eq!(record["subject"], subject, "{record}");
+    assert_eq!(&record["requested"], expected, "{record}");
+    let native_id = record["native_id"].as_str().expect("the native id");
+    assert!(!native_id.is_empty(), "{record}");
+    assert_eq!(
+        record["observed"],
+        serde_json::json!({
+            "status": "unsupported",
+            "surface": "fake.runtime",
+            "native_id": native_id,
+        }),
+        "{record}"
+    );
+    assert_eq!(record["proven"], false, "{record}");
+}
+
+/// The fleet launch provenance a recorded decision maps to, in its record
+/// form: the decision's policy, bundle, binding, chain, position, vendor and
+/// eligibility, and nothing else.
+fn provenance_of_decision(decision: &serde_json::Value) -> serde_json::Value {
+    let mut expected = serde_json::json!({
+        "policy_hash": decision["fleet_hash"],
+        "binding_key": decision["binding_key"],
+        "chain": decision["chain"],
+        "step": decision["step"],
+        "sub_step": decision["sub_step"],
+        "vendor": decision["vendor"],
+    });
+    for field in ["source_bundle_hash", "eligibility"] {
+        if let Some(value) = decision.get(field).filter(|value| !value.is_null()) {
+            expected[field] = value.clone();
+        }
+    }
+    expected
+}
+
 /// Record one `(account, provider)` quota state through the supported operator
 /// operation, the way the account-routing tests prepare headroom.
 ///
@@ -34244,6 +34313,68 @@ async fn a_fleet_binding_routes_a_new_seat_without_restart() {
         launched_route(&fixture, successor),
         ("test".to_owned(), "test".to_owned()),
         "the template chain the slot was frozen with"
+    );
+}
+
+/// ASMA-8280 G-3: a fleet-routed delivery launch requests the provenance its
+/// recorded decision names, chain included, and the record keeps that request
+/// apart from what the runtime observed. The fake runtime has no native
+/// surface for it, so the observation is unsupported and proves nothing.
+#[tokio::test]
+async fn a_fleet_routed_delivery_launch_records_its_provenance_apart_from_the_observation() {
+    let fixture = seat_fill_world(true).await;
+    let project = fixture.project.to_string();
+    prepare_fake_provider_headroom_for(&fixture.world, &project, false).await;
+    let binding = fleet_binding_key(&fixture, "implement");
+    let fleet = fleet_yaml(&[&binding], CLAUDE_THEN_CODEX);
+    write_fleet(&fixture.world, &fleet);
+    let predecessor = delivery_member(&fixture, "implement");
+    let replaced = take_over_blocked_seat(
+        &fixture,
+        predecessor.id,
+        "implement",
+        "fleet-launch-provenance",
+    )
+    .await;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    let successor = replaced_successor(&replaced);
+
+    let decisions = fleet_decisions(&fixture);
+    let decision = decisions.last().expect("the placement was recorded");
+    // A succession's decision is recorded under the seat it replaces.
+    assert_eq!(
+        decision["agent_run_id"],
+        predecessor.id.to_string(),
+        "{decision}"
+    );
+    assert_eq!(decision["chain"], "fleet-chain", "{decision}");
+    assert!(
+        decision.get("source_bundle_hash").is_none(),
+        "a schema_version 1 policy names no bundle: {decision}"
+    );
+    let expected = provenance_of_decision(decision);
+    assert_eq!(
+        expected,
+        serde_json::json!({
+            "policy_hash": ContentHash::of(fleet.as_bytes()).as_str(),
+            "binding_key": binding,
+            "chain": "fleet-chain",
+            "step": 1,
+            "sub_step": 1,
+            "vendor": "anthropic",
+            "eligibility": decision["eligibility"],
+        })
+    );
+    assert!(expected["eligibility"].is_object(), "{decision}");
+    assert_one_unproven_fleet_launch(
+        &fixture.world,
+        &successor.to_string(),
+        "delivery",
+        &expected,
+    );
+    assert!(
+        launch_provenance_records(&fixture.world, &predecessor.id.to_string()).is_empty(),
+        "the template-routed predecessor requested no fleet provenance"
     );
 }
 
@@ -35052,6 +35183,53 @@ async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
             "the frozen route is the pinned template revision: {route}"
         );
     }
+    // ASMA-8280 G-3: each slot froze the provenance of the very route the
+    // allocator gave it -- chain, step, vendor -- and its launch requested
+    // exactly that.
+    let seats = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_seats(
+                ProjectId::parse(&realm.project).expect("a project id"),
+                ConsultationRunId::Committee(
+                    kontor_core::id::CommitteeRunId::parse(&run).expect("a Committee run id"),
+                ),
+            )
+            .expect("the Committee seats read")
+    });
+    for (route, slot, chain, step, vendor) in [
+        (
+            reviewer_a,
+            "reviewer-a",
+            "claude-then-codex",
+            1,
+            "anthropic",
+        ),
+        (reviewer_b, "reviewer-b", "claude-then-grok", 2, "xai"),
+    ] {
+        assert_eq!(
+            route["fleet_provenance"],
+            serde_json::json!({
+                "policy_hash": fleet_hash.as_str(),
+                "binding_key": committee_fleet_key(slot),
+                "chain": chain,
+                "step": step,
+                "sub_step": 1,
+                "vendor": vendor,
+                "eligibility": route["eligibility"],
+            }),
+            "{route}"
+        );
+        let seat = seats
+            .iter()
+            .find(|seat| seat.role_slot_id.as_str() == slot)
+            .unwrap_or_else(|| panic!("the {slot} seat"));
+        assert_one_unproven_fleet_launch(
+            world,
+            &seat.seat_binding_id.to_string(),
+            "consultation",
+            &route["fleet_provenance"],
+        );
+    }
 
     // A second scenario separates the fleet's *vendor* from the provider
     // *family*: both reviewers open on the opencode family, but on different
@@ -35350,6 +35528,23 @@ async fn a_fleet_bound_advisor_keeps_its_fleet_provenance_through_materializatio
         Some("fleet_configuration"),
         "materialization launched the seat without the fleet's provenance"
     );
+    // ASMA-8280 G-3: the admission froze the fleet launch provenance with the
+    // choice, and the launch requested exactly that.
+    let frozen = &context["admission"]["fleet_provenance"];
+    assert_eq!(
+        *frozen,
+        serde_json::json!({
+            "policy_hash": fleet_hash.as_str(),
+            "binding_key": advisor_fleet_key(),
+            "chain": "cursor-grok",
+            "step": 1,
+            "sub_step": 1,
+            "vendor": "xai",
+            "eligibility": context["admission"]["eligibility"],
+        }),
+        "{context}"
+    );
+    assert_one_unproven_fleet_launch(world, &binding.to_string(), "consultation", frozen);
 }
 
 /// Overwrite one published policy with valid YAML that is not its own bytes.
@@ -36487,6 +36682,14 @@ async fn a_leadership_seat_without_a_caller_route_is_routed_by_the_policy_choice
         let decision = &decisions[0];
         let (provenance, route) = direct_resolution(world, &hash, &keys[slot], &codex_sol(effort));
         assert_decision_is_the_shared_resolution(decision, &provenance, &route, &keys[slot]);
+        // ASMA-8280 G-3: the hosted launch requested exactly what its
+        // decision records, and the fake runtime proved none of it.
+        assert_one_unproven_fleet_launch(
+            world,
+            binding,
+            "hosted_leadership",
+            &provenance_of_decision(decision),
+        );
         if role_code == "LSA" {
             assert_eq!(provenance, expected.provenance);
             assert_eq!(route, chosen_route);
@@ -37104,6 +37307,25 @@ async fn a_leadership_route_correction_is_held_to_the_activated_chain() {
     let (provenance, route) = direct_resolution(world, &hash, tpm, &codex_sol(EffortLevel::High));
     assert_decision_is_the_shared_resolution(&decisions[0], &provenance, &route, tpm);
     assert_eq!((route.step, route.sub_step), (1, 2));
+    // ASMA-8280 G-3: the correction's launch requested exactly what its
+    // decision records, with no eligibility for the caller's own route; the
+    // seat's first launch, before any activation, requested none.
+    assert!(
+        decisions[0].get("eligibility").is_none(),
+        "{}",
+        decisions[0]
+    );
+    assert_one_unproven_fleet_launch(
+        world,
+        &binding,
+        "hosted_leadership",
+        &provenance_of_decision(&decisions[0]),
+    );
+    assert_eq!(
+        launch_provenance_records(world, &binding)[0]["native_id"],
+        successor.as_str(),
+        "the record names the successor the correction launched"
+    );
 
     // A new *activation* between preview and apply is a routing change, so the
     // preview it did not see expires instead of being applied.

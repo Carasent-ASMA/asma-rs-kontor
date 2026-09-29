@@ -59,6 +59,11 @@ pub(crate) const FLEET_STATUS_FILE: &str = "fleet-status.json";
 /// [`FLEET_DECISIONS_DIR`].
 pub(crate) const LEADERSHIP_DECISIONS_DIR: &str = "leadership";
 
+/// One JSON-lines launch provenance log per launched subject, inside
+/// [`FLEET_DECISIONS_DIR`]: what each launch requested and what the runtime
+/// natively observed (ASMA-8280 G-3).
+pub(crate) const LAUNCH_PROVENANCE_DIR: &str = "launches";
+
 const F01: &str = "fleet.yml must be a regular file, not a symlink";
 const F02: &str = "fleet.yml must not be writable by group or others";
 const F03: &str = "fleet.yml must be owned by the state root's owner";
@@ -105,6 +110,8 @@ pub(crate) struct FleetBinding {
     /// The vendor the seat must avoid under `rules.independent_of`: part of
     /// the explicit eligibility the placement is chosen under.
     pub(crate) excluded_vendors: std::collections::BTreeSet<String>,
+    /// The orchestration bundle an aligned activation names.
+    pub(crate) source_bundle_hash: Option<ContentHash>,
 }
 
 /// What one publication wrote.
@@ -226,6 +233,27 @@ pub(crate) struct LeadershipDecision {
     pub(crate) eligibility: Option<kontor_fleet::Eligibility>,
 }
 
+/// One launch's fleet provenance: what Kontor requested and what the runtime
+/// natively observed, kept apart (ASMA-8280 G-3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LaunchProvenanceRecord {
+    /// `hosted_leadership`, `delivery` or `consultation`.
+    pub(crate) launch: String,
+    /// The launched subject: the SeatBinding, or the delivery agent run.
+    pub(crate) subject: String,
+    /// The native session the launch produced.
+    pub(crate) native_id: String,
+    /// What the launch requested, when the fleet policy chose its route.
+    pub(crate) requested: Option<kontor_runtime::FleetLaunchProvenance>,
+    /// What the runtime read back from its native surface, or why it could
+    /// not: never a copy of `requested`.
+    pub(crate) observed: kontor_runtime::FleetProvenanceObservation,
+    /// Whether `observed` proves `requested`. An unsupported surface proves
+    /// nothing and is recorded as such.
+    pub(crate) proven: bool,
+    pub(crate) recorded_at: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Stamp {
     len: u64,
@@ -273,6 +301,13 @@ pub(crate) struct FleetDecision {
     pub(crate) binding_key: String,
     pub(crate) role_slot: String,
     pub(crate) fleet_hash: String,
+    /// The chain the binding resolved to (ASMA-8280 G-3). Absent only on
+    /// rows written before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) chain: Option<String>,
+    /// The orchestration bundle an aligned activation named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_bundle_hash: Option<String>,
     pub(crate) step: u16,
     pub(crate) sub_step: u16,
     pub(crate) provider: String,
@@ -735,6 +770,83 @@ impl FleetSource {
         Ok(())
     }
 
+    /// The decision recorded for one agent run of one team run, when one was:
+    /// the fleet policy's authority a delivery launch names (ASMA-8280 G-3).
+    pub(crate) fn decision_for(
+        &self,
+        team_run_id: &str,
+        agent_run_id: &str,
+    ) -> Option<FleetDecision> {
+        let path = self
+            .state_root
+            .join(FLEET_DECISIONS_DIR)
+            .join(format!("{team_run_id}.jsonl"));
+        let text = std::fs::read_to_string(path).ok()?;
+        text.lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(|line| serde_json::from_str::<FleetDecision>(line).ok())
+            .rfind(|decision| decision.agent_run_id == agent_run_id)
+    }
+
+    /// Append what one launch requested and what its runtime observed.
+    ///
+    /// Written after the native effect, which has happened either way; a
+    /// failure to record is logged rather than undone, and leaves the launch
+    /// without recorded proof rather than with invented proof.
+    pub(crate) fn record_launch_provenance(&self, record: &LaunchProvenanceRecord) {
+        let directory = self
+            .state_root
+            .join(FLEET_DECISIONS_DIR)
+            .join(LAUNCH_PROVENANCE_DIR);
+        let written = create_private_dir(&self.state_root.join(FLEET_DECISIONS_DIR))
+            .and_then(|()| create_private_dir(&directory))
+            .and_then(|()| {
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create(true).append(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
+                let mut file = options.open(directory.join(format!("{}.jsonl", record.subject)))?;
+                let line = serde_json::to_string(record).map_err(std::io::Error::other)?;
+                file.write_all(line.as_bytes())?;
+                file.write_all(b"\n")?;
+                file.sync_data()
+            });
+        match written {
+            Ok(()) => tracing::info!(
+                launch = %record.launch,
+                subject = %record.subject,
+                native_id = %record.native_id,
+                proven = record.proven,
+                "fleet.launch_provenance_recorded"
+            ),
+            Err(error) => tracing::warn!(
+                %error,
+                subject = %record.subject,
+                "fleet.launch_provenance_unrecorded"
+            ),
+        }
+    }
+
+    /// Every launch provenance record one subject holds, in order.
+    #[cfg(test)]
+    pub(crate) fn launch_provenance(&self, subject: &str) -> Vec<LaunchProvenanceRecord> {
+        let path = self
+            .state_root
+            .join(FLEET_DECISIONS_DIR)
+            .join(LAUNCH_PROVENANCE_DIR)
+            .join(format!("{subject}.jsonl"));
+        std::fs::read_to_string(path)
+            .map(|text| {
+                text.lines()
+                    .filter_map(|line| serde_json::from_str(line).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The vendor of the last recorded route for `binding_key` in this run.
     pub(crate) fn last_vendor(&self, team_run_id: &str, binding_key: &str) -> Option<String> {
         let path = self
@@ -979,6 +1091,8 @@ mod tests {
             account_profile_id: None,
             decided_at: "2026-09-24T00:00:00Z".to_owned(),
             eligibility: None,
+            chain: None,
+            source_bundle_hash: None,
         }
     }
 
@@ -1541,6 +1655,94 @@ bindings:
             Some("openai".to_owned())
         );
         assert_eq!(source.last_vendor("run-1", "team/other/s"), None);
+    }
+
+    /// ASMA-8280 G-3: a delivery launch maps its provenance from the last
+    /// decision recorded for exactly its agent run, and a row written before
+    /// the chain was recorded still reads, with no chain.
+    #[test]
+    fn a_launch_reads_the_decision_recorded_for_its_own_agent_run() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        let source = FleetSource::at(root.path());
+        assert!(source.decision_for("run-1", "agent-1").is_none());
+        source
+            .record_decision(&decision("team/t/s", "anthropic"))
+            .expect("record");
+        let mut chained = decision("team/t/s", "openai");
+        chained.chain = Some("lead".to_owned());
+        source.record_decision(&chained).expect("record");
+        let mut other = decision("team/t/s", "xai");
+        other.agent_run_id = "agent-2".to_owned();
+        source.record_decision(&other).expect("record");
+        let read = source.decision_for("run-1", "agent-1").expect("a decision");
+        assert_eq!(read.vendor, "openai");
+        assert_eq!(read.chain.as_deref(), Some("lead"));
+        assert_eq!(
+            source
+                .decision_for("run-1", "agent-2")
+                .map(|read| read.vendor),
+            Some("xai".to_owned())
+        );
+        let legacy: FleetDecision = serde_json::from_value(serde_json::json!({
+            "team_run_id": "run-1", "agent_run_id": "agent-1", "binding_key": "team/t/s",
+            "role_slot": "slot", "fleet_hash": "hash", "step": 1, "sub_step": 1,
+            "provider": "provider", "model": "model", "vendor": "anthropic",
+            "decided_at": "2026-09-24T00:00:00Z",
+        }))
+        .expect("a row written before G-3 still reads");
+        assert!(legacy.chain.is_none() && legacy.source_bundle_hash.is_none());
+        let written = serde_json::to_value(&legacy).expect("JSON");
+        assert!(written.get("chain").is_none() && written.get("source_bundle_hash").is_none());
+    }
+
+    /// ASMA-8280 G-3: what a launch requested and what its runtime observed
+    /// are recorded as two values, append-only and owner-only.
+    #[test]
+    fn a_launch_record_keeps_the_request_apart_from_the_observation() {
+        let root = tempfile::tempdir().expect("temporary state root");
+        let source = FleetSource::at(root.path());
+        let requested = kontor_runtime::FleetLaunchProvenance {
+            policy_hash: ContentHash::of(b"policy"),
+            source_bundle_hash: None,
+            binding_key: "team/t/s".to_owned(),
+            chain: "lead".to_owned(),
+            step: 1,
+            sub_step: 1,
+            vendor: "openai".to_owned(),
+            eligibility: None,
+        };
+        let native_id = kontor_core::id::ExternalId::parse("native-1").expect("an id");
+        let observed = kontor_runtime::FleetProvenanceObservation::without_surface(
+            Some(&requested),
+            "codex.exec",
+            &native_id,
+        );
+        for _ in 0..2 {
+            source.record_launch_provenance(&LaunchProvenanceRecord {
+                launch: "delivery".to_owned(),
+                subject: "agent-1".to_owned(),
+                native_id: native_id.as_str().to_owned(),
+                requested: Some(requested.clone()),
+                observed: observed.clone(),
+                proven: observed.proves(Some(&requested)),
+                recorded_at: "2026-09-29T00:00:00Z".to_owned(),
+            });
+        }
+        let records = source.launch_provenance("agent-1");
+        assert_eq!(records.len(), 2, "append-only");
+        assert_eq!(records[0].requested.as_ref(), Some(&requested));
+        assert_eq!(records[0].observed, observed);
+        assert!(!records[0].proven, "an unsupported surface proves nothing");
+        let path = root
+            .path()
+            .join(FLEET_DECISIONS_DIR)
+            .join(LAUNCH_PROVENANCE_DIR)
+            .join("agent-1.jsonl");
+        let mode = std::fs::metadata(path)
+            .expect("the record")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "owner-only");
     }
 
     #[test]

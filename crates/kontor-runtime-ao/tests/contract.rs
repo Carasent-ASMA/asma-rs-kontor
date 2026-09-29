@@ -568,6 +568,36 @@ async fn four_lanes_share_one_inventory_without_stealing_each_others_sessions() 
     }
 }
 
+/// ASMA-8280 G-3: an AO session carries no Kontor labels or metadata, so a
+/// launch that requests fleet provenance is answered unsupported, naming the
+/// native id and the surface. The request is never its own observation.
+#[tokio::test]
+async fn an_ao_launch_reports_requested_fleet_provenance_as_unsupported() {
+    let ao = Fixture::new(AoHarness::ClaudeCode, daemon(SPAWN_CLAUDE, SESSION_LIVE));
+    let requested = kontor_runtime::FleetLaunchProvenance {
+        policy_hash: kontor_core::id::ContentHash::of(b"activated policy"),
+        source_bundle_hash: None,
+        binding_key: "team/t/implement".to_owned(),
+        chain: "delivery".to_owned(),
+        step: 1,
+        sub_step: 1,
+        vendor: "anthropic".to_owned(),
+        eligibility: Some(kontor_runtime::LaunchEligibility::default()),
+    };
+    let request = launch_request(&ao, run(RUN_CLAUDE))
+        .await
+        .with_fleet_provenance(Some(requested.clone()));
+    let outcome = ao.launch(&request).await.expect("the lane launches");
+    assert_eq!(
+        outcome.fleet_provenance,
+        kontor_runtime::FleetProvenanceObservation::Unsupported {
+            surface: "ao.session".to_owned(),
+            native_id: outcome.snapshot.identity().native_id.clone(),
+        }
+    );
+    assert!(!outcome.fleet_provenance.proves(Some(&requested)));
+}
+
 // ---------------------------------------------------------------------------
 // Typed refusals, issued before anything is dispatched
 // ---------------------------------------------------------------------------

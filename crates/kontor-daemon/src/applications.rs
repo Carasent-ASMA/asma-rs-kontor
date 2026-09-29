@@ -389,6 +389,9 @@ struct FrozenCommitteeRoute {
     /// The explicit eligibility the slot was allocated under, when the
     /// activated fleet policy supplied its routes (ASMA-8280 G-4).
     eligibility: Option<kontor_fleet::Eligibility>,
+    /// The fleet launch provenance the seat's launch requests, when the
+    /// activated policy chose this very route (ASMA-8280 G-3).
+    fleet_provenance: Option<kontor_runtime::FleetLaunchProvenance>,
 }
 
 fn consultation_route_provenance(
@@ -740,6 +743,22 @@ struct LeadershipBinding {
 }
 
 impl LeadershipRoute {
+    /// The fleet launch provenance this route's launch requests (ASMA-8280
+    /// G-3): the same policy, bundle, binding, chain, position and vendor its
+    /// decision records, and the eligibility only when the policy chose.
+    fn launch_provenance(&self) -> kontor_runtime::FleetLaunchProvenance {
+        kontor_runtime::FleetLaunchProvenance {
+            policy_hash: self.provenance.policy_hash.clone(),
+            source_bundle_hash: self.source_bundle_hash.clone(),
+            binding_key: self.provenance.binding_key.clone(),
+            chain: self.provenance.chain.clone(),
+            step: self.route.step,
+            sub_step: self.route.sub_step,
+            vendor: self.route.vendor.clone(),
+            eligibility: self.eligibility.as_ref().map(launch_eligibility),
+        }
+    }
+
     /// The provenance a preview or decision names: which policy bytes, which
     /// binding and chain, which roster revision and slot, which position.
     fn evidence(&self) -> serde_json::Value {
@@ -12563,7 +12582,8 @@ impl Services {
 
     /// The rung one fleet-routed consultation seat freezes, chosen through the
     /// shared resolver under the explicit eligibility the exact quota
-    /// observation states (ASMA-8280 G-4), with that eligibility.
+    /// observation states (ASMA-8280 G-4), with that eligibility and the
+    /// bound route it admitted.
     ///
     /// Each bound route keeps its chain position while its account spelling is
     /// qualified exactly as [`consultation_account_rungs`] qualifies any
@@ -12574,7 +12594,14 @@ impl Services {
         resolution: &kontor_fleet::FleetResolution,
         now: Timestamp,
         missing: &'static str,
-    ) -> Result<(ModelRung, kontor_fleet::Eligibility), ApiError> {
+    ) -> Result<
+        (
+            ModelRung,
+            kontor_fleet::Eligibility,
+            kontor_fleet::FleetRoute,
+        ),
+        ApiError,
+    > {
         let state = self.state()?;
         if resolution.routes.is_empty() {
             return Err(self.deny(ApiErrorCode::PlacementBlocked, missing));
@@ -12620,7 +12647,13 @@ impl Services {
         .map_err(|error| self.refuse_domain(&error))?;
         match placed.placement {
             kontor_scheduler::headroom::Placement::Admit { rung, .. } => {
-                Ok((rung, placed.eligibility))
+                let route = qualified.route_for(&rung).cloned().ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the admitted fleet route is not listed by the bound fleet chain",
+                    )
+                })?;
+                Ok((rung, placed.eligibility, route))
             }
             kontor_scheduler::headroom::Placement::Wait { .. }
             | kontor_scheduler::headroom::Placement::NeedsHuman { .. } => Err(self.deny(
@@ -12656,9 +12689,13 @@ impl Services {
         })?;
         // One snapshot for the whole invocation: an edit between two slots must
         // not mix two fleet versions into one allocation.
-        let fleet = self
-            .fleet_policy()
+        let placement = self
+            .fleet_placement()
             .map_err(|error| self.refuse_domain(&error))?;
+        let source_bundle_hash = placement
+            .as_ref()
+            .and_then(|placement| placement.source_bundle_hash.clone());
+        let fleet = placement.map(|placement| placement.policy);
         let quota_states = self.admission_quota_states(project_id)?;
         let accounts = self.eligible_accounts(project_id)?;
         let quota = QuotaOutlook {
@@ -12729,17 +12766,24 @@ impl Services {
         for slot in &template.slots {
             let fleet_routes = fleet.as_deref().and_then(|fleet| {
                 fleet
-                    .routes_for(&crate::fleet::committee_key(
+                    .resolve(&crate::fleet::committee_key(
                         &template_revision.profile_id,
                         slot.id.as_str(),
                     ))
-                    .map(|routes| (fleet, routes))
+                    .map(|resolution| (fleet, resolution))
             });
-            fleet_routed.push(fleet_routes.is_some());
+            fleet_routed.push(
+                fleet_routes
+                    .as_ref()
+                    .map(|(_, resolution)| resolution.clone()),
+            );
             let mut effective = match fleet_routes {
-                Some((fleet, routes)) => {
-                    let rungs: Vec<ModelRung> =
-                        routes.into_iter().map(|route| route.rung).collect();
+                Some((fleet, resolution)) => {
+                    let rungs: Vec<ModelRung> = resolution
+                        .routes
+                        .into_iter()
+                        .map(|route| route.rung)
+                        .collect();
                     committee_route_candidates(
                         &rungs,
                         "fleet_configuration",
@@ -12823,7 +12867,24 @@ impl Services {
             .map(|(slot, index)| {
                 let mut frozen = candidates[slot][index].clone();
                 frozen.headroom_basis_account_id = evidence[slot][index].admissible;
-                frozen.eligibility = fleet_routed[slot].then(|| eligibilities[slot].clone());
+                frozen.eligibility = fleet_routed[slot]
+                    .as_ref()
+                    .map(|_| eligibilities[slot].clone());
+                // Only a route the policy's own chain supplied carries fleet
+                // provenance; its rank is its position in that chain.
+                frozen.fleet_provenance = fleet_routed[slot]
+                    .as_ref()
+                    .filter(|_| frozen.source == "fleet_configuration")
+                    .and_then(|resolution| {
+                        let position = usize::try_from(frozen.rank).ok()?.checked_sub(1)?;
+                        let route = resolution.routes.get(position)?;
+                        Some(fleet_launch_provenance(
+                            &resolution.provenance,
+                            source_bundle_hash.as_ref(),
+                            route,
+                            frozen.eligibility.as_ref(),
+                        ))
+                    });
                 frozen
             })
             .collect())
@@ -12901,9 +12962,13 @@ impl Services {
         // One snapshot for the whole invocation: the context records which
         // policy supplied the route, and the freeze below must not disagree
         // with it because an edit landed in between.
-        let fleet = self
-            .fleet_policy()
+        let placement = self
+            .fleet_placement()
             .map_err(|error| self.refuse_domain(&error))?;
+        let source_bundle_hash = placement
+            .as_ref()
+            .and_then(|placement| placement.source_bundle_hash.clone());
+        let fleet = placement.map(|placement| placement.policy);
         let fleet_routes = fleet.as_deref().and_then(|fleet| {
             fleet
                 .resolve(&crate::fleet::advisor_key(&revision.profile_id))
@@ -12919,15 +12984,21 @@ impl Services {
         // Frozen before the context, so a fleet-routed Advisor's admission
         // records the explicit eligibility its route was chosen under; a
         // template-routed admission keeps its exact shape.
-        let (model_rung, eligibility) = match fleet_routes.as_ref() {
+        let (model_rung, eligibility, fleet_provenance) = match fleet_routes.as_ref() {
             Some((_, resolution)) => {
-                let (rung, eligibility) = self.freeze_fleet_consultation_rung(
+                let (rung, eligibility, route) = self.freeze_fleet_consultation_rung(
                     project_id,
                     resolution,
                     now,
                     "the Advisor profile has no model route",
                 )?;
-                (rung, Some(eligibility))
+                let provenance = fleet_launch_provenance(
+                    &resolution.provenance,
+                    source_bundle_hash.as_ref(),
+                    &route,
+                    Some(&eligibility),
+                );
+                (rung, Some(eligibility), Some(provenance))
             }
             None => (
                 self.freeze_consultation_model_rung(
@@ -12936,6 +13007,7 @@ impl Services {
                     now,
                     "the Advisor profile has no model route",
                 )?,
+                None,
                 None,
             ),
         };
@@ -12946,6 +13018,11 @@ impl Services {
         });
         if let Some(eligibility) = &eligibility {
             admission["eligibility"] = serde_json::json!(eligibility);
+        }
+        // What the seat's launch will request (ASMA-8280 G-3), frozen with
+        // the choice so the launch maps it rather than re-deriving it.
+        if let Some(provenance) = &fleet_provenance {
+            admission["fleet_provenance"] = serde_json::json!(provenance);
         }
         let context = self.intent(&serde_json::json!({
             "schema_version": 1,
@@ -13102,6 +13179,70 @@ impl Services {
         ))
     }
 
+    /// The fleet launch provenance a frozen admission or recovery profile
+    /// recorded (ASMA-8280 G-3); `None` when the policy did not choose.
+    ///
+    /// # Errors
+    /// Refuses a recorded provenance this build cannot read.
+    fn frozen_fleet_provenance(
+        &self,
+        frozen: Option<&serde_json::Value>,
+    ) -> Result<Option<kontor_runtime::FleetLaunchProvenance>, ApiError> {
+        frozen
+            .and_then(|frozen| frozen.get("fleet_provenance"))
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|_| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the frozen fleet launch provenance is unreadable",
+                )
+            })
+    }
+
+    /// The fleet launch provenance one Committee seat's launch requests: its
+    /// admission's, while the seat still holds the admitted route. A rerouted
+    /// seat's route was not the policy's choice and requests none.
+    ///
+    /// # Errors
+    /// As [`Self::frozen_fleet_provenance`].
+    fn committee_seat_fleet_provenance(
+        &self,
+        run: &StoredConsultationRun,
+        seat: &StoredConsultationSeat,
+    ) -> Result<Option<kontor_runtime::FleetLaunchProvenance>, ApiError> {
+        let Some(admission) = run
+            .context
+            .get("admission")
+            .and_then(|value| value.get("routes"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|routes| {
+                routes.iter().find(|route| {
+                    route
+                        .get("role_slot_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(seat.role_slot_id.as_str())
+                })
+            })
+        else {
+            return Ok(None);
+        };
+        let admitted = admission
+            .get("model_route")
+            .cloned()
+            .and_then(|value| {
+                serde_json::from_value::<kontor_api::applications::RuntimeModelRouteRequest>(value)
+                    .ok()
+            })
+            .map(|route| parse_runtime_model_route(&route, self.fleet.current().as_deref()))
+            .transpose()
+            .map_err(|error| self.refuse_domain(&error))?;
+        if admitted.as_ref() != Some(&seat.model_rung) {
+            return Ok(None);
+        }
+        self.frozen_fleet_provenance(Some(admission))
+    }
+
     /// Launch or exact-label recover the one Advisor seat.
     async fn materialize_advisor_seat(
         &self,
@@ -13163,6 +13304,7 @@ impl Services {
                 continue;
             }
             let route_provenance = self.advisor_route_provenance(run)?;
+            let fleet_provenance = self.frozen_fleet_provenance(run.context.get("admission"))?;
             adapter
                 .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -13214,11 +13356,19 @@ impl Services {
                     credential: ConsultationCredential::new(seat_credential),
                     model_rung: seat.model_rung.clone(),
                     route_provenance,
+                    fleet_provenance: fleet_provenance.clone(),
                     context_policy: context_policy.clone(),
                     requested_at: kontor_api::now(),
                 })
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            self.record_launch_provenance(
+                "consultation",
+                seat.seat_binding_id.to_string(),
+                &outcome.identity.native_id,
+                fleet_provenance.as_ref(),
+                &outcome.fleet_provenance,
+            );
             seat.native_identity = Some(outcome.identity);
             seat.provider_session_id = outcome.provider_session_id;
             seat.observed_at = Some(outcome.observed_at);
@@ -13448,6 +13598,9 @@ impl Services {
                 // admission keeps its exact shape.
                 if let Some(eligibility) = &frozen.eligibility {
                     route["eligibility"] = serde_json::json!(eligibility);
+                }
+                if let Some(provenance) = &frozen.fleet_provenance {
+                    route["fleet_provenance"] = serde_json::json!(provenance);
                 }
                 route
             })
@@ -13789,6 +13942,7 @@ impl Services {
                 continue;
             }
             let route_provenance = self.committee_seat_route_provenance(run, seat)?;
+            let fleet_provenance = self.committee_seat_fleet_provenance(run, seat)?;
             adapter
                 .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -13871,11 +14025,19 @@ impl Services {
                     credential: ConsultationCredential::new(seat_credential),
                     model_rung: seat.model_rung.clone(),
                     route_provenance,
+                    fleet_provenance: fleet_provenance.clone(),
                     context_policy: context_policy.clone(),
                     requested_at: kontor_api::now(),
                 })
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            self.record_launch_provenance(
+                "consultation",
+                seat.seat_binding_id.to_string(),
+                &outcome.identity.native_id,
+                fleet_provenance.as_ref(),
+                &outcome.fleet_provenance,
+            );
             seat.native_identity = Some(outcome.identity);
             seat.provider_session_id = outcome.provider_session_id;
             seat.observed_at = Some(outcome.observed_at);
@@ -13910,6 +14072,7 @@ impl Services {
         predecessor: &StoredConsultationSeat,
         model_rung: ModelRung,
         route_provenance: ConsultationRouteProvenance,
+        fleet_provenance: Option<kontor_runtime::FleetLaunchProvenance>,
     ) -> Result<StoredConsultationSeat, ApiError> {
         let _native_activity = self.native_activity()?;
         let state = self.state()?;
@@ -14052,11 +14215,19 @@ impl Services {
                 ),
                 model_rung: model_rung.clone(),
                 route_provenance,
+                fleet_provenance: fleet_provenance.clone(),
                 context_policy,
                 requested_at,
             })
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        self.record_launch_provenance(
+            "consultation",
+            predecessor.seat_binding_id.to_string(),
+            &outcome.identity.native_id,
+            fleet_provenance.as_ref(),
+            &outcome.fleet_provenance,
+        );
         let mut successor = predecessor.clone();
         successor.model_rung = model_rung;
         successor.native_identity = Some(outcome.identity);
@@ -15034,6 +15205,7 @@ fn committee_route_candidates(
                     profile_hash: profile_hash.clone(),
                     headroom_basis_account_id: None,
                     eligibility: None,
+                    fleet_provenance: None,
                 });
             }
         }
@@ -15595,6 +15767,36 @@ const PUBLISH_FLEET_BUNDLE: &str = "publish_fleet_bundle";
 /// The realm-scoped idempotency operation of an orchestration bundle
 /// activation (ASMA-8280 S-1).
 const ACTIVATE_FLEET_BUNDLE: &str = "activate_fleet_bundle";
+
+/// An explicit eligibility in the form a launch carries it (ASMA-8280 G-3).
+fn launch_eligibility(
+    eligibility: &kontor_fleet::Eligibility,
+) -> kontor_runtime::LaunchEligibility {
+    kontor_runtime::LaunchEligibility {
+        unavailable_accounts: eligibility.unavailable_accounts.clone(),
+        excluded_vendors: eligibility.excluded_vendors.clone(),
+    }
+}
+
+/// The fleet launch provenance one fleet-chosen route carries, from the
+/// resolution and route the shared resolver chose it through.
+fn fleet_launch_provenance(
+    provenance: &kontor_fleet::FleetProvenance,
+    source_bundle_hash: Option<&ContentHash>,
+    route: &kontor_fleet::FleetRoute,
+    eligibility: Option<&kontor_fleet::Eligibility>,
+) -> kontor_runtime::FleetLaunchProvenance {
+    kontor_runtime::FleetLaunchProvenance {
+        policy_hash: provenance.policy_hash.clone(),
+        source_bundle_hash: source_bundle_hash.cloned(),
+        binding_key: provenance.binding_key.clone(),
+        chain: provenance.chain.clone(),
+        step: route.step,
+        sub_step: route.sub_step,
+        vendor: route.vendor.clone(),
+        eligibility: eligibility.map(launch_eligibility),
+    }
+}
 
 /// One bundle manifest as the read, preview and publish operations report it.
 fn fleet_bundle_manifest_dto(
@@ -25304,6 +25506,9 @@ impl ApplicationOperations for Services {
                         })
                         .map_err(|error| self.refuse(&error))?;
                 }
+                let launch_provenance = leadership
+                    .get(seat.role.role_code.as_str())
+                    .map(LeadershipRoute::launch_provenance);
                 if let Some(placed) = leadership.get(seat.role.role_code.as_str()) {
                     self.record_leadership_decision(
                         "materialize_core_team",
@@ -25331,12 +25536,20 @@ impl ApplicationOperations for Services {
                         ),
                         fenced_predecessor_native_ids: Vec::new(),
                         model_rung: model_rung.clone(),
+                        fleet_provenance: launch_provenance.clone(),
                         autonomy,
                         context_policy: context_policy.clone(),
                         requested_at: kontor_api::now(),
                     })
                     .await
                     .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+                self.record_launch_provenance(
+                    "hosted_leadership",
+                    seat_binding_id.to_string(),
+                    &outcome.identity.native_id,
+                    launch_provenance.as_ref(),
+                    &outcome.fleet_provenance,
+                );
                 let hosted = StoredHostedTopologySeat {
                     project_id,
                     seat_binding_id,
@@ -26012,6 +26225,10 @@ impl ApplicationOperations for Services {
                     ),
                     fenced_predecessor_native_ids,
                     model_rung: plan.desired.clone(),
+                    fleet_provenance: plan
+                        .leadership
+                        .as_ref()
+                        .map(LeadershipRoute::launch_provenance),
                     // The one place a changed plane default legitimately takes
                     // effect. This is a new occupancy generation created through
                     // the audited retire/replace path, and the predecessor it
@@ -26023,6 +26240,16 @@ impl ApplicationOperations for Services {
                 })
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            self.record_launch_provenance(
+                "hosted_leadership",
+                plan.binding.id.to_string(),
+                &outcome.identity.native_id,
+                plan.leadership
+                    .as_ref()
+                    .map(LeadershipRoute::launch_provenance)
+                    .as_ref(),
+                &outcome.fleet_provenance,
+            );
             let successor = StoredHostedTopologySeat {
                 project_id,
                 seat_binding_id: plan.binding.id,
@@ -27979,9 +28206,13 @@ impl ApplicationOperations for Services {
         })?;
         // One snapshot for the whole recovery: an edit between the candidate
         // list and the provenance would record a policy the file never held.
-        let fleet = self
-            .fleet_policy()
+        let placement = self
+            .fleet_placement()
             .map_err(|error| self.refuse_domain(&error))?;
+        let source_bundle_hash = placement
+            .as_ref()
+            .and_then(|placement| placement.source_bundle_hash.clone());
+        let fleet = placement.map(|placement| placement.policy);
         let fleet_routes = fleet.as_deref().and_then(|fleet| {
             fleet
                 .resolve(&crate::fleet::committee_key(
@@ -27993,6 +28224,10 @@ impl ApplicationOperations for Services {
         // The fleet-routed path chooses through the shared resolver under an
         // explicit eligibility (ASMA-8280 G-4); it is recorded with the profile.
         let mut chosen_under: Option<kontor_fleet::Eligibility> = None;
+        // What the successor's launch requests when the policy chose its
+        // route (ASMA-8280 G-3); recorded with the profile, so a resumed
+        // attempt requests exactly what the prepared one did.
+        let mut chosen_route: Option<kontor_runtime::FleetLaunchProvenance> = None;
         let (desired_rung, recovery_profile, pending_attempt) = if let Some(attempt) =
             pending_attempt
         {
@@ -28005,6 +28240,7 @@ impl ApplicationOperations for Services {
                 ));
             }
             let profile = self.intent(&attempt.recovery_profile)?;
+            chosen_route = self.frozen_fleet_provenance(Some(&attempt.recovery_profile))?;
             (attempt.selected_model_rung.clone(), profile, Some(attempt))
         } else {
             let effective_rungs = match request.reason {
@@ -28116,6 +28352,14 @@ impl ApplicationOperations for Services {
                             BTreeSet::new(),
                         );
                         let selection = qualified.select(&eligibility);
+                        chosen_route = selection.selected.as_ref().map(|route| {
+                            fleet_launch_provenance(
+                                &qualified.provenance,
+                                source_bundle_hash.as_ref(),
+                                route,
+                                Some(&eligibility),
+                            )
+                        });
                         chosen_under = Some(eligibility);
                         selection.selected.map(|route| route.rung)
                     }
@@ -28136,6 +28380,9 @@ impl ApplicationOperations for Services {
             if let Some(eligibility) = &chosen_under {
                 recovery_profile["eligibility"] = serde_json::json!(eligibility);
             }
+            if let Some(provenance) = &chosen_route {
+                recovery_profile["fleet_provenance"] = serde_json::json!(provenance);
+            }
             let recovery_profile = self.intent(&recovery_profile)?;
             (desired_rung, recovery_profile, None)
         };
@@ -28147,6 +28394,7 @@ impl ApplicationOperations for Services {
                 "provider recovery did not resolve to a different governed route",
             ));
         }
+        let successor_fleet_provenance = chosen_route;
         let successor_route_provenance = match fleet_routes.as_ref() {
             Some((fleet, _))
                 if request.reason == ConsultationSeatRecoveryReasonDto::ProviderUnavailable
@@ -28219,6 +28467,7 @@ impl ApplicationOperations for Services {
                 &successor_basis,
                 desired_rung,
                 successor_route_provenance,
+                successor_fleet_provenance,
             )
             .await?;
         state
@@ -34678,6 +34927,11 @@ impl ApplicationOperations for Services {
         let context_policy = freeze_seat_context_policy(&adapter, &team.snapshot, &role_slot, now)
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let fleet_provenance = self.delivery_launch_provenance(
+            predecessor.team_run_id,
+            successor_agent_run_id,
+            &model_rung,
+        );
         let launch = SlotLaunch {
             display_name: self.delivery_seat_name(
                 project_id,
@@ -34699,6 +34953,7 @@ impl ApplicationOperations for Services {
             autonomy: freeze_seat_autonomy(&team.snapshot, &role_slot, adapter.declared_autonomy())
                 .map_err(|error| self.refuse_domain(&error))?,
             requested_at: now,
+            fleet_provenance,
         };
         // A successor claims its account before it touches the runtime, exactly
         // as a first launch does. Succession exists to move a seat off an
@@ -34734,6 +34989,13 @@ impl ApplicationOperations for Services {
             .launch(prepared.request())
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        self.record_launch_provenance(
+            "delivery",
+            prepared.request().agent_run_id().to_string(),
+            &outcome.snapshot.identity().native_id,
+            prepared.request().fleet_provenance(),
+            &outcome.fleet_provenance,
+        );
         slots
             .bind(prepared, &outcome.snapshot)
             .map_err(|error| self.refuse_domain(&error))?;
@@ -37559,6 +37821,11 @@ impl Services {
                 "the successor cannot launch without a durable handoff",
             )
         })?;
+        let fleet_provenance = self.delivery_launch_provenance(
+            attempt.request.team_run_id,
+            attempt.request.predecessor_agent_run_id,
+            &model_rung,
+        );
         let launch = SlotLaunch {
             display_name: self.delivery_seat_name(
                 project_id,
@@ -37580,6 +37847,7 @@ impl Services {
             autonomy: freeze_seat_autonomy(&team.snapshot, &role_slot, adapter.declared_autonomy())
                 .map_err(|error| self.refuse_domain(&error))?,
             requested_at: now,
+            fleet_provenance,
         };
         let admission = permit.admission_request(&launch);
         let admitted = match adapter.admit_launch(&admission).await {
@@ -37604,6 +37872,13 @@ impl Services {
             .launch(prepared.request())
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        self.record_launch_provenance(
+            "delivery",
+            prepared.request().agent_run_id().to_string(),
+            &outcome.snapshot.identity().native_id,
+            prepared.request().fleet_provenance(),
+            &outcome.fleet_provenance,
+        );
         slots
             .bind(prepared, &outcome.snapshot)
             .map_err(|error| self.refuse_domain(&error))?;
@@ -38364,9 +38639,10 @@ impl Services {
         slot: &RoleSlotId,
     ) -> kontor_core::DomainResult<Option<crate::fleet::DeclaredRungs>> {
         let key = crate::fleet::team_key(&snapshot.template_id.to_string(), slot.as_str());
-        if let Some(fleet) = self.fleet_policy()?
-            && let Some(resolution) = fleet.resolve(&key)
+        if let Some(placement) = self.fleet_placement()?
+            && let Some(resolution) = placement.policy.resolve(&key)
         {
+            let fleet = placement.policy;
             if resolution.routes.is_empty() {
                 return Err(kontor_core::DomainError::MissingEvidence {
                     subject: "FleetConfiguration",
@@ -38411,6 +38687,7 @@ impl Services {
                     binding_key: key,
                     resolution,
                     excluded_vendors,
+                    source_bundle_hash: placement.source_bundle_hash,
                 }),
             }));
         }
@@ -38568,6 +38845,70 @@ impl Services {
             resolution,
             source_bundle_hash: placement.source_bundle_hash,
         }))
+    }
+
+    /// Record what one launch requested and what its runtime observed
+    /// (ASMA-8280 G-3). Only a launch the fleet policy chose is recorded;
+    /// `proven` is the observation proving the request, never assumed.
+    fn record_launch_provenance(
+        &self,
+        launch: &'static str,
+        subject: String,
+        native_id: &ExternalId,
+        requested: Option<&kontor_runtime::FleetLaunchProvenance>,
+        observed: &kontor_runtime::FleetProvenanceObservation,
+    ) {
+        if requested.is_none() {
+            return;
+        }
+        self.fleet
+            .record_launch_provenance(&crate::fleet::LaunchProvenanceRecord {
+                launch: launch.to_owned(),
+                subject,
+                native_id: native_id.as_str().to_owned(),
+                requested: requested.cloned(),
+                observed: observed.clone(),
+                proven: observed.proves(requested),
+                recorded_at: kontor_api::now().to_string(),
+            });
+    }
+
+    /// The fleet launch provenance one delivery launch requests, mapped from
+    /// the last decision recorded under `agent_run_id` (ASMA-8280 G-3), and
+    /// only while that decision names this very route. A succession's decision
+    /// is recorded under the seat it replaces. A template-routed seat, or a
+    /// row written before the chain was recorded, requests none.
+    fn delivery_launch_provenance(
+        &self,
+        team_run_id: TeamRunId,
+        agent_run_id: AgentRunId,
+        rung: &ModelRung,
+    ) -> Option<kontor_runtime::FleetLaunchProvenance> {
+        let decision = self
+            .fleet
+            .decision_for(&team_run_id.to_string(), &agent_run_id.to_string())?;
+        // A decision for another route is not this launch's authority.
+        if decision.provider != rung.provider.0
+            || decision.model != rung.model.0
+            || decision.effort.as_deref() != rung.effort.map(|effort| effort.as_str())
+        {
+            return None;
+        }
+        Some(kontor_runtime::FleetLaunchProvenance {
+            policy_hash: ContentHash::parse(&decision.fleet_hash).ok()?,
+            source_bundle_hash: decision
+                .source_bundle_hash
+                .as_deref()
+                .map(ContentHash::parse)
+                .transpose()
+                .ok()?,
+            binding_key: decision.binding_key,
+            chain: decision.chain?,
+            step: decision.step,
+            sub_step: decision.sub_step,
+            vendor: decision.vendor,
+            eligibility: decision.eligibility.as_ref().map(launch_eligibility),
+        })
     }
 
     /// Append the decision behind one leadership effect before it happens.
@@ -38805,6 +39146,11 @@ impl Services {
             binding_key: binding_key.clone(),
             role_slot: slot.as_str().to_owned(),
             fleet_hash: snapshot.hash().as_str().to_owned(),
+            chain: Some(bound.resolution.provenance.chain.clone()),
+            source_bundle_hash: bound
+                .source_bundle_hash
+                .as_ref()
+                .map(|bundle| bundle.as_str().to_owned()),
             step: route.step,
             sub_step: route.sub_step,
             provider: route.rung.provider.0.clone(),
@@ -39192,6 +39538,8 @@ impl Services {
                     })
                     .map_err(|error| self.refuse(&error))?;
             }
+            let fleet_provenance =
+                self.delivery_launch_provenance(team_run_id, agent_run_id, &model_rung);
             let parts = LaunchParts {
                 scope: scope.clone(),
                 display_name: self.delivery_seat_name(
@@ -39230,10 +39578,20 @@ impl Services {
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?
                 .into_authority()
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            let request = authority
+                .into_request(parts)
+                .with_fleet_provenance(fleet_provenance);
             let outcome = adapter
-                .launch(&authority.into_request(parts))
+                .launch(&request)
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+            self.record_launch_provenance(
+                "delivery",
+                agent_run_id.to_string(),
+                &outcome.snapshot.identity().native_id,
+                request.fleet_provenance(),
+                &outcome.fleet_provenance,
+            );
 
             let binding = RuntimeBinding {
                 id: outcome.snapshot.binding_id(),
@@ -42561,6 +42919,8 @@ impl Services {
                 .with_store(|store| store.pin_agent_run_account(project_id, agent_run_id, account))
                 .map_err(|error| self.refuse(&error))?;
         }
+        let fleet_provenance =
+            self.delivery_launch_provenance(team_run_id, agent_run_id, &model_rung);
         let parts = LaunchParts {
             scope: scope.clone(),
             display_name: self.delivery_seat_name(
@@ -42601,11 +42961,19 @@ impl Services {
                 authority.into_recovery_request(parts, recovery.expected_native_id.clone())
             }
             None => authority.into_request(parts),
-        };
+        }
+        .with_fleet_provenance(fleet_provenance);
         let outcome = adapter
             .launch(&request)
             .await
             .map_err(|error| ApiError::from_runtime(realm_id, &error))?;
+        self.record_launch_provenance(
+            "delivery",
+            agent_run_id.to_string(),
+            &outcome.snapshot.identity().native_id,
+            request.fleet_provenance(),
+            &outcome.fleet_provenance,
+        );
         let binding = RuntimeBinding {
             id: outcome.snapshot.binding_id(),
             agent_run_id,
@@ -43916,6 +44284,7 @@ mod tests {
             profile_hash: ContentHash::of(b"fixture"),
             headroom_basis_account_id: None,
             eligibility: None,
+            fleet_provenance: None,
         }
     }
 

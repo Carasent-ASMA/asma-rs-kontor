@@ -231,6 +231,40 @@ pub mod label {
     /// the one this launch created. A hash, never the values.
     pub const LAUNCH_INTENT: &str = "kontor.launch_intent";
 
+    /// ASMA-8280 G-3: the activated fleet policy that chose this seat's route.
+    ///
+    /// The fleet labels are written only when a launch requests fleet
+    /// provenance, are part of the exact label set its census and readback
+    /// require, and are what the launch reports as observed — read back from
+    /// the agent, never copied from the request.
+    pub const FLEET_POLICY_HASH: &str = "kontor.fleet.policy_hash";
+    /// The orchestration bundle an aligned activation names.
+    pub const FLEET_SOURCE_BUNDLE: &str = "kontor.fleet.source_bundle_hash";
+    /// The canonical binding key the seat resolved.
+    pub const FLEET_BINDING_KEY: &str = "kontor.fleet.binding_key";
+    /// The chain that binding is bound to.
+    pub const FLEET_CHAIN: &str = "kontor.fleet.chain";
+    /// The chain step, counted from one.
+    pub const FLEET_STEP: &str = "kontor.fleet.step";
+    /// The route's position inside its step, counted from one.
+    pub const FLEET_SUB_STEP: &str = "kontor.fleet.sub_step";
+    /// The model's maker, as the policy names it.
+    pub const FLEET_VENDOR: &str = "kontor.fleet.vendor";
+    /// The stated eligibility, as compact canonical JSON, when one was stated.
+    pub const FLEET_ELIGIBILITY: &str = "kontor.fleet.eligibility";
+
+    /// Every fleet provenance label key.
+    pub const FLEET: &[&str] = &[
+        FLEET_POLICY_HASH,
+        FLEET_SOURCE_BUNDLE,
+        FLEET_BINDING_KEY,
+        FLEET_CHAIN,
+        FLEET_STEP,
+        FLEET_SUB_STEP,
+        FLEET_VENDOR,
+        FLEET_ELIGIBILITY,
+    ];
+
     /// Every label key, in the order they are applied.
     pub const ALL: &[&str] = &[
         AGENT_RUN,
@@ -244,6 +278,92 @@ pub mod label {
         WORKSPACE_ID,
         WORKTREE,
     ];
+}
+
+/// The native label surface fleet provenance is written to and read from.
+pub const FLEET_PROVENANCE_SURFACE: &str = "paseo.agent.labels";
+
+/// The exact labels one launch's fleet provenance is written as.
+///
+/// # Errors
+/// A stated eligibility that cannot be encoded as JSON.
+pub fn fleet_provenance_labels(
+    provenance: &kontor_runtime::FleetLaunchProvenance,
+) -> RuntimeResult<BTreeMap<String, String>> {
+    let mut labels: BTreeMap<String, String> = [
+        (
+            label::FLEET_POLICY_HASH,
+            provenance.policy_hash.as_str().to_owned(),
+        ),
+        (label::FLEET_BINDING_KEY, provenance.binding_key.clone()),
+        (label::FLEET_CHAIN, provenance.chain.clone()),
+        (label::FLEET_STEP, provenance.step.to_string()),
+        (label::FLEET_SUB_STEP, provenance.sub_step.to_string()),
+        (label::FLEET_VENDOR, provenance.vendor.clone()),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value))
+    .collect();
+    if let Some(bundle) = &provenance.source_bundle_hash {
+        labels.insert(
+            label::FLEET_SOURCE_BUNDLE.to_owned(),
+            bundle.as_str().to_owned(),
+        );
+    }
+    if let Some(eligibility) = &provenance.eligibility {
+        labels.insert(
+            label::FLEET_ELIGIBILITY.to_owned(),
+            serde_json::to_string(eligibility).map_err(|_| RuntimeError::Transport {
+                rule: "the fleet launch eligibility could not be encoded as a label",
+            })?,
+        );
+    }
+    Ok(labels)
+}
+
+/// The fleet provenance one agent's native labels hold, when they hold any.
+///
+/// `None` when the agent carries no fleet policy label. Every value is parsed
+/// from the agent's own labels; a label that is present but unreadable is a
+/// correlation failure, not an absence.
+///
+/// # Errors
+/// [`RuntimeError::CorrelationFailed`] for a present but malformed fleet label.
+pub fn fleet_provenance_from_labels(
+    labels: &BTreeMap<String, String>,
+) -> RuntimeResult<Option<kontor_runtime::FleetLaunchProvenance>> {
+    let Some(policy_hash) = labels.get(label::FLEET_POLICY_HASH) else {
+        return Ok(None);
+    };
+    let text = |key: &str| {
+        labels
+            .get(key)
+            .cloned()
+            .ok_or(RuntimeError::CorrelationFailed)
+    };
+    let number = |key: &str| {
+        labels
+            .get(key)
+            .and_then(|value| value.parse::<u16>().ok())
+            .ok_or(RuntimeError::CorrelationFailed)
+    };
+    let hash = |value: &str| ContentHash::parse(value).map_err(|_| RuntimeError::CorrelationFailed);
+    Ok(Some(kontor_runtime::FleetLaunchProvenance {
+        policy_hash: hash(policy_hash)?,
+        source_bundle_hash: labels
+            .get(label::FLEET_SOURCE_BUNDLE)
+            .map(|value| hash(value))
+            .transpose()?,
+        binding_key: text(label::FLEET_BINDING_KEY)?,
+        chain: text(label::FLEET_CHAIN)?,
+        step: number(label::FLEET_STEP)?,
+        sub_step: number(label::FLEET_SUB_STEP)?,
+        vendor: text(label::FLEET_VENDOR)?,
+        eligibility: labels
+            .get(label::FLEET_ELIGIBILITY)
+            .map(|value| serde_json::from_str(value).map_err(|_| RuntimeError::CorrelationFailed))
+            .transpose()?,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1723,6 +1843,71 @@ pub fn body_digest(body: &str) -> ContentHash {
 
 #[cfg(test)]
 mod tests {
+
+    fn provenance() -> kontor_runtime::FleetLaunchProvenance {
+        kontor_runtime::FleetLaunchProvenance {
+            policy_hash: ContentHash::of(b"policy"),
+            source_bundle_hash: None,
+            binding_key: "team/t/s".to_owned(),
+            chain: "codex-first".to_owned(),
+            step: 1,
+            sub_step: 2,
+            vendor: "openai".to_owned(),
+            eligibility: Some(kontor_runtime::LaunchEligibility {
+                unavailable_accounts: BTreeSet::from(["codex-work".to_owned()]),
+                excluded_vendors: BTreeSet::from(["anthropic".to_owned()]),
+            }),
+        }
+    }
+
+    /// ASMA-8280 G-3: fleet provenance round-trips through native labels, and a
+    /// present but unreadable label is a correlation failure, not an absence.
+    #[test]
+    fn fleet_provenance_round_trips_through_exact_labels() {
+        let requested = provenance();
+        let labels = fleet_provenance_labels(&requested).expect("encodes");
+        assert_eq!(labels[label::FLEET_STEP], "1");
+        assert_eq!(labels[label::FLEET_SUB_STEP], "2");
+        assert!(!labels.contains_key(label::FLEET_SOURCE_BUNDLE));
+        assert_eq!(
+            labels[label::FLEET_ELIGIBILITY],
+            r#"{"unavailable_accounts":["codex-work"],"excluded_vendors":["anthropic"]}"#
+        );
+        assert!(
+            labels
+                .keys()
+                .all(|key| label::FLEET.contains(&key.as_str()))
+        );
+        assert_eq!(
+            fleet_provenance_from_labels(&labels).expect("reads"),
+            Some(requested.clone())
+        );
+        // A caller route states no eligibility, and none is written or read.
+        let mut caller = requested;
+        caller.eligibility = None;
+        let labels =
+            fleet_provenance_from_labels(&fleet_provenance_labels(&caller).expect("encodes"))
+                .expect("reads");
+        assert_eq!(labels, Some(caller.clone()));
+
+        assert_eq!(
+            fleet_provenance_from_labels(&BTreeMap::new()).expect("reads"),
+            None
+        );
+        let mut broken = fleet_provenance_labels(&caller).expect("encodes");
+        broken.insert(label::FLEET_STEP.to_owned(), "one".to_owned());
+        assert!(matches!(
+            fleet_provenance_from_labels(&broken),
+            Err(RuntimeError::CorrelationFailed)
+        ));
+        let mut missing = fleet_provenance_labels(&caller).expect("encodes");
+        missing.remove(label::FLEET_CHAIN);
+        assert!(matches!(
+            fleet_provenance_from_labels(&missing),
+            Err(RuntimeError::CorrelationFailed)
+        ));
+    }
+
     use super::*;
 
     #[test]

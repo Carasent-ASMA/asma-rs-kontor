@@ -10036,6 +10036,7 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
         ),
         fenced_predecessor_native_ids: Vec::new(),
         model_rung: model_rung(),
+        fleet_provenance: None,
         autonomy: SeatAutonomy::standard(),
         context_policy: standard_context_policy(),
         requested_at: at("2026-08-16T09:10:00Z"),
@@ -10149,6 +10150,7 @@ async fn hosted_leadership_injects_scoped_mcp_through_the_actual_launch() {
                     model: ModelRef(model.to_owned()),
                     effort: None,
                 },
+                fleet_provenance: None,
                 autonomy: SeatAutonomy::Bounded,
                 context_policy: standard_context_policy(),
                 requested_at: at("2026-08-16T09:10:00Z"),
@@ -10269,6 +10271,7 @@ async fn a_leadership_seat_launches_and_reads_back_the_autonomy_it_was_given() {
                 ),
                 fenced_predecessor_native_ids: Vec::new(),
                 model_rung: model_rung(),
+                fleet_provenance: None,
                 autonomy: SeatAutonomy::Bounded,
                 context_policy: standard_context_policy(),
                 requested_at: at("2026-08-16T09:10:00Z"),
@@ -10360,6 +10363,7 @@ async fn an_attached_hosted_seat_with_no_provider_thread_recovers_in_place() {
             ),
             fenced_predecessor_native_ids: Vec::new(),
             model_rung: model_rung(),
+            fleet_provenance: None,
             // The recovery re-enters the same native under the same posture it
             // was launched with; a reload that silently changed mode would be a
             // replacement, not a recovery (ASMA-8193, ASMA-8115).
@@ -10546,6 +10550,7 @@ async fn a_fenced_historical_hosted_native_does_not_block_its_successor() {
         ),
         fenced_predecessor_native_ids: Vec::new(),
         model_rung: model_rung(),
+        fleet_provenance: None,
         autonomy: SeatAutonomy::standard(),
         context_policy: standard_context_policy(),
         requested_at: at("2026-08-16T09:10:00Z"),
@@ -13329,6 +13334,7 @@ async fn an_epic_consultation_worktree_reconciles_and_inspects_after_restart() {
             credential: kontor_runtime::adapter::ScopedSeatCredential::new("test".to_owned()),
             fenced_predecessor_native_ids: Vec::new(),
             model_rung: model_rung(),
+            fleet_provenance: None,
             autonomy: SeatAutonomy::standard(),
             context_policy: standard_context_policy(),
             requested_at: at("2026-09-20T12:01:00Z"),
@@ -14213,5 +14219,312 @@ async fn message_a_history_page_cannot_hide_a_duplicate_outside_that_page() {
             "a single-page observation must not bypass duplicate detection: {floor:?}"
         );
         assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8280 G-3: fleet launch provenance on the native label surface
+// ---------------------------------------------------------------------------
+
+fn fleet_provenance() -> kontor_runtime::FleetLaunchProvenance {
+    kontor_runtime::FleetLaunchProvenance {
+        policy_hash: kontor_core::id::ContentHash::of(b"activated policy"),
+        source_bundle_hash: Some(kontor_core::id::ContentHash::of(b"bundle")),
+        binding_key: "leadership/abc/lsa".to_owned(),
+        chain: "lead".to_owned(),
+        step: 2,
+        sub_step: 1,
+        vendor: "openai".to_owned(),
+        eligibility: Some(kontor_runtime::LaunchEligibility {
+            unavailable_accounts: BTreeSet::from(["claude-personal".to_owned()]),
+            excluded_vendors: BTreeSet::new(),
+        }),
+    }
+}
+
+/// Every fleet label `provenance` is written as, merged into `labels`.
+fn with_fleet_labels(
+    mut labels: serde_json::Value,
+    provenance: &kontor_runtime::FleetLaunchProvenance,
+) -> serde_json::Value {
+    for (key, value) in kontor_runtime_paseo::wire::fleet_provenance_labels(provenance).unwrap() {
+        labels[key] = serde_json::json!(value);
+    }
+    labels
+}
+
+/// A hosted leadership launch writes its fleet provenance as exact native
+/// labels and reports what the agent's own labels hold — the scripted
+/// readback, never the request. A readback whose fleet label drifted refuses
+/// the launch; no provenance requested is no provenance observed.
+#[tokio::test]
+async fn hosted_leadership_writes_and_reads_back_its_fleet_provenance() {
+    let requested = fleet_provenance();
+    for case in ["observed", "drifted", "not_requested"] {
+        let seat_binding_id = SeatBindingId::generate();
+        let mut workspace = v(WORKSPACE_ROOT_LOCAL);
+        workspace["entries"][0]["name"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+        workspace["entries"][0]["title"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+        let mut agent = v(AGENT);
+        agent["agent"]["provider"] = serde_json::json!("codex");
+        agent["agent"]["model"] = serde_json::json!("gpt-5.6-sol");
+        agent["agent"]["currentModeId"] = serde_json::json!("full-access");
+        let base = serde_json::json!({
+            "jira.epic": "ASMA-7744", "kontor.project_id": MINI_PROJECT,
+            "kontor.seat_binding_id": seat_binding_id.to_string(),
+            "kontor.hosted_seat": "true", "kontor.role": "lsa",
+            "kontor.role_slot_id": "lsa", "kontor.workspace_id": WORKSPACE_ID,
+            "kontor.worktree": CWD,
+        });
+        let mut labels = if case == "not_requested" {
+            base
+        } else {
+            with_fleet_labels(base, &requested)
+        };
+        if case == "drifted" {
+            labels["kontor.fleet.vendor"] = serde_json::json!("anthropic");
+        }
+        agent["agent"]["labels"] = labels;
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", workspace)
+            .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+            .answering_rpc(
+                "create_agent_request",
+                serde_json::json!({"status": "agent_created", "agent": {"id": AGENT_ID}}),
+            )
+            .answering_rpc("fetch_agent_request", agent);
+        let plane = Plane::build_with_config(
+            recorded,
+            PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+            config(),
+        );
+        plane
+            .adapter
+            .prepare_project("cmd-hosted-fleet", &project_name())
+            .await
+            .unwrap();
+        let container = plane
+            .adapter
+            .prepare_container(&ecp_request(node(NODE_A), bound_root(node(NODE_B))))
+            .await
+            .unwrap()
+            .snapshot;
+        let request = HostedSeatLaunchRequest {
+            seat_binding_id,
+            role_slot_id: slot("lsa"),
+            display_name: name("LSA"),
+            container,
+            cwd: root(),
+            scope: epic_execution_scope(),
+            prompt: text("continue governed leadership"),
+            role_prompt: None,
+            credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+                "hosted-fleet-secret".to_owned(),
+            ),
+            fenced_predecessor_native_ids: Vec::new(),
+            model_rung: ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: None,
+            },
+            fleet_provenance: (case != "not_requested").then(|| requested.clone()),
+            autonomy: SeatAutonomy::Bounded,
+            context_policy: standard_context_policy(),
+            requested_at: at("2026-08-16T09:10:00Z"),
+        };
+        let launched = plane.adapter.launch_hosted_seat(&request).await;
+        match case {
+            "drifted" => {
+                assert!(
+                    matches!(launched, Err(RuntimeError::CorrelationFailed)),
+                    "a drifted fleet label must refuse: {launched:?}"
+                );
+            }
+            "observed" => {
+                let outcome = launched.expect("the seat launches");
+                assert_eq!(
+                    outcome.fleet_provenance,
+                    kontor_runtime::FleetProvenanceObservation::Observed {
+                        surface: "paseo.agent.labels".to_owned(),
+                        provenance: requested.clone(),
+                    }
+                );
+                let sent = plane.daemon.sent_messages("create_agent_request");
+                let written = &sent[0]["labels"];
+                for (key, value) in
+                    kontor_runtime_paseo::wire::fleet_provenance_labels(&requested).unwrap()
+                {
+                    assert_eq!(written[&key], value, "{key} was not written: {written}");
+                }
+            }
+            _ => {
+                let outcome = launched.expect("the seat launches");
+                assert_eq!(
+                    outcome.fleet_provenance,
+                    kontor_runtime::FleetProvenanceObservation::NotRequested
+                );
+                let sent = plane.daemon.sent_messages("create_agent_request");
+                assert!(
+                    sent[0]["labels"].get("kontor.fleet.policy_hash").is_none(),
+                    "nothing requested is nothing written"
+                );
+            }
+        }
+    }
+}
+
+/// A delivery launch carries its fleet provenance into the exact label set its
+/// readback requires: an agent whose labels hold it is observed, and one whose
+/// labels do not is refused rather than observed from the request.
+#[tokio::test]
+async fn a_delivery_launch_reads_its_fleet_provenance_back_from_the_agent() {
+    let requested = fleet_provenance();
+    for carried in [true, false] {
+        let (plane, workspace) = Plane::prepared(daemon()).await;
+        let mut agent = v(AGENT);
+        if carried {
+            agent["agent"]["labels"] =
+                with_fleet_labels(agent["agent"]["labels"].clone(), &requested);
+        }
+        plane.daemon.set_answer_rpc("fetch_agent_request", agent);
+        let request = plane
+            .launch_request(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+            .await
+            .expect("admission")
+            .with_fleet_provenance(Some(requested.clone()));
+        let launched = plane.adapter.launch(&request).await;
+        if carried {
+            let outcome = launched.expect("the seat launches");
+            assert_eq!(
+                outcome.fleet_provenance,
+                kontor_runtime::FleetProvenanceObservation::Observed {
+                    surface: "paseo.agent.labels".to_owned(),
+                    provenance: requested.clone(),
+                }
+            );
+        } else {
+            assert!(
+                matches!(launched, Err(RuntimeError::CorrelationFailed)),
+                "an agent without the fleet labels must refuse: {launched:?}"
+            );
+        }
+    }
+    // A launch that requests none observes none.
+    let (plane, workspace) = Plane::prepared(daemon()).await;
+    let outcome = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the Implement seat launches");
+    assert_eq!(
+        outcome.fleet_provenance,
+        kontor_runtime::FleetProvenanceObservation::NotRequested
+    );
+}
+
+/// A consultation launch writes its fleet provenance beside the consultation
+/// labels and reports what the agent's labels hold; drift refuses the launch.
+/// The OpenCode `route_provenance.evidence_hash` label path is untouched: a
+/// Codex consultation still carries the read-only marker.
+#[tokio::test]
+async fn a_consultation_launch_writes_and_reads_back_its_fleet_provenance() {
+    let requested = fleet_provenance();
+    for drifted in [false, true] {
+        let seat_binding_id = SeatBindingId::generate();
+        let run_id = ConsultationRunId::Committee(CommitteeRunId::generate());
+        let mut agent = v(AGENT);
+        agent["agent"]["provider"] = serde_json::json!("codex");
+        agent["agent"]["model"] = serde_json::json!("gpt-5.6-sol");
+        agent["agent"]["currentModeId"] = serde_json::json!("auto-review");
+        let mut labels = with_fleet_labels(
+            serde_json::json!({
+                "kontor.consultation_run": format!("{}/{}", run_id.family().as_str(), run_id.as_text()),
+                "jira.epic": "ASMA-7744", "kontor.project_id": MINI_PROJECT,
+                "kontor.seat_binding_id": seat_binding_id.to_string(),
+                "kontor.role": "reviewer-a", "kontor.role_slot_id": "reviewer-a",
+                "kontor.workspace_id": WORKSPACE_ID, "kontor.worktree": CWD,
+                "kontor.read_only": "true",
+            }),
+            &requested,
+        );
+        if drifted {
+            labels["kontor.fleet.policy_hash"] =
+                serde_json::json!(kontor_core::id::ContentHash::of(b"another policy").as_str());
+        }
+        agent["agent"]["labels"] = labels;
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE))
+            .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+            .answering_rpc(
+                "create_agent_request",
+                serde_json::json!({"status": "agent_created", "agent": {"id": AGENT_ID}}),
+            )
+            .answering_rpc("fetch_agent_request", agent);
+        let plane = Plane::fresh(recorded);
+        plane
+            .adapter
+            .prepare_project("cmd-consultation-fleet", &project_name())
+            .await
+            .expect("the epic project is prepared");
+        let container = plane
+            .adapter
+            .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+            .await
+            .expect("the consultation container is prepared")
+            .snapshot;
+        let request = kontor_runtime::adapter::ConsultationLaunchRequest {
+            run_id,
+            seat_binding_id,
+            role_slot_id: slot("reviewer-a"),
+            display_name: name("Reviewer A"),
+            container,
+            cwd: root(),
+            scope: execution_scope(),
+            prompt: text("review the change"),
+            credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+                "consultation-fleet-secret".to_owned(),
+            ),
+            model_rung: ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: None,
+            },
+            route_provenance:
+                kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
+                    requested.policy_hash.clone(),
+                ),
+            fleet_provenance: Some(requested.clone()),
+            context_policy: standard_context_policy(),
+            requested_at: at("2026-08-16T09:10:00Z"),
+        };
+        let launched = plane.adapter.launch_consultation(&request).await;
+        if drifted {
+            assert!(
+                matches!(launched, Err(RuntimeError::CorrelationFailed)),
+                "a drifted fleet label must refuse: {launched:?}"
+            );
+            continue;
+        }
+        let outcome = launched.expect("the consultation seat launches");
+        assert_eq!(
+            outcome.fleet_provenance,
+            kontor_runtime::FleetProvenanceObservation::Observed {
+                surface: "paseo.agent.labels".to_owned(),
+                provenance: requested.clone(),
+            }
+        );
+        let sent = plane.daemon.sent_messages("create_agent_request");
+        assert_eq!(sent[0]["labels"]["kontor.read_only"], "true");
+        assert_eq!(
+            sent[0]["labels"]["kontor.fleet.policy_hash"],
+            requested.policy_hash.as_str()
+        );
     }
 }

@@ -62,6 +62,10 @@ use crate::observation::{
     ReconciliationReport, reconcile, timestamp_control_sequence,
 };
 use crate::refusal::{RefusalProvenance, TransientRefusal};
+
+/// The native surface this fake reports for fleet provenance. It has none that
+/// can carry it, so a launch that requests provenance is told `unsupported`.
+const FAKE_SURFACE: &str = "fake.runtime";
 use crate::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationChallengeCompletionRequest,
     CorrelationChallengeRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchRequest,
@@ -549,6 +553,11 @@ impl FakeState {
             candidate.observed_at,
         )?;
         Ok(LaunchOutcome {
+            fleet_provenance: crate::provenance::FleetProvenanceObservation::without_surface(
+                request.fleet_provenance(),
+                FAKE_SURFACE,
+                &snapshot.identity().native_id,
+            ),
             snapshot,
             observation,
         })
@@ -1373,6 +1382,11 @@ impl FakeState {
             request.requested_at(),
         )?;
         Ok(LaunchOutcome {
+            fleet_provenance: crate::provenance::FleetProvenanceObservation::without_surface(
+                request.fleet_provenance(),
+                FAKE_SURFACE,
+                &snapshot.identity().native_id,
+            ),
             snapshot,
             observation,
         })
@@ -3775,6 +3789,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             state.minted
         ))?);
         let outcome = ConsultationLaunchOutcome {
+            fleet_provenance: crate::provenance::FleetProvenanceObservation::without_surface(
+                request.fleet_provenance.as_ref(),
+                FAKE_SURFACE,
+                &identity.native_id,
+            ),
             identity,
             provider_session_id: Some(ExternalId::parse(&format!(
                 "provider-consultation-{}",
@@ -4005,11 +4024,19 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             return Ok(existing.clone());
         }
         state.minted = state.minted.saturating_add(1);
+        let identity = state.identity(ExternalId::parse(&format!(
+            "native-hosted-seat-{}",
+            state.minted
+        ))?);
         let outcome = ConsultationLaunchOutcome {
-            identity: state.identity(ExternalId::parse(&format!(
-                "native-hosted-seat-{}",
-                state.minted
-            ))?),
+            // This fake has no native surface that carries fleet provenance, so
+            // it says so rather than echoing the request back as an observation.
+            fleet_provenance: crate::provenance::FleetProvenanceObservation::without_surface(
+                request.fleet_provenance.as_ref(),
+                FAKE_SURFACE,
+                &identity.native_id,
+            ),
+            identity,
             provider_session_id: Some(ExternalId::parse(&format!(
                 "provider-hosted-seat-{}",
                 state.minted
@@ -4191,6 +4218,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 provider_session_id: preview.provider_session_id.clone(),
                 observed_at: preview.observed_at,
                 created: false,
+                fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
             },
         );
         state
@@ -5130,6 +5158,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(LaunchOutcome {
             snapshot,
             observation,
+            // Adoption binds a session no launch of Kontor's created, so there
+            // is no requested provenance to write or read back.
+            fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
         })
     }
 
@@ -5674,6 +5705,7 @@ mod retitle_seat_generation_tests {
                     .parse::<Timestamp>()
                     .expect("timestamp"),
                 created: true,
+                fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
             },
         );
         let request = HostedSeatInspectRequest {
@@ -5764,6 +5796,7 @@ mod retitle_seat_generation_tests {
                     .parse::<Timestamp>()
                     .expect("timestamp"),
                 created: true,
+                fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
             },
         );
         let request = HostedSeatMessageRequest {
@@ -5806,6 +5839,7 @@ mod retitle_seat_generation_tests {
                 provider_session_id: None,
                 observed_at: request.sent_at,
                 created: true,
+                fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
             },
         );
         let successor_request = HostedSeatMessageRequest {

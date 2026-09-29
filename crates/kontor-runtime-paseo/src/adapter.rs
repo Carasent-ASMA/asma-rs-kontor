@@ -4619,6 +4619,11 @@ impl PaseoAdapter {
             &project,
             &workspace_id,
         )?;
+        // ASMA-8280 G-3: the fleet policy's authority rides as native labels,
+        // so the census and the readback hold the seat to it as well.
+        if let Some(provenance) = request.fleet_provenance() {
+            labels.extend(crate::wire::fleet_provenance_labels(provenance)?);
+        }
         // Built before the census, not after, because the create carries a
         // launch-intent digest and the census must match the labels the created
         // agent will actually have. This is also the reconciliation claim: the
@@ -4846,6 +4851,7 @@ impl PaseoAdapter {
             }
             return Err(invalid);
         }
+        let fleet_provenance = Self::observed_fleet_provenance(request.fleet_provenance(), &agent)?;
 
         // A delivery seat exists by now, carrying this launch's exact intent. If
         // the durable bind fails, the seat is neither stranded nor duplicated:
@@ -4926,6 +4932,7 @@ impl PaseoAdapter {
         Ok(LaunchOutcome {
             snapshot,
             observation,
+            fleet_provenance,
         })
     }
 
@@ -5365,7 +5372,28 @@ impl PaseoAdapter {
         } else {
             labels.insert(label::READ_ONLY.to_owned(), "true".to_owned());
         }
+        if let Some(provenance) = &request.fleet_provenance {
+            labels.extend(crate::wire::fleet_provenance_labels(provenance)?);
+        }
         Ok(labels)
+    }
+
+    /// What this launch observed of its fleet provenance: read back from the
+    /// agent's native labels, which the placement readback has already held
+    /// to the exact requested set. Nothing requested is nothing to observe.
+    fn observed_fleet_provenance(
+        requested: Option<&kontor_runtime::FleetLaunchProvenance>,
+        agent: &PaseoAgent,
+    ) -> RuntimeResult<kontor_runtime::FleetProvenanceObservation> {
+        if requested.is_none() {
+            return Ok(kontor_runtime::FleetProvenanceObservation::NotRequested);
+        }
+        let provenance = crate::wire::fleet_provenance_from_labels(&agent.labels)?
+            .ok_or(RuntimeError::CorrelationFailed)?;
+        Ok(kontor_runtime::FleetProvenanceObservation::Observed {
+            surface: crate::wire::FLEET_PROVENANCE_SURFACE.to_owned(),
+            provenance,
+        })
     }
 
     async fn launch_consultation_inner(
@@ -5529,6 +5557,10 @@ impl PaseoAdapter {
                 .transpose()?,
             observed_at: request.requested_at,
             created,
+            fleet_provenance: Self::observed_fleet_provenance(
+                request.fleet_provenance.as_ref(),
+                &agent,
+            )?,
         })
     }
 
@@ -5569,14 +5601,18 @@ impl PaseoAdapter {
         project: &PaseoProjectBinding,
         workspace_id: &str,
     ) -> RuntimeResult<BTreeMap<String, String>> {
-        self.hosted_labels(
+        let mut labels = self.hosted_labels(
             request.seat_binding_id,
             &request.role_slot_id,
             &request.scope,
             project,
             workspace_id,
             &request.cwd,
-        )
+        )?;
+        if let Some(provenance) = &request.fleet_provenance {
+            labels.extend(crate::wire::fleet_provenance_labels(provenance)?);
+        }
+        Ok(labels)
     }
 
     fn released_seat_title(
@@ -6062,6 +6098,10 @@ impl PaseoAdapter {
                 .transpose()?,
             observed_at: request.requested_at,
             created,
+            fleet_provenance: Self::observed_fleet_provenance(
+                request.fleet_provenance.as_ref(),
+                &agent,
+            )?,
         })
     }
 }
@@ -9186,6 +9226,9 @@ impl RuntimeAdapter for PaseoAdapter {
         Ok(LaunchOutcome {
             snapshot,
             observation,
+            // Adoption binds a session no launch of Kontor's created, so there is
+            // no requested fleet provenance to observe.
+            fleet_provenance: kontor_runtime::FleetProvenanceObservation::NotRequested,
         })
     }
 
