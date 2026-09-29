@@ -673,6 +673,118 @@ pub struct NewCoreTeamRouteSuccessionClaim {
     pub claimed_at: Timestamp,
 }
 
+/// One occupant of a logical seat, as a succession recorded it.
+///
+/// Every field is required. A readback is evidence, and evidence with a hole in
+/// it is a claim: an absent `host` or `generation` would let two different
+/// natives produce the same document (ASMA-8187 P2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamRouteOccupant {
+    /// Exact native session identity.
+    pub native_id: ExternalId,
+    /// Runtime that holds it.
+    pub runtime_kind: String,
+    /// Host it was placed on.
+    pub host: String,
+    /// Runtime generation of this native.
+    pub generation: u64,
+    /// Provider conversation, when the runtime exposes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<ExternalId>,
+    /// Which occupancy of the logical seat this native is.
+    pub occupancy_generation: u64,
+    /// Frozen provider/model/effort route it runs on.
+    pub model_route: crate::spec::ModelRung,
+}
+
+/// The successor's grant subject: non-secret identity, never a credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamRouteGrantSubject {
+    /// The generation this successor's grant is scoped to.
+    pub generation: u64,
+    /// The logical seat the grant is scoped to.
+    pub subject_seat_binding_id: SeatBindingId,
+    /// Digest over the non-secret (seat, generation) pair, and nothing else.
+    pub subject_digest: ContentHash,
+}
+
+/// The complete durable evidence one Core Team succession produced.
+///
+/// One definition, shared by the layer that builds it, the layer that persists
+/// it and the layer that answers with it. `deny_unknown_fields` throughout is
+/// half the point: a readback that carries something nobody declared is a
+/// readback nobody validated, and the free-form JSON this replaces was exactly
+/// where an undeclared field could hide (ASMA-8187 P2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTeamRouteSuccessionReadback {
+    /// The preserved logical seat.
+    pub seat_binding_id: SeatBindingId,
+    /// Exact archived predecessor.
+    pub predecessor: CoreTeamRouteOccupant,
+    /// Exact installed successor.
+    pub successor: CoreTeamRouteOccupant,
+    /// The successor's generation-scoped grant subject, never any credential.
+    pub grant_subject: CoreTeamRouteGrantSubject,
+    /// Instant the predecessor was retired.
+    pub retired_at: String,
+}
+
+impl CoreTeamRouteSuccessionReadback {
+    /// Whether this readback is coherent on its own terms.
+    ///
+    /// Everything here is checkable without reading anything else: the grant
+    /// subject is derived from values the document already carries, the two
+    /// occupants must be two natives, and a retirement instant is not optional.
+    /// Ledger agreement is a separate question, asked where the ledger is.
+    ///
+    /// # Errors
+    /// Returns the rule that failed, as a stable `&'static str`.
+    pub fn check_internal_consistency(&self) -> Result<(), &'static str> {
+        if self.grant_subject.subject_digest
+            != core_team_grant_subject_digest(
+                self.grant_subject.subject_seat_binding_id,
+                self.grant_subject.generation,
+            )
+        {
+            return Err(
+                "the succession readback's grant subject digest is not the one it describes",
+            );
+        }
+        if self.predecessor.native_id == self.successor.native_id
+            && self.predecessor.generation == self.successor.generation
+        {
+            return Err("the succession readback names one native as both occupants");
+        }
+        if self.retired_at.trim().is_empty() {
+            return Err("the succession readback records no retirement instant");
+        }
+        Ok(())
+    }
+}
+
+/// The public digest a successor's generation-scoped grant is proved by.
+///
+/// Over the seat and the generation, with a domain separator and an explicit
+/// version, and over nothing else. A seat credential is derived from the
+/// operator secret; neither it nor any digest *of it* is recorded anywhere, so
+/// this value can be recomputed by any reader and proves only which grant the
+/// successor was entitled to derive.
+#[must_use]
+pub fn core_team_grant_subject_digest(
+    seat_binding_id: SeatBindingId,
+    occupancy_generation: u64,
+) -> ContentHash {
+    let mut subject = Vec::new();
+    subject.extend_from_slice(b"kontor-core-team-seat-grant-subject-v1\0");
+    subject.extend_from_slice(seat_binding_id.to_string().as_bytes());
+    subject.push(0);
+    subject.extend_from_slice(occupancy_generation.to_string().as_bytes());
+    ContentHash::of(&subject)
+}
+
 /// The committed outcome of one claimed succession.
 ///
 /// Written in the same transaction as the history append and the active-row

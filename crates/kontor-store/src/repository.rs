@@ -52,31 +52,31 @@ use kontor_core::repository::{
     AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AdoptionWrite, AgentRun,
     AttestationWrite, AvailabilityOverride, CalendarRepository, CapacityObservation,
     CapacityRepository, CommandRepository, CompletionWrite, ConnectorSpecSelector,
-    CoreTeamRouteSuccessionCommit, CoreTeamRouteSuccessionEffects, CredentialReference,
-    CredentialReferenceKind, GateEvaluation, GateRejectionRecovery, GateRejectionRoute,
-    GateRouteOrigin, HistoryGapKind, HistoryGapMarker, HostedSeatLaunchIntentState,
-    HostedSeatLaunchIntentSupersession, IntakeCreatedWork, IntakeDecisionRecord, IntakeOutcome,
-    IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
-    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
-    NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
-    NewConsultationRecoveryAttempt, NewCoreTeamRouteSuccessionClaim, NewGateEvaluation,
-    NewIntakeDecision, NewIntakeDecisionRecord, NewIntakeReevaluation, NewLocalCommand,
-    NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState,
-    NewProviderUsageObservation, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
-    NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
-    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, ProviderQuotaState,
-    ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage, RealmRepository,
-    ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure,
-    RunInspection, RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation,
-    SessionVerdictEvidence, SourceDisposition, SourceEventIngest, SpecRepository,
-    StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
-    StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
-    StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
-    StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
-    StoredCoreTeamRevision, StoredCoreTeamRouteSuccession, StoredEpicCompletion, StoredEpicRoster,
-    StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal,
-    StoredRetiredEvaluatorAttestation, StoredTeamRunAdmissionAdoption,
+    CoreTeamRouteSuccessionCommit, CoreTeamRouteSuccessionEffects, CoreTeamRouteSuccessionReadback,
+    CredentialReference, CredentialReferenceKind, GateEvaluation, GateRejectionRecovery,
+    GateRejectionRoute, GateRouteOrigin, HistoryGapKind, HistoryGapMarker,
+    HostedSeatLaunchIntentState, HostedSeatLaunchIntentSupersession, IntakeCreatedWork,
+    IntakeDecisionRecord, IntakeOutcome, IntakeRepository, MiniProject,
+    MiniProjectTopologySnapshot, NewAbandonReceipt, NewAccountProfile, NewAdaptiveAdmissionState,
+    NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
+    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt,
+    NewCoreTeamRouteSuccessionClaim, NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord,
+    NewIntakeReevaluation, NewLocalCommand, NewMiniProject, NewNativeContainerBinding,
+    NewObservation, NewProject, NewProviderQuotaState, NewProviderUsageObservation,
+    NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
+    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
+    ProjectRepository, ProjectTopologyDefault, ProviderQuotaState, ProviderUsageObservation,
+    QuotaObservationProvenance, RealmEventPage, RealmRepository, ReceiptAdvance,
+    ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunInspection,
+    RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence,
+    SourceDisposition, SourceEventIngest, SpecRepository, StoredAdvisorAdvice,
+    StoredCapacityConfiguration, StoredCommitteeFinding, StoredCompletionProfile,
+    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationMaterializationReroute,
+    StoredConsultationProfileRevision, StoredConsultationRecoveryAttempt, StoredConsultationRun,
+    StoredConsultationSeat, StoredCoreTeamRevision, StoredCoreTeamRouteSuccession,
+    StoredEpicCompletion, StoredEpicRoster, StoredHostedSeatLaunchIntent, StoredHostedTopologySeat,
+    StoredLegacyEpicBacklogCodeCorrection, StoredPromotion, StoredQuickSession,
+    StoredRemediationProposal, StoredRetiredEvaluatorAttestation, StoredTeamRunAdmissionAdoption,
     StoredTopologyContainerRecovery, SuccessionRepository, Task, TaskInspection,
     TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
     TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
@@ -5375,23 +5375,39 @@ impl SqliteStore {
             });
         }
         let transaction = self.begin()?;
-        let active_native: Option<String> = transaction
+        // The whole identity, not the external id alone. A provider may reissue
+        // an external id it has already used, so `native_id` on its own cannot
+        // say whether the seat holds *this* native or a later one wearing the
+        // same name; the runtime generation is what tells them apart
+        // (ASMA-8187 P1).
+        let active: Option<(String, i64, String, String)> = transaction
             .query_row(
-                "SELECT native_id FROM hosted_topology_seats
-                 WHERE project_id = ?1 AND seat_binding_id = ?2",
+                "SELECT native_id, generation, runtime_kind, host
+                   FROM hosted_topology_seats
+                  WHERE project_id = ?1 AND seat_binding_id = ?2",
                 params![
                     predecessor.project_id.to_string(),
                     predecessor.seat_binding_id.to_string(),
                 ],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(backend)?;
-        if active_native.as_deref() == Some(successor.native_identity.native_id.as_str()) {
+        let names = |identity: &NativeRuntimeIdentity| {
+            active
+                .as_ref()
+                .is_some_and(|(native, generation, kind, host)| {
+                    native == identity.native_id.as_str()
+                        && u64::try_from(*generation).unwrap_or(u64::MAX) == identity.generation
+                        && kind == identity.runtime_kind.as_str()
+                        && host == identity.host.as_str()
+                })
+        };
+        if names(&successor.native_identity) {
             transaction.rollback().map_err(backend)?;
             return Ok(Applied::Unchanged);
         }
-        if active_native.as_deref() != Some(predecessor.native_identity.native_id.as_str()) {
+        if !names(&predecessor.native_identity) {
             return Err(RepositoryError::Conflict {
                 subject: "hosted topology seat route",
                 rule: "the active native predecessor differs from the correction",
@@ -5486,6 +5502,24 @@ impl SqliteStore {
                     rule: "the succession readback does not match its declared hash",
                 });
             }
+            // And it is a *readback*, not merely well-formed JSON under an
+            // honest digest. Typing it here is what stops an incomplete or
+            // embellished document becoming durable in the first place; the
+            // binder's later check then has something whole to compare against
+            // (ASMA-8187 P2).
+            let typed = serde_json::from_value::<CoreTeamRouteSuccessionReadback>(
+                succession.readback.clone(),
+            )
+            .map_err(|_| RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession readback is not a complete Core Team succession readback",
+            })?;
+            typed
+                .check_internal_consistency()
+                .map_err(|rule| RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule,
+                })?;
             let readback = serde_json::to_string(&succession.readback).map_err(|error| {
                 RepositoryError::Backend {
                     detail: format!("a succession readback could not be encoded: {error}"),
@@ -5647,8 +5681,9 @@ impl SqliteStore {
                 .ok_or(RepositoryError::NotFound {
                     subject: "core team route succession",
                 })?;
-        let (Some(successor_native_id), Some(_)) = (
+        let (Some(successor_native_id), Some(successor_generation), Some(_)) = (
             recorded.successor_native_id.clone(),
+            recorded.successor_generation,
             recorded.route_committed_at,
         ) else {
             return Err(RepositoryError::Conflict {
@@ -5656,6 +5691,23 @@ impl SqliteStore {
                 rule: "a succession cannot commit effects before its route",
             });
         };
+
+        // Effect zero, and the one the other two are only meaningful under: the
+        // seat is still standing in the occupancy this command produced. An
+        // external native id is the provider's to reissue, so a later occupancy
+        // reusing the same id would otherwise satisfy an older row's latches and
+        // let it receipt effects belonging to its successor's successor
+        // (ASMA-8187 P1).
+        let occupancy = self.hosted_topology_seat_occupancy_generation(
+            recorded.project_id,
+            recorded.seat_binding_id,
+        )?;
+        if occupancy != Some(recorded.successor_occupancy_generation) {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the seat has left the occupancy generation this succession installed",
+            });
+        }
 
         // Effect one: the launch intent, installed against this exact native.
         let intent = self.get_hosted_seat_launch_intent(
@@ -5669,9 +5721,10 @@ impl SqliteStore {
         });
 
         // Effect two: the observation, bound to this exact successor. The
-        // active occupant proves which native the seat holds; the attachment
-        // instant proves the observation was written for *that* native and not
-        // inherited from an earlier one.
+        // active occupant proves which native the seat holds — by its whole
+        // identity, so a reissued id under another runtime generation is not
+        // mistaken for it — and the attachment instant proves the observation
+        // was written for *that* native and not inherited from an earlier one.
         let active =
             self.get_hosted_topology_seat(recorded.project_id, recorded.seat_binding_id)?;
         let seat_binding_observed = match (
@@ -5680,6 +5733,7 @@ impl SqliteStore {
         ) {
             (Some(active), Some(binding)) => {
                 active.native_identity.native_id == successor_native_id
+                    && active.native_identity.generation == successor_generation
                     && binding.last_attached_at == Some(active.observed_at)
             }
             _ => false,
@@ -5736,12 +5790,21 @@ impl SqliteStore {
             });
         }
         let transaction = self.begin()?;
-        let row: Option<(String, Option<String>, Option<String>, i64, i64)> = transaction
+        let row: Option<(
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+            String,
+            String,
+        )> = transaction
             .query_row(
                 "SELECT intent_hash, receipt_id, route_committed_at,
-                        launch_intent_installed, seat_binding_observed
-                   FROM core_team_route_successions
-                  WHERE idempotency_key = ?1",
+                            launch_intent_installed, seat_binding_observed,
+                            project_id, mini_project_id
+                       FROM core_team_route_successions
+                      WHERE idempotency_key = ?1",
                 params![key.as_str()],
                 |row| {
                     Ok((
@@ -5750,12 +5813,23 @@ impl SqliteStore {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
                     ))
                 },
             )
             .optional()
             .map_err(backend)?;
-        let Some((recorded_hash, bound, committed, launch_installed, seat_observed)) = row else {
+        let Some((
+            recorded_hash,
+            bound,
+            committed,
+            launch_installed,
+            seat_observed,
+            project_id,
+            mini_project_id,
+        )) = row
+        else {
             return Err(RepositoryError::NotFound {
                 subject: "core team route succession",
             });
@@ -5785,6 +5859,63 @@ impl SqliteStore {
                     rule: "the succession is already bound to another receipt",
                 })
             };
+        }
+        // A foreign key proves the receipt exists; it says nothing about whose
+        // it is. Read it here, inside the same transaction, and require it to be
+        // the receipt this exact command produced: same project, same key, same
+        // command kind, same target epic, same intent. Anything else is a
+        // succession pointing at somebody else's completion (ASMA-8187 P2).
+        let receipt: Option<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )> = transaction
+            .query_row(
+                "SELECT project_id, idempotency_key, kind, intent_hash,
+                            json_extract(target, '$.kind'),
+                            json_extract(target, '$.mini_project_id')
+                       FROM command_receipts WHERE id = ?1",
+                params![receipt_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((
+            receipt_project,
+            receipt_key,
+            receipt_kind,
+            receipt_intent,
+            target_kind,
+            target_epic,
+        )) = receipt
+        else {
+            return Err(RepositoryError::NotFound {
+                subject: "command receipt",
+            });
+        };
+        if receipt_project != project_id
+            || receipt_key != key.as_str()
+            || receipt_kind != "correct_core_team_route"
+            || receipt_intent != intent_hash.as_str()
+            || target_kind.as_deref() != Some("mini_project")
+            || target_epic.as_deref() != Some(mini_project_id.as_str())
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the receipt was recorded for another command",
+            });
         }
         // The receipt is the last moment anything reads this row before it
         // becomes the answer to every replay, so the evidence is re-proved
@@ -5862,36 +5993,43 @@ impl SqliteStore {
                 rule: "the stored succession readback no longer matches its recorded digest",
             });
         }
-        let text_at = |pointer: &str| {
-            readback
-                .pointer(pointer)
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_owned()
-        };
-        let u64_at = |pointer: &str| {
-            readback
-                .pointer(pointer)
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(u64::MAX)
-        };
-        let agrees = text_at("/seat_binding_id") == row.9
-            && text_at("/predecessor/native_id") == row.2
-            && u64_at("/predecessor/generation") == u64::try_from(row.3).unwrap_or(u64::MAX)
-            && u64_at("/predecessor/occupancy_generation")
+        // Typed, not probed. Reading nine pointers out of free JSON proves those
+        // nine agree and says nothing about the rest of the document: a missing
+        // `host`, an absent `retired_at` or an extra member nobody declared all
+        // passed. Deserializing into the shared domain structure — which denies
+        // unknown fields and has no optional identity — is what makes the whole
+        // readback the thing under test (ASMA-8187 P2).
+        let readback: CoreTeamRouteSuccessionReadback =
+            serde_json::from_value(readback).map_err(|_| RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession readback is not a complete Core Team succession readback",
+            })?;
+        let seat_binding_id = row.9;
+        let agrees = readback.seat_binding_id.to_string() == seat_binding_id
+            && readback.predecessor.native_id.as_str() == row.2
+            && readback.predecessor.generation == u64::try_from(row.3).unwrap_or(u64::MAX)
+            && readback.predecessor.occupancy_generation
                 == u64::try_from(row.4).unwrap_or(u64::MAX)
-            && text_at("/successor/native_id") == row.5
-            && u64_at("/successor/generation") == u64::try_from(row.6).unwrap_or(u64::MAX)
-            && u64_at("/successor/occupancy_generation")
-                == u64::try_from(row.7).unwrap_or(u64::MAX)
-            && u64_at("/grant_subject/generation") == u64::try_from(row.8).unwrap_or(u64::MAX)
-            && text_at("/grant_subject/subject_seat_binding_id") == row.9;
+            && readback.successor.native_id.as_str() == row.5
+            && readback.successor.generation == u64::try_from(row.6).unwrap_or(u64::MAX)
+            && readback.successor.occupancy_generation == u64::try_from(row.7).unwrap_or(u64::MAX)
+            && readback.grant_subject.generation == u64::try_from(row.8).unwrap_or(u64::MAX)
+            && readback.grant_subject.subject_seat_binding_id.to_string() == seat_binding_id;
         if !agrees {
             return Err(RepositoryError::Conflict {
                 subject: "core team route succession",
                 rule: "the succession readback disagrees with its own ledger identity",
             });
         }
+        // Re-asked here, over the stored bytes, rather than trusted from the
+        // write that produced them: the derived grant digest, two distinct
+        // occupants, a recorded retirement instant.
+        readback
+            .check_internal_consistency()
+            .map_err(|rule| RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule,
+            })?;
         Ok(())
     }
 

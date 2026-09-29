@@ -1080,6 +1080,10 @@ fn generation_two_without_profile_selection_outcomes_remains_importable() {
         "team_definition_migration_targets",
         "team_definition_migration_command_intents",
         "team_definition_migration_receipts",
+        // Generation thirteen. A faithful v2 document carries no Core Team
+        // succession key either, and leaving it in makes the fixture hash as
+        // something no schema-2 emitter ever wrote (ASMA-8187).
+        "core_team_route_successions",
     ] {
         legacy
             .pointer_mut("/records")

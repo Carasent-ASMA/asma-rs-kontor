@@ -762,7 +762,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // claimed before its first duplicable effect, and a durable readback plus
     // pending-effect record so a replay converges instead of re-planning
     // against a seat that has moved (ASMA-8187).
-    assert_eq!(SCHEMA_VERSION, 121);
+    assert_eq!(SCHEMA_VERSION, 122);
 }
 
 #[test]

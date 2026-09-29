@@ -335,6 +335,12 @@ impl KontorExportV1 {
             remove_succession_record_fields(records)?;
             remove_quota_runtime_cursor_fields(records)?;
         }
+        if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_core_team_route_succession_record_fields(records)?;
+        }
         canonical_bytes(&value)
     }
 
@@ -363,6 +369,9 @@ impl KontorExportV1 {
         if self.schema_version < SUCCESSION_EXPORT_VERSION {
             remove_succession_record_fields(&mut value)?;
             remove_quota_runtime_cursor_fields(&mut value)?;
+        }
+        if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
+            remove_core_team_route_succession_record_fields(&mut value)?;
         }
         canonical_bytes(&value)
     }
@@ -627,6 +636,13 @@ impl KontorExportV1 {
                 detail: "the export's continuity summary does not match its records",
             });
         }
+        // Last, and over the whole document including every embedded JSON
+        // string. Construction scans what *this* Realm publishes; this scans
+        // what another Realm hands us, which is the only copy nobody here
+        // vouched for. It runs before an import opens a transaction, so a
+        // document carrying credential material is refused having written
+        // nothing (ASMA-8187 P1).
+        scan_for_canaries(&canonical_value(self)?, 0)?;
         Ok(())
     }
 
@@ -1147,6 +1163,26 @@ fn remove_succession_record_fields(records: &mut serde_json::Value) -> Result<()
         detail: "the export records are not an object",
     })?;
     for field in SUCCESSION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove the generation-13 Core Team succession field.
+///
+/// A genuine schema-12 document never had this key, so its digest was taken
+/// over bytes without it. Parsing back-fills an empty array so older documents
+/// present the current record type, and every path that reproduces the original
+/// bytes has to take that back-fill out again — otherwise the document is
+/// rehashed as something its source never wrote, and an authentic v12 export
+/// fails verification for having been read (ASMA-8187 P1).
+fn remove_core_team_route_succession_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS {
         records.remove(field);
     }
     Ok(())
@@ -2927,6 +2963,11 @@ impl ExportedRecords {
         }
         if schema_version < SUCCESSION_EXPORT_VERSION {
             for field in SUCCESSION_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
+            for field in CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS {
                 continuity.record_counts.remove(field);
             }
         }

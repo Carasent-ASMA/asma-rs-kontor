@@ -186,7 +186,8 @@ use kontor_core::realm::ReceiptEnvelope;
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
     AccountProfileUpdate, AdaptiveAdmissionAdvance, CalendarRepository, CapacityRepository,
-    CommandRepository, CompletionWrite, CoreTeamRouteSuccessionCommit, CredentialReference,
+    CommandRepository, CompletionWrite, CoreTeamRouteGrantSubject, CoreTeamRouteOccupant,
+    CoreTeamRouteSuccessionCommit, CoreTeamRouteSuccessionReadback, CredentialReference,
     CredentialReferenceKind, HostedSeatLaunchIntentState, HostedSeatLaunchIntentSupersession,
     IntakeOutcome, IntakeRepository, LegacyConsultationTopicCorrection,
     LegacyEpicBacklogCodeCorrection, MigrationObjectKind, MiniProject,
@@ -8444,20 +8445,25 @@ impl Services {
     fn credential_subject(
         seat_binding_id: SeatBindingId,
         occupancy_generation: u64,
-    ) -> CoreTeamRouteGrantSubjectDto {
-        let mut subject = Vec::new();
-        subject.extend_from_slice(b"kontor-core-team-seat-grant-subject-v1\0");
-        subject.extend_from_slice(seat_binding_id.to_string().as_bytes());
-        subject.push(0);
-        subject.extend_from_slice(occupancy_generation.to_string().as_bytes());
-        CoreTeamRouteGrantSubjectDto {
+    ) -> CoreTeamRouteGrantSubject {
+        CoreTeamRouteGrantSubject {
             generation: occupancy_generation,
             subject_seat_binding_id: seat_binding_id,
-            subject_digest: ContentHash::of(&subject),
+            // Derived by the domain, so the layer that persists this readback
+            // recomputes the same value rather than believing what it is handed.
+            subject_digest: kontor_core::repository::core_team_grant_subject_digest(
+                seat_binding_id,
+                occupancy_generation,
+            ),
         }
     }
 
     /// The complete evidence one succession produced, as one document.
+    ///
+    /// Built as the domain type, not as a response shape: these are the bytes
+    /// that become durable, and the store validates them against this exact
+    /// structure. The API projection below is derived from the same value, so
+    /// the two cannot drift (ASMA-8187 P2).
     fn core_team_route_readback(
         seat_binding_id: SeatBindingId,
         predecessor: &StoredHostedTopologySeat,
@@ -8465,22 +8471,48 @@ impl Services {
         successor: &StoredHostedTopologySeat,
         successor_occupancy: u64,
         retired_at: Timestamp,
-    ) -> CoreTeamRouteSuccessionReadbackDto {
-        let occupant = |seat: &StoredHostedTopologySeat, occupancy: u64| CoreTeamRouteOccupantDto {
+    ) -> CoreTeamRouteSuccessionReadback {
+        let occupant = |seat: &StoredHostedTopologySeat, occupancy: u64| CoreTeamRouteOccupant {
             native_id: seat.native_identity.native_id.clone(),
             runtime_kind: seat.native_identity.runtime_kind.as_str().to_owned(),
             host: seat.native_identity.host.as_str().to_owned(),
             generation: seat.native_identity.generation,
             provider_session_id: seat.provider_session_id.clone(),
             occupancy_generation: occupancy,
-            model_route: runtime_model_route_dto(&seat.model_rung),
+            model_route: seat.model_rung.clone(),
         };
-        CoreTeamRouteSuccessionReadbackDto {
+        CoreTeamRouteSuccessionReadback {
             seat_binding_id,
             predecessor: occupant(predecessor, predecessor_occupancy),
             successor: occupant(successor, successor_occupancy),
             grant_subject: Self::credential_subject(seat_binding_id, successor_occupancy),
             retired_at: retired_at.to_string(),
+        }
+    }
+
+    /// Project one durable readback onto the API shape, field for field.
+    fn readback_dto(
+        readback: &CoreTeamRouteSuccessionReadback,
+    ) -> CoreTeamRouteSuccessionReadbackDto {
+        let occupant = |occupant: &CoreTeamRouteOccupant| CoreTeamRouteOccupantDto {
+            native_id: occupant.native_id.clone(),
+            runtime_kind: occupant.runtime_kind.clone(),
+            host: occupant.host.clone(),
+            generation: occupant.generation,
+            provider_session_id: occupant.provider_session_id.clone(),
+            occupancy_generation: occupant.occupancy_generation,
+            model_route: runtime_model_route_dto(&occupant.model_route),
+        };
+        CoreTeamRouteSuccessionReadbackDto {
+            seat_binding_id: readback.seat_binding_id,
+            predecessor: occupant(&readback.predecessor),
+            successor: occupant(&readback.successor),
+            grant_subject: CoreTeamRouteGrantSubjectDto {
+                generation: readback.grant_subject.generation,
+                subject_seat_binding_id: readback.grant_subject.subject_seat_binding_id,
+                subject_digest: readback.grant_subject.subject_digest.clone(),
+            },
+            retired_at: readback.retired_at.clone(),
         }
     }
 
@@ -8516,13 +8548,28 @@ impl Services {
                 store.get_hosted_topology_seat(project_id, recorded.seat_binding_id)
             })
             .map_err(|error| self.refuse(&error))?;
+        let occupancy = state
+            .with_store(|store| {
+                store
+                    .hosted_topology_seat_occupancy_generation(project_id, recorded.seat_binding_id)
+            })
+            .map_err(|error| self.refuse(&error))?;
         // The effects can only land while this succession's successor is still
         // the seat's occupant. Once the seat is empty, or a later succession has
         // moved it on, they never can — and answering that with success would
         // mint a receipt for effects that will never happen. The refusal is
         // typed so a caller can tell "not yet" from "not ever".
+        //
+        // "Still the occupant" is the whole identity plus the occupancy this
+        // command produced, not the external id alone. A provider may reissue an
+        // id it has already used, and a later occupancy wearing an earlier name
+        // is a different native doing different work (ASMA-8187 P1).
         let active = active
-            .filter(|seat| seat.native_identity.native_id == successor_native_id)
+            .filter(|seat| {
+                seat.native_identity.native_id == successor_native_id
+                    && Some(seat.native_identity.generation) == recorded.successor_generation
+                    && occupancy == Some(recorded.successor_occupancy_generation)
+            })
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::RevisionConflict,
@@ -8657,7 +8704,7 @@ impl Services {
         roster: &FrozenRoster,
     ) -> Result<CoreTeamRouteOutcomeDto, ApiError> {
         let state = self.state()?;
-        let readback: CoreTeamRouteSuccessionReadbackDto = recorded
+        let readback: CoreTeamRouteSuccessionReadback = recorded
             .readback
             .clone()
             .map(serde_json::from_value)
@@ -8699,7 +8746,7 @@ impl Services {
             seat_binding_id: recorded.seat_binding_id,
             predecessor_native_id: recorded.predecessor_native_id.clone(),
             successor_native_id,
-            readback: Some(readback),
+            readback: Some(Self::readback_dto(&readback)),
             readback_hash: recorded.readback_hash.clone(),
             succession_effects: Some(CoreTeamRouteEffectsDto {
                 launch_intent_installed: recorded.effects.launch_intent_installed,
@@ -25208,8 +25255,7 @@ impl ApplicationOperations for Services {
         let replayed = self.replayed(key, &intent, Some(&target))?.is_some();
 
         let replaced_native = plan.needs_native_replacement();
-        let mut succession_readback: Option<(CoreTeamRouteSuccessionReadbackDto, ContentHash)> =
-            None;
+        let mut succession_readback: Option<(CoreTeamRouteSuccessionReadback, ContentHash)> = None;
         let successor = if let Some(successor) = plan.successor.clone() {
             successor
         } else if !replaced_native {
@@ -25619,7 +25665,7 @@ impl ApplicationOperations for Services {
             successor_native_id: successor.native_identity.native_id,
             readback: succession_readback
                 .as_ref()
-                .map(|(readback, _)| readback.clone()),
+                .map(|(readback, _)| Self::readback_dto(readback)),
             readback_hash: succession_readback.as_ref().map(|(_, hash)| hash.clone()),
             // Both latched on this path, which is the state the ledger records.
             succession_effects: succession_readback

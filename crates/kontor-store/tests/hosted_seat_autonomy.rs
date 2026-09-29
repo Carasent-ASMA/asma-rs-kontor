@@ -936,91 +936,94 @@ fn a_succession_readback_is_refused_at_the_store_boundary() {
     };
     let key = IdempotencyKey::parse("asma-8187-boundary").expect("a key");
     let committed_at = at("2026-09-17T02:04:00Z");
-    let intent_hash = ContentHash::of(b"asma-8187 boundary intent");
     // Claim first. Without an owned claim the commit refuses on the missing
     // row and never reaches the validation under test — which is exactly how a
     // weaker version of this test passed while proving nothing.
-    fixture
-        .store
-        .claim_core_team_route_succession(
-            &kontor_core::repository::NewCoreTeamRouteSuccessionClaim {
+    claim_step(&fixture, &key, seat, &predecessor, 1);
+
+    let complete = full_readback(seat, &predecessor, 1, &successor, 2, committed_at);
+    let attempt = |readback: serde_json::Value, hash: ContentHash| {
+        fixture.store.replace_hosted_topology_seat_route(
+            &predecessor,
+            &successor,
+            committed_at,
+            "boundary test",
+            Some(&CoreTeamRouteSuccessionCommit {
                 idempotency_key: key.clone(),
-                intent_hash: intent_hash.clone(),
-                project_id: fixture.project_id,
-                mini_project_id: fixture.mini_project_id,
-                seat_binding_id: seat,
-                predecessor_native_id: predecessor.native_identity.native_id.clone(),
-                predecessor_generation: predecessor.native_identity.generation,
-                predecessor_occupancy_generation: 1,
-                successor_occupancy_generation: 2,
-                successor_credential_generation: 2,
-                claimed_at: at("2026-09-17T02:03:00Z"),
-            },
+                readback,
+                readback_hash: hash,
+                route_committed_at: committed_at,
+            }),
         )
-        .expect("the claim is taken");
-
-    let honest = serde_json::json!({
-        "seat_binding_id": seat.to_string(),
-        "note": "ordinary readback",
-    });
-    let honest_hash = CanonicalDocument::from_value(&serde_json::json!({
-        "schema_version": 1,
-        "readback": honest,
-    }))
-    .expect("the honest readback canonicalizes")
-    .hash()
-    .clone();
-
-    // A nested forbidden key is refused before anything is written. It is
-    // nested deliberately: a guard that only inspects top-level keys would let
-    // this through.
-    let hidden = serde_json::json!({
-        "seat_binding_id": seat.to_string(),
-        "placement": {"detail": {"credential": "anything at all"}},
-    });
-    assert!(
+    };
+    let rehash = |value: &serde_json::Value| {
         CanonicalDocument::from_value(&serde_json::json!({
             "schema_version": 1,
-            "readback": hidden,
+            "readback": value,
         }))
-        .is_err(),
-        "a nested forbidden key canonicalized at all"
-    );
-    let refused = fixture.store.replace_hosted_topology_seat_route(
-        &predecessor,
-        &successor,
-        committed_at,
-        "boundary test",
-        Some(&CoreTeamRouteSuccessionCommit {
-            idempotency_key: key.clone(),
-            readback: hidden,
-            readback_hash: honest_hash.clone(),
-            route_committed_at: committed_at,
-        }),
-    );
+        .expect("it canonicalizes")
+        .hash()
+        .clone()
+    };
+
+    // A readback missing a required identity field is refused. `host` is chosen
+    // because nothing downstream reads it: a document can lose it and still
+    // satisfy every field anybody compares, which is precisely why the shape
+    // itself has to be the rule.
+    let mut incomplete = serde_json::to_value(&complete).expect("it serializes");
+    incomplete["successor"]
+        .as_object_mut()
+        .expect("an occupant object")
+        .remove("host")
+        .expect("the complete readback carries a host");
+    let refused = attempt(incomplete.clone(), rehash(&incomplete))
+        .expect_err("an incomplete readback was persisted");
     assert!(
-        refused.is_err(),
-        "the store persisted a readback carrying a nested forbidden key"
+        matches!(
+            refused,
+            kontor_core::repository::RepositoryError::Conflict {
+                rule: "the succession readback is not a complete Core Team succession readback",
+                ..
+            }
+        ),
+        "{refused:?}"
     );
 
-    // A truthful document under a digest that does not describe it is equally
-    // refused: the hash is re-derived here rather than believed.
-    let lied = fixture.store.replace_hosted_topology_seat_route(
-        &predecessor,
-        &successor,
-        committed_at,
-        "boundary test",
-        Some(&CoreTeamRouteSuccessionCommit {
-            idempotency_key: key.clone(),
-            readback: honest.clone(),
-            readback_hash: ContentHash::of(b"a digest of something else"),
-            route_committed_at: committed_at,
-        }),
+    // An embellished one is refused too, and this is what closed the last place
+    // a free-form member could hide: there is no longer anywhere in a readback
+    // to put an undeclared key, nested or otherwise.
+    let mut embellished = serde_json::to_value(&complete).expect("it serializes");
+    embellished["placement"] = serde_json::json!({"detail": "anything at all"});
+    let refused = attempt(embellished.clone(), rehash(&embellished))
+        .expect_err("an embellished readback was persisted");
+    assert!(
+        matches!(
+            refused,
+            kontor_core::repository::RepositoryError::Conflict {
+                rule: "the succession readback is not a complete Core Team succession readback",
+                ..
+            }
+        ),
+        "{refused:?}"
     );
-    assert!(lied.is_err(), "a mismatched declared hash was persisted");
 
-    // Neither refusal moved the seat: the predecessor is still the occupant and
-    // no retirement was written.
+    // A complete, truthful document under a digest that does not describe it is
+    // equally refused: the hash is re-derived here rather than believed.
+    let honest = serde_json::to_value(&complete).expect("it serializes");
+    let refused = attempt(honest, ContentHash::of(b"a digest of something else"))
+        .expect_err("a mismatched declared hash was persisted");
+    assert!(
+        matches!(
+            refused,
+            kontor_core::repository::RepositoryError::Conflict {
+                rule: "the succession readback does not match its declared hash",
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+
+    // No refusal moved the seat: the predecessor is still the occupant.
     let active = fixture
         .store
         .get_hosted_topology_seat(fixture.project_id, seat)
@@ -1049,33 +1052,17 @@ fn succession_effects_and_readback_are_proved_before_a_receipt_binds() {
         ..predecessor.clone()
     };
     let key = IdempotencyKey::parse("asma-8187-effects").expect("a key");
-    let intent_hash = ContentHash::of(b"asma-8187 effects intent");
+    let intent_hash = succession_intent(&key).hash().clone();
     let committed_at = at("2026-09-17T02:04:00Z");
 
-    let readback = serde_json::json!({
-        "seat_binding_id": seat.to_string(),
-        "predecessor": {
-            "native_id": predecessor.native_identity.native_id.as_str(),
-            "generation": predecessor.native_identity.generation,
-            "occupancy_generation": 1,
-        },
-        "successor": {
-            "native_id": successor.native_identity.native_id.as_str(),
-            "generation": successor.native_identity.generation,
-            "occupancy_generation": 2,
-        },
-        "grant_subject": {
-            "generation": 2,
-            "subject_seat_binding_id": seat.to_string(),
-        },
-    });
-    let readback_hash = CanonicalDocument::from_value(&serde_json::json!({
-        "schema_version": 1,
-        "readback": readback,
-    }))
-    .expect("the readback canonicalizes")
-    .hash()
-    .clone();
+    let (readback, readback_hash) = readback_document(&full_readback(
+        seat,
+        &predecessor,
+        1,
+        &successor,
+        2,
+        committed_at,
+    ));
 
     fixture
         .store
@@ -1188,24 +1175,19 @@ fn succession_effects_and_readback_are_proved_before_a_receipt_binds() {
             .is_complete()
     );
 
-    // Binding a *coherent* succession gets past every verification and is
-    // stopped only by the receipt foreign key, since this suite mints no
-    // command receipts. The distinction matters: the refusal must not be one
-    // of the succession rules, which is what the companion test proves is
-    // reachable when the readback genuinely disagrees.
-    let refused = fixture
+    // A coherent succession, presenting the receipt its own command recorded,
+    // binds. Nothing about the receipt is taken on trust: the binder reads it
+    // and requires the project, key, kind, target epic and intent to be this
+    // command's own.
+    fixture
         .store
         .bind_core_team_route_succession_receipt(
             &key,
             &intent_hash,
-            CommandReceiptId::generate(),
+            recorded_receipt(&fixture, &key),
             at("2026-09-17T02:06:00Z"),
         )
-        .expect_err("this suite has no command receipts to reference");
-    assert!(
-        !format!("{refused:?}").contains("core team route succession"),
-        "a coherent succession was refused by a succession rule: {refused:?}"
-    );
+        .expect("a coherent succession binds the receipt its command recorded");
 }
 
 /// A readback that disagrees with its ledger row cannot be receipted.
@@ -1224,35 +1206,17 @@ fn a_readback_naming_another_successor_is_refused_before_binding() {
         ..predecessor.clone()
     };
     let key = IdempotencyKey::parse("asma-8187-disagree").expect("a key");
-    let intent_hash = ContentHash::of(b"asma-8187 disagreeing intent");
+    let intent_hash = succession_intent(&key).hash().clone();
     let committed_at = at("2026-09-17T02:04:00Z");
 
     // Correctly hashed, internally coherent — and naming a native this
     // succession never installed.
-    let lying = serde_json::json!({
-        "seat_binding_id": seat.to_string(),
-        "predecessor": {
-            "native_id": predecessor.native_identity.native_id.as_str(),
-            "generation": predecessor.native_identity.generation,
-            "occupancy_generation": 1,
-        },
-        "successor": {
-            "native_id": "someone-elses-native",
-            "generation": 2,
-            "occupancy_generation": 2,
-        },
-        "grant_subject": {
-            "generation": 2,
-            "subject_seat_binding_id": seat.to_string(),
-        },
-    });
-    let lying_hash = CanonicalDocument::from_value(&serde_json::json!({
-        "schema_version": 1,
-        "readback": lying,
-    }))
-    .expect("it canonicalizes")
-    .hash()
-    .clone();
+    // Complete, correctly hashed, internally coherent — and naming a native
+    // this succession never installed. Completeness is what makes the identity
+    // comparison the thing under test rather than the shape check.
+    let mut lying = full_readback(seat, &predecessor, 1, &successor, 2, committed_at);
+    lying.successor.native_id = ExternalId::parse("someone-elses-native").expect("a native id");
+    let (lying, lying_hash) = readback_document(&lying);
 
     fixture
         .store
@@ -1338,7 +1302,7 @@ fn a_readback_naming_another_successor_is_refused_before_binding() {
         .bind_core_team_route_succession_receipt(
             &key,
             &intent_hash,
-            CommandReceiptId::generate(),
+            recorded_receipt(&fixture, &key),
             at("2026-09-17T02:06:00Z"),
         )
         .expect_err("a readback naming another successor was receipted");
@@ -1390,7 +1354,7 @@ fn three_succession_states(
             .claim_core_team_route_succession(
                 &kontor_core::repository::NewCoreTeamRouteSuccessionClaim {
                     idempotency_key: key.clone(),
-                    intent_hash: ContentHash::of(successor_native.as_bytes()),
+                    intent_hash: succession_intent(key).hash().clone(),
                     project_id: fixture.project_id,
                     mini_project_id: fixture.mini_project_id,
                     seat_binding_id: seat,
@@ -1408,28 +1372,9 @@ fn three_succession_states(
 
     // 1 → 2, carried all the way to a bound receipt.
     let second = step(&completed, first, "lsa-second", 1);
-    let readback = serde_json::json!({
-        "seat_binding_id": seat.to_string(),
-        "predecessor": {
-            "native_id": first.native_identity.native_id.as_str(),
-            "generation": first.native_identity.generation,
-            "occupancy_generation": 1,
-        },
-        "successor": {
-            "native_id": second.native_identity.native_id.as_str(),
-            "generation": second.native_identity.generation,
-            "occupancy_generation": 2,
-        },
-        "grant_subject": {"generation": 2, "subject_seat_binding_id": seat.to_string()},
-    });
-    let readback_hash = CanonicalDocument::from_value(&serde_json::json!({
-        "schema_version": 1,
-        "readback": readback,
-    }))
-    .expect("the readback canonicalizes")
-    .hash()
-    .clone();
     let committed_at = at("2026-09-17T03:01:30Z");
+    let (readback, readback_hash) =
+        readback_document(&full_readback(seat, first, 1, &second, 2, committed_at));
     fixture
         .store
         .replace_hosted_topology_seat_route(
@@ -1450,49 +1395,22 @@ fn three_succession_states(
         .store
         .commit_core_team_route_succession_effects(&completed)
         .expect("the proved effects commit");
-    // A real command receipt: the ledger's `receipt_id` is a foreign key, and a
-    // fabricated identifier would refuse before anything under test is reached.
-    let receipt = kontor_core::repository::CommandRepository::record_local_command(
-        &fixture.store,
-        &kontor_core::repository::NewLocalCommand {
-            project_id: fixture.project_id,
-            receipt_id: CommandReceiptId::generate(),
-            idempotency_key: completed.clone(),
-            kind: kontor_core::receipt::CommandKind::CorrectCoreTeamRoute,
-            target: kontor_core::receipt::AggregateRef::MiniProject {
-                mini_project_id: fixture.mini_project_id,
-            },
-            target_revision: kontor_core::id::AggregateRevision::INITIAL,
-            intent: CanonicalDocument::from_value(&serde_json::json!({
-                "schema_version": 1,
-                "operation": "core_team_route_correction",
-            }))
-            .expect("the intent canonicalizes"),
-            created_at: at("2026-09-17T03:01:50Z"),
-        },
-    )
-    .expect("the destination-local command receipt is recorded");
+    let receipt = recorded_receipt(fixture, &completed);
     fixture
         .store
         .bind_core_team_route_succession_receipt(
             &completed,
-            &ContentHash::of(b"lsa-second"),
-            receipt.id,
+            succession_intent(&completed).hash(),
+            receipt,
             at("2026-09-17T03:02:00Z"),
         )
         .expect("the completed succession binds its receipt");
 
     // 2 → 3, committed with both effects still owed.
     let third = step(&committed, &second, "lsa-third", 2);
-    let second_readback = serde_json::json!({"seat_binding_id": seat.to_string(), "step": 2});
-    let second_hash = CanonicalDocument::from_value(&serde_json::json!({
-        "schema_version": 1,
-        "readback": second_readback,
-    }))
-    .expect("it canonicalizes")
-    .hash()
-    .clone();
     let second_at = at("2026-09-17T03:03:00Z");
+    let (second_readback, second_hash) =
+        readback_document(&full_readback(seat, &second, 2, &third, 3, second_at));
     fixture
         .store
         .replace_hosted_topology_seat_route(
@@ -1965,5 +1883,885 @@ fn a_legacy_export_generation_can_neither_carry_nor_conceal_a_succession() {
         )
         .is_err(),
         "an export understated how many successions it carries"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8187 P1 — an external native id is the provider's to reissue.
+// ---------------------------------------------------------------------------
+
+/// A later occupancy wearing an earlier native's name cannot complete its row.
+///
+/// `native_id` is an external identifier. Nothing stops a provider from issuing
+/// one it has used before, and when it does, two different natives doing two
+/// different jobs answer to the same name. A pending succession that compared
+/// only that name would accept the *later* occupant as proof that its own
+/// effects landed, and mint a receipt for work belonging to its successor's
+/// successor. The occupancy generation is what the seat cannot reuse, and the
+/// runtime generation is what the identity cannot (ASMA-8187 P1).
+#[test]
+fn a_reused_native_id_in_a_later_occupancy_cannot_complete_an_older_succession() {
+    let fixture = Fixture::build();
+    let (seat, first) = fixture.lsa(SeatAutonomy::Supervised);
+    let stranded = IdempotencyKey::parse("asma-8187-recycled-stranded").expect("a key");
+    let later = IdempotencyKey::parse("asma-8187-recycled-later").expect("a key");
+
+    // Occupancy 1 → 2 commits and is then abandoned with both effects owed.
+    let second = StoredHostedTopologySeat {
+        native_identity: identity("recycled", 5),
+        observed_at: at("2026-09-17T06:01:00Z"),
+        ..first.clone()
+    };
+    claim_step(&fixture, &stranded, seat, &first, 1);
+    commit_step(
+        &fixture,
+        &stranded,
+        seat,
+        &first,
+        &second,
+        1,
+        at("2026-09-17T06:01:30Z"),
+    );
+    assert!(
+        !fixture
+            .store
+            .get_core_team_route_succession(&stranded)
+            .expect("the ledger reads")
+            .expect("the row exists")
+            .is_complete()
+    );
+
+    // Occupancy 2 → 3 installs a *different* native under the *same* external
+    // id. This is the reuse: same name, later runtime generation, later
+    // occupancy.
+    let third = StoredHostedTopologySeat {
+        native_identity: identity("recycled", 9),
+        observed_at: at("2026-09-17T06:02:00Z"),
+        ..first.clone()
+    };
+    claim_step(&fixture, &later, seat, &second, 2);
+    commit_step(
+        &fixture,
+        &later,
+        seat,
+        &second,
+        &third,
+        2,
+        at("2026-09-17T06:02:30Z"),
+    );
+    land_effects(&fixture, seat, &third, 3);
+    fixture
+        .store
+        .commit_core_team_route_succession_effects(&later)
+        .expect("the later succession's own effects are proved");
+
+    // The stranded row must not be able to read the later occupant as its own.
+    let refused = fixture
+        .store
+        .commit_core_team_route_succession_effects(&stranded)
+        .expect_err("a reused native id completed an abandoned succession");
+    assert!(
+        matches!(
+            refused,
+            kontor_core::repository::RepositoryError::Conflict {
+                rule: "the seat has left the occupancy generation this succession installed",
+                ..
+            }
+        ),
+        "the refusal was not the occupancy fence: {refused:?}"
+    );
+    let stale = fixture
+        .store
+        .get_core_team_route_succession(&stranded)
+        .expect("the ledger reads")
+        .expect("the row exists");
+    assert!(
+        !stale.is_complete(),
+        "the stranded succession reads complete"
+    );
+    assert!(stale.receipt_id.is_none());
+    assert!(
+        fixture
+            .store
+            .bind_core_team_route_succession_receipt(
+                &stranded,
+                &stale.intent_hash,
+                recorded_receipt(&fixture, &stranded),
+                at("2026-09-17T06:03:00Z"),
+            )
+            .is_err(),
+        "an abandoned succession was receipted from a reused native id"
+    );
+}
+
+/// The identity comparison stands on its own, not only on the occupancy count.
+///
+/// Within one occupancy the store will not let the active identity change, so
+/// this state is not one the domain produces — it is what another writer, or a
+/// restored file, could leave behind. The latch must still refuse it, because a
+/// guard that is only reachable through a second guard is not a guard.
+#[test]
+fn an_active_native_of_another_runtime_generation_is_not_this_successor() {
+    let fixture = Fixture::build();
+    let (seat, first) = fixture.lsa(SeatAutonomy::Supervised);
+    let key = IdempotencyKey::parse("asma-8187-generation-swap").expect("a key");
+    let second = StoredHostedTopologySeat {
+        native_identity: identity("swapped", 5),
+        observed_at: at("2026-09-17T06:05:00Z"),
+        ..first.clone()
+    };
+    claim_step(&fixture, &key, seat, &first, 1);
+    commit_step(
+        &fixture,
+        &key,
+        seat,
+        &first,
+        &second,
+        1,
+        at("2026-09-17T06:05:30Z"),
+    );
+    land_effects(&fixture, seat, &second, 2);
+    // Everything is honest so far, so the latch would commit.
+    fixture
+        .store
+        .get_core_team_route_succession(&key)
+        .expect("the ledger reads")
+        .expect("the row exists");
+
+    // Now only the runtime generation moves. The occupancy count is untouched,
+    // the external id is untouched, and the observation instant still matches.
+    let connection = Connection::open(&fixture.db_path).expect("the database opens");
+    connection
+        .execute(
+            "UPDATE hosted_topology_seats SET generation = 9
+              WHERE project_id = ?1 AND seat_binding_id = ?2",
+            rusqlite::params![fixture.project_id.to_string(), seat.to_string()],
+        )
+        .expect("the generation is swapped underneath");
+    assert_eq!(
+        fixture
+            .store
+            .hosted_topology_seat_occupancy_generation(fixture.project_id, seat)
+            .expect("the occupancy reads"),
+        Some(2),
+        "the occupancy fence must not be what refuses here"
+    );
+
+    let refused = fixture
+        .store
+        .commit_core_team_route_succession_effects(&key)
+        .expect_err("a native of another runtime generation proved this succession");
+    assert!(
+        matches!(
+            refused,
+            kontor_core::repository::RepositoryError::Conflict {
+                rule: "the succession's trailing effects are not both proved against its successor",
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+}
+
+/// Claim one succession step through the store's own boundary.
+fn claim_step(
+    fixture: &Fixture,
+    key: &IdempotencyKey,
+    seat: SeatBindingId,
+    predecessor: &StoredHostedTopologySeat,
+    predecessor_occupancy: u64,
+) {
+    fixture
+        .store
+        .claim_core_team_route_succession(
+            &kontor_core::repository::NewCoreTeamRouteSuccessionClaim {
+                idempotency_key: key.clone(),
+                intent_hash: succession_intent(key).hash().clone(),
+                project_id: fixture.project_id,
+                mini_project_id: fixture.mini_project_id,
+                seat_binding_id: seat,
+                predecessor_native_id: predecessor.native_identity.native_id.clone(),
+                predecessor_generation: predecessor.native_identity.generation,
+                predecessor_occupancy_generation: predecessor_occupancy,
+                successor_occupancy_generation: predecessor_occupancy + 1,
+                successor_credential_generation: predecessor_occupancy + 1,
+                claimed_at: at("2026-09-17T06:00:00Z"),
+            },
+        )
+        .expect("the claim is taken");
+}
+
+/// Commit one succession step's route and ledger row together.
+fn commit_step(
+    fixture: &Fixture,
+    key: &IdempotencyKey,
+    seat: SeatBindingId,
+    predecessor: &StoredHostedTopologySeat,
+    successor: &StoredHostedTopologySeat,
+    predecessor_occupancy: u64,
+    committed_at: Timestamp,
+) {
+    let (readback, readback_hash) = readback_document(&full_readback(
+        seat,
+        predecessor,
+        predecessor_occupancy,
+        successor,
+        predecessor_occupancy + 1,
+        committed_at,
+    ));
+    fixture
+        .store
+        .replace_hosted_topology_seat_route(
+            predecessor,
+            successor,
+            committed_at,
+            "reuse fixture",
+            Some(&CoreTeamRouteSuccessionCommit {
+                idempotency_key: key.clone(),
+                readback,
+                readback_hash,
+                route_committed_at: committed_at,
+            }),
+        )
+        .expect("the transition and its ledger row commit");
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8187 P1 — this Realm's own bearers are credential material too.
+// ---------------------------------------------------------------------------
+
+/// A format-valid seat bearer is refused by value, wherever it appears.
+///
+/// The forbidden-key list stops `credential` and `token`; it cannot stop a
+/// caller choosing the key `note`, and once the readback became a typed
+/// structure it could not stop a caller putting one in a *declared* field
+/// either. A Kontor seat bearer carries no `Bearer ` prefix and matched none of
+/// the provider markers, so this Realm's own credential was the one kind of
+/// secret its scanner did not know. What is refused now is the value
+/// (ASMA-8187 P1).
+#[test]
+fn a_real_format_seat_bearer_is_refused_by_value_wherever_it_appears() {
+    let fixture = Fixture::build();
+    let (seat, predecessor) = fixture.lsa(SeatAutonomy::Supervised);
+    let successor = StoredHostedTopologySeat {
+        native_identity: identity("lsa-second", 2),
+        observed_at: at("2026-09-17T07:01:00Z"),
+        ..predecessor.clone()
+    };
+    let key = IdempotencyKey::parse("asma-8187-bearer-value").expect("a key");
+    let committed_at = at("2026-09-17T07:01:30Z");
+    claim_step(&fixture, &key, seat, &predecessor, 1);
+
+    // Synthetic: the shape a real bearer has, over a signature that is not one.
+    // No live credential is minted, read or logged anywhere in this test.
+    for bearer in [
+        format!("kontor-seat-v2.{seat}.2.{}", "a".repeat(64)),
+        format!("kontor-seat-v1.{seat}.{}", "b".repeat(64)),
+    ] {
+        // In a free document, under a key nobody would think to forbid.
+        assert!(
+            CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "handover": {"note": format!("resume with {bearer}")},
+            }))
+            .is_err(),
+            "a seat bearer canonicalized under a neutral key"
+        );
+
+        // And inside a *declared* readback field, where the shape check cannot
+        // be what refuses it.
+        let mut carrying = full_readback(seat, &predecessor, 1, &successor, 2, committed_at);
+        carrying.retired_at = format!("{} {bearer}", carrying.retired_at);
+        let value = serde_json::to_value(&carrying).expect("it serializes");
+        assert!(
+            CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "readback": value,
+            }))
+            .is_err(),
+            "a seat bearer canonicalized inside a declared field"
+        );
+        let refused = fixture.store.replace_hosted_topology_seat_route(
+            &predecessor,
+            &successor,
+            committed_at,
+            "bearer boundary",
+            Some(&CoreTeamRouteSuccessionCommit {
+                idempotency_key: key.clone(),
+                readback: value,
+                readback_hash: ContentHash::of(b"whatever digest the caller claims"),
+                route_committed_at: committed_at,
+            }),
+        );
+        assert!(refused.is_err(), "the store persisted a seat bearer");
+    }
+
+    // And nothing moved on the way out.
+    assert_eq!(
+        fixture
+            .store
+            .get_hosted_topology_seat(fixture.project_id, seat)
+            .expect("the seat reads")
+            .expect("the seat exists")
+            .native_identity
+            .native_id,
+        predecessor.native_identity.native_id,
+        "a refused bearer still replaced the occupant"
+    );
+    assert!(
+        fixture
+            .store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the claim survives")
+            .route_committed_at
+            .is_none()
+    );
+}
+
+/// A foreign document carrying a seat bearer is refused before any write.
+///
+/// Construction scans what this Realm publishes. A foreign document is the one
+/// copy nobody here vouched for, and it was believed on its digest alone: a
+/// self-consistent export could carry another Realm's bearer — or this one's —
+/// straight into durable evidence. The document below is internally consistent
+/// on purpose, so the digest is not what refuses it.
+#[test]
+fn a_foreign_document_carrying_a_seat_bearer_is_refused_before_any_write() {
+    let source = Fixture::build();
+    let (seat, first) = source.lsa(SeatAutonomy::Supervised);
+    three_succession_states(&source, seat, &first);
+    let mut export = kontor_store::backup::export_realm(&source.store, at("2026-09-17T07:10:00Z"))
+        .expect("the clean source Realm exports");
+
+    let destination_home = support::created_state_root();
+    let destination_path = destination_home.path().join("kontor.db");
+    let destination = support::open_created_realm(&destination_path);
+    let destination_project = ProjectId::generate();
+    destination
+        .create_project(&NewProject {
+            id: destination_project,
+            name: name("Receiving project"),
+            root_path: name("/tmp/hosted-seat-bearer"),
+            created_at: at("2026-09-17T07:11:00Z"),
+        })
+        .expect("the destination project is created");
+
+    // The readback crosses as a JSON *string*, so this is the embedded pass:
+    // a scanner that only walked the outer structure would see one opaque
+    // value and wave it through.
+    let bearer = format!("kontor-seat-v2.{seat}.2.{}", "c".repeat(64));
+    let row = export
+        .records
+        .core_team_route_successions
+        .iter_mut()
+        .find(|row| row.readback.is_some())
+        .expect("a committed succession carries a readback");
+    let mut readback: serde_json::Value =
+        serde_json::from_str(row.readback.as_ref().expect("a readback")).expect("readable JSON");
+    readback["handover"] = serde_json::json!({"note": bearer});
+    row.readback = Some(serde_json::to_string(&readback).expect("it re-serializes"));
+    // Made self-consistent again, so the refusal cannot be a digest mismatch.
+    export.records_hash = ContentHash::of(
+        &export
+            .canonical_records_bytes()
+            .expect("the records canonicalize"),
+    );
+
+    let refused = kontor_store::backup::import_export(
+        &destination,
+        &export,
+        &kontor_store::backup::ImportPlan::redacted_import_into(destination_project),
+        at("2026-09-17T07:12:00Z"),
+    )
+    .expect_err("a document carrying a seat bearer was imported");
+    assert!(
+        matches!(refused, kontor_store::backup::BackupError::Redaction { .. }),
+        "the refusal was not the canary scan: {refused:?}"
+    );
+
+    // Refused before the transaction: no receipt, no lineage, no evidence.
+    for table in [
+        "import_receipts",
+        "imported_records",
+        "imported_record_evidence",
+    ] {
+        assert_eq!(
+            rows(&destination_path, table),
+            0,
+            "a refused import wrote `{table}`"
+        );
+    }
+
+    // The same document is refused on the file path too, so nothing reaches
+    // `import_export` in the first place.
+    let bytes = serde_json::to_vec(&export).expect("the document serializes");
+    assert!(
+        matches!(
+            kontor_store::backup::KontorExportV1::parse(&bytes),
+            Err(kontor_store::backup::BackupError::Redaction { .. })
+        ),
+        "parsing accepted a document carrying a seat bearer"
+    );
+}
+
+/// An authentic schema-12 document verifies, imports, and back-fills empty.
+///
+/// The generation-13 field is injected on parse so an older document presents
+/// the current record type. That injection must be invisible to every path that
+/// reproduces the source's own bytes: a genuine v12 export was hashed over
+/// records that never had the key, and a v12 continuity summary never counted
+/// it. Reading the document must not change what it says.
+///
+/// The fixture below is emitted the way a schema-12 implementation emitted one —
+/// the key is absent, not empty, and the digest is taken over those exact bytes
+/// (ASMA-8187 P1).
+#[test]
+fn an_authentic_schema_twelve_document_verifies_and_imports_with_an_empty_backfill() {
+    let source = Fixture::build();
+    let (seat, first) = source.lsa(SeatAutonomy::Supervised);
+    three_succession_states(&source, seat, &first);
+    let current = kontor_store::backup::export_realm(&source.store, at("2026-09-17T08:00:00Z"))
+        .expect("the source Realm exports");
+    assert!(
+        !current.records.core_team_route_successions.is_empty(),
+        "the fixture must start from a Realm that does hold the ledger"
+    );
+
+    // Emit as generation twelve: the key is absent from the records object and
+    // from the continuity vocabulary, and the database is one that predates the
+    // ledger, so the document is not claiming to have dropped anything.
+    let mut document = serde_json::to_value(&current).expect("the export serializes");
+    document["schema_version"] = serde_json::json!(12);
+    document["database_schema_version"] = serde_json::json!(119);
+    document["records"]
+        .as_object_mut()
+        .expect("a records object")
+        .remove("core_team_route_successions")
+        .expect("the current generation carries the field");
+    document["continuity_summary"]["record_counts"]
+        .as_object_mut()
+        .expect("a counts object")
+        .remove("core_team_route_successions")
+        .expect("the current generation counts the field");
+    let authentic_records_bytes = {
+        let mut bytes = serde_json::to_vec(&document["records"]).expect("the records serialize");
+        bytes.push(b'\n');
+        bytes
+    };
+    document["records_hash"] =
+        serde_json::json!(ContentHash::of(&authentic_records_bytes).to_string());
+    let bytes = serde_json::to_vec(&document).expect("the document serializes");
+
+    // It parses, and the field arrives empty rather than absent.
+    let parsed = kontor_store::backup::KontorExportV1::parse(&bytes)
+        .expect("an authentic schema-12 document verifies");
+    assert_eq!(parsed.schema_version, 12);
+    assert!(
+        parsed.records.core_team_route_successions.is_empty(),
+        "the back-fill is not empty"
+    );
+
+    // And reading it did not change what it says: the digest still describes
+    // the source's own bytes, and the continuity vocabulary is still v12's.
+    assert_eq!(
+        parsed
+            .canonical_records_bytes()
+            .expect("the records canonicalize"),
+        authentic_records_bytes,
+        "parsing rehashed an authentic v12 document as something else"
+    );
+    assert!(
+        !parsed
+            .continuity_summary
+            .record_counts
+            .contains_key("core_team_route_successions"),
+        "a v12 continuity summary gained a generation-13 count"
+    );
+
+    // It imports, and brings no Core Team evidence with it, because it carried
+    // none.
+    let destination_home = support::created_state_root();
+    let destination_path = destination_home.path().join("kontor.db");
+    let destination = support::open_created_realm(&destination_path);
+    let destination_project = ProjectId::generate();
+    destination
+        .create_project(&NewProject {
+            id: destination_project,
+            name: name("Legacy receiving project"),
+            root_path: name("/tmp/hosted-seat-legacy"),
+            created_at: at("2026-09-17T08:01:00Z"),
+        })
+        .expect("the destination project is created");
+    let report = kontor_store::backup::import_export(
+        &destination,
+        &parsed,
+        &kontor_store::backup::ImportPlan::redacted_import_into(destination_project),
+        at("2026-09-17T08:02:00Z"),
+    )
+    .expect("an authentic schema-12 document imports");
+    assert!(
+        destination
+            .imported_records(&report.import_id.as_hyphenated().to_string())
+            .expect("the lineage reads")
+            .iter()
+            .all(|row| row.record_kind != "core_team_route_successions"),
+        "a v12 document produced Core Team lineage it never carried"
+    );
+    assert_eq!(rows(&destination_path, "imported_record_evidence"), 0);
+}
+
+/// The canonical intent one succession's command is admitted under.
+///
+/// Shared by the claim and by the command receipt because the binder now
+/// requires them to agree: a receipt whose intent differs from the claim's is a
+/// receipt for another command, whatever key it wears (ASMA-8187 P2).
+fn succession_intent(key: &IdempotencyKey) -> CanonicalDocument {
+    CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "operation": "core_team_route_correction",
+        "idempotency_key": key.as_str(),
+    }))
+    .expect("the intent canonicalizes")
+}
+
+/// Record the exact command receipt this succession's binder requires.
+fn recorded_receipt(fixture: &Fixture, key: &IdempotencyKey) -> CommandReceiptId {
+    kontor_core::repository::CommandRepository::record_local_command(
+        &fixture.store,
+        &kontor_core::repository::NewLocalCommand {
+            project_id: fixture.project_id,
+            receipt_id: CommandReceiptId::generate(),
+            idempotency_key: key.clone(),
+            kind: kontor_core::receipt::CommandKind::CorrectCoreTeamRoute,
+            target: kontor_core::receipt::AggregateRef::MiniProject {
+                mini_project_id: fixture.mini_project_id,
+            },
+            target_revision: kontor_core::id::AggregateRevision::INITIAL,
+            intent: succession_intent(key),
+            created_at: at("2026-09-17T02:05:30Z"),
+        },
+    )
+    .expect("the command receipt is recorded")
+    .id
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8187 P2 — a receipt is evidence for one command, and for one only.
+// ---------------------------------------------------------------------------
+
+/// A succession cannot bind a receipt recorded for another command.
+///
+/// The foreign key proves the receipt exists. It says nothing about whose it
+/// is, and the binder used to take the caller's word: any recorded receipt id
+/// would do. A succession pointing at somebody else's completion is a ledger
+/// asserting something it never saw (ASMA-8187 P2).
+#[test]
+fn a_succession_cannot_bind_a_receipt_recorded_for_another_command() {
+    let fixture = Fixture::build();
+    let (seat, predecessor) = fixture.lsa(SeatAutonomy::Supervised);
+    let key = IdempotencyKey::parse("asma-8187-own-receipt").expect("a key");
+    let stranger = IdempotencyKey::parse("asma-8187-other-command").expect("a key");
+    let successor = StoredHostedTopologySeat {
+        native_identity: identity("lsa-second", 2),
+        observed_at: at("2026-09-17T09:01:00Z"),
+        ..predecessor.clone()
+    };
+    claim_step(&fixture, &key, seat, &predecessor, 1);
+    commit_step(
+        &fixture,
+        &key,
+        seat,
+        &predecessor,
+        &successor,
+        1,
+        at("2026-09-17T09:01:30Z"),
+    );
+    land_effects(&fixture, seat, &successor, 2);
+    fixture
+        .store
+        .commit_core_team_route_succession_effects(&key)
+        .expect("the effects are proved");
+
+    // A perfectly real receipt — for a different command.
+    let foreign = recorded_receipt(&fixture, &stranger);
+    let refused = fixture
+        .store
+        .bind_core_team_route_succession_receipt(
+            &key,
+            succession_intent(&key).hash(),
+            foreign,
+            at("2026-09-17T09:02:00Z"),
+        )
+        .expect_err("a succession bound another command's receipt");
+    assert!(
+        matches!(
+            refused,
+            kontor_core::repository::RepositoryError::Conflict {
+                rule: "the receipt was recorded for another command",
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+    assert!(
+        fixture
+            .store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the row exists")
+            .receipt_id
+            .is_none(),
+        "a refused binding still wrote a receipt"
+    );
+
+    // Its own receipt binds, and the instant it bound at is then immutable.
+    let own = recorded_receipt(&fixture, &key);
+    fixture
+        .store
+        .bind_core_team_route_succession_receipt(
+            &key,
+            succession_intent(&key).hash(),
+            own,
+            at("2026-09-17T09:03:00Z"),
+        )
+        .expect("a succession binds the receipt its own command recorded");
+
+    let connection = Connection::open(&fixture.db_path).expect("the database opens");
+    assert!(
+        connection
+            .execute(
+                "UPDATE core_team_route_successions SET receipted_at = '2026-01-01T00:00:00Z'
+                  WHERE idempotency_key = ?1",
+                rusqlite::params![key.as_str()],
+            )
+            .is_err(),
+        "the instant a succession completed was rewritten"
+    );
+
+    // And one receipt is one completion: a second succession cannot claim it,
+    // even by a route that never asks the binder.
+    let later = IdempotencyKey::parse("asma-8187-second-claimant").expect("a key");
+    let third = StoredHostedTopologySeat {
+        native_identity: identity("lsa-third", 3),
+        observed_at: at("2026-09-17T09:04:00Z"),
+        ..predecessor.clone()
+    };
+    claim_step(&fixture, &later, seat, &successor, 2);
+    commit_step(
+        &fixture,
+        &later,
+        seat,
+        &successor,
+        &third,
+        2,
+        at("2026-09-17T09:04:30Z"),
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE core_team_route_successions
+                    SET receipt_id = ?2, receipted_at = '2026-09-17T09:05:00Z'
+                  WHERE idempotency_key = ?1",
+                rusqlite::params![later.as_str(), own.to_string()],
+            )
+            .is_err(),
+        "one receipt was bound to two successions"
+    );
+}
+
+/// A complete readback for one succession step, built as the domain type.
+///
+/// The suite used to hand-write partial JSON objects, which agreed with the
+/// ledger on the handful of fields anybody compared and said nothing about the
+/// rest. Building the real structure is what makes the completeness rules
+/// testable at all (ASMA-8187 P2).
+fn full_readback(
+    seat: SeatBindingId,
+    predecessor: &StoredHostedTopologySeat,
+    predecessor_occupancy: u64,
+    successor: &StoredHostedTopologySeat,
+    successor_occupancy: u64,
+    retired_at: Timestamp,
+) -> kontor_core::repository::CoreTeamRouteSuccessionReadback {
+    let occupant = |seat: &StoredHostedTopologySeat, occupancy: u64| {
+        kontor_core::repository::CoreTeamRouteOccupant {
+            native_id: seat.native_identity.native_id.clone(),
+            runtime_kind: seat.native_identity.runtime_kind.as_str().to_owned(),
+            host: seat.native_identity.host.as_str().to_owned(),
+            generation: seat.native_identity.generation,
+            provider_session_id: seat.provider_session_id.clone(),
+            occupancy_generation: occupancy,
+            model_route: seat.model_rung.clone(),
+        }
+    };
+    kontor_core::repository::CoreTeamRouteSuccessionReadback {
+        seat_binding_id: seat,
+        predecessor: occupant(predecessor, predecessor_occupancy),
+        successor: occupant(successor, successor_occupancy),
+        grant_subject: kontor_core::repository::CoreTeamRouteGrantSubject {
+            generation: successor_occupancy,
+            subject_seat_binding_id: seat,
+            subject_digest: kontor_core::repository::core_team_grant_subject_digest(
+                seat,
+                successor_occupancy,
+            ),
+        },
+        retired_at: retired_at.to_string(),
+    }
+}
+
+/// The same readback as JSON, with its canonical digest.
+fn readback_document(
+    readback: &kontor_core::repository::CoreTeamRouteSuccessionReadback,
+) -> (serde_json::Value, ContentHash) {
+    let value = serde_json::to_value(readback).expect("the readback serializes");
+    let hash = CanonicalDocument::from_value(&serde_json::json!({
+        "schema_version": 1,
+        "readback": value,
+    }))
+    .expect("the readback canonicalizes")
+    .hash()
+    .clone();
+    (value, hash)
+}
+
+/// Every derived and redundant value in a readback is re-proved, not read.
+///
+/// A readback repeats what the ledger already knows and carries one value —
+/// the grant-subject digest — that is derived from values it carries itself.
+/// Repetition is only evidence if somebody checks it; otherwise it is a second
+/// copy of whatever the caller decided to say (ASMA-8187 P2).
+#[test]
+fn a_readback_whose_derived_or_redundant_values_are_wrong_is_refused() {
+    let fixture = Fixture::build();
+    let (seat, predecessor) = fixture.lsa(SeatAutonomy::Supervised);
+    let successor = StoredHostedTopologySeat {
+        native_identity: identity("lsa-second", 2),
+        observed_at: at("2026-09-17T10:01:00Z"),
+        ..predecessor.clone()
+    };
+    let committed_at = at("2026-09-17T10:01:30Z");
+    let rehash = |value: &serde_json::Value| {
+        CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "readback": value,
+        }))
+        .expect("it canonicalizes")
+        .hash()
+        .clone()
+    };
+
+    // A digest that is not the one its own subject produces, refused where the
+    // document is written.
+    let key = IdempotencyKey::parse("asma-8187-bad-digest").expect("a key");
+    claim_step(&fixture, &key, seat, &predecessor, 1);
+    let mut wrong_digest = full_readback(seat, &predecessor, 1, &successor, 2, committed_at);
+    wrong_digest.grant_subject.subject_digest = ContentHash::of(b"a digest of another subject");
+    let value = serde_json::to_value(&wrong_digest).expect("it serializes");
+    let refused = fixture
+        .store
+        .replace_hosted_topology_seat_route(
+            &predecessor,
+            &successor,
+            committed_at,
+            "derived values",
+            Some(&CoreTeamRouteSuccessionCommit {
+                idempotency_key: key.clone(),
+                readback: value.clone(),
+                readback_hash: rehash(&value),
+                route_committed_at: committed_at,
+            }),
+        )
+        .expect_err("a fabricated grant-subject digest was persisted");
+    assert!(
+        matches!(
+            refused,
+            kontor_core::repository::RepositoryError::Conflict {
+                rule: "the succession readback's grant subject digest is not the one it describes",
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+
+    // A readback naming one native as both occupants describes no succession.
+    let mut circular = full_readback(seat, &predecessor, 1, &successor, 2, committed_at);
+    circular.successor.native_id = predecessor.native_identity.native_id.clone();
+    circular.successor.generation = predecessor.native_identity.generation;
+    let value = serde_json::to_value(&circular).expect("it serializes");
+    let refused = fixture
+        .store
+        .replace_hosted_topology_seat_route(
+            &predecessor,
+            &successor,
+            committed_at,
+            "derived values",
+            Some(&CoreTeamRouteSuccessionCommit {
+                idempotency_key: key.clone(),
+                readback: value.clone(),
+                readback_hash: rehash(&value),
+                route_committed_at: committed_at,
+            }),
+        )
+        .expect_err("a readback naming one native twice was persisted");
+    assert!(
+        matches!(
+            refused,
+            kontor_core::repository::RepositoryError::Conflict {
+                rule: "the succession readback names one native as both occupants",
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+
+    // And a complete, internally coherent, correctly hashed readback whose
+    // successor generation is not the one the ledger recorded is refused at
+    // binding — where the ledger is.
+    let mut drifting = full_readback(seat, &predecessor, 1, &successor, 2, committed_at);
+    drifting.successor.generation = 99;
+    drifting
+        .check_internal_consistency()
+        .expect("the drifting readback is coherent on its own terms");
+    let value = serde_json::to_value(&drifting).expect("it serializes");
+    fixture
+        .store
+        .replace_hosted_topology_seat_route(
+            &predecessor,
+            &successor,
+            committed_at,
+            "derived values",
+            Some(&CoreTeamRouteSuccessionCommit {
+                idempotency_key: key.clone(),
+                readback: value.clone(),
+                readback_hash: rehash(&value),
+                route_committed_at: committed_at,
+            }),
+        )
+        .expect("the write boundary cannot know which generation the ledger holds");
+    land_effects(&fixture, seat, &successor, 2);
+    fixture
+        .store
+        .commit_core_team_route_succession_effects(&key)
+        .expect("the effects are proved");
+    let refused = fixture
+        .store
+        .bind_core_team_route_succession_receipt(
+            &key,
+            succession_intent(&key).hash(),
+            recorded_receipt(&fixture, &key),
+            at("2026-09-17T10:03:00Z"),
+        )
+        .expect_err("a readback claiming another runtime generation was receipted");
+    assert!(
+        matches!(
+            refused,
+            kontor_core::repository::RepositoryError::Conflict {
+                rule: "the succession readback disagrees with its own ledger identity",
+                ..
+            }
+        ),
+        "{refused:?}"
     );
 }
