@@ -561,6 +561,217 @@
         }
       }
     },
+    "/v1/fleet/bundle": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "The Realm's orchestration bundle selection.",
+        "operationId": "fleet_bundle",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetBundleDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/bundle:activate": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Activate one published orchestration bundle under the expected standing\nactivation.",
+        "operationId": "activate_fleet_bundle",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetBundleActivateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetPolicyActivatedDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/bundle:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Resolve one candidate orchestration bundle. Writes nothing.",
+        "operationId": "preview_fleet_bundle",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetBundlePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetBundlePreviewDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/bundle:propose": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Propose an initial orchestration bundle for review. Writes nothing.",
+        "operationId": "propose_fleet_bundle",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetBundleProposalDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/fleet/bundle:publish": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish one previewed orchestration bundle. Selects nothing.",
+        "operationId": "publish_fleet_bundle",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FleetBundlePublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FleetBundlePublishedDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/fleet/policy": {
       "get": {
         "tags": [
@@ -16012,9 +16223,8 @@
       },
       "CoreTeamApplyRequest": {
         "type": "object",
-        "description": "Apply a named Core Team preview.",
+        "description": "Apply a named Core Team preview: the same seats, or the same bundle, it was\npreviewed with.",
         "required": [
-          "seats",
           "preview_hash",
           "expected_revision"
         ],
@@ -16030,11 +16240,21 @@
             "description": "The hash the preview answered with."
           },
           "seats": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "$ref": "#/components/schemas/CoreTeamSeatSelectionDto"
             },
             "description": "The roles the Core Team should seat, in order."
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The published orchestration bundle the preview was made from."
           }
         },
         "additionalProperties": false
@@ -16284,6 +16504,13 @@
           "receipt": {
             "$ref": "#/components/schemas/MutationReceiptDto",
             "description": "The receipt it was committed under."
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The published orchestration bundle a Core Team apply took its seats\nfrom, when it took them from one."
           }
         }
       },
@@ -16310,22 +16537,36 @@
           "realm_id": {
             "type": "string",
             "description": "The Realm that computed it."
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The published bundle the seats came from, when they came from one."
           }
         }
       },
       "CoreTeamPreviewRequest": {
         "type": "object",
-        "description": "A proposed Core Team composition.",
-        "required": [
-          "seats"
-        ],
+        "description": "A proposed Core Team composition: the caller's seats, or the Core Team\nrevision one published orchestration bundle declares (ASMA-8280 S-3).\nExactly one of the two.",
         "properties": {
           "seats": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "$ref": "#/components/schemas/CoreTeamSeatSelectionDto"
             },
             "description": "The roles the Core Team should seat, in order."
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A published orchestration bundle whose verified Core Team revision\nsupplies the seats instead."
           }
         },
         "additionalProperties": false
@@ -18016,6 +18257,286 @@
           }
         }
       },
+      "FleetActivationFenceDto": {
+        "type": "object",
+        "description": "The standing activation a caller read, as an activation must name it.\n\nOmitted entirely only when no activation record stands; a schema_version 1\nrecord is named by its policy alone.",
+        "required": [
+          "policy_hash"
+        ],
+        "properties": {
+          "policy_hash": {
+            "type": "string",
+            "description": "The policy the standing record names."
+          },
+          "source_bundle_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The bundle the standing record names, for a schema_version 2 record."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetBundleActivateRequest": {
+        "type": "object",
+        "description": "Select one published bundle — its policy and its Core Team revision\ntogether — for every later placement.",
+        "required": [
+          "source_bundle_hash"
+        ],
+        "properties": {
+          "expected_active": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetActivationFenceDto",
+                "description": "The standing activation the caller read; omit when none stood."
+              }
+            ]
+          },
+          "source_bundle_hash": {
+            "type": "string",
+            "description": "The published bundle to activate."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetBundleDto": {
+        "type": "object",
+        "description": "The Realm's orchestration bundle selection (ASMA-8280 S-1).\n\nThe same single activation pointer [`FleetPolicyDto`] reports, read for its\nbundle: a schema_version 1 record names a policy alone; a schema_version 2\nrecord also names the orchestration bundle and Core Team revision, whose\nmanifest is reported here when it verifies.",
+        "required": [
+          "realm_id",
+          "selection"
+        ],
+        "properties": {
+          "activation": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetActivationDto",
+                "description": "The activation record, when one exists and can be read."
+              }
+            ]
+          },
+          "activation_schema_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The activation record's format, `1` or `2`, when one can be read.",
+            "minimum": 0
+          },
+          "manifest": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FleetBundleManifestDto",
+                "description": "The bundle manifest a schema_version 2 record names, when it verifies."
+              }
+            ]
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it governs."
+          },
+          "refusal": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the selected activation cannot be served, when it cannot."
+          },
+          "selection": {
+            "$ref": "#/components/schemas/FleetPolicySelectionDto",
+            "description": "Which source decides fleet routing."
+          }
+        }
+      },
+      "FleetBundleManifestDto": {
+        "type": "object",
+        "description": "One immutable orchestration bundle manifest.",
+        "required": [
+          "source_bundle_hash",
+          "resolver",
+          "sources",
+          "policy_hash",
+          "policy_schema_version",
+          "role_catalog",
+          "core_team_revision_hash"
+        ],
+        "properties": {
+          "core_team_revision_hash": {
+            "type": "string",
+            "description": "The bundle's canonical Core Team revision."
+          },
+          "policy_hash": {
+            "type": "string",
+            "description": "The bundle's policy."
+          },
+          "policy_schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The schema that policy validates under.",
+            "minimum": 0
+          },
+          "resolver": {
+            "type": "string",
+            "description": "The resolver that produced the bundle."
+          },
+          "role_catalog": {
+            "$ref": "#/components/schemas/FleetRoleCatalogPinDto",
+            "description": "The role catalog the Core Team revision was resolved against."
+          },
+          "source_bundle_hash": {
+            "type": "string",
+            "description": "The manifest's canonical content hash: the bundle's identity."
+          },
+          "sources": {
+            "type": "object",
+            "description": "SHA-256 of each authoring source's exact bytes, by bundle-relative path.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "FleetBundlePreviewDto": {
+        "type": "object",
+        "description": "What a candidate bundle resolves to, before anything is written.",
+        "required": [
+          "realm_id",
+          "manifest",
+          "preview_hash"
+        ],
+        "properties": {
+          "manifest": {
+            "$ref": "#/components/schemas/FleetBundleManifestDto",
+            "description": "The manifest publication would write."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash the corresponding publish must name: the three exact source\ndocuments and the selected catalog revision."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was resolved for."
+          }
+        }
+      },
+      "FleetBundlePreviewRequest": {
+        "type": "object",
+        "description": "One candidate orchestration bundle, as authored: the exact bytes of its\nthree sources.",
+        "required": [
+          "orchestration",
+          "fleet",
+          "core_team"
+        ],
+        "properties": {
+          "core_team": {
+            "type": "string",
+            "description": "The exact bytes of `teams/core-team.yml`."
+          },
+          "fleet": {
+            "type": "string",
+            "description": "The exact bytes of `fleet.yml`."
+          },
+          "orchestration": {
+            "type": "string",
+            "description": "The exact bytes of `orchestration.yml`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetBundleProposalDto": {
+        "type": "object",
+        "description": "A proposed initial orchestration bundle for review (ASMA-8280 S-2).",
+        "required": [
+          "realm_id",
+          "orchestration",
+          "core_team",
+          "role_catalog"
+        ],
+        "properties": {
+          "core_team": {
+            "type": "string",
+            "description": "The proposed `teams/core-team.yml` bytes: the mandatory roles alone."
+          },
+          "orchestration": {
+            "type": "string",
+            "description": "The proposed `orchestration.yml` bytes."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was proposed for."
+          },
+          "role_catalog": {
+            "$ref": "#/components/schemas/FleetRoleCatalogPinDto",
+            "description": "The exact catalog revision the proposal pins."
+          }
+        }
+      },
+      "FleetBundlePublishRequest": {
+        "type": "object",
+        "description": "Publish one previewed bundle as immutable, content-addressed artifacts.\n\nPublication selects nothing: placement keeps reading the current selection\nuntil an activation names this bundle.",
+        "required": [
+          "orchestration",
+          "fleet",
+          "core_team",
+          "preview_hash"
+        ],
+        "properties": {
+          "core_team": {
+            "type": "string",
+            "description": "The exact bytes of `teams/core-team.yml` that were previewed."
+          },
+          "fleet": {
+            "type": "string",
+            "description": "The exact bytes of `fleet.yml` that were previewed."
+          },
+          "orchestration": {
+            "type": "string",
+            "description": "The exact bytes of `orchestration.yml` that were previewed."
+          },
+          "preview_hash": {
+            "type": "string",
+            "description": "The hash preview returned for these bytes."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FleetBundlePublishedDto": {
+        "type": "object",
+        "description": "One published bundle.",
+        "required": [
+          "realm_id",
+          "manifest",
+          "applied"
+        ],
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/AppliedDto",
+            "description": "Whether this call wrote any artifact or found them all published."
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/FleetBundleManifestDto",
+            "description": "The manifest as published."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it was published in."
+          }
+        }
+      },
       "FleetEligibilityRequest": {
         "type": "object",
         "description": "The runtime facts one fleet policy choice is made under: stated by the\ncaller, applied in chain order, and recorded with the decision.",
@@ -18233,6 +18754,31 @@
           "activation",
           "fleet_yml"
         ]
+      },
+      "FleetRoleCatalogPinDto": {
+        "type": "object",
+        "description": "The exact role catalog revision a bundle pins.",
+        "required": [
+          "catalog_id",
+          "version",
+          "content_hash"
+        ],
+        "properties": {
+          "catalog_id": {
+            "type": "string",
+            "description": "The catalog's stable identity."
+          },
+          "content_hash": {
+            "type": "string",
+            "description": "The canonical content hash of that revision."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The catalog revision.",
+            "minimum": 0
+          }
+        }
       },
       "GapDto": {
         "type": "object",

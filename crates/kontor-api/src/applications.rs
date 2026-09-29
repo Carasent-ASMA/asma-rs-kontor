@@ -900,12 +900,20 @@ pub struct CoreTeamSeatSelectionDto {
     pub ad_hoc_allowed: bool,
 }
 
-/// A proposed Core Team composition.
+/// A proposed Core Team composition: the caller's seats, or the Core Team
+/// revision one published orchestration bundle declares (ASMA-8280 S-3).
+/// Exactly one of the two.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamPreviewRequest {
     /// The roles the Core Team should seat, in order.
-    pub seats: Vec<CoreTeamSeatSelectionDto>,
+    #[serde(default)]
+    pub seats: Option<Vec<CoreTeamSeatSelectionDto>>,
+    /// A published orchestration bundle whose verified Core Team revision
+    /// supplies the seats instead.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
 }
 
 /// What a Core Team change would do.
@@ -916,17 +924,27 @@ pub struct CoreTeamPreviewDto {
     pub realm_id: kontor_core::id::RealmId,
     /// Every effect, in a stable order.
     pub effects: Vec<TopologyUpgradeEffectDto>,
+    /// The published bundle the seats came from, when they came from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
     /// The hash the corresponding apply must name.
     #[schema(value_type = String)]
     pub preview_hash: ContentHash,
 }
 
-/// Apply a named Core Team preview.
+/// Apply a named Core Team preview: the same seats, or the same bundle, it was
+/// previewed with.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CoreTeamApplyRequest {
     /// The roles the Core Team should seat, in order.
-    pub seats: Vec<CoreTeamSeatSelectionDto>,
+    #[serde(default)]
+    pub seats: Option<Vec<CoreTeamSeatSelectionDto>>,
+    /// The published orchestration bundle the preview was made from.
+    #[serde(default)]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
     /// The hash the preview answered with.
     #[schema(value_type = String)]
     pub preview_hash: ContentHash,
@@ -1302,6 +1320,11 @@ pub struct CoreTeamOutcomeDto {
     pub core_team: CoreTeamDto,
     /// The receipt it was committed under.
     pub receipt: MutationReceiptDto,
+    /// The published orchestration bundle a Core Team apply took its seats
+    /// from, when it took them from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
 }
 
 /// The roles a Quick session may be opened against.
@@ -2756,6 +2779,170 @@ pub struct FleetPolicyActivatedDto {
     /// `created` when this call replaced the record, `unchanged` when the
     /// policy was already active.
     pub applied: AppliedDto,
+}
+
+/// The Realm's orchestration bundle selection (ASMA-8280 S-1).
+///
+/// The same single activation pointer [`FleetPolicyDto`] reports, read for its
+/// bundle: a schema_version 1 record names a policy alone; a schema_version 2
+/// record also names the orchestration bundle and Core Team revision, whose
+/// manifest is reported here when it verifies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetBundleDto {
+    /// The Realm it governs.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// Which source decides fleet routing.
+    pub selection: FleetPolicySelectionDto,
+    /// The activation record's format, `1` or `2`, when one can be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_schema_version: Option<u32>,
+    /// The activation record, when one exists and can be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<FleetActivationDto>,
+    /// The bundle manifest a schema_version 2 record names, when it verifies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<FleetBundleManifestDto>,
+    /// Why the selected activation cannot be served, when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+}
+
+/// One immutable orchestration bundle manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetBundleManifestDto {
+    /// The manifest's canonical content hash: the bundle's identity.
+    #[schema(value_type = String)]
+    pub source_bundle_hash: ContentHash,
+    /// The resolver that produced the bundle.
+    pub resolver: String,
+    /// SHA-256 of each authoring source's exact bytes, by bundle-relative path.
+    #[schema(value_type = std::collections::BTreeMap<String, String>)]
+    pub sources: std::collections::BTreeMap<String, ContentHash>,
+    /// The bundle's policy.
+    #[schema(value_type = String)]
+    pub policy_hash: ContentHash,
+    /// The schema that policy validates under.
+    pub policy_schema_version: u32,
+    /// The role catalog the Core Team revision was resolved against.
+    pub role_catalog: FleetRoleCatalogPinDto,
+    /// The bundle's canonical Core Team revision.
+    #[schema(value_type = String)]
+    pub core_team_revision_hash: ContentHash,
+}
+
+/// The exact role catalog revision a bundle pins.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetRoleCatalogPinDto {
+    /// The catalog's stable identity.
+    #[schema(value_type = String)]
+    pub catalog_id: kontor_core::id::RoleCatalogId,
+    /// The catalog revision.
+    #[schema(value_type = u32)]
+    pub version: SpecVersion,
+    /// The canonical content hash of that revision.
+    #[schema(value_type = String)]
+    pub content_hash: ContentHash,
+}
+
+/// One candidate orchestration bundle, as authored: the exact bytes of its
+/// three sources.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetBundlePreviewRequest {
+    /// The exact bytes of `orchestration.yml`.
+    pub orchestration: String,
+    /// The exact bytes of `fleet.yml`.
+    pub fleet: String,
+    /// The exact bytes of `teams/core-team.yml`.
+    pub core_team: String,
+}
+
+/// What a candidate bundle resolves to, before anything is written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetBundlePreviewDto {
+    /// The Realm it was resolved for.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The manifest publication would write.
+    pub manifest: FleetBundleManifestDto,
+    /// The hash the corresponding publish must name: the three exact source
+    /// documents and the selected catalog revision.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// Publish one previewed bundle as immutable, content-addressed artifacts.
+///
+/// Publication selects nothing: placement keeps reading the current selection
+/// until an activation names this bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetBundlePublishRequest {
+    /// The exact bytes of `orchestration.yml` that were previewed.
+    pub orchestration: String,
+    /// The exact bytes of `fleet.yml` that were previewed.
+    pub fleet: String,
+    /// The exact bytes of `teams/core-team.yml` that were previewed.
+    pub core_team: String,
+    /// The hash preview returned for these bytes.
+    #[schema(value_type = String)]
+    pub preview_hash: ContentHash,
+}
+
+/// One published bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetBundlePublishedDto {
+    /// The Realm it was published in.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The manifest as published.
+    pub manifest: FleetBundleManifestDto,
+    /// Whether this call wrote any artifact or found them all published.
+    pub applied: AppliedDto,
+}
+
+/// The standing activation a caller read, as an activation must name it.
+///
+/// Omitted entirely only when no activation record stands; a schema_version 1
+/// record is named by its policy alone.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetActivationFenceDto {
+    /// The policy the standing record names.
+    #[schema(value_type = String)]
+    pub policy_hash: ContentHash,
+    /// The bundle the standing record names, for a schema_version 2 record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub source_bundle_hash: Option<ContentHash>,
+}
+
+/// Select one published bundle — its policy and its Core Team revision
+/// together — for every later placement.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FleetBundleActivateRequest {
+    /// The published bundle to activate.
+    #[schema(value_type = String)]
+    pub source_bundle_hash: ContentHash,
+    /// The standing activation the caller read; omit when none stood.
+    #[serde(default)]
+    pub expected_active: Option<FleetActivationFenceDto>,
+}
+
+/// A proposed initial orchestration bundle for review (ASMA-8280 S-2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FleetBundleProposalDto {
+    /// The Realm it was proposed for.
+    #[schema(value_type = String)]
+    pub realm_id: kontor_core::id::RealmId,
+    /// The proposed `orchestration.yml` bytes.
+    pub orchestration: String,
+    /// The proposed `teams/core-team.yml` bytes: the mandatory roles alone.
+    pub core_team: String,
+    /// The exact catalog revision the proposal pins.
+    pub role_catalog: FleetRoleCatalogPinDto,
 }
 
 /// One provider account's availability, as the realm currently reads it.
@@ -7612,6 +7799,32 @@ pub trait ApplicationOperations: Send + Sync {
         request: &FleetPolicyActivateRequest,
     ) -> Result<FleetPolicyActivatedDto, ApiError>;
 
+    /// The Realm's orchestration bundle selection.
+    fn fleet_bundle(&self) -> Result<FleetBundleDto, ApiError>;
+
+    /// Resolve one candidate bundle without writing anything.
+    fn preview_fleet_bundle(
+        &self,
+        request: &FleetBundlePreviewRequest,
+    ) -> Result<FleetBundlePreviewDto, ApiError>;
+
+    /// Publish one previewed bundle; this selects nothing.
+    async fn publish_fleet_bundle(
+        &self,
+        key: &IdempotencyKey,
+        request: &FleetBundlePublishRequest,
+    ) -> Result<FleetBundlePublishedDto, ApiError>;
+
+    /// Activate one published bundle under the expected standing activation.
+    async fn activate_fleet_bundle(
+        &self,
+        key: &IdempotencyKey,
+        request: &FleetBundleActivateRequest,
+    ) -> Result<FleetPolicyActivatedDto, ApiError>;
+
+    /// Propose an initial bundle for review. Writes nothing.
+    fn propose_fleet_bundle(&self) -> Result<FleetBundleProposalDto, ApiError>;
+
     /// One project's admission picture.
     fn project_capacity(&self, project_id: ProjectId) -> Result<ProjectCapacityDto, ApiError>;
 
@@ -10164,6 +10377,94 @@ pub async fn activate_fleet_policy(
             .activate_fleet_policy(&key, &request)
             .await?,
     ))
+}
+
+/// The Realm's orchestration bundle selection.
+#[utoipa::path(
+    get, path = "/v1/fleet/bundle", tag = "applications",
+    responses((status = 200, body = FleetBundleDto), (status = 401), (status = 403))
+)]
+pub async fn fleet_bundle(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<FleetBundleDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(state.applications().fleet_bundle()?))
+}
+
+/// Resolve one candidate orchestration bundle. Writes nothing.
+#[utoipa::path(
+    post, path = "/v1/fleet/bundle:preview", tag = "applications",
+    request_body = FleetBundlePreviewRequest,
+    responses((status = 200, body = FleetBundlePreviewDto), (status = 400), (status = 401), (status = 403), (status = 404))
+)]
+pub async fn preview_fleet_bundle(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Json(request): Json<FleetBundlePreviewRequest>,
+) -> Result<Json<FleetBundlePreviewDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(state.applications().preview_fleet_bundle(&request)?))
+}
+
+/// Publish one previewed orchestration bundle. Selects nothing.
+#[utoipa::path(
+    post, path = "/v1/fleet/bundle:publish", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = FleetBundlePublishRequest,
+    responses((status = 200, body = FleetBundlePublishedDto), (status = 400), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn publish_fleet_bundle(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<FleetBundlePublishRequest>,
+) -> Result<Json<FleetBundlePublishedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .publish_fleet_bundle(&key, &request)
+            .await?,
+    ))
+}
+
+/// Activate one published orchestration bundle under the expected standing
+/// activation.
+#[utoipa::path(
+    post, path = "/v1/fleet/bundle:activate", tag = "applications",
+    params(("Idempotency-Key" = String, Header, description = "The caller's stable key")),
+    request_body = FleetBundleActivateRequest,
+    responses((status = 200, body = FleetPolicyActivatedDto), (status = 400), (status = 401), (status = 403), (status = 404), (status = 409))
+)]
+pub async fn activate_fleet_bundle(
+    State(state): State<ApiState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(request): Json<FleetBundleActivateRequest>,
+) -> Result<Json<FleetPolicyActivatedDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .activate_fleet_bundle(&key, &request)
+            .await?,
+    ))
+}
+
+/// Propose an initial orchestration bundle for review. Writes nothing.
+#[utoipa::path(
+    post, path = "/v1/fleet/bundle:propose", tag = "applications",
+    responses((status = 200, body = FleetBundleProposalDto), (status = 401), (status = 403))
+)]
+pub async fn propose_fleet_bundle(
+    State(state): State<ApiState>,
+    caller: Caller,
+) -> Result<Json<FleetBundleProposalDto>, ApiError> {
+    caller.require(&state, CallerCapability::Admin)?;
+    Ok(Json(state.applications().propose_fleet_bundle()?))
 }
 
 /// One project's admission picture.

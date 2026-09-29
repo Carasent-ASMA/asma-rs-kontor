@@ -290,6 +290,94 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/fleet/bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The Realm's orchestration bundle selection. */
+        get: operations["fleet_bundle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/bundle:activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Activate one published orchestration bundle under the expected standing
+         *     activation.
+         */
+        post: operations["activate_fleet_bundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/bundle:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve one candidate orchestration bundle. Writes nothing. */
+        post: operations["preview_fleet_bundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/bundle:propose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Propose an initial orchestration bundle for review. Writes nothing. */
+        post: operations["propose_fleet_bundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/fleet/bundle:publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one previewed orchestration bundle. Selects nothing. */
+        post: operations["publish_fleet_bundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/fleet/policy": {
         parameters: {
             query?: never;
@@ -5542,7 +5630,10 @@ export interface components {
             /** @description `total` | `growth_after_prefix`. */
             trigger_scope: string;
         };
-        /** @description Apply a named Core Team preview. */
+        /**
+         * @description Apply a named Core Team preview: the same seats, or the same bundle, it was
+         *     previewed with.
+         */
         CoreTeamApplyRequest: {
             /**
              * Format: int64
@@ -5552,7 +5643,9 @@ export interface components {
             /** @description The hash the preview answered with. */
             preview_hash: string;
             /** @description The roles the Core Team should seat, in order. */
-            seats: components["schemas"]["CoreTeamSeatSelectionDto"][];
+            seats?: components["schemas"]["CoreTeamSeatSelectionDto"][] | null;
+            /** @description The published orchestration bundle the preview was made from. */
+            source_bundle_hash?: string | null;
         };
         /** @description One project's Core Team. */
         CoreTeamDto: {
@@ -5679,6 +5772,11 @@ export interface components {
             core_team: components["schemas"]["CoreTeamDto"];
             /** @description The receipt it was committed under. */
             receipt: components["schemas"]["MutationReceiptDto"];
+            /**
+             * @description The published orchestration bundle a Core Team apply took its seats
+             *     from, when it took them from one.
+             */
+            source_bundle_hash?: string | null;
         };
         /** @description What a Core Team change would do. */
         CoreTeamPreviewDto: {
@@ -5688,11 +5786,22 @@ export interface components {
             preview_hash: string;
             /** @description The Realm that computed it. */
             realm_id: string;
+            /** @description The published bundle the seats came from, when they came from one. */
+            source_bundle_hash?: string | null;
         };
-        /** @description A proposed Core Team composition. */
+        /**
+         * @description A proposed Core Team composition: the caller's seats, or the Core Team
+         *     revision one published orchestration bundle declares (ASMA-8280 S-3).
+         *     Exactly one of the two.
+         */
         CoreTeamPreviewRequest: {
             /** @description The roles the Core Team should seat, in order. */
-            seats: components["schemas"]["CoreTeamSeatSelectionDto"][];
+            seats?: components["schemas"]["CoreTeamSeatSelectionDto"][] | null;
+            /**
+             * @description A published orchestration bundle whose verified Core Team revision
+             *     supplies the seats instead.
+             */
+            source_bundle_hash?: string | null;
         };
         /** @description Apply one still-current Core Team route preview. */
         CoreTeamRouteApplyRequest: {
@@ -6564,6 +6673,132 @@ export interface components {
             source_bundle_hash?: string | null;
         };
         /**
+         * @description The standing activation a caller read, as an activation must name it.
+         *
+         *     Omitted entirely only when no activation record stands; a schema_version 1
+         *     record is named by its policy alone.
+         */
+        FleetActivationFenceDto: {
+            /** @description The policy the standing record names. */
+            policy_hash: string;
+            /** @description The bundle the standing record names, for a schema_version 2 record. */
+            source_bundle_hash?: string | null;
+        };
+        /**
+         * @description Select one published bundle — its policy and its Core Team revision
+         *     together — for every later placement.
+         */
+        FleetBundleActivateRequest: {
+            expected_active?: null | components["schemas"]["FleetActivationFenceDto"];
+            /** @description The published bundle to activate. */
+            source_bundle_hash: string;
+        };
+        /**
+         * @description The Realm's orchestration bundle selection (ASMA-8280 S-1).
+         *
+         *     The same single activation pointer [`FleetPolicyDto`] reports, read for its
+         *     bundle: a schema_version 1 record names a policy alone; a schema_version 2
+         *     record also names the orchestration bundle and Core Team revision, whose
+         *     manifest is reported here when it verifies.
+         */
+        FleetBundleDto: {
+            activation?: null | components["schemas"]["FleetActivationDto"];
+            /**
+             * Format: int32
+             * @description The activation record's format, `1` or `2`, when one can be read.
+             */
+            activation_schema_version?: number | null;
+            manifest?: null | components["schemas"]["FleetBundleManifestDto"];
+            /** @description The Realm it governs. */
+            realm_id: string;
+            /** @description Why the selected activation cannot be served, when it cannot. */
+            refusal?: string | null;
+            /** @description Which source decides fleet routing. */
+            selection: components["schemas"]["FleetPolicySelectionDto"];
+        };
+        /** @description One immutable orchestration bundle manifest. */
+        FleetBundleManifestDto: {
+            /** @description The bundle's canonical Core Team revision. */
+            core_team_revision_hash: string;
+            /** @description The bundle's policy. */
+            policy_hash: string;
+            /**
+             * Format: int32
+             * @description The schema that policy validates under.
+             */
+            policy_schema_version: number;
+            /** @description The resolver that produced the bundle. */
+            resolver: string;
+            /** @description The role catalog the Core Team revision was resolved against. */
+            role_catalog: components["schemas"]["FleetRoleCatalogPinDto"];
+            /** @description The manifest's canonical content hash: the bundle's identity. */
+            source_bundle_hash: string;
+            /** @description SHA-256 of each authoring source's exact bytes, by bundle-relative path. */
+            sources: {
+                [key: string]: string;
+            };
+        };
+        /** @description What a candidate bundle resolves to, before anything is written. */
+        FleetBundlePreviewDto: {
+            /** @description The manifest publication would write. */
+            manifest: components["schemas"]["FleetBundleManifestDto"];
+            /**
+             * @description The hash the corresponding publish must name: the three exact source
+             *     documents and the selected catalog revision.
+             */
+            preview_hash: string;
+            /** @description The Realm it was resolved for. */
+            realm_id: string;
+        };
+        /**
+         * @description One candidate orchestration bundle, as authored: the exact bytes of its
+         *     three sources.
+         */
+        FleetBundlePreviewRequest: {
+            /** @description The exact bytes of `teams/core-team.yml`. */
+            core_team: string;
+            /** @description The exact bytes of `fleet.yml`. */
+            fleet: string;
+            /** @description The exact bytes of `orchestration.yml`. */
+            orchestration: string;
+        };
+        /** @description A proposed initial orchestration bundle for review (ASMA-8280 S-2). */
+        FleetBundleProposalDto: {
+            /** @description The proposed `teams/core-team.yml` bytes: the mandatory roles alone. */
+            core_team: string;
+            /** @description The proposed `orchestration.yml` bytes. */
+            orchestration: string;
+            /** @description The Realm it was proposed for. */
+            realm_id: string;
+            /** @description The exact catalog revision the proposal pins. */
+            role_catalog: components["schemas"]["FleetRoleCatalogPinDto"];
+        };
+        /**
+         * @description Publish one previewed bundle as immutable, content-addressed artifacts.
+         *
+         *     Publication selects nothing: placement keeps reading the current selection
+         *     until an activation names this bundle.
+         */
+        FleetBundlePublishRequest: {
+            /** @description The exact bytes of `teams/core-team.yml` that were previewed. */
+            core_team: string;
+            /** @description The exact bytes of `fleet.yml` that were previewed. */
+            fleet: string;
+            /** @description The exact bytes of `orchestration.yml` that were previewed. */
+            orchestration: string;
+            /** @description The hash preview returned for these bytes. */
+            preview_hash: string;
+        };
+        /** @description One published bundle. */
+        FleetBundlePublishedDto: {
+            /** @description Whether this call wrote any artifact or found them all published. */
+            applied: components["schemas"]["AppliedDto"];
+            /** @description The manifest as published. */
+            manifest: components["schemas"]["FleetBundleManifestDto"];
+            /** @description The Realm it was published in. */
+            realm_id: string;
+        };
+        /**
          * @description The runtime facts one fleet policy choice is made under: stated by the
          *     caller, applied in chain order, and recorded with the decision.
          */
@@ -6666,6 +6901,18 @@ export interface components {
          * @enum {string}
          */
         FleetPolicySelectionDto: "activation" | "fleet_yml";
+        /** @description The exact role catalog revision a bundle pins. */
+        FleetRoleCatalogPinDto: {
+            /** @description The catalog's stable identity. */
+            catalog_id: string;
+            /** @description The canonical content hash of that revision. */
+            content_hash: string;
+            /**
+             * Format: int32
+             * @description The catalog revision.
+             */
+            version: number;
+        };
         /** @description A recorded discontinuity a reader is owed. */
         GapDto: {
             /**
@@ -11546,6 +11793,227 @@ export interface operations {
             };
             /** @description The position is outside the retained history */
             410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    fleet_bundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetBundleDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    activate_fleet_bundle: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetBundleActivateRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetPolicyActivatedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_fleet_bundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetBundlePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetBundlePreviewDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    propose_fleet_bundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetBundleProposalDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    publish_fleet_bundle: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FleetBundlePublishRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetBundlePublishedDto"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -587,6 +587,30 @@ impl FleetSource {
         })
     }
 
+    /// One published bundle, verified in full through the shared reader:
+    /// manifest, policy, roster and catalog pin.
+    ///
+    /// # Errors
+    /// The first check that fails.
+    pub(crate) fn verify_bundle(
+        &self,
+        bundle_hash: &ContentHash,
+    ) -> Result<kontor_fleet_activation::VerifiedBundle, FleetError> {
+        kontor_fleet_activation::verify_bundle(&self.state_root, bundle_hash)
+    }
+
+    /// One published bundle manifest, verified as a canonical manifest at its
+    /// content address. The read operation reports it beside the record.
+    ///
+    /// # Errors
+    /// The first check that fails.
+    pub(crate) fn bundle_manifest(
+        &self,
+        bundle_hash: &ContentHash,
+    ) -> Result<BundleManifest, FleetError> {
+        kontor_fleet_activation::verify_manifest(&self.state_root, bundle_hash)
+    }
+
     /// Replace the one activation pointer atomically, owner-only.
     fn replace_activation(&self, record: &FleetActivation) -> Result<(), ActivationRefusal> {
         let bytes = serde_json::to_vec_pretty(record).map_err(|error| {

@@ -549,7 +549,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         http().count(),
-        196,
+        201,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // ASMA-8280 B-1: the registry's local operations — in-process handlers
@@ -565,7 +565,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         http().count() - CLI_ONLY.len(),
-        195,
+        200,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -577,7 +577,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // route serves the document itself and is not self-documented.
     assert_eq!(
         documented().len(),
-        197,
+        202,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -802,6 +802,13 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_fleet_policy_preview", CallerTier::Admin),
         ("kontor_fleet_policy_publish", CallerTier::Admin),
         ("kontor_fleet_policy_activate", CallerTier::Admin),
+        // The orchestration bundle is the same admin configuration: reading or
+        // previewing it exposes and authors policy authority.
+        ("kontor_fleet_bundle_get", CallerTier::Admin),
+        ("kontor_fleet_bundle_preview", CallerTier::Admin),
+        ("kontor_fleet_bundle_publish", CallerTier::Admin),
+        ("kontor_fleet_bundle_activate", CallerTier::Admin),
+        ("kontor_fleet_bundle_propose", CallerTier::Admin),
         // The local read has no route. Choosing where a seat runs is operator
         // work, which admin inherits; an observer is not admitted. The CLI
         // enforces it before it reads the state root.

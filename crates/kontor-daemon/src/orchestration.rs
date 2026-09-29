@@ -122,6 +122,19 @@ pub struct ResolvedBundle {
     pub manifest: BundleManifest,
 }
 
+/// The role catalog pin a Core Team source declares, read before any catalog
+/// is fetched, so a publisher knows which realm revision to resolve against.
+///
+/// # Errors
+/// O-03 when the source is not a schema_version 1 Core Team source.
+pub fn catalog_pin_of(core_team: &str) -> Result<RoleCatalogPin, FleetError> {
+    let source: CoreTeamSource = serde_yaml_ng::from_str(core_team).map_err(|_| invalid(O03))?;
+    if source.schema_version != SOURCE_SCHEMA_VERSION {
+        return Err(invalid(O03));
+    }
+    Ok(source.role_catalog)
+}
+
 /// Resolve one authoring bundle against the catalog its Core Team source pins.
 ///
 /// `catalog` is the realm's revision under the pinned identity and revision;
@@ -539,6 +552,15 @@ mod tests {
             ..authoring.sources()
         };
         assert!(resolve_bundle(&sources, &authoring.catalog).is_err());
+    }
+
+    #[test]
+    fn the_pin_is_read_before_any_catalog_is_fetched() {
+        let authoring = authoring();
+        let pin = catalog_pin(&authoring.catalog).expect("the pin");
+        assert_eq!(catalog_pin_of(&authoring.core_team).expect("a pin"), pin);
+        assert_eq!(refused(catalog_pin_of("schema_version: 2\n")), O03);
+        assert_eq!(refused(catalog_pin_of("not yaml: [")), O03);
     }
 
     #[test]

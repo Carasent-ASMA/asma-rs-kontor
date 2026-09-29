@@ -621,14 +621,22 @@ and `content_hash`, and declares every seat in order — the mandatory LSA and
 TPM included — with its `role_slot_id`, `role_code`, `presence` and
 `ad_hoc_allowed`. The publisher resolves it through the Core Team resolver, and
 the canonical revision bytes it produces define the `core_team_revision_hash`
-every `leadership/<hash>/<slot>` binding names. An initial proposal holding
-only the mandatory roles can be generated for review
-(`kontor_daemon::orchestration::propose_core_team`); it is never read at
-runtime until it is published and activated.
+every `leadership/<hash>/<slot>` binding names.
 
-In this build bundle publication and activation are daemon seams
-(`FleetSource::publish_bundle`, `FleetSource::activate_bundle`) with no
-registered operation yet, so nothing below happens except through them.
+Five admin operations, served by the route table, the MCP registry and the CLI
+alike, carry a bundle from proposal to activation:
+
+| Operation | Effect |
+| --- | --- |
+| `kontor_fleet_bundle_propose` | An initial `orchestration.yml` and `teams/core-team.yml` holding only the mandatory roles, with the exact catalog revision (id, version, content hash) they pin. Writes and activates nothing; nothing reads the proposal until it is published and activated. |
+| `kontor_fleet_bundle_preview` | Resolves the exact `orchestration`, `fleet` and `core_team` bytes against the realm catalog revision the Core Team source pins, and returns the manifest publication would write and the preview hash, which binds those bytes and that catalog revision. Writes nothing. |
+| `kontor_fleet_bundle_publish` | Resolves the same bytes again, requires that preview hash, and writes and verifies the immutable policy, roster and manifest. **Selects nothing.** |
+| `kontor_fleet_bundle_activate` | Names `source_bundle_hash` and `expected_active` — the standing record's `policy_hash`, plus its `source_bundle_hash` when it is a v2 record, omitted entirely only when no record stands — verifies every artifact, and replaces the one pointer atomically. |
+| `kontor_fleet_bundle_get` | The record as a bundle: `activation_schema_version` 1 or 2, the record, and the manifest a v2 record names. |
+
+Publish and activate keys are bound realm-wide, each to its complete logical
+request. The single-policy operations above still work unchanged and write a
+v1 record over the same pointer.
 
 Publication writes three immutable artifacts: the policy under
 `fleet-history/`, the canonical roster under
@@ -656,6 +664,17 @@ launch consumes only the selected roster: an epic whose pinned revision is not
 those exact bytes keeps its pin, is never retargeted, and its leadership launch
 is refused. A schema_version 1 record keeps its exact shape and behaviour and
 selects no roster.
+
+A project's Core Team can be published from a published bundle through the
+existing `kontor_core_team_preview` and `kontor_core_team_apply`: name
+`source_bundle_hash` instead of `seats` (exactly one of the two). Both steps
+re-verify the bundle's immutable artifacts, derive the seats from its roster
+through the same resolver, and require the result to be the bundle's roster
+byte for byte — the bundle must be authored at the project's next Core Team
+version against the catalog the realm holds, or the preview refuses. The apply
+names the bundle in its intent, receipt and outcome. Nothing else changes: no
+epic pin or running seat is retargeted, and an explicit-seat request is
+unchanged.
 
 #### Direct-mode resolution without a daemon
 

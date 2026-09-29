@@ -36504,6 +36504,480 @@ async fn a_leadership_seat_without_a_caller_route_is_routed_by_the_policy_choice
     }
 }
 
+/// The registered proposal, resolved once through the registered preview so
+/// the policy can bind both leadership slots of the exact roster it names.
+/// Returns the three source documents and that roster's hash.
+async fn proposed_bundle(world: &World) -> (String, String, String, String) {
+    let proposal = Call::post("/v1/fleet/bundle:propose", &serde_json::json!({}))
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(proposal.status, 200, "{}", proposal.body);
+    let orchestration = proposal.json()["orchestration"]
+        .as_str()
+        .expect("orchestration.yml")
+        .to_owned();
+    let core_team = proposal.json()["core_team"]
+        .as_str()
+        .expect("teams/core-team.yml")
+        .to_owned();
+    let probe = Call::post(
+        "/v1/fleet/bundle:preview",
+        &serde_json::json!({
+            "orchestration": orchestration,
+            "fleet": fleet_yaml(&["team/t/s"], CLAUDE_THEN_CODEX),
+            "core_team": core_team,
+        }),
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(probe.status, 200, "{}", probe.body);
+    let roster = probe.json()["manifest"]["core_team_revision_hash"]
+        .as_str()
+        .expect("the roster hash")
+        .to_owned();
+    let fleet = leadership_policy(
+        &format!("leadership/{roster}/lsa"),
+        "sol@xhigh",
+        &format!("leadership/{roster}/tpm"),
+        "sol@high",
+    );
+    (orchestration, fleet, core_team, roster)
+}
+
+/// ASMA-8280 S-1/S-2: an orchestration bundle is proposed, previewed,
+/// published and activated through registered admin operations. Publication
+/// selects nothing; activation verifies every artifact and is fenced on the
+/// exact standing pair; each key names one logical request; the read reports
+/// v1 and v2 honestly; and a v1 activation still converges over a v2 one.
+#[tokio::test]
+async fn an_orchestration_bundle_is_published_and_activated_through_registered_operations() {
+    let composed = compose_realm("/tmp/kontor-asma8280-bundle-operations").await;
+    let world = &composed.world;
+    let shaped = serde_json::json!({"orchestration": "", "fleet": "", "core_team": ""});
+    for (path, body) in [
+        ("/v1/fleet/bundle:propose", serde_json::json!({})),
+        ("/v1/fleet/bundle:preview", shaped),
+    ] {
+        let refused = Call::post(path, &body)
+            .signed_as(world, "operator")
+            .send(world)
+            .await;
+        assert_eq!(refused.status, 403, "{path} is admin configuration");
+    }
+    let refused = Call::get("/v1/fleet/bundle")
+        .signed_as(world, "operator")
+        .send(world)
+        .await;
+    assert_eq!(refused.status, 403);
+
+    // The proposal pins the exact catalog revision the realm holds.
+    let proposal = Call::post("/v1/fleet/bundle:propose", &serde_json::json!({}))
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    let catalog = bundled_role_catalog();
+    assert_eq!(
+        proposal.json()["role_catalog"]["content_hash"],
+        catalog.canonicalize().expect("the catalog").hash().as_str()
+    );
+    assert_eq!(
+        proposal.json()["role_catalog"]["catalog_id"],
+        catalog.catalog_id.to_string()
+    );
+
+    let (orchestration, fleet, core_team, roster) = proposed_bundle(world).await;
+    let sources = |fleet: &str| serde_json::json!({"orchestration": orchestration, "fleet": fleet, "core_team": core_team});
+    let previewed = Call::post("/v1/fleet/bundle:preview", &sources(&fleet))
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    let manifest = previewed.json()["manifest"].clone();
+    let bundle = manifest["source_bundle_hash"]
+        .as_str()
+        .expect("a bundle")
+        .to_owned();
+    assert_eq!(manifest["core_team_revision_hash"], roster.as_str());
+    assert_eq!(
+        manifest["policy_hash"],
+        ContentHash::of(fleet.as_bytes()).as_str()
+    );
+    assert_eq!(
+        manifest["sources"]["teams/core-team.yml"],
+        ContentHash::of(core_team.as_bytes()).as_str()
+    );
+    let preview_hash = previewed.json()["preview_hash"].clone();
+    assert!(
+        !world
+            .directory
+            .path()
+            .join("orchestration-history")
+            .exists(),
+        "preview writes nothing"
+    );
+
+    let publish = |key: &'static str, fleet: String, preview_hash: serde_json::Value| {
+        let mut body = sources(&fleet);
+        body["preview_hash"] = preview_hash;
+        async move {
+            Call::post("/v1/fleet/bundle:publish", &body)
+                .signed_as(world, "admin")
+                .with_key(key)
+                .send(world)
+                .await
+        }
+    };
+    let other_fleet = leadership_policy(
+        &format!("leadership/{roster}/lsa"),
+        "sol@high",
+        &format!("leadership/{roster}/tpm"),
+        "sol@high",
+    );
+    let unseen = publish(
+        "asma8280-bundle-unseen",
+        other_fleet.clone(),
+        preview_hash.clone(),
+    )
+    .await;
+    assert_eq!(
+        unseen.status, 400,
+        "bytes the preview never resolved: {}",
+        unseen.body
+    );
+    let published = publish(
+        "asma8280-bundle-publish",
+        fleet.clone(),
+        preview_hash.clone(),
+    )
+    .await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    assert_eq!(published.json()["applied"], "created");
+    assert_eq!(published.json()["manifest"], manifest);
+    let replay = publish(
+        "asma8280-bundle-publish",
+        fleet.clone(),
+        preview_hash.clone(),
+    )
+    .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["applied"], "unchanged");
+    // One key names one publication.
+    let other_preview = Call::post("/v1/fleet/bundle:preview", &sources(&other_fleet))
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    let reused = publish(
+        "asma8280-bundle-publish",
+        other_fleet.clone(),
+        other_preview.json()["preview_hash"].clone(),
+    )
+    .await;
+    assert_eq!(reused.status, 409, "{}", reused.body);
+
+    // Publication selected nothing.
+    let standing = Call::get("/v1/fleet/bundle")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(standing.status, 200, "{}", standing.body);
+    assert_eq!(standing.json()["selection"], "fleet_yml");
+    assert!(
+        standing.json().get("activation").is_none(),
+        "{}",
+        standing.body
+    );
+
+    let activate = |key: &'static str, bundle: String, expected: serde_json::Value| async move {
+        let mut body = serde_json::json!({"source_bundle_hash": bundle});
+        if !expected.is_null() {
+            body["expected_active"] = expected;
+        }
+        Call::post("/v1/fleet/bundle:activate", &body)
+            .signed_as(world, "admin")
+            .with_key(key)
+            .send(world)
+            .await
+    };
+    // A fence naming a standing activation that does not exist moves nothing.
+    let stale = activate(
+        "asma8280-bundle-stale",
+        bundle.clone(),
+        serde_json::json!({"policy_hash": ContentHash::of(b"never").as_str()}),
+    )
+    .await;
+    assert_eq!(stale.status, 409, "{}", stale.body);
+    let unpublished = activate(
+        "asma8280-bundle-unpublished",
+        ContentHash::of(b"no such bundle").to_string(),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(unpublished.status, 404, "{}", unpublished.body);
+
+    let activated = activate(
+        "asma8280-bundle-activate",
+        bundle.clone(),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(activated.status, 200, "{}", activated.body);
+    assert_eq!(activated.json()["applied"], "created");
+    let record = activated.json()["activation"].clone();
+    assert_eq!(record["source_bundle_hash"], bundle.as_str());
+    assert_eq!(record["core_team_revision_hash"], roster.as_str());
+    assert_eq!(record["policy_hash"], manifest["policy_hash"]);
+    let replay = activate(
+        "asma8280-bundle-activate",
+        bundle.clone(),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(replay.json()["applied"], "unchanged", "{}", replay.body);
+
+    let read = Call::get("/v1/fleet/bundle")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(read.json()["selection"], "activation");
+    assert_eq!(read.json()["activation_schema_version"], 2);
+    assert_eq!(read.json()["manifest"], manifest);
+    assert!(read.json().get("refusal").is_none(), "{}", read.body);
+
+    // The next bundle needs the exact standing pair.
+    let other_preview = Call::post("/v1/fleet/bundle:preview", &sources(&other_fleet))
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    let other_published = publish(
+        "asma8280-bundle-publish-other",
+        other_fleet.clone(),
+        other_preview.json()["preview_hash"].clone(),
+    )
+    .await;
+    assert_eq!(other_published.status, 200, "{}", other_published.body);
+    let other_bundle = other_published.json()["manifest"]["source_bundle_hash"]
+        .as_str()
+        .expect("a bundle")
+        .to_owned();
+    let policy_only = activate(
+        "asma8280-bundle-policy-only-fence",
+        other_bundle.clone(),
+        serde_json::json!({"policy_hash": record["policy_hash"]}),
+    )
+    .await;
+    assert_eq!(
+        policy_only.status, 409,
+        "a v2 record is named by its pair: {}",
+        policy_only.body
+    );
+    let moved = activate(
+        "asma8280-bundle-move",
+        other_bundle.clone(),
+        serde_json::json!({"policy_hash": record["policy_hash"], "source_bundle_hash": bundle}),
+    )
+    .await;
+    assert_eq!(moved.status, 200, "{}", moved.body);
+    assert_eq!(
+        moved.json()["activation"]["source_bundle_hash"],
+        other_bundle.as_str()
+    );
+
+    // v1 compatibility: the single-policy activation still converges, fenced
+    // on the policy, and the read then reports a v1 record with no bundle.
+    let v1 = fleet_yaml(&["team/t/s"], CODEX_THEN_CLAUDE);
+    let v1_hash = publish_through_the_registry(world, &v1, "asma8280-bundle-v1").await;
+    let v1_activated = Call::post(
+        "/v1/fleet/policy:activate",
+        &serde_json::json!({
+            "policy_hash": v1_hash,
+            "expected_active_policy_hash": moved.json()["activation"]["policy_hash"],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("asma8280-bundle-v1-activate")
+    .send(world)
+    .await;
+    assert_eq!(v1_activated.status, 200, "{}", v1_activated.body);
+    let read = Call::get("/v1/fleet/bundle")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(read.json()["activation_schema_version"], 1, "{}", read.body);
+    assert!(read.json().get("manifest").is_none(), "{}", read.body);
+    assert!(
+        read.json()["activation"]
+            .get("source_bundle_hash")
+            .is_none()
+    );
+
+    // A rewritten roster refuses the bundle's activation and moves nothing.
+    let roster_path = world
+        .directory
+        .path()
+        .join("core-team-history")
+        .join(format!("{roster}.json"));
+    std::fs::write(&roster_path, "{}").expect("the roster is rewritten");
+    let tampered = activate(
+        "asma8280-bundle-tampered",
+        bundle.clone(),
+        serde_json::json!({"policy_hash": v1_hash}),
+    )
+    .await;
+    assert_eq!(tampered.status, 400, "{}", tampered.body);
+    assert!(
+        tampered
+            .body
+            .contains("a published Core Team revision is not canonical"),
+        "{}",
+        tampered.body
+    );
+    let read = Call::get("/v1/fleet/bundle")
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    assert_eq!(read.json()["activation_schema_version"], 1, "nothing moved");
+}
+
+/// ASMA-8280 S-3: a project's Core Team is published from a published bundle
+/// through the existing preview and apply contract — the one Core Team writer
+/// — with the bundle re-verified at both steps, held byte for byte to its
+/// roster, named in the intent and receipt, and never retargeting an epic pin.
+#[tokio::test]
+async fn a_core_team_is_published_from_a_verified_bundle_through_the_existing_contract() {
+    let composed = compose_realm("/tmp/kontor-asma8280-bundle-core-team").await;
+    let world = &composed.world;
+    let project = composed.project.clone();
+    let epic_pin_before = leadership_keys(world, &project, &composed.epic)["lsa"]
+        .as_str()
+        .to_owned();
+    let (orchestration, fleet, core_team, roster) = proposed_bundle(world).await;
+    let sources =
+        serde_json::json!({"orchestration": orchestration, "fleet": fleet, "core_team": core_team});
+    let previewed = Call::post("/v1/fleet/bundle:preview", &sources)
+        .signed_as(world, "admin")
+        .send(world)
+        .await;
+    let mut body = sources.clone();
+    body["preview_hash"] = previewed.json()["preview_hash"].clone();
+    let published = Call::post("/v1/fleet/bundle:publish", &body)
+        .signed_as(world, "admin")
+        .with_key("asma8280-s3-publish")
+        .send(world)
+        .await;
+    assert_eq!(published.status, 200, "{}", published.body);
+    let bundle = published.json()["manifest"]["source_bundle_hash"]
+        .as_str()
+        .expect("a bundle")
+        .to_owned();
+
+    let preview = |body: serde_json::Value| {
+        let project = project.clone();
+        async move {
+            Call::post(format!("/v1/projects/{project}/core-team:preview"), &body)
+                .signed_as(world, "admin")
+                .send(world)
+                .await
+        }
+    };
+    // Exactly one of seats and a bundle.
+    for (body, rule) in [
+        (serde_json::json!({}), "names its seats or a source bundle"),
+        (
+            serde_json::json!({"seats": [seat("SA", "default", true)], "source_bundle_hash": bundle}),
+            "not both",
+        ),
+    ] {
+        let refused = preview(body).await;
+        assert_eq!(refused.status, 400, "{}", refused.body);
+        assert!(refused.body.contains(rule), "{}", refused.body);
+    }
+    let unpublished = preview(serde_json::json!({
+        "source_bundle_hash": ContentHash::of(b"no such bundle").as_str()
+    }))
+    .await;
+    assert_eq!(unpublished.status, 404, "{}", unpublished.body);
+
+    let previewed = preview(serde_json::json!({"source_bundle_hash": bundle})).await;
+    assert_eq!(previewed.status, 200, "{}", previewed.body);
+    assert_eq!(previewed.json()["source_bundle_hash"], bundle.as_str());
+    let apply = |key: &'static str, body: serde_json::Value| {
+        let project = project.clone();
+        async move {
+            Call::post(format!("/v1/projects/{project}/core-team:apply"), &body)
+                .signed_as(world, "admin")
+                .with_key(key)
+                .send(world)
+                .await
+        }
+    };
+    let applied_body = serde_json::json!({
+        "source_bundle_hash": bundle,
+        "preview_hash": previewed.json()["preview_hash"],
+        "expected_revision": 1,
+    });
+    let applied = apply("asma8280-s3-apply", applied_body.clone()).await;
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(applied.json()["source_bundle_hash"], bundle.as_str());
+    assert_eq!(applied.json()["receipt"]["applied"], "created");
+    let replay = apply("asma8280-s3-apply", applied_body.clone()).await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replay.json()["receipt"]["receipt_id"],
+        applied.json()["receipt"]["receipt_id"],
+        "one receipt names the bundle-sourced apply"
+    );
+
+    // The published revision is the bundle's roster, byte for byte.
+    let stored = world.daemon.state().with_store(|store| {
+        store
+            .get_current_core_team(project_id_of(&project))
+            .expect("the Core Team reads")
+            .expect("a Core Team was published")
+    });
+    let published_revision = kontor_teams::CoreTeamRevision {
+        version: stored.version,
+        catalog_hash: stored.catalog_hash,
+        seats: serde_json::from_value(stored.seats).expect("the seats read"),
+    }
+    .canonicalize()
+    .expect("canonical");
+    assert_eq!(
+        published_revision.hash().as_str(),
+        roster,
+        "the published revision is the roster"
+    );
+    // The epic keeps the roster it froze.
+    assert_eq!(
+        leadership_keys(world, &project, &composed.epic)["lsa"].as_str(),
+        epic_pin_before,
+        "no epic pin is retargeted"
+    );
+
+    // The project's next version is 2 now; the bundle declares version 1.
+    let next = preview(serde_json::json!({"source_bundle_hash": bundle})).await;
+    assert_eq!(next.status, 400, "{}", next.body);
+    assert!(
+        next.body.contains(
+            "the bundle's Core Team revision is not the revision this project would publish next"
+        ),
+        "{}",
+        next.body
+    );
+
+    // A rewritten roster is refused at preview.
+    let roster_path = world
+        .directory
+        .path()
+        .join("core-team-history")
+        .join(format!("{roster}.json"));
+    std::fs::write(&roster_path, "{}").expect("the roster is rewritten");
+    let tampered = preview(serde_json::json!({"source_bundle_hash": bundle})).await;
+    assert_eq!(tampered.status, 400, "{}", tampered.body);
+}
+
 /// ASMA-8280: a Core Team route correction is held to the activated chain.
 /// Off-chain moves refuse before any native effect, an unactivated publication
 /// or `fleet.yml` edit between preview and apply changes nothing, and a new

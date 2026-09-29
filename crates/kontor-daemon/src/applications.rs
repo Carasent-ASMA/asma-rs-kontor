@@ -147,9 +147,12 @@ use kontor_api::applications::{
     WorktreeClaimCorrectionPreviewDto, WorktreeClaimCorrectionRequest,
 };
 use kontor_api::applications::{
-    FleetActivationDto, FleetPolicyActivateRequest, FleetPolicyActivatedDto, FleetPolicyDto,
-    FleetPolicyPreviewDto, FleetPolicyPreviewRequest, FleetPolicyPublishRequest,
-    FleetPolicyPublishedDto, FleetPolicySelectionDto,
+    FleetActivationDto, FleetBundleActivateRequest, FleetBundleDto, FleetBundleManifestDto,
+    FleetBundlePreviewDto, FleetBundlePreviewRequest, FleetBundleProposalDto,
+    FleetBundlePublishRequest, FleetBundlePublishedDto, FleetPolicyActivateRequest,
+    FleetPolicyActivatedDto, FleetPolicyDto, FleetPolicyPreviewDto, FleetPolicyPreviewRequest,
+    FleetPolicyPublishRequest, FleetPolicyPublishedDto, FleetPolicySelectionDto,
+    FleetRoleCatalogPinDto,
 };
 use kontor_api::dto::JiraBindingDto;
 use kontor_api::error::{ApiError, ApiErrorCode};
@@ -8988,13 +8991,101 @@ impl Services {
     }
 
     /// The digest an apply must name to prove it saw this preview.
+    /// The seats one Core Team preview or apply resolves: the caller's own,
+    /// or those one published orchestration bundle's Core Team revision
+    /// declares (ASMA-8280 S-3), in the one form the existing resolver takes.
+    ///
+    /// A bundle is re-verified from its immutable artifacts — manifest,
+    /// policy, roster and catalog pin — and its exact roster is returned, so
+    /// the revision the resolver produces can be held to those bytes.
+    fn core_team_request_seats(
+        &self,
+        seats: Option<&[CoreTeamSeatSelectionDto]>,
+        source_bundle_hash: Option<&ContentHash>,
+    ) -> Result<(Vec<CoreTeamSeatSelectionDto>, Option<CanonicalDocument>), ApiError> {
+        #[derive(serde::Deserialize)]
+        struct Envelope {
+            value: CoreTeamRevision,
+        }
+        match (seats, source_bundle_hash) {
+            (Some(seats), None) => Ok((seats.to_vec(), None)),
+            (None, Some(bundle)) => {
+                let verified = self
+                    .fleet
+                    .verify_bundle(bundle)
+                    .map_err(|error| self.refuse_fleet_policy(&error))?;
+                let revision = verified
+                    .roster
+                    .deserialize::<Envelope>()
+                    .map_err(|error| self.refuse_domain(&error))?
+                    .value;
+                let seats = revision
+                    .seats
+                    .iter()
+                    .map(|seat| CoreTeamSeatSelectionDto {
+                        role: kontor_api::applications::RoleSelectionDto {
+                            catalog_revision: RevisionRefDto {
+                                id: seat.role.catalog_id.to_string(),
+                                version: seat.role.catalog_revision,
+                            },
+                            role_code: seat.role.role_code.clone(),
+                            custom_display_name: seat.role.custom_display_name.clone(),
+                        },
+                        presence: seat.presence,
+                        ad_hoc_allowed: seat.ad_hoc_allowed,
+                    })
+                    .collect();
+                Ok((seats, Some(verified.roster)))
+            }
+            (Some(_), Some(_)) => Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a Core Team names either its seats or a source bundle, not both",
+            )),
+            (None, None) => Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "a Core Team names its seats or a source bundle",
+            )),
+        }
+    }
+
+    /// Hold a bundle-sourced Core Team revision to the bundle's exact roster.
+    ///
+    /// The existing resolver resolves the bundle's seats at this project's
+    /// next version against the realm catalog; only when that is the bundle's
+    /// canonical revision byte for byte is publishing it publishing the
+    /// bundle's roster. Anything else — another version, another catalog —
+    /// refuses rather than publishing a revision the bundle never named.
+    fn confirm_bundle_roster(
+        &self,
+        proposed: &CoreTeamRevision,
+        bundle_roster: Option<&CanonicalDocument>,
+    ) -> Result<(), ApiError> {
+        let Some(roster) = bundle_roster else {
+            return Ok(());
+        };
+        let resolved = proposed
+            .canonicalize()
+            .map_err(|error| self.refuse_domain(&error))?;
+        if resolved.hash() != roster.hash() || resolved.json() != roster.json() {
+            return Err(self
+                .deny(
+                    ApiErrorCode::InvalidRequest,
+                    "the bundle's Core Team revision is not the revision this project would publish next",
+                )
+                .about("CoreTeamRevision")
+                .advising("author the bundle's teams/core-team.yml at this project's next Core Team version against the catalog the realm holds, then publish it again"));
+        }
+        Ok(())
+    }
+
     fn core_team_hash(
         &self,
         project_id: ProjectId,
         proposed: &CoreTeamRevision,
         effects: &[TopologyUpgradeEffectDto],
+        source_bundle_hash: Option<&ContentHash>,
     ) -> Result<ContentHash, ApiError> {
-        self.preview_hash(&serde_json::json!({
+        let mut digest = serde_json::json!({
             "schema_version": 1,
             "operation": "core_team_preview",
             "project": project_id.to_string(),
@@ -9013,7 +9104,14 @@ impl Services {
                     })
                 })
                 .collect::<Vec<_>>(),
-        }))
+        });
+        // A bundle-sourced preview names its bundle, so its hash authorizes
+        // only a bundle-sourced apply; an explicit-seat preview hash is
+        // unchanged.
+        if let Some(bundle) = source_bundle_hash {
+            digest["source_bundle_hash"] = serde_json::json!(bundle.as_str());
+        }
+        self.preview_hash(&digest)
     }
 
     /// Project one stored revision's seats onto the wire.
@@ -15489,6 +15587,34 @@ const PUBLISH_FLEET_POLICY: &str = "publish_fleet_policy";
 
 /// The realm-scoped idempotency operation of a fleet policy activation.
 const ACTIVATE_FLEET_POLICY: &str = "activate_fleet_policy";
+
+/// The realm-scoped idempotency operation of an orchestration bundle
+/// publication (ASMA-8280 S-1).
+const PUBLISH_FLEET_BUNDLE: &str = "publish_fleet_bundle";
+
+/// The realm-scoped idempotency operation of an orchestration bundle
+/// activation (ASMA-8280 S-1).
+const ACTIVATE_FLEET_BUNDLE: &str = "activate_fleet_bundle";
+
+/// One bundle manifest as the read, preview and publish operations report it.
+fn fleet_bundle_manifest_dto(
+    source_bundle_hash: &ContentHash,
+    manifest: &kontor_fleet_activation::BundleManifest,
+) -> FleetBundleManifestDto {
+    FleetBundleManifestDto {
+        source_bundle_hash: source_bundle_hash.clone(),
+        resolver: manifest.resolver.clone(),
+        sources: manifest.sources.clone(),
+        policy_hash: manifest.policy_hash.clone(),
+        policy_schema_version: manifest.policy_schema_version,
+        role_catalog: FleetRoleCatalogPinDto {
+            catalog_id: manifest.role_catalog.catalog_id,
+            version: manifest.role_catalog.version,
+            content_hash: manifest.role_catalog.content_hash.clone(),
+        },
+        core_team_revision_hash: manifest.core_team_revision_hash.clone(),
+    }
+}
 
 fn fleet_activation_dto(record: &crate::fleet::FleetActivation) -> FleetActivationDto {
     FleetActivationDto {
@@ -24252,6 +24378,170 @@ impl ApplicationOperations for Services {
         })
     }
 
+    fn fleet_bundle(&self) -> Result<FleetBundleDto, ApiError> {
+        let state = self.state()?;
+        let status = self.fleet.status();
+        // The manifest a v2 record names, reported when it verifies; the
+        // record itself is reported as written, and `refusal` says why an
+        // activation cannot be served.
+        let manifest = status
+            .record
+            .as_ref()
+            .and_then(|record| record.source_bundle_hash.as_ref())
+            .and_then(|hash| {
+                self.fleet
+                    .bundle_manifest(hash)
+                    .ok()
+                    .map(|manifest| fleet_bundle_manifest_dto(hash, &manifest))
+            });
+        Ok(FleetBundleDto {
+            realm_id: state.realm_id(),
+            selection: if status.activation {
+                FleetPolicySelectionDto::Activation
+            } else {
+                FleetPolicySelectionDto::FleetYml
+            },
+            activation_schema_version: status.record.as_ref().map(|record| record.schema_version),
+            activation: status.record.as_ref().map(fleet_activation_dto),
+            manifest,
+            refusal: status.refusal,
+        })
+    }
+
+    fn preview_fleet_bundle(
+        &self,
+        request: &FleetBundlePreviewRequest,
+    ) -> Result<FleetBundlePreviewDto, ApiError> {
+        let state = self.state()?;
+        let (resolved, bundle_hash, preview_hash) =
+            self.resolve_fleet_bundle(&request.orchestration, &request.fleet, &request.core_team)?;
+        Ok(FleetBundlePreviewDto {
+            realm_id: state.realm_id(),
+            manifest: fleet_bundle_manifest_dto(&bundle_hash, &resolved.manifest),
+            preview_hash,
+        })
+    }
+
+    async fn publish_fleet_bundle(
+        &self,
+        key: &IdempotencyKey,
+        request: &FleetBundlePublishRequest,
+    ) -> Result<FleetBundlePublishedDto, ApiError> {
+        let state = self.state()?;
+        // Resolved again from the exact bytes that will be written, then held
+        // to the preview: the preview hash only proves the caller saw these
+        // bytes resolve against this catalog.
+        let (resolved, bundle_hash, preview_hash) =
+            self.resolve_fleet_bundle(&request.orchestration, &request.fleet, &request.core_team)?;
+        if preview_hash != request.preview_hash {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "the orchestration bundle does not match the bytes its preview resolved",
+            ));
+        }
+        let fingerprint = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": PUBLISH_FLEET_BUNDLE,
+            "source_bundle_hash": bundle_hash.as_str(),
+            "preview_hash": preview_hash.as_str(),
+        }))?;
+        self.bind_realm_operation(key, PUBLISH_FLEET_BUNDLE, &fingerprint)?;
+        let published = self
+            .fleet
+            .publish_bundle(&resolved)
+            .map_err(|error| self.refuse_fleet_policy(&error))?;
+        Ok(FleetBundlePublishedDto {
+            realm_id: state.realm_id(),
+            manifest: fleet_bundle_manifest_dto(&published.bundle_hash, &published.manifest),
+            applied: if published.created {
+                AppliedDto::Created
+            } else {
+                AppliedDto::Unchanged
+            },
+        })
+    }
+
+    async fn activate_fleet_bundle(
+        &self,
+        key: &IdempotencyKey,
+        request: &FleetBundleActivateRequest,
+    ) -> Result<FleetPolicyActivatedDto, ApiError> {
+        let state = self.state()?;
+        let fingerprint = self.intent(&serde_json::json!({
+            "schema_version": 1,
+            "operation": ACTIVATE_FLEET_BUNDLE,
+            "source_bundle_hash": request.source_bundle_hash.as_str(),
+            "expected_active": request.expected_active.as_ref().map(|expected| {
+                serde_json::json!({
+                    "policy_hash": expected.policy_hash.as_str(),
+                    "source_bundle_hash": expected
+                        .source_bundle_hash
+                        .as_ref()
+                        .map(ContentHash::as_str),
+                })
+            }),
+        }))?;
+        self.bind_realm_operation(key, ACTIVATE_FLEET_BUNDLE, &fingerprint)?;
+        // The one activation implementation: every artifact is verified, then
+        // the one pointer is replaced under the exact standing pair the caller
+        // read. A replay finds its bundle standing and changes nothing.
+        let fence = crate::fleet::ActivationFence {
+            policy_hash: request
+                .expected_active
+                .as_ref()
+                .map(|expected| expected.policy_hash.clone()),
+            source_bundle_hash: request
+                .expected_active
+                .as_ref()
+                .and_then(|expected| expected.source_bundle_hash.clone()),
+        };
+        let activated = self
+            .fleet
+            .activate_bundle(&request.source_bundle_hash, &fence)
+            .map_err(|refusal| match refusal {
+                crate::fleet::ActivationRefusal::Moved => self.deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the fleet activation moved since the caller read it",
+                ),
+                crate::fleet::ActivationRefusal::Policy(error) => self.refuse_fleet_policy(&error),
+            })?;
+        Ok(FleetPolicyActivatedDto {
+            realm_id: state.realm_id(),
+            activation: fleet_activation_dto(&activated.record),
+            applied: if activated.changed {
+                AppliedDto::Created
+            } else {
+                AppliedDto::Unchanged
+            },
+        })
+    }
+
+    fn propose_fleet_bundle(&self) -> Result<FleetBundleProposalDto, ApiError> {
+        let state = self.state()?;
+        // The explicit authoring generator (ASMA-8280 B-2): the mandatory
+        // roles alone, against the catalog this realm governs Core Teams with.
+        // Proposal text for review; nothing reads it until it is published and
+        // an activation names that bundle.
+        let catalog = self.published_catalog()?;
+        let content_hash = catalog
+            .canonicalize()
+            .map_err(|error| self.refuse_domain(&error))?
+            .hash()
+            .clone();
+        Ok(FleetBundleProposalDto {
+            realm_id: state.realm_id(),
+            orchestration: crate::orchestration::propose_orchestration()
+                .map_err(|error| self.refuse_fleet_policy(&error))?,
+            core_team: crate::orchestration::propose_core_team(&catalog)
+                .map_err(|error| self.refuse_fleet_policy(&error))?,
+            role_catalog: FleetRoleCatalogPinDto {
+                catalog_id: catalog.catalog_id,
+                version: catalog.version,
+                content_hash,
+            },
+        })
+    }
+
     fn project_capacity(&self, project_id: ProjectId) -> Result<ProjectCapacityDto, ApiError> {
         self.capacity_projection(project_id)
     }
@@ -24586,13 +24876,24 @@ impl ApplicationOperations for Services {
         // written. No draft, no id, no receipt — an apply recomputes this from
         // current state and compares the hash, so a stored plan here would only
         // be a second answer able to disagree with the Realm.
-        let proposed = self.resolve_core_team(project_id, &request.seats, stored.as_ref())?;
+        let (seats, bundle_roster) = self.core_team_request_seats(
+            request.seats.as_deref(),
+            request.source_bundle_hash.as_ref(),
+        )?;
+        let proposed = self.resolve_core_team(project_id, &seats, stored.as_ref())?;
+        self.confirm_bundle_roster(&proposed, bundle_roster.as_ref())?;
         let effects = core_team_effects(stored.as_ref(), &proposed)
             .map_err(|error| self.refuse_domain(&error))?;
         Ok(CoreTeamPreviewDto {
             realm_id: state.realm_id(),
-            preview_hash: self.core_team_hash(project_id, &proposed, &effects)?,
+            preview_hash: self.core_team_hash(
+                project_id,
+                &proposed,
+                &effects,
+                request.source_bundle_hash.as_ref(),
+            )?,
             effects,
+            source_bundle_hash: request.source_bundle_hash.clone(),
         })
     }
 
@@ -24604,12 +24905,18 @@ impl ApplicationOperations for Services {
     ) -> Result<CoreTeamOutcomeDto, ApiError> {
         let state = self.state()?;
         let project = self.project_row(project_id)?;
-        let intent = self.intent(&serde_json::json!({
+        let mut intent = serde_json::json!({
             "schema_version": 1,
             "operation": "core_team_apply",
             "project": project_id.to_string(),
             "preview": request.preview_hash.as_str(),
-        }))?;
+        });
+        // A bundle-sourced apply names its bundle in the intent, and so in
+        // the receipt; an explicit-seat apply keeps its exact intent.
+        if let Some(bundle) = &request.source_bundle_hash {
+            intent["source_bundle_hash"] = serde_json::json!(bundle.as_str());
+        }
+        let intent = self.intent(&intent)?;
         // Replay is judged before the expected revision, unlike a topology
         // upgrade. Publishing moves this aggregate's revision, so a retry after
         // a lost acknowledgement necessarily presents the revision it read
@@ -24633,10 +24940,23 @@ impl ApplicationOperations for Services {
             // Recomputed rather than remembered, then held to the hash the
             // caller was shown. What was authorized is this exact roster
             // resolved against these exact catalog revisions.
-            let proposed = self.resolve_core_team(project_id, &request.seats, stored.as_ref())?;
+            // A bundle is re-verified here as well, from its immutable
+            // artifacts: the preview proves only what the bundle said then.
+            let (seats, bundle_roster) = self.core_team_request_seats(
+                request.seats.as_deref(),
+                request.source_bundle_hash.as_ref(),
+            )?;
+            let proposed = self.resolve_core_team(project_id, &seats, stored.as_ref())?;
+            self.confirm_bundle_roster(&proposed, bundle_roster.as_ref())?;
             let effects = core_team_effects(stored.as_ref(), &proposed)
                 .map_err(|error| self.refuse_domain(&error))?;
-            if self.core_team_hash(project_id, &proposed, &effects)? != request.preview_hash {
+            if self.core_team_hash(
+                project_id,
+                &proposed,
+                &effects,
+                request.source_bundle_hash.as_ref(),
+            )? != request.preview_hash
+            {
                 return Err(self.deny(
                     ApiErrorCode::InvalidRequest,
                     "the apply does not match the named preview",
@@ -24683,6 +25003,7 @@ impl ApplicationOperations for Services {
                 snapshot_cursor: self.cursor()?,
             },
             core_team,
+            source_bundle_hash: request.source_bundle_hash.clone(),
         })
     }
     async fn materialize_core_team(
@@ -25070,6 +25391,7 @@ impl ApplicationOperations for Services {
             &intent,
         )?;
         Ok(CoreTeamOutcomeDto {
+            source_bundle_hash: None,
             core_team: self.epic_core_team_dto(project_id, epic_id, &roster)?,
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
@@ -26593,6 +26915,7 @@ impl ApplicationOperations for Services {
             &intent,
         )?;
         Ok(CoreTeamOutcomeDto {
+            source_bundle_hash: None,
             core_team: self.epic_core_team_dto(project_id, epic_id, &roster)?,
             receipt: MutationReceiptDto {
                 realm_id: state.realm_id(),
@@ -38302,6 +38625,56 @@ impl Services {
             })
     }
 
+    /// Resolve one orchestration bundle from its exact source bytes through
+    /// the one publisher, against the realm catalog revision its Core Team
+    /// source pins, with the preview hash its publication must name.
+    ///
+    /// The preview hash binds the bundle's identity — which is the three
+    /// sources' exact hashes, the policy, the roster and the catalog pin — and
+    /// the selected catalog revision.
+    fn resolve_fleet_bundle(
+        &self,
+        orchestration: &str,
+        fleet: &str,
+        core_team: &str,
+    ) -> Result<
+        (
+            crate::orchestration::ResolvedBundle,
+            ContentHash,
+            ContentHash,
+        ),
+        ApiError,
+    > {
+        let pin = crate::orchestration::catalog_pin_of(core_team)
+            .map_err(|error| self.refuse_fleet_policy(&error))?;
+        let catalog = self.catalog_revision(pin.catalog_id, pin.version)?;
+        let resolved = crate::orchestration::resolve_bundle(
+            &crate::orchestration::BundleSources {
+                orchestration,
+                fleet,
+                core_team,
+            },
+            &catalog,
+        )
+        .map_err(|error| self.refuse_fleet_policy(&error))?;
+        let manifest = resolved
+            .manifest
+            .canonicalize()
+            .map_err(|error| self.refuse_fleet_policy(&error))?;
+        let preview_hash = self.preview_hash(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "fleet_bundle_preview",
+            "source_bundle_hash": manifest.hash().as_str(),
+            "sources": resolved.manifest.sources,
+            "role_catalog": {
+                "catalog_id": catalog.catalog_id.to_string(),
+                "version": catalog.version.get(),
+                "content_hash": resolved.manifest.role_catalog.content_hash.as_str(),
+            },
+        }))?;
+        Ok((resolved, manifest.hash().clone(), preview_hash))
+    }
+
     /// The preview hash one fleet policy's publication must name.
     fn fleet_policy_preview_hash(
         &self,
@@ -38339,7 +38712,10 @@ impl Services {
     fn refuse_fleet_policy(&self, error: &crate::fleet::FleetError) -> ApiError {
         match error {
             crate::fleet::FleetError::Invalid { rule } => {
-                let code = if *rule == crate::fleet::UNPUBLISHED_POLICY {
+                let code = if *rule == crate::fleet::UNPUBLISHED_POLICY
+                    || *rule == kontor_fleet_activation::rule::M07
+                    || *rule == kontor_fleet_activation::rule::C07
+                {
                     ApiErrorCode::NotFound
                 } else {
                     ApiErrorCode::InvalidRequest

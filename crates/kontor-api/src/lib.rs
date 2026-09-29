@@ -578,6 +578,26 @@ pub fn router(state: ApiState) -> Router {
                 "/v1/fleet/policy:activate",
                 post(applications::activate_fleet_policy),
             )
+            // The orchestration bundle (ASMA-8280 S-1, S-2): the same one
+            // activation pointer, naming a policy and a Core Team revision
+            // together. Publication selects nothing.
+            .route("/v1/fleet/bundle", get(applications::fleet_bundle))
+            .route(
+                "/v1/fleet/bundle:preview",
+                post(applications::preview_fleet_bundle),
+            )
+            .route(
+                "/v1/fleet/bundle:publish",
+                post(applications::publish_fleet_bundle),
+            )
+            .route(
+                "/v1/fleet/bundle:activate",
+                post(applications::activate_fleet_bundle),
+            )
+            .route(
+                "/v1/fleet/bundle:propose",
+                post(applications::propose_fleet_bundle),
+            )
             .route(
                 "/v1/projects/{project_id}/capacity",
                 get(applications::project_capacity),

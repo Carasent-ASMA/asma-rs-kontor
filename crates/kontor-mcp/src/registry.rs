@@ -225,6 +225,20 @@ const FLEET_ALLOCATION: &[FieldSpec] = &[
     ),
 ];
 
+/// The standing activation a bundle activation names (`kontor_fleet_bundle_activate`).
+const FLEET_ACTIVATION_FENCE: &[FieldSpec] = &[
+    field(
+        "policy_hash",
+        ArgType::Text,
+        "The policy the standing record names.",
+    ),
+    optional_field(
+        "source_bundle_hash",
+        ArgType::Text,
+        "The bundle the standing record names, for a schema_version 2 record.",
+    ),
+];
+
 /// A shorthand for one required field of a declared object.
 const fn field(name: &'static str, ty: ArgType, about: &'static str) -> FieldSpec {
     FieldSpec {
@@ -5975,6 +5989,120 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Select one published fleet policy for every later placement, under the expected current selection.",
     },
     ToolSpec {
+        name: "kontor_fleet_bundle_get",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/fleet/bundle",
+        },
+        kind: OpKind::Read,
+        args: &[],
+        about: "The activation record as a bundle: v1 (a policy alone) or v2 (policy, bundle and Core Team revision), and the bundle manifest a v2 record names.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_bundle_preview",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/fleet/bundle:preview",
+        },
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "orchestration",
+                Place::Body,
+                ArgType::Text,
+                "The exact bytes of orchestration.yml.",
+            ),
+            req(
+                "fleet",
+                Place::Body,
+                ArgType::Text,
+                "The exact bytes of fleet.yml.",
+            ),
+            req(
+                "core_team",
+                Place::Body,
+                ArgType::Text,
+                "The exact bytes of teams/core-team.yml.",
+            ),
+        ],
+        about: "Resolve one orchestration bundle against the catalog revision its Core Team source pins and return its manifest and preview hash. Writes nothing.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_bundle_publish",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/fleet/bundle:publish",
+        },
+        kind: OpKind::Write,
+        args: &[
+            IDEMPOTENCY,
+            req(
+                "orchestration",
+                Place::Body,
+                ArgType::Text,
+                "The exact orchestration.yml bytes that were previewed.",
+            ),
+            req(
+                "fleet",
+                Place::Body,
+                ArgType::Text,
+                "The exact fleet.yml bytes that were previewed.",
+            ),
+            req(
+                "core_team",
+                Place::Body,
+                ArgType::Text,
+                "The exact teams/core-team.yml bytes that were previewed.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the preview answered with.",
+            ),
+        ],
+        about: "Publish one previewed orchestration bundle as immutable policy, roster and manifest artifacts. Selects nothing.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_bundle_activate",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/fleet/bundle:activate",
+        },
+        kind: OpKind::Write,
+        args: &[
+            IDEMPOTENCY,
+            req(
+                "source_bundle_hash",
+                Place::Body,
+                ArgType::Text,
+                "The content hash of the published bundle to activate.",
+            ),
+            opt(
+                "expected_active",
+                Place::Body,
+                ArgType::Object(FLEET_ACTIVATION_FENCE),
+                "The standing activation the caller read; omit only when none stood.",
+            ),
+        ],
+        about: "Verify every artifact of one published bundle and replace the activation pointer, fenced on the standing activation the caller read.",
+    },
+    ToolSpec {
+        name: "kontor_fleet_bundle_propose",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/fleet/bundle:propose",
+        },
+        kind: OpKind::Read,
+        args: &[],
+        about: "Propose an initial orchestration.yml and teams/core-team.yml, with the exact catalog revision they pin, for review. Writes and activates nothing.",
+    },
+    ToolSpec {
         name: "kontor_fleet_policy_resolve",
         // Actionable placement selection is operator work: an observer reads
         // the realm but does not choose where a seat runs. Admin inherits it.
@@ -6229,11 +6357,17 @@ pub static REGISTRY: &[ToolSpec] = &[
                 ArgType::ProjectId,
                 "The owning project.",
             ),
-            req(
+            opt(
                 "seats",
                 Place::Body,
                 ArgType::Json,
-                "The roles the Core Team should seat, in order.",
+                "The roles the Core Team should seat, in order. Exactly one of seats and source_bundle_hash.",
+            ),
+            opt(
+                "source_bundle_hash",
+                Place::Body,
+                ArgType::Text,
+                "A published orchestration bundle whose verified Core Team revision supplies the seats instead.",
             ),
         ],
         about: "What a Core Team change would do. Commits nothing.",
@@ -6254,11 +6388,17 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "The owning project.",
             ),
             IDEMPOTENCY,
-            req(
+            opt(
                 "seats",
                 Place::Body,
                 ArgType::Json,
-                "The roles the Core Team should seat, in order.",
+                "The roles the Core Team should seat, in order: the seats that were previewed.",
+            ),
+            opt(
+                "source_bundle_hash",
+                Place::Body,
+                ArgType::Text,
+                "The published orchestration bundle that was previewed, instead of seats.",
             ),
             req(
                 "preview_hash",
