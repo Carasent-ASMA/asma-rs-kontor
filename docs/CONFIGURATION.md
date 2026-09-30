@@ -719,6 +719,35 @@ considered and why it was passed over, and the chosen step, sub-step and vendor
 selected and the reason. There is no partial allocation. Governed Committee
 admission calls the same allocator.
 
+The same operation places one `planning_pair@1` pair when it is given
+`--planning-pair` instead. Name exactly one of `--binding-key`, `--allocation`
+and `--planning-pair`:
+
+```json
+{
+  "members": [
+    {"slot": "seat-a", "binding_key": "advisor/<profile-a>"},
+    {"slot": "seat-b", "binding_key": "advisor/<profile-b>",
+     "unavailable_accounts": ["codex-work"]}
+  ]
+}
+```
+
+The members are exactly `seat-a` then `seat-b` (PP-01). Each names an existing
+binding and states its own eligibility. The top-level `--unavailable-accounts`
+and `--excluded-vendors` belong to single mode (PP-04). Combining
+`--planning-pair` with another mode is refused (PP-03); `--binding-key` with
+`--allocation`, or no mode at all, is J-01 as before. The pair has no role,
+Judge or diversity to set. It is one joint allocation of both members through
+the same allocator under `distinct_vendor_per_reviewer`: the members never
+share a policy vendor, and a route whose vendor is `unknown` is not placed. The
+answer is `{protocol: "planning_pair@1", selection, placement_hash, members}`:
+`selection` is the joint allocation receipt, `placement_hash` its canonical
+hash, and `members` the two frozen members. When no such placement exists, the
+answer is the same document without `members` under `status: 409`
+`placement_blocked`. It is placement evidence only: it carries no verdict, and
+it never satisfies a review gate.
+
 ## Provider quota signals
 
 Copy [`config/examples/quota-signals.yml`](../config/examples/quota-signals.yml)

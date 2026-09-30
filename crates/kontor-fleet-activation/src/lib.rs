@@ -124,6 +124,8 @@ pub mod rule {
 
     pub const PP01: &str = "a planning pair names exactly two members, seat-a then seat-b";
     pub const PP02: &str = "a planning pair's placement could not be frozen as one canonical receipt with two distinct actual vendors";
+    pub const PP03: &str = "name exactly one of binding_key, allocation and planning_pair";
+    pub const PP04: &str = "a planning pair takes each member's own eligibility; unavailable_accounts and excluded_vendors at the top level belong to a single binding";
 }
 
 use rule::{

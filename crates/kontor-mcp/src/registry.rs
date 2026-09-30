@@ -225,6 +225,41 @@ const FLEET_ALLOCATION: &[FieldSpec] = &[
     ),
 ];
 
+/// One member of a planning pair placement (`kontor_fleet_policy_resolve`).
+///
+/// A member has no role and the pair has no diversity field: both members are
+/// always held to distinct actual vendors, and neither is a Committee reviewer
+/// or Judge.
+const FLEET_PLANNING_PAIR_MEMBER: &[FieldSpec] = &[
+    field(
+        "slot",
+        ArgType::Enum(&["seat-a", "seat-b"]),
+        "The member slot: seat-a (SEAT A) then seat-b (SEAT B).",
+    ),
+    field(
+        "binding_key",
+        ArgType::Text,
+        "The existing canonical binding this member resolves, such as advisor/<profile> or committee/<template>/<seat>.",
+    ),
+    optional_field(
+        "unavailable_accounts",
+        ArgType::TextArray,
+        "Account aliases that cannot take this member now.",
+    ),
+    optional_field(
+        "excluded_vendors",
+        ArgType::TextArray,
+        "Vendors this member must avoid.",
+    ),
+];
+
+/// A `planning_pair@1` placement: exactly its two members, in slot order.
+const FLEET_PLANNING_PAIR: &[FieldSpec] = &[field(
+    "members",
+    ArgType::ObjectArray(FLEET_PLANNING_PAIR_MEMBER),
+    "Exactly two members, seat-a then seat-b.",
+)];
+
 /// The standing activation a bundle activation names (`kontor_fleet_bundle_activate`).
 const FLEET_ACTIVATION_FENCE: &[FieldSpec] = &[
     field(
@@ -6114,7 +6149,7 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "binding_key",
                 Place::Body,
                 ArgType::Text,
-                "Single mode: the canonical binding team/<template>/<slot>, committee/<template>/<seat>, advisor/<profile> or leadership/<core-team-revision-hash>/<role-slot-id>. Exactly one of binding_key and allocation.",
+                "Single mode: the canonical binding team/<template>/<slot>, committee/<template>/<seat>, advisor/<profile> or leadership/<core-team-revision-hash>/<role-slot-id>. Exactly one of binding_key, allocation and planning_pair.",
             ),
             opt(
                 "unavailable_accounts",
@@ -6132,10 +6167,16 @@ pub static REGISTRY: &[ToolSpec] = &[
                 "allocation",
                 Place::Body,
                 ArgType::Object(FLEET_ALLOCATION),
-                "Joint mode: allocate every slot of one Committee together, each under its own eligibility. Exactly one of binding_key and allocation.",
+                "Joint mode: allocate every slot of one Committee together, each under its own eligibility. Exactly one of binding_key, allocation and planning_pair.",
+            ),
+            opt(
+                "planning_pair",
+                Place::Body,
+                ArgType::Object(FLEET_PLANNING_PAIR),
+                "planning_pair@1 mode: place both members of one planning pair on distinct actual vendors through the shared allocator, each under its own eligibility. Placement evidence only, never a gate. Exactly one of binding_key, allocation and planning_pair.",
             ),
         ],
-        about: "Resolve one binding, or allocate one Committee jointly, against the activated fleet policy in --state-root, with no daemon: the policy's choice under the stated eligibility and its provenance. Refuses anything unverifiable; never reads fleet.yml.",
+        about: "Resolve one binding, allocate one Committee jointly, or place one planning_pair@1 pair, against the activated fleet policy in --state-root, with no daemon: the policy's choice under the stated eligibility and its provenance. Refuses anything unverifiable; never reads fleet.yml.",
     },
     ToolSpec {
         name: "kontor_capacity_get",
@@ -8148,8 +8189,8 @@ mod tests {
         assert_eq!(resolve.kind, OpKind::Read);
         assert_eq!(resolve.tier, CallerTier::Operator);
         assert_eq!(resolve.args_in(Place::Header).count(), 0);
-        // Exactly one of the two modes is required, so neither argument is.
-        for mode in ["binding_key", "allocation"] {
+        // Exactly one of the three modes is required, so no mode argument is.
+        for mode in ["binding_key", "allocation", "planning_pair"] {
             let argument = resolve
                 .args
                 .iter()
@@ -8174,6 +8215,25 @@ mod tests {
             slot["required"],
             serde_json::json!(["slot_id", "role", "binding_key"])
         );
+        // The planning pair mode is declared too, and has no diversity, role
+        // or Judge to set.
+        let pair = &schema["properties"]["planning_pair"];
+        assert_eq!(pair["additionalProperties"], false);
+        assert_eq!(pair["required"], serde_json::json!(["members"]));
+        let member = &pair["properties"]["members"]["items"];
+        assert_eq!(member["additionalProperties"], false);
+        assert_eq!(
+            member["properties"]["slot"]["enum"],
+            serde_json::json!(["seat-a", "seat-b"])
+        );
+        assert_eq!(
+            member["required"],
+            serde_json::json!(["slot", "binding_key"])
+        );
+        for absent in ["diversity", "role", "judge"] {
+            assert!(pair["properties"][absent].is_null(), "{absent}");
+            assert!(member["properties"][absent].is_null(), "{absent}");
+        }
         assert!(!CLI_ONLY.contains(&resolve.name));
     }
 
