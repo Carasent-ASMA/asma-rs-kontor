@@ -6,7 +6,8 @@
 - Orchestration: paseo-direct (plan `2026-09-27-20-14-plan-shared-orchestration-workflow.md`). No Kontor step, receipt or obligation is proposed here.
 - Slice one (2026-09-29): the domain and the shared reader. It was fast-forwarded from `173d399bfd44ec598332b4fe1cdf882af024fe5c` to the published `739debaacfb0ace894b36114aaa1eef6835cdfc1` (`origin/feat/ASMA-8278-shared-orchestration-workflow`) before any feature edit, and committed as `d876055ba73f6d56577a60782888cfe4a0209df8` (tree `0b5b2cce8fbb9bdfaf70daf4e6265f48ef6139c3`).
 - Slice two (2026-09-30): the direct CLI `planning_pair@1` mode, committed as `d9dce9c8ecb8f529de4e3967e87ab25f78af112a` (tree `5deed40edebddcce49d6496f61b8cb3a744f92ed`). It is built on the accepted `d876055b` (tree `0b5b2cce`) and was dispatched by TPM generation 2 `7fc26706-dce2-4a02-be87-e0f933b25fd4` (predecessor `3c52abda-4fd0-4af6-b086-476bc51eb305`, archived). Every ancestor, `d876055b` included, is unchanged.
-- Slice three (2026-10-02, this revision): immutable profile identity, the run's durable record and MUT-003, with the reserved governed decisions reported rather than adopted. It is built on the accepted `d9dce9c8` (tree `5deed40e`) and was dispatched by TPM successor `47cb9a74-a798-4f40-9b54-2a818afe0a42`. The writing seat is Paseo agent `45d0acc7-0773-4f43-858f-c6d6c8eecf78`. Every ancestor, `d9dce9c8` included, is unchanged.
+- Slice three (2026-10-02): immutable profile identity, the run's durable record and MUT-003, with the reserved governed decisions reported rather than adopted. It is built on the accepted `d9dce9c8` (tree `5deed40e`), was dispatched by TPM successor `47cb9a74-a798-4f40-9b54-2a818afe0a42`, and was committed as `3b05abce237593b88d4bb83fc41440967479dd8e` (tree `7c92ee34dd825b1feaa7f46583174eb0ea2258d6`). Verify passed and audit 6f failed it: a sealed finding was readable through the public `PlanningPairRun::record()`.
+- Audit remediation (2026-10-02, this revision): it closes every public read path to a sealed finding or answer, and adds nothing else. It is built on `3b05abce` (tree `7c92ee34`) and dispatched by the same TPM. The writing seat is Paseo agent `45d0acc7-0773-4f43-858f-c6d6c8eecf78`, Claude session `3538e45e-113f-432b-9d1e-57e0d1b4af96`, in project `prj_e9f8052597f78919` and TSW `wks_8062e92dee85f5b3`. Every ancestor, `3b05abce` included, is unchanged.
 - The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
@@ -164,6 +165,8 @@ These are not the supported mutation evidence, and MUT-003 is still unperformed.
 
 ### Reserved decisions, reported to TPM and LSA (not adopted)
 
+> **Disposed since (2026-10-02).** The LSA (`b50b37c0-1977-4f73-a221-3c95c367dfbc`) disposed D-1 (option A), D-2 (the registered operation table) and D-3's source contract for bounded implementation. The TPM records that disposition as the sole plan writer. Actual selected capability, release and live qualification stay fenced, and the ASMA-8113 owner's compatibility review is an acceptance fence on the changed identity vocabulary. The report below is kept as written at `3b05abce`. The audit remediation adds no storage, operation or identity change. The additive slice follows only after verify and audit pass on the repaired candidate.
+
 The dispatch asked for governed persistence, identity and operations "reusing existing
 consultation identity, uniqueness, store and registered application operations". The
 existing conventions do not establish where a planning pair sits in them. Each item below
@@ -209,8 +212,8 @@ daemon, store, API and every other crate are unchanged.
 | --- | --- | --- |
 | Profile identity | `crates/kontor-core/src/id.rs` `PlanningPairProfileId`; `planning_pair.rs` `PlanningPairSpec.profile_id` and `.version`, `PlanningPairSpec::pin`, `PlanningPairPin` | A UUID v7 entity id, as for `AdvisorProfileId`, and its own type, so it can never be read as a Committee template id. A revision is `(profile_id, version, definition_hash)`, the Advisor and Committee convention. Version one is the floor because `SpecVersion` cannot hold 0, so the document needs no check of its own. The canonical hash covers the id and version, so another revision or another document never hashes equal. |
 | Run pin | `PlanningPairRun::pin`; `spec_hash()` is now the pin's `definition_hash` | A run records exactly the revision it was convened under. Contribution hashes still bind the definition hash, which now covers the id and version. |
-| Durable record | `PlanningPairRecord`, `RecordedContribution`, `RecordedClarification`; `PlanningPairRun::record`, `PlanningPairRun::restore`; `PlanningPairRecord::canonicalize`, `PlanningPairRecord::from_stored` | The record is a closed canonical document (`deny_unknown_fields` throughout) of the pin, the placement hash, both members, the question, the findings in slot order, at most one clarification with its answers, and the disposition. It has no field for a Judge, verdict, aggregate, settlement or second round. `from_stored` holds stored bytes to their canonical form and address (`CanonicalDocument::from_stored`). `restore` trusts nothing: it refuses another protocol (`NOT_PLANNING_PAIR`) or another revision (`RECORD_PIN`), freezes the members again, admits the run again, and replays every finding, the clarification, each answer and the disposition through the live transitions. So any rule above fails on its own rule. Each contribution must hash to its recorded address (`RECORD_HASH`), and the record must be the one the replayed run writes (`RECORD_NOT_CANONICAL`). |
-| Sealed findings stay sealed | `PlanningPairRun` is still not `Serialize` | The record necessarily holds a finding while the round is sealed. It is a store's form, not a release, and a restored run releases findings only through `findings()`, exactly as the live run does. |
+| Durable record | `PlanningPairRecord`, `RecordedContribution`, `RecordedClarification`; `PlanningPairRun::record` (public at `3b05abce`; module-private since the audit remediation), `PlanningPairRun::restore`; `PlanningPairRecord::canonicalize`, `PlanningPairRecord::from_stored` | The record is a closed canonical document (`deny_unknown_fields` throughout) of the pin, the placement hash, both members, the question, the findings in slot order, at most one clarification with its answers, and the disposition. It has no field for a Judge, verdict, aggregate, settlement or second round. `from_stored` holds stored bytes to their canonical form and address (`CanonicalDocument::from_stored`). `restore` trusts nothing: it refuses another protocol (`NOT_PLANNING_PAIR`) or another revision (`RECORD_PIN`), freezes the members again, admits the run again, and replays every finding, the clarification, each answer and the disposition through the live transitions. So any rule above fails on its own rule. Each contribution must hash to its recorded address (`RECORD_HASH`), and the record must be the one the replayed run writes (`RECORD_NOT_CANONICAL`). |
+| Sealed findings stay sealed | `PlanningPairRun` is still not `Serialize` | **Defect at `3b05abce` (audit 6f): this claim was false.** The public `PlanningPairRun::record()` returned the sealed finding, as did the derived `Debug`. See "Audit remediation" below. As written then: the record necessarily holds a finding while the round is sealed. It is a store's form, not a release, and a restored run releases findings only through `findings()`, exactly as the live run does. |
 | Members | `PlanningPairMember` now derives `Deserialize` with `deny_unknown_fields` | Deserializing one admits nothing; only `PlanningPairMembers::freeze` does. |
 
 ### Tests
@@ -253,6 +256,10 @@ evaluator's, the only gate there is.
 | MUT-003-g | same file `:774`, `CommitteeTemplateSpec::validate`, same SHA-256 | the `distinct_provider_per_slot` check becomes `if false && …` | `-- reviewers_sharing_a_primary_provider_are_refused reviewers_colliding_only_on_a_fallback_rung_are_refused`, 2 listed | 0 passed, 2 failed (each at its `assert!(template.validate().is_err())`) | 2 passed; SHA-256 equal |
 
 All 7 were killed. After the pass, `git status` showed only this slice's three edited files.
+These rows are historical: they ran on `planning_pair.rs` blob `c2b607e4…` and the
+slice-three tests. Rows a–c were run again after the audit remediation changed both files
+(see that section). Rows d–g stand as recorded, because their files and killer tests are
+unchanged.
 This is executed MUT-003 evidence, not its acceptance: the TPM routes verify and audit on
 the committed head. If the reviewed head changes any site above, rerun that site.
 
@@ -262,14 +269,111 @@ the committed head. If the reviewed head changes any site above, rerun that site
 - `cargo clippy -p kontor-core -p kontor-fleet-activation -p kontor-cli --all-targets -- -D warnings`: clean.
 - On the final code: `cargo test --no-fail-fast -p kontor-core` gave 346 passed across 18 targets (23 in `planning_pair`). `-p kontor-fleet-activation` gave 18 passed. `-p kontor-cli --test local_resolve` gave 9 passed. No test failed. Registry and store parity were not rerun, because neither the registry nor the store changed.
 
-## Remaining gaps after slice three
+## Audit remediation — sealed contributions have no public read path
 
-- **D-1, D-2 and D-3** (above) are reserved and reported. Persistence, governed operations and governed member recording wait on them.
-- **Persistence and identity.** The durable record and its fail-closed restore exist, but no store keeps them: there are no tables or migration. The run id type and the semantic identity (dedupe) hash wait on D-1. ASMA-8113 stays open and is consumed, not reopened.
+### The finding
+
+Audit 6f failed `3b05abce`. After seat A alone, `pair.record().findings[0].advice` returned
+seat A's sealed finding while `findings()` was `None`. "For a store only" was a comment,
+not a boundary. Looking for equivalent paths from a `&PlanningPairRun` turned up three
+more:
+
+- **`Debug`:** the derived `Debug` printed every recorded contribution.
+- **`Clone`:** the actor is a value, so in-process authority is nominal. Anyone holding a
+  run could clone it, record a fake seat B on the copy, and call `findings()` to release
+  seat A's real finding without touching the live run.
+- **`PartialEq`:** a restored run built from a guessed record, compared with the live run,
+  would confirm the guess.
+
+### The repair
+
+The smallest repair that is actually enforced: a run now emits nothing sealed, and its
+durable form flows only into the module. No storage, operation, identity or crate outside
+`kontor-core`'s planning pair changes.
+
+| Element | Source (`crates/kontor-core/src/planning_pair.rs`) | What it does |
+| --- | --- | --- |
+| No record accessor | `fn record` is module-private | It survives only inside `PlanningPairRun::restore`, for the `RECORD_NOT_CANONICAL` comparison. |
+| No derived escape | `PlanningPairRun` no longer derives `Clone`, `PartialEq`, `Eq` or `Debug` | A hand-written `Debug` renders the pin, members, question, state, `findings()`, `clarification()` and the disposition, through `finish_non_exhaustive`. A sealed contribution appears neither by content, nor by address, nor by count. |
+| Explicit storage seam | `PlanningPairRecord::admitted(&run)`; the record's documentation | This is the only bridge from a run to a record, and it carries the header (pin, placement, both members, question) and no contribution. The persistence owner then appends each transition's own input under the address the transition returned: the member's submitted slot and advice as a `RecordedContribution` after `record_finding` or `record_answer`, in slot order, and the caller's own `ClarificationRequest` and `PlanningPairDisposition` once those succeed. This matches the disposition's "findings and answers independently durable". `restore` is unchanged and remains the only way back, so durable round trips, hashes and every rule still hold. |
+| Proof of absence | compile-fail doctests on `PlanningPairRun` | A compiling control (`state()` and `findings()` from a `&PlanningPairRun`) sits beside four `compile_fail` snippets, each differing from it by one call: `run.clone()` into an owned run, `run == other`, `serde_json::to_value(run)` and `run.record()`. |
+
+What still holds by design: in-process, `PlanningPairActor` is a value, so a holder of
+`&mut PlanningPairRun` can still pass `Member(SeatB)` and record a real seat-B finding.
+That is a write, not a read. It is the authority the governed service must authenticate,
+per D-2 ("derive principal, member and active generation from existing authentication").
+The domain cannot authenticate a caller, and this repair does not claim it does.
+
+### Tests
+
+`crates/kontor-core/tests/planning_pair.rs` now has 25 tests (2 new), and its record tests
+go through the seam. A test `Journal` is the persistence owner: it writes `admitted(&run)`,
+then appends each transition's own input under the address it returned, in slot order.
+Nothing is read back out of the run.
+
+| Test | What it proves |
+| --- | --- |
+| `a_sealed_finding_has_no_public_read_path_until_release` (new) | After seat A alone: the state is `awaiting_findings`; `findings()`, `clarification()` and `disposition()` are `None`; `retained_dissent()` is empty. Neither `{:?}` nor `{:#?}` contains the advice or its address. `admitted(&run)` carries no contribution and its canonical bytes contain neither. A clarification or a disposition is refused with `FINDINGS_INCOMPLETE`, and nothing leaks afterwards. Seat B's finding then releases seat A's verbatim, under the address seat A was given. |
+| `a_sealed_answer_has_no_public_read_path_until_every_addressed_member_answers` (new) | The same for answers. With both members addressed and only seat A answered, nothing renders or bridges the answer, while the released findings still render. Seat B's answer releases seat A's verbatim. |
+| `a_run_survives_the_store_at_every_point_in_its_life` (rewritten) | The run is restored from canonical stored bytes at every state and held to every public observation of the live run, its rendering included, since the run has no equality of its own. The restored one-finding run stays sealed, and completing it releases seat A's original finding under its original address, so the sealed finding was kept, not dropped. A restored clarified run refuses a second clarification (`EXTRA_CLARIFICATION`). A restored disposed run keeps seat B's dissent (finding and answer), is refused by `require_formal_review` (`NOT_FORMAL`), and is `Terminal`. |
+| `a_stored_run_under_another_revision_or_protocol_fails_closed`, `a_stored_run_that_breaks_a_rule_fails_closed_on_that_rule`, `a_stored_record_has_no_room_for_a_judge_a_verdict_or_a_second_round` | Unchanged assertions on a record assembled through the seam: `RECORD_PIN`, `NOT_PLANNING_PAIR`, the nine tampered records each on its own rule (`RECORD_HASH` among them), and no room for a Judge, verdict, aggregate, settlement or second round. Refusals are compared by `.err()`, because the run has no equality. |
+
+### Repair checks (seeded and run on the remediation source)
+
+The convention is the MUT-003 one: one mutant at a time, the file's SHA-256 captured before
+seeding and confirmed after restoring, a filtered command whose `--list` count is given,
+red with the mutant in place, and green after restoring. The source is `planning_pair.rs`,
+blob `e6222fedeefd821673a6e8fa7db0fb470b848a5987142e9ee337727abc50eaff`. The tests are
+blob `9b21d4d1cf29dc5c2bce90f860cc4179839825fc4ad2acdd46d7e721088705db`. These checks are
+not MUT-003.
+
+| Id | Mutant | Command (`--list` count) | Red | Green |
+| --- | --- | --- | --- | --- |
+| REPAIR-1 | `#[derive(Clone)]` on the run | `cargo test -p kontor-core --doc -- planning_pair::PlanningPairRun` (5) | 3 passed, 1 failed: the `clone` doctest, "Test compiled successfully, but it's marked `compile_fail`" | 4 passed |
+| REPAIR-2 | `#[derive(PartialEq)]` on the run | same (5) | 3 passed, 1 failed: the `==` doctest, compiled successfully | 4 passed |
+| REPAIR-3 | `#[derive(Serialize)]` on the run and its private clarification | same (5) | 3 passed, 1 failed: the `serde_json::to_value` doctest, compiled successfully. A first form that derived it on the run alone did not compile, because the clarification is not `Serialize`; it was discarded as a type-checker kill, not counted | 4 passed |
+| REPAIR-4 | `fn record` made `pub` again | same (5) | 3 passed, 1 failed: the `run.record()` doctest, compiled successfully | 4 passed |
+| REPAIR-5 | `Debug` renders `&self.findings` (raw) | `cargo test -p kontor-core --test planning_pair -- a_sealed_finding_has_no_public_read_path_until_release --exact` (1) | 0 passed, 1 failed at the rendering assertion | 1 passed |
+| REPAIR-6 | `Debug` renders the raw clarification answers | `-- a_sealed_answer_has_no_public_read_path_until_every_addressed_member_answers --exact` (1) | 0 passed, 1 failed at the rendering assertion | 1 passed |
+| REPAIR-7 | `admitted` copies the recorded findings | `-- a_sealed_finding_has_no_public_read_path_until_release --exact` (1) | 0 passed, 1 failed at "the header carries no contribution" | 1 passed |
+
+### MUT-003 re-run (sites a–c)
+
+The remediation changed `planning_pair.rs` and its tests, so sites a–c were re-seeded with
+the same mutants and the same `--exact` filters as the historical rows. The source is blob
+`e6222fed…` above, restored and confirmed by SHA-256 after each run.
+
+| Id | Site | Command filter (`--list` count) | Red | Green |
+| --- | --- | --- | --- | --- |
+| MUT-003-a (re-run) | `PlanningPairMembers::freeze`, line 414: the same-vendor check becomes `if false && …` | `-- members_on_one_actual_vendor_are_refused a_stored_run_that_breaks_a_rule_fails_closed_on_that_rule` (2) | 0 passed, 2 failed: `left: Ok(PlanningPairMembers { … })` where `SAME_VENDOR` is required | 2 passed |
+| MUT-003-b (re-run) | `PlanningPairRun::findings_complete`, line 891: the guard becomes `if false` | `-- a_findings_round_missing_a_member_releases_nothing a_stored_run_that_breaks_a_rule_fails_closed_on_that_rule` (2) | 0 passed, 2 failed: `left: Ok(())` where `FINDINGS_INCOMPLETE` is required | 2 passed |
+| MUT-003-c (re-run) | `ConsultationProtocol::is_formal_review`, line 137: becomes `!matches!(self, Self::Advisor)` | `-- advice_cannot_satisfy_a_formal_review_gate` (1) | 0 passed, 1 failed: `assertion failed: !protocol.is_formal_review()` | 1 passed |
+
+Rows d–g are retained, not re-run. Their sites and killer tests are byte-identical to
+`3b05abce`:
+
+- `crates/kontor-fleet-activation/src/lib.rs` `2f5c53dd…`, with `src/tests.rs` `a508b9d6…`;
+- `crates/kontor-cli/src/local.rs` `7ae9557a…`, with `tests/local_resolve.rs` `92ccfb83…`;
+- `crates/kontor-core/src/consultation.rs` `5f9f90d1…`, with `tests/consultation_specs.rs` `efe9eb3c…`.
+
+All of these MUT-003 rows were seeded and run by this implement seat. None is an
+independent reproduction, and acceptance remains the TPM-routed verify and audit.
+
+### Remediation gates
+
+- `cargo fmt -p kontor-core -- --check`: clean. The format was applied per crate, and only the remediation's test file changed.
+- `cargo clippy -p kontor-core --all-targets -- -D warnings`: clean.
+- On the final code: `cargo test --no-fail-fast -p kontor-core` gave 353 passed across 19 targets (25 in `planning_pair`, plus 5 planning-pair doctests: the control and 4 `compile_fail`). `-p kontor-fleet-activation` gave 18 passed and `-p kontor-cli --test local_resolve` gave 9; both consume the changed types. No test failed. No unchanged broad suite was rerun.
+
+## Remaining gaps after the audit remediation
+
+- **D-1, D-2 and D-3** were disposed by the LSA on 2026-10-02 (see the note under "Reserved decisions") for bounded implementation. The additive persistence, registered-operation and source-authentication slice follows only after verify and audit pass on this repair. The ASMA-8113 owner's compatibility review fences acceptance of the changed identity vocabulary. Live placement, release and qualification stay fenced under D-3.
+- **Persistence and identity.** The durable record, its explicit input-sourced seam (`PlanningPairRecord::admitted` plus each transition's own input and returned address) and its fail-closed restore exist, but no store keeps them: there are no tables or migration. The run id type and the semantic identity (dedupe) hash wait on D-1. ASMA-8113 stays open and is consumed, not reopened.
 - **Governed mode.** There are no daemon operations for a planning pair and no API route, MCP-routed tool, OpenAPI or console types, ASW/CSW placement, seat bindings or scoped credentials (D-2, D-3).
 - **TPM-owned placement.** Only the direct CLI places a pair. No TPM operation, receipt or procedure wraps it, and the asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
 - **Runtime.** There is no per-member `FleetLaunchProvenance` mapping, native launch or readback of the frozen members. Read-only authority is unrepresentable in the document, the run and the record, but is not yet read back from a launched harness. No real provider or Paseo launch was performed, and no daemon or CLI build was deployed.
 - **Publication and qualification.** The document now has an immutable identity, but no registered publication (D-2), catalog, preset, ASW/CSW naming or Team Definition slot. The protocol is not yet qualified in either mode.
-- **MUT-003** was executed (7 of 7 killed, above) on pre-review source. Its acceptance is the TPM-routed verify and audit of the committed head.
+- **MUT-003** was executed by this seat: 7 of 7 killed at `3b05abce`, and sites a–c killed again on the remediation source. Its acceptance is the TPM-routed verify and audit of the committed head.
+- **In-process authority is nominal.** A `PlanningPairActor` is a value. The governed service must authenticate the member and caller (D-2, D-3) before a transition runs.
 - **Independent Review stays separate.** The general Committee cardinality fixture (`cardinality_is_data_not_three`: two reviewers, no Judge) is not `independent_review@1` and is not treated as one here. Independent Review remains the only formal gate, and its template and Judge requirement are decided separately.
 - TASK-004 and TASK-002 are not closed by any slice.

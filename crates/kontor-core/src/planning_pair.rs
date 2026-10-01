@@ -28,10 +28,18 @@
 //!
 //! A document is identified the way an Advisor profile is: a
 //! [`PlanningPairProfileId`], a monotonic [`SpecVersion`] and the canonical
-//! hash of the revision. A run pins all three ([`PlanningPairPin`]). Its
-//! durable form is [`PlanningPairRecord`], a canonical document a store keeps
-//! and [`PlanningPairRun::restore`] reads back through the same transitions,
-//! so a stored run that broke any rule above fails closed instead of loading.
+//! hash of the revision. A run pins all three ([`PlanningPairPin`]).
+//!
+//! The durable form is [`PlanningPairRecord`], and it flows into this module,
+//! never out of a run. [`PlanningPairRecord::admitted`] is the only bridge
+//! from a run to a record, and it carries no contribution. The persistence
+//! owner appends each transition's own input under the address that
+//! transition returned, and [`PlanningPairRun::restore`] reads the record
+//! back through the same transitions, so a stored run that broke any rule
+//! above fails closed instead of loading. A run has no public path that
+//! reveals one member's sealed finding or answer before release: it is not
+//! `Clone`, `PartialEq` or serializable, and its `Debug` renders only what
+//! it has released.
 
 use crate::consultation::{
     AdviceDisposition, ConsultationContextPolicy, ConsultationScope, has_duplicate,
@@ -521,13 +529,52 @@ struct PlanningPairClarification {
 
 /// One planning pair consultation.
 ///
-/// Deliberately not serializable: the only ways to read a finding are
-/// [`Self::findings`] and [`Self::retained_dissent`], so no rendering of the
-/// run can release one member's finding before the other's is durable. Its
-/// durable form, [`PlanningPairRecord`], is for a store: it necessarily holds
-/// a sealed finding, and it is never a release — a run restored from it
-/// releases a finding only as this one would.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A finding or answer is readable only once released: through
+/// [`Self::findings`], [`Self::clarification`] and [`Self::retained_dissent`].
+/// No other path from a run reveals a sealed contribution. The run is not
+/// serializable, has no record accessor, renders only released content under
+/// `Debug`, and is neither `Clone` (a copy could be completed by an
+/// impersonated member to release the real finding) nor `PartialEq` (equality
+/// would confirm a guessed finding). A holder can observe it:
+///
+/// ```
+/// use kontor_core::planning_pair::{PlanningPairContribution, PlanningPairRun, PlanningPairState};
+/// fn observe(run: &PlanningPairRun) -> (PlanningPairState, Option<[&PlanningPairContribution; 2]>) {
+///     (run.state(), run.findings())
+/// }
+/// ```
+///
+/// but cannot copy it,
+///
+/// ```compile_fail
+/// fn fork(run: &kontor_core::planning_pair::PlanningPairRun) -> kontor_core::planning_pair::PlanningPairRun {
+///     run.clone()
+/// }
+/// ```
+///
+/// compare it,
+///
+/// ```compile_fail
+/// fn guess(run: &kontor_core::planning_pair::PlanningPairRun, other: &kontor_core::planning_pair::PlanningPairRun) -> bool {
+///     run == other
+/// }
+/// ```
+///
+/// serialize it,
+///
+/// ```compile_fail
+/// fn render(run: &kontor_core::planning_pair::PlanningPairRun) -> serde_json::Value {
+///     serde_json::to_value(run).expect("JSON")
+/// }
+/// ```
+///
+/// or read its durable record:
+///
+/// ```compile_fail
+/// fn read(run: &kontor_core::planning_pair::PlanningPairRun) -> kontor_core::planning_pair::PlanningPairRecord {
+///     run.record()
+/// }
+/// ```
 pub struct PlanningPairRun {
     pin: PlanningPairPin,
     members: PlanningPairMembers,
@@ -877,14 +924,28 @@ impl PlanningPairRun {
     }
 }
 
+impl std::fmt::Debug for PlanningPairRun {
+    /// Only what the run has released. A sealed finding or answer is shown
+    /// neither by content nor by address, and not even by count.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlanningPairRun")
+            .field("pin", &self.pin)
+            .field("members", &self.members)
+            .field("question", &self.question)
+            .field("state", &self.state())
+            .field("findings", &self.findings())
+            .field("clarification", &self.clarification())
+            .field("disposition", &self.disposition)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PlanningPairRun {
-    /// The run's durable form: its pin, frozen members, question and every
-    /// contribution, clarification and disposition recorded so far.
-    ///
-    /// For a store only. It holds a finding even while the round is sealed;
-    /// reading it is not a release.
-    #[must_use]
-    pub fn record(&self) -> PlanningPairRecord {
+    /// The canonical record of this run, for [`Self::restore`]'s comparison
+    /// only. Private on purpose: it holds a sealed finding while the round is
+    /// sealed, so it must never leave this module.
+    fn record(&self) -> PlanningPairRecord {
         PlanningPairRecord {
             schema_version: SCHEMA_VERSION,
             protocol: ConsultationProtocol::PlanningPair,
@@ -916,7 +977,10 @@ impl PlanningPairRun {
 
     /// Read a stored run back under the document revision it pins.
     ///
-    /// Nothing is trusted: the members are frozen again, the run is admitted
+    /// The record is the persistence owner's: the header
+    /// [`PlanningPairRecord::admitted`] wrote, then each transition's own input
+    /// under the address that transition returned, findings and answers in
+    /// slot order. Nothing is trusted: the members are frozen again, the run is admitted
     /// again, and every finding, the clarification, every answer and the
     /// disposition are replayed through the same transitions a live run takes,
     /// so each rule above is checked again. Each contribution must hash to its
@@ -1014,6 +1078,18 @@ pub struct RecordedClarification {
 /// one clarification and one disposition, and no field for a Judge, a
 /// verdict, an aggregate or a settlement. It proves nothing by itself; only
 /// [`PlanningPairRun::restore`] admits one.
+///
+/// It is assembled by whoever persists the run, from what that owner already
+/// holds, and never read out of a run. The storage seam is:
+///
+/// 1. [`Self::admitted`] when the run is admitted: the header, with no
+///    contribution;
+/// 2. for each [`PlanningPairRun::record_finding`] or
+///    [`PlanningPairRun::record_answer`], a [`RecordedContribution`] holding
+///    the member's own submitted slot and advice under the address the call
+///    returned, in slot order;
+/// 3. the caller's own [`ClarificationRequest`] and
+///    [`PlanningPairDisposition`] once their transitions succeed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningPairRecord {
@@ -1040,6 +1116,25 @@ pub struct PlanningPairRecord {
 }
 
 impl PlanningPairRecord {
+    /// The header of a run's record: the pin, the placement, both frozen
+    /// members and the question, and no contribution, clarification or
+    /// disposition, whatever the run has recorded since. This is the only
+    /// path from a run to a record.
+    #[must_use]
+    pub fn admitted(run: &PlanningPairRun) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            protocol: ConsultationProtocol::PlanningPair,
+            pin: run.pin.clone(),
+            placement_hash: run.members.placement_hash.clone(),
+            members: run.members.members.to_vec(),
+            question: run.question.clone(),
+            findings: Vec::new(),
+            clarification: None,
+            disposition: None,
+        }
+    }
+
     /// The canonical document a store keeps, and its content address.
     ///
     /// # Errors
