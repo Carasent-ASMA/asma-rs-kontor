@@ -5,8 +5,9 @@
 - Branch: `feat/ASMA-8282-qualify-shared-advisor-and-committee-protocols`, local, not pushed, no pull request
 - Orchestration: paseo-direct (plan `2026-09-27-20-14-plan-shared-orchestration-workflow.md`). No Kontor step, receipt or obligation is proposed here.
 - Slice one (2026-09-29): the domain and the shared reader. It was fast-forwarded from `173d399bfd44ec598332b4fe1cdf882af024fe5c` to the published `739debaacfb0ace894b36114aaa1eef6835cdfc1` (`origin/feat/ASMA-8278-shared-orchestration-workflow`) before any feature edit, and committed as `d876055ba73f6d56577a60782888cfe4a0209df8` (tree `0b5b2cce8fbb9bdfaf70daf4e6265f48ef6139c3`).
-- Slice two (2026-09-30, this revision): the direct CLI `planning_pair@1` mode. It is built on the accepted `d876055b` (tree `0b5b2cce`) and was dispatched by TPM generation 2 `7fc26706-dce2-4a02-be87-e0f933b25fd4` (predecessor `3c52abda-4fd0-4af6-b086-476bc51eb305`, archived). Every ancestor, `d876055b` included, is unchanged.
-- The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of either commit and is preserved untouched.
+- Slice two (2026-09-30): the direct CLI `planning_pair@1` mode, committed as `d9dce9c8ecb8f529de4e3967e87ab25f78af112a` (tree `5deed40edebddcce49d6496f61b8cb3a744f92ed`). It is built on the accepted `d876055b` (tree `0b5b2cce`) and was dispatched by TPM generation 2 `7fc26706-dce2-4a02-be87-e0f933b25fd4` (predecessor `3c52abda-4fd0-4af6-b086-476bc51eb305`, archived). Every ancestor, `d876055b` included, is unchanged.
+- Slice three (2026-10-02, this revision): immutable profile identity, the run's durable record and MUT-003, with the reserved governed decisions reported rather than adopted. It is built on the accepted `d9dce9c8` (tree `5deed40e`) and was dispatched by TPM successor `47cb9a74-a798-4f40-9b54-2a818afe0a42`. The writing seat is Paseo agent `45d0acc7-0773-4f43-858f-c6d6c8eecf78`. Every ancestor, `d9dce9c8` included, is unchanged.
+- The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
 does not close TASK-004 or TASK-002, and it claims no mutation acceptance.
@@ -159,13 +160,116 @@ These are not the supported mutation evidence, and MUT-003 is still unperformed.
 - `cargo clippy -p kontor-cli -p kontor-mcp -p kontor-fleet-activation --all-targets -- -D warnings`: clean.
 - On the final code: `cargo test --no-fail-fast -p kontor-cli` gave 33 passed (21 binary unit, 1 `fleet_bundle`, 9 `local_resolve`, 1 `memory_parity`, 1 `version`). `-p kontor-mcp --lib` gave 67 passed, and `-p kontor-fleet-activation` gave 18. `-p kontor-core --test planning_pair` gave 18. `-p kontor-tests-contract --test mcp_parity --test mcp_cardinality --test mcp_mutants` gave 12 + 12 + 12 passed. No test failed.
 
-## Remaining gaps after slice two
+## Slice three — immutable identity, durable record and MUT-003
 
-- **Governed mode.** There are no daemon operations for a planning pair (invoke, findings, clarification, disposition, get). There are also no API route, MCP-routed tool, OpenAPI or console types, ASW/CSW placement, seat bindings or scoped credentials.
-- **Persistence and identity.** There are no store tables or migration. `ConsultationFamily` and `ConsultationIdentity` are not extended, so a planning pair cannot be persisted, deduplicated or recovered yet. The ASMA-8113 identity work stays open and is consumed, not reopened.
-- **TPM-owned placement.** The direct CLI now takes the caller-named keys and each member's eligibility, but no TPM operation, receipt or procedure wraps it. The asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
-- **Runtime.** There is no per-member `FleetLaunchProvenance` mapping, native launch or readback of the frozen members. Read-only authority is unrepresentable in the document and the run, but is not yet read back from a launched harness. No real provider or Paseo launch was performed, and no daemon or CLI build was deployed.
-- **Publication and qualification.** `PlanningPairSpec` has no profile id, revision, catalog, preset or registered publication, no ASW/CSW naming and no Team Definition slot entry. The protocol is not yet qualified in either mode.
-- **MUT-003** ("missing finding or same-vendor collision passes a gate") is not performed. Its sites are `PlanningPairMembers::freeze`, `Activated::place_planning_pair` (the diversity), `PlanningPairRun::findings_complete`, `ConsultationProtocol::require_formal_review`, and, from slice two, the CLI's `placement.is_complete()` gate on `status: 200`. The supported run on the reviewed candidate remains required.
+### Reserved decisions, reported to TPM and LSA (not adopted)
+
+The dispatch asked for governed persistence, identity and operations "reusing existing
+consultation identity, uniqueness, store and registered application operations". The
+existing conventions do not establish where a planning pair sits in them. Each item below
+is a decision this seat must not take. Nothing in this slice depends on any of them.
+
+**D-1 — Publication and identity boundary.** It blocks persistence, the run id, the
+semantic identity and every governed operation. The existing consultation surface is
+closed to two families:
+
+- **Database:** `consultation_profile_revisions.family` (migration 0034), `consultation_runs.family` (last rebuilt in 0070) and `consultation_topic_corrections.family` (0091) are each `CHECK (family IN ('advisor', 'committee'))`. Migration 0034 says the family is closed in SQL "so a caller that reached the database directly still cannot invent a third consultation family".
+- **Run state:** `consultation_runs.state` is closed to `materializing`, `running`, `awaiting_judge`, `settled` and `needs_human`, and `settled_at` is tied to `settled`. A planning pair has no settlement and ends `disposed`.
+- **Command kinds:** the closed kind list (last rebuilt in 0108) names `apply_advisor_profile`, `apply_committee_template`, `invoke_advisor_run`, `invoke_committee_run`, `record_committee_findings`, `settle_advisor_run`, `settle_committee_run`, `recover_consultation_seat` and `reroute_unmaterialized_consultation_seat`, and nothing for a planning pair.
+- **Rust:** `ConsultationFamily` and `ConsultationRunId` have two variants each. 82 lines under `crates/*/src` name a variant (counted by grep; inline test modules included), 63 of them in `crates/kontor-daemon/src/applications.rs`. The rest are in the core repository port, the store, the runtime adapter and the fake runtime.
+- **Native correlation:** the Paseo label `kontor.consultation_run` is `<family>/<run uuid>`, and launch, recovery and readback correlation all match it.
+- **Identity:** `ConsultationIdentity::hash` (ASMA-8113, consumed at `e29b895d`) hashes `family.as_str()`.
+
+The options:
+
+- **A. A third family, `planning_pair`, through the same tables, identity function, labels and command kinds.** This needs one migration that widens the three family CHECKs, either the run-state vocabulary (`disposed` and the planning-pair states) or a planning-pair state table of its own, and the command kinds. It also needs `ConsultationFamily::PlanningPair`, `ConsultationRunId::PlanningPair(<PlanningPairRunId>)` and every match site. It reuses the semantic-identity uniqueness index `(project_id, semantic_identity_hash)`, topic validation, naming, seat bindings and consultation recovery. Existing Advisor and Committee identity hashes would not change, because the family is a hashed string input. It needs the ASMA-8113 owner to accept widening the identity vocabulary. **This seat recommends A.**
+- **B. A Committee-family template with a protocol discriminator.** This is rejected by the contract: a planning pair would become addressable as a Committee, which is the alias with Independent Review this task forbids.
+- **C. Dedicated planning-pair tables and a separate identity.** This leaves ASMA-8113 untouched, but duplicates the uniqueness, naming, seat and recovery conventions the dispatch says to reuse.
+
+The decision owner is the LSA, consulting the ASMA-8113 owner. If it is recorded as an ADR, acceptance is Igor's (AGENTS.md, "Decision records").
+
+**D-2 — Governed operation contract.** This depends on D-1. No registered operation accepts a planning pair. The decision must fix:
+
+- the route family and names, for example profile preview, apply and list; run invoke and get; member finding and answer recording; and the caller's clarification and disposition;
+- the tiers: Admin publication, as for Advisor and Committee profiles; Operator invocation and caller acts; seat-scoped member writes;
+- the idempotency command kinds and their fingerprints;
+- the receipt and outcome shapes.
+
+Mirroring `kontor_advisor_*` and `kontor_committee_*` is the obvious starting shape, but the clarification and disposition steps have no existing counterpart, so they are a contract decision, not a copy.
+
+**D-3 — Member placement and launch.** This depends on D-1 and D-2 and is outside this seat's authority. A governed finding or answer comes from a member seat, authenticated by a seat-scoped credential on its SeatBinding inside a CSW-like container. Creating those seats is TPM-owned placement, and native workspace and seat creation, which this dispatch forbids inventing. Until it exists, a governed planning pair cannot record a member's finding with authenticated provenance.
+
+### What is implemented (decision-neutral)
+
+Everything below is what options A and C would both persist. No table, migration, run id,
+family variant, command kind, route, MCP tool or OpenAPI change is added. The direct CLI,
+daemon, store, API and every other crate are unchanged.
+
+| Element | Source | What it does |
+| --- | --- | --- |
+| Profile identity | `crates/kontor-core/src/id.rs` `PlanningPairProfileId`; `planning_pair.rs` `PlanningPairSpec.profile_id` and `.version`, `PlanningPairSpec::pin`, `PlanningPairPin` | A UUID v7 entity id, as for `AdvisorProfileId`, and its own type, so it can never be read as a Committee template id. A revision is `(profile_id, version, definition_hash)`, the Advisor and Committee convention. Version one is the floor because `SpecVersion` cannot hold 0, so the document needs no check of its own. The canonical hash covers the id and version, so another revision or another document never hashes equal. |
+| Run pin | `PlanningPairRun::pin`; `spec_hash()` is now the pin's `definition_hash` | A run records exactly the revision it was convened under. Contribution hashes still bind the definition hash, which now covers the id and version. |
+| Durable record | `PlanningPairRecord`, `RecordedContribution`, `RecordedClarification`; `PlanningPairRun::record`, `PlanningPairRun::restore`; `PlanningPairRecord::canonicalize`, `PlanningPairRecord::from_stored` | The record is a closed canonical document (`deny_unknown_fields` throughout) of the pin, the placement hash, both members, the question, the findings in slot order, at most one clarification with its answers, and the disposition. It has no field for a Judge, verdict, aggregate, settlement or second round. `from_stored` holds stored bytes to their canonical form and address (`CanonicalDocument::from_stored`). `restore` trusts nothing: it refuses another protocol (`NOT_PLANNING_PAIR`) or another revision (`RECORD_PIN`), freezes the members again, admits the run again, and replays every finding, the clarification, each answer and the disposition through the live transitions. So any rule above fails on its own rule. Each contribution must hash to its recorded address (`RECORD_HASH`), and the record must be the one the replayed run writes (`RECORD_NOT_CANONICAL`). |
+| Sealed findings stay sealed | `PlanningPairRun` is still not `Serialize` | The record necessarily holds a finding while the round is sealed. It is a store's form, not a release, and a restored run releases findings only through `findings()`, exactly as the live run does. |
+| Members | `PlanningPairMember` now derives `Deserialize` with `deny_unknown_fields` | Deserializing one admits nothing; only `PlanningPairMembers::freeze` does. |
+
+### Tests
+
+`crates/kontor-core/tests/planning_pair.rs` has 5 new tests (23 in total). The fixture
+now uses one fixed profile id, so every `spec()` is the same revision.
+
+| Test | What it proves |
+| --- | --- |
+| `a_document_revision_is_identified_by_its_id_version_and_hash` | The pin is the fixed id, version one and the canonical hash, and the run holds it. Version two and another id each change the pin and the hash. Version `0` and a non-UUID id cannot be parsed. |
+| `a_run_survives_the_store_at_every_point_in_its_life` | Canonical bytes are read back and restored equal at every state: admitted, one sealed finding, findings released, awaiting an answer, answered, disposed. A restored one-finding run still releases nothing. A restored disposed run is `Terminal`, as the live one is. |
+| `a_stored_run_under_another_revision_or_protocol_fails_closed` | Another version or another id is `RECORD_PIN`. `protocol: independent_review` or `advisor` is `NOT_PLANNING_PAIR`. |
+| `a_stored_run_that_breaks_a_rule_fails_closed_on_that_rule` | Nine tampered records each fail on their own rule: a rewritten finding (`RECORD_HASH`), seat B moved onto seat A's vendor (`SAME_VENDOR`), seat B dropped (`MEMBERS`), seat A's finding twice (`FINDING_IMMUTABLE`), seat B's finding missing (`FINDINGS_INCOMPLETE`), an answer from an unaddressed member (`NOT_ADDRESSED`), the requested answer missing (`ANSWERS_INCOMPLETE`), seat B's dissent dropped from the disposition (`DISSENT_LOST`), and the findings out of slot order (`RECORD_NOT_CANONICAL`). The untouched record restores. |
+| `a_stored_record_has_no_room_for_a_judge_a_verdict_or_a_second_round` | `judge`, `verdict`, `aggregate`, `settled`, `clarifications` and `round` are refused, and so is a stored member gaining `capabilities`. Re-indented bytes, and bytes under another address, are refused by `from_stored`. |
+
+### MUT-003 (seeded and run on this slice's candidate source)
+
+MUT-003 is "missing finding or same-vendor collision passes a gate". It was run on this
+slice's final source before the TPM-routed verify and audit, following the ASMA-8117
+MUT-002 convention:
+
+1. one mutant at a time;
+2. the file's SHA-256 captured before seeding;
+3. one command with `--exact`, whose `--list` enumerates exactly the named tests;
+4. the result observed red with the mutant in place;
+5. the file restored from an untouched copy, confirmed by its SHA-256, and touched;
+6. the same command rerun green.
+
+Sites a–e are the planning pair's. Sites f and g are the formal Independent Review
+evaluator's, the only gate there is.
+
+| Id | Site (file:line, unmutated SHA-256) | Mutant | Command filter (`--exact`) and `--list` count | Observed red | Restored green |
+| --- | --- | --- | --- | --- | --- |
+| MUT-003-a | `crates/kontor-core/src/planning_pair.rs:406`, `PlanningPairMembers::freeze`, `c2b607e4b8adbe506fec9479191225d8eb9a1ba950f148adc2f7711914df233d` | the same-vendor check becomes `if false && …` | `-p kontor-core --test planning_pair -- members_on_one_actual_vendor_are_refused a_stored_run_that_breaks_a_rule_fails_closed_on_that_rule`, 2 listed | 0 passed, 2 failed: `left: Ok(PlanningPairMembers { … })`, `right: Err(Invalid { subject: "PlanningPairMembers", rule: "the two members reach the same actual vendor, …" })`; and the stored case "seat B moved onto seat A's vendor" | 2 passed; SHA-256 equal |
+| MUT-003-b | same file `:844`, `PlanningPairRun::findings_complete`, same SHA-256 | the guard becomes `if false` | `-- a_findings_round_missing_a_member_releases_nothing a_stored_run_that_breaks_a_rule_fails_closed_on_that_rule`, 2 listed | 0 passed, 2 failed: `left: Ok(())`, `right: Err(MissingEvidence { …, rule: "both members' findings must be recorded before the caller acts on either" })`; and the stored case "seat B's finding missing" | 2 passed; SHA-256 equal |
+| MUT-003-c | same file `:129`, `ConsultationProtocol::is_formal_review`, same SHA-256 | `matches!(self, Self::IndependentReview)` becomes `!matches!(self, Self::Advisor)` | `-- advice_cannot_satisfy_a_formal_review_gate`, 1 listed | 0 passed, 1 failed: `assertion failed: !protocol.is_formal_review()` | 1 passed; SHA-256 equal |
+| MUT-003-d | `crates/kontor-fleet-activation/src/lib.rs:890`, `Activated::place_planning_pair`, `2f5c53dda01c849bed10883aa8b93c1dfb7a6ec125c09b0059a80ef111bb311a` (equal to the `d9dce9c8` blob) | diversity becomes `AllocationDiversity::None` | `-p kontor-fleet-activation --lib -- tests::a_planning_pair_on_one_actual_vendor_is_blocked tests::a_planning_pair_is_one_joint_allocation_on_two_actual_vendors`, 2 listed | 0 passed, 2 failed: both panicked with `Invalid { rule: "a planning pair's placement could not be frozen as one canonical receipt with two distinct actual vendors" }`. With diversity waived, the allocator put both members on one vendor, and the domain `freeze` still refused to freeze them; that second layer is why the answer became PP-02 rather than a same-vendor pair | 2 passed; SHA-256 equal |
+| MUT-003-e | `crates/kontor-cli/src/local.rs:233`, `fleet_policy_planning_pair`, `7ae9557a3ba29c9ce975657f5dba2f740ab888233ad3c563e08f946fbf870582` (equal to the `d9dce9c8` blob) | `placement.is_complete()` becomes `true` | `-p kontor-cli --test local_resolve -- a_planning_pair_on_one_actual_vendor_is_blocked_whole`, 1 listed | 0 passed, 1 failed: exit `0` where `1` is required, with a body whose `selection.blocked` is `no_distinct_reviewer_vendors` printed as success | 1 passed; SHA-256 equal |
+| MUT-003-f | `crates/kontor-core/src/consultation.rs:860`, `conjunctive_outcome`, `5f9f90d148edc14e6a9c493dadf48283a87748443630869b33607786a40d6235` (equal to the `d9dce9c8` blob) | a missing required finding `continue`s instead of `return None` | `-p kontor-core --test consultation_specs -- a_missing_finding_blocks_settlement_rather_than_passing`, 1 listed | 0 passed, 1 failed: "an absent finding is not agreement", `left: Some(Compliant)`, `right: None` | 1 passed; SHA-256 equal |
+| MUT-003-g | same file `:774`, `CommitteeTemplateSpec::validate`, same SHA-256 | the `distinct_provider_per_slot` check becomes `if false && …` | `-- reviewers_sharing_a_primary_provider_are_refused reviewers_colliding_only_on_a_fallback_rung_are_refused`, 2 listed | 0 passed, 2 failed (each at its `assert!(template.validate().is_err())`) | 2 passed; SHA-256 equal |
+
+All 7 were killed. After the pass, `git status` showed only this slice's three edited files.
+This is executed MUT-003 evidence, not its acceptance: the TPM routes verify and audit on
+the committed head. If the reviewed head changes any site above, rerun that site.
+
+### Slice three gates
+
+- `cargo fmt -p kontor-core -- --check`: clean. The format was applied per crate, and only this slice's files changed.
+- `cargo clippy -p kontor-core -p kontor-fleet-activation -p kontor-cli --all-targets -- -D warnings`: clean.
+- On the final code: `cargo test --no-fail-fast -p kontor-core` gave 346 passed across 18 targets (23 in `planning_pair`). `-p kontor-fleet-activation` gave 18 passed. `-p kontor-cli --test local_resolve` gave 9 passed. No test failed. Registry and store parity were not rerun, because neither the registry nor the store changed.
+
+## Remaining gaps after slice three
+
+- **D-1, D-2 and D-3** (above) are reserved and reported. Persistence, governed operations and governed member recording wait on them.
+- **Persistence and identity.** The durable record and its fail-closed restore exist, but no store keeps them: there are no tables or migration. The run id type and the semantic identity (dedupe) hash wait on D-1. ASMA-8113 stays open and is consumed, not reopened.
+- **Governed mode.** There are no daemon operations for a planning pair and no API route, MCP-routed tool, OpenAPI or console types, ASW/CSW placement, seat bindings or scoped credentials (D-2, D-3).
+- **TPM-owned placement.** Only the direct CLI places a pair. No TPM operation, receipt or procedure wraps it, and the asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
+- **Runtime.** There is no per-member `FleetLaunchProvenance` mapping, native launch or readback of the frozen members. Read-only authority is unrepresentable in the document, the run and the record, but is not yet read back from a launched harness. No real provider or Paseo launch was performed, and no daemon or CLI build was deployed.
+- **Publication and qualification.** The document now has an immutable identity, but no registered publication (D-2), catalog, preset, ASW/CSW naming or Team Definition slot. The protocol is not yet qualified in either mode.
+- **MUT-003** was executed (7 of 7 killed, above) on pre-review source. Its acceptance is the TPM-routed verify and audit of the committed head.
 - **Independent Review stays separate.** The general Committee cardinality fixture (`cardinality_is_data_not_three`: two reviewers, no Judge) is not `independent_review@1` and is not treated as one here. Independent Review remains the only formal gate, and its template and Judge requirement are decided separately.
-- TASK-004 and TASK-002 are not closed by either slice.
+- TASK-004 and TASK-002 are not closed by any slice.

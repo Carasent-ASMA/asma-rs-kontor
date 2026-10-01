@@ -273,6 +273,12 @@ entity_ids! {
     AdvisorProfileId,
     /// Identifies one Committee template across its revisions.
     CommitteeTemplateId,
+    /// Identifies one `planning_pair@1` document across its revisions.
+    ///
+    /// Like an Advisor profile, it is the identity a run pins, and a revision
+    /// is a version within it. It is its own type, never a Committee template
+    /// id, so a planning pair cannot be looked up as a Committee.
+    PlanningPairProfileId,
     /// Identifies one durable open question: an ambiguity somebody had to
     /// proceed past, recorded so that later work can be gated on it.
     ///
