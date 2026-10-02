@@ -69,6 +69,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "planning_pair_placements",
     "planning_pair_record_revisions",
     "planning_pair_contributions",
+    // Schema v123 (ASMA-8282 frontier A): each member's immutable known native.
+    "planning_pair_member_natives",
     "context_packs",
     "core_team_revisions",
     // Schema v32 (KON-OP-06): published Completion Profile revisions, one durable
@@ -767,7 +769,9 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v122 adds the closed `planning_pair` consultation family, its
     // family-conditioned run states, its run-keyed placement, record and
     // contribution payload, and its six command kinds (ASMA-8282).
-    assert_eq!(SCHEMA_VERSION, 122);
+    // v123 keeps each planning pair member's immutable known native session
+    // and adds the caller's same-native member recovery kind (ASMA-8282).
+    assert_eq!(SCHEMA_VERSION, 123);
 }
 
 #[test]
@@ -6477,6 +6481,178 @@ fn v122_preserves_every_advisor_and_committee_row_and_rule() {
         kinds, 1,
         "the six planning pair command kinds are closed in"
     );
+}
+
+/// v123 (ASMA-8282 frontier A) adds one run-keyed planning pair detail, each
+/// member's known native claim, and one receipt kind. The receipt ledger keeps
+/// every row; a claim belongs only to a current member seat of an open planning
+/// pair on its own placement, and is immutable and permanent.
+#[test]
+fn v123_keeps_every_receipt_and_admits_only_a_current_members_immutable_claim() {
+    const PROJECT: &str = "0193f000-0000-7000-8000-000000000201";
+    const RUN: &str = "0193f000-0000-7000-8000-000000000202";
+    const COMMITTEE: &str = "0193f000-0000-7000-8000-000000000203";
+    const SEAT: &str = "0193f000-0000-7000-8000-000000000204";
+    const RECEIPT: &str = "0193f000-0000-7000-8000-000000000205";
+    const PLACEMENT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const CONTEXT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let v122 = include_str!("../migrations/0122_planning_pair_family.sql");
+    let start = v122
+        .find("CREATE TABLE command_receipts_v122 (")
+        .expect("the v122 receipt shape");
+    let end = start + v122[start..].find(") STRICT;").expect("its end") + ") STRICT;".len();
+    let receipts = v122[start..end].replace("command_receipts_v122", "command_receipts");
+
+    let connection = Connection::open_in_memory().expect("the migration fixture opens");
+    connection
+        .execute_batch(&format!(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE seat_bindings (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE consultation_runs (
+                 run_id TEXT NOT NULL PRIMARY KEY, project_id TEXT NOT NULL,
+                 family TEXT NOT NULL, state TEXT NOT NULL, UNIQUE (project_id, run_id)
+             ) STRICT;
+             CREATE TABLE consultation_seats (
+                 run_id TEXT NOT NULL, project_id TEXT NOT NULL,
+                 seat_binding_id TEXT NOT NULL UNIQUE, occupancy_generation INTEGER NOT NULL
+             ) STRICT;
+             CREATE TABLE planning_pair_placements (
+                 run_id TEXT NOT NULL PRIMARY KEY, project_id TEXT NOT NULL,
+                 placement_hash TEXT NOT NULL
+             ) STRICT;
+             {receipts}
+             INSERT INTO projects VALUES ('{PROJECT}');
+             INSERT INTO seat_bindings VALUES ('{SEAT}');
+             INSERT INTO consultation_runs VALUES
+                 ('{RUN}', '{PROJECT}', 'planning_pair', 'materializing'),
+                 ('{COMMITTEE}', '{PROJECT}', 'committee', 'running');
+             INSERT INTO consultation_seats VALUES ('{RUN}', '{PROJECT}', '{SEAT}', 2);
+             INSERT INTO planning_pair_placements VALUES ('{RUN}', '{PROJECT}', '{PLACEMENT}');
+             INSERT INTO command_receipts
+                 (id, project_id, idempotency_key, kind, target, target_revision, intent,
+                  intent_hash, state, attempts, created_at, updated_at, execution_mode)
+             VALUES ('{RECEIPT}', '{PROJECT}', 'pp-disposed', 'record_planning_pair_disposition',
+                     '{{}}', 3, '{{}}', '{CONTEXT}', 'intent_persisted', 0,
+                     '2026-10-02T10:00:00Z', '2026-10-02T10:00:00Z', 'local');"
+        ))
+        .expect("the v122 fixture");
+    let before: String = connection
+        .query_row(
+            "SELECT json_group_array(json_array(id, kind, idempotency_key, target_revision, state))
+               FROM command_receipts",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the receipts read");
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0123_planning_pair_member_natives.sql"
+        ))
+        .expect("v123 applies over the historical rows");
+    let after: String = connection
+        .query_row(
+            "SELECT json_group_array(json_array(id, kind, idempotency_key, target_revision, state))
+               FROM command_receipts",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the receipts read");
+    assert_eq!(after, before, "every receipt is copied unchanged");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the version reads");
+    assert_eq!(version, 123);
+
+    let receipt = |id: &str, key: &str, kind: &str| {
+        connection.execute(
+            &format!(
+                "INSERT INTO command_receipts
+                     (id, project_id, idempotency_key, kind, target, target_revision, intent,
+                      intent_hash, state, attempts, created_at, updated_at, execution_mode)
+                 VALUES ('{id}', '{PROJECT}', '{key}', '{kind}', '{{}}', 4, '{{}}', '{CONTEXT}',
+                         'intent_persisted', 0, '2026-10-02T10:01:00Z',
+                         '2026-10-02T10:01:00Z', 'local')"
+            ),
+            [],
+        )
+    };
+    receipt(
+        "0193f000-0000-7000-8000-000000000206",
+        "pp-recover",
+        "recover_planning_pair_seat",
+    )
+    .expect("the recovery kind is closed in");
+    assert!(
+        receipt(
+            "0193f000-0000-7000-8000-000000000207",
+            "pp-unknown",
+            "replace_planning_pair_seat",
+        )
+        .is_err(),
+        "the kind list stays closed"
+    );
+
+    let claim = |run: &str, generation: i64, placement: &str| {
+        connection.execute(
+            &format!(
+                "INSERT INTO planning_pair_member_natives
+                     (run_id, project_id, seat_binding_id, occupancy_generation, runtime_kind,
+                      host, runtime_generation, native_id, provider_session_id, context_hash,
+                      placement_hash, readback_refusal, observed_at)
+                 VALUES ('{run}', '{PROJECT}', '{SEAT}', {generation}, 'fake.runtime',
+                         'fake-host', 1, 'native-member-b', NULL, '{CONTEXT}', '{placement}',
+                         'route_unobserved', '2026-10-02T10:02:00Z')"
+            ),
+            [],
+        )
+    };
+    let refused = |result: rusqlite::Result<usize>, why: &str| match result {
+        Err(error) => assert!(
+            error
+                .to_string()
+                .contains("belongs only to a current member seat of an open pair"),
+            "{why}: {error}"
+        ),
+        Ok(_) => panic!("{why}: the claim was admitted"),
+    };
+    refused(claim(RUN, 1, PLACEMENT), "a retired generation");
+    refused(claim(RUN, 2, CONTEXT), "another placement");
+    claim(RUN, 2, PLACEMENT).expect("the current member's claim is kept");
+    let second = claim(RUN, 2, PLACEMENT).expect_err("one claim per member generation");
+    assert!(
+        second.to_string().contains("UNIQUE constraint failed"),
+        "{second}"
+    );
+    for (sql, rule) in [
+        (
+            "UPDATE planning_pair_member_natives SET native_id = 'native-member-c'",
+            "is immutable",
+        ),
+        (
+            "DELETE FROM planning_pair_member_natives",
+            "cannot be withdrawn",
+        ),
+    ] {
+        let error = connection
+            .execute(sql, [])
+            .expect_err("a kept claim never moves");
+        assert!(error.to_string().contains(rule), "{sql}: {error}");
+    }
+    connection
+        .execute(
+            &format!("UPDATE consultation_runs SET state = 'disposed' WHERE run_id = '{RUN}'"),
+            [],
+        )
+        .expect("the fixture disposes the pair");
+    connection
+        .execute(
+            &format!(
+                "UPDATE consultation_seats SET occupancy_generation = 3 WHERE run_id = '{RUN}'"
+            ),
+            [],
+        )
+        .expect("the fixture fences the member");
+    refused(claim(RUN, 3, PLACEMENT), "a disposed pair");
 }
 
 /// The exact v121 shape of `consultation_runs`: the v70 table, the four

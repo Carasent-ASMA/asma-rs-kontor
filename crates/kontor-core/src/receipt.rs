@@ -256,6 +256,10 @@ closed_enum! {
         RecordPlanningPairAnswer => "record_planning_pair_answer",
         /// Record the caller's disposition. Terminal; never a settlement.
         RecordPlanningPairDisposition => "record_planning_pair_disposition",
+        /// Requalify one planning pair member on its exact known native
+        /// session, as the frozen caller: the same SeatBinding, generation,
+        /// frozen context and session, read back again. Never a replacement.
+        RecoverPlanningPairSeat => "recover_planning_pair_seat",
         /// Open one ad-hoc Quick session under the project's session base.
         ///
         /// The project is the aggregate. A Quick session creates no MiniProject
@@ -651,7 +655,8 @@ impl CommandKind {
             | Self::RecordPlanningPairFinding
             | Self::RequestPlanningPairClarification
             | Self::RecordPlanningPairAnswer
-            | Self::RecordPlanningPairDisposition => witness(matches!(target, A::MiniProject)),
+            | Self::RecordPlanningPairDisposition
+            | Self::RecoverPlanningPairSeat => witness(matches!(target, A::MiniProject)),
         }
     }
 

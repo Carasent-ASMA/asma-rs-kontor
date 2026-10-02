@@ -277,6 +277,22 @@ const PLANNING_PAIR_PROFILE_REF: &[FieldSpec] = &[
     ),
 ];
 
+/// One exact native session a member recovery asserts.
+const PLANNING_PAIR_NATIVE_IDENTITY: &[FieldSpec] = &[
+    field("runtime_kind", ArgType::OpenKey, "The runtime family."),
+    field(
+        "host",
+        ArgType::ExternalName,
+        "The runtime host that owns the generation.",
+    ),
+    field("generation", ArgType::U64, "The runtime generation."),
+    field(
+        "native_id",
+        ArgType::ExternalId,
+        "The native session id within that generation.",
+    ),
+];
+
 /// What the caller decided about one member's advice.
 const PLANNING_PAIR_MEMBER_DISPOSITION: &[FieldSpec] = &[
     field(
@@ -8124,6 +8140,61 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Record the authenticated caller's disposition. A decision with retained dissent; never a verdict, a settlement or a gate.",
     },
     ToolSpec {
+        name: "kontor_planning_pair_seat_recover",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "planning_pair_run_id",
+                Place::Path,
+                ArgType::PlanningPairRunId,
+                "The planning pair.",
+            ),
+            req(
+                "seat_binding_id",
+                Place::Path,
+                ArgType::SeatBindingId,
+                "The member seat to requalify.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_run_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The run revision the caller read.",
+            ),
+            req(
+                "expected_member_occupancy_generation",
+                Place::Body,
+                ArgType::U64,
+                "The member's occupancy generation the caller read.",
+            ),
+            req(
+                "expected_native_identity",
+                Place::Body,
+                ArgType::Object(PLANNING_PAIR_NATIVE_IDENTITY),
+                "The member's known native session the caller read; an assertion, never its source.",
+            ),
+            opt(
+                "expected_provider_session_id",
+                Place::Body,
+                ArgType::ExternalId,
+                "The provider conversation, exactly when one is recorded for the known session.",
+            ),
+        ],
+        about: "Requalify one planning pair member on its exact known native session, as the authenticated frozen caller. The same seat, generation and session read back again; never a replacement, a new session or a reroute.",
+    },
+    ToolSpec {
         name: "kontor_completion_profiles_list",
         tier: CallerTier::Observer,
         execution: Execution::Http {
@@ -9010,6 +9081,59 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Frontier A: the caller's same-native member recovery is one Operator
+    /// write on its own route with a closed compare-and-swap body, and no
+    /// declared profile serves it: not the caller's exact four, not the
+    /// member's three, not leadership, worker or consultation.
+    #[test]
+    fn the_member_recovery_is_an_operator_write_no_profile_serves() {
+        let tool = ToolSpec::find("kontor_planning_pair_seat_recover")
+            .expect("the member recovery is registered");
+        assert_eq!(tool.tier, CallerTier::Operator);
+        assert_eq!(tool.kind, OpKind::Write);
+        assert_eq!(
+            tool.execution,
+            Execution::Http {
+                method: Method::Post,
+                path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover",
+            }
+        );
+        let names: Vec<&str> = tool.args.iter().map(|arg| arg.name).collect();
+        assert_eq!(
+            names,
+            [
+                "project_id",
+                "planning_pair_run_id",
+                "seat_binding_id",
+                "idempotency_key",
+                "expected_run_revision",
+                "expected_member_occupancy_generation",
+                "expected_native_identity",
+                "expected_provider_session_id",
+            ],
+            "only compare-and-swap assertions: no route, provider, profile, generation or credential"
+        );
+        for profile in SERVE_PROFILES {
+            assert!(
+                !profile.allows(tool.name),
+                "`{}` must not serve the member recovery",
+                profile.name
+            );
+        }
+        assert_eq!(
+            ServeProfile::find("planning_pair_caller")
+                .expect("the caller profile")
+                .tools,
+            kontor_core::planning_pair::CALLER_MCP_TOOLS
+        );
+        assert_eq!(
+            ServeProfile::find("planning_pair_member")
+                .expect("the member profile")
+                .tools,
+            kontor_core::planning_pair::MEMBER_MCP_TOOLS
+        );
     }
 
     #[test]

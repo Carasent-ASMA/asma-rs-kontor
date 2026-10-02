@@ -2251,6 +2251,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Requalify one member on its exact known native session, as the pair's
+         *     frozen caller's own scoped seat. Never a replacement or a new session.
+         */
+        post: operations["recover_planning_pair_seat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/provider-account-profiles": {
         parameters: {
             query?: never;
@@ -8056,6 +8076,23 @@ export interface components {
             /** @description Why the caller decided as it did. */
             rationale: string;
         };
+        /**
+         * @description One member's known native session: what a trusted runtime readback named,
+         *     never a qualification.
+         */
+        PlanningPairKnownNativeDto: {
+            /** @description The exact session. */
+            native_identity: components["schemas"]["PlanningPairNativeIdentityDto"];
+            /**
+             * Format: date-time
+             * @description When it was read back.
+             */
+            observed_at: string;
+            /** @description Its provider conversation, when one was reported. */
+            provider_session_id?: string | null;
+            /** @description Why its launch readback did not qualify the member, when it did not. */
+            readback_refusal?: string | null;
+        };
         /** @description What the caller decided about one member's advice. */
         PlanningPairMemberDispositionDto: {
             /** @description The exact clarification answer, when the member gave one. */
@@ -8071,6 +8108,7 @@ export interface components {
         PlanningPairMemberDto: {
             /** @description The binding the TPM named. */
             binding_key: string;
+            known_native?: null | components["schemas"]["PlanningPairKnownNativeDto"];
             /** @description The exact native seat title. */
             label: string;
             /** @description The route the shared allocator chose. */
@@ -8102,6 +8140,23 @@ export interface components {
             slot: components["schemas"]["PlanningPairSlotDto"];
             /** @description Account aliases that cannot take this member now. */
             unavailable_accounts?: string[];
+        };
+        /**
+         * @description One exact native session: its runtime family, host and runtime generation,
+         *     and its native id.
+         */
+        PlanningPairNativeIdentityDto: {
+            /**
+             * Format: int64
+             * @description The runtime generation.
+             */
+            generation: number;
+            /** @description The runtime host that owns the generation. */
+            host: string;
+            /** @description The native session id within it. */
+            native_id: string;
+            /** @description The runtime family. */
+            runtime_kind: string;
         };
         /** @description The exact published document revision an invocation pins. */
         PlanningPairProfileRefDto: {
@@ -8181,6 +8236,38 @@ export interface components {
             topology_node_id: string;
             /** @description Who this projection was rendered for. */
             viewer: components["schemas"]["PlanningPairViewerDto"];
+        };
+        /**
+         * @description One member requalified on its exact known native session.
+         *
+         *     The same SeatBinding, generation, session and frozen placement: nothing is
+         *     created, replaced or rerouted, and nothing here is a verdict.
+         */
+        PlanningPairSeatRecoveryDto: {
+            /**
+             * Format: int64
+             * @description The member's unchanged occupancy generation.
+             */
+            member_occupancy_generation: number;
+            /** @description The same native session, read back again. */
+            native_identity: components["schemas"]["PlanningPairNativeIdentityDto"];
+            /** @description The frozen placement the member's provenance was read back against. */
+            placement_hash: string;
+            /** @description The pair as its caller now sees it. */
+            planning_pair: components["schemas"]["PlanningPairRunDto"];
+            /** @description The same provider conversation, when one is recorded. */
+            provider_session_id?: string | null;
+            /** @description The recovery's receipt. */
+            receipt: components["schemas"]["MutationReceiptDto"];
+            /**
+             * Format: int64
+             * @description The run revision the requalification was recorded at.
+             */
+            recovered_revision: number;
+            /** @description The member's persistent SeatBinding. */
+            seat_binding_id: string;
+            /** @description The member slot. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
         };
         /**
          * @description One of the two member slots.
@@ -9332,6 +9419,34 @@ export interface components {
              * @description Which append-only evaluation of the gate that receipt recorded.
              */
             sequence: number;
+        };
+        /**
+         * @description Requalify one member on its exact known native session, as the pair's
+         *     frozen caller.
+         *
+         *     Every field is a compare-and-swap assertion. The member and the pair come
+         *     from the path and the caller from its credential; the session is the one
+         *     already known for the member, never one named here. There is no route,
+         *     provider, profile, generation, credential or new-session field.
+         */
+        RecoverPlanningPairSeatRequest: {
+            /**
+             * Format: int64
+             * @description The member's occupancy generation the caller read.
+             */
+            expected_member_occupancy_generation: number;
+            /** @description The member's known native session the caller read. */
+            expected_native_identity: components["schemas"]["PlanningPairNativeIdentityDto"];
+            /**
+             * @description The member's provider conversation, required exactly when one is
+             *     recorded for the known session.
+             */
+            expected_provider_session_id?: string | null;
+            /**
+             * Format: int64
+             * @description The run revision the caller read.
+             */
+            expected_run_revision: number;
         };
         /**
          * @description One member the resolver removed, and why.
@@ -18066,6 +18181,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recover_planning_pair_seat: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+                /** @description The member seat to requalify */
+                seat_binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoverPlanningPairSeatRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairSeatRecoveryDto"];
                 };
             };
             401: {

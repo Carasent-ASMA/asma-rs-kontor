@@ -3126,3 +3126,21 @@ fn the_recorded_inventory_is_one_ao_envelope_including_harnesses_kontor_declines
             .any(|it| it.kind == AoSessionKind::Orchestrator)
     );
 }
+
+/// ASMA-8282 frontier A: AO composes no same-native planning pair member
+/// reconcile. Every lane refuses it as an unsupported capability with no AO
+/// call at all.
+#[tokio::test]
+async fn ao_reconciles_no_planning_pair_member_and_makes_no_call() {
+    for harness in [AoHarness::ClaudeCode, AoHarness::Codex, AoHarness::Cursor] {
+        let (ao, daemon, _gate) = gated(harness);
+        assert_unsupported(
+            RuntimeCapability::Resume,
+            ao.reconcile_planning_pair_member(
+                &kontor_tests_contract::planning_pair_reconcile_request(),
+            )
+            .await,
+        );
+        assert!(daemon.calls().is_empty(), "{harness:?}: no AO call");
+    }
+}

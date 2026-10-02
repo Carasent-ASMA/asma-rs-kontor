@@ -164,18 +164,25 @@ The credential stays in the runtime's process-environment channel.
 A member is bound, and so may contribute, only when every mandatory
 member-surface field is observed as matched: its correlation, its route and its
 closed tool restriction. Its readback must also observe exactly its requested
-provenance. A missing observation, or any unmatched or unsupported field, is a
-typed refusal: the native session is kept unbound and named as confirmation
-unknown, the pair stays materializing with no receipt, and a replay meets that
-same session. Account authority is never observed and is stated separately; an
-account-qualified label is not credential ownership.
+provenance. Whatever the readback shows, the exact session it names is first
+kept as the member's known native claim (schema 123). The claim is immutable
+and keyed by the run, the SeatBinding and the occupancy generation. It is never
+a qualification: only the bound seat qualifies a member. A missing observation,
+or any unmatched or unsupported field, is then a typed refusal: the session is
+kept unbound and named as confirmation unknown, and the pair stays
+materializing with no receipt. A replay, including one after a restart, meets
+that same claim and answers the same refusal, with no runtime call and no
+second create. A lost acknowledgement with no observed session leaves no claim,
+and nothing is guessed. Account authority is never observed and is stated
+separately; an account-qualified label is not credential ownership.
 
 Qualification is per member, not one atomic step. If only seat B's readback
-fails, seat A, which launched first and was fully observed, stays bound. Its
-credential can record a finding while the pair is still materializing. That
-finding stays sealed from the caller. Seat B stays unbound and its writes are
-refused. The pair has no receipt, and a replay asks again only for seat B, on
-its same native session. Nothing unbinds both members. When both routes are
+fails, seat A, which launched first and was fully observed, stays bound. By the
+LSA's decision, its credential records its own first finding while the pair is
+still materializing. That finding is sealed from the caller, the peer and an
+observer, and only seat A reads it back. Seat B stays unbound and its writes are
+refused. The pair has no invocation receipt, and a replay meets seat B's kept
+claim with no launch. Nothing unbinds both members. When both routes are
 refused, the refusal names only the first blocker, seat A's provider and gap.
 
 A pair's caller may be served under a distinct, opt-in profile,
@@ -201,6 +208,42 @@ caller seat at its current hosted generation, under the document's allowed
 roles. A member, a TPM seat and an ambient Admin or Operator are refused under
 it, and the caller cannot contribute under the member profile.
 
+The pair's frozen caller requalifies one member on its exact known native
+session with `kontor_planning_pair_seat_recover`:
+`POST /v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover`.
+
+- **Tier and caller.** It is an Operator-floor write. The caller is the exact
+  frozen caller at its current hosted generation, under the pinned document's
+  roles and scopes. An ambient Admin or Operator, either member, another seat
+  and a retired caller credential are refused before any replay or runtime
+  call. No declared serve profile serves it, the caller's four tools included.
+- **Body.** The closed body asserts only: the run revision, the member's
+  occupancy generation, the full known native identity (runtime kind, host,
+  runtime generation and native id) and, exactly when one is recorded, the
+  provider conversation. The session comes from the bound seat or its kept
+  claim, never from the body. A member with no known session is refused, and
+  nothing is discovered or created. The run projection shows each member's
+  `known_native` beside its qualifying `observed_binding`.
+- **Readback.** Every real route is refused before any effect. The same
+  session is then read back through the reconcile seam below, with no
+  credential, generation change, launch, replacement, archive, reallocation or
+  reroute.
+- **Qualifying readback.** One that observes every mandatory field and the
+  requested provenance binds that session. In the same store transaction it
+  moves the run one revision under compare-and-swap and writes the
+  `recover_planning_pair_seat` receipt. An exact replay answers that receipt
+  with no runtime call, even after the run moved or was disposed; a different
+  intent for the key conflicts. A materializing pair stays materializing; its
+  invocation replay then runs it. A `needs_human` pair whose members are both
+  qualified again returns to `running`.
+- **Adverse readback.** A stopped session this runtime cannot resume in
+  place, a lost session, a drifted label or an unobserved field withdraws only
+  that member's current qualification, under the same compare-and-swap. The
+  claim, the peer and every finding and dissent are kept. A running pair moves
+  to `needs_human`, and the operation is refused with no receipt. A member
+  that lost its qualification writes nothing more until it is requalified, and
+  its earlier finding stays. A disposed pair refuses any new recovery.
+
 The runtime port has an additive, opt-in seam for reconciling a member in
 place: `RuntimeAdapter::reconcile_planning_pair_member`. Its request,
 `PlanningPairMemberReconcileRequest`, carries the member's frozen context and
@@ -214,7 +257,6 @@ Paseo, AO and Codex keep that default, so no real route can reconcile a
 member. Only the fake runtime implements the seam, as a hypothetical surface
 that observes every field.
 
-None of this is a live qualification. No daemon operation reconciles or
-recovers a member yet: who may invoke one is a decision returned to the LSA.
-The Committee seat recovery route, which replaces a native, cannot reach a
-planning pair member: it finds no such Committee run.
+None of this is a live qualification. The Committee seat recovery route,
+which replaces a native, is unchanged and cannot reach a planning pair member:
+it finds no such Committee run.

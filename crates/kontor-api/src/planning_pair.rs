@@ -1,6 +1,6 @@
 //! Governed `planning_pair@1` operations (ASMA-8282, disposition D-2).
 //!
-//! Nine registered routes beside the unchanged Advisor and Committee ones. The
+//! Ten registered routes beside the unchanged Advisor and Committee ones. The
 //! registry tier on each is a floor, never authentication: invocation,
 //! clarification and disposition are accepted only from the frozen caller's own
 //! scoped seat credential, and a finding or answer only from the member seat's
@@ -14,8 +14,8 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use kontor_core::id::{
-    AggregateRevision, BoundedText, ContentHash, ExternalName, MiniProjectId, PlanningPairRunId,
-    ProjectId, SeatBindingId, TaskId, TopologyNodeId,
+    AggregateRevision, BoundedText, ContentHash, ExternalId, ExternalName, MiniProjectId,
+    PlanningPairRunId, ProjectId, RuntimeKindKey, SeatBindingId, TaskId, TopologyNodeId,
 };
 use kontor_core::planning_pair::PlanningPairSlot;
 use serde::{Deserialize, Serialize};
@@ -244,6 +244,29 @@ pub struct PlanningPairMemberDto {
     /// reports one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_binding: Option<ObservedBindingDto>,
+    /// The exact native session the member is known by at its current
+    /// generation, qualified or not. Only a bound `observed_binding` qualifies
+    /// the member; this is what its caller names to recover it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_native: Option<PlanningPairKnownNativeDto>,
+}
+
+/// One member's known native session: what a trusted runtime readback named,
+/// never a qualification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PlanningPairKnownNativeDto {
+    /// The exact session.
+    pub native_identity: PlanningPairNativeIdentityDto,
+    /// Its provider conversation, when one was reported.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<ExternalId>,
+    /// Why its launch readback did not qualify the member, when it did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readback_refusal: Option<String>,
+    /// When it was read back.
+    #[schema(value_type = String, format = DateTime)]
+    pub observed_at: kontor_core::id::Timestamp,
 }
 
 /// Who the projection was rendered for, and so what it may contain.
@@ -334,6 +357,79 @@ pub struct PlanningPairRunDto {
     /// The receipt, for a write.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt: Option<MutationReceiptDto>,
+}
+
+/// One exact native session: its runtime family, host and runtime generation,
+/// and its native id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningPairNativeIdentityDto {
+    /// The runtime family.
+    #[schema(value_type = String)]
+    pub runtime_kind: RuntimeKindKey,
+    /// The runtime host that owns the generation.
+    #[schema(value_type = String)]
+    pub host: ExternalName,
+    /// The runtime generation.
+    pub generation: u64,
+    /// The native session id within it.
+    #[schema(value_type = String)]
+    pub native_id: ExternalId,
+}
+
+/// Requalify one member on its exact known native session, as the pair's
+/// frozen caller.
+///
+/// Every field is a compare-and-swap assertion. The member and the pair come
+/// from the path and the caller from its credential; the session is the one
+/// already known for the member, never one named here. There is no route,
+/// provider, profile, generation, credential or new-session field.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecoverPlanningPairSeatRequest {
+    /// The run revision the caller read.
+    #[schema(value_type = u64)]
+    pub expected_run_revision: AggregateRevision,
+    /// The member's occupancy generation the caller read.
+    pub expected_member_occupancy_generation: u64,
+    /// The member's known native session the caller read.
+    pub expected_native_identity: PlanningPairNativeIdentityDto,
+    /// The member's provider conversation, required exactly when one is
+    /// recorded for the known session.
+    #[schema(value_type = Option<String>)]
+    #[serde(default)]
+    pub expected_provider_session_id: Option<ExternalId>,
+}
+
+/// One member requalified on its exact known native session.
+///
+/// The same SeatBinding, generation, session and frozen placement: nothing is
+/// created, replaced or rerouted, and nothing here is a verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PlanningPairSeatRecoveryDto {
+    /// The pair as its caller now sees it.
+    pub planning_pair: PlanningPairRunDto,
+    /// The member's persistent SeatBinding.
+    #[schema(value_type = String)]
+    pub seat_binding_id: SeatBindingId,
+    /// The member slot.
+    pub slot: PlanningPairSlotDto,
+    /// The member's unchanged occupancy generation.
+    pub member_occupancy_generation: u64,
+    /// The same native session, read back again.
+    pub native_identity: PlanningPairNativeIdentityDto,
+    /// The same provider conversation, when one is recorded.
+    #[schema(value_type = Option<String>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<ExternalId>,
+    /// The frozen placement the member's provenance was read back against.
+    #[schema(value_type = String)]
+    pub placement_hash: ContentHash,
+    /// The run revision the requalification was recorded at.
+    #[schema(value_type = u64)]
+    pub recovered_revision: AggregateRevision,
+    /// The recovery's receipt.
+    pub receipt: MutationReceiptDto,
 }
 
 /// The exact persistent seat a scoped credential authenticated.
@@ -659,6 +755,45 @@ pub async fn record_planning_pair_disposition(
         state
             .applications()
             .record_planning_pair_disposition(&key, project_id, run_id, seat, &request)
+            .await?,
+    ))
+}
+
+/// Requalify one member on its exact known native session, as the pair's
+/// frozen caller's own scoped seat. Never a replacement or a new session.
+#[utoipa::path(
+    post,
+    path = "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover",
+    tag = "applications",
+    params(
+        ("project_id" = String, Path, description = "The owning project"),
+        ("planning_pair_run_id" = String, Path, description = "The planning pair"),
+        ("seat_binding_id" = String, Path, description = "The member seat to requalify"),
+        ("Idempotency-Key" = String, Header, description = "The caller's stable key")
+    ),
+    request_body = RecoverPlanningPairSeatRequest,
+    responses(
+        (status = 200, body = PlanningPairSeatRecoveryDto),
+        (status = 401), (status = 403), (status = 404), (status = 409),
+        (status = 503, description = "The owning application service is not composed")
+    )
+)]
+pub async fn recover_planning_pair_seat(
+    State(state): State<ApiState>,
+    caller: Caller,
+    Path((project_id, run_id, seat_binding_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(request): Json<RecoverPlanningPairSeatRequest>,
+) -> Result<Json<PlanningPairSeatRecoveryDto>, ApiError> {
+    let seat = scoped_seat(&state, caller)?;
+    let project_id = parse_id(&state, ProjectId::parse(&project_id))?;
+    let run_id = parse_id(&state, PlanningPairRunId::parse(&run_id))?;
+    let seat_binding_id = parse_id(&state, SeatBindingId::parse(&seat_binding_id))?;
+    let key = idempotency_key(&state, &headers)?;
+    Ok(Json(
+        state
+            .applications()
+            .recover_planning_pair_seat(&key, project_id, run_id, seat_binding_id, seat, &request)
             .await?,
     ))
 }

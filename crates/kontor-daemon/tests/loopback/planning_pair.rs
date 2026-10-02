@@ -2504,7 +2504,7 @@ async fn a_member_without_a_member_surface_observation_is_kept_unqualified() {
 /// one atomic step: when only seat B's readback fails, seat A, launched first
 /// and fully observed, stays bound and qualified. Seat B stays unbound and
 /// named, the pair stays materializing with no receipt for its key, and a
-/// replay relaunches only seat B and meets its same native session.
+/// replay meets seat B's durable known-native claim with no launch at all.
 ///
 /// Seat A's credential is therefore qualified while the pair is still
 /// materializing: its finding is recorded, sealed from the caller, and seat
@@ -2624,8 +2624,8 @@ async fn a_second_seat_readback_failure_keeps_the_first_member_bound_and_the_pai
     );
     assert_eq!(
         launched(calls),
-        vec![seat_b.seat_binding_id],
-        "the replay skipped bound seat A and asked again only for seat B"
+        Vec::<SeatBindingId>::new(),
+        "the replay skipped bound seat A and met seat B's kept claim with no launch"
     );
     let after = world.daemon.state().with_store(|store| {
         store
@@ -2736,8 +2736,8 @@ async fn a_pair_whose_two_routes_are_both_refused_names_only_the_first_blocker()
 /// is reconciled in place against the frozen context the daemon derived for
 /// it: the same session, never a create, read back now rather than cached.
 /// Another session, another frozen field, an absent session or a withheld
-/// route is refused, and nothing is created, retired or archived. No daemon
-/// operation calls this yet; its authority is returned to the LSA.
+/// route is refused, and nothing is created, retired or archived. The
+/// caller's member recovery is the one daemon operation that calls it.
 #[tokio::test]
 async fn the_hypothetical_fake_reconciles_only_the_exact_known_member_native_in_place() {
     use kontor_runtime::planning_pair::{
@@ -3370,4 +3370,1492 @@ async fn the_opt_in_caller_profile_drives_a_pair_through_its_four_tools_and_gran
         .expect("the replay is dispatched");
     assert_eq!(replay.status, 409, "{}", replay.body);
     assert_eq!(replay.body["code"], "stale_binding", "{}", replay.body);
+}
+
+// ---------------------------------------------------------------------------
+// Frontier A: the frozen caller's same-native member recovery.
+// ---------------------------------------------------------------------------
+
+/// One member of `slot` as a planning pair projection renders it.
+fn member_of_slot(run: &serde_json::Value, slot: &str) -> serde_json::Value {
+    run["members"]
+        .as_array()
+        .expect("two members")
+        .iter()
+        .find(|member| member["slot"] == slot)
+        .cloned()
+        .unwrap_or_else(|| panic!("the {slot} member in {run}"))
+}
+
+/// One member as a planning pair projection renders it.
+fn member_of(run: &serde_json::Value, seat: SeatBindingId) -> serde_json::Value {
+    run["members"]
+        .as_array()
+        .expect("two members")
+        .iter()
+        .find(|member| member["seat_binding_id"] == seat.to_string())
+        .cloned()
+        .unwrap_or_else(|| panic!("member {seat} in {run}"))
+}
+
+impl PairRealm {
+    async fn recover_with(
+        &self,
+        pair: &Pair,
+        seat: SeatBindingId,
+        body: &serde_json::Value,
+        token: String,
+        key: &str,
+    ) -> Answer {
+        self.write(pair, &format!("/seats/{seat}/recover"), body, token, key)
+            .await
+    }
+
+    /// The body a caller builds from what it reads: the run revision, the
+    /// member's generation and its known native session. Nothing here names a
+    /// session the caller did not read.
+    async fn recover_body(&self, pair: &Pair, seat: SeatBindingId) -> serde_json::Value {
+        let read = self.read_with(pair, Some(self.caller_token())).await;
+        assert_eq!(read.status, 200, "{}", read.body);
+        let run = read.json();
+        let member = member_of(&run, seat);
+        let known = &member["known_native"];
+        assert!(
+            known.is_object(),
+            "the caller reads the member's known native: {}",
+            read.body
+        );
+        serde_json::json!({
+            "expected_run_revision": run["revision"],
+            "expected_member_occupancy_generation": member["occupancy_generation"],
+            "expected_native_identity": known["native_identity"],
+            "expected_provider_session_id": known["provider_session_id"],
+        })
+    }
+
+    /// How many receipts of `kind` the realm holds.
+    fn receipts_of(&self, kind: &str) -> i64 {
+        rusqlite::Connection::open(self.world.directory.path().join("kontor.db"))
+            .expect("the realm database opens")
+            .query_row(
+                "SELECT count(*) FROM command_receipts WHERE kind = ?1",
+                [kind],
+                |row| row.get(0),
+            )
+            .expect("the receipts count")
+    }
+
+    /// One member seat as storage keeps it.
+    fn member_seat(
+        &self,
+        pair: &Pair,
+        seat: SeatBindingId,
+    ) -> kontor_core::repository::StoredConsultationSeat {
+        let run = self.stored_run(pair);
+        self.world
+            .daemon
+            .state()
+            .with_store(|store| store.list_consultation_seats(self.project_id, run.id))
+            .expect("the seats read")
+            .into_iter()
+            .find(|stored| stored.seat_binding_id == seat)
+            .expect("the member seat")
+    }
+
+    /// One member's kept known native claim at its current generation.
+    fn known_claim(
+        &self,
+        pair: &Pair,
+        seat: SeatBindingId,
+    ) -> Option<kontor_core::repository::StoredPlanningPairKnownNative> {
+        let run = self.stored_run(pair);
+        let generation = self.member_seat(pair, seat).occupancy_generation;
+        self.world
+            .daemon
+            .state()
+            .with_store(|store| {
+                store.planning_pair_known_native(self.project_id, run.id, seat, generation)
+            })
+            .expect("the claim reads")
+    }
+}
+
+/// The calls a fake runtime received that could create, replace, archive or
+/// reconcile a member.
+fn member_effects(calls: &[AdapterCall]) -> Vec<AdapterCall> {
+    calls
+        .iter()
+        .filter(|call| {
+            matches!(
+                call,
+                AdapterCall::LaunchConsultation(_)
+                    | AdapterCall::RetireConsultation(_)
+                    | AdapterCall::ArchiveContainer(_)
+                    | AdapterCall::ReconcilePlanningPairMember(_)
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+/// A pair whose `slot` member's launch readback did not observe `field`: that
+/// member's known native is kept and it is unqualified; the other is bound.
+/// Answers the pair and its invoke body.
+async fn unqualified_pair(
+    realm: &PairRealm,
+    slot: PlanningPairSlot,
+    field: kontor_runtime::planning_pair::MandatoryMemberField,
+    topic: &str,
+    key: &str,
+) -> (Pair, serde_json::Value) {
+    realm
+        .world
+        .fake
+        .observing_planning_pair_member_field_unsupported_in(slot, field);
+    let body = realm.invoke_body(&realm.profile, topic).await;
+    let first = realm.invoke_with(&body, realm.caller_token(), key).await;
+    assert_eq!(first.code(), "unavailable", "{}", first.body);
+    let run = realm.world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_runs(
+                realm.project_id,
+                MiniProjectId::parse(&realm.epic).expect("an epic id"),
+                ConsultationFamily::PlanningPair,
+            )
+            .expect("the runs read")
+            .into_iter()
+            .find(|run| run.invoke_key.as_str() == key)
+            .expect("the frozen pair")
+    });
+    let seats = realm.world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_seats(realm.project_id, run.id)
+            .expect("the seats read")
+    });
+    let kontor_core::consultation::ConsultationRunId::PlanningPair(run_id) = run.id else {
+        panic!("a planning pair run")
+    };
+    let seat = |slot: &str| {
+        seats
+            .iter()
+            .find(|seat| seat.role_slot_id.as_str() == slot)
+            .expect("the member seat")
+            .seat_binding_id
+    };
+    (
+        Pair {
+            run: run_id.to_string(),
+            seat_a: seat("seat-a"),
+            seat_b: seat("seat-b"),
+            invoked: serde_json::json!({}),
+        },
+        body,
+    )
+}
+
+/// Frontier A, the positive path on the hypothetical fake: a second-seat
+/// readback failure is recovered per member. The caller reads seat B's known
+/// native, requalifies that same session (the same SeatBinding, generation and
+/// native, read back again) and its invocation replay then runs the pair.
+/// Nothing is launched, retired or archived; an exact replay of the recovery
+/// answers its receipt with no runtime call; a different intent conflicts.
+#[tokio::test]
+async fn the_caller_requalifies_a_second_seat_on_its_same_native_and_the_replay_runs_the_pair() {
+    use kontor_runtime::planning_pair::MandatoryMemberField;
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-recover").await;
+    let world = &realm.world;
+    let (pair, invoke) = unqualified_pair(
+        &realm,
+        PlanningPairSlot::SeatB,
+        MandatoryMemberField::Route,
+        "Recover plan",
+        "pp-recover-invoke",
+    )
+    .await;
+    let claim = realm
+        .known_claim(&pair, pair.seat_b)
+        .expect("seat B's claim");
+    assert_eq!(
+        claim.readback_refusal,
+        Some(kontor_core::planning_pair::PlanningPairReadbackRefusal::RouteUnobserved)
+    );
+    let read = realm.read_with(&pair, Some(realm.caller_token())).await;
+    let seat_b = member_of(&read.json(), pair.seat_b);
+    assert!(
+        seat_b["observed_binding"].is_null(),
+        "seat B is not qualified"
+    );
+    assert_eq!(
+        seat_b["known_native"]["readback_refusal"],
+        "route_unobserved"
+    );
+    assert!(member_of(&read.json(), pair.seat_a)["observed_binding"].is_object());
+    world
+        .fake
+        .clearing_planning_pair_member_observation_faults();
+    let body = realm.recover_body(&pair, pair.seat_b).await;
+    let revision = realm.revision(&pair).await;
+    world.fake.take_calls();
+
+    let recovered = realm
+        .recover_with(
+            &pair,
+            pair.seat_b,
+            &body,
+            realm.caller_token(),
+            "pp-recover-b",
+        )
+        .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    let answer = recovered.json();
+    assert_eq!(answer["receipt"]["applied"], "created");
+    assert_eq!(answer["native_identity"], body["expected_native_identity"]);
+    assert_eq!(
+        answer["provider_session_id"],
+        body["expected_provider_session_id"]
+    );
+    assert_eq!(answer["member_occupancy_generation"], 1);
+    assert_eq!(answer["recovered_revision"], revision + 1);
+    assert_eq!(
+        answer["planning_pair"]["state"], "materializing",
+        "materializing stays"
+    );
+    assert!(
+        member_of(&answer["planning_pair"], pair.seat_b)["observed_binding"].is_object(),
+        "seat B is bound to its same native: {}",
+        recovered.body
+    );
+    assert_eq!(
+        member_effects(&world.fake.take_calls()),
+        vec![AdapterCall::ReconcilePlanningPairMember(pair.seat_b)],
+        "one in-place readback, no launch, retirement or archive"
+    );
+    assert_eq!(
+        realm.known_claim(&pair, pair.seat_b),
+        Some(claim),
+        "the claim is kept unchanged"
+    );
+    assert_eq!(
+        realm
+            .member_seat(&pair, pair.seat_b)
+            .native_identity
+            .map(|identity| identity.native_id),
+        Some(
+            ExternalId::parse(
+                body["expected_native_identity"]["native_id"]
+                    .as_str()
+                    .expect("an id")
+            )
+            .expect("a native id")
+        )
+    );
+
+    let replayed = realm
+        .recover_with(
+            &pair,
+            pair.seat_b,
+            &body,
+            realm.caller_token(),
+            "pp-recover-b",
+        )
+        .await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert_eq!(replayed.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(
+        replayed.json()["receipt"]["receipt_id"],
+        answer["receipt"]["receipt_id"]
+    );
+    let mut other = body.clone();
+    other["expected_run_revision"] = serde_json::json!(revision + 1);
+    let conflicting = realm
+        .recover_with(
+            &pair,
+            pair.seat_b,
+            &other,
+            realm.caller_token(),
+            "pp-recover-b",
+        )
+        .await;
+    assert_eq!(
+        conflicting.code(),
+        "idempotency_conflict",
+        "{}",
+        conflicting.body
+    );
+    assert!(
+        member_effects(&world.fake.take_calls()).is_empty(),
+        "a replay or a conflict reaches no runtime"
+    );
+    assert_eq!(realm.receipts_of("recover_planning_pair_seat"), 1);
+
+    let invoked = realm
+        .invoke_with(&invoke, realm.caller_token(), "pp-recover-invoke")
+        .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    assert_eq!(invoked.json()["state"], "running");
+    assert_eq!(invoked.json()["receipt"]["applied"], "created");
+    assert!(
+        member_effects(&world.fake.take_calls()).is_empty(),
+        "the invocation resumes on both bound members with no launch"
+    );
+}
+
+/// Frontier A authority: only the exact frozen caller, at its current hosted
+/// generation, recovers. An ambient Admin or Operator, either member, the TPM
+/// and a retired caller credential are refused before any replay or runtime
+/// call, and a member of another pair is not this pair's to recover.
+#[tokio::test]
+async fn only_the_frozen_caller_recovers_and_a_retired_caller_never_replays() {
+    use kontor_runtime::planning_pair::MandatoryMemberField;
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-recover-authority").await;
+    let world = &realm.world;
+    let (pair, _) = unqualified_pair(
+        &realm,
+        PlanningPairSlot::SeatB,
+        MandatoryMemberField::ToolRestrictions,
+        "Authority plan",
+        "pp-authority-invoke",
+    )
+    .await;
+    world
+        .fake
+        .clearing_planning_pair_member_observation_faults();
+    let body = realm.recover_body(&pair, pair.seat_b).await;
+    world.fake.take_calls();
+    let path = realm.run_path(&pair, &format!("/seats/{}/recover", pair.seat_b));
+    for tier in ["admin", "operator"] {
+        let ambient = Call::post(path.clone(), &body)
+            .signed_as(world, tier)
+            .with_key(format!("pp-authority-{tier}"))
+            .send(world)
+            .await;
+        assert_eq!(ambient.code(), "forbidden", "{tier}: {}", ambient.body);
+    }
+    for (who, token) in [
+        ("seat A", realm.member_token(pair.seat_a, 1)),
+        ("seat B", realm.member_token(pair.seat_b, 1)),
+        (
+            "the TPM",
+            realm.seat_token(realm.tpm, realm.hosted_generation(realm.tpm)),
+        ),
+    ] {
+        let refused = realm
+            .recover_with(
+                &pair,
+                pair.seat_b,
+                &body,
+                token,
+                &format!("pp-authority-{who}"),
+            )
+            .await;
+        assert_eq!(refused.code(), "forbidden", "{who}: {}", refused.body);
+    }
+    let other = realm.invoke("Another plan", "pp-authority-other").await;
+    let foreign = realm
+        .recover_with(
+            &pair,
+            other.seat_b,
+            &body,
+            realm.caller_token(),
+            "pp-authority-foreign",
+        )
+        .await;
+    assert_eq!(foreign.code(), "not_found", "{}", foreign.body);
+    // A seat the pinned document admits by role is still not this pair's
+    // frozen caller: under a document that also allows the TPM to convene a
+    // pair, the TPM cannot recover the LSA's.
+    let mut widened = pair_document("01991c00-0000-7000-8000-0000000000b2", PAIR_KIND);
+    widened["allowed_caller_roles"] = serde_json::json!(["lsa", "tpm"]);
+    let widened = publish_pair_document(world, &realm.project, &widened, "pp-authority-doc").await;
+    let invoked = realm
+        .invoke_with(
+            &realm.invoke_body(&widened, "Widened plan").await,
+            realm.caller_token(),
+            "pp-authority-widened",
+        )
+        .await;
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let seat_of = |slot: &str| {
+        SeatBindingId::parse(
+            member_of_slot(&invoked.json(), slot)["seat_binding_id"]
+                .as_str()
+                .expect("a seat"),
+        )
+        .expect("a seat id")
+    };
+    let lsa_pair = Pair {
+        run: invoked.json()["planning_pair_run_id"]
+            .as_str()
+            .expect("a run id")
+            .to_owned(),
+        seat_a: seat_of("seat-a"),
+        seat_b: seat_of("seat-b"),
+        invoked: invoked.json(),
+    };
+    let lsa_body = realm.recover_body(&lsa_pair, lsa_pair.seat_a).await;
+    world.fake.take_calls();
+    let by_role = realm
+        .recover_with(
+            &lsa_pair,
+            lsa_pair.seat_a,
+            &lsa_body,
+            realm.seat_token(realm.tpm, realm.hosted_generation(realm.tpm)),
+            "pp-authority-by-role",
+        )
+        .await;
+    assert_eq!(by_role.code(), "forbidden", "{}", by_role.body);
+    assert_eq!(
+        by_role.json()["rule"],
+        "only the planning pair's frozen caller recovers one of its members"
+    );
+    world.fake.take_calls();
+
+    let recovered = realm
+        .recover_with(
+            &pair,
+            pair.seat_b,
+            &body,
+            realm.caller_token(),
+            "pp-authority-recover",
+        )
+        .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    let retired = realm.caller_token();
+    retire_caller_generation(&realm);
+    world.fake.take_calls();
+    let replay = realm
+        .recover_with(&pair, pair.seat_b, &body, retired, "pp-authority-recover")
+        .await;
+    assert_eq!(replay.code(), "stale_binding", "{}", replay.body);
+    let successor = realm
+        .recover_with(
+            &pair,
+            pair.seat_b,
+            &body,
+            realm.caller_token(),
+            "pp-authority-recover",
+        )
+        .await;
+    assert_eq!(
+        successor.code(),
+        "idempotency_conflict",
+        "the successor generation is another caller intent: {}",
+        successor.body
+    );
+    assert!(
+        member_effects(&world.fake.take_calls()).is_empty(),
+        "no refused or replayed request reached the runtime"
+    );
+    assert_eq!(realm.receipts_of("recover_planning_pair_seat"), 1);
+}
+
+/// Frontier A compare-and-swap: the body only asserts. Another native id,
+/// runtime kind, host, runtime generation or provider conversation, another
+/// member generation and a stale run revision are each refused before any
+/// runtime call; an unknown field is refused by the closed body; a member with
+/// no known native is refused with nothing discovered or created. The exact
+/// assertion then recovers.
+#[tokio::test]
+async fn a_recovery_asserts_the_exact_known_session_under_compare_and_swap() {
+    use kontor_runtime::planning_pair::MandatoryMemberField;
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-recover-cas").await;
+    let world = &realm.world;
+    let (pair, _) = unqualified_pair(
+        &realm,
+        PlanningPairSlot::SeatB,
+        MandatoryMemberField::Correlation,
+        "CAS plan",
+        "pp-cas-invoke",
+    )
+    .await;
+    world
+        .fake
+        .clearing_planning_pair_member_observation_faults();
+    let body = realm.recover_body(&pair, pair.seat_b).await;
+    world.fake.take_calls();
+    let mutate = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut changed = body.clone();
+        edit(&mut changed);
+        changed
+    };
+    let revision = body["expected_run_revision"].as_u64().expect("a revision");
+    for (why, changed, code) in [
+        (
+            "another native id",
+            mutate(&|body| body["expected_native_identity"]["native_id"] = "native-other".into()),
+            "stale_binding",
+        ),
+        (
+            "another runtime kind",
+            mutate(&|body| body["expected_native_identity"]["runtime_kind"] = "paseo".into()),
+            "stale_binding",
+        ),
+        (
+            "another host",
+            mutate(&|body| body["expected_native_identity"]["host"] = "another-host".into()),
+            "stale_binding",
+        ),
+        (
+            "another runtime generation",
+            mutate(&|body| {
+                let generation = body["expected_native_identity"]["generation"]
+                    .as_u64()
+                    .expect("a generation");
+                body["expected_native_identity"]["generation"] = (generation + 1).into();
+            }),
+            "stale_binding",
+        ),
+        (
+            "another provider conversation",
+            mutate(&|body| body["expected_provider_session_id"] = "provider-other".into()),
+            "stale_binding",
+        ),
+        (
+            "no provider conversation",
+            mutate(&|body| body["expected_provider_session_id"] = serde_json::Value::Null),
+            "stale_binding",
+        ),
+        (
+            "another member generation",
+            mutate(&|body| body["expected_member_occupancy_generation"] = 2.into()),
+            "stale_binding",
+        ),
+        (
+            "a stale run revision",
+            mutate(&|body| body["expected_run_revision"] = (revision + 1).into()),
+            "revision_conflict",
+        ),
+    ] {
+        let refused = realm
+            .recover_with(
+                &pair,
+                pair.seat_b,
+                &changed,
+                realm.caller_token(),
+                &format!("pp-cas-{why}"),
+            )
+            .await;
+        assert_eq!(refused.code(), code, "{why}: {}", refused.body);
+    }
+    let widened = realm
+        .recover_with(
+            &pair,
+            pair.seat_b,
+            &mutate(&|body| body["model_route"] = serde_json::json!({"provider": "codex"})),
+            realm.caller_token(),
+            "pp-cas-widened",
+        )
+        .await;
+    assert!(
+        widened.status.is_client_error() && widened.status != 409,
+        "a closed body refuses a route field: {} {}",
+        widened.status,
+        widened.body
+    );
+    assert!(
+        member_effects(&world.fake.take_calls()).is_empty(),
+        "no assertion that failed reached the runtime"
+    );
+    assert!(
+        realm
+            .member_seat(&pair, pair.seat_b)
+            .native_identity
+            .is_none(),
+        "nothing was bound"
+    );
+    let recovered = realm
+        .recover_with(
+            &pair,
+            pair.seat_b,
+            &body,
+            realm.caller_token(),
+            "pp-cas-exact",
+        )
+        .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+
+    // A member whose launch never reported a session has no known native:
+    // nothing is discovered, created or substituted for it.
+    let lost = pair_realm("/tmp/kontor-asma8282-pair-recover-unknown").await;
+    lost.world
+        .fake
+        .refusing_launch_of(&kontor_core::id::RoleSlotId::parse("seat-b").expect("a slot"));
+    let lost_body = lost.invoke_body(&lost.profile, "Unknown plan").await;
+    let refused = lost
+        .invoke_with(&lost_body, lost.caller_token(), "pp-unknown-invoke")
+        .await;
+    assert_ne!(refused.status, 200, "{}", refused.body);
+    let lost_run = lost.world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_runs(
+                lost.project_id,
+                MiniProjectId::parse(&lost.epic).expect("an epic id"),
+                ConsultationFamily::PlanningPair,
+            )
+            .expect("the runs read")
+            .pop()
+            .expect("the frozen pair")
+    });
+    let lost_seats = lost.world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_seats(lost.project_id, lost_run.id)
+            .expect("the seats read")
+    });
+    let kontor_core::consultation::ConsultationRunId::PlanningPair(lost_id) = lost_run.id else {
+        panic!("a planning pair run")
+    };
+    let lost_pair = Pair {
+        run: lost_id.to_string(),
+        seat_a: lost_seats[0].seat_binding_id,
+        seat_b: lost_seats[1].seat_binding_id,
+        invoked: serde_json::json!({}),
+    };
+    assert!(lost.known_claim(&lost_pair, lost_pair.seat_b).is_none());
+    lost.world.fake.take_calls();
+    let unknown = lost
+        .recover_with(
+            &lost_pair,
+            lost_pair.seat_b,
+            &serde_json::json!({
+                "expected_run_revision": lost.revision(&lost_pair).await,
+                "expected_member_occupancy_generation": 1,
+                "expected_native_identity": body["expected_native_identity"],
+            }),
+            lost.caller_token(),
+            "pp-unknown-recover",
+        )
+        .await;
+    assert_eq!(unknown.code(), "unavailable", "{}", unknown.body);
+    assert!(
+        unknown.body.contains("no known native session"),
+        "{}",
+        unknown.body
+    );
+    assert!(member_effects(&lost.world.fake.take_calls()).is_empty());
+}
+
+/// Frontier A durability: an unqualified member's known native is durable. A
+/// restarted realm's invocation replay meets the same claim, answers the same
+/// typed refusal with no launch at all, and the caller then requalifies that
+/// same session.
+#[tokio::test]
+async fn a_durable_unqualified_member_survives_a_restart_without_a_second_create() {
+    use kontor_runtime::planning_pair::MandatoryMemberField;
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-recover-restart").await;
+    let (pair, invoke) = unqualified_pair(
+        &realm,
+        PlanningPairSlot::SeatB,
+        MandatoryMemberField::Route,
+        "Restart recover plan",
+        "pp-restart-recover-invoke",
+    )
+    .await;
+    let claim = realm
+        .known_claim(&pair, pair.seat_b)
+        .expect("seat B's claim");
+    let caller_generation = realm.hosted_generation(realm.caller);
+    let PairRealm {
+        world,
+        project,
+        project_id,
+        epic,
+        caller,
+        ..
+    } = realm;
+    let World {
+        directory,
+        daemon,
+        fake,
+        ..
+    } = world;
+    let state_root = directory.path().to_owned();
+    drop(daemon);
+    let restarted = Daemon::start(
+        DaemonConfig::at(&state_root).with_port(0),
+        RuntimeRegistry::new().with(
+            fake_family(),
+            Arc::clone(&fake) as Arc<dyn kontor_runtime::adapter::RuntimeAdapter>,
+        ),
+    )
+    .expect("the same state root reopens");
+    restarted.state().signals().stop();
+    let router = restarted.router();
+    let token = restarted
+        .state()
+        .credentials()
+        .seat_credential_for_generation(caller, caller_generation);
+    fake.take_calls();
+    let replayed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/planning-pair-runs:invoke"),
+        &invoke,
+    )
+    .with_token(token.clone())
+    .with_key("pp-restart-recover-invoke")
+    .send_to(&router)
+    .await;
+    assert_eq!(replayed.code(), "unavailable", "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["rule"],
+        "the planning pair member's readback did not observe its route"
+    );
+    assert_eq!(
+        replayed.json()["at"],
+        format!("native/{}", claim.identity.native_id.as_str())
+    );
+    assert!(
+        member_effects(&fake.take_calls()).is_empty(),
+        "the restarted replay met the kept claim: no launch, no second create"
+    );
+    let kept = restarted
+        .state()
+        .with_store(|store| {
+            store.planning_pair_known_native(project_id, claim.run_id, pair.seat_b, 1)
+        })
+        .expect("the claim reads");
+    assert_eq!(kept, Some(claim.clone()), "the claim survived the restart");
+
+    fake.clearing_planning_pair_member_observation_faults();
+    let read = Call::get(format!(
+        "/v1/projects/{project}/planning-pair-runs/{}",
+        pair.run
+    ))
+    .with_token(token.clone())
+    .send_to(&router)
+    .await;
+    let member = member_of(&read.json(), pair.seat_b);
+    let recovered = Call::post(
+        format!(
+            "/v1/projects/{project}/planning-pair-runs/{}/seats/{}/recover",
+            pair.run, pair.seat_b
+        ),
+        &serde_json::json!({
+            "expected_run_revision": read.json()["revision"],
+            "expected_member_occupancy_generation": member["occupancy_generation"],
+            "expected_native_identity": member["known_native"]["native_identity"],
+            "expected_provider_session_id": member["known_native"]["provider_session_id"],
+        }),
+    )
+    .with_token(token.clone())
+    .with_key("pp-restart-recover-b")
+    .send_to(&router)
+    .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(
+        member_effects(&fake.take_calls()),
+        vec![AdapterCall::ReconcilePlanningPairMember(pair.seat_b)]
+    );
+    let resumed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/planning-pair-runs:invoke"),
+        &invoke,
+    )
+    .with_token(token)
+    .with_key("pp-restart-recover-invoke")
+    .send_to(&router)
+    .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+    assert_eq!(resumed.json()["state"], "running");
+    assert!(member_effects(&fake.take_calls()).is_empty());
+}
+
+/// Frontier A adverse readbacks on a running pair. A stopped session, which
+/// this runtime cannot resume in place, and a lost session are each refused
+/// as unavailable, and nothing is created, replaced or archived. Only the
+/// affected member loses its current qualification; its claim, its peer and
+/// every finding are kept, and the running pair needs a human. Requalifying
+/// both members of the same sessions restores it to running; a lost session
+/// can never be requalified.
+#[tokio::test]
+async fn an_adverse_readback_withdraws_only_that_members_qualification_and_never_replaces() {
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-recover-adverse").await;
+    let world = &realm.world;
+    let pair = realm.invoke("Adverse plan", "pp-adverse-invoke").await;
+    let finding = realm
+        .finding(&pair, pair.seat_a, "Keep it small.", "pp-adverse-a")
+        .await;
+    assert_eq!(finding.status, 200, "{}", finding.body);
+    let claim_a = realm
+        .known_claim(&pair, pair.seat_a)
+        .expect("seat A's claim");
+    let body_a = realm.recover_body(&pair, pair.seat_a).await;
+    world.fake.stopping_consultation_native(pair.seat_a);
+    world.fake.take_calls();
+
+    let stopped = realm
+        .recover_with(
+            &pair,
+            pair.seat_a,
+            &body_a,
+            realm.caller_token(),
+            "pp-adverse-stopped",
+        )
+        .await;
+    assert_eq!(stopped.code(), "unavailable", "{}", stopped.body);
+    assert_eq!(
+        stopped.json()["rule"],
+        "the planning pair member's native session is stopped and this runtime does not resume it in place"
+    );
+    assert!(
+        realm
+            .member_seat(&pair, pair.seat_a)
+            .native_identity
+            .is_none(),
+        "seat A lost its qualification"
+    );
+    assert!(
+        realm
+            .member_seat(&pair, pair.seat_b)
+            .native_identity
+            .is_some(),
+        "seat B kept its own"
+    );
+    assert_eq!(
+        realm.known_claim(&pair, pair.seat_a),
+        Some(claim_a.clone()),
+        "the claim is kept"
+    );
+    assert_eq!(
+        realm.stored_run(&pair).state,
+        ConsultationRunState::NeedsHuman
+    );
+    assert_eq!(
+        realm.contributions(&pair).len(),
+        1,
+        "seat A's finding is kept"
+    );
+    assert_eq!(
+        realm.receipts_of("recover_planning_pair_seat"),
+        0,
+        "a refusal writes no receipt"
+    );
+    let rewrite = realm
+        .finding(&pair, pair.seat_a, "Another word.", "pp-adverse-a-again")
+        .await;
+    assert_eq!(
+        rewrite.code(),
+        "stale_binding",
+        "an unqualified member writes nothing: {}",
+        rewrite.body
+    );
+
+    let body_b = realm.recover_body(&pair, pair.seat_b).await;
+    world.fake.losing_consultation_native(pair.seat_b);
+    let lost = realm
+        .recover_with(
+            &pair,
+            pair.seat_b,
+            &body_b,
+            realm.caller_token(),
+            "pp-adverse-lost",
+        )
+        .await;
+    assert_eq!(lost.code(), "unavailable", "{}", lost.body);
+    assert!(
+        realm
+            .member_seat(&pair, pair.seat_b)
+            .native_identity
+            .is_none()
+    );
+    assert_eq!(
+        realm.stored_run(&pair).state,
+        ConsultationRunState::NeedsHuman
+    );
+    let calls = world.fake.take_calls();
+    assert_eq!(
+        member_effects(&calls),
+        vec![
+            AdapterCall::ReconcilePlanningPairMember(pair.seat_a),
+            AdapterCall::ReconcilePlanningPairMember(pair.seat_b),
+        ],
+        "only readbacks: no launch, retirement or archive"
+    );
+
+    // Seat A's same session resumes; seat B's is gone and is never replaced.
+    let body_a = realm.recover_body(&pair, pair.seat_a).await;
+    world.fake.running_consultation_native_again(pair.seat_a);
+    let requalified = realm
+        .recover_with(
+            &pair,
+            pair.seat_a,
+            &body_a,
+            realm.caller_token(),
+            "pp-adverse-a-back",
+        )
+        .await;
+    assert_eq!(requalified.status, 200, "{}", requalified.body);
+    assert_eq!(
+        requalified.json()["planning_pair"]["state"],
+        "needs_human",
+        "one qualified member does not run the pair"
+    );
+    let body_b = realm.recover_body(&pair, pair.seat_b).await;
+    let never = realm
+        .recover_with(
+            &pair,
+            pair.seat_b,
+            &body_b,
+            realm.caller_token(),
+            "pp-adverse-b-back",
+        )
+        .await;
+    assert_eq!(never.code(), "unavailable", "{}", never.body);
+    assert!(
+        member_effects(&world.fake.take_calls())
+            .iter()
+            .all(|call| matches!(call, AdapterCall::ReconcilePlanningPairMember(_))),
+        "a lost native is never relaunched"
+    );
+    assert_eq!(
+        realm.member_seat(&pair, pair.seat_a).occupancy_generation,
+        1,
+        "no generation moved"
+    );
+}
+
+/// The LSA's second decision, and the protocol carried through recovery. A
+/// qualified seat A records its own first finding while seat B is unqualified
+/// and the pair is still materializing: the finding is sealed from the
+/// caller, the peer and an observer, and only seat A reads it back. Seat B
+/// cannot write; seat A cannot rewrite, ask or decide; there is no invocation,
+/// running state or recovery receipt, only seat A's own contribution receipt.
+///
+/// After seat B is requalified the pair runs and both findings release through
+/// the original domain. A member that later loses its qualification keeps its
+/// finding, cannot write again until requalified, and moves the running pair
+/// to `needs_human`; requalifying it restores `running`. The disposition keeps
+/// dissent, and a disposed pair is immutable to a new recovery while an exact
+/// replay of a prior one still answers.
+#[tokio::test]
+async fn a_qualified_member_contributes_alone_sealed_and_the_pair_survives_requalification() {
+    use kontor_runtime::planning_pair::MandatoryMemberField;
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-recover-decision").await;
+    let world = &realm.world;
+    let (pair, invoke) = unqualified_pair(
+        &realm,
+        PlanningPairSlot::SeatB,
+        MandatoryMemberField::ToolRestrictions,
+        "Decision plan",
+        "pp-decision-invoke",
+    )
+    .await;
+    const SEALED: &str = "Seat A alone: ship the schema step first.";
+    let alone = realm
+        .finding(&pair, pair.seat_a, SEALED, "pp-decision-a")
+        .await;
+    assert_eq!(alone.status, 200, "{}", alone.body);
+    assert_eq!(alone.json()["state"], "materializing");
+    assert_eq!(alone.json()["receipt"]["applied"], "created");
+    let caller = realm.read_with(&pair, Some(realm.caller_token())).await;
+    let observer = realm.read_with(&pair, None).await;
+    let peer = realm
+        .read_with(&pair, Some(realm.member_token(pair.seat_b, 1)))
+        .await;
+    for (who, read) in [
+        ("caller", &caller),
+        ("observer", &observer),
+        ("peer", &peer),
+    ] {
+        assert_eq!(read.status, 200, "{who}: {}", read.body);
+        assert!(
+            !read.body.contains(SEALED),
+            "{who} reads nothing sealed: {}",
+            read.body
+        );
+    }
+    let own = realm
+        .read_with(&pair, Some(realm.member_token(pair.seat_a, 1)))
+        .await;
+    assert!(
+        own.body.contains(SEALED),
+        "seat A reads its own: {}",
+        own.body
+    );
+    let rewrite = realm
+        .finding(&pair, pair.seat_a, "A second word.", "pp-decision-a-again")
+        .await;
+    assert_ne!(rewrite.status, 200, "no rewrite: {}", rewrite.body);
+    for (route, body) in [
+        (
+            "/clarification:request",
+            serde_json::json!({"question": "Which?", "addressed": ["seat-a"],
+                               "expected_revision": realm.revision(&pair).await}),
+        ),
+        (
+            "/disposition:record",
+            serde_json::json!({"members": [], "rationale": "No.",
+                               "expected_revision": realm.revision(&pair).await}),
+        ),
+    ] {
+        let refused = realm
+            .write(
+                &pair,
+                route,
+                &body,
+                realm.member_token(pair.seat_a, 1),
+                "pp-decision-a-acts",
+            )
+            .await;
+        assert_eq!(refused.code(), "forbidden", "{route}: {}", refused.body);
+    }
+    let peer_write = realm
+        .finding(&pair, pair.seat_b, "Not qualified.", "pp-decision-b")
+        .await;
+    assert_eq!(peer_write.code(), "stale_binding", "{}", peer_write.body);
+    assert_eq!(realm.receipts_of("record_planning_pair_finding"), 1);
+    assert_eq!(realm.receipts_of("invoke_planning_pair_run"), 0);
+    assert_eq!(realm.receipts_of("recover_planning_pair_seat"), 0);
+    assert_eq!(
+        realm.stored_run(&pair).state,
+        ConsultationRunState::Materializing
+    );
+
+    // Seat B is requalified, the pair runs, and both findings release.
+    world
+        .fake
+        .clearing_planning_pair_member_observation_faults();
+    let body_b = realm.recover_body(&pair, pair.seat_b).await;
+    let recovered = realm
+        .recover_with(
+            &pair,
+            pair.seat_b,
+            &body_b,
+            realm.caller_token(),
+            "pp-decision-b-back",
+        )
+        .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    let invoked = realm
+        .invoke_with(&invoke, realm.caller_token(), "pp-decision-invoke")
+        .await;
+    assert_eq!(invoked.json()["state"], "running", "{}", invoked.body);
+    let second = realm
+        .finding(
+            &pair,
+            pair.seat_b,
+            "Seat B: split the migration.",
+            "pp-decision-b-finding",
+        )
+        .await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let released = realm.read_with(&pair, Some(realm.caller_token())).await;
+    assert_eq!(slots(&released.json()["findings"]), ["seat-a", "seat-b"]);
+    assert!(
+        released.body.contains(SEALED),
+        "released through the domain"
+    );
+    let asked = realm
+        .write(
+            &pair,
+            "/clarification:request",
+            &serde_json::json!({"question": "Which step reverts alone?", "addressed": ["seat-a"],
+                                "expected_revision": realm.revision(&pair).await}),
+            realm.caller_token(),
+            "pp-decision-ask",
+        )
+        .await;
+    assert_eq!(asked.status, 200, "{}", asked.body);
+
+    // Seat A loses its qualification: its finding stays, it cannot answer,
+    // and the running pair needs a human until it is requalified.
+    world
+        .fake
+        .observing_planning_pair_member_field_unsupported_in(
+            PlanningPairSlot::SeatA,
+            MandatoryMemberField::Correlation,
+        );
+    let body_a = realm.recover_body(&pair, pair.seat_a).await;
+    let lost = realm
+        .recover_with(
+            &pair,
+            pair.seat_a,
+            &body_a,
+            realm.caller_token(),
+            "pp-decision-a-lost",
+        )
+        .await;
+    assert_eq!(lost.code(), "unavailable", "{}", lost.body);
+    assert_eq!(
+        realm.stored_run(&pair).state,
+        ConsultationRunState::NeedsHuman
+    );
+    let answer = |key: &'static str| {
+        let realm = &realm;
+        let pair = &pair;
+        async move {
+            let body = serde_json::json!({
+                "advice": "The schema step reverts alone.",
+                "expected_revision": realm.revision(pair).await,
+            });
+            realm
+                .write(
+                    pair,
+                    "/answers:record",
+                    &body,
+                    realm.member_token(pair.seat_a, 1),
+                    key,
+                )
+                .await
+        }
+    };
+    let unqualified = answer("pp-decision-answer-early").await;
+    assert_eq!(unqualified.code(), "stale_binding", "{}", unqualified.body);
+    let still = realm.read_with(&pair, Some(realm.caller_token())).await;
+    assert_eq!(
+        slots(&still.json()["findings"]),
+        ["seat-a", "seat-b"],
+        "nothing is erased"
+    );
+    world
+        .fake
+        .clearing_planning_pair_member_observation_faults();
+    let body_a = realm.recover_body(&pair, pair.seat_a).await;
+    let back = realm
+        .recover_with(
+            &pair,
+            pair.seat_a,
+            &body_a,
+            realm.caller_token(),
+            "pp-decision-a-back",
+        )
+        .await;
+    assert_eq!(back.status, 200, "{}", back.body);
+    assert_eq!(
+        back.json()["planning_pair"]["state"],
+        "running",
+        "both qualified again"
+    );
+    let answered = answer("pp-decision-answer").await;
+    assert_eq!(answered.status, 200, "{}", answered.body);
+
+    // The disposition keeps dissent; a disposed pair is immutable.
+    let read = realm.read_with(&pair, Some(realm.caller_token())).await;
+    let released = read.json();
+    let finding_hash = |slot: &str| {
+        released["findings"]
+            .as_array()
+            .expect("released findings")
+            .iter()
+            .find(|entry| entry["slot"] == slot)
+            .expect("a released finding")["document_hash"]
+            .clone()
+    };
+    let disposed = realm
+        .write(
+            &pair,
+            "/disposition:record",
+            &serde_json::json!({
+                "members": [
+                    {"slot": "seat-a", "finding": finding_hash("seat-a"),
+                     "answer": released["clarification"]["answers"][0]["document_hash"],
+                     "disposition": "accepted"},
+                    {"slot": "seat-b", "finding": finding_hash("seat-b"), "disposition": "rejected"},
+                ],
+                "rationale": "The schema step first.",
+                "expected_revision": realm.revision(&pair).await,
+            }),
+            realm.caller_token(),
+            "pp-decision-dispose",
+        )
+        .await;
+    assert_eq!(disposed.json()["state"], "disposed", "{}", disposed.body);
+    assert_eq!(slots(&disposed.json()["retained_dissent"]), ["seat-b"]);
+    world.fake.take_calls();
+    let fresh = realm.recover_body(&pair, pair.seat_a).await;
+    let terminal = realm
+        .recover_with(
+            &pair,
+            pair.seat_a,
+            &fresh,
+            realm.caller_token(),
+            "pp-decision-after",
+        )
+        .await;
+    assert_eq!(terminal.code(), "revision_conflict", "{}", terminal.body);
+    assert_eq!(
+        terminal.json()["rule"],
+        "the aggregate is terminal and immutable",
+        "a disposed pair is immutable to a new recovery: {}",
+        terminal.body
+    );
+    let replay = realm
+        .recover_with(
+            &pair,
+            pair.seat_a,
+            &body_a,
+            realm.caller_token(),
+            "pp-decision-a-back",
+        )
+        .await;
+    assert_eq!(replay.status, 200, "{}", replay.body);
+    assert_eq!(replay.json()["receipt"]["applied"], "unchanged");
+    assert_eq!(replay.json()["planning_pair"]["state"], "disposed");
+    assert!(member_effects(&world.fake.take_calls()).is_empty());
+    let after = realm.read_with(&pair, Some(realm.caller_token())).await;
+    assert_eq!(
+        slots(&after.json()["retained_dissent"]),
+        ["seat-b"],
+        "dissent is intact"
+    );
+    let rounds: Vec<(String, String, u64)> = realm
+        .contributions(&pair)
+        .into_iter()
+        .map(|row| {
+            (
+                row.round.as_str().to_owned(),
+                row.slot.as_str().to_owned(),
+                row.occupancy_generation,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rounds,
+        [
+            ("findings".to_owned(), "seat-a".to_owned(), 1),
+            ("findings".to_owned(), "seat-b".to_owned(), 1),
+            ("clarification".to_owned(), "seat-a".to_owned(), 1),
+        ],
+        "one findings round and one answer, no synthetic round or generation"
+    );
+}
+
+/// Frontier A on real routes and faulty runtimes. A member route the runtime
+/// cannot compose is refused before any readback, with no state change, and a
+/// runtime that misreports its readback as a create is refused and binds
+/// nothing.
+#[tokio::test]
+async fn a_withheld_route_or_a_misreported_create_never_requalifies() {
+    use kontor_runtime::planning_pair::MandatoryMemberField;
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-recover-routes").await;
+    let world = &realm.world;
+    let (pair, _) = unqualified_pair(
+        &realm,
+        PlanningPairSlot::SeatB,
+        MandatoryMemberField::Route,
+        "Route recover plan",
+        "pp-routes-invoke",
+    )
+    .await;
+    world
+        .fake
+        .clearing_planning_pair_member_observation_faults();
+    let body = realm.recover_body(&pair, pair.seat_b).await;
+    world.fake.misreporting_planning_pair_reconcile_as_created();
+    world.fake.take_calls();
+    let created = realm
+        .recover_with(
+            &pair,
+            pair.seat_b,
+            &body,
+            realm.caller_token(),
+            "pp-routes-created",
+        )
+        .await;
+    assert_eq!(created.code(), "unavailable", "{}", created.body);
+    assert_eq!(
+        created.json()["rule"],
+        "the runtime did not answer with the member's known native session"
+    );
+    assert!(
+        realm
+            .member_seat(&pair, pair.seat_b)
+            .native_identity
+            .is_none()
+    );
+    world.fake.withholding_planning_pair_members_on("cursor");
+    let withheld = realm
+        .recover_with(
+            &pair,
+            pair.seat_b,
+            &body,
+            realm.caller_token(),
+            "pp-routes-withheld",
+        )
+        .await;
+    assert_eq!(
+        withheld.code(),
+        "unsupported_capability",
+        "{}",
+        withheld.body
+    );
+    assert_eq!(
+        member_effects(&world.fake.take_calls()),
+        vec![AdapterCall::ReconcilePlanningPairMember(pair.seat_b)],
+        "the withheld route never reached a readback"
+    );
+    assert!(
+        realm
+            .member_seat(&pair, pair.seat_b)
+            .native_identity
+            .is_none()
+    );
+    assert_eq!(realm.receipts_of("recover_planning_pair_seat"), 0);
+}
+
+/// Frontier A atomicity, at deterministic barriers. Two recoveries of one key
+/// held after their readback and before their write classify exactly one
+/// `created`, with one receipt and one bind. A recovery held there while a
+/// member's finding moves the run refuses, binding nothing and writing no
+/// receipt. A recovery that runs while an invocation is held after its own
+/// compare-and-swap and before its receipt moves the run once more, and both
+/// receipts are written once.
+#[tokio::test]
+async fn recoveries_invocations_and_contributions_classify_atomically_at_their_barriers() {
+    use kontor_runtime::planning_pair::MandatoryMemberField;
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-recover-atomic").await;
+    let world = &realm.world;
+    let (pair, invoke) = unqualified_pair(
+        &realm,
+        PlanningPairSlot::SeatB,
+        MandatoryMemberField::Route,
+        "Atomic plan",
+        "pp-atomic-invoke",
+    )
+    .await;
+    world
+        .fake
+        .clearing_planning_pair_member_observation_faults();
+    let body = realm.recover_body(&pair, pair.seat_b).await;
+    let hold = world.daemon.hold_planning_pair_recovery_writes();
+
+    // A recovery held at its write while seat A's finding moves the run.
+    let held = async {
+        realm
+            .recover_with(
+                &pair,
+                pair.seat_b,
+                &body,
+                realm.caller_token(),
+                "pp-atomic-raced",
+            )
+            .await
+    };
+    let race = async {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while hold.waiting() < 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the recovery reaches its write");
+        let finding = realm
+            .finding(&pair, pair.seat_a, "Moves the run.", "pp-atomic-a")
+            .await;
+        assert_eq!(finding.status, 200, "{}", finding.body);
+        hold.release();
+    };
+    let (raced, ()) = tokio::join!(held, race);
+    assert_eq!(raced.code(), "revision_conflict", "{}", raced.body);
+    assert!(
+        realm
+            .member_seat(&pair, pair.seat_b)
+            .native_identity
+            .is_none()
+    );
+    assert_eq!(realm.receipts_of("recover_planning_pair_seat"), 0);
+
+    // Two recoveries of one key held at their write: one created, one receipt.
+    let body = realm.recover_body(&pair, pair.seat_b).await;
+    let hold = world.daemon.hold_planning_pair_recovery_writes();
+    let open = async {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while hold.waiting() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both recoveries reach their write before either writes");
+        hold.release();
+    };
+    let (first, second, ()) = tokio::join!(
+        realm.recover_with(
+            &pair,
+            pair.seat_b,
+            &body,
+            realm.caller_token(),
+            "pp-atomic-b"
+        ),
+        realm.recover_with(
+            &pair,
+            pair.seat_b,
+            &body,
+            realm.caller_token(),
+            "pp-atomic-b"
+        ),
+        open,
+    );
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(second.status, 200, "{}", second.body);
+    let mut applied = [
+        first.json()["receipt"]["applied"].clone(),
+        second.json()["receipt"]["applied"].clone(),
+    ];
+    applied.sort_by_key(ToString::to_string);
+    assert_eq!(
+        applied,
+        [serde_json::json!("created"), serde_json::json!("unchanged")]
+    );
+    assert_eq!(
+        first.json()["receipt"]["receipt_id"],
+        second.json()["receipt"]["receipt_id"]
+    );
+    assert_eq!(realm.receipts_of("recover_planning_pair_seat"), 1);
+    let revision_after = realm.revision(&pair).await;
+    assert_eq!(
+        revision_after,
+        body["expected_run_revision"].as_u64().expect("a revision") + 1,
+        "the run moved once"
+    );
+
+    // An invocation held after its compare-and-swap; a recovery runs between.
+    let stale = realm.recover_body(&pair, pair.seat_a).await;
+    let invoke_hold = world.daemon.hold_planning_pair_invocation_receipts();
+    let invoking = async {
+        realm
+            .invoke_with(&invoke, realm.caller_token(), "pp-atomic-invoke")
+            .await
+    };
+    let between = async {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while invoke_hold.waiting() < 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the invocation reaches its receipt write");
+        let refused = realm
+            .recover_with(
+                &pair,
+                pair.seat_a,
+                &stale,
+                realm.caller_token(),
+                "pp-atomic-a-stale",
+            )
+            .await;
+        let current = realm.recover_body(&pair, pair.seat_a).await;
+        let recovered = realm
+            .recover_with(
+                &pair,
+                pair.seat_a,
+                &current,
+                realm.caller_token(),
+                "pp-atomic-a-current",
+            )
+            .await;
+        invoke_hold.release();
+        (refused, recovered)
+    };
+    let (invoked, (refused, recovered)) = tokio::join!(invoking, between);
+    assert_eq!(
+        refused.code(),
+        "revision_conflict",
+        "the invocation's compare-and-swap moved the run: {}",
+        refused.body
+    );
+    assert_eq!(recovered.status, 200, "{}", recovered.body);
+    assert_eq!(recovered.json()["receipt"]["applied"], "created");
+    assert_eq!(recovered.json()["planning_pair"]["state"], "running");
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    assert_eq!(invoked.json()["receipt"]["applied"], "created");
+    assert_eq!(realm.receipts_of("invoke_planning_pair_run"), 1);
+    assert_eq!(realm.receipts_of("recover_planning_pair_seat"), 2);
+    assert_eq!(realm.revision(&pair).await, revision_after + 2);
 }

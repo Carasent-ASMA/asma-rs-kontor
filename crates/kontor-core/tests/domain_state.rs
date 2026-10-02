@@ -1779,6 +1779,12 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
         "witness",
         None,
     ),
+    (
+        "recover_planning_pair_seat",
+        "mini_project",
+        "witness",
+        None,
+    ),
     // The two completion writes are about one epic's own frozen run.
     ("advance_completion", "mini_project", "witness", None),
     ("remediate_completion", "mini_project", "witness", None),

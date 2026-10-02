@@ -8044,6 +8044,17 @@ pub trait ApplicationOperations: Send + Sync {
         caller: crate::planning_pair::PlanningPairSeat,
         request: &crate::planning_pair::RecordPlanningPairDispositionRequest,
     ) -> Result<crate::planning_pair::PlanningPairRunDto, ApiError>;
+    /// Requalify one member on its exact known native session, as the
+    /// authenticated frozen caller.
+    async fn recover_planning_pair_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        seat_binding_id: SeatBindingId,
+        caller: crate::planning_pair::PlanningPairSeat,
+        request: &crate::planning_pair::RecoverPlanningPairSeatRequest,
+    ) -> Result<crate::planning_pair::PlanningPairSeatRecoveryDto, ApiError>;
     /// Every published Advisor profile revision.
     fn advisor_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError>;
     /// Judge one Advisor profile definition. Commits nothing.

@@ -64,19 +64,19 @@ use kontor_core::repository::{
     NewMiniProject, NewNativeContainerBinding, NewObservation, NewProject, NewProviderQuotaState,
     NewProviderUsageObservation, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
     NewSourceEvent, NewTask, NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink,
-    PhaseAdvance, Project, ProjectRepository, ProjectTopologyDefault, ProviderQuotaState,
-    ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage, RealmRepository,
-    ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure,
-    RunInspection, RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation,
-    SessionVerdictEvidence, SourceDisposition, SourceEventIngest, SpecRepository,
-    StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
+    PhaseAdvance, PlanningPairMemberReadback, Project, ProjectRepository, ProjectTopologyDefault,
+    ProviderQuotaState, ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage,
+    RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
+    RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
+    SeatLivenessObservation, SessionVerdictEvidence, SourceDisposition, SourceEventIngest,
+    SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
     StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
     StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
     StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
     StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster, StoredHostedSeatLaunchIntent,
     StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection,
-    StoredPlanningPairContribution, StoredPlanningPairPlacement, StoredPlanningPairRecord,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    StoredPlanningPairContribution, StoredPlanningPairKnownNative, StoredPlanningPairPlacement,
+    StoredPlanningPairRecord, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
     StoredRetiredEvaluatorAttestation, StoredTeamRunAdmissionAdoption,
     StoredTopologyContainerRecovery, SuccessionRepository, Task, TaskInspection,
     TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
@@ -1072,6 +1072,366 @@ type ConsultationSeatColumns = (
     Option<String>,
     Option<String>,
 );
+
+/// The known native claim of one planning pair member, read on `connection`
+/// (a transaction or the store's own connection).
+fn planning_pair_known_native_in(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+    run_id: ConsultationRunId,
+    seat_binding_id: SeatBindingId,
+    occupancy_generation: u64,
+) -> RepositoryResult<Option<StoredPlanningPairKnownNative>> {
+    let row = connection
+        .query_row(
+            "SELECT runtime_kind, host, runtime_generation, native_id, provider_session_id,
+                    context_hash, placement_hash, readback_refusal, observed_at
+               FROM planning_pair_member_natives
+              WHERE project_id = ?1 AND run_id = ?2 AND seat_binding_id = ?3
+                AND occupancy_generation = ?4",
+            params![
+                project_id.to_string(),
+                run_id.as_text(),
+                seat_binding_id.to_string(),
+                i64::try_from(occupancy_generation).unwrap_or(i64::MAX),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?;
+    row.map(
+        |(runtime_kind, host, generation, native_id, provider, context, placement, refusal, at)| {
+            Ok(StoredPlanningPairKnownNative {
+                run_id,
+                project_id,
+                seat_binding_id,
+                occupancy_generation,
+                identity: NativeRuntimeIdentity {
+                    runtime_kind: RuntimeKindKey::parse(&runtime_kind)?,
+                    host: ExternalName::parse(&host)?,
+                    generation: u64::try_from(generation).map_err(|_| {
+                        conflict(
+                            "planning pair member native",
+                            "the runtime generation is negative",
+                        )
+                    })?,
+                    native_id: ExternalId::parse(&native_id)?,
+                },
+                provider_session_id: provider.as_deref().map(ExternalId::parse).transpose()?,
+                context_hash: ContentHash::parse(&context)?,
+                placement_hash: ContentHash::parse(&placement)?,
+                readback_refusal: refusal
+                    .as_deref()
+                    .map(kontor_core::planning_pair::PlanningPairReadbackRefusal::parse)
+                    .transpose()?,
+                observed_at: read_timestamp(&at)?,
+            })
+        },
+    )
+    .transpose()
+}
+
+/// Keep `claim` as the member's known native: written when none is kept for
+/// its generation, and otherwise only ever the same session, never replaced.
+fn keep_planning_pair_known_native_in(
+    transaction: &rusqlite::Transaction<'_>,
+    claim: &StoredPlanningPairKnownNative,
+) -> RepositoryResult<StoredPlanningPairKnownNative> {
+    if claim.run_id.family() != ConsultationFamily::PlanningPair {
+        return Err(conflict(
+            "planning pair member native",
+            "a known member native belongs only to a planning pair",
+        ));
+    }
+    if let Some(kept) = planning_pair_known_native_in(
+        transaction,
+        claim.project_id,
+        claim.run_id,
+        claim.seat_binding_id,
+        claim.occupancy_generation,
+    )? {
+        if kept.identity != claim.identity
+            || kept
+                .provider_session_id
+                .as_ref()
+                .is_some_and(|session| claim.provider_session_id.as_ref() != Some(session))
+            || kept.context_hash != claim.context_hash
+            || kept.placement_hash != claim.placement_hash
+        {
+            return Err(conflict(
+                "planning pair member native",
+                "a known planning pair member native is immutable; another observation never replaces it",
+            ));
+        }
+        return Ok(kept);
+    }
+    transaction
+        .execute(
+            "INSERT INTO planning_pair_member_natives
+                 (run_id, project_id, seat_binding_id, occupancy_generation, runtime_kind, host,
+                  runtime_generation, native_id, provider_session_id, context_hash,
+                  placement_hash, readback_refusal, observed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                claim.run_id.as_text(),
+                claim.project_id.to_string(),
+                claim.seat_binding_id.to_string(),
+                i64::try_from(claim.occupancy_generation).unwrap_or(i64::MAX),
+                claim.identity.runtime_kind.as_str(),
+                claim.identity.host.as_str(),
+                i64::try_from(claim.identity.generation).unwrap_or(i64::MAX),
+                claim.identity.native_id.as_str(),
+                claim.provider_session_id.as_ref().map(ExternalId::as_str),
+                claim.context_hash.as_str(),
+                claim.placement_hash.as_str(),
+                claim.readback_refusal.map(|refusal| refusal.as_str()),
+                format_utc_timestamp(claim.observed_at),
+            ],
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::SqliteFailure(failure, _)
+                if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                conflict(
+                    "planning pair member native",
+                    "a known planning pair native belongs only to a current member seat of an open pair",
+                )
+            }
+            other => backend(other),
+        })?;
+    Ok(claim.clone())
+}
+
+/// One member seat's occupancy generation and native binding columns:
+/// `(occupancy_generation, runtime_kind, host, runtime_generation, native_id)`.
+type PlanningPairMemberSeatRow = (
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+);
+
+/// One planning pair member seat's generation and binding, read in
+/// `transaction`.
+fn planning_pair_member_seat_in(
+    transaction: &rusqlite::Transaction<'_>,
+    project_id: ProjectId,
+    run_id: ConsultationRunId,
+    seat_binding_id: SeatBindingId,
+) -> RepositoryResult<Option<PlanningPairMemberSeatRow>> {
+    transaction
+        .query_row(
+            "SELECT occupancy_generation, runtime_kind, host, generation, native_id
+               FROM consultation_seats
+              WHERE project_id = ?1 AND run_id = ?2 AND seat_binding_id = ?3",
+            params![
+                project_id.to_string(),
+                run_id.as_text(),
+                seat_binding_id.to_string()
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)
+}
+
+/// Bind one member seat, at its current generation, to exactly its known
+/// session: a seat already bound to that session is unchanged, and one bound
+/// to any other is a conflict.
+fn bind_planning_pair_member_in(
+    transaction: &rusqlite::Transaction<'_>,
+    known: &StoredPlanningPairKnownNative,
+    observed_at: Timestamp,
+) -> RepositoryResult<()> {
+    let seat = planning_pair_member_seat_in(
+        transaction,
+        known.project_id,
+        known.run_id,
+        known.seat_binding_id,
+    )?;
+    let (generation, runtime_kind, host, runtime_generation, native_id) =
+        seat.ok_or(RepositoryError::NotFound {
+            subject: "consultation seat",
+        })?;
+    if u64::try_from(generation).ok() != Some(known.occupancy_generation) {
+        return Err(conflict(
+            "planning pair member",
+            "the member's occupancy generation moved",
+        ));
+    }
+    let identity = &known.identity;
+    if let Some(native_id) = native_id {
+        if runtime_kind.as_deref() != Some(identity.runtime_kind.as_str())
+            || host.as_deref() != Some(identity.host.as_str())
+            || runtime_generation.and_then(|value| u64::try_from(value).ok())
+                != Some(identity.generation)
+            || native_id != identity.native_id.as_str()
+        {
+            return Err(conflict(
+                "consultation seat",
+                "a frozen seat cannot move to another native session",
+            ));
+        }
+        return Ok(());
+    }
+    let changed = transaction
+        .execute(
+            "UPDATE consultation_seats
+                SET runtime_kind = ?5, host = ?6, generation = ?7, native_id = ?8,
+                    provider_session_id = ?9, observed_at = ?10
+              WHERE project_id = ?1 AND run_id = ?2 AND seat_binding_id = ?3
+                AND occupancy_generation = ?4 AND runtime_kind IS NULL",
+            params![
+                known.project_id.to_string(),
+                known.run_id.as_text(),
+                known.seat_binding_id.to_string(),
+                i64::try_from(known.occupancy_generation).unwrap_or(i64::MAX),
+                identity.runtime_kind.as_str(),
+                identity.host.as_str(),
+                i64::try_from(identity.generation).unwrap_or(i64::MAX),
+                identity.native_id.as_str(),
+                known.provider_session_id.as_ref().map(ExternalId::as_str),
+                text(observed_at),
+            ],
+        )
+        .map_err(backend)?;
+    if changed != 1 {
+        return Err(RepositoryError::NotFound {
+            subject: "consultation seat",
+        });
+    }
+    Ok(())
+}
+
+/// Hold one member readback to the seat it was taken against: the seat the
+/// run's current member at the expected generation, and the session the
+/// member's known one, bound or claimed. Answers the run's state. The run's
+/// revision and that it is not disposed are held by the one compare-and-swap
+/// that moves it, in the same transaction.
+fn planning_pair_member_readback_in(
+    transaction: &rusqlite::Transaction<'_>,
+    readback: &PlanningPairMemberReadback,
+) -> RepositoryResult<ConsultationRunState> {
+    let verified = &readback.verified;
+    if verified.run_id != readback.run_id
+        || verified.project_id != readback.project_id
+        || verified.seat_binding_id != readback.seat_binding_id
+        || verified.occupancy_generation != readback.occupancy_generation
+    {
+        return Err(conflict(
+            "planning pair member recovery",
+            "the readback describes another member",
+        ));
+    }
+    let state: Option<String> = transaction
+        .query_row(
+            "SELECT state FROM consultation_runs
+              WHERE project_id = ?1 AND run_id = ?2 AND family = 'planning_pair'",
+            params![readback.project_id.to_string(), readback.run_id.as_text()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    let state = ConsultationRunState::parse(&state.ok_or(RepositoryError::NotFound {
+        subject: "consultation run",
+    })?)?;
+    let seat = planning_pair_member_seat_in(
+        transaction,
+        readback.project_id,
+        readback.run_id,
+        readback.seat_binding_id,
+    )?;
+    let (generation, runtime_kind, host, runtime_generation, native_id) =
+        seat.ok_or(RepositoryError::NotFound {
+            subject: "consultation seat",
+        })?;
+    if u64::try_from(generation).ok() != Some(readback.occupancy_generation) {
+        return Err(conflict(
+            "planning pair member",
+            "the member's occupancy generation moved",
+        ));
+    }
+    let identity = &verified.identity;
+    let known = match native_id {
+        Some(native_id) => {
+            runtime_kind.as_deref() == Some(identity.runtime_kind.as_str())
+                && host.as_deref() == Some(identity.host.as_str())
+                && runtime_generation.and_then(|value| u64::try_from(value).ok())
+                    == Some(identity.generation)
+                && native_id == identity.native_id.as_str()
+        }
+        None => planning_pair_known_native_in(
+            transaction,
+            readback.project_id,
+            readback.run_id,
+            readback.seat_binding_id,
+            readback.occupancy_generation,
+        )?
+        .ok_or(RepositoryError::NotFound {
+            subject: "planning pair member native",
+        })?
+        .identity
+        .eq(identity),
+    };
+    if !known {
+        return Err(conflict(
+            "planning pair member recovery",
+            "the readback is not of the member's known native session",
+        ));
+    }
+    Ok(state)
+}
+
+/// Move one planning pair one revision, to `next`, under compare-and-swap.
+fn advance_planning_pair_run_in(
+    transaction: &rusqlite::Transaction<'_>,
+    readback: &PlanningPairMemberReadback,
+    next: ConsultationRunState,
+) -> RepositoryResult<()> {
+    let changed = transaction
+        .execute(
+            "UPDATE consultation_runs
+                SET revision = revision + 1, state = ?4, updated_at = ?5
+              WHERE project_id = ?1 AND run_id = ?2 AND family = 'planning_pair'
+                AND revision = ?3 AND state <> 'disposed'",
+            params![
+                readback.project_id.to_string(),
+                readback.run_id.as_text(),
+                i64::try_from(readback.expected_revision.get()).unwrap_or(i64::MAX),
+                next.as_str(),
+                format_utc_timestamp(readback.applied_at),
+            ],
+        )
+        .map_err(backend)?;
+    if changed != 1 {
+        return Err(conflict(
+            "consultation run",
+            "the run moved since it was read",
+        ));
+    }
+    Ok(())
+}
 
 fn read_consultation_seat(
     run_id: ConsultationRunId,
@@ -2976,6 +3336,181 @@ impl SqliteStore {
             .ok_or(RepositoryError::Conflict {
                 subject: "consultation run",
                 rule: "the run disappeared after its transition",
+            })
+    }
+
+    /// The known native claim of one planning pair member at one occupancy
+    /// generation, when a trusted runtime outcome recorded one.
+    pub fn planning_pair_known_native(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+    ) -> RepositoryResult<Option<StoredPlanningPairKnownNative>> {
+        planning_pair_known_native_in(
+            &self.connection,
+            project_id,
+            run_id,
+            seat_binding_id,
+            occupancy_generation,
+        )
+    }
+
+    /// Record what one member launch's trusted readback proved, in one
+    /// transaction: the known native claim, and, only when that readback
+    /// qualified the member, its bind on exactly that session.
+    ///
+    /// A claim already kept for the member's generation is never replaced: the
+    /// same session is a replay, and any other observation is a conflict.
+    ///
+    /// # Errors
+    /// A conflict when the claim names another session than one already kept,
+    /// the seat is not the pair's current member, the pair is disposed, or the
+    /// seat is bound to another session.
+    pub fn record_planning_pair_member_launch(
+        &self,
+        claim: &StoredPlanningPairKnownNative,
+    ) -> RepositoryResult<StoredPlanningPairKnownNative> {
+        let transaction = self.begin()?;
+        let kept = keep_planning_pair_known_native_in(&transaction, claim)?;
+        if claim.readback_refusal.is_none() {
+            bind_planning_pair_member_in(&transaction, &kept, claim.observed_at)?;
+        }
+        transaction.commit().map_err(backend)?;
+        Ok(kept)
+    }
+
+    /// Requalify one planning pair member on its exact known native session,
+    /// with the frozen caller's receipt, in one transaction (ASMA-8282
+    /// frontier A).
+    ///
+    /// An exact replay of `command` changes nothing and answers the receipt
+    /// it first wrote. Otherwise the run must still be at the expected
+    /// revision and not disposed, the member at its current generation, and
+    /// the readback must name the member's known session, bound or claimed.
+    /// The member is bound to that session if it is not already. A pair whose
+    /// members are then both qualified leaves `needs_human` for `running`;
+    /// a materializing or running pair keeps its state. The run moves one
+    /// revision, and the receipt is written beside it.
+    ///
+    /// # Errors
+    /// A conflict when the run moved or is disposed, the generation moved, the
+    /// session is not the known one or the readback did not qualify the
+    /// member; not found when no native is known for the member.
+    pub fn requalify_planning_pair_member(
+        &self,
+        readback: &PlanningPairMemberReadback,
+        command: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<(StoredConsultationRun, CommandReceiptId, bool)> {
+        let command = command.peek(self.realm_id())?;
+        if readback.verified.readback_refusal.is_some() {
+            return Err(conflict(
+                "planning pair member recovery",
+                "a readback that did not qualify the member cannot requalify it",
+            ));
+        }
+        if command.target_revision != readback.expected_revision.next()? {
+            return Err(conflict(
+                "planning pair member recovery",
+                "the receipt must name the run's next revision",
+            ));
+        }
+        let transaction = self.begin()?;
+        if let Some(existing) =
+            crate::commands::intent::insert_local_command(&transaction, command)?
+        {
+            drop(transaction);
+            let run = self
+                .get_consultation_run(readback.project_id, readback.run_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "consultation run",
+                })?;
+            return Ok((run, existing.id, false));
+        }
+        let state = planning_pair_member_readback_in(&transaction, readback)?;
+        keep_planning_pair_known_native_in(&transaction, &readback.verified)?;
+        bind_planning_pair_member_in(&transaction, &readback.verified, readback.applied_at)?;
+        let unqualified: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM consultation_seats
+                  WHERE project_id = ?1 AND run_id = ?2 AND runtime_kind IS NULL",
+                params![readback.project_id.to_string(), readback.run_id.as_text()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        let next = if state == ConsultationRunState::NeedsHuman && unqualified == 0 {
+            ConsultationRunState::Running
+        } else {
+            state
+        };
+        advance_planning_pair_run_in(&transaction, readback, next)?;
+        transaction.commit().map_err(backend)?;
+        let run = self
+            .get_consultation_run(readback.project_id, readback.run_id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "consultation run",
+            })?;
+        Ok((run, command.receipt_id, true))
+    }
+
+    /// Withdraw one planning pair member's current qualification after an
+    /// adverse readback of its exact known native session, in one transaction
+    /// (ASMA-8282 frontier A).
+    ///
+    /// Only this member is unbound; its peer, every finding and the known
+    /// native claim are kept, and the claim is written from `verified` if none
+    /// was kept yet. A running pair moves to `needs_human`; a materializing
+    /// pair stays materializing. The run moves one revision. No receipt is
+    /// written: the operation is refused.
+    ///
+    /// # Errors
+    /// A conflict when the run moved or is disposed, the generation moved, or
+    /// the member is not bound to the known session.
+    pub fn disqualify_planning_pair_member(
+        &self,
+        readback: &PlanningPairMemberReadback,
+    ) -> RepositoryResult<StoredConsultationRun> {
+        let transaction = self.begin()?;
+        let state = planning_pair_member_readback_in(&transaction, readback)?;
+        keep_planning_pair_known_native_in(&transaction, &readback.verified)?;
+        let identity = &readback.verified.identity;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_seats
+                    SET runtime_kind = NULL, host = NULL, generation = NULL, native_id = NULL,
+                        provider_session_id = NULL, observed_at = NULL
+                  WHERE project_id = ?1 AND run_id = ?2 AND seat_binding_id = ?3
+                    AND occupancy_generation = ?4 AND runtime_kind = ?5 AND host = ?6
+                    AND generation = ?7 AND native_id = ?8",
+                params![
+                    readback.project_id.to_string(),
+                    readback.run_id.as_text(),
+                    readback.seat_binding_id.to_string(),
+                    i64::try_from(readback.occupancy_generation).unwrap_or(i64::MAX),
+                    identity.runtime_kind.as_str(),
+                    identity.host.as_str(),
+                    i64::try_from(identity.generation).unwrap_or(i64::MAX),
+                    identity.native_id.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "planning pair member recovery",
+                "only a member bound to its known session can lose its qualification",
+            ));
+        }
+        let next = if state == ConsultationRunState::Running {
+            ConsultationRunState::NeedsHuman
+        } else {
+            state
+        };
+        advance_planning_pair_run_in(&transaction, readback, next)?;
+        transaction.commit().map_err(backend)?;
+        self.get_consultation_run(readback.project_id, readback.run_id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "consultation run",
             })
     }
 

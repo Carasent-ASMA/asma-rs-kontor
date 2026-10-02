@@ -554,6 +554,66 @@ pub struct StoredPlanningPairContribution {
     pub created_at: Timestamp,
 }
 
+/// What one trusted runtime outcome proved about a planning pair member's
+/// native session at one occupancy generation: its known-native claim.
+///
+/// Immutable, and never a qualification. A member is qualified only by its
+/// bound seat; this keeps the exact session a launch, or a verified
+/// exact-session readback, reported, so a replay, a restart or a recovery meets
+/// that same session instead of discovering or creating another. Only a
+/// runtime outcome writes one. No caller body, label or alias ever does, and
+/// nothing in it is secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlanningPairKnownNative {
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The member seat.
+    pub seat_binding_id: SeatBindingId,
+    /// The occupancy generation the session was launched under.
+    pub occupancy_generation: u64,
+    /// The exact native session.
+    pub identity: NativeRuntimeIdentity,
+    /// The provider conversation, when the runtime reported one.
+    pub provider_session_id: Option<ExternalId>,
+    /// Canonical hash of the frozen member context the session was launched
+    /// under.
+    pub context_hash: ContentHash,
+    /// The frozen placement the member was launched on.
+    pub placement_hash: ContentHash,
+    /// Why that readback did not qualify the member, or `None` when it did.
+    pub readback_refusal: Option<crate::planning_pair::PlanningPairReadbackRefusal>,
+    /// When the session was read back.
+    pub observed_at: Timestamp,
+}
+
+/// One planning pair member's current readback of its exact known native
+/// session, as storage applies it under compare-and-swap.
+///
+/// Storage holds the run at `expected_revision`, the member at its current
+/// `occupancy_generation`, and the session at the known one: the bound seat's,
+/// or else the known-native claim's. `verified` is what the runtime read back
+/// of that session. It becomes the claim when none is kept yet, and never
+/// replaces one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanningPairMemberReadback {
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// The member seat.
+    pub seat_binding_id: SeatBindingId,
+    /// The run revision the readback was taken against.
+    pub expected_revision: AggregateRevision,
+    /// The member's current occupancy generation.
+    pub occupancy_generation: u64,
+    /// The trusted runtime readback of the exact known session.
+    pub verified: StoredPlanningPairKnownNative,
+    /// When the change is applied.
+    pub applied_at: Timestamp,
+}
+
 /// Durable receipt-first intent for replacing one consultation native filler.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredConsultationRecoveryAttempt {

@@ -815,6 +815,11 @@ struct FakeState {
     )>,
     /// Whether member launches report no member-surface observation at all.
     planning_pair_observation_omitted: bool,
+    /// Member sessions that are stopped, which this fake does not resume in
+    /// place.
+    planning_pair_stopped: BTreeSet<SeatBindingId>,
+    /// Whether a member reconcile misreports its answer as a create.
+    planning_pair_reconcile_misreports_create: bool,
     /// The gate every consultation launch waits at, when one is installed.
     consultation_launch_gate: Option<ConsultationLaunchGate>,
     /// Providers this runtime refuses specifically as recovery successors.
@@ -1547,6 +1552,8 @@ impl ScriptedFakeRuntime {
                 planning_pair_unobserved_fields: BTreeSet::new(),
                 planning_pair_unobserved_slot_fields: BTreeSet::new(),
                 planning_pair_observation_omitted: false,
+                planning_pair_stopped: BTreeSet::new(),
+                planning_pair_reconcile_misreports_create: false,
                 consultation_launch_gate: None,
                 unsupported_consultation_recovery_providers: BTreeSet::new(),
                 placements: BTreeSet::new(),
@@ -1702,6 +1709,34 @@ impl ScriptedFakeRuntime {
         self.lock()
             .planning_pair_unobserved_slot_fields
             .insert((slot, field));
+    }
+
+    /// Observe every member-surface field again from now on, as a runtime
+    /// whose readback was repaired would. Labels a session was created without
+    /// stay missing.
+    pub fn clearing_planning_pair_member_observation_faults(&self) {
+        let mut state = self.lock();
+        state.planning_pair_unobserved_fields.clear();
+        state.planning_pair_unobserved_slot_fields.clear();
+        state.planning_pair_observation_omitted = false;
+    }
+
+    /// Stop one member's native session. This fake does not resume a stopped
+    /// session in place, so a reconcile reports it unavailable.
+    pub fn stopping_consultation_native(&self, seat: SeatBindingId) {
+        self.lock().planning_pair_stopped.insert(seat);
+    }
+
+    /// Let one stopped member session run again, the same session, as one
+    /// started outside this runtime would.
+    pub fn running_consultation_native_again(&self, seat: SeatBindingId) {
+        self.lock().planning_pair_stopped.remove(&seat);
+    }
+
+    /// Misreport every later member reconcile as a create, as a faulty runtime
+    /// might: the answer a caller must refuse.
+    pub fn misreporting_planning_pair_reconcile_as_created(&self) {
+        self.lock().planning_pair_reconcile_misreports_create = true;
     }
 
     /// Lose one consultation seat's native session, as a runtime whose
@@ -4151,6 +4186,14 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         {
             return Err(RuntimeError::CorrelationFailed);
         }
+        if state
+            .planning_pair_stopped
+            .contains(&context.seat_binding_id)
+        {
+            return Err(RuntimeError::StaleBinding {
+                rule: "the planning pair member's native session is stopped and this runtime does not resume it in place",
+            });
+        }
         // The same session, read back again now, never a create: a
         // hypothetical runtime, source-contract evidence only.
         Ok(ConsultationLaunchOutcome {
@@ -4162,7 +4205,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             identity: held.identity,
             provider_session_id: held.provider_session_id,
             observed_at: request.requested_at,
-            created: false,
+            created: state.planning_pair_reconcile_misreports_create,
         })
     }
 

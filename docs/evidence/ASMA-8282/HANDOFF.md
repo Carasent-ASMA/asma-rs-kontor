@@ -15,6 +15,7 @@
 - D-3 authority repair (2026-10-02): verify b887 on `1b1d5597` passed the composition and confirmed an authority hole, and the LSA granted no waiver. The repair: a member binds only when every mandatory member-surface field matches; every real Paseo route is refused before freeze; and Claude composition is proved on fixtures only. See "D-3 authority repair" below.
 - Frontier B (2026-10-02): the opt-in `planning_pair_caller` source profile, built on `8b6ee064` (tree `aef842f6`) after verify and audit 6f passed with no findings. It covers the registry profile and explicit selection, plus tests and docs. No composition and no daemon source change. See "Frontier B" below.
 - Frontier A (2026-10-02): the same-native member reconcile seam, at source level only. It is built on `e7a9404a` (tree `62377b57`) after verify and audit passed. It covers an opt-in runtime port that is typed unsupported on every real runtime, a hypothetical fake, the second-seat-only and both-routes fixtures, and docs. The daemon recovery operation's authority is returned to the LSA. See "Frontier A" below.
+- Frontier A operation (2026-10-02): the frozen caller's same-native member recovery, under the LSA decision. It is built on `75f253cb` (tree `d9e728c7`) after its bounded verify and audit passed. It covers the operation, the forward migration 0123 with the pair's known-native claim, tests and docs, at source and fixture level only. See "Frontier A: the frozen caller's same-native member recovery" below.
 - The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. At slice four it holds 53 files, which hash to `4ff4c1bc5cbe7c7ce505442d50827f91d64b0bb308cd18183a39d42339e49e87`: each file's SHA-256 in sorted path order, hashed again. Its files were last written at 2026-10-02 00:25 CEST. That run was not this writing session's (its only workspace run was on 2026-09-29), and slice four did not touch them. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
@@ -968,6 +969,10 @@ Pre-mutation SHA-256 values, each confirmed equal after restore:
 
 ## Frontier A: same-native member reconciliation, source seam only (2026-10-02)
 
+> **Superseded in part (2026-10-02).** The LSA decided the operation's authority: the exact
+> frozen caller. That operation is now implemented; see "Frontier A: the frozen caller's
+> same-native member recovery". This section is kept as written at `75f253cb`.
+
 TPM's separate frontier A dispatch builds on `e7a9404aa871c3f8c1ed29616182909b9b518ff7` (tree
 `62377b57cbf057674759e2987095e1199c2cf03f`), after verify and audit passed.
 
@@ -1080,6 +1085,253 @@ not production evidence.
 - **Resume is declared, not exercised.** The port allows a runtime to resume the same session in place. The fake models no stopped session.
 - This is not a live qualification. Recovery's native effects need separate authorization.
 
+## Frontier A: the frozen caller's same-native member recovery (2026-10-02)
+
+TPM's frontier A dispatch builds on `75f253cb74fabf7d8c383ced850ae9d49fb59e11` (tree
+`d9e728c7e193561b73004fca80ab49af671f4f35`), after its bounded verify and audit passed. That
+candidate did not meet the full goal: it returned the operation's authority to the LSA.
+
+The LSA decided under domain D-1 to D-3 / ADR-0008. This is a domain decision, not a platform,
+identity-owner or native-authority acceptance. This checkout owns the operation, a forward
+migration, the pair's known-native claim, its gates, tests and docs. Every native effect is
+source and fixture only: no native probe, resume or create; no provider, credential, network,
+daemon start, home, deploy, policy, pin, or new seat or workspace.
+
+### The LSA decision, as implemented
+
+- **Operation.** `kontor_planning_pair_seat_recover` is
+  `POST /v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover`.
+  It is an `OpKind::Write` on the Operator floor.
+- **Caller.** Only the exact frozen caller, authenticated first:
+  - at its current hosted generation;
+  - under the pinned document's allowed roles and scopes;
+  - through its scoped seat identity.
+
+  Ambient Admin and Operator, either member, another seat (including one the document admits by
+  role), another pair's member and a retired caller are refused before any replay or runtime call.
+- **Served by no profile.** Neither the caller's exact four, the member's three, leadership,
+  worker nor consultation serves it. It appears only in the unprofiled whole-tier listing, like
+  every tool. A future selection is separate.
+- **Committee unchanged.** The existing Committee Admin replacing recovery keeps its hashes,
+  endpoint and behaviour.
+- **Closed body.** It holds `expected_run_revision`, `expected_member_occupancy_generation`, the
+  full `expected_native_identity` (runtime kind, host, runtime generation, native id) and
+  `expected_provider_session_id`, the last exactly when one is recorded. These are
+  compare-and-swap assertions only. The path names the run and member, the credential names the
+  caller, and the session is the bound seat's or its immutable claim's, never the body's. A member
+  with no known session is refused, with no discovery, create or fallback. There is no route,
+  provider, profile, generation, credential, replacement, archive or new-session field.
+- **Receipt.** The kind is `CommandKind::RecoverPlanningPairSeat` (`recover_planning_pair_seat`),
+  added in the forward migration 0123. The fingerprint covers:
+  - the operation;
+  - the run, the member seat and its slot;
+  - the frozen caller binding and its current generation;
+  - the expected revision and member generation;
+  - the full native and session references;
+  - the hash of the exact frozen member context;
+  - the placement hash.
+
+  It holds no secret.
+- **Replay.** Authentication first. An exact key and intent replays the original durable receipt
+  with no runtime call, even after the run moved or was disposed. A different intent conflicts.
+- **New key.** The run revision, member generation, native identity and provider session are each
+  compared, and the pair must not be terminal. Then the real-route check refuses before any effect,
+  and the opt-in seam reads the same session back. That readback carries no credential and makes no
+  generation bump, launch, replacement, archive, reallocation, or pin, model or vendor change.
+- **Qualifying readback.** Every mandatory correlation, route and closed-restriction field must be
+  `Matched`, and the current fleet provenance observed must equal the requested one, not a cached
+  value. One store transaction then does all of this: the run CAS, the bind (if unbound) to the
+  same session, the claim (written only if none is kept), the state, and the receipt. The
+  receipt's `applied` is `created` or `unchanged`. A concurrent request for the key answers the
+  winner's receipt.
+- **Run state.** A materializing pair stays materializing; its invocation replay then runs it. A
+  `needs_human` pair whose two members are both qualified again returns to `running`. A disposed
+  pair is immutable to any new key.
+- **Adverse readback.** This covers a stopped session the runtime cannot resume in place, a lost
+  session, a drifted label, a misreported create, another provider conversation, or an unobserved
+  field. It is refused as typed `unavailable`, with no receipt. One CAS withdraws only this
+  member's current qualification. A running pair goes to `needs_human`, and a materializing one
+  stays. The claim, the peer, every finding and the dissent are kept. No contract unbinds both
+  members.
+- **Second decision.** A qualified seat A records its own first finding while seat B is
+  unqualified and the pair materializing. This rests on the full qualification binding, exact
+  generation authentication before replay, the run CAS, the frozen profile, placement and slot, and
+  the domain's one-finding rule on a non-disposed pair.
+  - The finding is sealed from the caller, the peer and an observer; only seat A reads it back.
+  - Seat B is denied. Seat A cannot rewrite, ask or decide.
+  - There is no seat B qualification, running state, invocation receipt or recovery receipt. Seat A
+    has its own contribution receipt.
+  - Once seat B is requalified, both findings release through the original domain, with one
+    clarification, hashes and dissent, and no gate.
+  - A later lost qualification erases no finding. A new write needs a renewed qualification, and no
+    second round or generation is synthesized.
+
+### The durable known-native claim (schema 123)
+
+`planning_pair_member_natives` is a pair-only, run-keyed sidecar (FK to the run and its frozen
+placement), keyed by run, SeatBinding and occupancy generation. It is not a registry, a semantic
+identity or `StoredConsultationSeat.native_identity`. It keeps:
+- the runtime, native and provider session references;
+- the launch's frozen-context hash and the placement hash;
+- the observed-at time;
+- the typed readback-refusal evidence (`PlanningPairReadbackRefusal`, a closed vocabulary).
+
+Its triggers admit a claim only for a current member seat, at its current generation, of an open
+planning pair, on its own placement. A claim is then immutable and permanent.
+
+- **Writers.** Only a trusted runtime outcome writes it: a member launch's readback, or a verified
+  exact-session recovery readback when none is kept. A caller body, label or alias never does.
+- **Conflicts.** A claim already kept is never replaced. The same session is a replay; any other
+  observation is a conflict.
+- **Types.** The known claim (`StoredPlanningPairKnownNative`, projected as
+  `members[].known_native`) is distinct from the qualifying bind (`observed_binding`). No secret is
+  in the row, the DTO or a debug form.
+- **Launch.** A member launch keeps its claim first: in one transaction with the bind when it
+  qualified, and before the typed `unavailable` when it did not.
+- **Replay and restart.** These meet the same claim: the same rule and native, no runtime call, no
+  second create.
+- **Lost acknowledgement.** With no supported observed id, nothing is claimed or guessed.
+- **Unsupported routes.** They refuse before any claim, configuration or native effect.
+
+### What is implemented
+
+| Element | Source |
+| --- | --- |
+| Command kind, claim, refusal vocabulary, readback request | `kontor-core` `receipt.rs`, `repository.rs` (`StoredPlanningPairKnownNative`, `PlanningPairMemberReadback`), `planning_pair.rs` (`PlanningPairReadbackRefusal`) |
+| Forward migration | `kontor-store/migrations/0123_planning_pair_member_natives.sql`: the claim table and triggers, and `command_receipts` rebuilt exactly as v122 with the one kind; `SCHEMA_VERSION` 123 |
+| Store | `planning_pair_known_native`, `record_planning_pair_member_launch` (claim plus optional bind), `requalify_planning_pair_member` (receipt, member check, claim, bind, state and run CAS in one transaction), `disqualify_planning_pair_member` (member check, claim, unbind of this member only, state and run CAS) |
+| API | `RecoverPlanningPairSeatRequest`, `PlanningPairNativeIdentityDto`, `PlanningPairSeatRecoveryDto`, `PlanningPairKnownNativeDto`, `members[].known_native`; the route, its port method, the router and OpenAPI; `contract/openapi.json` (+253) and `apps/console/src/api/schema.d.ts` (+179) regenerated, additions only |
+| Daemon | `applications/planning_pair.rs` `recover_planning_pair_seat`; claim-aware member materialization; a typed `PlanningPairReadbackRefusal` qualification rule; `#[doc(hidden)]` `hold_planning_pair_recovery_writes` (no composed daemon installs one) |
+| MCP | `kontor_planning_pair_seat_recover` with a closed object for the native identity; no profile change |
+| Fake runtime (hypothetical) | `clearing_planning_pair_member_observation_faults`, `stopping_consultation_native` and `running_consultation_native_again` (a stopped exact session), `misreporting_planning_pair_reconcile_as_created`; a stopped session is reconciled as typed `StaleBinding` |
+
+Paseo, AO and Codex keep the seam's typed unsupported default, so every real route is still
+refused before freeze and before any recovery effect.
+
+### Decisions taken inside the contract, for review
+
+1. **Adverse versus no-observation.**
+   - Readback adverse, which withdraws a current qualification: a runtime `StaleBinding` (absent or
+     stopped), `CorrelationFailed`, `created: true`, another session, another provider
+     conversation, an unobserved field or unconfirmed provenance.
+   - No observation, which changes no state: an unsupported capability, a withheld route, or a
+     transport error.
+2. **Revision on invalidation.** Invalidation moves the run revision under compare-and-swap and
+   writes no receipt, as for any refusal. A retry of that key therefore meets a revision conflict.
+3. **Replay after a member fence.** The frozen member context in the fingerprint carries the
+   member's current generation. After a member generation fence, an old key is an
+   `idempotency_conflict`, not the old receipt.
+4. **Claim guards.** A launch claim is guarded by the current generation, an open pair and its
+   placement, not by the run revision: by the second decision, seat A's own finding may move the
+   run while seat B launches. The recovery's own writes compare-and-swap on the revision.
+5. **Who sees `known_native`.** Every viewer that sees `observed_binding` also sees `known_native`.
+   It holds no secret.
+6. **Error codes.** A member with no known session answers `unavailable`. A disposed pair answers
+   the domain's terminal refusal (`revision_conflict`, "the aggregate is terminal and immutable").
+7. **Changed existing behaviour.**
+   - An invocation replay of an unqualified member no longer calls the runtime: it consumes the
+     claim.
+   - The first-launch refusal now advises `kontor_planning_pair_seat_recover`. Its `rule`, `at` and
+     "confirmation unknown" are unchanged.
+   - Frontier A's second-seat fixture now pins zero launches on replay, not one.
+   - The canary counts moved deliberately: 211 mapped, 210 advertised, 212 documented.
+
+### Tests
+
+New daemon loopback tests (35 in the module):
+
+| Test | Proves |
+| --- | --- |
+| `the_caller_requalifies_a_second_seat_on_its_same_native_and_the_replay_runs_the_pair` | Seat B's refusal-evidenced claim; the caller reads `known_native`; recovery `created`; the same native and generation; materializing stays; exactly one in-place readback, with no launch, retirement or archive; the claim unchanged; the exact replay `unchanged` with no runtime call; a different intent conflicts; one receipt; the invocation replay then runs with no launch |
+| `only_the_frozen_caller_recovers_and_a_retired_caller_never_replays` | Ambient Admin and Operator, seat A, seat B, the TPM, the TPM admitted by role under a document that allows it, and another pair's member are each refused. The retired caller's replay of its own key is `stale_binding`; the successor generation's is `idempotency_conflict`. No refused request reaches the runtime, and there is one receipt |
+| `a_recovery_asserts_the_exact_known_session_under_compare_and_swap` | Another native id, runtime kind, host, runtime generation, provider session or none, member generation, and a stale revision are each refused before the runtime, and a route field is refused by the closed body. A member with no known native (a launch refused with no session) is `unavailable` with nothing discovered or created |
+| `a_durable_unqualified_member_survives_a_restart_without_a_second_create` | A restarted realm's invocation replay answers the same rule and native with no launch; the claim survives; the recovery then runs and the invocation runs |
+| `an_adverse_readback_withdraws_only_that_members_qualification_and_never_replaces` | A stopped session and a lost one are refused; only that member is unbound; the claim, the peer and the finding are kept; running goes to `needs_human`; no receipt. The unqualified member cannot write. The same session running again requalifies, but one member alone stays `needs_human`. A lost session is never requalified or relaunched. No generation moves |
+| `a_qualified_member_contributes_alone_sealed_and_the_pair_survives_requalification` | The second decision end to end, including sealing against caller, observer and peer reads; requalification; release; one clarification; loss, then `needs_human`, then requalification back to `running`; the answer; the disposition with dissent; the disposed pair immutable to a new key, while the exact old-key replay is `unchanged`; findings and dissent intact; exactly findings ×2 and one answer, all at generation 1 |
+| `a_withheld_route_or_a_misreported_create_never_requalifies` | A misreported create is refused and binds nothing. A withheld route is `unsupported_capability` before any readback |
+| `recoveries_invocations_and_contributions_classify_atomically_at_their_barriers` | Barriers placed after the readback and before the write. A recovery raced by a finding is a `revision_conflict` with no bind and no receipt. Two same-key recoveries give one `created`, one `unchanged`, one receipt and one revision. An invocation held after its CAS and before its receipt, with recoveries in between: the stale one conflicts, the current one is created, and both receipts are written once |
+
+Other new or updated tests:
+- **Store:**
+  - `v123_keeps_every_receipt_and_admits_only_a_current_members_immutable_claim` covers the receipts copied unchanged, the new kind only, retired-generation, wrong-placement and disposed refusals, one claim per generation, and immutability and permanence.
+  - The schema version and table list now include v123.
+  - The v115 repair fixture now drops the new table, as 0122's tables are dropped.
+- **MCP:** `the_member_recovery_is_an_operator_write_no_profile_serves` checks the tier, kind, route and closed argument list; that no profile serves it; and that the caller's and member's lists are exact.
+- **Real adapters:** `ao_reconciles_no_planning_pair_member_and_makes_no_call` (every lane) and `codex_reconciles_no_planning_pair_member_and_makes_no_call` join the existing Paseo frontier A test.
+- **Contract:** `mcp_parity` maps the tool's tier and its deliberate counts.
+
+### Frontier A operation gates
+
+- `cargo fmt -p` on the ten affected crates: only this slice's files changed.
+- `cargo clippy --all-targets -D warnings` on those ten crates: clean.
+- Test counts:
+  - `kontor-core` 355;
+  - `kontor-store` 612;
+  - `kontor-runtime` 84;
+  - `kontor-api` 35 (OpenAPI contract included);
+  - `kontor-mcp` 90;
+  - contract `mcp_parity`, `mcp_cardinality`, `mcp_mutants` and `runtime_adapter`: 88;
+  - Paseo contract 292;
+  - AO contract 62;
+  - Codex contract 24;
+  - daemon loopback `planning_pair::` 35;
+  - daemon loopback consultation, committee, advisor, recover, reroute and release filters: 63;
+  - `mcp_journey` 2.
+- Not one failure. Old goldens, guard profiles, the caller's 4, the member's 3, the catalog migration, authorization and sealing, and the atomic receipts are covered by those suites. The broad 1764-test run was not repeated.
+
+### Frontier A operation mutation checks (seeded and run by this seat)
+
+Pre-mutation SHA-256 values, each confirmed equal after restore:
+- `kontor-daemon/src/applications/planning_pair.rs` `1e74b50a673d21b29dadb5e0922237ad588902c2591a4bf31d4f78ca99f00abf`
+- `kontor-store/src/repository.rs` `806de05b2c9625dceffb052844dca2e2a1defc951da229c1ada1c20c30df6d40`
+- `kontor-store/migrations/0123_planning_pair_member_natives.sql` `588df92f0db4078d4a714ccf284b0ecf3b1b4df32a6f36e790e5cf008fe3f0cc`
+- `kontor-mcp/src/registry.rs` `2aab2094359fa66abdbb5296c317d5b8371ddd2e3af9321753faa2971cded1b0`
+
+Each mutant was reseeded on its own from clean source. Every one is a producer (production)
+site; the earlier FA-MUT-08 to -11 fake-fidelity rows above stay as history.
+
+**Where a result says "answered 200",** a request the test expects to be refused succeeded instead.
+
+One store guard was removed before this batch so that the mutant could be meaningful. That
+guard was the store's second check, under the same transaction, of the run revision and disposal
+already enforced by the compare-and-swap `UPDATE`. Without that removal, FR-MUT-12 would have
+survived as a redundant guard.
+
+| Id | Label | Mutant | Listed | Red (passed of listed), then green |
+| --- | --- | --- | --- | --- |
+| FR-MUT-01 | production, exact caller | The frozen-caller identity is not compared | 1 | 0/1. It failed first at seat A, which then reached the hosted-generation check (`stale_binding`) instead of the exact-caller refusal. 1/1 |
+| FR-MUT-02 | production, authentication before replay | The caller is authenticated after the replay lookup | 1 | 0/1: the retired caller's replay of its own key answered 200. 1/1 |
+| FR-MUT-03 | production, member generation CAS | The member generation is not compared | 1 | 0/1: the other-member-generation case answered 200. 1/1 |
+| FR-MUT-04 | production, full native identity | The session is compared by native id only | 1 | 0/1: another runtime kind answered 200. 1/1 |
+| FR-MUT-05 | production, provider conversation | The provider conversation is not compared | 1 | 0/1: another provider conversation answered 200. 1/1 |
+| FR-MUT-06 | production, claim consumed on replay | A replay ignores the kept claim and launches again | 5 | 3/5. **Only** the second-seat and restart fixtures failed ("no launch"). The three unqualified-member tests stayed green: they compare the rule and native, which a cached relaunch repeats. 5/5 |
+| FR-MUT-07 | production, claim before refusal | Only a qualifying readback is kept as a claim | 2 | 0/2: no claim for seat B. 2/2 |
+| FR-MUT-08 | production, current readback | A recovery binds without qualifying its readback | 2 | 1/2. **Only** the decision test failed: seat A's unobserved-correlation recovery answered 200. The adverse test's stopped and lost sessions are runtime refusals, not readbacks. 2/2 |
+| FR-MUT-09 | production, same native, never a create | The daemon does not hold the readback to the same native | 1 | 0/1: a misreported create answered 200. 1/1 |
+| FR-MUT-10 | production, adverse invalidation | An adverse readback keeps the member qualified | 2 | 0/2: "seat A lost its qualification". 2/2 |
+| FR-MUT-11 | production, disposed immutable | A new recovery on a disposed pair is not refused as terminal | 1 | 0/1. Storage still refused, but not with the domain's terminal rule. 1/1 |
+| FR-MUT-12 | production store, run CAS | The recovery write does not hold the run revision | 1 | 0/1: the recovery raced by a finding answered 200. 1/1 |
+| FR-MUT-13 | production store, receipt classification | An exact replay is classified `created` | 2 | 1/2. **Only** the barrier test failed: `["created","created"]`. 2/2 |
+| FR-MUT-14 | production store, no both-unbind | An adverse readback unbinds every member | 1 | 0/1: "seat B kept its own". 1/1 |
+| FR-MUT-15 | production store, `needs_human` | A running pair keeps running when a member loses qualification | 2 | 0/2: `Running` where `NeedsHuman` was expected. 2/2 |
+| FR-MUT-16 | production store, running needs both | A `needs_human` pair runs with one member qualified | 1 | 0/1: "one qualified member does not run the pair". 1/1 |
+| FR-MUT-17 | production store, materializing stays | A recovery advances a materializing pair to running | 1 | 0/1: "materializing stays". 1/1 |
+| FR-MUT-18 | production migration, current generation | A claim is admitted for a retired member generation | 1 | 0/1: "a retired generation: the claim was admitted". 1/1 |
+| FR-MUT-19 | production migration, immutable claim | A kept claim can be rewritten | 1 | 0/1: "a kept claim never moves". 1/1 |
+| FR-MUT-20 | production registry, profile widening | The leadership profile serves the member recovery | 1 | 0/1: "`leadership` must not serve the member recovery". 1/1 |
+
+**Not seeded, because they are redundant guards and a kill would come from schedule or ordering:**
+- The daemon's frozen-context-hash refusal, which the store's immutable claim comparison also enforces.
+- The claim keeper's other-identity conflict: the member readback check and the replay's claim consumption already prevent a second session from reaching it.
+
+### Limits kept accurate
+
+- **Not live.** Every positive path runs on the hypothetical fake. Every real route keeps the typed unsupported seam and the pre-freeze route refusal. In-place resume of a stopped session is unsupported in this source: the fake reports it as `unavailable`, and nothing resumes. Recovery's native effects need separate authorization.
+- **Two runtime readbacks under concurrency.** Two concurrent same-key recoveries both read the session back before one write wins, so the runtime sees two readbacks. Exactly one bind, one revision and one receipt result.
+- **No receipt for an adverse recovery.** A refused recovery that withdrew a qualification records no receipt; the run revision and the seat show the change.
+- **Per-member qualification is not atomic.** This is unchanged and tested. No contract unbinds both members. The first-blocker route diagnostic is unchanged.
+- **Ancestors.** The Committee replacing recovery and every Advisor and Committee route, golden, receipt, authentication and generation rule are unchanged.
+
 ## Remaining capability gaps after slice four (current)
 
 - **ASMA-8113 fence.** The reviewer is unassigned, so the widened identity vocabulary's acceptance, integration and deployment wait on an explicit assignment and an exact verdict.
@@ -1100,7 +1352,12 @@ not production evidence.
   - no live policy deploy, pin migration or native qualification;
   - no release.
   The bundled pack declares no planning pair container, so a governed pair needs an explicitly published topology kind, Team Definition container and document. TPM owns that placement, and the owning release workflow owns deployment.
-- **Member seat recovery.** The replacing recovery (provider loss, credential propagation) is not implemented for a planning pair, and the Committee recover route cannot reach a member, which is now tested. A same-native reconcile seam exists on the runtime port, typed unsupported on every real runtime and implemented only by the fake. No daemon operation uses it: its authority is returned to the LSA (see "Frontier A"). A lost or unqualified member fails closed.
+- **Member seat recovery.**
+  - **Same-native recovery is implemented at source:** `kontor_planning_pair_seat_recover`, as the exact frozen caller, on the member's immutable known-native claim (schema 123). See "Frontier A: the frozen caller's same-native member recovery".
+  - **Real routes:** every one keeps the seam's typed unsupported default and the pre-freeze refusal, so nothing is qualified live.
+  - **Not implemented:** the replacing recovery (provider loss, credential propagation), and in-place resume of a stopped session.
+  - **Unchanged:** the Committee recover route, which still cannot reach a member.
+  - **Failure mode:** a lost or unqualified member fails closed.
 - **Caller serve profile.** An opt-in `planning_pair_caller` source profile now serves exactly the four caller tools when it is selected by name. No hosted seat is composed with it: no explicit optional selection seam exists, and none is inferred. The `leadership` profile is unchanged, so a hosted LSA still has no caller tools unless a client holding its scoped credential serves this profile.
 - **Direct-mode consumer.** The asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
 - **TPM-owned placement.** No TPM operation, receipt or procedure wraps placement.

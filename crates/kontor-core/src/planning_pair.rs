@@ -556,6 +556,23 @@ pub struct PlanningPairDisposition {
 }
 
 crate::closed_enum! {
+    /// Why one member's native readback did not qualify it, as its
+    /// known-native claim keeps the evidence.
+    PlanningPairReadbackRefusal, "PlanningPairReadbackRefusal" {
+        /// The runtime reported no member-surface observation.
+        NoMemberSurface => "no_member_surface",
+        /// The native correlation labels were not observed as matched.
+        CorrelationUnobserved => "correlation_unobserved",
+        /// The route was not observed as matched.
+        RouteUnobserved => "route_unobserved",
+        /// The closed tool restriction was not observed as matched.
+        ToolRestrictionUnobserved => "tool_restriction_unobserved",
+        /// The readback did not observe exactly the requested provenance.
+        ProvenanceUnconfirmed => "provenance_unconfirmed",
+    }
+}
+
+crate::closed_enum! {
     /// Where one planning pair stands.
     ///
     /// There is no settled state: the pair ends when the caller records its

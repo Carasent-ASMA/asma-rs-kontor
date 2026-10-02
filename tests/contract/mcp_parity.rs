@@ -549,7 +549,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         http().count(),
-        210,
+        211,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // ASMA-8280 B-1: the registry's local operations — in-process handlers
@@ -565,7 +565,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         http().count() - CLI_ONLY.len(),
-        209,
+        210,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -577,7 +577,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // route serves the document itself and is not self-documented.
     assert_eq!(
         documented().len(),
-        211,
+        212,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -890,6 +890,10 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
             "kontor_planning_pair_disposition_record",
             CallerTier::Operator,
         ),
+        // ASMA-8282 frontier A: the frozen caller's same-native member
+        // recovery sits on the same Operator floor and is bound to the exact
+        // frozen caller at its current generation, never an ambient tier.
+        ("kontor_planning_pair_seat_recover", CallerTier::Operator),
         ("kontor_completion_profiles_list", CallerTier::Observer),
         ("kontor_completion_profile_preview", CallerTier::Admin),
         ("kontor_completion_profile_apply", CallerTier::Admin),

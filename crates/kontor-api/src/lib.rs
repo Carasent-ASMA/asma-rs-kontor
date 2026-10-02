@@ -801,6 +801,10 @@ pub fn router(state: ApiState) -> Router {
                 post(planning_pair::record_planning_pair_disposition),
             )
             .route(
+                "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover",
+                post(planning_pair::recover_planning_pair_seat),
+            )
+            .route(
                 "/v1/projects/{project_id}/completion-profiles",
                 get(applications::completion_profiles),
             )

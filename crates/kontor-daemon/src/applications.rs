@@ -897,6 +897,8 @@ pub struct Services {
     /// receipt is written. Absent in every composed daemon unless a test
     /// installs one, and then it changes only when, never what, is written.
     planning_pair_receipt_hold: std::sync::Mutex<Option<PlanningPairReceiptHold>>,
+    /// A black-box test's hold before a planning pair member recovery writes.
+    planning_pair_recovery_hold: std::sync::Mutex<Option<PlanningPairReceiptHold>>,
 }
 
 struct CompletionCommit<'a> {
@@ -962,6 +964,7 @@ impl Services {
             quota_signals,
             fleet,
             planning_pair_receipt_hold: std::sync::Mutex::new(None),
+            planning_pair_recovery_hold: std::sync::Mutex::new(None),
         }))
     }
 
@@ -27312,6 +27315,19 @@ impl ApplicationOperations for Services {
         request: &kontor_api::planning_pair::RecordPlanningPairDispositionRequest,
     ) -> Result<kontor_api::planning_pair::PlanningPairRunDto, ApiError> {
         self.record_planning_pair_decision(key, project_id, run_id, caller, request)
+    }
+
+    async fn recover_planning_pair_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        seat_binding_id: SeatBindingId,
+        caller: kontor_api::planning_pair::PlanningPairSeat,
+        request: &kontor_api::planning_pair::RecoverPlanningPairSeatRequest,
+    ) -> Result<kontor_api::planning_pair::PlanningPairSeatRecoveryDto, ApiError> {
+        self.recover_planning_pair_seat(key, project_id, run_id, seat_binding_id, caller, request)
+            .await
     }
 
     fn advisor_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {

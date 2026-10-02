@@ -7497,6 +7497,90 @@
         }
       }
     },
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Requalify one member on its exact known native session, as the pair's\nfrozen caller's own scoped seat. Never a replacement or a new session.",
+        "operationId": "recover_planning_pair_seat",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "planning_pair_run_id",
+            "in": "path",
+            "description": "The planning pair",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seat_binding_id",
+            "in": "path",
+            "description": "The member seat to requalify",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoverPlanningPairSeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairSeatRecoveryDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/provider-account-profiles": {
       "get": {
         "tags": [
@@ -21384,6 +21468,39 @@
           }
         }
       },
+      "PlanningPairKnownNativeDto": {
+        "type": "object",
+        "description": "One member's known native session: what a trusted runtime readback named,\nnever a qualification.",
+        "required": [
+          "native_identity",
+          "observed_at"
+        ],
+        "properties": {
+          "native_identity": {
+            "$ref": "#/components/schemas/PlanningPairNativeIdentityDto",
+            "description": "The exact session."
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was read back."
+          },
+          "provider_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its provider conversation, when one was reported."
+          },
+          "readback_refusal": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why its launch readback did not qualify the member, when it did not."
+          }
+        }
+      },
       "PlanningPairMemberDispositionDto": {
         "type": "object",
         "description": "What the caller decided about one member's advice.",
@@ -21431,6 +21548,17 @@
           "binding_key": {
             "type": "string",
             "description": "The binding the TPM named."
+          },
+          "known_native": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlanningPairKnownNativeDto",
+                "description": "The exact native session the member is known by at its current\ngeneration, qualified or not. Only a bound `observed_binding` qualifies\nthe member; this is what its caller names to recover it."
+              }
+            ]
           },
           "label": {
             "type": "string",
@@ -21500,6 +21628,37 @@
               "type": "string"
             },
             "description": "Account aliases that cannot take this member now."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanningPairNativeIdentityDto": {
+        "type": "object",
+        "description": "One exact native session: its runtime family, host and runtime generation,\nand its native id.",
+        "required": [
+          "runtime_kind",
+          "host",
+          "generation",
+          "native_id"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The runtime generation.",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string",
+            "description": "The runtime host that owns the generation."
+          },
+          "native_id": {
+            "type": "string",
+            "description": "The native session id within it."
+          },
+          "runtime_kind": {
+            "type": "string",
+            "description": "The runtime family."
           }
         },
         "additionalProperties": false
@@ -21706,6 +21865,65 @@
           "viewer": {
             "$ref": "#/components/schemas/PlanningPairViewerDto",
             "description": "Who this projection was rendered for."
+          }
+        }
+      },
+      "PlanningPairSeatRecoveryDto": {
+        "type": "object",
+        "description": "One member requalified on its exact known native session.\n\nThe same SeatBinding, generation, session and frozen placement: nothing is\ncreated, replaced or rerouted, and nothing here is a verdict.",
+        "required": [
+          "planning_pair",
+          "seat_binding_id",
+          "slot",
+          "member_occupancy_generation",
+          "native_identity",
+          "placement_hash",
+          "recovered_revision",
+          "receipt"
+        ],
+        "properties": {
+          "member_occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The member's unchanged occupancy generation.",
+            "minimum": 0
+          },
+          "native_identity": {
+            "$ref": "#/components/schemas/PlanningPairNativeIdentityDto",
+            "description": "The same native session, read back again."
+          },
+          "placement_hash": {
+            "type": "string",
+            "description": "The frozen placement the member's provenance was read back against."
+          },
+          "planning_pair": {
+            "$ref": "#/components/schemas/PlanningPairRunDto",
+            "description": "The pair as its caller now sees it."
+          },
+          "provider_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The same provider conversation, when one is recorded."
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MutationReceiptDto",
+            "description": "The recovery's receipt."
+          },
+          "recovered_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision the requalification was recorded at.",
+            "minimum": 0
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The member's persistent SeatBinding."
+          },
+          "slot": {
+            "$ref": "#/components/schemas/PlanningPairSlotDto",
+            "description": "The member slot."
           }
         }
       },
@@ -24166,6 +24384,41 @@
             "minimum": 0
           }
         }
+      },
+      "RecoverPlanningPairSeatRequest": {
+        "type": "object",
+        "description": "Requalify one member on its exact known native session, as the pair's\nfrozen caller.\n\nEvery field is a compare-and-swap assertion. The member and the pair come\nfrom the path and the caller from its credential; the session is the one\nalready known for the member, never one named here. There is no route,\nprovider, profile, generation, credential or new-session field.",
+        "required": [
+          "expected_run_revision",
+          "expected_member_occupancy_generation",
+          "expected_native_identity"
+        ],
+        "properties": {
+          "expected_member_occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The member's occupancy generation the caller read.",
+            "minimum": 0
+          },
+          "expected_native_identity": {
+            "$ref": "#/components/schemas/PlanningPairNativeIdentityDto",
+            "description": "The member's known native session the caller read."
+          },
+          "expected_provider_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The member's provider conversation, required exactly when one is\nrecorded for the known session."
+          },
+          "expected_run_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision the caller read.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "RedactionDto": {
         "type": "object",

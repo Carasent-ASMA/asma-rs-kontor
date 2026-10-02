@@ -1930,3 +1930,21 @@ async fn a_drifted_thread_is_failed_and_never_adopted_as_a_successor() {
         "a failed attempt cites no confirmation evidence"
     );
 }
+
+/// ASMA-8282 frontier A: Codex composes no same-native planning pair member
+/// reconcile. It refuses it as an unsupported capability with no Codex call.
+#[tokio::test]
+async fn codex_reconciles_no_planning_pair_member_and_makes_no_call() {
+    let plane = plane_a(one_run_script());
+    let refused = plane
+        .adapter
+        .reconcile_planning_pair_member(&kontor_tests_contract::planning_pair_reconcile_request())
+        .await;
+    assert_eq!(
+        refused.expect_err("Codex never reconciles a planning pair member"),
+        RuntimeError::UnsupportedCapability {
+            capability: kontor_runtime::capability::RuntimeCapability::Resume,
+        }
+    );
+    assert!(plane.codex.calls().is_empty(), "no Codex call");
+}
