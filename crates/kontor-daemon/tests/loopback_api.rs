@@ -47,6 +47,9 @@ mod replacement_bridges;
 #[path = "loopback/legacy_consultation_reads.rs"]
 mod legacy_consultation_reads;
 
+#[path = "loopback/planning_pair.rs"]
+mod planning_pair;
+
 #[tokio::test]
 async fn open_question_commands_preserve_authority_history_and_completion_blockers() {
     use kontor_core::id::OpenQuestionId;

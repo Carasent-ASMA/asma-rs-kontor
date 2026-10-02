@@ -124,6 +124,15 @@ pub enum RuntimeError {
         /// The exact native caller Paseo refused.
         caller_agent_id: ExternalId,
     },
+    /// A planning pair member route whose closed member surface this runtime
+    /// cannot establish (ASMA-8282 D-3), named with its provider and gap.
+    #[error("runtime cannot establish the planning pair member surface for {provider}: {gap:?}")]
+    PlanningPairMemberSurfaceUnsupported {
+        /// The route's provider.
+        provider: String,
+        /// Why the surface cannot be established for it.
+        gap: crate::planning_pair::MemberSurfaceGap,
+    },
     /// The selected provider has no permission mode Kontor knows how to pin.
     #[error("provider {provider} has no pinned runtime permission mode")]
     PermissionModeUnsupported {
@@ -468,6 +477,10 @@ pub struct ConsultationLaunchRequest {
     pub context_policy: ContextPolicySnapshot,
     /// Invocation instant.
     pub requested_at: Timestamp,
+    /// The frozen member context a planning pair launch is held to, and
+    /// `None` for every Advisor and Committee launch (ASMA-8282 D-3). See
+    /// [`ConsultationLaunchRequest::planning_pair_context`].
+    pub planning_pair: Option<crate::planning_pair::PlanningPairLaunchContext>,
 }
 
 /// A persistent seat credential whose debug form never exposes its value.
@@ -512,6 +525,9 @@ pub struct ConsultationLaunchOutcome {
     /// The fleet provenance read back from the native surface, or why none
     /// could be (ASMA-8280 G-3). Never the request's own value.
     pub fleet_provenance: FleetProvenanceObservation,
+    /// What a planning pair member launch read back of its member surface,
+    /// and `None` for every Advisor and Committee launch.
+    pub planning_pair: Option<crate::planning_pair::PlanningPairMemberObservation>,
 }
 
 /// Retire the exact native filler of one consultation SeatBinding before a
@@ -989,6 +1005,28 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// Prove, without a native effect, that this runtime composes the closed
+    /// planning pair member surface (ASMA-8282 D-3) for each of the pair's two
+    /// actual frozen routes: the member serve profile, its guard and closed
+    /// tool restriction, the provider's contained permission mode, and the
+    /// observed provenance readback.
+    ///
+    /// Asked before the pair is frozen and again before its container is
+    /// prepared. The answer is per route: a route whose provider has no
+    /// supported closed surface is refused with that provider named, never
+    /// launched under another surface or substituted. The default refuses
+    /// every route, so a runtime that has not composed the surface never
+    /// launches a member under the Advisor and Committee surface.
+    fn validate_planning_pair_member_surface(
+        &self,
+        routes: &[crate::planning_pair::PlanningPairMemberRoute],
+    ) -> RuntimeResult<()> {
+        let _ = routes;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Launch,
+        })
+    }
+
     /// The posture seats on this runtime get when their role slot declares none.
     ///
     /// A plane-wide operator default, subordinate to the role slot: a template
@@ -1095,6 +1133,27 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Launch,
+        })
+    }
+
+    /// Reconcile one planning pair member's exact known native session in
+    /// place (ASMA-8282 frontier A), reading its member surface and
+    /// provenance back as a launch does.
+    ///
+    /// The answer is that same session with `created` false. A runtime never
+    /// creates, replaces, archives or reroutes a member here. An absent
+    /// session is [`RuntimeError::StaleBinding`]; another session, or one
+    /// whose correlation labels name anything but the request's frozen
+    /// context, is [`RuntimeError::CorrelationFailed`]; a field it cannot read
+    /// back is reported `Unsupported`, never matched. The default refuses as
+    /// an unsupported capability before any native effect, so a runtime that
+    /// has not composed this never answers it.
+    async fn reconcile_planning_pair_member(
+        &self,
+        _request: &crate::planning_pair::PlanningPairMemberReconcileRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Resume,
         })
     }
 

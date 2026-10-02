@@ -28,6 +28,9 @@
 mod artifact_submission;
 mod committee_evidence;
 mod open_questions;
+mod planning_pair;
+#[doc(hidden)]
+pub use planning_pair::PlanningPairReceiptHold;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -186,6 +189,7 @@ use kontor_core::id::{
 use kontor_core::naming::{
     NativeNameSegment, NativeNameTemplate, NativeNameToken, NativeNameValues,
 };
+use kontor_core::planning_pair::PlanningPairSpec;
 use kontor_core::publication::{
     CommitSha, PublicationBinding, PublicationDecision, PublicationIdentity, evaluate,
 };
@@ -889,6 +893,12 @@ pub struct Services {
     /// next placement with no restart or republish, and an invalid edit keeps
     /// the last valid snapshot inside the source.
     fleet: Arc<crate::fleet::FleetSource>,
+    /// A black-box test's hold immediately before a planning pair invocation
+    /// receipt is written. Absent in every composed daemon unless a test
+    /// installs one, and then it changes only when, never what, is written.
+    planning_pair_receipt_hold: std::sync::Mutex<Option<PlanningPairReceiptHold>>,
+    /// A black-box test's hold before a planning pair member recovery writes.
+    planning_pair_recovery_hold: std::sync::Mutex<Option<PlanningPairReceiptHold>>,
 }
 
 struct CompletionCommit<'a> {
@@ -953,6 +963,8 @@ impl Services {
             native_lifecycle_guard: tokio::sync::RwLock::new(()),
             quota_signals,
             fleet,
+            planning_pair_receipt_hold: std::sync::Mutex::new(None),
+            planning_pair_recovery_hold: std::sync::Mutex::new(None),
         }))
     }
 
@@ -6288,6 +6300,27 @@ impl Services {
         target_revision: AggregateRevision,
         document: &CanonicalDocument,
     ) -> Result<CommandReceiptId, ApiError> {
+        self.record_classified(key, project_id, kind, target, target_revision, document)
+            .map(|(receipt, _)| receipt)
+    }
+
+    /// As [`Self::record`], and whether this call is the one that wrote it.
+    ///
+    /// Decided where the receipt is written, inside the one store critical
+    /// section that reads the key and inserts it: an existing receipt for the
+    /// exact replay is `false`, and the stored receipt carrying the id this call
+    /// generated is `true`. A caller that answers `created` or `unchanged` from
+    /// this needs no check of its own beforehand, so two requests that both
+    /// found no receipt still classify exactly one write as theirs.
+    fn record_classified(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        kind: CommandKind,
+        target: AggregateRef,
+        target_revision: AggregateRevision,
+        document: &CanonicalDocument,
+    ) -> Result<(CommandReceiptId, bool), ApiError> {
         let state = self.state()?;
         let realm_id = state.realm_id();
         let document = document.clone();
@@ -6303,13 +6336,14 @@ impl Services {
                         "the idempotency key was already used for a different operation",
                     )
                 })?;
-                return Ok(existing.id);
+                return Ok((existing.id, false));
             }
+            let generated = CommandReceiptId::generate();
             let envelope = ReceiptEnvelope::new(
                 realm_id,
                 NewLocalCommand {
                     project_id,
-                    receipt_id: CommandReceiptId::generate(),
+                    receipt_id: generated,
                     idempotency_key: key.clone(),
                     kind,
                     target,
@@ -6320,7 +6354,7 @@ impl Services {
             );
             store
                 .record_local_command_in_realm(&envelope)
-                .map(|receipt| receipt.id)
+                .map(|receipt| (receipt.id, receipt.id == generated))
                 .map_err(|error| self.refuse(&error))
         })?;
         state.signals().appended();
@@ -9642,6 +9676,7 @@ impl Services {
             match family {
                 ConsultationFamily::Advisor => CommandKind::ApplyAdvisorProfile,
                 ConsultationFamily::Committee => CommandKind::ApplyCommitteeTemplate,
+                ConsultationFamily::PlanningPair => CommandKind::ApplyPlanningPairProfile,
             },
             AggregateRef::Project { project_id },
             project.revision,
@@ -12264,7 +12299,7 @@ impl Services {
         let (_, template) = self.committee_template(run)?;
         let committee_run_id = match run.id {
             ConsultationRunId::Committee(id) => id,
-            ConsultationRunId::Advisor(_) => {
+            ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => {
                 return Err(self.deny(
                     ApiErrorCode::InvalidRequest,
                     "this result reconstruction requires a Committee run",
@@ -12403,7 +12438,7 @@ impl Services {
     ) -> Result<ContentHash, ApiError> {
         let committee_run_id = match run.id {
             ConsultationRunId::Committee(id) => id,
-            ConsultationRunId::Advisor(_) => unreachable!(),
+            ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => unreachable!(),
         };
         let (remediation, remediation_hash) = self
             .state()?
@@ -13359,6 +13394,7 @@ impl Services {
                     fleet_provenance: fleet_provenance.clone(),
                     context_policy: context_policy.clone(),
                     requested_at: kontor_api::now(),
+                    planning_pair: None,
                 })
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -13437,7 +13473,7 @@ impl Services {
             .map_err(|error| self.refuse(&error))?;
         let advisor_run_id = match run.id {
             ConsultationRunId::Advisor(id) => id,
-            ConsultationRunId::Committee(_) => {
+            ConsultationRunId::Committee(_) | ConsultationRunId::PlanningPair(_) => {
                 return Err(self.deny(
                     ApiErrorCode::InvalidRequest,
                     "this projection requires an Advisor run",
@@ -13900,7 +13936,9 @@ impl Services {
                         run.project_id,
                         match run.id {
                             ConsultationRunId::Committee(id) => id,
-                            ConsultationRunId::Advisor(_) => unreachable!(),
+                            ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => {
+                                unreachable!()
+                            }
                         },
                         run.round,
                     )
@@ -14028,6 +14066,7 @@ impl Services {
                     fleet_provenance: fleet_provenance.clone(),
                     context_policy: context_policy.clone(),
                     requested_at: kontor_api::now(),
+                    planning_pair: None,
                 })
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -14128,7 +14167,9 @@ impl Services {
         let evidence = if slot.role == CommitteeRole::Judge {
             let committee_run_id = match run.id {
                 ConsultationRunId::Committee(id) => id,
-                ConsultationRunId::Advisor(_) => unreachable!(),
+                ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => {
+                    unreachable!()
+                }
             };
             let findings = state
                 .with_store(|store| {
@@ -14218,6 +14259,7 @@ impl Services {
                 fleet_provenance: fleet_provenance.clone(),
                 context_policy,
                 requested_at,
+                planning_pair: None,
             })
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -14286,7 +14328,7 @@ impl Services {
             .map_err(|error| self.refuse(&error))?;
         let committee_run_id = match run.id {
             ConsultationRunId::Committee(id) => id,
-            ConsultationRunId::Advisor(_) => {
+            ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => {
                 return Err(self.deny(
                     ApiErrorCode::InvalidRequest,
                     "this projection requires a Committee run",
@@ -16276,6 +16318,8 @@ enum ConsultationDefinition {
     Advisor(Box<AdvisorProfileSpec>),
     /// A Committee template.
     Committee(Box<CommitteeTemplateSpec>),
+    /// A `planning_pair@1` document.
+    PlanningPair(Box<PlanningPairSpec>),
 }
 
 impl ConsultationDefinition {
@@ -16284,6 +16328,7 @@ impl ConsultationDefinition {
         match self {
             Self::Advisor(spec) => spec.profile_id.to_string(),
             Self::Committee(spec) => spec.template_id.to_string(),
+            Self::PlanningPair(spec) => spec.profile_id.to_string(),
         }
     }
 
@@ -16291,6 +16336,7 @@ impl ConsultationDefinition {
         match self {
             Self::Advisor(spec) => spec.version,
             Self::Committee(spec) => spec.version,
+            Self::PlanningPair(spec) => spec.version,
         }
     }
 
@@ -16298,6 +16344,7 @@ impl ConsultationDefinition {
         match self {
             Self::Advisor(spec) => spec.name.clone(),
             Self::Committee(spec) => spec.name.clone(),
+            Self::PlanningPair(spec) => spec.name.clone(),
         }
     }
 
@@ -16306,6 +16353,7 @@ impl ConsultationDefinition {
         match self {
             Self::Advisor(spec) => spec.canonicalize(),
             Self::Committee(spec) => spec.canonicalize(),
+            Self::PlanningPair(spec) => spec.canonicalize(),
         }
     }
 }
@@ -16340,6 +16388,12 @@ fn consultation_definition(
                 .map_err(|error| format!("not a valid Committee template: {error}"))?;
             spec.validate().map_err(|error| error.to_string())?;
             Ok(ConsultationDefinition::Committee(Box::new(spec)))
+        }
+        ConsultationFamily::PlanningPair => {
+            let spec: PlanningPairSpec = serde_json::from_value(definition.clone())
+                .map_err(|error| format!("not a valid planning_pair@1 document: {error}"))?;
+            spec.validate().map_err(|error| error.to_string())?;
+            Ok(ConsultationDefinition::PlanningPair(Box::new(spec)))
         }
     }
 }
@@ -17776,7 +17830,11 @@ impl Services {
                     };
                     let committee_run_id = match run.id {
                         ConsultationRunId::Committee(id) => id,
-                        ConsultationRunId::Advisor(_) => continue,
+                        // Advice is never a verdict: neither an Advisor nor a
+                        // planning pair is a completion verdict candidate.
+                        ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => {
+                            continue;
+                        }
                     };
                     if selected_committee_run_id
                         .is_some_and(|selected| selected != committee_run_id)
@@ -17890,7 +17948,9 @@ impl Services {
                     .expect("the exact Committee candidate count was checked");
                 let committee_run_id = match settled.id {
                     ConsultationRunId::Committee(id) => id,
-                    ConsultationRunId::Advisor(_) => unreachable!(),
+                    ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => {
+                        unreachable!()
+                    }
                 };
                 let consultation = ExternalName::parse(&committee_run_id.to_string())
                     .map_err(|error| self.refuse_domain(&error))?;
@@ -27157,6 +27217,119 @@ impl ApplicationOperations for Services {
             },
         })
     }
+    fn planning_pair_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
+        self.planning_pair_catalog(project_id)
+    }
+
+    fn preview_planning_pair_profile(
+        &self,
+        project_id: ProjectId,
+        request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError> {
+        self.preview_planning_pair_document(project_id, request)
+    }
+
+    async fn apply_planning_pair_profile(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError> {
+        self.apply_planning_pair_document(key, project_id, request)
+    }
+
+    async fn invoke_planning_pair_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        caller: kontor_api::planning_pair::PlanningPairSeat,
+        request: &kontor_api::planning_pair::InvokePlanningPairRequest,
+    ) -> Result<kontor_api::planning_pair::PlanningPairRunDto, ApiError> {
+        self.invoke_planning_pair(key, project_id, epic_id, caller, request)
+            .await
+    }
+
+    fn planning_pair_run(
+        &self,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        reader: kontor_api::planning_pair::PlanningPairReader,
+    ) -> Result<kontor_api::planning_pair::PlanningPairRunDto, ApiError> {
+        self.read_planning_pair(project_id, run_id, reader)
+    }
+
+    async fn record_planning_pair_finding(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        member: kontor_api::planning_pair::PlanningPairSeat,
+        request: &kontor_api::planning_pair::RecordPlanningPairContributionRequest,
+    ) -> Result<kontor_api::planning_pair::PlanningPairRunDto, ApiError> {
+        self.record_planning_pair_contribution(
+            key,
+            project_id,
+            run_id,
+            member,
+            kontor_core::planning_pair::PlanningPairRound::Findings,
+            request,
+        )
+    }
+
+    async fn request_planning_pair_clarification(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        caller: kontor_api::planning_pair::PlanningPairSeat,
+        request: &kontor_api::planning_pair::RequestPlanningPairClarificationRequest,
+    ) -> Result<kontor_api::planning_pair::PlanningPairRunDto, ApiError> {
+        self.request_planning_pair_question(key, project_id, run_id, caller, request)
+    }
+
+    async fn record_planning_pair_answer(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        member: kontor_api::planning_pair::PlanningPairSeat,
+        request: &kontor_api::planning_pair::RecordPlanningPairContributionRequest,
+    ) -> Result<kontor_api::planning_pair::PlanningPairRunDto, ApiError> {
+        self.record_planning_pair_contribution(
+            key,
+            project_id,
+            run_id,
+            member,
+            kontor_core::planning_pair::PlanningPairRound::Clarification,
+            request,
+        )
+    }
+
+    async fn record_planning_pair_disposition(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        caller: kontor_api::planning_pair::PlanningPairSeat,
+        request: &kontor_api::planning_pair::RecordPlanningPairDispositionRequest,
+    ) -> Result<kontor_api::planning_pair::PlanningPairRunDto, ApiError> {
+        self.record_planning_pair_decision(key, project_id, run_id, caller, request)
+    }
+
+    async fn recover_planning_pair_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        seat_binding_id: SeatBindingId,
+        caller: kontor_api::planning_pair::PlanningPairSeat,
+        request: &kontor_api::planning_pair::RecoverPlanningPairSeatRequest,
+    ) -> Result<kontor_api::planning_pair::PlanningPairSeatRecoveryDto, ApiError> {
+        self.recover_planning_pair_seat(key, project_id, run_id, seat_binding_id, caller, request)
+            .await
+    }
+
     fn advisor_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
         self.consultation_catalog(project_id, ConsultationFamily::Advisor)
     }
@@ -42170,7 +42343,39 @@ impl Services {
         let kind = match family {
             ConsultationFamily::Advisor => &self.domain.delivery.advisor_kind,
             ConsultationFamily::Committee => &self.domain.delivery.committee_kind,
+            // A planning pair's container kind is never the domain's: its own
+            // published document names it explicitly, and only the planning
+            // pair invocation path passes it.
+            ConsultationFamily::PlanningPair => {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a planning pair names its container kind in its own document",
+                ));
+            }
         };
+        self.consultation_semantic_identity_of_kind(
+            project_id, epic_id, task_id, family, kind, revision, definition, topic, re_review,
+        )
+    }
+
+    /// [`Self::consultation_semantic_identity`] for one explicit container
+    /// kind: the same validation and the same shared identity function.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the identity hash must receive every authority field explicitly"
+    )]
+    fn consultation_semantic_identity_of_kind(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        task_id: Option<TaskId>,
+        family: ConsultationFamily,
+        kind: &TopologyKindKey,
+        revision: &StoredConsultationProfileRevision,
+        definition: &TeamDefinitionSpec,
+        topic: &ExternalName,
+        re_review: Option<&CommitteeReReviewProvenance>,
+    ) -> Result<ContentHash, ApiError> {
         let container = definition.container(kind).ok_or_else(|| {
             self.deny(
                 ApiErrorCode::PlacementBlocked,

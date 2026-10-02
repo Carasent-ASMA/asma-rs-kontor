@@ -969,4 +969,8 @@ fn every_rule_string_is_stable() {
         PP01,
         "a planning pair names exactly two members, seat-a then seat-b"
     );
+    assert_eq!(
+        PP03,
+        "name exactly one of binding_key, allocation and planning_pair"
+    );
 }

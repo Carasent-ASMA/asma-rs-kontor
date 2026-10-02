@@ -634,6 +634,24 @@ impl Daemon {
         self.applications.reconcile_jira_once().await
     }
 
+    /// Hold every planning pair invocation at its receipt write until the
+    /// returned hold is released. A black-box contract seam only: nothing this
+    /// daemon composes installs one.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn hold_planning_pair_invocation_receipts(&self) -> applications::PlanningPairReceiptHold {
+        self.applications.hold_planning_pair_invocation_receipts()
+    }
+
+    /// Hold every planning pair member recovery at its compare-and-swap, for a
+    /// black-box test that lines requests up after their readback. No
+    /// composed daemon installs one.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn hold_planning_pair_recovery_writes(&self) -> applications::PlanningPairReceiptHold {
+        self.applications.hold_planning_pair_recovery_writes()
+    }
+
     /// The concrete Jira reconciliation services owned by this daemon.
     #[must_use]
     pub fn jira_reconciler(&self) -> Arc<applications::Services> {

@@ -1751,6 +1751,40 @@ const LEGAL_COMMAND_TARGETS: &[(&str, &str, &str, Option<&str>)] = &[
     ),
     ("record_committee_findings", "mini_project", "witness", None),
     ("settle_committee_run", "mini_project", "witness", None),
+    // A planning pair (ASMA-8282) follows the same rule: publishing its
+    // document is project configuration; every run write is about one epic.
+    ("apply_planning_pair_profile", "project", "witness", None),
+    ("invoke_planning_pair_run", "mini_project", "witness", None),
+    (
+        "record_planning_pair_finding",
+        "mini_project",
+        "witness",
+        None,
+    ),
+    (
+        "request_planning_pair_clarification",
+        "mini_project",
+        "witness",
+        None,
+    ),
+    (
+        "record_planning_pair_answer",
+        "mini_project",
+        "witness",
+        None,
+    ),
+    (
+        "record_planning_pair_disposition",
+        "mini_project",
+        "witness",
+        None,
+    ),
+    (
+        "recover_planning_pair_seat",
+        "mini_project",
+        "witness",
+        None,
+    ),
     // The two completion writes are about one epic's own frozen run.
     ("advance_completion", "mini_project", "witness", None),
     ("remediate_completion", "mini_project", "witness", None),

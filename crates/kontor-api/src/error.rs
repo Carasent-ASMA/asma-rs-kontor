@@ -863,6 +863,11 @@ impl ApiError {
             // A launch the runtime will not admit because it cannot prove a
             // required capability is not unavailability either: retrying will
             // not help until the capability is provable.
+            RuntimeError::PlanningPairMemberSurfaceUnsupported { .. } => Self::new(
+                realm_id,
+                ApiErrorCode::UnsupportedCapability,
+                "this runtime cannot establish the closed planning pair member surface for that route",
+            ),
             RuntimeError::LaunchNotAdmitted { rule } => Self::new(
                 realm_id,
                 ApiErrorCode::UnsupportedCapability,

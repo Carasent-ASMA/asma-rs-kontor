@@ -5378,6 +5378,39 @@ impl PaseoAdapter {
         Ok(labels)
     }
 
+    /// Why this adapter cannot establish a planning pair member's closed
+    /// surface for one route (ASMA-8282 D-3), decided with no plane call, no
+    /// file, no process and no session.
+    ///
+    /// Every real route is refused today, each for its own reason:
+    ///
+    /// * **Claude.** The member guard, serve profile and creation restriction
+    ///   are composable, and their construction is proved on source fixtures.
+    ///   But this Paseo acknowledges no applied closed tool restriction for a
+    ///   created session: `providerOptionsApplied` is an optional per-agent
+    ///   flag about OpenCode provider options, not the session's exact tools,
+    ///   guard or ambient MCP exclusion. So the restriction could never be
+    ///   observed, and a member could never qualify.
+    /// * **Codex.** A read-only sandbox and `never` approval are not a closed
+    ///   tool restriction: `toolPolicy` only preapproves, and the provider
+    ///   home's own MCP servers are not excluded.
+    /// * **Cursor and OpenCode.** `plan` and every historical fallback are
+    ///   behavioral, not an enforced read-only boundary.
+    /// * **Anything else.** No member surface is composed.
+    fn planning_pair_member_route_gap(rung: &ModelRung) -> RuntimeError {
+        use kontor_runtime::planning_pair::MemberSurfaceGap;
+        let gap = match crate::client::built_in_provider(&rung.provider.0) {
+            "claude" => MemberSurfaceGap::RestrictionUnacknowledged,
+            "codex" => MemberSurfaceGap::ClosedToolsUnavailable,
+            "cursor" | "opencode" => MemberSurfaceGap::ReadOnlyUnenforced,
+            _ => MemberSurfaceGap::NotComposed,
+        };
+        RuntimeError::PlanningPairMemberSurfaceUnsupported {
+            provider: rung.provider.0.clone(),
+            gap,
+        }
+    }
+
     /// What this launch observed of its fleet provenance: read back from the
     /// agent's native labels, which the placement readback has already held
     /// to the exact requested set. Nothing requested is nothing to observe.
@@ -5561,6 +5594,7 @@ impl PaseoAdapter {
                 request.fleet_provenance.as_ref(),
                 &agent,
             )?,
+            planning_pair: None,
         })
     }
 
@@ -6102,6 +6136,7 @@ impl PaseoAdapter {
                 request.fleet_provenance.as_ref(),
                 &agent,
             )?,
+            planning_pair: None,
         })
     }
 }
@@ -6114,6 +6149,14 @@ impl RuntimeAdapter for PaseoAdapter {
         provenance: &ConsultationRouteProvenance,
     ) -> RuntimeResult<()> {
         super::client::consultation_route_permission_mode(rung, provenance).map(|_| ())
+    }
+
+    fn validate_planning_pair_member_surface(
+        &self,
+        routes: &[kontor_runtime::planning_pair::PlanningPairMemberRoute],
+    ) -> RuntimeResult<()> {
+        kontor_runtime::planning_pair::PlanningPairMemberRoute::require_pair(routes)?;
+        Err(Self::planning_pair_member_route_gap(&routes[0].model_rung))
     }
 
     fn declared_autonomy(&self) -> Option<SeatAutonomy> {
@@ -6599,6 +6642,13 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &ConsultationLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        // ASMA-8282 D-3: the family and its frozen member context agree, and
+        // then the member is refused for its route's own gap, before the launch
+        // claim, any plane call, any composed file or any session. A planning
+        // pair is never launched under the Advisor and Committee surface.
+        if request.planning_pair_context()?.is_some() {
+            return Err(Self::planning_pair_member_route_gap(&request.model_rung));
+        }
         {
             let state = &mut *self.lock();
             if !state.consultation_claims.insert(request.seat_binding_id) {

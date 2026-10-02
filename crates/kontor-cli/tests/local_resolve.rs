@@ -1,8 +1,11 @@
 //! ASMA-8280 B-1: `kontor fleet-policy-resolve` is the registry's local
 //! operation. It runs against `--state-root` alone — no daemon, credential
 //! file or base URL — through the shared verified reader, and prints the
-//! `FleetSelection` the one resolver chose, or fails closed.
+//! `FleetSelection` the one resolver chose, or fails closed. ASMA-8282 adds
+//! its `planning_pair@1` mode: the shared reader's `PlanningPairPlacement`,
+//! printed verbatim.
 
+use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -523,4 +526,358 @@ fn a_joint_request_names_one_mode_and_the_declared_shape() {
     );
     assert_eq!(exit, 3, "{document}");
     assert_eq!(document["code"], "forbidden");
+}
+
+/// Planning pair mode at the operator tier.
+fn place(root: &Path, pair: &serde_json::Value, extra: &[&str]) -> (i32, serde_json::Value) {
+    let pair = pair.to_string();
+    let mut arguments = vec![
+        "--tier",
+        "operator",
+        "fleet-policy-resolve",
+        "--planning-pair",
+        pair.as_str(),
+    ];
+    arguments.extend_from_slice(extra);
+    kontor(root, &arguments)
+}
+
+fn member(slot: &str, binding_key: &str) -> serde_json::Value {
+    serde_json::json!({"slot": slot, "binding_key": binding_key})
+}
+
+#[test]
+fn a_planning_pair_is_one_placement_through_the_shared_reader() {
+    let realm = Realm::aligned();
+    let lsa = realm.leadership("lsa");
+    let request = serde_json::json!({"members": [member("seat-a", TEAM), member("seat-b", &lsa)]});
+    let (exit, envelope) = place(realm.path(), &request, &[]);
+    assert_eq!(exit, 0, "{envelope}");
+    assert_eq!(envelope["tool"], "kontor_fleet_policy_resolve");
+    assert_eq!(envelope["status"], 200);
+    let expected = kontor_fleet_activation::place_planning_pair(
+        realm.path(),
+        &serde_json::from_value(request.clone()).expect("a planning pair request"),
+    )
+    .expect("the shared reader places the pair");
+    assert_eq!(
+        envelope["body"],
+        serde_json::to_value(&expected).expect("JSON"),
+        "the CLI prints the shared reader's placement verbatim"
+    );
+    // The receipt is the one joint allocation the allocation mode answers for
+    // the same two slots: no second allocator stands behind this mode.
+    let (exit, joint) = allocate(
+        realm.path(),
+        &serde_json::json!({
+            "diversity": "distinct_vendor_per_reviewer",
+            "slots": [
+                {"slot_id": "seat-a", "role": "reviewer", "binding_key": TEAM},
+                {"slot_id": "seat-b", "role": "reviewer", "binding_key": lsa},
+            ],
+        }),
+        &[],
+    );
+    assert_eq!(exit, 0, "{joint}");
+    let body = &envelope["body"];
+    assert_eq!(body["selection"], joint["body"]);
+    assert_eq!(body["protocol"], "planning_pair@1");
+    assert_eq!(body["members"]["placement_hash"], body["placement_hash"]);
+    let picked: Vec<(String, String, String)> = body["members"]["members"]
+        .as_array()
+        .expect("two members")
+        .iter()
+        .map(|member| {
+            (
+                member["slot"].as_str().expect("slot").to_owned(),
+                member["route"]["provider"]
+                    .as_str()
+                    .expect("provider")
+                    .to_owned(),
+                member["vendor"].as_str().expect("vendor").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        picked,
+        [
+            ("seat-a".into(), "codex-work".into(), "openai".into()),
+            (
+                "seat-b".into(),
+                "claude-personal".into(),
+                "anthropic".into()
+            ),
+        ]
+    );
+    assert_eq!(
+        body["selection"]["slots"][1]["considered"][0]["excluded"],
+        "vendor_held"
+    );
+    assert_eq!(
+        body["selection"]["slots"][1]["considered"][0]["conflicts_with"],
+        "seat-a"
+    );
+    assert!(body["selection"]["provenance"]["source_bundle_hash"].is_string());
+    // Placement evidence only: exactly these four keys, and none a verdict.
+    let keys: BTreeSet<&str> = body
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        BTreeSet::from(["members", "placement_hash", "protocol", "selection"])
+    );
+
+    // Operator is the declared tier and admin inherits it; an observer is refused.
+    let pair = request.to_string();
+    let at = |tier: &str| {
+        kontor(
+            realm.path(),
+            &[
+                "--tier",
+                tier,
+                "fleet-policy-resolve",
+                "--planning-pair",
+                &pair,
+            ],
+        )
+    };
+    assert_eq!(at("admin"), (0, envelope.clone()));
+    let (exit, document) = at("observer");
+    assert_eq!(exit, 3, "{document}");
+    assert_eq!(document["code"], "forbidden");
+    assert_eq!(document["dispatched"], false);
+}
+
+#[test]
+fn a_planning_pair_on_one_actual_vendor_is_blocked_whole() {
+    let realm = Realm::aligned();
+    let lsa = realm.leadership("lsa");
+    for request in [
+        // Anthropic excluded: both members can reach only OpenAI.
+        serde_json::json!({"members": [
+            {"slot": "seat-a", "binding_key": TEAM, "excluded_vendors": ["anthropic"]},
+            {"slot": "seat-b", "binding_key": lsa, "excluded_vendors": ["anthropic"]},
+        ]}),
+        // The same, stated as the Claude account being unavailable now.
+        serde_json::json!({"members": [
+            {"slot": "seat-a", "binding_key": TEAM, "unavailable_accounts": ["claude-personal"]},
+            {"slot": "seat-b", "binding_key": TEAM, "unavailable_accounts": ["claude-personal"]},
+        ]}),
+    ] {
+        let (exit, envelope) = place(realm.path(), &request, &[]);
+        assert_eq!(exit, 1, "{envelope}");
+        assert_eq!(envelope["status"], 409);
+        assert_eq!(envelope["body"]["code"], "placement_blocked");
+        let placement = &envelope["body"]["placement"];
+        assert_eq!(
+            placement["selection"]["blocked"],
+            "no_distinct_reviewer_vendors"
+        );
+        assert!(
+            placement["members"].is_null(),
+            "nothing is frozen from a blocked placement: {placement}"
+        );
+        assert!(
+            placement["selection"]["slots"]
+                .as_array()
+                .expect("slots")
+                .iter()
+                .all(|slot| slot["selected"].is_null())
+        );
+        let expected = kontor_fleet_activation::place_planning_pair(
+            realm.path(),
+            &serde_json::from_value(request.clone()).expect("a planning pair request"),
+        )
+        .expect("the defined block result");
+        assert_eq!(*placement, serde_json::to_value(&expected).expect("JSON"));
+    }
+}
+
+#[test]
+fn a_planning_pair_names_seat_a_then_seat_b_and_resolvable_bindings() {
+    let realm = Realm::aligned();
+    let a = member("seat-a", TEAM);
+    let b = member("seat-b", TEAM);
+    for members in [
+        serde_json::json!([b, a]),
+        serde_json::json!([a]),
+        serde_json::json!([b]),
+        serde_json::json!([a, a]),
+        serde_json::json!([a, b, b]),
+        serde_json::json!([]),
+    ] {
+        assert_refused(
+            &place(realm.path(), &serde_json::json!({"members": members}), &[]),
+            2,
+            "invalid_request",
+            rule::PP01,
+        );
+    }
+    // A member whose binding the activation does not bind refuses the pair.
+    assert_refused(
+        &place(
+            realm.path(),
+            &serde_json::json!({"members": [
+                a,
+                member("seat-b", "team/01936f5a-0000-7000-8000-000000000999/implement"),
+            ]}),
+            &[],
+        ),
+        6,
+        "not_found",
+        rule::D03,
+    );
+}
+
+#[test]
+fn the_three_request_forms_are_mutually_exclusive() {
+    let realm = Realm::aligned();
+    let pair = serde_json::json!({"members": [member("seat-a", TEAM), member("seat-b", TEAM)]})
+        .to_string();
+    let allocation = serde_json::json!({"diversity": "distinct_vendor_per_reviewer", "slots": [
+        {"slot_id": "a", "role": "reviewer", "binding_key": TEAM},
+    ]})
+    .to_string();
+    let run = |extra: &[&str]| {
+        let mut arguments = vec!["--tier", "operator", "fleet-policy-resolve"];
+        arguments.extend_from_slice(extra);
+        kontor(realm.path(), &arguments)
+    };
+    for extra in [
+        vec!["--planning-pair", &pair, "--binding-key", TEAM],
+        vec!["--planning-pair", &pair, "--allocation", &allocation],
+        vec![
+            "--planning-pair",
+            &pair,
+            "--binding-key",
+            TEAM,
+            "--allocation",
+            &allocation,
+        ],
+    ] {
+        assert_refused(&run(&extra), 2, "invalid_request", rule::PP03);
+    }
+    // The two earlier forms keep their own refusal, unchanged.
+    assert_refused(
+        &run(&["--binding-key", TEAM, "--allocation", &allocation]),
+        2,
+        "invalid_request",
+        rule::J01,
+    );
+    assert_refused(&run(&[]), 2, "invalid_request", rule::J01);
+    // Each member states its own eligibility; the top level belongs to a single binding.
+    for extra in [
+        ["--unavailable-accounts", r#"["codex-work"]"#],
+        ["--excluded-vendors", r#"["openai"]"#],
+    ] {
+        assert_refused(
+            &run(&["--planning-pair", &pair, extra[0], extra[1]]),
+            2,
+            "invalid_request",
+            rule::PP04,
+        );
+    }
+
+    // The declared nested schema has no role, Judge slot or diversity to set,
+    // and refuses a member without a binding, before anything is read.
+    for (request, property) in [
+        (
+            serde_json::json!({"members": [member("seat-a", TEAM),
+                {"slot": "seat-b", "binding_key": TEAM, "role": "judge"}]}),
+            "planning_pair.members[1].role",
+        ),
+        (
+            serde_json::json!({"members": [member("seat-a", TEAM), member("judge", TEAM)]}),
+            "planning_pair.members[1].slot",
+        ),
+        (
+            serde_json::json!({"diversity": "none",
+                "members": [member("seat-a", TEAM), member("seat-b", TEAM)]}),
+            "planning_pair.diversity",
+        ),
+        (
+            serde_json::json!({"members": [member("seat-a", TEAM), {"slot": "seat-b"}]}),
+            "planning_pair.members[1].binding_key",
+        ),
+        (serde_json::json!({}), "planning_pair.members"),
+    ] {
+        let (exit, document) = place(realm.path(), &request, &[]);
+        assert_eq!(exit, 2, "{document}");
+        assert_eq!(document["code"], "invalid_request", "{document}");
+        assert_eq!(document["dispatched"], false, "{document}");
+        assert!(
+            document["rule"]
+                .as_str()
+                .is_some_and(|rule| rule.contains(property)),
+            "{property}: {document}"
+        );
+    }
+}
+
+/// Frontier C, C-M: a planning pair request carries no caller authority. The
+/// closed schema refuses a caller seat, a caller or member generation, a
+/// native id and labels before anything is read, and the answer to a valid
+/// request is still exactly the placement: no readiness, launch or
+/// authorization field a consumer could read as authority.
+#[test]
+fn a_planning_pair_request_carries_no_caller_or_native_authority() {
+    let realm = Realm::aligned();
+    let lsa = realm.leadership("lsa");
+    let pair = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut request =
+            serde_json::json!({"members": [member("seat-a", TEAM), member("seat-b", &lsa)]});
+        edit(&mut request);
+        request
+    };
+    for (request, property) in [
+        (
+            pair(&|request| {
+                request["caller_seat_binding_id"] = "01991c00-0000-7000-8000-000000000001".into();
+            }),
+            "planning_pair.caller_seat_binding_id",
+        ),
+        (
+            pair(&|request| request["caller_occupancy_generation"] = 7.into()),
+            "planning_pair.caller_occupancy_generation",
+        ),
+        (
+            pair(&|request| request["labels"] = serde_json::json!({"kontor.caller": "lsa"})),
+            "planning_pair.labels",
+        ),
+        (
+            pair(&|request| request["members"][0]["occupancy_generation"] = 1.into()),
+            "planning_pair.members[0].occupancy_generation",
+        ),
+        (
+            pair(&|request| request["members"][1]["native_id"] = "native-member-b".into()),
+            "planning_pair.members[1].native_id",
+        ),
+    ] {
+        let (exit, document) = place(realm.path(), &request, &[]);
+        assert_eq!(exit, 2, "{property}: {document}");
+        assert_eq!(document["code"], "invalid_request", "{document}");
+        assert_eq!(document["dispatched"], false, "{document}");
+        assert!(
+            document["rule"]
+                .as_str()
+                .is_some_and(|rule| rule.contains(property)),
+            "{property}: {document}"
+        );
+    }
+    let (exit, envelope) = place(realm.path(), &pair(&|_| {}), &[]);
+    assert_eq!(exit, 0, "{envelope}");
+    let keys: BTreeSet<&str> = envelope["body"]
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        BTreeSet::from(["members", "placement_hash", "protocol", "selection"]),
+        "placement evidence only"
+    );
 }

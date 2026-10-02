@@ -25,12 +25,28 @@
 //! or refuses, and never substitutes another. Only
 //! [`ConsultationProtocol::IndependentReview`] passes
 //! [`ConsultationProtocol::require_formal_review`].
+//!
+//! A document is identified the way an Advisor profile is: a
+//! [`PlanningPairProfileId`], a monotonic [`SpecVersion`] and the canonical
+//! hash of the revision. A run pins all three ([`PlanningPairPin`]).
+//!
+//! The durable form is [`PlanningPairRecord`], and it flows into this module,
+//! never out of a run. [`PlanningPairRecord::admitted`] is the only bridge
+//! from a run to a record, and it carries no contribution. The persistence
+//! owner appends each transition's own input under the address that
+//! transition returned, and [`PlanningPairRun::restore`] reads the record
+//! back through the same transitions, so a stored run that broke any rule
+//! above fails closed instead of loading. A run has no public path that
+//! reveals one member's sealed finding or answer before release: it is not
+//! `Clone`, `PartialEq` or serializable, and its `Debug` renders only what
+//! it has released.
 
 use crate::consultation::{
     AdviceDisposition, ConsultationContextPolicy, ConsultationScope, has_duplicate,
 };
 use crate::id::{
-    BoundedText, CanonicalDocument, ContentHash, ExternalName, RoleKey, SchemaVersion,
+    BoundedText, CanonicalDocument, ContentHash, ExternalName, PlanningPairProfileId, RoleCode,
+    RoleKey, SCHEMA_VERSION, SchemaVersion, SpecVersion, TopologyKindKey,
 };
 use crate::spec::{BudgetBounds, ModelRung};
 use crate::{DomainError, DomainResult};
@@ -45,6 +61,48 @@ pub const FINDINGS_ROUNDS: u32 = 1;
 /// Clarification rounds one planning pair may spend: at most one, and only
 /// when the caller asks for it.
 pub const MAX_CLARIFICATION_ROUNDS: u32 = 1;
+
+/// The serve profile every planning pair member is launched under (D-3).
+pub const MEMBER_SERVE_PROFILE: &str = "planning_pair_member";
+
+/// The closed member surface: exactly the three registered operations a
+/// planning pair member may call.
+///
+/// This is the one list. The registry's [`MEMBER_SERVE_PROFILE`] profile, the
+/// consultation tool guard that enforces it in a member's harness, and every
+/// runtime's creation-time tool policy are all generated from it, so the
+/// surface a member is offered, the one its guard permits and the one its
+/// runtime preapproves cannot drift apart. It names no caller operation, no
+/// Advisor or Committee tool, and nothing that publishes, gates, delegates or
+/// answers a permission.
+pub const MEMBER_MCP_TOOLS: [&str; 3] = [
+    "kontor_planning_pair_run_get",
+    "kontor_planning_pair_findings_record",
+    "kontor_planning_pair_answer_record",
+];
+
+/// The opt-in serve profile a planning pair's caller may be served under.
+///
+/// Distinct from every leadership profile, and selected only by naming it:
+/// nothing infers it from a seat's role, title or pinned document, and no
+/// profile defaults to it.
+pub const CALLER_SERVE_PROFILE: &str = "planning_pair_caller";
+
+/// The closed caller surface: exactly the four registered operations a
+/// planning pair's caller uses.
+///
+/// Like [`MEMBER_MCP_TOOLS`] this is the one list the registry's
+/// [`CALLER_SERVE_PROFILE`] profile is generated from. It carries no member
+/// contribution, no publication, no gate, permission or delegation tool, and
+/// no Advisor or Committee operation. Serving it grants nothing: the caller
+/// is still authenticated as the exact frozen caller seat at its current
+/// hosted generation, under the document's allowed roles.
+pub const CALLER_MCP_TOOLS: [&str; 4] = [
+    "kontor_planning_pair_run_get",
+    "kontor_planning_pair_run_invoke",
+    "kontor_planning_pair_clarification_request",
+    "kontor_planning_pair_disposition_record",
+];
 
 /// The stable rule texts a refusal names.
 #[allow(
@@ -81,13 +139,19 @@ pub mod rule {
     pub const FIRST_DISPOSITION: &str =
         "a planning pair's disposition is its only decision, so it supersedes nothing";
     pub const SAY_SOMETHING: &str = "the text must say something";
+    pub const RECORD_PIN: &str =
+        "a stored planning pair names another document revision than the one it is restored under";
+    pub const RECORD_HASH: &str = "a stored contribution does not hash to its recorded address";
+    pub const RECORD_NOT_CANONICAL: &str =
+        "a stored planning pair is not the canonical record of the run it replays to";
 }
 
 use rule::{
     ADDRESSEES, ANSWER_IMMUTABLE, ANSWERS_INCOMPLETE, CALLER_ONLY, DISSENT_LOST,
     EXTRA_CLARIFICATION, FINDING_IMMUTABLE, FINDINGS_INCOMPLETE, FIRST_DISPOSITION, MEMBER_ONLY,
     MEMBERS, NO_CLARIFICATION, NO_PROTOCOL, NOT_ADDRESSED, NOT_FORMAL, NOT_PLANNING_PAIR,
-    SAME_VENDOR, SAY_SOMETHING, UNAVAILABLE, VENDOR_UNKNOWN,
+    RECORD_HASH, RECORD_NOT_CANONICAL, RECORD_PIN, SAME_VENDOR, SAY_SOMETHING, UNAVAILABLE,
+    VENDOR_UNKNOWN,
 };
 
 crate::closed_enum! {
@@ -205,6 +269,12 @@ crate::closed_enum! {
 pub struct PlanningPairMemberSpec {
     /// Which of the two slots this is.
     pub slot: PlanningPairSlot,
+    /// The registered catalog role this member's seat is held under.
+    ///
+    /// Explicit, because nothing else may supply it: the Team Definition slot
+    /// that titles this member is display-named (`SEAT A`, `SEAT B`) and so
+    /// carries no role code, and no delivery default names one.
+    pub role_code: RoleCode,
     /// What this member brings that the other does not.
     pub specialty: BoundedText,
     /// The bounded behavioural prompt the member is launched with.
@@ -225,10 +295,21 @@ pub struct PlanningPairSpec {
     pub schema_version: SchemaVersion,
     /// Always [`ConsultationProtocol::PlanningPair`].
     pub protocol: ConsultationProtocol,
+    /// The document id shared by every revision.
+    pub profile_id: PlanningPairProfileId,
+    /// This revision.
+    pub version: SpecVersion,
     /// Human name.
     pub name: ExternalName,
     /// The planning question this pair is convened for.
     pub charter: BoundedText,
+    /// The Team Definition container kind a governed pair is placed in.
+    ///
+    /// An explicit selection, never a default: the epic's pinned Team
+    /// Definition must declare exactly this kind, read-only, with exactly the
+    /// slots `seat-a` and `seat-b`, or the pair cannot be invoked. It is part
+    /// of the document, and so of its hash and of every run's identity.
+    pub container_kind: TopologyKindKey,
     /// Exactly two members, `seat-a` then `seat-b`.
     pub members: Vec<PlanningPairMemberSpec>,
     /// Roles allowed to convene it. Never empty.
@@ -245,7 +326,8 @@ impl PlanningPairSpec {
     /// # Errors
     /// Refuses another protocol, anything but the two members in slot order,
     /// empty prose, an invalid grant, an empty or duplicated caller or scope
-    /// list, and an invalid budget.
+    /// list, and an invalid budget. A revision before version one cannot be
+    /// represented: [`SpecVersion`] refuses it.
     pub fn validate(&self) -> DomainResult<()> {
         const SUBJECT: &str = "PlanningPairSpec";
         if self.protocol != ConsultationProtocol::PlanningPair {
@@ -295,11 +377,40 @@ impl PlanningPairSpec {
         self.validate()?;
         CanonicalDocument::from_serializable(self)
     }
+
+    /// The pin a run convened under this revision records.
+    ///
+    /// # Errors
+    /// As [`PlanningPairSpec::canonicalize`].
+    pub fn pin(&self) -> DomainResult<PlanningPairPin> {
+        Ok(PlanningPairPin {
+            profile_id: self.profile_id,
+            version: self.version,
+            definition_hash: self.canonicalize()?.hash().clone(),
+        })
+    }
+}
+
+/// The exact document revision a planning pair was convened under: its id,
+/// its version and the canonical hash of that revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningPairPin {
+    /// The document id shared by every revision.
+    pub profile_id: PlanningPairProfileId,
+    /// The revision.
+    pub version: SpecVersion,
+    /// The canonical hash of that revision.
+    pub definition_hash: ContentHash,
 }
 
 /// One frozen member: its slot, the caller-named binding it was placed
 /// through, and the route and actual vendor the shared allocator chose.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// Deserializing one proves nothing: only [`PlanningPairMembers::freeze`]
+/// admits a member.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanningPairMember {
     /// Which of the two slots it fills.
     pub slot: PlanningPairSlot,
@@ -445,6 +556,23 @@ pub struct PlanningPairDisposition {
 }
 
 crate::closed_enum! {
+    /// Why one member's native readback did not qualify it, as its
+    /// known-native claim keeps the evidence.
+    PlanningPairReadbackRefusal, "PlanningPairReadbackRefusal" {
+        /// The runtime reported no member-surface observation.
+        NoMemberSurface => "no_member_surface",
+        /// The native correlation labels were not observed as matched.
+        CorrelationUnobserved => "correlation_unobserved",
+        /// The route was not observed as matched.
+        RouteUnobserved => "route_unobserved",
+        /// The closed tool restriction was not observed as matched.
+        ToolRestrictionUnobserved => "tool_restriction_unobserved",
+        /// The readback did not observe exactly the requested provenance.
+        ProvenanceUnconfirmed => "provenance_unconfirmed",
+    }
+}
+
+crate::closed_enum! {
     /// Where one planning pair stands.
     ///
     /// There is no settled state: the pair ends when the caller records its
@@ -473,12 +601,54 @@ struct PlanningPairClarification {
 
 /// One planning pair consultation.
 ///
-/// Deliberately not serializable: the only ways to read a finding are
-/// [`Self::findings`] and [`Self::retained_dissent`], so no rendering of the
-/// run can release one member's finding before the other's is durable.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A finding or answer is readable only once released: through
+/// [`Self::findings`], [`Self::clarification`] and [`Self::retained_dissent`].
+/// No other path from a run reveals a sealed contribution. The run is not
+/// serializable, has no record accessor, renders only released content under
+/// `Debug`, and is neither `Clone` (a copy could be completed by an
+/// impersonated member to release the real finding) nor `PartialEq` (equality
+/// would confirm a guessed finding). A holder can observe it:
+///
+/// ```
+/// use kontor_core::planning_pair::{PlanningPairContribution, PlanningPairRun, PlanningPairState};
+/// fn observe(run: &PlanningPairRun) -> (PlanningPairState, Option<[&PlanningPairContribution; 2]>) {
+///     (run.state(), run.findings())
+/// }
+/// ```
+///
+/// but cannot copy it,
+///
+/// ```compile_fail
+/// fn fork(run: &kontor_core::planning_pair::PlanningPairRun) -> kontor_core::planning_pair::PlanningPairRun {
+///     run.clone()
+/// }
+/// ```
+///
+/// compare it,
+///
+/// ```compile_fail
+/// fn guess(run: &kontor_core::planning_pair::PlanningPairRun, other: &kontor_core::planning_pair::PlanningPairRun) -> bool {
+///     run == other
+/// }
+/// ```
+///
+/// serialize it,
+///
+/// ```compile_fail
+/// fn render(run: &kontor_core::planning_pair::PlanningPairRun) -> serde_json::Value {
+///     serde_json::to_value(run).expect("JSON")
+/// }
+/// ```
+///
+/// or read its durable record:
+///
+/// ```compile_fail
+/// fn read(run: &kontor_core::planning_pair::PlanningPairRun) -> kontor_core::planning_pair::PlanningPairRecord {
+///     run.record()
+/// }
+/// ```
 pub struct PlanningPairRun {
-    spec_hash: ContentHash,
+    pin: PlanningPairPin,
     members: PlanningPairMembers,
     question: BoundedText,
     findings: [Option<PlanningPairContribution>; 2],
@@ -497,12 +667,12 @@ impl PlanningPairRun {
         members: PlanningPairMembers,
         question: BoundedText,
     ) -> DomainResult<Self> {
-        let spec_hash = spec.canonicalize()?.hash().clone();
+        let pin = spec.pin()?;
         if question.as_str().trim().is_empty() {
             return Err(DomainError::invalid("PlanningPairRun", SAY_SOMETHING));
         }
         Ok(Self {
-            spec_hash,
+            pin,
             members,
             question,
             findings: [None, None],
@@ -520,7 +690,13 @@ impl PlanningPairRun {
     /// The canonical hash of the document the pair was convened under.
     #[must_use]
     pub const fn spec_hash(&self) -> &ContentHash {
-        &self.spec_hash
+        &self.pin.definition_hash
+    }
+
+    /// The exact document revision the pair was convened under.
+    #[must_use]
+    pub const fn pin(&self) -> &PlanningPairPin {
+        &self.pin
     }
 
     /// The two frozen members.
@@ -805,7 +981,7 @@ impl PlanningPairRun {
         let document = CanonicalDocument::from_value(&serde_json::json!({
             "schema_version": 1,
             "protocol": PLANNING_PAIR_PROTOCOL,
-            "spec_hash": self.spec_hash.as_str(),
+            "spec_hash": self.pin.definition_hash.as_str(),
             "placement_hash": self.members.placement_hash.as_str(),
             "round": round.as_str(),
             "slot": slot.as_str(),
@@ -817,6 +993,238 @@ impl PlanningPairRun {
             advice,
             document_hash: document.hash().clone(),
         })
+    }
+}
+
+impl std::fmt::Debug for PlanningPairRun {
+    /// Only what the run has released. A sealed finding or answer is shown
+    /// neither by content nor by address, and not even by count.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PlanningPairRun")
+            .field("pin", &self.pin)
+            .field("members", &self.members)
+            .field("question", &self.question)
+            .field("state", &self.state())
+            .field("findings", &self.findings())
+            .field("clarification", &self.clarification())
+            .field("disposition", &self.disposition)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PlanningPairRun {
+    /// The canonical record of this run, for [`Self::restore`]'s comparison
+    /// only. Private on purpose: it holds a sealed finding while the round is
+    /// sealed, so it must never leave this module.
+    fn record(&self) -> PlanningPairRecord {
+        PlanningPairRecord {
+            schema_version: SCHEMA_VERSION,
+            protocol: ConsultationProtocol::PlanningPair,
+            pin: self.pin.clone(),
+            placement_hash: self.members.placement_hash.clone(),
+            members: self.members.members.to_vec(),
+            question: self.question.clone(),
+            findings: self
+                .findings
+                .iter()
+                .flatten()
+                .map(RecordedContribution::of)
+                .collect(),
+            clarification: self
+                .clarification
+                .as_ref()
+                .map(|clarification| RecordedClarification {
+                    request: clarification.request.clone(),
+                    answers: clarification
+                        .answers
+                        .iter()
+                        .flatten()
+                        .map(RecordedContribution::of)
+                        .collect(),
+                }),
+            disposition: self.disposition.clone(),
+        }
+    }
+
+    /// Read a stored run back under the document revision it pins.
+    ///
+    /// The record is the persistence owner's: the header
+    /// [`PlanningPairRecord::admitted`] wrote, then each transition's own input
+    /// under the address that transition returned, findings and answers in
+    /// slot order. Nothing is trusted: the members are frozen again, the run is admitted
+    /// again, and every finding, the clarification, every answer and the
+    /// disposition are replayed through the same transitions a live run takes,
+    /// so each rule above is checked again. Each contribution must hash to its
+    /// recorded address, and the record must be exactly the one the replayed
+    /// run would write.
+    ///
+    /// # Errors
+    /// `NOT_PLANNING_PAIR` for another protocol, `RECORD_PIN` when the record
+    /// pins another revision than `spec`, the first rule any replayed
+    /// transition breaks, `RECORD_HASH` for a contribution that does not hash
+    /// to its address, and `RECORD_NOT_CANONICAL` for any other difference.
+    pub fn restore(spec: &PlanningPairSpec, record: PlanningPairRecord) -> DomainResult<Self> {
+        const SUBJECT: &str = "PlanningPairRecord";
+        if record.protocol != ConsultationProtocol::PlanningPair {
+            return Err(DomainError::invalid(SUBJECT, NOT_PLANNING_PAIR));
+        }
+        if record.pin != spec.pin()? {
+            return Err(DomainError::invalid(SUBJECT, RECORD_PIN));
+        }
+        let members =
+            PlanningPairMembers::freeze(record.placement_hash.clone(), record.members.clone())?;
+        let mut run = Self::admit(spec, members, record.question.clone())?;
+        let addressed = |hash: ContentHash, contribution: &RecordedContribution| {
+            if hash == contribution.document_hash {
+                Ok(())
+            } else {
+                Err(DomainError::invalid(SUBJECT, RECORD_HASH))
+            }
+        };
+        for finding in &record.findings {
+            let hash = run.record_finding(
+                PlanningPairActor::Member(finding.slot),
+                finding.slot,
+                finding.advice.clone(),
+            )?;
+            addressed(hash, finding)?;
+        }
+        if let Some(clarification) = &record.clarification {
+            run.request_clarification(PlanningPairActor::Caller, clarification.request.clone())?;
+            for answer in &clarification.answers {
+                let hash = run.record_answer(
+                    PlanningPairActor::Member(answer.slot),
+                    answer.slot,
+                    answer.advice.clone(),
+                )?;
+                addressed(hash, answer)?;
+            }
+        }
+        if let Some(disposition) = &record.disposition {
+            run.record_disposition(PlanningPairActor::Caller, disposition.clone())?;
+        }
+        if run.record() != record {
+            return Err(DomainError::invalid(SUBJECT, RECORD_NOT_CANONICAL));
+        }
+        Ok(run)
+    }
+}
+
+/// One member's recorded contribution, as a store keeps it. The round is the
+/// list it is kept in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedContribution {
+    /// The member that gave it.
+    pub slot: PlanningPairSlot,
+    /// The advice, verbatim.
+    pub advice: BoundedText,
+    /// The address it was recorded under.
+    pub document_hash: ContentHash,
+}
+
+impl RecordedContribution {
+    fn of(contribution: &PlanningPairContribution) -> Self {
+        Self {
+            slot: contribution.slot,
+            advice: contribution.advice.clone(),
+            document_hash: contribution.document_hash.clone(),
+        }
+    }
+}
+
+/// The caller's clarification question and every answer recorded to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedClarification {
+    /// The caller's question.
+    pub request: ClarificationRequest,
+    /// The answers recorded so far, `seat-a` then `seat-b`.
+    pub answers: Vec<RecordedContribution>,
+}
+
+/// The durable form of one planning pair run.
+///
+/// A closed canonical document: it has room for one findings round, at most
+/// one clarification and one disposition, and no field for a Judge, a
+/// verdict, an aggregate or a settlement. It proves nothing by itself; only
+/// [`PlanningPairRun::restore`] admits one.
+///
+/// It is assembled by whoever persists the run, from what that owner already
+/// holds, and never read out of a run. The storage seam is:
+///
+/// 1. [`Self::admitted`] when the run is admitted: the header, with no
+///    contribution;
+/// 2. for each [`PlanningPairRun::record_finding`] or
+///    [`PlanningPairRun::record_answer`], a [`RecordedContribution`] holding
+///    the member's own submitted slot and advice under the address the call
+///    returned, in slot order;
+/// 3. the caller's own [`ClarificationRequest`] and
+///    [`PlanningPairDisposition`] once their transitions succeed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningPairRecord {
+    /// Schema generation of this record.
+    pub schema_version: SchemaVersion,
+    /// Always [`ConsultationProtocol::PlanningPair`].
+    pub protocol: ConsultationProtocol,
+    /// The document revision the run pins.
+    pub pin: PlanningPairPin,
+    /// The canonical hash of the placement receipt the members came from.
+    pub placement_hash: ContentHash,
+    /// The two frozen members, `seat-a` then `seat-b`.
+    pub members: Vec<PlanningPairMember>,
+    /// The caller's question.
+    pub question: BoundedText,
+    /// The findings recorded so far, `seat-a` then `seat-b`.
+    pub findings: Vec<RecordedContribution>,
+    /// The clarification round, once the caller asked for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clarification: Option<RecordedClarification>,
+    /// The caller's disposition, once recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<PlanningPairDisposition>,
+}
+
+impl PlanningPairRecord {
+    /// The header of a run's record: the pin, the placement, both frozen
+    /// members and the question, and no contribution, clarification or
+    /// disposition, whatever the run has recorded since. This is the only
+    /// path from a run to a record.
+    #[must_use]
+    pub fn admitted(run: &PlanningPairRun) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            protocol: ConsultationProtocol::PlanningPair,
+            pin: run.pin.clone(),
+            placement_hash: run.members.placement_hash.clone(),
+            members: run.members.members.to_vec(),
+            question: run.question.clone(),
+            findings: Vec::new(),
+            clarification: None,
+            disposition: None,
+        }
+    }
+
+    /// The canonical document a store keeps, and its content address.
+    ///
+    /// # Errors
+    /// As [`CanonicalDocument::from_serializable`].
+    pub fn canonicalize(&self) -> DomainResult<CanonicalDocument> {
+        CanonicalDocument::from_serializable(self)
+    }
+
+    /// Re-admit stored bytes under their recorded address.
+    ///
+    /// This checks only that the bytes are canonical, are their address and
+    /// have the record's shape. [`PlanningPairRun::restore`] checks the rest.
+    ///
+    /// # Errors
+    /// As [`CanonicalDocument::from_stored`] and
+    /// [`CanonicalDocument::deserialize`].
+    pub fn from_stored(json: &str, hash: &ContentHash) -> DomainResult<Self> {
+        CanonicalDocument::from_stored(json, hash)?.deserialize()
     }
 }
 

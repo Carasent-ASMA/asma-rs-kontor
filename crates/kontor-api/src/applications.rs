@@ -7977,6 +7977,84 @@ pub trait ApplicationOperations: Send + Sync {
         epic_id: MiniProjectId,
         request: &TopologyUpgradeApplyRequest,
     ) -> Result<CoreTeamOutcomeDto, ApiError>;
+    /// Every published `planning_pair@1` document revision.
+    fn planning_pair_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError>;
+    /// Judge one planning pair document. Commits nothing.
+    fn preview_planning_pair_profile(
+        &self,
+        project_id: ProjectId,
+        request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError>;
+    /// Publish one planning pair document revision.
+    async fn apply_planning_pair_profile(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError>;
+    /// Invoke one planning pair as the authenticated caller seat.
+    async fn invoke_planning_pair_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        caller: crate::planning_pair::PlanningPairSeat,
+        request: &crate::planning_pair::InvokePlanningPairRequest,
+    ) -> Result<crate::planning_pair::PlanningPairRunDto, ApiError>;
+    /// One planning pair as its reader may see it.
+    fn planning_pair_run(
+        &self,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        reader: crate::planning_pair::PlanningPairReader,
+    ) -> Result<crate::planning_pair::PlanningPairRunDto, ApiError>;
+    /// Record the authenticated member's sealed finding.
+    async fn record_planning_pair_finding(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        member: crate::planning_pair::PlanningPairSeat,
+        request: &crate::planning_pair::RecordPlanningPairContributionRequest,
+    ) -> Result<crate::planning_pair::PlanningPairRunDto, ApiError>;
+    /// Record the authenticated caller's one clarification question.
+    async fn request_planning_pair_clarification(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        caller: crate::planning_pair::PlanningPairSeat,
+        request: &crate::planning_pair::RequestPlanningPairClarificationRequest,
+    ) -> Result<crate::planning_pair::PlanningPairRunDto, ApiError>;
+    /// Record the authenticated addressed member's sealed answer.
+    async fn record_planning_pair_answer(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        member: crate::planning_pair::PlanningPairSeat,
+        request: &crate::planning_pair::RecordPlanningPairContributionRequest,
+    ) -> Result<crate::planning_pair::PlanningPairRunDto, ApiError>;
+    /// Record the authenticated caller's disposition. Terminal.
+    async fn record_planning_pair_disposition(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        caller: crate::planning_pair::PlanningPairSeat,
+        request: &crate::planning_pair::RecordPlanningPairDispositionRequest,
+    ) -> Result<crate::planning_pair::PlanningPairRunDto, ApiError>;
+    /// Requalify one member on its exact known native session, as the
+    /// authenticated frozen caller.
+    async fn recover_planning_pair_seat(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        seat_binding_id: SeatBindingId,
+        caller: crate::planning_pair::PlanningPairSeat,
+        request: &crate::planning_pair::RecoverPlanningPairSeatRequest,
+    ) -> Result<crate::planning_pair::PlanningPairSeatRecoveryDto, ApiError>;
     /// Every published Advisor profile revision.
     fn advisor_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError>;
     /// Judge one Advisor profile definition. Commits nothing.

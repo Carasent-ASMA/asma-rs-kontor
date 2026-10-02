@@ -64,13 +64,16 @@ pub(crate) fn run(
     }
 }
 
-/// Resolve one binding, or allocate one Committee jointly, against the
-/// activated bundle.
+/// Resolve one binding, allocate one Committee jointly, or place one
+/// `planning_pair@1` pair, against the activated bundle.
 ///
-/// The request names exactly one mode (J-01). Single mode takes `binding_key`
-/// and the top-level eligibility, and answers the `FleetSelection`. Joint mode
-/// takes `allocation` alone — each slot states its own eligibility (J-02) —
-/// and answers the joint selection from one verified snapshot.
+/// The request names exactly one mode. Single mode takes `binding_key` and the
+/// top-level eligibility, and answers the `FleetSelection`. Joint mode takes
+/// `allocation` alone — each slot states its own eligibility (J-02) — and
+/// answers the joint selection from one verified snapshot. Planning pair mode
+/// takes `planning_pair` alone (PP-03, PP-04) and answers the
+/// `PlanningPairPlacement`. `binding_key` with `allocation`, or no mode at
+/// all, is J-01 exactly as before the planning pair mode existed.
 ///
 /// The answer is the envelope every command prints: `status` 200 and the
 /// result verbatim as the body. A result with no eligible route, or no
@@ -84,6 +87,25 @@ fn fleet_policy_resolve(
     arguments: &serde_json::Value,
 ) -> ExitClass {
     let present = |name: &str| arguments.get(name).is_some_and(|value| !value.is_null());
+    if present("planning_pair") {
+        if present("allocation") || present("binding_key") {
+            return output::emit_local(
+                tool.name,
+                "invalid_request",
+                rule::PP03,
+                "name exactly one of --binding-key, --allocation and --planning-pair",
+            );
+        }
+        if present("unavailable_accounts") || present("excluded_vendors") {
+            return output::emit_local(
+                tool.name,
+                "invalid_request",
+                rule::PP04,
+                "state each member's eligibility inside --planning-pair",
+            );
+        }
+        return fleet_policy_planning_pair(tool, state_root, &arguments["planning_pair"]);
+    }
     let joint = present("allocation");
     if joint == present("binding_key") {
         return output::emit_local(
@@ -173,6 +195,45 @@ fn fleet_policy_allocate(
         document,
         "allocation",
         "no complete allocation gives every slot an eligible route under the diversity rule",
+    )
+}
+
+/// Planning pair mode: both members from one verified snapshot, through the
+/// shared reader's `place_planning_pair`, which is a joint allocation under
+/// distinct actual vendors and nothing else.
+///
+/// The answer is placement evidence. It carries the protocol, the one
+/// allocator receipt, its placement hash and the frozen members; it has no
+/// verdict and satisfies no gate.
+fn fleet_policy_planning_pair(
+    tool: &'static ToolSpec,
+    state_root: &Path,
+    planning_pair: &serde_json::Value,
+) -> ExitClass {
+    let Ok(request) = serde_json::from_value::<kontor_fleet_activation::PlanningPairRequest>(
+        planning_pair.clone(),
+    ) else {
+        return output::emit_local(
+            tool.name,
+            "invalid_request",
+            "the planning_pair is not a planning pair request",
+            "send the two members, seat-a then seat-b, the schema declares",
+        );
+    };
+    let placement = match kontor_fleet_activation::place_planning_pair(state_root, &request) {
+        Ok(placement) => placement,
+        Err(error) => return refuse(tool, &error),
+    };
+    let Ok(document) = serde_json::to_value(&placement) else {
+        output::note("the placement could not be rendered as JSON");
+        return ExitClass::Unexpected;
+    };
+    answer(
+        tool,
+        placement.is_complete(),
+        document,
+        "placement",
+        "no complete placement gives both planning pair members an eligible route on distinct actual vendors",
     )
 }
 

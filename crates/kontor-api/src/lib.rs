@@ -46,6 +46,7 @@ pub mod error;
 pub mod memory;
 pub mod open_questions;
 pub mod openapi;
+pub mod planning_pair;
 pub mod sessions;
 pub mod state;
 
@@ -760,6 +761,48 @@ pub fn router(state: ApiState) -> Router {
             .route(
                 "/v1/projects/{project_id}/committee-runs/{committee_run_id}/settle",
                 post(applications::settle_committee_run),
+            )
+            // ASMA-8282: the planning pair, beside the unchanged Advisor and
+            // Committee routes.
+            .route(
+                "/v1/projects/{project_id}/planning-pair-profiles",
+                get(planning_pair::planning_pair_profiles),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-profiles:preview",
+                post(planning_pair::preview_planning_pair_profile),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-profiles:apply",
+                post(planning_pair::apply_planning_pair_profile),
+            )
+            .route(
+                "/v1/projects/{project_id}/epics/{epic_id}/planning-pair-runs:invoke",
+                post(planning_pair::invoke_planning_pair_run),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}",
+                get(planning_pair::planning_pair_run),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/findings:record",
+                post(planning_pair::record_planning_pair_finding),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/clarification:request",
+                post(planning_pair::request_planning_pair_clarification),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/answers:record",
+                post(planning_pair::record_planning_pair_answer),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/disposition:record",
+                post(planning_pair::record_planning_pair_disposition),
+            )
+            .route(
+                "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/seats/{seat_binding_id}/recover",
+                post(planning_pair::recover_planning_pair_seat),
             )
             .route(
                 "/v1/projects/{project_id}/completion-profiles",

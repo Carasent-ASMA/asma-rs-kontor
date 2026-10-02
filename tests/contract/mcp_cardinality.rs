@@ -72,7 +72,8 @@ fn sample(ty: ArgType, name: &str) -> serde_json::Value {
         | ArgType::CapacityObservationId
         | ArgType::QuickSessionId
         | ArgType::AdvisorRunId
-        | ArgType::CommitteeRunId => serde_json::Value::String(UUID.to_owned()),
+        | ArgType::CommitteeRunId
+        | ArgType::PlanningPairRunId => serde_json::Value::String(UUID.to_owned()),
         ArgType::IntakeReceiptId => serde_json::Value::String(UUID.to_owned()),
         ArgType::OpenKey => serde_json::Value::String("codex".to_owned()),
         ArgType::ExternalId => serde_json::Value::String("external-event-1".to_owned()),

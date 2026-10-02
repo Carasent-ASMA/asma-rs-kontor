@@ -5,20 +5,26 @@
 //! satisfy a formal review gate.
 //!
 //! Every refusal below is asserted by its exact rule, so a test cannot pass on
-//! an unrelated refusal the fixture happened to trigger.
+//! an unrelated refusal the fixture happened to trigger. The last section
+//! covers the document's immutable identity, the boundary that keeps a sealed
+//! finding or answer unreadable until the domain releases it, and the run's
+//! durable record, which its persistence owner assembles from each
+//! transition's own input and reads back only through the same transitions.
 
 use kontor_core::DomainError;
 use kontor_core::consultation::{
     AdviceDisposition, ConsultationContextPolicy, ConsultationScope, MemoryAccess,
 };
 use kontor_core::id::{
-    BoundedText, ContentHash, CurrencyCode, ExternalName, Money, RoleKey, SCHEMA_VERSION,
+    BoundedText, ContentHash, CurrencyCode, ExternalName, Money, PlanningPairProfileId, RoleCode,
+    RoleKey, SCHEMA_VERSION, SpecVersion, TopologyKindKey,
 };
 use kontor_core::planning_pair::{
     ClarificationRequest, ConsultationProtocol, FINDINGS_ROUNDS, MAX_CLARIFICATION_ROUNDS,
     MemberDisposition, PlanningPairActor, PlanningPairDisposition, PlanningPairMember,
-    PlanningPairMemberSpec, PlanningPairMembers, PlanningPairRound, PlanningPairRun,
-    PlanningPairSlot, PlanningPairSpec, PlanningPairState, rule, select_protocol,
+    PlanningPairMemberSpec, PlanningPairMembers, PlanningPairRecord, PlanningPairRound,
+    PlanningPairRun, PlanningPairSlot, PlanningPairSpec, PlanningPairState, RecordedClarification,
+    RecordedContribution, rule, select_protocol,
 };
 use kontor_core::spec::{BudgetBounds, ModelRef, ModelRung, ProviderRef};
 
@@ -51,6 +57,7 @@ fn run_refusal(rule: &'static str) -> DomainError {
 fn member_spec(slot: PlanningPairSlot) -> PlanningPairMemberSpec {
     PlanningPairMemberSpec {
         slot,
+        role_code: RoleCode::parse("SA").expect("a registered role code"),
         specialty: text("Independent planning perspective"),
         behavior: text("Read the frozen plan and give one finding; change nothing."),
         context: ConsultationContextPolicy {
@@ -61,12 +68,20 @@ fn member_spec(slot: PlanningPairSlot) -> PlanningPairMemberSpec {
     }
 }
 
+/// One fixed document id, so every `spec()` is the same revision.
+fn profile() -> PlanningPairProfileId {
+    PlanningPairProfileId::parse("01991c00-0000-7000-8000-0000000000a1").expect("profile id")
+}
+
 fn spec() -> PlanningPairSpec {
     PlanningPairSpec {
         schema_version: SCHEMA_VERSION,
         protocol: ConsultationProtocol::PlanningPair,
+        profile_id: profile(),
+        version: SpecVersion::FIRST,
         name: ExternalName::parse("Planning pair").expect("name"),
         charter: text("Is this plan the smallest sound next step?"),
+        container_kind: TopologyKindKey::parse("PPW").expect("kind"),
         members: vec![member_spec(SeatA), member_spec(SeatB)],
         allowed_caller_roles: vec![RoleKey::parse("lead").expect("role")],
         allowed_scopes: vec![ConsultationScope::Epic, ConsultationScope::Ticket],
@@ -835,4 +850,471 @@ fn dissent_survives_the_callers_decision() {
     assert_eq!((&kept_a.document_hash, &kept_b.document_hash), (&a, &b));
     let (_, answers) = pair.clarification().expect("the answer stays too");
     assert_eq!(answers[0].document_hash, answer);
+}
+
+// ---------------------------------------------------------------------------
+// Immutable identity and durable state
+// ---------------------------------------------------------------------------
+
+fn record_refusal(rule: &'static str) -> DomainError {
+    invalid("PlanningPairRecord", rule)
+}
+
+/// Keep a record as a store would — canonical bytes under their address — and
+/// read it back.
+fn stored(record: &PlanningPairRecord) -> PlanningPairRecord {
+    let document = record.canonicalize().expect("canonical");
+    PlanningPairRecord::from_stored(document.json(), document.hash()).expect("re-admitted")
+}
+
+/// What a persistence owner keeps: the admitted header, then each
+/// transition's own input under the address that transition returned. Nothing
+/// here is read back out of the run.
+struct Journal {
+    pair: PlanningPairRun,
+    record: PlanningPairRecord,
+}
+
+impl Journal {
+    fn admit() -> Self {
+        let pair = run();
+        let record = PlanningPairRecord::admitted(&pair);
+        Self { pair, record }
+    }
+
+    fn finding(&mut self, slot: PlanningPairSlot, advice: &str) -> ContentHash {
+        let document_hash = self
+            .pair
+            .record_finding(Member(slot), slot, text(advice))
+            .expect("a finding");
+        in_slot_order(
+            &mut self.record.findings,
+            RecordedContribution {
+                slot,
+                advice: text(advice),
+                document_hash: document_hash.clone(),
+            },
+        );
+        document_hash
+    }
+
+    fn clarify(&mut self, addressed: Vec<PlanningPairSlot>) {
+        let request = ClarificationRequest {
+            question: text("What breaks?"),
+            addressed,
+        };
+        self.pair
+            .request_clarification(Caller, request.clone())
+            .expect("asked");
+        self.record.clarification = Some(RecordedClarification {
+            request,
+            answers: Vec::new(),
+        });
+    }
+
+    fn answer(&mut self, slot: PlanningPairSlot, advice: &str) -> ContentHash {
+        let document_hash = self
+            .pair
+            .record_answer(Member(slot), slot, text(advice))
+            .expect("an answer");
+        let clarification = self.record.clarification.as_mut().expect("asked");
+        in_slot_order(
+            &mut clarification.answers,
+            RecordedContribution {
+                slot,
+                advice: text(advice),
+                document_hash: document_hash.clone(),
+            },
+        );
+        document_hash
+    }
+
+    fn decide(&mut self, disposition: PlanningPairDisposition) {
+        self.pair
+            .record_disposition(Caller, disposition.clone())
+            .expect("decided");
+        self.record.disposition = Some(disposition);
+    }
+
+    /// Restore from canonical stored bytes, and hold the copy to everything
+    /// the live run shows. The run has no equality of its own, so this is
+    /// every public observation of it, its rendering included.
+    fn assert_restores(&self) -> PlanningPairRun {
+        let restored = PlanningPairRun::restore(&spec(), stored(&self.record)).expect("restores");
+        let live = &self.pair;
+        assert_eq!(restored.pin(), live.pin());
+        assert_eq!(restored.members(), live.members());
+        assert_eq!(restored.question(), live.question());
+        assert_eq!(restored.state(), live.state());
+        assert_eq!(restored.findings(), live.findings());
+        assert_eq!(restored.clarification(), live.clarification());
+        assert_eq!(restored.disposition(), live.disposition());
+        assert_eq!(restored.retained_dissent(), live.retained_dissent());
+        assert_eq!(format!("{restored:?}"), format!("{live:?}"));
+        restored
+    }
+}
+
+/// Findings and answers are kept in slot order, whatever order they arrive in.
+fn in_slot_order(list: &mut Vec<RecordedContribution>, contribution: RecordedContribution) {
+    let at = list
+        .iter()
+        .position(|kept| kept.slot > contribution.slot)
+        .unwrap_or(list.len());
+    list.insert(at, contribution);
+}
+
+/// A disposed run in which seat B was asked to clarify and was rejected.
+fn disposed() -> Journal {
+    let mut journal = Journal::admit();
+    let a = journal.finding(SeatA, "Land the migration first.");
+    let b = journal.finding(SeatB, "Land the reader first.");
+    journal.clarify(vec![SeatB]);
+    let answer = journal.answer(SeatB, "Old rows would be misread.");
+    journal.decide(decide(
+        (&a, None, AdviceDisposition::Accepted),
+        (&b, Some(&answer), AdviceDisposition::Rejected),
+    ));
+    journal
+}
+
+/// Restore `record` after one edit to its JSON.
+fn restore_edited(
+    record: &PlanningPairRecord,
+    edit: impl FnOnce(&mut serde_json::Value),
+) -> Result<PlanningPairRun, DomainError> {
+    let mut json = serde_json::to_value(record).expect("JSON");
+    edit(&mut json);
+    let edited: PlanningPairRecord = serde_json::from_value(json).expect("still a record");
+    PlanningPairRun::restore(&spec(), edited)
+}
+
+#[test]
+fn a_document_revision_is_identified_by_its_id_version_and_hash() {
+    let pin = spec().pin().expect("pinned");
+    assert_eq!(
+        (pin.profile_id, pin.version),
+        (profile(), SpecVersion::FIRST)
+    );
+    assert_eq!(
+        &pin.definition_hash,
+        spec().canonicalize().expect("canonical").hash()
+    );
+    assert_eq!(run().pin(), &pin);
+    assert_eq!(run().spec_hash(), &pin.definition_hash);
+    let mut next = spec();
+    next.version = SpecVersion::FIRST.next().expect("version two");
+    let mut other = spec();
+    other.profile_id = PlanningPairProfileId::generate();
+    for changed in [next, other] {
+        let changed = changed.pin().expect("pinned");
+        assert_ne!(changed, pin);
+        assert_ne!(changed.definition_hash, pin.definition_hash);
+    }
+    // A revision before version one, and an id that is not a v7 UUID, cannot
+    // be represented at all.
+    for (field, value) in [
+        ("version", serde_json::json!(0)),
+        ("profile_id", serde_json::json!("planning-pair")),
+    ] {
+        let mut json = serde_json::to_value(spec()).expect("JSON");
+        json[field] = value;
+        assert!(
+            serde_json::from_value::<PlanningPairSpec>(json).is_err(),
+            "{field}"
+        );
+    }
+}
+
+const SEALED_FINDING: &str = "Seat A's sealed advice: land the migration first.";
+const SEALED_ANSWER: &str = "Seat A's sealed answer: nothing breaks if it lands first.";
+
+/// Nothing the run renders, and nothing the one run-to-record bridge carries,
+/// contains `advice` or its address.
+fn assert_unreadable(pair: &PlanningPairRun, advice: &str, address: &ContentHash) {
+    for rendered in [format!("{pair:?}"), format!("{pair:#?}")] {
+        assert!(
+            !rendered.contains(advice) && !rendered.contains(address.as_str()),
+            "{rendered}"
+        );
+    }
+    let header = PlanningPairRecord::admitted(pair);
+    assert!(
+        header.findings.is_empty()
+            && header.clarification.is_none()
+            && header.disposition.is_none(),
+        "the header carries no contribution"
+    );
+    let bytes = header.canonicalize().expect("canonical");
+    assert!(!bytes.json().contains(advice) && !bytes.json().contains(address.as_str()));
+}
+
+#[test]
+fn a_sealed_finding_has_no_public_read_path_until_release() {
+    let mut journal = Journal::admit();
+    let sealed = journal.finding(SeatA, SEALED_FINDING);
+    let pair = &mut journal.pair;
+    assert_eq!(pair.state(), PlanningPairState::AwaitingFindings);
+    assert!(pair.findings().is_none());
+    assert!(pair.clarification().is_none());
+    assert!(pair.disposition().is_none());
+    assert!(pair.retained_dissent().is_empty());
+    assert_unreadable(pair, SEALED_FINDING, &sealed);
+    // No caller act on a sealed round succeeds, so none can surface it either.
+    assert_eq!(
+        pair.request_clarification(
+            Caller,
+            ClarificationRequest {
+                question: text("Why?"),
+                addressed: vec![SeatA],
+            },
+        ),
+        Err(missing(rule::FINDINGS_INCOMPLETE))
+    );
+    assert_eq!(
+        pair.record_disposition(
+            Caller,
+            decide(
+                (&sealed, None, AdviceDisposition::Accepted),
+                (&sealed, None, AdviceDisposition::Rejected),
+            ),
+        ),
+        Err(missing(rule::FINDINGS_INCOMPLETE))
+    );
+    assert_unreadable(pair, SEALED_FINDING, &sealed);
+    // Release is the domain's: seat B's finding releases both, verbatim.
+    pair.record_finding(Member(SeatB), SeatB, text("Land the reader first."))
+        .expect("seat B");
+    let [released, _] = pair.findings().expect("released");
+    assert_eq!(
+        (released.advice.as_str(), &released.document_hash),
+        (SEALED_FINDING, &sealed)
+    );
+    assert!(format!("{pair:?}").contains(SEALED_FINDING));
+}
+
+#[test]
+fn a_sealed_answer_has_no_public_read_path_until_every_addressed_member_answers() {
+    let mut journal = Journal::admit();
+    journal.finding(SeatA, "Land the migration first.");
+    journal.finding(SeatB, "Land the reader first.");
+    journal.clarify(vec![SeatA, SeatB]);
+    let sealed = journal.answer(SeatA, SEALED_ANSWER);
+    let pair = &mut journal.pair;
+    assert_eq!(pair.state(), PlanningPairState::AwaitingAnswers);
+    assert!(pair.clarification().is_none());
+    assert_unreadable(pair, SEALED_ANSWER, &sealed);
+    assert!(
+        format!("{pair:?}").contains("Land the reader first."),
+        "the released findings still render"
+    );
+    pair.record_answer(Member(SeatB), SeatB, text("Old rows would be misread."))
+        .expect("seat B answers");
+    let (_, answers) = pair.clarification().expect("released");
+    assert_eq!(
+        (answers[0].advice.as_str(), &answers[0].document_hash),
+        (SEALED_ANSWER, &sealed)
+    );
+}
+
+#[test]
+fn a_run_survives_the_store_at_every_point_in_its_life() {
+    let mut journal = Journal::admit();
+    journal.assert_restores();
+    let a = journal.finding(SeatA, "Land the migration first.");
+    let mut sealed = journal.assert_restores();
+    assert!(
+        sealed.findings().is_none(),
+        "a stored sealed finding is still sealed once read back"
+    );
+    // It was kept, not dropped: completing the round on the restored copy
+    // releases seat A's original finding under its original address.
+    sealed
+        .record_finding(Member(SeatB), SeatB, text("Land the reader first."))
+        .expect("seat B on the restored copy");
+    let [kept, _] = sealed.findings().expect("released");
+    assert_eq!(
+        (kept.advice.as_str(), &kept.document_hash),
+        ("Land the migration first.", &a)
+    );
+    let b = journal.finding(SeatB, "Land the reader first.");
+    journal.assert_restores();
+    journal.clarify(vec![SeatB]);
+    let mut asked = journal.assert_restores();
+    assert_eq!(
+        asked.request_clarification(
+            Caller,
+            ClarificationRequest {
+                question: text("And seat A?"),
+                addressed: vec![SeatA],
+            },
+        ),
+        Err(run_refusal(rule::EXTRA_CLARIFICATION)),
+        "a restored pair still spends at most one clarification round"
+    );
+    let answer = journal.answer(SeatB, "Old rows would be misread.");
+    journal.assert_restores();
+    journal.decide(decide(
+        (&a, None, AdviceDisposition::Accepted),
+        (&b, Some(&answer), AdviceDisposition::Rejected),
+    ));
+    let mut restored = journal.assert_restores();
+    assert_eq!(restored.state(), PlanningPairState::Disposed);
+    let dissent: Vec<(PlanningPairSlot, PlanningPairRound)> = restored
+        .retained_dissent()
+        .into_iter()
+        .map(|contribution| (contribution.slot, contribution.round))
+        .collect();
+    assert_eq!(
+        dissent,
+        [
+            (SeatB, PlanningPairRound::Findings),
+            (SeatB, PlanningPairRound::Clarification),
+        ],
+        "seat B's dissent survives the store"
+    );
+    assert_eq!(
+        restored.protocol().require_formal_review(),
+        Err(unauthorized("FormalReviewGate", rule::NOT_FORMAL)),
+        "restored advice is still advice"
+    );
+    assert_eq!(
+        restored.record_finding(Member(SeatB), SeatB, text("A late opinion.")),
+        Err(DomainError::Terminal {
+            subject: "PlanningPairRun"
+        }),
+        "a restored disposed pair is as immutable as the live one"
+    );
+}
+
+#[test]
+fn a_stored_run_under_another_revision_or_protocol_fails_closed() {
+    let record = disposed().record;
+    let mut next = spec();
+    next.version = SpecVersion::FIRST.next().expect("version two");
+    assert_eq!(
+        PlanningPairRun::restore(&next, record.clone()).err(),
+        Some(record_refusal(rule::RECORD_PIN))
+    );
+    let mut other = spec();
+    other.profile_id = PlanningPairProfileId::generate();
+    assert_eq!(
+        PlanningPairRun::restore(&other, record.clone()).err(),
+        Some(record_refusal(rule::RECORD_PIN))
+    );
+    for protocol in ["independent_review", "advisor"] {
+        assert_eq!(
+            restore_edited(&record, |json| json["protocol"] =
+                serde_json::json!(protocol))
+            .err(),
+            Some(record_refusal(rule::NOT_PLANNING_PAIR)),
+            "{protocol}"
+        );
+    }
+}
+
+#[test]
+fn a_stored_run_that_breaks_a_rule_fails_closed_on_that_rule() {
+    let record = disposed().record;
+    type Edit = fn(&mut serde_json::Value);
+    let cases: [(&str, Edit, DomainError); 9] = [
+        (
+            "seat B's finding rewritten in storage",
+            |json| json["findings"][1]["advice"] = serde_json::json!("Land the migration first."),
+            record_refusal(rule::RECORD_HASH),
+        ),
+        (
+            "seat B moved onto seat A's vendor",
+            |json| json["members"][1]["vendor"] = serde_json::json!("anthropic"),
+            invalid("PlanningPairMembers", rule::SAME_VENDOR),
+        ),
+        (
+            "seat B dropped from the members",
+            |json| {
+                json["members"].as_array_mut().expect("members").pop();
+            },
+            invalid("PlanningPairMembers", rule::MEMBERS),
+        ),
+        (
+            "seat A's finding recorded twice",
+            |json| json["findings"][1] = json["findings"][0].clone(),
+            run_refusal(rule::FINDING_IMMUTABLE),
+        ),
+        (
+            "seat B's finding missing",
+            |json| {
+                json["findings"].as_array_mut().expect("findings").pop();
+            },
+            missing(rule::FINDINGS_INCOMPLETE),
+        ),
+        (
+            "an answer from a member the question did not address",
+            |json| json["clarification"]["answers"][0]["slot"] = serde_json::json!("seat-a"),
+            run_refusal(rule::NOT_ADDRESSED),
+        ),
+        (
+            "the requested answer missing",
+            |json| json["clarification"]["answers"] = serde_json::json!([]),
+            missing(rule::ANSWERS_INCOMPLETE),
+        ),
+        (
+            "seat B's dissent dropped from the disposition",
+            |json| {
+                json["disposition"]["members"]
+                    .as_array_mut()
+                    .expect("dispositions")
+                    .pop();
+            },
+            run_refusal(rule::DISSENT_LOST),
+        ),
+        (
+            "the findings out of slot order",
+            |json| {
+                json["findings"].as_array_mut().expect("findings").reverse();
+            },
+            record_refusal(rule::RECORD_NOT_CANONICAL),
+        ),
+    ];
+    for (case, edit, refusal) in cases {
+        assert_eq!(restore_edited(&record, edit).err(), Some(refusal), "{case}");
+    }
+    PlanningPairRun::restore(&spec(), record).expect("the untouched record restores");
+}
+
+#[test]
+fn a_stored_record_has_no_room_for_a_judge_a_verdict_or_a_second_round() {
+    let record = disposed().record;
+    let json = serde_json::to_value(&record).expect("JSON");
+    for (field, value) in [
+        ("judge", serde_json::json!({"slot": "judge"})),
+        ("verdict", serde_json::json!("compliant")),
+        ("aggregate", serde_json::json!("pass")),
+        ("settled", serde_json::json!(true)),
+        ("clarifications", serde_json::json!([])),
+        ("round", serde_json::json!(2)),
+    ] {
+        let mut shaped = json.clone();
+        shaped[field] = value;
+        assert!(
+            serde_json::from_value::<PlanningPairRecord>(shaped).is_err(),
+            "{field}"
+        );
+    }
+    let mut shaped = json.clone();
+    shaped["members"][0]["capabilities"] = serde_json::json!(["write"]);
+    assert!(
+        serde_json::from_value::<PlanningPairRecord>(shaped).is_err(),
+        "a stored member cannot gain an authority"
+    );
+    // Stored bytes are held to their canonical form and their address.
+    let document = record.canonicalize().expect("canonical");
+    let pretty = serde_json::to_string_pretty(&json).expect("pretty JSON");
+    assert!(PlanningPairRecord::from_stored(&pretty, document.hash()).is_err());
+    assert!(
+        PlanningPairRecord::from_stored(document.json(), &ContentHash::of(b"elsewhere")).is_err()
+    );
+    assert_eq!(
+        PlanningPairRecord::from_stored(document.json(), document.hash()).expect("re-admitted"),
+        record
+    );
 }

@@ -43,6 +43,7 @@ pub mod capability;
 pub mod container;
 pub mod fake;
 pub mod observation;
+pub mod planning_pair;
 pub mod provenance;
 pub mod refusal;
 pub mod request;
