@@ -1912,6 +1912,55 @@ authority change was needed for it. What stays outside, and why:
 - **No Direct host.** The coordinator is API-independent, but nothing composes it outside the daemon. A test host with fake ports is not a qualified owner.
 - **Unchanged holds.** The calibration stays UNKNOWN. R3 stays at root `8ba` and module `419`. Neither TASK-004 nor TASK-002 is closed.
 
+### Audit 6f on `7d0f640f`, and this documentation rework
+
+**The audit.** The independent 6f audit (Codex turn 18) of
+`7d0f640f6365a69dca601e1e8853e2ede0b3c5e1` (tree `3c0ebd4789215f66cb8d93146694e0f8d722252c`,
+parent `8c706eec`) returned **overall FAIL**, with the **technical source PASS**. The sole finding
+was the current gaps list's B1b line, which read "The corrected record awaits TPM's fresh b887 and
+6f review." That was false at `7d0f640f`, because `8c706eec` had been accepted after both passed.
+The overall result for `7d0f640f` stays FAIL; it is not relabelled.
+
+**What the audit reseeded, and what it did not.** The audit independently reseeded **only** three
+mutants. Each was red (exit 101) and restored hash-identical:
+- MUT-01, the caller authorized after the replay: 10 failures;
+- MUT-07, a lost advance accepted while still materializing: its dedicated test fails;
+- MUT-14, the materialization route guard removed: 4 failures.
+
+The other 18 rows remain this seat's historical producer evidence, not the auditor's. In the
+retained records all 21 were killed and restored: 9 fail exactly one test and 12 fail more. No kill
+is claimed twice and none is borrowed.
+
+**Verify counts and parity, accepted as recorded.** The audit accepted the verify counts and did
+not duplicate them: runtime 124, daemon unit 154, loopback planning pair 44 and legacy 60. The
+parity record stands: 10 normalized lines, `2040a1c3…`.
+
+**The correction.** Both current B1b statements now record what TPM relays. One is the ASMA-8113
+entry, which read "Its technical compatibility parity is for review on its own head"; the other is
+the "Shared invocation" line.
+- **Accepted:** B1b at the corrected `8c706eec` (tree `c96abf24`), after b887's verify and 6f's audit passed there.
+- **Bounds:** the acceptance covers the assembled B1b source only. It is not a new owner grant; the owner compatibility PASS stays scoped to the exact `be9537aa`.
+- **Kept:** `6ed03f2c` stays overall FAIL, with its technical source and compatibility parity PASS.
+
+Each W3a line in the current list now names this audit.
+
+**Historical records stay as written.** These pending statements were true when written and are
+not current:
+- B1b's "Limits kept accurate": its parity "is for review on the new head", written at `6ed03f2c`.
+- The two current-list lines quoted above, written at `6ed03f2c` and `8c706eec`.
+- W3a's "Review lineage and holds": "B1b's review state at `8c706eec` is TPM's to relay; this record claims none", written at `7d0f640f`.
+
+**Scope of the rework.** The rework changes only this file.
+- **No new claim:** no kill, acceptance or owner grant. The corrected head carries no acceptance before TPM's focused b887 verify and then 6f audit, and this seat dispatches neither.
+- **Unchanged:** production code, tests, Cargo, the runtime, API, store, schema, intents and profiles. Every other blob equals `7d0f640f`'s.
+- **Not re-run:** Cargo, tests and mutation, because no source byte changed.
+- **Unchanged holds:** every failed head, mutation result and trust limit above; the B2 proposal; the calibration envelope; R3 and the ECP flags.
+
+**Review lineage:**
+- The owner compatibility PASS covers the exact `be9537aa` only.
+- B1a is accepted at `8cd2305f`, and B1b at `8c706eec`.
+- `cabc4ac2`, `6ed03f2c` and `7d0f640f` each stay FAIL.
+
 ## Remaining capability gaps after slice four (current)
 
 - **ASMA-8113 identity compatibility.** Igor designated the 6f reviewer at 10:58:58Z ("can you do both? i allow you", recorded at checkpoint `a8560cb1`). As TPM relays, the exact-source owner compatibility review of `be9537aaa0245ce67cc683a8348f2b5f5addd5eb` (tree `0712a7ea7886723bf7adf2bb79dbee16a4b44012`) passed and was accepted.
@@ -1919,7 +1968,8 @@ authority change was needed for it. What stays outside, and why:
   - **What it grants:** nothing broader. There is no integration, deployment, native qualification, ADR or task-closure authority.
   - **Later heads:** a later head is not covered automatically. B1a changes no identity vocabulary, and the 6f audit of `cabc4ac2` rechecked its technical compatibility parity independently. That head's overall audit is still FAIL; see "Audit 6f on `cabc4ac2`" under slice B1a.
   - **Accepted heads since:** B1a is accepted at the corrected `8cd2305f` (tree `1ab35adf`), after b887's verify and 6f's audit passed there, as TPM relays.
-  - **B1b:** it changes no identity vocabulary either. Its technical compatibility parity is for review on its own head, and nothing is inherited.
+  - **B1b:** it changes no identity vocabulary either. B1b is accepted at the corrected `8c706eec` (tree `c96abf24`), after b887's verify and 6f's audit passed there, as TPM relays. That acceptance is bounded to the assembled B1b source. It is not a new owner grant, and no owner meaning is inherited.
+  - **W3a:** it changes no identity vocabulary. The 6f audit of `7d0f640f` passed its technical source and failed overall on one documentation finding. No acceptance or owner meaning follows.
 - **Paseo member-surface capability (one row).**
 
   | Field | Value |
@@ -1947,8 +1997,10 @@ authority change was needed for it. What stays outside, and why:
 - **Direct-mode consumer.** The asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
 - **Shared invocation.**
   - **B1a:** moved the pure caller eligibility and member context. Accepted at `8cd2305f`.
-  - **B1b:** moves the recovery plan and outcome and the five intent fingerprints, at source on this branch. The 6f audit of `6ed03f2c` failed solely on this record's mutation distribution; its technical source and compatibility parity passed. The corrected record awaits TPM's fresh b887 and 6f review.
-  - **W3a:** moves the invocation coordinator (create, replay, resume-materialization) into `kontor-runtime` `planning_pair::application`, behind one owner port the daemon alone implements. It is at source on this branch, for TPM's b887 and 6f review. See "Shared invocation, slice W3a".
+  - **B1b:** moved the recovery plan and outcome and the five intent fingerprints. Accepted at the corrected `8c706eec` (tree `c96abf24`), after b887's verify and 6f's audit both passed there, as TPM relays.
+    - **Bounds:** the acceptance covers the B1b source as assembled at that head. It is not a new owner grant; the owner compatibility PASS stays scoped to the exact `be9537aa`.
+    - **History:** the 6f audit of `6ed03f2c` stays overall FAIL, solely on this record's mutation distribution; its technical source and compatibility parity passed.
+  - **W3a:** moves the invocation coordinator (create, replay, resume-materialization) into `kontor-runtime` `planning_pair::application`, behind one owner port the daemon alone implements. It is at source on this branch, for TPM's b887 and 6f review. The 6f audit of `7d0f640f` is overall FAIL, solely on the earlier B1b line in this list; its technical source passed. The corrected head carries no new acceptance before TPM's b887 verify and then 6f audit. See "Shared invocation, slice W3a" and "Audit 6f on `7d0f640f`".
   - **Do not exist:** direct actuation, a direct caller verifier (Q1, Igor's trust-boundary decision) and one generation-fenced writer (Q3, B2).
 - **TPM-owned placement.** No TPM operation, receipt or procedure wraps placement.
 - **Concurrent resume.** This is repaired for the planning pair:
