@@ -18,6 +18,7 @@
 - Frontier A operation (2026-10-02): the frozen caller's same-native member recovery, under the LSA decision. It is built on `75f253cb` (tree `d9e728c7`) after its bounded verify and audit passed. It covers the operation, the forward migration 0123 with the pair's known-native claim, tests and docs, at source and fixture level only. See "Frontier A: the frozen caller's same-native member recovery" below.
 - Frontier C, slice C-M (2026-10-02): the module readiness diagnostic, a source seam only, under the LSA's frontier C disposition (SHA-256 `084b7ca2…978b`). It is built on `98e5868f` (tree `9d150feb`) after verify and audit passed. It covers the shared member rule, the three-plane readiness seam and its tests; nothing exposes it yet. See "Frontier C, slice C-M" below.
 - Shared invocation, slice B1a (2026-10-02): pure frozen-caller eligibility and member launch and recovery context derivation, moved into `kontor-runtime::planning_pair` under the LSA's Q1–Q4 disposition (SHA-256 `212eab0c…0169`). It is built on `be9537aa` (tree `0712a7ea`). The daemon keeps every read, its order, authentication, replay, CAS, effects and the byte-identical refusals. See "Shared invocation, slice B1a" below.
+- B1a documentation rework (2026-10-02): the independent 6f audit failed `cabc4ac2` (tree `b92c9304`) solely for a stale current-state claim that the ASMA-8113 reviewer was unassigned; code and parity passed. The rework is built on `cabc4ac2`, dispatched by TPM, and corrects only this record. See "Audit 6f on `cabc4ac2`" under slice B1a.
 - The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. At slice four it holds 53 files, which hash to `4ff4c1bc5cbe7c7ce505442d50827f91d64b0bb308cd18183a39d42339e49e87`: each file's SHA-256 in sorted path order, hashed again. Its files were last written at 2026-10-02 00:25 CEST. That run was not this writing session's (its only workspace run was on 2026-09-29), and slice four did not touch them. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
@@ -1561,9 +1562,42 @@ after. Moved sites borrow no earlier daemon-line kill.
 - **Reserved.** Igor decides the Q1 trust boundary on an actual proposal. No issuer, key, token endpoint or attestation API is proposed or added. The B2 single-writer design is a later gate.
 - **Unchanged holds.** The calibration stays UNKNOWN, with no flag or live pin change. R3 stays at root `8ba` and module `419`, with the install review independent. Neither TASK-004 nor TASK-002 is closed.
 
+### Audit 6f on `cabc4ac2`, and this documentation rework
+
+**The audit.** The independent 6f audit of `cabc4ac2baf39ca598002f247f0cdb6ad64fc2ba` (tree
+`b92c9304241923c806c9894bea49b15f3f717c26`) returned **FAIL**. The sole finding was a
+current-state claim in "Remaining capability gaps after slice four (current)" that the ASMA-8113
+reviewer was unassigned.
+- The technical code and parity checks passed.
+- Five independent mutants were killed and restored.
+- The equivalent lifecycle mutant (B1A-MUT-06) was retained as equivalent.
+
+The overall result for `cabc4ac2` stays FAIL; it is not relabelled.
+
+**The correction.** The ASMA-8113 reviewer is assigned:
+- Igor designated 6f at 10:58:58Z ("can you do both? i allow you", recorded at checkpoint `a8560cb1`).
+- As TPM relays, the exact-source owner compatibility review of `be9537aa` (tree `0712a7ea`) passed and was accepted.
+- That satisfies the reviewer-assignment and compatibility limb for the frozen `be9537aa`.
+- B1a carries no owner-meaning change, and the 6f audit independently rechecked its technical compatibility parity.
+- No broader integration, deployment, native qualification, ADR or task-closure authority follows.
+
+The current gaps list now says this.
+
+**Historical records stay as written.** The earlier "unassigned" statements were true when
+written: slice four, the D-3 member surface, and C-M's limits. C-M's head `be9537aa` was
+committed at 09:37Z, before the designation.
+
+**Scope of the rework.** The rework changes only this file.
+- **Unchanged:** production code, tests, API, schema, pins, the root plan, other checkouts and Jira.
+- **Not re-run:** the Cargo suites, because no source changed.
+- **Unchanged limits:** every failed head, mutation result and trust limit above.
+
 ## Remaining capability gaps after slice four (current)
 
-- **ASMA-8113 fence.** The reviewer is unassigned, so the widened identity vocabulary's acceptance, integration and deployment wait on an explicit assignment and an exact verdict.
+- **ASMA-8113 identity compatibility.** Igor designated the 6f reviewer at 10:58:58Z ("can you do both? i allow you", recorded at checkpoint `a8560cb1`). As TPM relays, the exact-source owner compatibility review of `be9537aaa0245ce67cc683a8348f2b5f5addd5eb` (tree `0712a7ea7886723bf7adf2bb79dbee16a4b44012`) passed and was accepted.
+  - **What it covers:** the reviewer-assignment and compatibility limb, for that frozen head only.
+  - **What it grants:** nothing broader. There is no integration, deployment, native qualification, ADR or task-closure authority.
+  - **Later heads:** a later head is not covered automatically. B1a changes no identity vocabulary, and the 6f audit of `cabc4ac2` rechecked its technical compatibility parity independently. That head's overall audit is still FAIL; see "Audit 6f on `cabc4ac2`" under slice B1a.
 - **Paseo member-surface capability (one row).**
 
   | Field | Value |
