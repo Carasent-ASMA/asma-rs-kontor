@@ -19179,6 +19179,130 @@ impl Services {
 
 #[async_trait]
 impl ApplicationOperations for Services {
+    fn recall_memory(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        run: Option<AgentRunId>,
+        key: Option<&IdempotencyKey>,
+    ) -> Result<kontor_store::memory::RecalledMemory, ApiError> {
+        use kontor_core::memory::{DegradedReason, RecallIntent};
+        use kontor_store::memory::SemanticRecall;
+        let state = self.state()?;
+        if run.is_some() != key.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "frozen recall requires its idempotency key",
+            ));
+        }
+        if let Some(run) = run {
+            let agent = state
+                .with_store(|store| store.get_agent_run(project_id, run))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "no such agent run exists in this project",
+                    )
+                })?;
+            let team = state
+                .with_store(|store| store.get_team_run(project_id, agent.team_run_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "no such team run exists in this project",
+                    )
+                })?;
+            if team.task_id != task_id {
+                return Err(self.deny(
+                    ApiErrorCode::MemoryBindingConflict,
+                    "the run serves another task",
+                ));
+            }
+            if let Some(frozen) = state
+                .with_store(|store| {
+                    store.replay_experiences_idempotent(
+                        project_id,
+                        &run.to_string(),
+                        &task_id.to_string(),
+                        key.expect("validated key"),
+                    )
+                })
+                .map_err(|error| kontor_api::memory::map(state, error))?
+            {
+                return Ok(frozen);
+            }
+        }
+        let task = self.task_row(project_id, task_id)?;
+        let workflow = state
+            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "experience recall requires a selected work-profile phase",
+                )
+            })?;
+        let mut declared_scope = Vec::new();
+        if let Some(epic_id) = task.mini_project_id
+            && let Some(scope) = state
+                .with_store(|store| store.get_epic_execution_scope(project_id, epic_id))
+                .map_err(|error| self.refuse(&error))?
+        {
+            declared_scope.push(scope.short_title.as_str().to_owned());
+        }
+        let intent = RecallIntent {
+            schema_version: 1,
+            task_id: task_id.to_string(),
+            task_title: task.title.as_str().to_owned(),
+            module: task.module.map(|module| module.as_str().to_owned()),
+            declared_scope,
+            phase: workflow.current_phase.as_str().to_owned(),
+        };
+        state
+            .with_store(|store| match run {
+                Some(run) => store.recall_experiences_idempotent(
+                    project_id,
+                    &run.to_string(),
+                    &task_id.to_string(),
+                    key.expect("validated key"),
+                    &intent,
+                    &SemanticRecall::Degraded(DegradedReason::Absent),
+                ),
+                None => store.preview_recall(
+                    project_id,
+                    &intent,
+                    &SemanticRecall::Degraded(DegradedReason::Absent),
+                ),
+            })
+            .map_err(|error| kontor_api::memory::map(state, error))
+    }
+    fn rebuild_memory_projection(
+        &self,
+        project_id: ProjectId,
+        _key: &IdempotencyKey,
+        request: &kontor_api::memory::ProjectionRebuildRequest,
+    ) -> Result<kontor_store::memory::ProjectionReadback, ApiError> {
+        let state = self.state()?;
+        let preview = state
+            .with_store(|store| store.projection_preview(project_id))
+            .map_err(|error| kontor_api::memory::map(state, error))?;
+        if request.expected_generation != preview.active_generation
+            || request.expected_memory_cursor != preview.snapshot.memory_cursor
+            || request.preview_digest != preview.snapshot.digest
+        {
+            return Err(self.deny(
+                ApiErrorCode::ProjectionConflict,
+                "the projection preview is stale",
+            ));
+        }
+        Err(self.deny(
+            ApiErrorCode::ProjectionUnavailable,
+            "the semantic projection adapter is unavailable",
+        ))
+    }
+
     fn open_questions(
         &self,
         project_id: ProjectId,

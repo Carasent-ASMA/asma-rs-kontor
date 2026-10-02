@@ -7002,6 +7002,22 @@ pub struct TicketClaimDto {
 /// different bytes is a conflict.
 #[async_trait]
 pub trait ApplicationOperations: Send + Sync {
+    /// Derive recall from authoritative task state; a run replays its frozen binding first.
+    fn recall_memory(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        run: Option<AgentRunId>,
+        key: Option<&IdempotencyKey>,
+    ) -> Result<kontor_store::memory::RecalledMemory, ApiError>;
+    /// Rebuild through the qualified optional adapter, never claiming success while absent.
+    fn rebuild_memory_projection(
+        &self,
+        project_id: ProjectId,
+        key: &IdempotencyKey,
+        request: &crate::memory::ProjectionRebuildRequest,
+    ) -> Result<kontor_store::memory::ProjectionReadback, ApiError>;
+
     /// Close the local command recorded under `key` after its application route
     /// has produced a successful response.
     ///

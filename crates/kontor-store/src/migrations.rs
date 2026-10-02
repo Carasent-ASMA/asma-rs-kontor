@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 119;
+pub const SCHEMA_VERSION: i64 = 120;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -415,6 +415,8 @@ const MIGRATIONS: &[&str] = &[
     // the SQLite boundary so recorded publication evidence cannot be rewritten
     // or erased after insertion (ASMA-8102 / PUB-01).
     include_str!("../migrations/0119_publication_attestations_immutable.sql"),
+    // Schema v120. Typed experience eligibility, immutable projections and recall metadata.
+    include_str!("../migrations/0120_experience_memory_projection.sql"),
 ];
 
 const _: () = assert!(
@@ -620,6 +622,12 @@ fn apply_pending(
     // transaction or none of them may move at all.
     if version < 47 {
         canonicalize_operational_topology_v47(&transaction)?;
+    }
+
+    // Schema v120's derived cache uses the canonical Rust validator, never a
+    // permissive SQL shape test. Its writes share the ordered migration transaction.
+    if version < 120 {
+        crate::memory::rebuild_experience_eligibility_in(&transaction)?;
     }
 
     // The Realm is created exactly once, by the open that created the schema. An

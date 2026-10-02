@@ -537,12 +537,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "192 forever": this is what makes a later contract change fail here, so a
+    // Not "200 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        192,
+        200,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
@@ -550,7 +550,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         REGISTRY.len() - CLI_ONLY.len(),
-        191,
+        199,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -562,7 +562,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // route serves the document itself and is not self-documented.
     assert_eq!(
         documented().len(),
-        193,
+        201,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -696,6 +696,14 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // template imposed, which is the same kind of act as waiving a gate — so
         // the daemon requires admin on the route and the registry says so too.
         ("kontor_role_slot_waive", CallerTier::Admin),
+        ("kontor_experience_propose", CallerTier::Operator),
+        ("kontor_memory_recall_preview", CallerTier::Observer),
+        ("kontor_memory_recall_freeze", CallerTier::Operator),
+        ("kontor_memory_recall_get", CallerTier::Observer),
+        ("kontor_memory_projection_preview", CallerTier::Observer),
+        ("kontor_memory_projection_get", CallerTier::Observer),
+        ("kontor_memory_projection_rebuild", CallerTier::Operator),
+        ("kontor_experience_classify", CallerTier::Observer),
         ("kontor_memory_search", CallerTier::Observer),
         ("kontor_memory_history", CallerTier::Observer),
         ("kontor_memory_propose", CallerTier::Operator),
