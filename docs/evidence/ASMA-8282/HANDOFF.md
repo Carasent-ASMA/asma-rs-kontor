@@ -20,6 +20,7 @@
 - Shared invocation, slice B1a (2026-10-02): pure frozen-caller eligibility and member launch and recovery context derivation, moved into `kontor-runtime::planning_pair` under the LSA's Q1–Q4 disposition (SHA-256 `212eab0c…0169`). It is built on `be9537aa` (tree `0712a7ea`). The daemon keeps every read, its order, authentication, replay, CAS, effects and the byte-identical refusals. See "Shared invocation, slice B1a" below.
 - B1a documentation rework (2026-10-02): the independent 6f audit failed `cabc4ac2` (tree `b92c9304`) solely for a stale current-state claim that the ASMA-8113 reviewer was unassigned; code and parity passed. The rework is built on `cabc4ac2`, dispatched by TPM, and corrects only this record. See "Audit 6f on `cabc4ac2`" under slice B1a.
 - Shared invocation, slice B1b (2026-10-02): the recovery plan and outcome and the five intent fingerprints, moved into `kontor-runtime::planning_pair`. It is built on the accepted `8cd2305f` (tree `1ab35adf`). The daemon keeps every read, authentication before replay, CAS, receipts, effects and the byte-identical refusals and intents. See "Shared invocation, slice B1b" below.
+- B1b documentation rework (2026-10-02): the independent 6f audit failed `6ed03f2c` (tree `70a0d852`) solely for this record's mutation distribution (33 single, 5 multi; MUT-34 fails two recovery loopbacks). Its technical source and compatibility parity passed. The rework is built on `6ed03f2c` and corrects only this record. See "Audit 6f on `6ed03f2c`" under slice B1b.
 - The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. At slice four it holds 53 files, which hash to `4ff4c1bc5cbe7c7ce505442d50827f91d64b0bb308cd18183a39d42339e49e87`: each file's SHA-256 in sorted path order, hashed again. Its files were last written at 2026-10-02 00:25 CEST. That run was not this writing session's (its only workspace run was on 2026-09-29), and slice four did not touch them. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
@@ -1690,7 +1691,11 @@ kill is borrowed from B1a or earlier history.
 | B1B-MUT-01–11 | fingerprints: ticket, account order, vendor source, caller generation, round operation, member generation, addressed order, disposition, asserted conversation, runtime generation, context hash | 11 red, each failing exactly one runtime test |
 | B1B-MUT-12–29 | recovery: terminal state, generation, peer claim, bound conversation, claimed conversation, session, conversation, context, observed-at order, readback refusal, qualification, stale rule, same native, unknown conversation, qualification ignored, provenance not required, requalified refusal, requalified observation | 18 red: 14 fail one runtime test, 4 fail two or three |
 | B1B-MUT-30–31 | mapping: no known session as `StaleBinding`; the runtime's rule replaced | 2 red, each failing one daemon unit test |
-| B1B-MUT-32–38 | adapter: every recovery refusal as `StaleBinding`; revision before disposed; withdrawal of only an unbound member; invoke exclusions swapped; an answer fingerprinted as a finding; recovery context as placement; another presented generation | 7 red, each at its intended loopback assertion |
+| B1B-MUT-32–38 | adapter: every recovery refusal as `StaleBinding`; revision before disposed; withdrawal of only an unbound member; invoke exclusions swapped; an answer fingerprinted as a finding; recovery context as placement; another presented generation | 7 red at their intended loopback assertions. Six fail exactly one loopback test. **MUT-34 fails two:** both recovery loopbacks (`every_recovery_refusal_answers_its_baseline_body` and `a_bound_member_withdraws_and_a_disposed_pair_refuses_exactly_as_before`). |
+
+**In all:** 38 red. 33 fail exactly one test and 5 fail more: MUT-15 fails three; MUT-17, 21, 27
+and 34 fail two each. These counts are this seat's retained records
+(`/tmp/asma-8282-b1b-mut/results.jsonl`).
 
 There are no survivors and no equivalents. Three cases were added while planning these
 mutants, before seeding, because without them the mutant would have survived:
@@ -1704,6 +1709,36 @@ mutants, before seeding, because without them the mutant would have survived:
 - **Compatibility on this head.** B1b changes no identity vocabulary. Its technical compatibility parity is for review on the new head; no owner meaning is inherited.
 - **Reserved.** Igor decides the Q1 trust boundary. The B2 single-writer engine and direct actuation do not exist.
 - **Unchanged holds.** The calibration stays UNKNOWN. R3 stays at root `8ba` and module `419`. Neither TASK-004 nor TASK-002 is closed.
+
+### Audit 6f on `6ed03f2c`, and this documentation rework
+
+**The audit.** The independent 6f audit of `6ed03f2cc31702528a5f5278aeba531e16b18029` (tree
+`70a0d852489dcba3e90af712dda0dab294ca2da4`) returned **FAIL**. The technical source and the
+affected compatibility parity passed. The sole finding was this ledger's mutation
+distribution: it read as 34 mutants failing one test and 4 failing more. The retained records
+show 33 and 5, because MUT-34 fails both recovery loopbacks. The overall result for `6ed03f2c`
+stays FAIL; it is not relabelled.
+
+**What the audit reseeded, and what it did not.** The audit independently reseeded **only**
+MUT-34:
+- baseline: 2 of 2 green;
+- mutant: exit 101, with both recovery loopbacks failing;
+- restored: 2 of 2 green, daemon SHA-256 `0be516161005bdad79ae6ba8a387aaf1e77fb51fdc5d48e45f1abcb94530f25d`.
+
+The other 37 rows remain this seat's historical producer evidence, not the auditor's. In the
+retained records all 38 were killed and restored.
+
+**The correction.** The MUT-32–38 row now describes MUT-34's two failures, and a total states
+the distribution. The rework changes only this file:
+- **No new claim:** no kill and no owner grant.
+- **Unchanged:** production code, tests, source hashes and the source frontier.
+- **Not re-run:** Cargo and mutation, because no source changed.
+
+**Review lineage, unchanged:**
+- Igor designated 6f as the ASMA-8113 reviewer at 10:58:58Z.
+- The exact-source owner compatibility PASS covers the frozen `be9537aa` (tree `0712a7ea`) only.
+- B1a is accepted at `8cd2305f` (tree `1ab35adf`), after b887's verify and 6f's audit passed there.
+- `cabc4ac2` and `6ed03f2c` each stay FAIL.
 
 ## Remaining capability gaps after slice four (current)
 
@@ -1740,7 +1775,7 @@ mutants, before seeding, because without them the mutant would have survived:
 - **Direct-mode consumer.** The asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
 - **Shared invocation.**
   - **B1a:** moved the pure caller eligibility and member context. Accepted at `8cd2305f`.
-  - **B1b:** moves the recovery plan and outcome and the five intent fingerprints. It is implemented at source on this branch and awaits TPM's b887 and 6f review.
+  - **B1b:** moves the recovery plan and outcome and the five intent fingerprints, at source on this branch. The 6f audit of `6ed03f2c` failed solely on this record's mutation distribution; its technical source and compatibility parity passed. The corrected record awaits TPM's fresh b887 and 6f review.
   - **Do not exist:** direct actuation, a direct caller verifier (Q1, Igor's trust-boundary decision) and one generation-fenced writer (Q3, B2).
 - **TPM-owned placement.** No TPM operation, receipt or procedure wraps placement.
 - **Concurrent resume.** This is repaired for the planning pair:
