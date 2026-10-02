@@ -8253,19 +8253,53 @@ impl Services {
             // Read for the occupancy actually filling the seat, so a replaced
             // seat reports the persona *its own* generation was launched under
             // rather than inheriting the predecessor's.
+            //
+            // The generation comes from the seat, not from the persona table.
+            // `latest_hosted_seat_role_persona` answers a different question --
+            // the highest generation that happens to *have* a persona row -- and
+            // the two diverge exactly where it matters: a seat claim opens the
+            // next occupancy through `replace_hosted_topology_seat_route`
+            // without recording a persona, so after a claim supersedes a
+            // launched occupancy the maximum persona row is the predecessor's.
+            // Reporting it here would attribute a retired native's persona to
+            // the claimant, while the occupancy chain truthfully says null.
+            // A current generation with no row is null, which is the same
+            // answer the chain gives and the only honest one.
             seat.role_persona = match seat.seat_binding_id {
-                Some(seat_binding_id) => state
-                    .with_store(|store| {
-                        store.latest_hosted_seat_role_persona(project_id, seat_binding_id)
-                    })
-                    .map_err(|error| self.refuse(&error))?
-                    .map(|(occupancy_generation, persona)| CoreTeamSeatPersonaDto {
-                        role_code: persona.role_code,
-                        prompt_hash: persona.prompt_hash,
-                        delivery: persona.delivery.as_str().to_owned(),
-                        occupancy_generation,
-                        frozen_at: persona.frozen_at,
-                    }),
+                Some(seat_binding_id) => {
+                    // The store's own definition of the current occupancy --
+                    // `1 + count(history)` -- which is what the occupancy chain
+                    // derives positionally. One rule, read twice, never two.
+                    let current_generation = state
+                        .with_store(|store| {
+                            store.hosted_topology_seat_occupancy_generation(
+                                project_id,
+                                seat_binding_id,
+                            )
+                        })
+                        .map_err(|error| self.refuse(&error))?;
+                    match current_generation {
+                        Some(occupancy_generation) => state
+                            .with_store(|store| {
+                                store.get_hosted_seat_role_persona(
+                                    project_id,
+                                    seat_binding_id,
+                                    occupancy_generation,
+                                )
+                            })
+                            .map_err(|error| self.refuse(&error))?
+                            .map(|persona| CoreTeamSeatPersonaDto {
+                                role_code: persona.role_code,
+                                prompt_hash: persona.prompt_hash,
+                                delivery: persona.delivery.as_str().to_owned(),
+                                occupancy_generation,
+                                frozen_at: persona.frozen_at,
+                            }),
+                        // No bound occupancy is no current persona, rather than
+                        // the newest one some earlier occupancy happened to have.
+                        None => None,
+                    }
+                }
                 None => None,
             };
         }
