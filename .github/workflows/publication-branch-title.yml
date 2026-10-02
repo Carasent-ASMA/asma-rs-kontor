@@ -1,10 +1,12 @@
 # Publication branch and title identity (ASMA-8101 / ASMA-8103).
 #
-# Trusted-base design: `pull_request_target` runs this workflow from the
-# default branch, the checker reads the current event metadata as data, and
-# nothing from the PR head or merge commit is ever checked out or executed.
-# The checker itself refuses any current base ref other than master, so the
-# trigger keeps no base filter and retargeting stays observable via `edited`.
+# Trusted-source design: `pull_request_target` runs this workflow from the
+# default branch; the checker is fetched through the GitHub Contents API from
+# the exact immutable workflow revision (`github.workflow_sha`) into the
+# runner temp directory; nothing from the PR head or merge commit is ever
+# fetched or executed. The checker itself refuses any current base ref other
+# than master, so the trigger keeps no base filter and retargeting stays
+# observable via `edited`.
 name: Publication branch and title identity
 
 on:
@@ -28,19 +30,41 @@ jobs:
     name: asma/publication-branch-title
     runs-on: ubuntu-latest
     steps:
-      - name: Check out the exact trusted base revision
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
-          fetch-depth: 1
+      - name: Fetch the checker from the exact workflow revision
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKER_SOURCE_SHA: ${{ github.workflow_sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CHECKER_PATH: ${{ runner.temp }}/publication_branch_title.py
+        run: |
+          set -euo pipefail
+
+          test "${#CHECKER_SOURCE_SHA}" -eq 40
+          case "$CHECKER_SOURCE_SHA" in
+            *[!0-9a-f]*) exit 1 ;;
+          esac
+
+          printf 'checker_source_sha=%s\n' "$CHECKER_SOURCE_SHA"
+          printf 'event_base_sha=%s\n' "$EVENT_BASE_SHA"
+
+          curl --fail-with-body --silent --show-error --location \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github.raw+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/contents/.github/scripts/publication_branch_title.py?ref=${CHECKER_SOURCE_SHA}" \
+            --output "$CHECKER_PATH"
+
+          test -s "$CHECKER_PATH"
 
       - name: Evaluate the current branch and title
+        shell: bash
         env:
+          CHECKER_PATH: ${{ runner.temp }}/publication_branch_title.py
           PR_ACTION: ${{ github.event.action }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: python3 .github/scripts/publication_branch_title.py
+        run: python3 "$CHECKER_PATH"
