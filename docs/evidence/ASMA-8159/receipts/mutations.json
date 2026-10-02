@@ -1,0 +1,742 @@
+[
+  {
+    "mutant": "MUT-001",
+    "path": "crates/kontor-core/src/memory.rs",
+    "verdict": "KILLED",
+    "base_sha256": "d441653116bfeb841fe322ebffb84820a843a1ed47cffff313f2bd06c2d0876f",
+    "mutant_sha256": "e0bc1d21a7824ba032caff04a5e9c02d880d0ca516759555591b3283079f439d",
+    "restored_sha256": "d441653116bfeb841fe322ebffb84820a843a1ed47cffff313f2bd06c2d0876f",
+    "patch": "docs/evidence/ASMA-8159/receipts/mut-001.patch.gz",
+    "patch_sha256": "29b3d0bf33e100e2e5d5cb2585e2858da3e146ceddffb7644f1b0350df4dfae3",
+    "patch_gzip_sha256": "9646ba25875cca081bfa6b9662d1060f7db33525cf91913d917598498a033d71",
+    "baseline": {
+      "name": "mut-001-baseline",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-core",
+        "--test",
+        "experience_memory",
+        "--locked",
+        "--offline",
+        "--",
+        "strict_experience_roundtrip_and_non_memory_eligibility",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-core --test experience_memory --locked --offline -- strict_experience_roundtrip_and_non_memory_eligibility --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 0.248,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-001-baseline.log.gz",
+      "log_sha256": "77498fb8b8d636629a1c31c916b6882416b7d777f757a1342994acf4a62174eb",
+      "raw_sha256": "7e6df37ffbfef7b44cec7845731afec8d3ceaf9831f37a0cc753d228033b16ba",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.01s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "seeded": {
+      "name": "mut-001-seeded",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-core",
+        "--test",
+        "experience_memory",
+        "--locked",
+        "--offline",
+        "--",
+        "strict_experience_roundtrip_and_non_memory_eligibility",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-core --test experience_memory --locked --offline -- strict_experience_roundtrip_and_non_memory_eligibility --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 101,
+      "seconds": 8.263,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-001-seeded.log.gz",
+      "log_sha256": "e47af97b6032105d596be3dab835c0c285199b338b76a345010da8b45201ece1",
+      "raw_sha256": "3903d052655a850f43b8e8fa78b3612d4dde562dbca176ad875abd9cebfd7d90",
+      "compiled": true,
+      "test_results": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s"
+      ],
+      "failed_tests": [
+        "strict_experience_roundtrip_and_non_memory_eligibility"
+      ],
+      "compile_failure": false
+    },
+    "restored": {
+      "name": "mut-001-restored",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-core",
+        "--test",
+        "experience_memory",
+        "--locked",
+        "--offline",
+        "--",
+        "strict_experience_roundtrip_and_non_memory_eligibility",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-core --test experience_memory --locked --offline -- strict_experience_roundtrip_and_non_memory_eligibility --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 1.566,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-001-restored.log.gz",
+      "log_sha256": "299b27e631a5b7c0c940871516cce4b6934ef8ade06eae18cbd37fb7fd69475b",
+      "raw_sha256": "cab13a0508a98856086f8126da4c99c45622372c922d4a37d61405606dcac145",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.01s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "base_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "mutant_virtual_git_tree": "c97c7b86f004141e57c71ef7d188d16941439879",
+    "restored_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "base_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "mutant_source_manifest_sha256": "a9867f8d7dea9965e701df2a4545ab3cfc5b57e456f3d269b27585095a7298f3",
+    "restored_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "tree_hash_method": "Git SHA-1 blob/tree serialization over initial tracked tree with only the seeded blob substituted; no Git object/index write; ASMA-8159 untracked evidence excluded"
+  },
+  {
+    "mutant": "MUT-002",
+    "path": "crates/kontor-store/src/memory.rs",
+    "verdict": "KILLED",
+    "base_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+    "mutant_sha256": "1b2532f95e535f21c848063be5dc6f0ad521641c8faa7fd76d82e03c7d2a154b",
+    "restored_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+    "patch": "docs/evidence/ASMA-8159/receipts/mut-002.patch.gz",
+    "patch_sha256": "d241f51b4fd088311f283fb515308c53033c7e60c9098b50ce41f291dc9e9c0b",
+    "patch_gzip_sha256": "dc9b8abec458d4bb29a7e4b11066fa7c6bced4bf6fa715a9335a715c8a4c6010",
+    "baseline": {
+      "name": "mut-002-baseline",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 11.362,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-002-baseline.log.gz",
+      "log_sha256": "26e682cfea1be034653076c89a4d5462c13d64bb82ceaac8d9d7c46c56de3c18",
+      "raw_sha256": "68c4a8384f497837a9c72ed46952477f24a3b3a0f3335d2129ef3c0fd658a84a",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 1.72s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "seeded": {
+      "name": "mut-002-seeded",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 101,
+      "seconds": 9.705,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-002-seeded.log.gz",
+      "log_sha256": "410fff8c6bca4f94a826190a2eebcef16c0ce8a6c6a99668f8926de29736c544",
+      "raw_sha256": "33b5a27b5b50a58ebdf1b2b8bca56e51370a94dd2866d3eca27b2bf05b19bca2",
+      "compiled": true,
+      "test_results": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 24 filtered out; finished in 1.77s"
+      ],
+      "failed_tests": [
+        "memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind"
+      ],
+      "compile_failure": false
+    },
+    "restored": {
+      "name": "mut-002-restored",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 9.559,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-002-restored.log.gz",
+      "log_sha256": "23a094915152abc4ef4c3d4c291443e90a12dd45cd38ab1e44db550c6faa1fe6",
+      "raw_sha256": "05739ece330f457937306fad8a5dc32954d4915dfa58fe56df9e9ce40a2d5047",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 1.71s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "base_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "mutant_virtual_git_tree": "ced93d3a753b4632e03b4d8837caaa518b9e07ef",
+    "restored_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "base_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "mutant_source_manifest_sha256": "b7fadf4db6d6fba763df0a99d04ff78b022d35b48fcb598032d5f8054f605eac",
+    "restored_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "tree_hash_method": "Git SHA-1 blob/tree serialization over initial tracked tree with only the seeded blob substituted; no Git object/index write; ASMA-8159 untracked evidence excluded"
+  },
+  {
+    "mutant": "MUT-003",
+    "path": "crates/kontor-store/src/memory.rs",
+    "verdict": "KILLED",
+    "base_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+    "mutant_sha256": "396fa10f916ec81254162127a863562b43dd01aa557a1f77feab5bde10178f4e",
+    "restored_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+    "patch": "docs/evidence/ASMA-8159/receipts/mut-003.patch.gz",
+    "patch_sha256": "0c7a473fd4e781c32487ec7f8b3f9e5134e868cd7d2ca107a3d587a14ff69716",
+    "patch_gzip_sha256": "213fbd98deeea75f4ba2af3fdf3b477470322c93a9faec217f9178b4982843b8",
+    "baseline": {
+      "name": "mut-003-baseline",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 2.105,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-003-baseline.log.gz",
+      "log_sha256": "cab5820c33a4acc620cc07fef1e27f8e6744dcc9d0538a03b3ecffcf5cdfc044",
+      "raw_sha256": "9a528c1ddf51e9ec0a4a13f4b11bb38e34fc5227aab3761e1e2168f7a95ad4e3",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 1.85s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "seeded": {
+      "name": "mut-003-seeded",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 101,
+      "seconds": 9.722,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-003-seeded.log.gz",
+      "log_sha256": "97c078de4ea94f396e6efcc4184111d9df54cf36d684f70ac613bd8edb095b85",
+      "raw_sha256": "b7014b5e75900e0c85cf7e0c92ad93167cd9f7d89f45985749cfd37b4f04d23a",
+      "compiled": true,
+      "test_results": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 24 filtered out; finished in 1.83s"
+      ],
+      "failed_tests": [
+        "memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top"
+      ],
+      "compile_failure": false
+    },
+    "restored": {
+      "name": "mut-003-restored",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 9.628,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-003-restored.log.gz",
+      "log_sha256": "0babd98a62615a8a8e6ffce94b28ecd16c6917e13d6fb942fe879ce17ea694b4",
+      "raw_sha256": "de2d18d4aeb08bc6960385fc5198c97df98712ae24bd457ba21a9506902d964b",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 1.87s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "base_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "mutant_virtual_git_tree": "8ae72f9442e6d2d0b151596dc2163c7d3107aa4b",
+    "restored_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "base_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "mutant_source_manifest_sha256": "5dc54010879504d84ce1654d0954a636f0c794a79ef4f971cf6648bfcf543fd2",
+    "restored_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "tree_hash_method": "Git SHA-1 blob/tree serialization over initial tracked tree with only the seeded blob substituted; no Git object/index write; ASMA-8159 untracked evidence excluded"
+  },
+  {
+    "mutant": "MUT-004",
+    "path": "crates/kontor-memory-cognee/src/lib.rs",
+    "verdict": "KILLED",
+    "base_sha256": "f461effcda17a460a0939ef2bb077f74de1bd0b26ee5b6c44b997fcd3ec84c40",
+    "mutant_sha256": "dc38c8dfa7d31eaf9d9e27145b35b549fa3fd5e86d4df58510192450d3c73f24",
+    "restored_sha256": "f461effcda17a460a0939ef2bb077f74de1bd0b26ee5b6c44b997fcd3ec84c40",
+    "patch": "docs/evidence/ASMA-8159/receipts/mut-004.patch.gz",
+    "patch_sha256": "79488c1a95a3fb92944ea6f33bda9bea091c2637e5940e84e11fe41e5bf380fd",
+    "patch_gzip_sha256": "38bc1ba105da3f0e5d012670f350b5c50edc13429ca03a182943b6179c8ff887",
+    "baseline": {
+      "name": "mut-004-baseline",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-memory-cognee",
+        "--test",
+        "fixtures",
+        "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-memory-cognee --test fixtures authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text --locked --offline -- --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 5.701,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-004-baseline.log.gz",
+      "log_sha256": "95e76a9f20679db4bf9e7765e23c9b09ecd8b9ccff22d7556146a4a7dc2439b7",
+      "raw_sha256": "b51d8b4b1ead2cef4925fd5aac216dbe1cc5e388a0509baa8bf590328a7b726a",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.70s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "seeded": {
+      "name": "mut-004-seeded",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-memory-cognee",
+        "--test",
+        "fixtures",
+        "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-memory-cognee --test fixtures authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text --locked --offline -- --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 101,
+      "seconds": 3.63,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-004-seeded.log.gz",
+      "log_sha256": "6ce3153d0af4f59292a7c96ab00b0c7df0ae8d3af3c6ffe559534edf50d2ad36",
+      "raw_sha256": "659f64bb7145cc770f20bb8d8b70e1650099686ad6a447b82ce8664227e013d3",
+      "compiled": true,
+      "test_results": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.71s"
+      ],
+      "failed_tests": [
+        "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text"
+      ],
+      "compile_failure": false
+    },
+    "restored": {
+      "name": "mut-004-restored",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-memory-cognee",
+        "--test",
+        "fixtures",
+        "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-memory-cognee --test fixtures authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text --locked --offline -- --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 3.314,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-004-restored.log.gz",
+      "log_sha256": "c04b0d83e80649fbe46af6849c5666dae1ad70173c763515cc3fbd3eba8b44a5",
+      "raw_sha256": "03a554f5aa02e75785b7355b9883eef8f7a57ea2166d1b35094f4ffb0d63f138",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.74s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "base_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "mutant_virtual_git_tree": "2e79382c47885ec5e188ecf7d48c31f6b663ccb1",
+    "restored_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "base_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "mutant_source_manifest_sha256": "46a6d96e8312ef8e338c29e601c168d7ac438c418efbac349069b909e71b38e5",
+    "restored_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "tree_hash_method": "Git SHA-1 blob/tree serialization over initial tracked tree with only the seeded blob substituted; no Git object/index write; ASMA-8159 untracked evidence excluded"
+  },
+  {
+    "mutant": "MUT-005",
+    "path": "crates/kontor-daemon/src/applications.rs",
+    "verdict": "KILLED",
+    "base_sha256": "0a15e9f04c77edfd34b56ef6a0be1f70b5c142b4cdc1d795bc0e5d2a7292617a",
+    "mutant_sha256": "df0b77962daa2ffe6901b80f5dfcb5738aee9d1ba5d80661854d6d147013a482",
+    "restored_sha256": "0a15e9f04c77edfd34b56ef6a0be1f70b5c142b4cdc1d795bc0e5d2a7292617a",
+    "patch": "docs/evidence/ASMA-8159/receipts/mut-005.patch.gz",
+    "patch_sha256": "584a9fcb593bd17604f0c9ab4285144edc8d3023b5fa12b9ed475a61262a3ec7",
+    "patch_gzip_sha256": "bd1a5e367309c49936a39540be52cffcd9fa4003d8f8e884c6ac35a8fcfc368b",
+    "baseline": {
+      "name": "mut-005-baseline",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-daemon --test loopback_api experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked --locked --offline -- --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 71.132,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-005-baseline.log.gz",
+      "log_sha256": "3cc5e4340c85e879bc77575c779542ed2ec96d03394ca89e47e3f87ef5359655",
+      "raw_sha256": "0a55d855b5212adef2cced161819841e15aada5ff2cdee5c902929375c0b62f0",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.38s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "seeded": {
+      "name": "mut-005-seeded",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-daemon --test loopback_api experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked --locked --offline -- --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 101,
+      "seconds": 36.743,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-005-seeded.log.gz",
+      "log_sha256": "65a93aed6c91cc1eff75b94fcd7fa035e513e7bc2f915ead6fba79954bd29a32",
+      "raw_sha256": "bdbefec0b92d63fedf05b94268c0332b49dac195a954b5f952e8983e40827282",
+      "compiled": true,
+      "test_results": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.47s"
+      ],
+      "failed_tests": [
+        "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked"
+      ],
+      "compile_failure": false
+    },
+    "restored": {
+      "name": "mut-005-restored",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-daemon --test loopback_api experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked --locked --offline -- --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 24.439,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-005-restored.log.gz",
+      "log_sha256": "e0b98b448994340cd62667b458af76b18385e8e43bf7810113567666783e593c",
+      "raw_sha256": "53b382bc367ec63793b62fa65730bc85b72a6ac1ca5e549da1d0f54a8dc05e34",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.41s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "base_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "mutant_virtual_git_tree": "6ce2823321400c5ccc8a80dd0ef2001f1ac56ac9",
+    "restored_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "base_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "mutant_source_manifest_sha256": "ec4ffbc126e43fd74885d615be4c85c4133c0bf33b8c58be8bc0ad090817aba5",
+    "restored_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "tree_hash_method": "Git SHA-1 blob/tree serialization over initial tracked tree with only the seeded blob substituted; no Git object/index write; ASMA-8159 untracked evidence excluded"
+  },
+  {
+    "mutant": "MUT-006",
+    "path": "crates/kontor-daemon/src/applications.rs",
+    "verdict": "KILLED",
+    "base_sha256": "0a15e9f04c77edfd34b56ef6a0be1f70b5c142b4cdc1d795bc0e5d2a7292617a",
+    "mutant_sha256": "27bdb82aa4bccf1f73271f84f50113a5c230844f39c2b71d26bd8cc64729008b",
+    "restored_sha256": "0a15e9f04c77edfd34b56ef6a0be1f70b5c142b4cdc1d795bc0e5d2a7292617a",
+    "patch": "docs/evidence/ASMA-8159/receipts/mut-006.patch.gz",
+    "patch_sha256": "5421780f81c2c4754c6e04534341ba086e8f891bb7b5626ba41021bc9cb655e7",
+    "patch_gzip_sha256": "d70a488e3e7a976181203c907d9ad720fd7f912880390ef558b16bfd1b987793",
+    "baseline": {
+      "name": "mut-006-baseline",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-daemon --test loopback_api experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding --locked --offline -- --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 2.516,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-006-baseline.log.gz",
+      "log_sha256": "816fc901ba56a8cce3ca84bcc0e6ff1cec9d9774316d25bba32bbf67ec334977",
+      "raw_sha256": "44d3f9eeaee9b4504390caedaf43220bc33db35266565e6e6fb5567e551f10e7",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.21s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "seeded": {
+      "name": "mut-006-seeded",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-daemon --test loopback_api experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding --locked --offline -- --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 101,
+      "seconds": 37.021,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-006-seeded.log.gz",
+      "log_sha256": "57513183701e43c8c3243af54f498a8693a2610c11dc6c986870769897d4aa6b",
+      "raw_sha256": "a3a047e8dae4579490f997575ab698563e30501ff5dbc79b500e4b49aa4f0c4c",
+      "compiled": true,
+      "test_results": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.26s"
+      ],
+      "failed_tests": [
+        "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding"
+      ],
+      "compile_failure": false
+    },
+    "restored": {
+      "name": "mut-006-restored",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-daemon --test loopback_api experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding --locked --offline -- --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 24.652,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-006-restored.log.gz",
+      "log_sha256": "c131812c18852533037b6fd896bab3821d5cda36ee1e5f3f3430faa100c99140",
+      "raw_sha256": "1a41d0d81afeb38029161947b9b9be5c1f5730ea8a3dd9dae88b3c82f0099f9e",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.25s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "base_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "mutant_virtual_git_tree": "1f0d9d893fc56a4889e76c90d7de8c811055ae0f",
+    "restored_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "base_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "mutant_source_manifest_sha256": "c3856f00f72e57e7e26466a865b8f8a311a2817c069135d4756aab14e538abb3",
+    "restored_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "tree_hash_method": "Git SHA-1 blob/tree serialization over initial tracked tree with only the seeded blob substituted; no Git object/index write; ASMA-8159 untracked evidence excluded"
+  },
+  {
+    "mutant": "MUT-007",
+    "path": "crates/kontor-store/src/memory.rs",
+    "verdict": "KILLED",
+    "base_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+    "mutant_sha256": "6d1b0cdc25144daaf61ba0b063eb071b03e9ced6f8499897512583ea3976bc1d",
+    "restored_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+    "patch": "docs/evidence/ASMA-8159/receipts/mut-007.patch.gz",
+    "patch_sha256": "77aab6e443a0b6e3aed7935a4751ba02350c06c557ed9ae04cfb973207922fc4",
+    "patch_gzip_sha256": "be76b844ab252908c51ea5e18b9c1355373d5b001d0bf65280b3a07840069259",
+    "baseline": {
+      "name": "mut-007-baseline",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::projection_minimal_payload_failures_freshness_and_compare_and_swap",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::projection_minimal_payload_failures_freshness_and_compare_and_swap --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 2.043,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-007-baseline.log.gz",
+      "log_sha256": "2e64a1b96cf456c201098446b45f128259cd1d0ce6f6e2b0fec875a543588313",
+      "raw_sha256": "e4b1bb100bf2c376bc5c472cddb991f7354c1d4ed59bc87dbff955e01ac8f846",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 1.73s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "seeded": {
+      "name": "mut-007-seeded",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::projection_minimal_payload_failures_freshness_and_compare_and_swap",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::projection_minimal_payload_failures_freshness_and_compare_and_swap --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 101,
+      "seconds": 10.174,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-007-seeded.log.gz",
+      "log_sha256": "1f6fb9fed419b0e54cc6636ae38afd06127e13998eb6a1d22f1cbe56cbddaf77",
+      "raw_sha256": "6958f6809239ac9cb6f8349179af323c5a1a85ce81fee481380c046c068b5b17",
+      "compiled": true,
+      "test_results": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 24 filtered out; finished in 1.73s"
+      ],
+      "failed_tests": [
+        "memory::experience_tests::projection_minimal_payload_failures_freshness_and_compare_and_swap"
+      ],
+      "compile_failure": false
+    },
+    "restored": {
+      "name": "mut-007-restored",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--locked",
+        "--offline",
+        "--",
+        "memory::experience_tests::projection_minimal_payload_failures_freshness_and_compare_and_swap",
+        "--exact"
+      ],
+      "shell_command": "cargo test -p kontor-store --lib --locked --offline -- memory::experience_tests::projection_minimal_payload_failures_freshness_and_compare_and_swap --exact",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit_code": 0,
+      "seconds": 10.032,
+      "log": "docs/evidence/ASMA-8159/receipts/mut-007-restored.log.gz",
+      "log_sha256": "54db5c1257dac45c2bcb730a50045e82420138917cc2679480b03421ce97d9ec",
+      "raw_sha256": "5e130377946457bff683f60a24e2269f43df1d342aab173e7988b137329c8b26",
+      "compiled": true,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 1.79s"
+      ],
+      "failed_tests": [],
+      "compile_failure": false
+    },
+    "base_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "mutant_virtual_git_tree": "211dfe434f7c8bcef3077623469827c545eef77e",
+    "restored_git_tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70",
+    "base_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "mutant_source_manifest_sha256": "01ec003df84fdad2a23e1058e775e316940d05fc68db0d49ed0d87ea10c2a036",
+    "restored_source_manifest_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239",
+    "tree_hash_method": "Git SHA-1 blob/tree serialization over initial tracked tree with only the seeded blob substituted; no Git object/index write; ASMA-8159 untracked evidence excluded"
+  }
+]
