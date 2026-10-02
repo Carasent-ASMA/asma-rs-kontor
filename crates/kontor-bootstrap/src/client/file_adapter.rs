@@ -2,24 +2,25 @@
 //!
 //! Codex, OpenCode, VS Code/Copilot and Cursor each own one user-scoped
 //! configuration file in a documented format. The adapter patches exactly the
-//! `kontor` entry, leaves every other byte alone, refuses a same-name entry it
-//! did not write, refuses a symlinked path, and compares the file immediately
-//! before replacing it so a concurrent writer is never overwritten.
+//! `kontor` entry, leaves every other byte alone, refuses a symlink at any
+//! component, binds every write to the complete observed file and entry
+//! snapshot, and requires bootstrap-owned provenance (or an explicit repair
+//! digest) before replacing anything.
 //!
 //! The shapes are the KON-OP-08 table's: `[mcp_servers.kontor]` for Codex,
 //! `mcp.servers.kontor` with a local command array for OpenCode,
 //! `servers.kontor` stdio for Copilot, and `mcpServers.kontor` for Cursor.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use super::json_edit::{Dialect, JsonDocument};
+use super::json_edit::{Dialect, JsonDocument, JsonEditError};
 use super::{
-    AdapterError, AdapterResult, ClientAdapter, ClientId, ConflictReason, EntryState,
-    MCP_EXECUTABLE, ObservedHash, ServerSpec,
+    AdapterError, AdapterResult, ClientAdapter, ClientId, ConflictReason, EntryState, ObservedHash,
+    OwnershipStore, ServerSpec, desired_entry,
 };
+use crate::confinement::{ConfinementError, Dir, MAX_DOCUMENT_BYTES, NodeKind};
 use crate::fault::{FailPoint, FaultInjector};
 
 /// The injected client home: the synthetic stand-in for a user home.
@@ -52,7 +53,22 @@ impl ClientHome {
 #[derive(Debug, Clone)]
 pub struct FileClientAdapter {
     client: ClientId,
-    home: PathBuf,
+    home_root: PathBuf,
+    ownership: OwnershipStore,
+}
+
+/// The full observation one adapter made, holding open directory descriptors.
+struct Observed {
+    dir: Option<Dir>,
+    file: Option<(&'static str, Dialect)>,
+    original: Option<Vec<u8>>,
+    state: EntryState,
+}
+
+enum ParsedEntry {
+    Absent,
+    Value(Value),
+    Refused(ConflictReason),
 }
 
 impl FileClientAdapter {
@@ -60,12 +76,17 @@ impl FileClientAdapter {
     ///
     /// # Errors
     /// [`AdapterError::InvalidSpec`] for a client without a file surface.
-    pub fn new(client: ClientId, home: &ClientHome) -> Result<Self, AdapterError> {
+    pub fn new(
+        client: ClientId,
+        home: &ClientHome,
+        ownership: OwnershipStore,
+    ) -> Result<Self, AdapterError> {
         match client {
             ClientId::Codex | ClientId::OpenCode | ClientId::Copilot | ClientId::Cursor => {
                 Ok(Self {
                     client,
-                    home: home.root().to_path_buf(),
+                    home_root: home.root().to_path_buf(),
+                    ownership,
                 })
             }
             ClientId::ClaudeCode => Err(AdapterError::InvalidSpec),
@@ -80,338 +101,435 @@ impl FileClientAdapter {
         ClientId::Cursor,
     ];
 
-    fn directory(&self) -> PathBuf {
+    fn components(&self) -> &'static [&'static str] {
         match self.client {
-            ClientId::Codex => self.home.join(".codex"),
-            ClientId::OpenCode => self.home.join(".config").join("opencode"),
-            ClientId::Copilot => self.home.join(".copilot"),
-            ClientId::Cursor => self.home.join(".cursor"),
-            ClientId::ClaudeCode => unreachable!("no file surface for Claude Code"),
+            ClientId::Codex => &[".codex"],
+            ClientId::OpenCode => &[".config", "opencode"],
+            ClientId::Copilot => &[".copilot"],
+            ClientId::Cursor => &[".cursor"],
+            ClientId::ClaudeCode => &[],
         }
     }
 
-    /// The configuration file candidates in resolution order, each with its
-    /// dialect.
-    fn candidates(&self) -> Vec<(PathBuf, Dialect)> {
-        let directory = self.directory();
+    fn candidates(&self) -> &'static [(&'static str, Dialect)] {
         match self.client {
-            ClientId::Codex => vec![(directory.join("config.toml"), Dialect::Json)],
-            ClientId::OpenCode => vec![
-                (directory.join("opencode.json"), Dialect::Json),
-                (directory.join("opencode.jsonc"), Dialect::Jsonc),
+            ClientId::Codex => &[("config.toml", Dialect::Json)],
+            ClientId::OpenCode => &[
+                ("opencode.json", Dialect::Json),
+                ("opencode.jsonc", Dialect::Jsonc),
             ],
-            ClientId::Copilot => vec![(directory.join("mcp-config.json"), Dialect::Json)],
-            ClientId::Cursor => vec![(directory.join("mcp.json"), Dialect::Json)],
-            ClientId::ClaudeCode => Vec::new(),
+            ClientId::Copilot => &[("mcp-config.json", Dialect::Json)],
+            ClientId::Cursor => &[("mcp.json", Dialect::Json)],
+            ClientId::ClaudeCode => &[],
         }
     }
 
-    fn default_file(&self) -> PathBuf {
+    fn default_file(&self) -> (&'static str, Dialect) {
         match self.client {
-            ClientId::OpenCode => self.directory().join("opencode.json"),
-            _ => {
-                self.candidates()
-                    .into_iter()
-                    .next()
-                    .expect("a file surface")
-                    .0
-            }
+            ClientId::OpenCode => ("opencode.json", Dialect::Json),
+            _ => self.candidates()[0],
         }
     }
 
-    /// Refuse a symlink at the client directory or any component beneath the
-    /// injected home, and report whether the directory exists.
-    fn probe_directory(&self) -> Result<bool, ConflictReason> {
-        let directory = self.directory();
-        let relative = directory
-            .strip_prefix(&self.home)
-            .expect("adapter directory lives under the injected home");
-        let mut prefix = self.home.clone();
-        for component in relative.components() {
-            prefix.push(component);
-            match std::fs::symlink_metadata(&prefix) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
-                    return Err(ConflictReason::Symlink);
-                }
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-                Err(_) => return Ok(false),
-            }
+    fn entry_path(&self) -> &'static [&'static str] {
+        match self.client {
+            ClientId::Codex => &["mcp_servers", "kontor"],
+            ClientId::OpenCode => &["mcp", "servers", "kontor"],
+            ClientId::Copilot => &["servers", "kontor"],
+            ClientId::Cursor => &["mcpServers", "kontor"],
+            ClientId::ClaudeCode => &[],
         }
-        Ok(true)
     }
 
-    /// Resolve exactly one existing configuration file, refusing ambiguity.
-    fn resolve_existing(&self) -> Result<Option<(PathBuf, Dialect)>, ConflictReason> {
-        if !self.probe_directory()? {
-            return Ok(None);
+    fn logical_path(&self, file: &str) -> PathBuf {
+        let mut path = self.home_root.clone();
+        for component in self.components() {
+            path.push(component);
         }
-        let existing: Vec<(PathBuf, Dialect)> = self
-            .candidates()
-            .into_iter()
-            .filter(|(path, _)| std::fs::symlink_metadata(path).is_ok())
-            .collect();
-        match existing.len() {
+        path.push(file);
+        path
+    }
+
+    /// Open the client directory, refusing every symlink component.
+    fn client_directory(&self) -> Result<Option<Dir>, ConflictReason> {
+        let mut current = match Dir::open_root(&self.home_root) {
+            Ok(dir) => dir,
+            Err(ConfinementError::Missing) => return Ok(None),
+            Err(ConfinementError::Symlink) => return Err(ConflictReason::Symlink),
+            Err(_) => return Err(ConflictReason::Unparsable),
+        };
+        for component in self.components() {
+            match current.open_child(component) {
+                Ok(dir) => current = dir,
+                Err(ConfinementError::Missing) => return Ok(None),
+                Err(ConfinementError::Symlink) => return Err(ConflictReason::Symlink),
+                Err(_) => return Err(ConflictReason::Unparsable),
+            }
+        }
+        Ok(Some(current))
+    }
+
+    /// Resolve exactly one configuration file, refusing ambiguity and symlinks.
+    fn resolve_file(&self, dir: &Dir) -> Result<Option<(&'static str, Dialect)>, ConflictReason> {
+        let mut found = Vec::new();
+        for (name, dialect) in self.candidates() {
+            match dir.kind_child(name) {
+                Ok(Some(NodeKind::Symlink)) => return Err(ConflictReason::Symlink),
+                Ok(Some(NodeKind::File)) => found.push((*name, *dialect)),
+                Ok(Some(_)) => return Err(ConflictReason::Unparsable),
+                Ok(None) => {}
+                Err(_) => return Err(ConflictReason::Unparsable),
+            }
+        }
+        match found.len() {
             0 => Ok(None),
-            1 => {
-                let (path, dialect) = existing.into_iter().next().expect("one");
-                let metadata =
-                    std::fs::symlink_metadata(&path).map_err(|_| ConflictReason::Unparsable)?;
-                if metadata.file_type().is_symlink() {
-                    return Err(ConflictReason::Symlink);
-                }
-                Ok(Some((path, dialect)))
-            }
+            1 => Ok(Some(found[0])),
             _ => Err(ConflictReason::AmbiguousConfig),
         }
     }
 
-    fn read_document(&self) -> Result<Option<ExistingDocument>, ConflictReason> {
-        let Some((path, dialect)) = self.resolve_existing()? else {
-            return Ok(None);
-        };
-        let bytes = std::fs::read(&path).map_err(|_| ConflictReason::Unparsable)?;
-        let text = std::str::from_utf8(&bytes).map_err(|_| ConflictReason::Unparsable)?;
-        let document = match self.client {
-            ClientId::Codex => ConfigDocument::Toml(
-                text.parse::<toml_edit::DocumentMut>()
-                    .map_err(|_| ConflictReason::Unparsable)?,
-            ),
-            _ => ConfigDocument::Json(
-                JsonDocument::parse(text, dialect).map_err(|_| ConflictReason::Unparsable)?,
-            ),
-        };
-        Ok(Some(ExistingDocument {
-            path,
-            bytes,
-            document,
-        }))
-    }
-
-    fn observe(&self, document: &ConfigDocument, spec: &ServerSpec) -> EntryState {
-        match self.parse_entry(document) {
-            EntryObservation::Absent => EntryState::EntryAbsent,
-            EntryObservation::Refused(reason) => EntryState::Refused { reason },
-            EntryObservation::Entry { program, args, raw } => {
-                let observed = match (&program, raw) {
-                    (Some(program), _) => ObservedHash::of_entry(program, &args),
-                    (None, Some(raw)) => ObservedHash::of_bytes(raw.as_bytes()),
-                    (None, None) => ObservedHash::of_bytes(&[]),
-                };
-                match program {
-                    Some(program) if basename(&program) == MCP_EXECUTABLE => {
-                        if program.as_str() == spec.program.to_string_lossy().as_ref()
-                            && args == spec.args
-                        {
-                            EntryState::Current { observed }
-                        } else {
-                            EntryState::ManagedStale { observed }
-                        }
-                    }
-                    _ => EntryState::Unrelated { observed },
-                }
-            }
-        }
-    }
-
-    fn parse_entry(&self, document: &ConfigDocument) -> EntryObservation {
-        if self.client == ClientId::Codex {
-            return parse_codex_toml(document);
-        }
-        let ConfigDocument::Json(document) = document else {
-            return EntryObservation::Absent;
-        };
-        let (path, parents): (&[&str], &[&[&str]]) = match self.client {
-            ClientId::OpenCode => (
-                &["mcp", "servers", "kontor"],
-                &[&["mcp"], &["mcp", "servers"], &["mcpServers"]],
-            ),
-            ClientId::Copilot => (&["servers", "kontor"], &[&["servers"], &["mcpServers"]]),
-            ClientId::Cursor => (&["mcpServers", "kontor"], &[&["mcpServers"], &["servers"]]),
-            ClientId::Codex | ClientId::ClaudeCode => return EntryObservation::Absent,
-        };
-        // A container the documented schema does not allow at all is refused
-        // rather than interpreted as "no entry yet".
-        for parent in parents {
-            if let Some(value) = document.value(parent)
-                && !value.is_object()
-            {
-                return EntryObservation::Refused(ConflictReason::LegacySchema);
-            }
-        }
-        if self.client == ClientId::OpenCode && document.has_member(&["mcpServers"]) {
-            return EntryObservation::Refused(ConflictReason::LegacySchema);
-        }
-        match document.value(path) {
-            Some(value) => parse_json_entry(&value),
-            None => EntryObservation::Absent,
-        }
-    }
-
-    /// Whether a JSON parent container exists with the wrong shape.
-    fn parent_shape_conflict(&self, document: &ConfigDocument) -> Option<ConflictReason> {
-        let ConfigDocument::Json(document) = document else {
-            return None;
-        };
+    fn parse_document(
+        &self,
+        bytes: &[u8],
+        dialect: Dialect,
+    ) -> Result<ConfigDocument, ConflictReason> {
         match self.client {
-            ClientId::Codex => None,
-            ClientId::OpenCode => {
-                if document.has_member(&["mcpServers"]) {
-                    return Some(ConflictReason::LegacySchema);
-                }
-                document.value(&["mcp"]).and_then(|mcp| {
-                    if mcp.is_object() {
-                        document.value(&["mcp", "servers"]).and_then(|servers| {
-                            (!servers.is_object()).then_some(ConflictReason::LegacySchema)
-                        })
-                    } else {
-                        Some(ConflictReason::LegacySchema)
-                    }
-                })
+            ClientId::Codex => {
+                let text = std::str::from_utf8(bytes).map_err(|_| ConflictReason::Unparsable)?;
+                Ok(ConfigDocument::Toml(
+                    text.parse::<toml_edit::DocumentMut>()
+                        .map_err(|_| ConflictReason::Unparsable)?,
+                ))
             }
-            ClientId::Copilot => document
-                .value(&["servers"])
-                .and_then(|servers| (!servers.is_object()).then_some(ConflictReason::LegacySchema)),
-            ClientId::Cursor => document
-                .value(&["mcpServers"])
-                .and_then(|servers| (!servers.is_object()).then_some(ConflictReason::LegacySchema)),
-            ClientId::ClaudeCode => None,
+            _ => {
+                let text = std::str::from_utf8(bytes).map_err(|_| ConflictReason::Unparsable)?;
+                match JsonDocument::parse(text, dialect) {
+                    Ok(document) => Ok(ConfigDocument::Json(document)),
+                    Err(JsonEditError::TooLarge) => Err(ConflictReason::TooLarge),
+                    Err(JsonEditError::TooDeep) => Err(ConflictReason::TooDeep),
+                    Err(_) => Err(ConflictReason::Unparsable),
+                }
+            }
         }
     }
 
-    fn empty_document(&self) -> Result<ConfigDocument, ConflictReason> {
-        match self.client {
-            ClientId::Codex => Ok(ConfigDocument::Toml(toml_edit::DocumentMut::new())),
-            _ => Ok(ConfigDocument::Json(
-                JsonDocument::parse("{}", Dialect::Json).map_err(|_| ConflictReason::Unparsable)?,
-            )),
-        }
-    }
-
-    /// Apply the desired entry, returning the full new file text.
-    fn edit(&self, spec: &ServerSpec) -> Result<EditedFile, ConflictReason> {
-        let (path, original, mut document) = match self.read_document()? {
-            Some(existing) => (Some(existing.path), Some(existing.bytes), existing.document),
-            None => (None, None, self.empty_document()?),
-        };
-        if let Some(reason) = self.parent_shape_conflict(&document) {
-            return Err(reason);
-        }
-        match &mut document {
-            ConfigDocument::Toml(document) => {
-                apply_codex(document, spec)?;
-            }
-            ConfigDocument::Json(document) => match self.client {
-                ClientId::OpenCode => {
-                    apply_json(document, &["mcp", "servers", "kontor"], |document| {
-                        ensure_object(document, &["mcp", "servers"])?;
-                        Ok(json!({"type": "local", "command": command_array(spec)}))
-                    })?;
-                }
-                ClientId::Copilot => {
-                    apply_json(document, &["servers", "kontor"], |document| {
-                        ensure_object(document, &["servers"])?;
-                        Ok(json!({
-                            "type": "stdio",
-                            "command": spec.program.to_string_lossy(),
-                            "args": spec.args,
-                        }))
-                    })?;
-                }
-                ClientId::Cursor => {
-                    apply_json(document, &["mcpServers", "kontor"], |document| {
-                        ensure_object(document, &["mcpServers"])?;
-                        Ok(json!({
-                            "command": spec.program.to_string_lossy(),
-                            "args": spec.args,
-                        }))
-                    })?;
-                }
-                ClientId::Codex | ClientId::ClaudeCode => {
-                    return Err(ConflictReason::Unparsable);
-                }
+    fn parse_entry(&self, document: &ConfigDocument) -> ParsedEntry {
+        match document {
+            ConfigDocument::Toml(document) => match self.client {
+                ClientId::Codex => parse_codex(document),
+                _ => ParsedEntry::Refused(ConflictReason::Unparsable),
             },
+            ConfigDocument::Json(document) => {
+                if self.client == ClientId::OpenCode && document.has_member(&["mcpServers"]) {
+                    return ParsedEntry::Refused(ConflictReason::LegacySchema);
+                }
+                let parents: &[&[&str]] = match self.client {
+                    ClientId::OpenCode => &[&["mcp"], &["mcp", "servers"]],
+                    ClientId::Copilot => &[&["servers"]],
+                    ClientId::Cursor => &[&["mcpServers"]],
+                    _ => &[],
+                };
+                for parent in parents {
+                    if let Some(value) = document.value(parent)
+                        && !value.is_object()
+                    {
+                        return ParsedEntry::Refused(ConflictReason::LegacySchema);
+                    }
+                }
+                match document.value(self.entry_path()) {
+                    Some(value) => ParsedEntry::Value(value),
+                    None => ParsedEntry::Absent,
+                }
+            }
         }
-        Ok(EditedFile {
-            path: path.unwrap_or_else(|| self.default_file()),
+    }
+
+    /// The full observation: open descriptors, raw bytes, full entry value and
+    /// its classification. No effect of any kind.
+    fn observe(&self, spec: &ServerSpec) -> Result<Observed, AdapterError> {
+        spec.validate()?;
+        let directory = match self.client_directory() {
+            Ok(Some(dir)) => dir,
+            Ok(None) => {
+                return Ok(Observed {
+                    dir: None,
+                    file: None,
+                    original: None,
+                    state: EntryState::ClientAbsent,
+                });
+            }
+            Err(reason) => return Ok(refused(reason)),
+        };
+        let resolved = match self.resolve_file(&directory) {
+            Ok(resolved) => resolved,
+            Err(reason) => return Ok(refused(reason)),
+        };
+        let (file, dialect, original) = match resolved {
+            Some((name, dialect)) => match directory.read_child(name, MAX_DOCUMENT_BYTES) {
+                Ok(Some(bytes)) => (name, dialect, Some(bytes)),
+                Ok(None) => (name, dialect, None),
+                Err(ConfinementError::Symlink) => return Ok(refused(ConflictReason::Symlink)),
+                Err(ConfinementError::TooLarge) => return Ok(refused(ConflictReason::TooLarge)),
+                Err(_) => return Ok(refused(ConflictReason::Unparsable)),
+            },
+            None => {
+                let (name, dialect) = self.default_file();
+                (name, dialect, None)
+            }
+        };
+
+        let ledger = match self.ownership.load() {
+            Ok(ledger) => ledger,
+            Err(_) => {
+                return Ok(Observed {
+                    dir: Some(directory),
+                    file: Some((file, dialect)),
+                    original,
+                    state: EntryState::Refused {
+                        reason: ConflictReason::OwnershipUnreadable,
+                    },
+                });
+            }
+        };
+
+        let Some(bytes) = &original else {
+            return Ok(Observed {
+                dir: Some(directory),
+                file: Some((file, dialect)),
+                original: None,
+                state: EntryState::EntryAbsent,
+            });
+        };
+        let document = match self.parse_document(bytes, dialect) {
+            Ok(document) => document,
+            Err(reason) => return Ok(refused(reason)),
+        };
+        let state = match self.parse_entry(&document) {
+            ParsedEntry::Absent => EntryState::EntryAbsent,
+            ParsedEntry::Refused(reason) => return Ok(refused(reason)),
+            ParsedEntry::Value(value) => {
+                let observed = ObservedHash::of_value(&value);
+                if !schema_accepts(self.client, &value) {
+                    EntryState::Unrelated { observed }
+                } else {
+                    let desired = desired_entry(self.client, spec);
+                    super::classify(&value, &desired, ledger.owns(self.client, &observed))
+                }
+            }
+        };
+        Ok(Observed {
+            dir: Some(directory),
+            file: Some((file, dialect)),
             original,
-            edited: document.to_text(),
+            state,
         })
     }
 
-    /// Replace the configuration file after proving it has not moved.
-    fn commit(
+    /// Write the desired entry, bound to the exact expected observation.
+    fn write(
         &self,
-        edited: &EditedFile,
+        spec: &ServerSpec,
+        expected: &EntryState,
         faults: &mut dyn FaultInjector,
-    ) -> Result<(), AdapterError> {
-        faults.hit(FailPoint::BeforeClientWrite(self.client), &edited.path)?;
-        if let Some(original) = &edited.original {
-            let current = std::fs::read(&edited.path).map_err(|_| AdapterError::Io)?;
-            if &current != original {
-                return Err(AdapterError::ConcurrentChange);
-            }
+    ) -> Result<AdapterResult, AdapterError> {
+        let observed = self.observe(spec)?;
+        let Some(directory) = observed.dir.as_ref() else {
+            return Ok(AdapterResult::Absent);
+        };
+        let Some((file, dialect)) = observed.file else {
+            return Ok(AdapterResult::Absent);
+        };
+        if !same_snapshot(expected, &observed.state) {
+            return Ok(AdapterResult::Conflict {
+                reason: ConflictReason::ConcurrentChange,
+                observed: observed.state.observed().cloned(),
+            });
         }
-        let parent = edited.path.parent().ok_or(AdapterError::Io)?;
-        let file_name = edited
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or(AdapterError::Io)?;
-        let temporary = parent.join(format!(".{file_name}.kontor-bootstrap-{}.tmp", nonce()));
-        let result = (|| {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
+
+        let edited = match self.render(&observed, spec, dialect) {
+            Ok(edited) => edited,
+            Err(reason) => {
+                return Ok(AdapterResult::Conflict {
+                    reason,
+                    observed: observed.state.observed().cloned(),
+                });
+            }
+        };
+
+        let logical = self.logical_path(file);
+        faults.hit(FailPoint::BeforeClientWrite(self.client), &logical)?;
+        let temporary = format!(
+            ".{file}.kontor-bootstrap-{}.tmp",
+            crate::artifact::install::nonce()
+        );
+        if directory.kind_child(&temporary)?.is_some() {
+            directory.remove_child(&temporary)?;
+        }
+        let final_mode = match observed.original {
+            Some(_) => directory.child_mode(file)?.unwrap_or(0o600) & 0o777,
+            None => 0o600,
+        };
+        let result = (|| -> Result<(), AdapterError> {
+            // The file exists with its private mode before any content is
+            // written; a failure to create or set the mode propagates.
+            let mut temp = directory.create_child_empty(&temporary, 0o600)?;
+            faults.hit(FailPoint::AfterClientTempCreate(self.client), &logical)?;
+            std::io::Write::write_all(&mut temp, edited.as_bytes())
                 .map_err(|_| AdapterError::Io)?;
-            std::io::Write::write_all(&mut file, edited.edited.as_bytes())
-                .map_err(|_| AdapterError::Io)?;
-            file.sync_all().map_err(|_| AdapterError::Io)?;
-            if let Some(original) = &edited.original {
-                let current = std::fs::read(&edited.path).map_err(|_| AdapterError::Io)?;
-                if &current != original {
-                    return Err(AdapterError::ConcurrentChange);
+            temp.sync_all().map_err(|_| AdapterError::Io)?;
+            Dir::set_file_mode(&temp, final_mode)?;
+            drop(temp);
+
+            faults.hit(FailPoint::AfterClientTempWrite(self.client), &logical)?;
+
+            faults.hit(FailPoint::BeforeClientRename(self.client), &logical)?;
+            // The final precondition is checked after the last injection point
+            // and immediately before the effect.
+            match &observed.original {
+                None => {
+                    if directory.kind_child(file)?.is_some() {
+                        return Err(AdapterError::ConcurrentChange);
+                    }
                 }
-                if let Ok(metadata) = std::fs::metadata(&edited.path) {
-                    let _ = std::fs::set_permissions(&temporary, metadata.permissions());
+                Some(original) => {
+                    let current = match directory.read_child(file, MAX_DOCUMENT_BYTES)? {
+                        Some(bytes) => bytes,
+                        None => return Err(AdapterError::ConcurrentChange),
+                    };
+                    if &current != original {
+                        return Err(AdapterError::ConcurrentChange);
+                    }
                 }
             }
-            std::fs::rename(&temporary, &edited.path)
-                .or_else(|_| {
-                    std::fs::remove_file(&edited.path)?;
-                    std::fs::rename(&temporary, &edited.path)
-                })
-                .map_err(|_| AdapterError::Io)
+            if directory.kind_child(file)? == Some(NodeKind::Symlink) {
+                return Err(AdapterError::Confinement(ConfinementError::Symlink));
+            }
+            faults.hit(FailPoint::BeforeClientCommit(self.client), &logical)?;
+            match &observed.original {
+                None => {
+                    // Creation is no-replace: a file that appears after
+                    // observation is preserved and the write is refused.
+                    directory.link_child(&temporary, directory, file)?;
+                    directory.remove_child(&temporary)?;
+                }
+                Some(_) => directory.rename_child(&temporary, directory, file)?,
+            }
+            Ok(())
         })();
         if result.is_err() {
-            let _ = std::fs::remove_file(&temporary);
+            let _ = directory.remove_child(&temporary);
         }
-        result?;
-        faults.hit(FailPoint::AfterClientWrite(self.client), &edited.path)?;
-        Ok(())
-    }
-
-    fn write(
-        &mut self,
-        spec: &ServerSpec,
-        faults: &mut dyn FaultInjector,
-    ) -> Result<Result<AdapterResult, ConflictReason>, AdapterError> {
-        let edited = match self.edit(spec) {
-            Ok(edited) => edited,
-            Err(reason) => return Ok(Err(reason)),
-        };
-        match self.commit(&edited, faults) {
+        match result {
             Ok(()) => {}
             Err(AdapterError::ConcurrentChange) => {
-                return Ok(Err(ConflictReason::ConcurrentChange));
+                return Ok(AdapterResult::Conflict {
+                    reason: ConflictReason::ConcurrentChange,
+                    observed: observed.state.observed().cloned(),
+                });
             }
-            Err(other) => return Err(other),
+            Err(AdapterError::Confinement(ConfinementError::Symlink)) => {
+                return Ok(AdapterResult::Conflict {
+                    reason: ConflictReason::Symlink,
+                    observed: None,
+                });
+            }
+            Err(AdapterError::Confinement(ConfinementError::Exists)) => {
+                return Ok(AdapterResult::Conflict {
+                    reason: ConflictReason::ConcurrentChange,
+                    observed: None,
+                });
+            }
+            Err(error) => return Err(error),
         }
-        match self.inspect(spec)? {
-            EntryState::Current { .. } => Ok(Ok(AdapterResult::Updated)),
-            _ => Ok(Ok(AdapterResult::FailedReadback)),
+        faults.hit(FailPoint::AfterClientWrite(self.client), &logical)?;
+
+        let readback = self.observe(spec)?;
+        match readback.state {
+            EntryState::Current { observed: hash } => {
+                let desired = desired_entry(self.client, spec);
+                self.ownership
+                    .record(self.client, &hash, &ObservedHash::of_value(&desired))?;
+                Ok(AdapterResult::Updated)
+            }
+            _ => Ok(AdapterResult::FailedReadback),
         }
+    }
+
+    /// Render the complete new file text for one desired entry.
+    fn render(
+        &self,
+        observed: &Observed,
+        spec: &ServerSpec,
+        dialect: Dialect,
+    ) -> Result<String, ConflictReason> {
+        let desired = desired_entry(self.client, spec);
+        match self.client {
+            ClientId::Codex => {
+                let mut document = match &observed.original {
+                    Some(bytes) => std::str::from_utf8(bytes)
+                        .map_err(|_| ConflictReason::Unparsable)?
+                        .parse::<toml_edit::DocumentMut>()
+                        .map_err(|_| ConflictReason::Unparsable)?,
+                    None => toml_edit::DocumentMut::new(),
+                };
+                apply_codex(&mut document, spec)?;
+                Ok(document.to_string())
+            }
+            _ => {
+                let text = match &observed.original {
+                    Some(bytes) => std::str::from_utf8(bytes)
+                        .map_err(|_| ConflictReason::Unparsable)?
+                        .to_owned(),
+                    None => "{}".to_owned(),
+                };
+                let mut document =
+                    JsonDocument::parse(text, dialect).map_err(|error| match error {
+                        JsonEditError::TooLarge => ConflictReason::TooLarge,
+                        JsonEditError::TooDeep => ConflictReason::TooDeep,
+                        _ => ConflictReason::Unparsable,
+                    })?;
+                let serialized =
+                    serde_json::to_string(&desired).map_err(|_| ConflictReason::Unparsable)?;
+                ensure_parents(&mut document, self.entry_path())?;
+                if document.has_member(self.entry_path()) {
+                    document
+                        .replace_value(self.entry_path(), &serialized)
+                        .map_err(|_| ConflictReason::Unparsable)?;
+                } else {
+                    let (parent, leaf) = self.entry_path().split_at(self.entry_path().len() - 1);
+                    document
+                        .insert_member(parent, leaf[0], &serialized)
+                        .map_err(|_| ConflictReason::Unparsable)?;
+                }
+                Ok(document.text().to_owned())
+            }
+        }
+    }
+}
+
+fn refused(reason: ConflictReason) -> Observed {
+    Observed {
+        dir: None,
+        file: None,
+        original: None,
+        state: EntryState::Refused { reason },
+    }
+}
+
+fn same_snapshot(expected: &EntryState, fresh: &EntryState) -> bool {
+    match (expected, fresh) {
+        (EntryState::EntryAbsent, EntryState::EntryAbsent) => true,
+        (EntryState::ClientAbsent, EntryState::ClientAbsent) => true,
+        (EntryState::Current { observed: a }, EntryState::Current { observed: b })
+        | (EntryState::ManagedStale { observed: a }, EntryState::ManagedStale { observed: b })
+        | (EntryState::Unrelated { observed: a }, EntryState::Unrelated { observed: b })
+        | (EntryState::Unrelated { observed: a }, EntryState::ManagedStale { observed: b })
+        | (EntryState::ManagedStale { observed: a }, EntryState::Unrelated { observed: b })
+        | (EntryState::Current { observed: a }, EntryState::ManagedStale { observed: b })
+        | (EntryState::Current { observed: a }, EntryState::Unrelated { observed: b })
+        | (EntryState::ManagedStale { observed: a }, EntryState::Current { observed: b })
+        | (EntryState::Unrelated { observed: a }, EntryState::Current { observed: b }) => a == b,
+        _ => false,
     }
 }
 
@@ -421,21 +539,7 @@ impl ClientAdapter for FileClientAdapter {
     }
 
     fn inspect(&mut self, spec: &ServerSpec) -> Result<EntryState, AdapterError> {
-        if !spec.points_at_managed_executable() {
-            return Err(AdapterError::InvalidSpec);
-        }
-        let document = match self.read_document() {
-            Ok(Some(existing)) => existing.document,
-            Ok(None) => {
-                return match self.probe_directory() {
-                    Ok(true) => Ok(EntryState::EntryAbsent),
-                    Ok(false) => Ok(EntryState::ClientAbsent),
-                    Err(reason) => Ok(EntryState::Refused { reason }),
-                };
-            }
-            Err(reason) => return Ok(EntryState::Refused { reason }),
-        };
-        Ok(self.observe(&document, spec))
+        Ok(self.observe(spec)?.state)
     }
 
     fn install(
@@ -443,36 +547,23 @@ impl ClientAdapter for FileClientAdapter {
         spec: &ServerSpec,
         faults: &mut dyn FaultInjector,
     ) -> Result<AdapterResult, AdapterError> {
-        if !spec.points_at_managed_executable() {
-            return Ok(AdapterResult::Conflict {
-                reason: ConflictReason::SameNameUnrelated,
-                observed: None,
-            });
-        }
-        match self.inspect(spec)? {
+        let state = self.observe(spec)?.state;
+        match &state {
             EntryState::ClientAbsent => Ok(AdapterResult::Absent),
-            EntryState::EntryAbsent => match self.write(spec, faults)? {
-                Ok(AdapterResult::Updated) => Ok(AdapterResult::Installed),
-                Ok(other) => Ok(other),
-                Err(reason) => Ok(AdapterResult::Conflict {
-                    reason,
-                    observed: None,
-                }),
-            },
+            EntryState::EntryAbsent => {
+                self.write(spec, &state, faults).map(|result| match result {
+                    AdapterResult::Updated => AdapterResult::Installed,
+                    other => other,
+                })
+            }
             EntryState::Current { .. } => Ok(AdapterResult::AlreadyCurrent),
-            EntryState::ManagedStale { observed } => match self.write(spec, faults)? {
-                Ok(result) => Ok(result),
-                Err(reason) => Ok(AdapterResult::Conflict {
-                    reason,
-                    observed: Some(observed),
-                }),
-            },
+            EntryState::ManagedStale { observed: _ } => self.write(spec, &state, faults),
             EntryState::Unrelated { observed } => Ok(AdapterResult::Conflict {
                 reason: ConflictReason::SameNameUnrelated,
-                observed: Some(observed),
+                observed: Some(observed.clone()),
             }),
             EntryState::Refused { reason } => Ok(AdapterResult::Conflict {
-                reason,
+                reason: *reason,
                 observed: None,
             }),
         }
@@ -484,46 +575,28 @@ impl ClientAdapter for FileClientAdapter {
         expected: &ObservedHash,
         faults: &mut dyn FaultInjector,
     ) -> Result<AdapterResult, AdapterError> {
-        if !spec.points_at_managed_executable() {
-            return Ok(AdapterResult::Conflict {
-                reason: ConflictReason::SameNameUnrelated,
-                observed: None,
-            });
-        }
-        match self.inspect(spec)? {
+        let state = self.observe(spec)?.state;
+        match &state {
             EntryState::ClientAbsent | EntryState::EntryAbsent => Ok(AdapterResult::Absent),
             EntryState::Current { .. } => Ok(AdapterResult::AlreadyCurrent),
             EntryState::ManagedStale { observed } | EntryState::Unrelated { observed } => {
-                if observed != *expected {
+                if observed != expected {
                     return Ok(AdapterResult::Conflict {
                         reason: ConflictReason::ObservedHashMismatch,
-                        observed: Some(observed),
+                        observed: Some(observed.clone()),
                     });
                 }
-                match self.write(spec, faults)? {
-                    Ok(result) => Ok(match result {
-                        AdapterResult::Updated => AdapterResult::Repaired,
-                        other => other,
-                    }),
-                    Err(reason) => Ok(AdapterResult::Conflict {
-                        reason,
-                        observed: Some(observed),
-                    }),
-                }
+                self.write(spec, &state, faults).map(|result| match result {
+                    AdapterResult::Updated => AdapterResult::Repaired,
+                    other => other,
+                })
             }
             EntryState::Refused { reason } => Ok(AdapterResult::Conflict {
-                reason,
+                reason: *reason,
                 observed: None,
             }),
         }
     }
-}
-
-/// One existing configuration file with its parsed document.
-struct ExistingDocument {
-    path: PathBuf,
-    bytes: Vec<u8>,
-    document: ConfigDocument,
 }
 
 /// A parsed configuration document in its own format.
@@ -532,85 +605,107 @@ enum ConfigDocument {
     Json(JsonDocument),
 }
 
-impl ConfigDocument {
-    fn to_text(&self) -> String {
-        match self {
-            ConfigDocument::Toml(document) => document.to_string(),
-            ConfigDocument::Json(document) => document.text().to_owned(),
+fn parse_codex(document: &toml_edit::DocumentMut) -> ParsedEntry {
+    let servers = match document.get("mcp_servers") {
+        None => return ParsedEntry::Absent,
+        Some(item) => match item.as_table_like() {
+            Some(_) => item,
+            None => return ParsedEntry::Refused(ConflictReason::LegacySchema),
+        },
+    };
+    let entry = match servers.get("kontor") {
+        None => return ParsedEntry::Absent,
+        Some(item) => item,
+    };
+    match toml_item_to_value(entry) {
+        Some(value) => ParsedEntry::Value(value),
+        None => ParsedEntry::Refused(ConflictReason::Unparsable),
+    }
+}
+
+fn toml_item_to_value(item: &toml_edit::Item) -> Option<Value> {
+    match item {
+        toml_edit::Item::Value(value) => toml_value_to_value(value),
+        toml_edit::Item::Table(table) => toml_table_to_value(table),
+        toml_edit::Item::ArrayOfTables(array) => {
+            let mut values = Vec::new();
+            for table in array.iter() {
+                values.push(toml_table_to_value(table)?);
+            }
+            Some(Value::Array(values))
+        }
+        toml_edit::Item::None => None,
+    }
+}
+
+fn toml_table_to_value(table: &dyn toml_edit::TableLike) -> Option<Value> {
+    let mut object = serde_json::Map::new();
+    for (key, item) in table.iter() {
+        object.insert(key.to_owned(), toml_item_to_value(item)?);
+    }
+    Some(Value::Object(object))
+}
+
+fn toml_value_to_value(value: &toml_edit::Value) -> Option<Value> {
+    match value {
+        toml_edit::Value::String(text) => Some(Value::String(text.value().clone())),
+        toml_edit::Value::Integer(number) => Some(Value::Number((*number.value()).into())),
+        toml_edit::Value::Float(number) => {
+            serde_json::Number::from_f64(*number.value()).map(Value::Number)
+        }
+        toml_edit::Value::Boolean(boolean) => Some(Value::Bool(*boolean.value())),
+        toml_edit::Value::Datetime(datetime) => Some(Value::String(datetime.to_string())),
+        toml_edit::Value::Array(array) => {
+            let mut values = Vec::new();
+            for element in array.iter() {
+                values.push(toml_value_to_value(element)?);
+            }
+            Some(Value::Array(values))
+        }
+        toml_edit::Value::InlineTable(table) => {
+            let mut object = serde_json::Map::new();
+            for (key, element) in table.iter() {
+                object.insert(key.to_owned(), toml_value_to_value(element)?);
+            }
+            Some(Value::Object(object))
         }
     }
 }
 
-/// One entry as observed, before classification against a desired spec.
-enum EntryObservation {
-    Absent,
-    Refused(ConflictReason),
-    Entry {
-        program: Option<String>,
-        args: Vec<String>,
-        raw: Option<String>,
-    },
-}
-
-struct EditedFile {
-    path: PathBuf,
-    original: Option<Vec<u8>>,
-    edited: String,
-}
-
-fn basename(program: &str) -> &str {
-    program.rsplit(['/', '\\']).next().unwrap_or(program)
-}
-
-fn command_array(spec: &ServerSpec) -> Vec<String> {
-    let mut command = vec![spec.program.to_string_lossy().into_owned()];
-    command.extend(spec.args.iter().cloned());
-    command
-}
-
-fn parse_codex_toml(document: &ConfigDocument) -> EntryObservation {
-    let ConfigDocument::Toml(document) = document else {
-        return EntryObservation::Absent;
+/// Strict per-client schema validation. A value that fails here is never
+/// current and never authorizes a write from the entry itself.
+fn schema_accepts(client: ClientId, value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
     };
-    let servers = match document.get("mcp_servers") {
-        None => return EntryObservation::Absent,
-        Some(item) => match item.as_table_like() {
-            Some(_) => item,
-            None => return EntryObservation::Refused(ConflictReason::LegacySchema),
-        },
+    let string_field = |key: &str| object.get(key).and_then(Value::as_str);
+    let string_array = |key: &str| -> Option<Vec<&str>> {
+        let array = object.get(key)?.as_array()?;
+        array.iter().map(Value::as_str).collect()
     };
-    let entry = match servers.get("kontor") {
-        None => return EntryObservation::Absent,
-        Some(item) => item,
-    };
-    let Some(table) = entry.as_table_like() else {
-        return EntryObservation::Entry {
-            program: None,
-            args: Vec::new(),
-            raw: Some(entry.to_string()),
-        };
-    };
-    let Some(command) = table.get("command").and_then(toml_edit::Item::as_str) else {
-        return EntryObservation::Entry {
-            program: None,
-            args: Vec::new(),
-            raw: Some(entry.to_string()),
-        };
-    };
-    let args = table
-        .get("args")
-        .and_then(toml_edit::Item::as_array)
-        .map(|array| {
-            array
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    EntryObservation::Entry {
-        program: Some(command.to_owned()),
-        args,
-        raw: None,
+    match client {
+        ClientId::Codex | ClientId::Copilot => {
+            string_field("command").is_some() && string_array("args").is_some()
+        }
+        ClientId::OpenCode => {
+            string_field("type") == Some("local")
+                && string_array("command").is_some_and(|command| !command.is_empty())
+        }
+        ClientId::Cursor => {
+            object
+                .get("type")
+                .is_none_or(|kind| kind.as_str() == Some("stdio"))
+                && string_field("command").is_some()
+                && object.get("args").is_none_or(|args| {
+                    args.as_array()
+                        .is_some_and(|a| a.iter().all(Value::is_string))
+                })
+        }
+        ClientId::ClaudeCode => {
+            string_field("type") == Some("stdio")
+                && string_field("command").is_some()
+                && string_array("args").is_some()
+        }
     }
 }
 
@@ -625,13 +720,7 @@ fn apply_codex(
         .get_mut("mcp_servers")
         .and_then(toml_edit::Item::as_table_like_mut)
         .ok_or(ConflictReason::LegacySchema)?;
-    if servers.get("kontor").is_none() {
-        servers.insert("kontor", toml_edit::Item::Table(toml_edit::Table::new()));
-    }
-    let entry = servers
-        .get_mut("kontor")
-        .and_then(toml_edit::Item::as_table_like_mut)
-        .ok_or(ConflictReason::LegacySchema)?;
+    let mut entry = toml_edit::Table::new();
     entry.insert(
         "command",
         toml_edit::value(spec.program.to_string_lossy().into_owned()),
@@ -641,64 +730,12 @@ fn apply_codex(
         args.push(argument.as_str());
     }
     entry.insert("args", toml_edit::value(args));
+    servers.insert("kontor", toml_edit::Item::Table(entry));
     Ok(())
 }
 
-fn parse_json_entry(value: &Value) -> EntryObservation {
-    let Some(object) = value.as_object() else {
-        return EntryObservation::Entry {
-            program: None,
-            args: Vec::new(),
-            raw: Some(value.to_string()),
-        };
-    };
-    let raw = || Some(value.to_string());
-    if let Some(command) = object.get("command").and_then(Value::as_array) {
-        let mut strings = command.iter().map(Value::as_str);
-        let program = strings.next().flatten().map(str::to_owned);
-        let args: Option<Vec<String>> = strings.map(|value| value.map(str::to_owned)).collect();
-        let (Some(program), Some(args)) = (program, args) else {
-            return EntryObservation::Entry {
-                program: None,
-                args: Vec::new(),
-                raw: raw(),
-            };
-        };
-        return EntryObservation::Entry {
-            program: Some(program),
-            args,
-            raw: None,
-        };
-    }
-    if let Some(program) = object.get("command").and_then(Value::as_str) {
-        let args = object
-            .get("args")
-            .and_then(Value::as_array)
-            .map(|array| {
-                array
-                    .iter()
-                    .filter_map(|value| value.as_str().map(str::to_owned))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        return EntryObservation::Entry {
-            program: Some(program.to_owned()),
-            args,
-            raw: None,
-        };
-    }
-    EntryObservation::Entry {
-        program: None,
-        args: Vec::new(),
-        raw: raw(),
-    }
-}
-
-fn ensure_object(document: &mut JsonDocument, path: &[&str]) -> Result<(), ConflictReason> {
-    if document.has_member(path) {
-        return Ok(());
-    }
-    for depth in 0..path.len() {
+fn ensure_parents(document: &mut JsonDocument, path: &[&str]) -> Result<(), ConflictReason> {
+    for depth in 0..path.len().saturating_sub(1) {
         let target = &path[..=depth];
         if document.has_member(target) {
             continue;
@@ -708,30 +745,4 @@ fn ensure_object(document: &mut JsonDocument, path: &[&str]) -> Result<(), Confl
             .map_err(|_| ConflictReason::Unparsable)?;
     }
     Ok(())
-}
-
-fn apply_json(
-    document: &mut JsonDocument,
-    path: &[&str],
-    render: impl FnOnce(&mut JsonDocument) -> Result<Value, ConflictReason>,
-) -> Result<(), ConflictReason> {
-    let value = render(document)?;
-    let serialized = serde_json::to_string(&value).map_err(|_| ConflictReason::Unparsable)?;
-    if document.has_member(path) {
-        document
-            .replace_value(path, &serialized)
-            .map_err(|_| ConflictReason::Unparsable)
-    } else {
-        let (parent, leaf) = path.split_at(path.len() - 1);
-        document
-            .insert_member(parent, leaf[0], &serialized)
-            .map_err(|_| ConflictReason::Unparsable)
-    }
-}
-
-fn nonce() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    format!("{}-{nanos}", std::process::id())
 }

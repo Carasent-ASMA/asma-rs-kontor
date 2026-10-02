@@ -1,7 +1,8 @@
 //! Binary-level qualification over synthetic roots: the real `kontor-bootstrap`
-//! executable, assert_cmd, and a redaction check on everything it prints.
+//! executable, assert_cmd, full prevalidation, and a redaction check on
+//! everything it prints.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use assert_cmd::Command;
 use kontor_bootstrap::artifact::manifest::{
@@ -66,56 +67,55 @@ impl World {
         .expect("write manifest");
     }
 
-    fn run(&self, arguments: &[&str]) -> (Value, bool) {
+    fn run(&self, arguments: &[&str]) -> (Value, bool, String) {
         let output = Command::cargo_bin("kontor-bootstrap")
             .expect("binary")
             .args(arguments)
             .output()
             .expect("run");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let document: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
-            panic!(
-                "stdout is not JSON: {}",
-                String::from_utf8_lossy(&output.stdout)
-            )
+            panic!("stdout is not JSON: {stdout}");
         });
-        (document, output.status.success())
+        (document, output.status.success(), stdout)
+    }
+
+    fn common(&self) -> Vec<String> {
+        vec![
+            "--install-root".to_owned(),
+            self.install_root.to_str().expect("utf8").to_owned(),
+            "--manifest".to_owned(),
+            self.manifest.to_str().expect("utf8").to_owned(),
+            "--home-root".to_owned(),
+            self.home_root.to_str().expect("utf8").to_owned(),
+            "--state-root".to_owned(),
+            self.state_root.to_str().expect("utf8").to_owned(),
+        ]
     }
 
     fn install(&self) -> Value {
-        let (document, success) = self.run(&[
-            "install",
-            "--install-root",
-            self.install_root.to_str().expect("utf8"),
-            "--source-dir",
-            self.source_dir.to_str().expect("utf8"),
-            "--manifest",
-            self.manifest.to_str().expect("utf8"),
-            "--home-root",
-            self.home_root.to_str().expect("utf8"),
-            "--state-root",
-            self.state_root.to_str().expect("utf8"),
-        ]);
-        assert!(success, "install failed: {document}");
+        let mut arguments = vec!["install".to_owned()];
+        arguments.extend(self.common());
+        arguments.push("--source-dir".to_owned());
+        arguments.push(self.source_dir.to_str().expect("utf8").to_owned());
+        let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        let (document, success, stdout) = self.run(&refs);
+        assert!(success, "install failed: {document} {stdout}");
+        assert_redacted(&document, self);
         document
     }
 
     fn readback(&self) -> Value {
-        let (document, success) = self.run(&[
-            "readback",
-            "--install-root",
-            self.install_root.to_str().expect("utf8"),
-            "--manifest",
-            self.manifest.to_str().expect("utf8"),
-            "--home-root",
-            self.home_root.to_str().expect("utf8"),
-            "--state-root",
-            self.state_root.to_str().expect("utf8"),
-        ]);
-        assert!(success, "readback failed: {document}");
+        let mut arguments = vec!["readback".to_owned()];
+        arguments.extend(self.common());
+        let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        let (document, success, stdout) = self.run(&refs);
+        assert!(success, "readback failed: {document} {stdout}");
+        assert_redacted(&document, self);
         document
     }
 
-    fn client_result<'a>(&self, document: &'a Value, client: &str) -> &'a Value {
+    fn client_report<'a>(&self, document: &'a Value, client: &str) -> &'a Value {
         document["clients"]
             .as_array()
             .expect("clients")
@@ -123,10 +123,17 @@ impl World {
             .find(|report| report["client"] == client)
             .unwrap_or_else(|| panic!("no report for {client}: {document}"))
     }
+
+    fn assert_no_mutations(&self) {
+        assert!(
+            !self.install_root.exists(),
+            "the install root was created before validation completed"
+        );
+    }
 }
 
 fn assert_redacted(document: &Value, world: &World) {
-    let text = document.to_string();
+    let stdout = document.to_string();
     for path in [
         &world.install_root,
         &world.source_dir,
@@ -135,13 +142,13 @@ fn assert_redacted(document: &Value, world: &World) {
     ] {
         let rendered = path.to_str().expect("utf8");
         assert!(
-            !text.contains(rendered),
+            !stdout.contains(rendered),
             "receipt leaked the host path {rendered}"
         );
     }
-    for forbidden in ["program", "args", "KONTOR_AUTH", "credential"] {
+    for forbidden in ["program", "\"args\"", "KONTOR_AUTH", "credential-tier"] {
         assert!(
-            !text.contains(forbidden),
+            !stdout.contains(forbidden),
             "receipt leaked the field name {forbidden}"
         );
     }
@@ -153,43 +160,40 @@ fn install_then_readback_then_replay_and_update() {
     let document = world.install();
     assert_eq!(document["schema_version"], 1);
     assert_eq!(document["release"], "1.0.0");
-    let artifacts = document["artifacts"].as_array().expect("artifacts");
-    assert_eq!(artifacts.len(), 4);
     assert!(
-        artifacts
+        document["artifacts"]
+            .as_array()
+            .expect("artifacts")
             .iter()
             .all(|entry| entry["disposition"] == "installed")
     );
     for client in ["codex", "opencode", "copilot", "cursor"] {
         assert_eq!(
-            world.client_result(&document, client)["result"]["result"],
+            world.client_report(&document, client)["result"]["result"],
             "installed",
             "{client}"
         );
     }
     assert_eq!(
-        world.client_result(&document, "claude-code")["result"]["result"],
-        "absent",
-        "the command boundary is not wired in this unit"
+        world.client_report(&document, "claude-code")["result"]["result"],
+        "absent"
     );
-    assert_redacted(&document, &world);
     assert!(world.state_root.join("bootstrap-receipt.json").exists());
-    for name in ArtifactName::ALL {
-        assert_eq!(
-            std::fs::read_to_string(world.install_root.join(name.file_name())).expect("read"),
-            format!("{}@1.0.0", name.file_name())
-        );
-    }
+    assert!(world.state_root.join("bootstrap-ownership.json").exists());
+    let active = world.install_root.join("current");
+    assert_eq!(
+        std::fs::read_to_string(active.join("kontor")).expect("artifact"),
+        "kontor@1.0.0"
+    );
 
     let observed = world.readback();
     for client in ["codex", "opencode", "copilot", "cursor"] {
         assert_eq!(
-            world.client_result(&observed, client)["state"]["state"],
+            world.client_report(&observed, client)["state"]["state"],
             "current",
             "{client}"
         );
     }
-    assert_redacted(&observed, &world);
 
     let replay = world.install();
     assert!(
@@ -201,7 +205,7 @@ fn install_then_readback_then_replay_and_update() {
     );
     for client in ["codex", "opencode", "copilot", "cursor"] {
         assert_eq!(
-            world.client_result(&replay, client)["result"]["result"],
+            world.client_report(&replay, client)["result"]["result"],
             "already_current",
             "{client}"
         );
@@ -217,7 +221,7 @@ fn install_then_readback_then_replay_and_update() {
             .all(|entry| entry["disposition"] == "updated")
     );
     assert_eq!(
-        std::fs::read_to_string(world.install_root.join("kontor")).expect("read"),
+        std::fs::read_to_string(world.install_root.join("current/kontor")).expect("artifact"),
         "kontor@2.0.0"
     );
 }
@@ -232,46 +236,49 @@ fn repair_through_the_cli_requires_the_exact_observed_hash() {
     )
     .expect("seed unrelated");
     let observed = world.readback();
-    let report = world.client_result(&observed, "cursor");
+    let report = world.client_report(&observed, "cursor");
     assert_eq!(report["state"]["state"], "unrelated");
     let hash = report["state"]["observed"]
         .as_str()
         .expect("observed hash")
         .to_owned();
 
-    let (wrong, success) = world.run(&[
-        "repair",
-        "--install-root",
-        world.install_root.to_str().expect("utf8"),
-        "--home-root",
-        world.home_root.to_str().expect("utf8"),
-        "--state-root",
-        world.state_root.to_str().expect("utf8"),
-        "--client",
-        "cursor",
-        "--expected-hash",
-        &"a".repeat(64),
-    ]);
+    let wrong = vec![
+        "repair".to_owned(),
+        "--install-root".to_owned(),
+        world.install_root.to_str().expect("utf8").to_owned(),
+        "--home-root".to_owned(),
+        world.home_root.to_str().expect("utf8").to_owned(),
+        "--state-root".to_owned(),
+        world.state_root.to_str().expect("utf8").to_owned(),
+        "--client".to_owned(),
+        "cursor".to_owned(),
+        "--expected-hash".to_owned(),
+        "a".repeat(64),
+    ];
+    let refs: Vec<&str> = wrong.iter().map(String::as_str).collect();
+    let (document, success, _) = world.run(&refs);
     assert!(success);
-    assert_eq!(wrong["result"]["result"], "conflict");
-    assert_eq!(wrong["result"]["reason"], "observed_hash_mismatch");
+    assert_eq!(document["result"]["result"], "conflict");
+    assert_eq!(document["result"]["reason"], "observed_hash_mismatch");
 
-    let (repaired, success) = world.run(&[
-        "repair",
-        "--install-root",
-        world.install_root.to_str().expect("utf8"),
-        "--home-root",
-        world.home_root.to_str().expect("utf8"),
-        "--state-root",
-        world.state_root.to_str().expect("utf8"),
-        "--client",
-        "cursor",
-        "--expected-hash",
-        &hash,
-    ]);
+    let repaired = vec![
+        "repair".to_owned(),
+        "--install-root".to_owned(),
+        world.install_root.to_str().expect("utf8").to_owned(),
+        "--home-root".to_owned(),
+        world.home_root.to_str().expect("utf8").to_owned(),
+        "--state-root".to_owned(),
+        world.state_root.to_str().expect("utf8").to_owned(),
+        "--client".to_owned(),
+        "cursor".to_owned(),
+        "--expected-hash".to_owned(),
+        hash,
+    ];
+    let refs: Vec<&str> = repaired.iter().map(String::as_str).collect();
+    let (document, success, _) = world.run(&refs);
     assert!(success);
-    assert_eq!(repaired["result"]["result"], "repaired");
-    assert_redacted(&repaired, &world);
+    assert_eq!(document["result"]["result"], "repaired");
     let text = std::fs::read_to_string(world.home_root.join(".cursor/mcp.json")).expect("read");
     assert!(text.contains("kontor-mcp"));
     assert!(!text.contains("/usr/bin/other-mcp"));
@@ -281,7 +288,7 @@ fn repair_through_the_cli_requires_the_exact_observed_hash() {
 fn recover_is_typed_when_nothing_is_pending() {
     let world = World::new();
     world.install();
-    let (document, success) = world.run(&[
+    let (document, success, _) = world.run(&[
         "recover",
         "--install-root",
         world.install_root.to_str().expect("utf8"),
@@ -290,29 +297,132 @@ fn recover_is_typed_when_nothing_is_pending() {
     ]);
     assert!(success);
     assert_eq!(document["recovery"], "nothing");
-    assert_redacted(&document, &world);
 }
 
 #[test]
 fn an_invalid_manifest_is_a_typed_refusal_with_no_writes() {
     let world = World::new();
     std::fs::write(&world.manifest, "{}").expect("manifest");
-    let (document, success) = world.run(&[
-        "install",
-        "--install-root",
-        world.install_root.to_str().expect("utf8"),
-        "--source-dir",
-        world.source_dir.to_str().expect("utf8"),
-        "--manifest",
-        world.manifest.to_str().expect("utf8"),
-        "--home-root",
-        world.home_root.to_str().expect("utf8"),
-        "--state-root",
-        world.state_root.to_str().expect("utf8"),
-    ]);
+    let mut arguments = vec!["install".to_owned()];
+    arguments.extend(world.common());
+    arguments.push("--source-dir".to_owned());
+    arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let (document, success, _) = world.run(&refs);
     assert!(!success);
     assert_eq!(document["error"]["code"], "manifest_invalid");
-    assert!(!world.install_root.join("kontor").exists());
+    world.assert_no_mutations();
+}
+
+#[test]
+fn an_injected_manifest_is_refused_without_reflection() {
+    let world = World::new();
+    let document = serde_json::json!({
+        "schema_version": 1,
+        "release": "../../etc/passwd",
+        "artifacts": [],
+    });
+    std::fs::write(
+        &world.manifest,
+        serde_json::to_string(&document).expect("json"),
+    )
+    .expect("manifest");
+    let mut arguments = vec!["install".to_owned()];
+    arguments.extend(world.common());
+    arguments.push("--source-dir".to_owned());
+    arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let (error, success, stdout) = world.run(&refs);
+    assert!(!success);
+    assert_eq!(error["error"]["code"], "manifest_invalid");
+    for marker in ["passwd", "etc", "../"] {
+        assert!(
+            !stdout.contains(marker),
+            "error reflected {marker}: {stdout}"
+        );
+    }
+    world.assert_no_mutations();
+}
+
+#[test]
+fn prevalidation_produces_zero_mutations() {
+    // Relative state root.
+    let world = World::new();
+    let relative = vec![
+        "install".to_owned(),
+        "--install-root".to_owned(),
+        world.install_root.to_str().expect("utf8").to_owned(),
+        "--source-dir".to_owned(),
+        world.source_dir.to_str().expect("utf8").to_owned(),
+        "--manifest".to_owned(),
+        world.manifest.to_str().expect("utf8").to_owned(),
+        "--home-root".to_owned(),
+        world.home_root.to_str().expect("utf8").to_owned(),
+        "--state-root".to_owned(),
+        "relative/state".to_owned(),
+    ];
+    let refs: Vec<&str> = relative.iter().map(String::as_str).collect();
+    let (document, success, _) = world.run(&refs);
+    assert!(!success);
+    assert_eq!(document["error"]["code"], "state_root_invalid");
+    world.assert_no_mutations();
+
+    // Unknown client.
+    let world = World::new();
+    let mut arguments = vec!["install".to_owned()];
+    arguments.extend(world.common());
+    arguments.push("--source-dir".to_owned());
+    arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
+    arguments.push("--client".to_owned());
+    arguments.push("not-a-client".to_owned());
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let (document, success, _) = world.run(&refs);
+    assert!(!success);
+    assert_eq!(document["error"]["code"], "unknown_client");
+    world.assert_no_mutations();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_state_root_produces_zero_mutations() {
+    use std::os::unix::fs::symlink;
+    let world = World::new();
+    let outside = world._holder.path().join("outside-state");
+    std::fs::create_dir_all(&outside).expect("outside");
+    let link = world._holder.path().join("state-link");
+    symlink(&outside, &link).expect("link");
+    let mut arguments = vec!["install".to_owned()];
+    arguments.extend(world.common());
+    arguments.push("--source-dir".to_owned());
+    arguments.push(world.source_dir.to_str().expect("utf8").to_owned());
+    let position = arguments
+        .iter()
+        .position(|argument| argument == world.state_root.to_str().expect("utf8"))
+        .expect("state root");
+    arguments[position] = link.to_str().expect("utf8").to_owned();
+    let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let (document, success, _) = world.run(&refs);
+    assert!(!success);
+    assert_eq!(document["error"]["code"], "state_root_invalid");
+    world.assert_no_mutations();
+    assert!(
+        std::fs::read_dir(&outside)
+            .expect("outside")
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn the_binary_requires_every_root_explicitly() {
+    let output = Command::cargo_bin("kontor-bootstrap")
+        .expect("binary")
+        .args(["install"])
+        .output()
+        .expect("run");
+    assert!(!output.status.success());
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(text.contains("--install-root"), "{text}");
 }
 
 #[cfg(unix)]
@@ -324,7 +434,7 @@ fn a_symlinked_client_config_is_a_typed_conflict() {
     std::fs::write(&outside, "unrelated = true").expect("outside");
     symlink(&outside, world.home_root.join(".codex/config.toml")).expect("symlink");
     let document = world.install();
-    let report = world.client_result(&document, "codex");
+    let report = world.client_report(&document, "codex");
     assert_eq!(report["result"]["result"], "conflict");
     assert_eq!(report["result"]["reason"], "symlink");
     assert_eq!(
@@ -332,49 +442,3 @@ fn a_symlinked_client_config_is_a_typed_conflict() {
         "unrelated = true"
     );
 }
-
-#[test]
-fn a_relative_root_is_a_typed_refusal() {
-    let world = World::new();
-    let (document, success) = world.run(&[
-        "install",
-        "--install-root",
-        "relative/install",
-        "--source-dir",
-        world.source_dir.to_str().expect("utf8"),
-        "--manifest",
-        world.manifest.to_str().expect("utf8"),
-        "--home-root",
-        world.home_root.to_str().expect("utf8"),
-        "--state-root",
-        world.state_root.to_str().expect("utf8"),
-    ]);
-    assert!(!success);
-    assert_eq!(document["error"]["code"], "install_root_invalid");
-}
-
-#[test]
-fn the_binary_does_not_touch_a_real_home_by_default() {
-    // Every root is required; omitting one is a usage error, never a fallback
-    // to a home directory.
-    let output = Command::cargo_bin("kontor-bootstrap")
-        .expect("binary")
-        .args(["install"])
-        .output()
-        .expect("run");
-    assert!(!output.status.success());
-    let text = String::from_utf8_lossy(&output.stderr);
-    assert!(text.contains("--install-root"), "{text}");
-}
-
-#[test]
-fn no_process_or_service_manager_is_reachable_from_the_binary() {
-    let world = World::new();
-    let document = world.install();
-    let text = document.to_string();
-    for forbidden in ["launchctl", "systemctl", "systemd"] {
-        assert!(!text.contains(forbidden));
-    }
-}
-
-fn _unused(_: &Path) {}

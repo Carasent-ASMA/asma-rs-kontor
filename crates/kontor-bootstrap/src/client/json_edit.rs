@@ -12,6 +12,12 @@
 
 use serde_json::Value;
 
+/// The largest JSON/JSONC document this editor will parse.
+pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
+
+/// The deepest nesting this editor will parse before refusing.
+pub const MAX_DEPTH: usize = 64;
+
 /// Which dialect a document is read as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -39,6 +45,12 @@ pub enum JsonEditError {
     /// The addressed value is not of the shape the edit needs.
     #[error("the addressed value is not an object")]
     NotAnObject,
+    /// The document exceeds the configured size bound.
+    #[error("the document exceeds the configured size bound")]
+    TooLarge,
+    /// The document nests deeper than the configured bound.
+    #[error("the document nests deeper than the configured bound")]
+    TooDeep,
     /// The member to add already exists.
     #[error("the member already exists")]
     MemberExists,
@@ -96,12 +108,15 @@ impl JsonDocument {
     /// strict document.
     pub fn parse(text: impl Into<String>, dialect: Dialect) -> Result<Self, JsonEditError> {
         let text = text.into();
+        if text.len() > MAX_INPUT_BYTES {
+            return Err(JsonEditError::TooLarge);
+        }
         let mut parser = Parser {
             bytes: text.as_bytes(),
             pos: 0,
             dialect,
         };
-        let root = parser.parse_value()?;
+        let root = parser.parse_value(0)?;
         parser.skip_trivia()?;
         if parser.pos != parser.bytes.len() {
             return Err(JsonEditError::Malformed);
@@ -133,10 +148,19 @@ impl JsonDocument {
         self.lookup(path).is_some()
     }
 
-    /// The parsed value at `path`, if it resolves and parses.
+    /// The parsed value at `path`, if it resolves.
+    ///
+    /// The value is rebuilt from the parsed span tree, so comments and
+    /// trailing commas *inside* the addressed value do not erase it.
     #[must_use]
     pub fn value(&self, path: &[&str]) -> Option<Value> {
-        serde_json::from_str(self.value_text(path)?).ok()
+        self.to_value(path)
+    }
+
+    /// Rebuild the addressed value as JSON from the span tree.
+    #[must_use]
+    pub fn to_value(&self, path: &[&str]) -> Option<Value> {
+        node_to_value(self.lookup(path)?, &self.text)
     }
 
     /// Add `name: value` inside the object at `path`, preserving every other
@@ -235,6 +259,45 @@ fn line_indent(text: &str, offset: usize) -> String {
         .collect()
 }
 
+fn node_to_value(node: &Node, text: &str) -> Option<Value> {
+    match node {
+        Node::Object { members, .. } => {
+            let mut object = serde_json::Map::new();
+            for member in members {
+                object.insert(member.key.clone(), node_to_value(&member.value, text)?);
+            }
+            Some(Value::Object(object))
+        }
+        Node::Array { elements, .. } => {
+            let mut array = Vec::with_capacity(elements.len());
+            for element in elements {
+                array.push(node_to_value(element, text)?);
+            }
+            Some(Value::Array(array))
+        }
+        Node::Scalar { start, end } => {
+            let raw = text.get(*start..*end)?;
+            if raw.starts_with('"') {
+                decode_string_literal(raw).map(Value::String)
+            } else {
+                serde_json::from_str(raw).ok()
+            }
+        }
+    }
+}
+
+/// Decode one well-formed JSON string literal, including escapes.
+fn decode_string_literal(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut parser = Parser {
+        bytes,
+        pos: 0,
+        dialect: Dialect::Json,
+    };
+    let decoded = parser.parse_string().ok()?;
+    (parser.pos == bytes.len()).then_some(decoded)
+}
+
 fn indent_before(text: &str, offset: usize) -> String {
     let line_start = text[..offset].rfind('\n').map_or(0, |index| index + 1);
     let candidate = &text[line_start..offset];
@@ -311,12 +374,15 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
-    fn parse_value(&mut self) -> Result<Node, JsonEditError> {
+    fn parse_value(&mut self, depth: usize) -> Result<Node, JsonEditError> {
+        if depth > MAX_DEPTH {
+            return Err(JsonEditError::TooDeep);
+        }
         self.skip_trivia()?;
         let start = self.pos;
         match self.peek() {
-            Some(b'{') => self.parse_object(),
-            Some(b'[') => self.parse_array(),
+            Some(b'{') => self.parse_object(depth),
+            Some(b'[') => self.parse_array(depth),
             Some(b'"') => {
                 self.parse_string()?;
                 Ok(Node::Scalar {
@@ -342,7 +408,7 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_object(&mut self) -> Result<Node, JsonEditError> {
+    fn parse_object(&mut self, depth: usize) -> Result<Node, JsonEditError> {
         let open = self.pos;
         self.pos += 1;
         let mut members = Vec::new();
@@ -374,7 +440,7 @@ impl Parser<'_> {
                 return Err(JsonEditError::Malformed);
             }
             self.pos += 1;
-            let value = self.parse_value()?;
+            let value = self.parse_value(depth + 1)?;
             members.push(Member {
                 key,
                 key_start,
@@ -400,7 +466,7 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_array(&mut self) -> Result<Node, JsonEditError> {
+    fn parse_array(&mut self, depth: usize) -> Result<Node, JsonEditError> {
         let open = self.pos;
         self.pos += 1;
         let mut elements = Vec::new();
@@ -419,7 +485,7 @@ impl Parser<'_> {
                     elements,
                 });
             }
-            elements.push(self.parse_value()?);
+            elements.push(self.parse_value(depth + 1)?);
             self.skip_trivia()?;
             match self.peek() {
                 Some(b',') => {
@@ -725,6 +791,36 @@ mod tests {
             JsonDocument::parse(r#"{"m\u0063p": {"a": 1}}"#, Dialect::Json).expect("parse");
         assert!(document.has_member(&["mcp"]));
         assert_eq!(document.value(&["mcp"]).expect("mcp")["a"], 1);
+    }
+
+    #[test]
+    fn deeply_nested_and_oversized_documents_are_typed_refusals() {
+        let deep = format!(
+            "{}1{}",
+            "[".repeat(MAX_DEPTH + 5),
+            "]".repeat(MAX_DEPTH + 5)
+        );
+        assert_eq!(
+            JsonDocument::parse(deep, Dialect::Json).unwrap_err(),
+            JsonEditError::TooDeep
+        );
+        let oversized = format!("{{\"a\": \"{}\"}}", "x".repeat(MAX_INPUT_BYTES));
+        assert_eq!(
+            JsonDocument::parse(oversized, Dialect::Json).unwrap_err(),
+            JsonEditError::TooLarge
+        );
+    }
+
+    #[test]
+    fn comments_inside_an_addressed_value_do_not_erase_it() {
+        let text = "{\n  \"mcp\": {\n    \"servers\": {\n      \"kontor\": {\n        /* transport */ \"type\": \"local\",\n        \"command\": [/* binary */ \"/x/kontor-mcp\"]\n      }\n    }\n  }\n}";
+        let document = JsonDocument::parse(text, Dialect::Jsonc).expect("parse");
+        let value = document
+            .value(&["mcp", "servers", "kontor"])
+            .expect("the commented entry is present");
+        assert_eq!(value["type"], "local");
+        assert_eq!(value["command"][0], "/x/kontor-mcp");
+        assert!(document.value_text(&["mcp", "servers", "kontor"]).is_some());
     }
 
     #[test]

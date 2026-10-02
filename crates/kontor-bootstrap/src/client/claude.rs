@@ -5,14 +5,19 @@
 //! <name> --scope user`, `mcp get <name>` and `mcp remove <name> --scope user`
 //! — and delegates execution to an injected [`ClaudeBoundary`]. Only a fake
 //! boundary ships here; nothing spawns the client in this unit.
+//!
+//! Replacement is race-safe and failure-safe: the entry is re-read and its
+//! full snapshot digest revalidated immediately before removal, the exact
+//! original entry is captured, and a failed re-add attempts to restore it. An
+//! entry created after observation is never deleted.
 
 use std::collections::BTreeMap;
 
 use serde_json::Value;
 
 use super::{
-    AdapterError, AdapterResult, ClientAdapter, ClientId, ConflictReason, EntryState,
-    MCP_EXECUTABLE, ObservedHash, ServerSpec,
+    AdapterError, AdapterResult, ClientAdapter, ClientId, ConflictReason, EntryState, ObservedHash,
+    OwnershipStore, ServerSpec, desired_entry,
 };
 use crate::fault::FaultInjector;
 
@@ -91,25 +96,21 @@ pub trait ClaudeBoundary {
 /// The Claude Code adapter over one injected boundary.
 pub struct ClaudeAdapter {
     boundary: Box<dyn ClaudeBoundary>,
+    ownership: OwnershipStore,
 }
 
 impl ClaudeAdapter {
-    /// An adapter over one boundary.
+    /// An adapter over one boundary and one ownership ledger.
     #[must_use]
-    pub fn new(boundary: Box<dyn ClaudeBoundary>) -> Self {
-        Self { boundary }
-    }
-
-    fn desired_json(spec: &ServerSpec) -> String {
-        serde_json::json!({
-            "type": "stdio",
-            "command": spec.program.to_string_lossy(),
-            "args": spec.args,
-        })
-        .to_string()
+    pub fn new(boundary: Box<dyn ClaudeBoundary>, ownership: OwnershipStore) -> Self {
+        Self {
+            boundary,
+            ownership,
+        }
     }
 
     fn observe(&mut self, spec: &ServerSpec) -> Result<EntryState, AdapterError> {
+        spec.validate()?;
         let entry = match self.boundary.get(ENTRY_NAME) {
             Ok(entry) => entry,
             Err(ClaudeBoundaryError::Unavailable) => return Ok(EntryState::ClientAbsent),
@@ -118,53 +119,105 @@ impl ClaudeAdapter {
         let Some(value) = entry else {
             return Ok(EntryState::EntryAbsent);
         };
-        let Some(object) = value.as_object() else {
-            return Ok(EntryState::Unrelated {
-                observed: ObservedHash::of_bytes(value.to_string().as_bytes()),
-            });
-        };
-        let Some(program) = object.get("command").and_then(Value::as_str) else {
-            return Ok(EntryState::Unrelated {
-                observed: ObservedHash::of_bytes(value.to_string().as_bytes()),
-            });
-        };
-        let args = object
-            .get("args")
-            .and_then(Value::as_array)
-            .map(|array| {
-                array
-                    .iter()
-                    .filter_map(|value| value.as_str().map(str::to_owned))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let observed = ObservedHash::of_entry(program, &args);
-        if basename(program) != MCP_EXECUTABLE {
+        let observed = ObservedHash::of_value(&value);
+        if !schema_accepts(&value) {
             return Ok(EntryState::Unrelated { observed });
         }
-        if program == spec.program.to_string_lossy().as_ref() && args == spec.args {
-            Ok(EntryState::Current { observed })
-        } else {
-            Ok(EntryState::ManagedStale { observed })
+        let ledger = match self.ownership.load() {
+            Ok(ledger) => ledger,
+            Err(_) => {
+                return Ok(EntryState::Refused {
+                    reason: ConflictReason::OwnershipUnreadable,
+                });
+            }
+        };
+        let desired = desired_entry(ClientId::ClaudeCode, spec);
+        Ok(super::classify(
+            &value,
+            &desired,
+            ledger.owns(ClientId::ClaudeCode, &observed),
+        ))
+    }
+
+    fn readback(&mut self, spec: &ServerSpec) -> Result<AdapterResult, AdapterError> {
+        match self.observe(spec)? {
+            EntryState::Current { observed } => {
+                let desired = desired_entry(ClientId::ClaudeCode, spec);
+                self.ownership.record(
+                    ClientId::ClaudeCode,
+                    &observed,
+                    &ObservedHash::of_value(&desired),
+                )?;
+                Ok(AdapterResult::Updated)
+            }
+            _ => Ok(AdapterResult::FailedReadback),
         }
     }
 
-    fn replace(&mut self, spec: &ServerSpec) -> Result<(), AdapterError> {
-        let json = Self::desired_json(spec);
+    /// Add a desired entry into an observed-absent store.
+    fn add_absent(
+        &mut self,
+        spec: &ServerSpec,
+        faults: &mut dyn FaultInjector,
+    ) -> Result<AdapterResult, AdapterError> {
+        let json = serde_json::to_string(&desired_entry(ClientId::ClaudeCode, spec))
+            .map_err(|_| AdapterError::CommandFailed)?;
+        let _ = faults;
         match self.boundary.add_json(ENTRY_NAME, &json) {
-            Ok(()) => Ok(()),
+            Ok(()) => {}
             Err(ClaudeBoundaryError::AlreadyExists) => {
-                // The documented update path is an explicit remove followed by
-                // the add; overwrite semantics are never assumed.
-                self.boundary
-                    .remove(ENTRY_NAME)
-                    .map_err(|_| AdapterError::CommandFailed)?;
-                self.boundary
-                    .add_json(ENTRY_NAME, &json)
-                    .map_err(|_| AdapterError::CommandFailed)
+                return Ok(AdapterResult::Conflict {
+                    reason: ConflictReason::ConcurrentChange,
+                    observed: None,
+                });
             }
-            Err(_) => Err(AdapterError::CommandFailed),
+            Err(_) => return Err(AdapterError::CommandFailed),
         }
+        self.readback(spec)
+    }
+
+    /// Replace an owned or explicitly authorized entry, race- and
+    /// failure-safe.
+    fn replace(
+        &mut self,
+        spec: &ServerSpec,
+        expected: &ObservedHash,
+    ) -> Result<AdapterResult, AdapterError> {
+        let Some(current) = self
+            .boundary
+            .get(ENTRY_NAME)
+            .map_err(|_| AdapterError::CommandFailed)?
+        else {
+            return Ok(AdapterResult::FailedReadback);
+        };
+        if &ObservedHash::of_value(&current) != expected {
+            return Ok(AdapterResult::Conflict {
+                reason: ConflictReason::ConcurrentChange,
+                observed: Some(ObservedHash::of_value(&current)),
+            });
+        }
+        let original = serde_json::to_string(&current).map_err(|_| AdapterError::CommandFailed)?;
+        let desired = serde_json::to_string(&desired_entry(ClientId::ClaudeCode, spec))
+            .map_err(|_| AdapterError::CommandFailed)?;
+
+        if self.boundary.remove(ENTRY_NAME).is_err() {
+            return Err(AdapterError::CommandFailed);
+        }
+        match self.boundary.add_json(ENTRY_NAME, &desired) {
+            Ok(()) => {}
+            Err(_) => {
+                // The exact original entry is restored; a failed restore is a
+                // typed error, never a silent success.
+                self.boundary
+                    .add_json(ENTRY_NAME, &original)
+                    .map_err(|_| AdapterError::RestoreFailed)?;
+                return Ok(AdapterResult::Conflict {
+                    reason: ConflictReason::ReplacementFailed,
+                    observed: Some(expected.clone()),
+                });
+            }
+        }
+        self.readback(spec)
     }
 }
 
@@ -174,37 +227,22 @@ impl ClientAdapter for ClaudeAdapter {
     }
 
     fn inspect(&mut self, spec: &ServerSpec) -> Result<EntryState, AdapterError> {
-        if !spec.points_at_managed_executable() {
-            return Err(AdapterError::InvalidSpec);
-        }
         self.observe(spec)
     }
 
     fn install(
         &mut self,
         spec: &ServerSpec,
-        _faults: &mut dyn FaultInjector,
+        faults: &mut dyn FaultInjector,
     ) -> Result<AdapterResult, AdapterError> {
-        if !spec.points_at_managed_executable() {
-            return Err(AdapterError::InvalidSpec);
-        }
         match self.observe(spec)? {
             EntryState::ClientAbsent => Ok(AdapterResult::Absent),
-            EntryState::EntryAbsent => {
-                self.replace(spec)?;
-                match self.observe(spec)? {
-                    EntryState::Current { .. } => Ok(AdapterResult::Installed),
-                    _ => Ok(AdapterResult::FailedReadback),
-                }
-            }
+            EntryState::EntryAbsent => self.add_absent(spec, faults).map(|result| match result {
+                AdapterResult::Updated => AdapterResult::Installed,
+                other => other,
+            }),
             EntryState::Current { .. } => Ok(AdapterResult::AlreadyCurrent),
-            EntryState::ManagedStale { observed: _ } => {
-                self.replace(spec)?;
-                match self.observe(spec)? {
-                    EntryState::Current { .. } => Ok(AdapterResult::Updated),
-                    _ => Ok(AdapterResult::FailedReadback),
-                }
-            }
+            EntryState::ManagedStale { observed } => self.replace(spec, &observed),
             EntryState::Unrelated { observed } => Ok(AdapterResult::Conflict {
                 reason: ConflictReason::SameNameUnrelated,
                 observed: Some(observed),
@@ -222,24 +260,20 @@ impl ClientAdapter for ClaudeAdapter {
         expected: &ObservedHash,
         _faults: &mut dyn FaultInjector,
     ) -> Result<AdapterResult, AdapterError> {
-        if !spec.points_at_managed_executable() {
-            return Err(AdapterError::InvalidSpec);
-        }
         match self.observe(spec)? {
             EntryState::ClientAbsent | EntryState::EntryAbsent => Ok(AdapterResult::Absent),
             EntryState::Current { .. } => Ok(AdapterResult::AlreadyCurrent),
             EntryState::ManagedStale { observed } | EntryState::Unrelated { observed } => {
-                if observed != *expected {
+                if &observed != expected {
                     return Ok(AdapterResult::Conflict {
                         reason: ConflictReason::ObservedHashMismatch,
                         observed: Some(observed),
                     });
                 }
-                self.replace(spec)?;
-                match self.observe(spec)? {
-                    EntryState::Current { .. } => Ok(AdapterResult::Repaired),
-                    _ => Ok(AdapterResult::FailedReadback),
-                }
+                self.replace(spec, &observed).map(|result| match result {
+                    AdapterResult::Updated => AdapterResult::Repaired,
+                    other => other,
+                })
             }
             EntryState::Refused { reason } => Ok(AdapterResult::Conflict {
                 reason,
@@ -247,6 +281,18 @@ impl ClientAdapter for ClaudeAdapter {
             }),
         }
     }
+}
+
+fn schema_accepts(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.get("type").and_then(Value::as_str) == Some("stdio")
+        && object.get("command").and_then(Value::as_str).is_some()
+        && object
+            .get("args")
+            .and_then(Value::as_array)
+            .is_some_and(|array| array.iter().all(Value::is_string))
 }
 
 /// A boundary that is deliberately unwired.
@@ -329,6 +375,12 @@ impl FakeClaudeBoundary {
     pub fn seed(&mut self, name: &str, value: Value) {
         self.entries.insert(name.to_owned(), value);
     }
+
+    /// The entry this fake currently holds.
+    #[must_use]
+    pub fn entry(&self, name: &str) -> Option<&Value> {
+        self.entries.get(name)
+    }
 }
 
 impl ClaudeBoundary for FakeClaudeBoundary {
@@ -370,8 +422,4 @@ impl ClaudeBoundary for FakeClaudeBoundary {
             .map(|_| ())
             .ok_or(ClaudeBoundaryError::NotFound)
     }
-}
-
-fn basename(program: &str) -> &str {
-    program.rsplit(['/', '\\']).next().unwrap_or(program)
 }

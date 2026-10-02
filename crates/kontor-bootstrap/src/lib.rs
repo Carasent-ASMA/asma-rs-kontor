@@ -30,6 +30,7 @@
 
 pub mod artifact;
 pub mod client;
+pub mod confinement;
 pub mod fault;
 pub mod receipt;
 pub mod service;
@@ -42,7 +43,7 @@ pub use client::claude::{ClaudeAdapter, ClaudeBoundary, FakeClaudeBoundary};
 pub use client::file_adapter::{ClientHome, FileClientAdapter};
 pub use client::{
     AdapterError, AdapterResult, ClientAdapter, ClientId, ClientReceipt, ConflictReason,
-    EntryState, ObservedHash, ServerSpec,
+    EntryState, ObservedHash, OwnershipLedger, OwnershipStore, ServerSpec,
 };
 pub use fault::{FailPoint, FaultInjector, NoFaults};
 pub use receipt::{

@@ -3,16 +3,19 @@
 //! A receipt is the durable answer to "what did bootstrap do": one disposition
 //! per artifact and per client. It carries names, versions, digests, typed
 //! states and typed reasons only — never a path, an argv, a credential value or
-//! any secret material. The types make that structural rather than a promise.
+//! any secret material. Serialization re-validates every free-form field
+//! against the safe-token rules, so an injected marker can neither appear in
+//! the output nor in a reflected error.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::artifact::install::{ArtifactStatus, InstallOutcome};
-use crate::artifact::manifest::{ArtifactManifest, ArtifactName};
+use crate::artifact::manifest::{ArtifactManifest, ArtifactName, is_safe_token};
 use crate::client::{AdapterResult, ClientId, EntryState};
-use crate::service::ServiceReceipt;
+use crate::confinement::{ConfinementError, Dir};
+use crate::service::{ServiceReceipt, is_safe_identity};
 
 /// The receipt schema this build writes.
 pub const RECEIPT_SCHEMA_VERSION: u32 = 1;
@@ -86,6 +89,9 @@ pub struct BootstrapReceipt {
 }
 
 /// Why a receipt could not be produced or written.
+///
+/// No variant echoes an offending value: an injection attempt is answered with
+/// a typed refusal that carries only the field name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ReceiptError {
     /// The receipt could not be serialized.
@@ -94,6 +100,15 @@ pub enum ReceiptError {
     /// The state root is relative, which bootstrap refuses.
     #[error("the state root must be an absolute path")]
     RelativeStateRoot,
+    /// The state root or receipt path is a symlink, which bootstrap refuses.
+    #[error("the receipt destination is not a real directory")]
+    UnsafeDestination,
+    /// A free-form field violates the safe-token rules.
+    #[error("the bootstrap receipt contains an unsafe {field} field")]
+    UnsafeField {
+        /// The field name only, never its value.
+        field: &'static str,
+    },
     /// The receipt could not be written.
     #[error("the bootstrap receipt could not be written")]
     Io,
@@ -168,35 +183,106 @@ impl BootstrapReceipt {
         self.service = Some(service);
     }
 
+    /// Re-validate every free-form field against the safe-token rules.
+    ///
+    /// # Errors
+    /// [`ReceiptError::UnsafeField`] naming only the field.
+    pub fn validate(&self) -> Result<(), ReceiptError> {
+        if !is_safe_token(&self.release) {
+            return Err(ReceiptError::UnsafeField { field: "release" });
+        }
+        for artifact in &self.artifacts {
+            if !is_safe_token(&artifact.version) {
+                return Err(ReceiptError::UnsafeField {
+                    field: "artifact.version",
+                });
+            }
+            if artifact.sha256.len() != 64
+                || !artifact
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err(ReceiptError::UnsafeField {
+                    field: "artifact.sha256",
+                });
+            }
+        }
+        if let Some(service) = &self.service
+            && !is_safe_identity(&service.identity)
+        {
+            return Err(ReceiptError::UnsafeField {
+                field: "service.identity",
+            });
+        }
+        Ok(())
+    }
+
     /// The one-document JSON form.
     ///
     /// # Errors
-    /// [`ReceiptError::Serialize`].
+    /// [`ReceiptError::UnsafeField`] or [`ReceiptError::Serialize`].
     pub fn to_json(&self) -> Result<String, ReceiptError> {
+        self.validate()?;
         serde_json::to_string_pretty(self).map_err(|_| ReceiptError::Serialize)
     }
 
-    /// Write the receipt under an injected state root.
+    /// Write the receipt under an injected state root, confined and with
+    /// private permissions from creation.
     ///
     /// # Errors
-    /// A relative state root, or a filesystem failure.
+    /// A relative or symlinked state root, an unsafe field, or a filesystem
+    /// failure.
     pub fn write_to(&self, state_root: &Path) -> Result<PathBuf, ReceiptError> {
         if !state_root.is_absolute() {
             return Err(ReceiptError::RelativeStateRoot);
         }
-        std::fs::create_dir_all(state_root).map_err(|_| ReceiptError::Io)?;
-        let path = state_root.join(RECEIPT_FILE_NAME);
         let document = self.to_json()?;
-        std::fs::write(&path, document).map_err(|_| ReceiptError::Io)?;
-        Ok(path)
+        let dir = match Dir::open_root(state_root) {
+            Ok(dir) => dir,
+            Err(ConfinementError::Missing) => {
+                std::fs::create_dir_all(state_root).map_err(|_| ReceiptError::Io)?;
+                Dir::open_root(state_root).map_err(map_root)?
+            }
+            Err(error) => return Err(map_root(error)),
+        };
+        let temporary = format!(
+            ".{RECEIPT_FILE_NAME}.tmp-{}-{}",
+            std::process::id(),
+            crate::artifact::install::nonce_suffix()
+        );
+        match dir.kind_child(&temporary) {
+            Ok(Some(_)) => {
+                dir.remove_child(&temporary).map_err(|_| ReceiptError::Io)?;
+            }
+            Ok(None) => {}
+            Err(_) => return Err(ReceiptError::Io),
+        }
+        let file = dir
+            .create_child_file(&temporary, document.as_bytes(), 0o600)
+            .map_err(|_| ReceiptError::Io)?;
+        drop(file);
+        dir.rename_child(&temporary, &dir, RECEIPT_FILE_NAME)
+            .map_err(|_| ReceiptError::Io)?;
+        Ok(state_root.join(RECEIPT_FILE_NAME))
+    }
+}
+
+fn map_root(error: ConfinementError) -> ReceiptError {
+    match error {
+        ConfinementError::Missing | ConfinementError::Symlink | ConfinementError::UnsafeName => {
+            ReceiptError::UnsafeDestination
+        }
+        _ => ReceiptError::Io,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::artifact::manifest::MANIFEST_SCHEMA_VERSION;
+    use crate::artifact::manifest::{ArtifactEntry, MANIFEST_SCHEMA_VERSION};
     use crate::client::{ClientReceipt, ConflictReason, ObservedHash};
+    use crate::service::{ServicePlatform, ServiceState};
 
     fn manifest() -> ArtifactManifest {
         ArtifactManifest {
@@ -204,7 +290,7 @@ mod tests {
             release: "1.2.3".to_owned(),
             artifacts: ArtifactName::ALL
                 .into_iter()
-                .map(|name| crate::artifact::manifest::ArtifactEntry {
+                .map(|name| ArtifactEntry {
                     name,
                     version: "1.2.3".to_owned(),
                     sha256: "a".repeat(64),
@@ -227,14 +313,43 @@ mod tests {
             client: ClientId::Cursor,
             state: EntryState::ClientAbsent,
         });
+        receipt.set_service(ServiceReceipt {
+            platform: ServicePlatform::Launchd,
+            identity: "kontor-daemon".to_owned(),
+            state: ServiceState::Absent,
+        });
         let document = receipt.to_json().expect("serialize");
         assert!(document.contains("\"schema_version\": 1"));
         assert!(document.contains("\"installed\""));
         assert!(document.contains("\"concurrent_change\""));
         assert!(document.contains("\"client_absent\""));
-        for forbidden in ["/Users", "/home", "program", "args", "KONTOR_AUTH"] {
+        for forbidden in ["/Users", "/home", "program", "KONTOR_AUTH", ".."] {
             assert!(!document.contains(forbidden), "receipt leaked {forbidden}");
         }
+    }
+
+    #[test]
+    fn injection_into_a_free_form_field_is_refused_without_reflection() {
+        let mut receipt = BootstrapReceipt::from_install(&manifest(), InstallOutcome::Installed);
+        receipt.release = "../../etc/passwd".to_owned();
+        let error = receipt.to_json().expect_err("unsafe release");
+        assert_eq!(error, ReceiptError::UnsafeField { field: "release" });
+        let reflected = error.to_string();
+        assert!(!reflected.contains("etc"));
+        assert!(!reflected.contains("passwd"));
+
+        receipt.release = "1.2.3".to_owned();
+        receipt.set_service(ServiceReceipt {
+            platform: ServicePlatform::Launchd,
+            identity: "/Users/me/.ssh/id_rsa".to_owned(),
+            state: ServiceState::Absent,
+        });
+        assert_eq!(
+            receipt.to_json().expect_err("unsafe identity"),
+            ReceiptError::UnsafeField {
+                field: "service.identity"
+            }
+        );
     }
 
     #[test]
@@ -243,6 +358,27 @@ mod tests {
         assert_eq!(
             receipt.write_to(Path::new("relative")),
             Err(ReceiptError::RelativeStateRoot)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_receipt_destination_is_refused() {
+        use std::os::unix::fs::symlink;
+        let holder = tempfile::tempdir().expect("holder");
+        let outside = tempfile::tempdir().expect("outside");
+        let link = holder.path().join("state-link");
+        symlink(&outside, &link).expect("link");
+        let receipt = BootstrapReceipt::from_install(&manifest(), InstallOutcome::Installed);
+        assert_eq!(
+            receipt.write_to(&link),
+            Err(ReceiptError::UnsafeDestination)
+        );
+        assert!(
+            std::fs::read_dir(outside.path())
+                .expect("outside")
+                .next()
+                .is_none()
         );
     }
 

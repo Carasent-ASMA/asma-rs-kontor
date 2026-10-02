@@ -3145,6 +3145,7 @@ dependencies = [
  "fs4",
  "hex",
  "predicates",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.11.0",

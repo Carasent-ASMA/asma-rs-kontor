@@ -8,10 +8,15 @@
 //! refused before any filesystem effect.
 
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::confinement::{ConfinementError, Dir, MAX_DOCUMENT_BYTES};
+
+/// The largest artifact source this build will read or stage.
+pub const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 
 /// The manifest schema this build understands. Unknown versions are refused
 /// rather than interpreted field-by-field.
@@ -94,13 +99,11 @@ pub struct ArtifactManifest {
     pub artifacts: Vec<ArtifactEntry>,
 }
 
-/// A source file verified against the manifest.
+/// A source artifact verified against the manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedSource {
     /// The artifact this file provides.
     pub name: ArtifactName,
-    /// Where the verified bytes were read from.
-    pub path: PathBuf,
     /// The verified lowercase hex SHA-256.
     pub sha256: String,
 }
@@ -121,9 +124,24 @@ pub enum ManifestError {
         /// The version that was found.
         found: u32,
     },
-    /// The release version is empty or blank.
-    #[error("the artifact manifest declares no release version")]
-    EmptyRelease,
+    /// The release version is not a safe bounded token.
+    #[error("the artifact manifest declares an unsafe release version")]
+    InvalidRelease,
+    /// An artifact version is not a safe bounded token.
+    #[error("artifact {name} declares an unsafe version token")]
+    InvalidArtifactVersion {
+        /// The offending artifact.
+        name: ArtifactName,
+    },
+    /// The artifact source root itself is unusable.
+    #[error("the artifact source root is unusable")]
+    SourceRootInvalid,
+    /// A source artifact exceeds the configured size bound.
+    #[error("source artifact {name} exceeds the configured size bound")]
+    SourceTooLarge {
+        /// The oversized artifact.
+        name: ArtifactName,
+    },
     /// The artifact list does not hold exactly the four set members.
     #[error("the artifact manifest does not declare exactly the four set artifacts")]
     IncompleteSet,
@@ -191,15 +209,20 @@ impl ArtifactManifest {
     /// Read and validate a manifest from a file.
     ///
     /// A symlinked manifest is refused: the file this program reads must be the
-    /// file a release published, not an indirection through mutable state.
+    /// file a release published, not an indirection through mutable state. The
+    /// document is size-bounded before parsing.
     ///
     /// # Errors
-    /// [`ManifestError::InvalidDocument`] when the path is a symlink or cannot
-    /// be read, plus every [`ManifestError`] `parse` can return.
+    /// [`ManifestError::InvalidDocument`] when the path is a symlink, too
+    /// large, or cannot be read, plus every [`ManifestError`] `parse` can
+    /// return.
     pub fn read(path: &Path) -> Result<Self, ManifestError> {
         let metadata =
             std::fs::symlink_metadata(path).map_err(|_| ManifestError::InvalidDocument)?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(ManifestError::InvalidDocument);
+        }
+        if metadata.len() > MAX_DOCUMENT_BYTES {
             return Err(ManifestError::InvalidDocument);
         }
         let bytes = std::fs::read_to_string(path).map_err(|_| ManifestError::InvalidDocument)?;
@@ -216,8 +239,8 @@ impl ArtifactManifest {
                 found: self.schema_version,
             });
         }
-        if self.release.trim().is_empty() {
-            return Err(ManifestError::EmptyRelease);
+        if !is_safe_token(&self.release) {
+            return Err(ManifestError::InvalidRelease);
         }
         if self.artifacts.len() != ArtifactName::ALL.len() {
             return Err(ManifestError::IncompleteSet);
@@ -229,6 +252,9 @@ impl ArtifactManifest {
             };
             if matches.next().is_some() {
                 return Err(ManifestError::DuplicateArtifact { name });
+            }
+            if !is_safe_token(&entry.version) {
+                return Err(ManifestError::InvalidArtifactVersion { name });
             }
             if entry.version != self.release {
                 return Err(ManifestError::IncoherentVersion {
@@ -250,40 +276,51 @@ impl ArtifactManifest {
         self.artifacts.iter().find(|entry| entry.name == name)
     }
 
-    /// Verify every declared artifact against its source file.
+    /// Verify every declared artifact against its source directory.
     ///
-    /// This is a pure read: the source directory is not modified, and a
-    /// mismatch is refused before any install root is touched.
+    /// The source directory is opened once and every artifact is read relative
+    /// to that held descriptor with no-follow semantics, so a symlinked source
+    /// artifact (or a swapped source directory) is refused rather than read.
+    /// This is a pure read: no root is modified.
     ///
     /// # Errors
-    /// Missing, symlinked, unreadable or mismatching source artifacts.
+    /// Missing, symlinked, oversized, unreadable or mismatching source
+    /// artifacts.
     pub fn verify_sources(&self, source_dir: &Path) -> Result<Vec<VerifiedSource>, ManifestError> {
+        let root = Dir::open_root(source_dir).map_err(map_source_root)?;
+        self.verify_sources_in(&root)
+    }
+
+    /// Verify every declared artifact against an already-open source directory.
+    ///
+    /// # Errors
+    /// The same refusals as [`ArtifactManifest::verify_sources`].
+    pub fn verify_sources_in(&self, source: &Dir) -> Result<Vec<VerifiedSource>, ManifestError> {
         let mut verified = Vec::with_capacity(ArtifactName::ALL.len());
         for name in ArtifactName::ALL {
             let Some(entry) = self.entry(name) else {
                 return Err(ManifestError::IncompleteSet);
             };
-            let path = source_dir.join(name.file_name());
-            let metadata =
-                std::fs::symlink_metadata(&path).map_err(|error| match error.kind() {
-                    std::io::ErrorKind::NotFound => ManifestError::SourceMissing { name },
-                    _ => ManifestError::SourceUnreadable { name },
-                })?;
-            if metadata.file_type().is_symlink() {
-                return Err(ManifestError::SourceSymlink { name });
-            }
-            if !metadata.is_file() {
-                return Err(ManifestError::SourceMissing { name });
-            }
-            let bytes =
-                std::fs::read(&path).map_err(|_| ManifestError::SourceUnreadable { name })?;
+            let bytes = match source.read_child(name.file_name(), MAX_ARTIFACT_BYTES) {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => return Err(ManifestError::SourceMissing { name }),
+                Err(ConfinementError::Symlink) => {
+                    return Err(ManifestError::SourceSymlink { name });
+                }
+                Err(ConfinementError::TooLarge) => {
+                    return Err(ManifestError::SourceTooLarge { name });
+                }
+                Err(ConfinementError::Missing) => {
+                    return Err(ManifestError::SourceMissing { name });
+                }
+                Err(_) => return Err(ManifestError::SourceUnreadable { name }),
+            };
             let digest = sha256_hex(&bytes);
             if !digest.eq_ignore_ascii_case(&entry.sha256) {
                 return Err(ManifestError::SourceDigestMismatch { name });
             }
             verified.push(VerifiedSource {
                 name,
-                path,
                 sha256: digest,
             });
         }
@@ -295,6 +332,29 @@ impl ArtifactManifest {
 #[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+/// Whether a string is a bounded, path-safe version token.
+///
+/// The charset excludes separators, traversal markers and control bytes, so a
+/// version accepted here can never carry a path or a secret marker into an
+/// error message or a receipt.
+pub fn is_safe_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= 64
+        && !token.contains("..")
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'-'))
+}
+
+fn map_source_root(error: ConfinementError) -> ManifestError {
+    match error {
+        ConfinementError::Missing => ManifestError::SourceRootInvalid,
+        ConfinementError::Symlink => ManifestError::SourceRootInvalid,
+        ConfinementError::UnsafeName => ManifestError::SourceRootInvalid,
+        _ => ManifestError::SourceRootInvalid,
+    }
 }
 
 /// Whether a string is exactly 64 lowercase hex characters.

@@ -33,8 +33,22 @@ pub enum FailPoint {
     /// After finalization and cleanup.
     AfterFinalize,
     /// Before one client configuration file is replaced. The path handed to
-    /// [`FaultInjector::hit`] is the client configuration file itself.
+    /// [`FaultInjector::hit`] is the logical client configuration path.
     BeforeClientWrite(ClientId),
+    /// After one client temporary file has been created with its restrictive
+    /// mode, before any content is written. The path handed to
+    /// [`FaultInjector::hit`] is the logical client configuration path.
+    AfterClientTempCreate(ClientId),
+    /// After one client temporary file has been written, before the
+    /// compare-before-rename checks.
+    AfterClientTempWrite(ClientId),
+    /// After the final precondition check, immediately before the commit
+    /// effect. For an initially absent target the effect is a no-replace
+    /// creation; a writer racing here must be preserved.
+    BeforeClientCommit(ClientId),
+    /// After the compare-before-rename checks, immediately before the atomic
+    /// rename. A directory-swap race is injected here.
+    BeforeClientRename(ClientId),
     /// After one client configuration file has been replaced, before it is
     /// read back.
     AfterClientWrite(ClientId),

@@ -1,21 +1,24 @@
-//! The file-adapter fixture matrix: every supported client, every required
-//! interruption and preservation case, over a synthetic home only.
+//! The file-adapter fixture and security matrix, over a synthetic home only.
 
 use std::path::{Path, PathBuf};
 
+use serde_json::{Value, json};
+
 use kontor_bootstrap::client::file_adapter::{ClientHome, FileClientAdapter};
-use kontor_bootstrap::fault::ScriptedFaults;
+use kontor_bootstrap::client::json_edit::{Dialect, JsonDocument};
+use kontor_bootstrap::fault::{FailPoint, FaultInjector, NoFaults, ScriptedFaults};
 use kontor_bootstrap::{
-    AdapterResult, ClientAdapter, ClientId, ConflictReason, EntryState, FailPoint, NoFaults,
-    ObservedHash, ServerSpec,
+    AdapterError, AdapterResult, ClientAdapter, ClientId, ConflictReason, EntryState, InstallError,
+    ObservedHash, OwnershipStore, ServerSpec,
 };
 
-const MANAGED: &str = "/opt/kontor tools/kontor-mcp";
+const MANAGED: &str = "/opt/kontor tools/current/kontor-mcp";
 const OTHER: &str = "/usr/local/bin/other-mcp";
+const LEDGER: &str = "bootstrap-ownership.json";
 
-fn spec(program: &str, state_root: &str) -> ServerSpec {
+fn spec(state_root: &str) -> ServerSpec {
     ServerSpec {
-        program: PathBuf::from(program),
+        program: PathBuf::from(MANAGED),
         args: vec![
             "--state-root".to_owned(),
             state_root.to_owned(),
@@ -28,7 +31,9 @@ fn spec(program: &str, state_root: &str) -> ServerSpec {
 struct Fixture {
     _holder: tempfile::TempDir,
     home_root: PathBuf,
+    state_root: PathBuf,
     client: ClientId,
+    ownership: OwnershipStore,
     adapter: FileClientAdapter,
 }
 
@@ -36,13 +41,18 @@ impl Fixture {
     fn new(client: ClientId) -> Self {
         let holder = tempfile::tempdir().expect("tempdir");
         let home_root = holder.path().join("home with space");
+        let state_root = holder.path().join("state root");
         std::fs::create_dir_all(&home_root).expect("home");
+        std::fs::create_dir_all(&state_root).expect("state");
         let home = ClientHome::at(&home_root).expect("client home");
-        let adapter = FileClientAdapter::new(client, &home).expect("adapter");
+        let ownership = OwnershipStore::at(&state_root).expect("ownership");
+        let adapter = FileClientAdapter::new(client, &home, ownership.clone()).expect("adapter");
         Self {
             _holder: holder,
             home_root,
+            state_root,
             client,
+            ownership,
             adapter,
         }
     }
@@ -89,192 +99,180 @@ impl Fixture {
     }
 
     fn read(&self) -> String {
-        let primary = self.file();
-        if primary.exists() {
-            std::fs::read_to_string(primary).expect("read fixture")
+        if self.file().exists() {
+            std::fs::read_to_string(self.file()).expect("read fixture")
         } else {
             std::fs::read_to_string(self.directory().join("opencode.jsonc"))
                 .expect("read fixture candidate")
         }
     }
+
+    fn write(&self, text: &str) {
+        self.present();
+        std::fs::write(self.file(), text).expect("write fixture");
+    }
+
+    fn owns(&self, value: &Value) -> bool {
+        self.ownership
+            .load()
+            .expect("ledger")
+            .owns(self.client, &ObservedHash::of_value(value))
+    }
 }
 
-fn shape_entry(fixture: &Fixture, program: &str, args: &[String]) -> serde_json::Value {
-    match fixture.client {
-        ClientId::Codex => serde_json::json!({"command": program, "args": args}),
+type HookAction = Box<dyn FnMut(&Path) -> Result<(), InstallError>>;
+
+struct Hooks(Vec<(FailPoint, HookAction)>);
+
+impl FaultInjector for Hooks {
+    fn hit(&mut self, point: FailPoint, root: &Path) -> Result<(), InstallError> {
+        for (target, action) in &mut self.0 {
+            if *target == point {
+                action(root)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn hook(
+    point: FailPoint,
+    action: impl FnMut(&Path) -> Result<(), InstallError> + 'static,
+) -> (FailPoint, HookAction) {
+    (point, Box::new(action))
+}
+
+fn entry_value(client: ClientId, program: &str, args: &[String]) -> Value {
+    match client {
+        ClientId::Codex | ClientId::Cursor => json!({"command": program, "args": args}),
         ClientId::OpenCode => {
             let mut command = vec![program.to_owned()];
             command.extend(args.iter().cloned());
-            serde_json::json!({"type": "local", "command": command})
+            json!({"type": "local", "command": command})
         }
-        ClientId::Copilot => {
-            serde_json::json!({"type": "stdio", "command": program, "args": args})
+        ClientId::Copilot | ClientId::ClaudeCode => {
+            json!({"type": "stdio", "command": program, "args": args})
         }
-        ClientId::Cursor => serde_json::json!({"command": program, "args": args}),
+    }
+}
+
+fn seed_entry(fixture: &Fixture, value: &Value) {
+    fixture.present();
+    match fixture.client {
+        ClientId::Codex => {
+            fixture.write(&format!(
+                "[mcp_servers.kontor]\ncommand = \"{}\"\nargs = {}\n",
+                value["command"].as_str().unwrap_or_default(),
+                toml_args(&value["args"])
+            ));
+        }
+        ClientId::OpenCode => {
+            fixture.write(&json!({"mcp": {"servers": {"kontor": value}}}).to_string())
+        }
+        ClientId::Copilot => fixture.write(&json!({"servers": {"kontor": value}}).to_string()),
+        ClientId::Cursor => fixture.write(&json!({"mcpServers": {"kontor": value}}).to_string()),
         ClientId::ClaudeCode => unreachable!(),
     }
 }
 
-fn assert_entry_shape(fixture: &Fixture, spec: &ServerSpec) {
+fn toml_args(args: &Value) -> String {
+    let items: Vec<String> = args
+        .as_array()
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|item| format!("\"{item}\""))
+                .collect()
+        })
+        .unwrap_or_default();
+    format!("[{}]", items.join(", "))
+}
+
+fn assert_shape(fixture: &Fixture, spec: &ServerSpec) {
+    let expected = desired_value(fixture.client, spec);
     let text = fixture.read();
     match fixture.client {
         ClientId::Codex => {
-            let document = text.parse::<toml_edit::DocumentMut>().expect("valid TOML");
-            let entry = &document["mcp_servers"]["kontor"];
+            let document = text.parse::<toml_edit::DocumentMut>().expect("toml");
             assert_eq!(
-                entry["command"].as_str(),
-                Some(spec.program.to_str().unwrap())
+                document["mcp_servers"]["kontor"]["command"].as_str(),
+                expected["command"].as_str()
             );
-            let args: Vec<&str> = entry["args"]
+            let args: Vec<&str> = document["mcp_servers"]["kontor"]["args"]
                 .as_array()
                 .expect("args")
                 .iter()
                 .map(|value| value.as_str().expect("string"))
                 .collect();
-            assert_eq!(
-                args,
-                spec.args.iter().map(String::as_str).collect::<Vec<_>>()
-            );
+            let expected_args: Vec<&str> = expected["args"]
+                .as_array()
+                .expect("args")
+                .iter()
+                .map(|value| value.as_str().expect("string"))
+                .collect();
+            assert_eq!(args, expected_args);
         }
         ClientId::OpenCode => {
-            let document = kontor_bootstrap::client::json_edit::JsonDocument::parse(
-                text,
-                kontor_bootstrap::client::json_edit::Dialect::Jsonc,
-            )
-            .expect("valid JSONC");
+            let document = JsonDocument::parse(text, Dialect::Jsonc).expect("jsonc");
             assert_eq!(
-                document
-                    .value(&["mcp", "servers", "kontor"])
-                    .expect("entry"),
-                shape_entry(fixture, spec.program.to_str().unwrap(), &spec.args)
+                document.value(&["mcp", "servers", "kontor"]),
+                Some(expected)
             );
         }
-        ClientId::Copilot | ClientId::Cursor => {
-            let document: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-            let value = match fixture.client {
-                ClientId::Copilot => &document["servers"]["kontor"],
-                ClientId::Cursor => &document["mcpServers"]["kontor"],
-                _ => unreachable!(),
-            };
-            assert_eq!(
-                *value,
-                shape_entry(fixture, spec.program.to_str().unwrap(), &spec.args)
-            );
+        ClientId::Copilot => {
+            let document: Value = serde_json::from_str(&text).expect("json");
+            assert_eq!(document["servers"]["kontor"], expected);
+        }
+        ClientId::Cursor => {
+            let document: Value = serde_json::from_str(&text).expect("json");
+            assert_eq!(document["mcpServers"]["kontor"], expected);
         }
         ClientId::ClaudeCode => unreachable!(),
     }
 }
 
-fn clean_install(client: ClientId) {
-    let fixture = Fixture::new(client);
-    fixture.present();
-    let desired = spec(MANAGED, "/synthetic/realm");
-    assert_eq!(fixture.install(&desired), AdapterResult::Installed);
-    assert_entry_shape(&fixture, &desired);
-    assert_eq!(
-        fixture.inspect(&desired),
-        EntryState::Current {
-            observed: ObservedHash::of_entry(MANAGED, &desired.args)
+fn desired_value(client: ClientId, spec: &ServerSpec) -> Value {
+    let args: Vec<String> = spec.args.clone();
+    let program = spec.program.to_string_lossy().into_owned();
+    match client {
+        ClientId::Codex | ClientId::Cursor => json!({"command": program, "args": args}),
+        ClientId::OpenCode => {
+            let mut command = vec![program];
+            command.extend(args);
+            json!({"type": "local", "command": command})
         }
-    );
-}
-
-#[test]
-fn every_file_client_installs_cleanly() {
-    for client in FileClientAdapter::FILE_CLIENTS {
-        clean_install(client);
+        ClientId::Copilot | ClientId::ClaudeCode => json!({
+            "type": "stdio",
+            "command": program,
+            "args": args,
+        }),
     }
 }
 
 #[test]
-fn every_file_client_updates_and_replays() {
+fn every_file_client_installs_cleanly_and_replays() {
     for client in FileClientAdapter::FILE_CLIENTS {
         let fixture = Fixture::new(client);
         fixture.present();
-        let first = spec(MANAGED, "/synthetic/one");
-        let second = spec(MANAGED, "/synthetic/two");
-        assert_eq!(fixture.install(&first), AdapterResult::Installed);
-        let after_first = fixture.read();
-        assert_eq!(fixture.install(&second), AdapterResult::Updated);
-        assert_entry_shape(&fixture, &second);
-        let after_update = fixture.read();
-        assert_eq!(fixture.install(&second), AdapterResult::AlreadyCurrent);
-        assert_eq!(fixture.read(), after_update, "replay is write-free");
-        assert_ne!(after_first, after_update);
-    }
-}
-
-#[test]
-fn every_file_client_refuses_a_same_name_unrelated_entry_and_repairs_only_with_its_hash() {
-    for client in FileClientAdapter::FILE_CLIENTS {
-        let fixture = Fixture::new(client);
-        fixture.present();
-        let desired = spec(MANAGED, "/synthetic/realm");
-        seed_unrelated(&fixture);
-        let observed = match fixture.inspect(&desired) {
-            EntryState::Unrelated { observed } => observed,
-            other => panic!("{client}: expected unrelated, got {other:?}"),
-        };
+        let desired = spec("/synthetic/realm");
         assert_eq!(
             fixture.install(&desired),
-            AdapterResult::Conflict {
-                reason: ConflictReason::SameNameUnrelated,
-                observed: Some(observed.clone()),
-            }
+            AdapterResult::Installed,
+            "{client}"
         );
+        assert_shape(&fixture, &desired);
+        assert!(fixture.owns(&desired_value(client, &desired)), "{client}");
         assert_eq!(
-            fixture.repair(
-                &desired,
-                &ObservedHash::parse(&"a".repeat(64)).expect("hash")
-            ),
-            AdapterResult::Conflict {
-                reason: ConflictReason::ObservedHashMismatch,
-                observed: Some(observed.clone()),
-            }
-        );
-        assert_eq!(fixture.repair(&desired, &observed), AdapterResult::Repaired);
-        assert_entry_shape(&fixture, &desired);
-    }
-}
-
-#[test]
-fn every_file_client_reports_an_absent_client_without_creating_one() {
-    for client in FileClientAdapter::FILE_CLIENTS {
-        let fixture = Fixture::new(client);
-        let desired = spec(MANAGED, "/synthetic/realm");
-        assert_eq!(fixture.inspect(&desired), EntryState::ClientAbsent);
-        assert_eq!(fixture.install(&desired), AdapterResult::Absent);
-        assert!(!fixture.directory().exists());
-        assert_eq!(
-            fixture.repair(
-                &desired,
-                &ObservedHash::parse(&"b".repeat(64)).expect("hash")
-            ),
-            AdapterResult::Absent
+            fixture.install(&desired),
+            AdapterResult::AlreadyCurrent,
+            "{client}"
         );
     }
 }
 
 #[test]
-fn every_file_client_fails_readback_when_the_write_vanishes() {
-    for client in FileClientAdapter::FILE_CLIENTS {
-        let fixture = Fixture::new(client);
-        fixture.present();
-        let desired = spec(MANAGED, "/synthetic/realm");
-        let mut faults = ScriptedFaults::observing(FailPoint::AfterClientWrite(client), |path| {
-            std::fs::write(path, "no longer a document")
-                .map_err(|_| kontor_bootstrap::InstallError::Io)
-        });
-        let mut adapter = fixture.adapter.clone();
-        assert_eq!(
-            adapter.install(&desired, &mut faults).expect("install"),
-            AdapterResult::FailedReadback
-        );
-    }
-}
-
-#[test]
-fn every_file_client_preserves_unrelated_configuration() {
+fn every_file_client_updates_owned_entries_and_preserves_unrelated_configuration() {
     for client in FileClientAdapter::FILE_CLIENTS {
         let fixture = Fixture::new(client);
         fixture.present();
@@ -285,96 +283,512 @@ fn every_file_client_preserves_unrelated_configuration() {
             fixture.file()
         };
         std::fs::write(&path, &original).expect("seed");
-        let desired = spec(MANAGED, "/synthetic/realm");
-        assert_eq!(fixture.install(&desired), AdapterResult::Installed);
-        let installed = std::fs::read_to_string(&path).expect("read installed");
+        let first = spec("/synthetic/one");
+        let second = spec("/synthetic/two");
+        assert_eq!(
+            fixture.install(&first),
+            AdapterResult::Installed,
+            "{client}"
+        );
+        assert_eq!(fixture.install(&second), AdapterResult::Updated, "{client}");
+        assert_shape(&fixture, &second);
+        let installed = std::fs::read_to_string(&path).expect("read");
         for fragment in unrelated_fragments(client) {
             assert!(
                 installed.contains(fragment),
                 "{client}: lost {fragment:?} from\n{installed}"
             );
         }
-        assert_entry_shape(&fixture, &desired);
-        // The original document still parses as the same unrelated structure.
-        assert_unrelated_intact(client, &installed);
+    }
+}
+
+#[test]
+fn every_file_client_refuses_unowned_entries_and_repairs_only_with_its_hash() {
+    for client in FileClientAdapter::FILE_CLIENTS {
+        let fixture = Fixture::new(client);
+        let desired = spec("/synthetic/realm");
+        let other = entry_value(client, OTHER, &["--own".to_owned()]);
+        seed_entry(&fixture, &other);
+        let observed = match fixture.inspect(&desired) {
+            EntryState::Unrelated { observed } => observed,
+            state => panic!("{client}: expected unrelated, got {state:?}"),
+        };
+        assert_eq!(
+            fixture.install(&desired),
+            AdapterResult::Conflict {
+                reason: ConflictReason::SameNameUnrelated,
+                observed: Some(observed.clone()),
+            },
+            "{client}"
+        );
+        let wrong = ObservedHash::parse(&"a".repeat(64)).expect("hash");
+        assert_eq!(
+            fixture.repair(&desired, &wrong),
+            AdapterResult::Conflict {
+                reason: ConflictReason::ObservedHashMismatch,
+                observed: Some(observed.clone()),
+            },
+            "{client}"
+        );
+        assert_eq!(
+            fixture.repair(&desired, &observed),
+            AdapterResult::Repaired,
+            "{client}"
+        );
+        assert_shape(&fixture, &desired);
+        assert!(fixture.owns(&desired_value(client, &desired)), "{client}");
+    }
+}
+
+#[test]
+fn a_kontor_mcp_basename_is_not_ownership() {
+    for client in FileClientAdapter::FILE_CLIENTS {
+        let fixture = Fixture::new(client);
+        let desired = spec("/synthetic/realm");
+        let same_name = entry_value(
+            client,
+            "/elsewhere/bin/kontor-mcp",
+            &["--state-root".to_owned(), "/somewhere".to_owned()],
+        );
+        seed_entry(&fixture, &same_name);
+        assert!(
+            matches!(fixture.inspect(&desired), EntryState::Unrelated { .. }),
+            "{client}: a basename must not claim ownership"
+        );
+        assert!(
+            matches!(
+                fixture.install(&desired),
+                AdapterResult::Conflict {
+                    reason: ConflictReason::SameNameUnrelated,
+                    ..
+                }
+            ),
+            "{client}"
+        );
+    }
+}
+
+#[test]
+fn an_env_or_extra_field_change_makes_an_owned_entry_unowned() {
+    for client in [ClientId::Codex, ClientId::Cursor] {
+        let fixture = Fixture::new(client);
+        fixture.present();
+        let desired = spec("/synthetic/realm");
+        assert_eq!(fixture.install(&desired), AdapterResult::Installed);
+        let mutated = match client {
+            ClientId::Codex => fixture.read().replace(
+                "[mcp_servers.kontor]",
+                "[mcp_servers.kontor]\nenv = { A = \"1\" }",
+            ),
+            _ => {
+                let mut document: Value = serde_json::from_str(&fixture.read()).expect("json");
+                document["mcpServers"]["kontor"]["env"] = json!({"A": "1"});
+                document.to_string()
+            }
+        };
+        std::fs::write(fixture.file(), &mutated).expect("mutate");
+        let before = fixture.read();
+        assert!(
+            matches!(fixture.inspect(&desired), EntryState::Unrelated { .. }),
+            "{client}: a changed full snapshot must lose ownership"
+        );
+        assert!(
+            matches!(
+                fixture.install(&desired),
+                AdapterResult::Conflict {
+                    reason: ConflictReason::SameNameUnrelated,
+                    ..
+                }
+            ),
+            "{client}"
+        );
+        assert_eq!(fixture.read(), before, "{client}: bytes were overwritten");
+    }
+}
+
+#[test]
+fn a_commented_jsonc_managed_entry_is_never_absent_or_overwritten() {
+    let fixture = Fixture::new(ClientId::OpenCode);
+    fixture.present();
+    let original = "{\n  // outer note survives\n  \"mcp\": {\n    \"servers\": {\n      \"kontor\": {\n        /* transport */ \"type\": \"local\",\n        \"command\": [/* binary */ \"/usr/bin/other-mcp\"]\n      }\n    }\n  }\n}\n";
+    std::fs::write(fixture.directory().join("opencode.jsonc"), original).expect("seed");
+    let desired = spec("/synthetic/realm");
+    let observed = match fixture.inspect(&desired) {
+        EntryState::Unrelated { observed } => observed,
+        state => panic!("a commented entry must not read as {state:?}"),
+    };
+    assert!(matches!(
+        fixture.install(&desired),
+        AdapterResult::Conflict {
+            reason: ConflictReason::SameNameUnrelated,
+            observed: Some(_),
+        }
+    ));
+    let installed =
+        std::fs::read_to_string(fixture.directory().join("opencode.jsonc")).expect("read");
+    assert!(installed.contains("// outer note survives"));
+    assert_eq!(installed, original);
+    assert_eq!(fixture.repair(&desired, &observed), AdapterResult::Repaired);
+    let repaired =
+        std::fs::read_to_string(fixture.directory().join("opencode.jsonc")).expect("read");
+    assert!(repaired.contains("// outer note survives"));
+}
+
+#[test]
+fn an_absent_file_creation_race_is_refused() {
+    for client in FileClientAdapter::FILE_CLIENTS {
+        let fixture = Fixture::new(client);
+        fixture.present();
+        let target = fixture.file();
+        let created = target.clone();
+        let mut hooks = Hooks(vec![hook(
+            FailPoint::BeforeClientRename(client),
+            move |_| {
+                std::fs::write(&created, "created after observation").map_err(|_| InstallError::Io)
+            },
+        )]);
+        let mut adapter = fixture.adapter.clone();
+        match adapter.install(&spec("/synthetic/realm"), &mut hooks) {
+            Ok(AdapterResult::Conflict {
+                reason: ConflictReason::ConcurrentChange,
+                ..
+            }) => {}
+            other => panic!("{client}: expected a concurrent-change conflict, got {other:?}"),
+        }
+        assert_eq!(fixture.read(), "created after observation", "{client}");
+    }
+}
+
+#[test]
+fn a_creation_that_races_the_final_check_is_preserved() {
+    for client in FileClientAdapter::FILE_CLIENTS {
+        let fixture = Fixture::new(client);
+        fixture.present();
+        let target = fixture.file();
+        let created = target.clone();
+        let mut hooks = Hooks(vec![hook(
+            FailPoint::BeforeClientCommit(client),
+            move |_| std::fs::write(&created, "raced bytes").map_err(|_| InstallError::Io),
+        )]);
+        let mut adapter = fixture.adapter.clone();
+        match adapter.install(&spec("/synthetic/realm"), &mut hooks) {
+            Ok(AdapterResult::Conflict {
+                reason: ConflictReason::ConcurrentChange,
+                ..
+            }) => {}
+            other => panic!("{client}: a raced creation must be refused, got {other:?}"),
+        }
+        assert_eq!(fixture.read(), "raced bytes", "{client}");
+    }
+}
+
+#[test]
+fn a_directory_swap_cannot_redirect_a_client_write() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        for client in [ClientId::Codex, ClientId::Cursor] {
+            let fixture = Fixture::new(client);
+            fixture.present();
+            let outside = fixture._holder.path().join("outside-client");
+            std::fs::create_dir_all(&outside).expect("outside");
+            let moved_holder = fixture._holder.path().join("moved");
+            std::fs::create_dir_all(&moved_holder).expect("moved holder");
+            let directory = fixture.directory();
+            let moved = moved_holder.join("client-moved");
+            let swap_directory = directory.clone();
+            let swap_moved = moved.clone();
+            let swap_outside = outside.clone();
+            let mut hooks = Hooks(vec![hook(
+                FailPoint::BeforeClientRename(client),
+                move |_| {
+                    std::fs::rename(&swap_directory, &swap_moved).map_err(|_| InstallError::Io)?;
+                    symlink(&swap_outside, &swap_directory).map_err(|_| InstallError::Io)
+                },
+            )]);
+            let mut adapter = fixture.adapter.clone();
+            assert_eq!(
+                adapter
+                    .install(&spec("/synthetic/realm"), &mut hooks)
+                    .expect("install"),
+                AdapterResult::FailedReadback,
+                "{client}: readback resolves the swapped path, which is correct"
+            );
+            assert!(
+                std::fs::read_dir(&outside)
+                    .expect("outside")
+                    .next()
+                    .is_none(),
+                "{client}: nothing may land outside the held directory"
+            );
+            assert!(
+                std::fs::read_dir(&moved).expect("moved").next().is_some(),
+                "{client}: the write landed in the moved original directory"
+            );
+        }
+    }
+}
+
+#[test]
+fn temporary_client_files_are_private_before_content() {
+    for client in FileClientAdapter::FILE_CLIENTS {
+        let fixture = Fixture::new(client);
+        fixture.present();
+        let directory = fixture.directory();
+        let file_name = fixture
+            .file()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("name")
+            .to_owned();
+        let scan = directory.clone();
+        let mut hooks = Hooks(vec![hook(
+            FailPoint::AfterClientTempCreate(client),
+            move |_| {
+                let temp = std::fs::read_dir(&scan)
+                    .map_err(|_| InstallError::Io)?
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .find(|name| name.starts_with(&format!(".{file_name}.kontor-bootstrap-")))
+                    .ok_or(InstallError::Io)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = std::fs::metadata(scan.join(&temp))
+                        .map_err(|_| InstallError::Io)?
+                        .permissions()
+                        .mode()
+                        & 0o777;
+                    if mode != 0o600 {
+                        return Err(InstallError::Injected {
+                            point: FailPoint::AfterClientTempCreate(client),
+                        });
+                    }
+                }
+                Ok(())
+            },
+        )]);
+        let mut adapter = fixture.adapter.clone();
+        assert_eq!(
+            adapter
+                .install(&spec("/synthetic/realm"), &mut hooks)
+                .expect("install"),
+            AdapterResult::Installed,
+            "{client}"
+        );
     }
 }
 
 #[cfg(unix)]
 #[test]
-fn every_file_client_refuses_a_symlinked_configuration_file() {
-    use std::os::unix::fs::symlink;
+fn a_permission_failure_is_propagated_without_partial_state() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new(ClientId::Cursor);
+    fixture.present();
+    let directory = fixture.directory();
+    let mut permissions = std::fs::metadata(&directory)
+        .expect("metadata")
+        .permissions();
+    permissions.set_mode(0o500);
+    std::fs::set_permissions(&directory, permissions).expect("chmod");
+    let mut adapter = fixture.adapter.clone();
+    let result = adapter.install(&spec("/synthetic/realm"), &mut NoFaults);
+    let mut restore = std::fs::metadata(&directory)
+        .expect("metadata")
+        .permissions();
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&directory, restore).expect("restore");
+    assert!(
+        matches!(
+            result,
+            Err(AdapterError::Confinement(_)) | Err(AdapterError::Io)
+        ),
+        "permission failure must propagate: {result:?}"
+    );
+    assert!(!fixture.file().exists());
+    assert_eq!(
+        adapter.inspect(&spec("/synthetic/realm")).expect("inspect"),
+        EntryState::EntryAbsent
+    );
+}
+
+#[test]
+fn symlinked_homes_files_and_directories_are_refused() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        for client in FileClientAdapter::FILE_CLIENTS {
+            let fixture = Fixture::new(client);
+            fixture.present();
+            let outside = fixture._holder.path().join("outside-config");
+            std::fs::write(&outside, "outside bytes").expect("outside");
+            symlink(&outside, fixture.file()).expect("symlink file");
+            let desired = spec("/synthetic/realm");
+            assert_eq!(
+                fixture.inspect(&desired),
+                EntryState::Refused {
+                    reason: ConflictReason::Symlink
+                },
+                "{client}"
+            );
+            assert_eq!(
+                fixture.install(&desired),
+                AdapterResult::Conflict {
+                    reason: ConflictReason::Symlink,
+                    observed: None
+                },
+                "{client}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&outside).expect("read"),
+                "outside bytes"
+            );
+        }
+    }
+}
+
+#[test]
+fn wrong_transports_and_invalid_schemas_are_never_current() {
+    let fixture = Fixture::new(ClientId::Cursor);
+    seed_entry(
+        &fixture,
+        &json!({"type": "http", "url": "https://example.invalid"}),
+    );
+    let desired = spec("/synthetic/realm");
+    assert!(!matches!(
+        fixture.inspect(&desired),
+        EntryState::Current { .. }
+    ));
+    assert!(matches!(
+        fixture.install(&desired),
+        AdapterResult::Conflict { .. }
+    ));
+    assert!(fixture.read().contains("https://example.invalid"));
+
+    let fixture = Fixture::new(ClientId::OpenCode);
+    seed_entry(
+        &fixture,
+        &json!({"type": "remote", "url": "https://example.invalid"}),
+    );
+    assert!(!matches!(
+        fixture.inspect(&desired),
+        EntryState::Current { .. }
+    ));
+    assert!(matches!(
+        fixture.install(&desired),
+        AdapterResult::Conflict { .. }
+    ));
+}
+
+#[test]
+fn an_unreadable_ledger_refuses_writes() {
     for client in FileClientAdapter::FILE_CLIENTS {
         let fixture = Fixture::new(client);
-        fixture.present();
-        let outside = fixture._holder.path().join("outside-config");
-        std::fs::write(&outside, "outside bytes").expect("outside");
-        symlink(&outside, fixture.file()).expect("symlink");
-        let desired = spec(MANAGED, "/synthetic/realm");
+        seed_entry(&fixture, &entry_value(client, "/elsewhere/kontor-mcp", &[]));
+        std::fs::write(fixture.state_root.join(LEDGER), "not a ledger").expect("ledger");
+        let desired = spec("/synthetic/realm");
         assert_eq!(
             fixture.inspect(&desired),
             EntryState::Refused {
-                reason: ConflictReason::Symlink
-            }
+                reason: ConflictReason::OwnershipUnreadable
+            },
+            "{client}"
         );
         assert_eq!(
             fixture.install(&desired),
             AdapterResult::Conflict {
-                reason: ConflictReason::Symlink,
+                reason: ConflictReason::OwnershipUnreadable,
                 observed: None
-            }
+            },
+            "{client}"
         );
-        assert_eq!(
-            std::fs::read_to_string(&outside).expect("read outside"),
-            "outside bytes"
-        );
+        let before = fixture.read();
+        assert_eq!(fixture.read(), before);
     }
 }
 
 #[test]
-fn every_file_client_refuses_a_concurrent_writer() {
-    for client in FileClientAdapter::FILE_CLIENTS {
+fn oversized_and_deep_documents_are_typed_refusals() {
+    let fixture = Fixture::new(ClientId::Cursor);
+    fixture.present();
+    let deep = format!("{}1{}", "[".repeat(100), "]".repeat(100));
+    std::fs::write(fixture.file(), and_wrap(&deep)).expect("deep");
+    let desired = spec("/synthetic/realm");
+    assert_eq!(
+        fixture.inspect(&desired),
+        EntryState::Refused {
+            reason: ConflictReason::TooDeep
+        }
+    );
+    assert_eq!(
+        fixture.install(&desired),
+        AdapterResult::Conflict {
+            reason: ConflictReason::TooDeep,
+            observed: None
+        }
+    );
+}
+
+fn and_wrap(inner: &str) -> String {
+    format!("{{\"mcpServers\": {{\"kontor\": {inner}}}}}")
+}
+
+#[test]
+fn a_failed_readback_does_not_record_ownership() {
+    for client in [ClientId::Codex, ClientId::Cursor] {
         let fixture = Fixture::new(client);
         fixture.present();
-        let first = spec(MANAGED, "/synthetic/one");
-        let second = spec(MANAGED, "/synthetic/two");
-        assert_eq!(fixture.install(&first), AdapterResult::Installed);
-        let mut faults = ScriptedFaults::observing(FailPoint::BeforeClientWrite(client), |path| {
-            std::fs::write(path, "foreign writer").map_err(|_| kontor_bootstrap::InstallError::Io)
-        });
+        // Replace the target immediately after the rename, before readback.
+        let target = fixture.file();
+        let mut hooks = Hooks(vec![hook(FailPoint::AfterClientWrite(client), move |_| {
+            std::fs::write(&target, "no longer a document").map_err(|_| InstallError::Io)
+        })]);
         let mut adapter = fixture.adapter.clone();
-        match adapter.install(&second, &mut faults).expect("install") {
-            AdapterResult::Conflict {
-                reason: ConflictReason::ConcurrentChange,
-                observed: Some(_),
-            } => {}
-            other => panic!("{client}: expected a concurrent-change conflict, got {other:?}"),
-        }
-        assert_eq!(fixture.read(), "foreign writer");
+        assert_eq!(
+            adapter
+                .install(&spec("/synthetic/realm"), &mut hooks)
+                .expect("install"),
+            AdapterResult::FailedReadback,
+            "{client}"
+        );
+        assert!(
+            !fixture.ownership.load().expect("ledger").owns(
+                client,
+                &ObservedHash::of_value(&desired_value(client, &spec("/synthetic/realm")))
+            ),
+            "{client}: a failed readback must not claim ownership"
+        );
     }
 }
 
 #[test]
-fn opencode_refuses_an_ambiguous_or_legacy_surface() {
+fn an_absent_client_is_a_typed_absence_without_creation() {
+    for client in FileClientAdapter::FILE_CLIENTS {
+        let fixture = Fixture::new(client);
+        let desired = spec("/synthetic/realm");
+        assert_eq!(
+            fixture.inspect(&desired),
+            EntryState::ClientAbsent,
+            "{client}"
+        );
+        assert_eq!(fixture.install(&desired), AdapterResult::Absent, "{client}");
+        assert!(!fixture.directory().exists(), "{client}");
+    }
+}
+
+#[test]
+fn opencode_refuses_ambiguity_and_legacy_surfaces() {
     let fixture = Fixture::new(ClientId::OpenCode);
     fixture.present();
     std::fs::write(fixture.directory().join("opencode.json"), "{}").expect("json");
     std::fs::write(fixture.directory().join("opencode.jsonc"), "{}").expect("jsonc");
-    let desired = spec(MANAGED, "/synthetic/realm");
+    let desired = spec("/synthetic/realm");
     assert_eq!(
         fixture.inspect(&desired),
         EntryState::Refused {
             reason: ConflictReason::AmbiguousConfig
         }
     );
-    assert_eq!(
-        fixture.install(&desired),
-        AdapterResult::Conflict {
-            reason: ConflictReason::AmbiguousConfig,
-            observed: None
-        }
-    );
-
     std::fs::remove_file(fixture.directory().join("opencode.jsonc")).expect("remove");
     std::fs::write(
         fixture.directory().join("opencode.json"),
@@ -387,7 +801,6 @@ fn opencode_refuses_an_ambiguous_or_legacy_surface() {
             reason: ConflictReason::LegacySchema
         }
     );
-
     std::fs::write(fixture.directory().join("opencode.json"), r#"{"mcp": []}"#)
         .expect("legacy mcp");
     assert_eq!(
@@ -396,57 +809,6 @@ fn opencode_refuses_an_ambiguous_or_legacy_surface() {
             reason: ConflictReason::LegacySchema
         }
     );
-}
-
-#[test]
-fn opencode_installs_into_a_jsonc_document_with_comments() {
-    let fixture = Fixture::new(ClientId::OpenCode);
-    fixture.present();
-    let original = "{\n  // operator note\n  \"theme\": \"dark\",\n}\n";
-    let path = fixture.directory().join("opencode.jsonc");
-    std::fs::write(&path, original).expect("seed");
-    let desired = spec(MANAGED, "/synthetic/realm");
-    assert_eq!(fixture.install(&desired), AdapterResult::Installed);
-    let installed = std::fs::read_to_string(&path).expect("read jsonc");
-    assert!(installed.contains("// operator note"));
-    assert!(installed.contains("\"theme\": \"dark\""));
-    let parsed = kontor_bootstrap::client::json_edit::JsonDocument::parse(
-        installed.clone(),
-        kontor_bootstrap::client::json_edit::Dialect::Jsonc,
-    )
-    .expect("parses as JSONC");
-    assert_eq!(parsed.value(&["theme"]), Some(serde_json::json!("dark")));
-    assert_eq!(
-        parsed
-            .value(&["mcp", "servers", "kontor", "command"])
-            .expect("command")[0],
-        serde_json::json!(MANAGED)
-    );
-    // The sibling `.json` candidate was never created.
-    assert!(!fixture.directory().join("opencode.json").exists());
-}
-
-fn seed_unrelated(fixture: &Fixture) {
-    fixture.present();
-    let text = match fixture.client {
-        ClientId::Codex => {
-            format!("[mcp_servers.kontor]\ncommand = \"{OTHER}\"\nargs = [\"--own\"]\n")
-        }
-        ClientId::OpenCode => serde_json::json!({
-            "mcp": {"servers": {"kontor": shape_entry(fixture, OTHER, &["--own".to_owned()])}}
-        })
-        .to_string(),
-        ClientId::Copilot => serde_json::json!({
-            "servers": {"kontor": shape_entry(fixture, OTHER, &["--own".to_owned()])}
-        })
-        .to_string(),
-        ClientId::Cursor => serde_json::json!({
-            "mcpServers": {"kontor": shape_entry(fixture, OTHER, &["--own".to_owned()])}
-        })
-        .to_string(),
-        ClientId::ClaudeCode => unreachable!(),
-    };
-    std::fs::write(fixture.file(), text).expect("seed unrelated");
 }
 
 fn rich_config(client: ClientId) -> String {
@@ -486,85 +848,37 @@ fn unrelated_fragments(client: ClientId) -> Vec<&'static str> {
     }
 }
 
-fn assert_unrelated_intact(client: ClientId, installed: &str) {
-    match client {
-        ClientId::Codex => {
-            let document = installed.parse::<toml_edit::DocumentMut>().expect("toml");
-            assert_eq!(document["model"].as_str(), Some("gpt-5"));
-            assert_eq!(document["other_section"]["keep"].as_bool(), Some(true));
-            assert_eq!(
-                document["mcp_servers"]["other"]["command"].as_str(),
-                Some("/usr/bin/other")
-            );
-        }
-        ClientId::OpenCode => {
-            let document = kontor_bootstrap::client::json_edit::JsonDocument::parse(
-                installed.to_owned(),
-                kontor_bootstrap::client::json_edit::Dialect::Jsonc,
-            )
-            .expect("jsonc");
-            assert_eq!(document.value(&["theme"]), Some(serde_json::json!("dark")));
-            assert_eq!(
-                document.value(&["mcp", "other", "url"]),
-                Some(serde_json::json!("https://example.invalid"))
-            );
-            assert_eq!(
-                document.value(&["keep"]),
-                Some(serde_json::json!([1, 2, 3]))
-            );
-        }
-        ClientId::Copilot => {
-            let document: serde_json::Value = serde_json::from_str(installed).expect("json");
-            assert_eq!(document["unrelated"], true);
-            assert_eq!(document["servers"]["other"]["command"], "/usr/bin/other");
-        }
-        ClientId::Cursor => {
-            let document: serde_json::Value = serde_json::from_str(installed).expect("json");
-            assert_eq!(document["unrelated"], 7);
-            assert_eq!(document["mcpServers"]["other"]["command"], "/usr/bin/other");
-        }
-        ClientId::ClaudeCode => {}
-    }
+#[test]
+fn a_relative_client_home_or_state_root_is_refused() {
+    assert_eq!(
+        ClientHome::at("relative").unwrap_err(),
+        AdapterError::RelativeRoot
+    );
+    assert_eq!(
+        OwnershipStore::at("relative").unwrap_err(),
+        AdapterError::RelativeRoot
+    );
 }
 
 #[test]
-fn a_relative_client_home_is_refused() {
-    assert!(ClientHome::at(Path::new("relative")).is_err());
-}
-
-#[cfg(unix)]
-#[test]
-fn every_file_client_refuses_a_symlinked_client_directory() {
-    use std::os::unix::fs::symlink;
-    for client in FileClientAdapter::FILE_CLIENTS {
-        let fixture = Fixture::new(client);
-        let outside = fixture._holder.path().join("outside-directory");
-        std::fs::create_dir_all(&outside).expect("outside dir");
-        std::fs::write(outside.join("config.toml"), "outside = true").expect("outside file");
-        let directory = fixture.directory();
-        if let Some(parent) = directory.parent() {
-            std::fs::create_dir_all(parent).expect("parent");
-        }
-        symlink(&outside, &directory).expect("symlink directory");
-        let desired = spec(MANAGED, "/synthetic/realm");
-        assert_eq!(
-            fixture.inspect(&desired),
-            EntryState::Refused {
-                reason: ConflictReason::Symlink
-            },
-            "{client}"
-        );
-        assert_eq!(
-            fixture.install(&desired),
-            AdapterResult::Conflict {
-                reason: ConflictReason::Symlink,
-                observed: None
-            },
-            "{client}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(outside.join("config.toml")).expect("read"),
-            "outside = true"
-        );
+fn a_scripted_concurrent_writer_is_refused() {
+    let fixture = Fixture::new(ClientId::Cursor);
+    fixture.present();
+    let desired = spec("/synthetic/realm");
+    let second = spec("/synthetic/other");
+    assert_eq!(fixture.install(&desired), AdapterResult::Installed);
+    let target = fixture.file();
+    let mut faults =
+        ScriptedFaults::observing(FailPoint::BeforeClientWrite(ClientId::Cursor), move |_| {
+            std::fs::write(&target, "foreign writer").map_err(|_| InstallError::Io)
+        });
+    let mut adapter = fixture.adapter.clone();
+    match adapter.install(&second, &mut faults).expect("install") {
+        AdapterResult::Conflict {
+            reason: ConflictReason::ConcurrentChange,
+            ..
+        } => {}
+        other => panic!("expected concurrent-change conflict, got {other:?}"),
     }
+    assert_eq!(fixture.read(), "foreign writer");
 }

@@ -21,6 +21,20 @@ pub enum ServicePlatform {
     SystemdUser,
 }
 
+/// Whether a service identity is a bounded, path-safe token.
+///
+/// Rejected identities can therefore never carry a path, a traversal marker or
+/// a secret marker into a receipt.
+#[must_use]
+pub fn is_safe_identity(identity: &str) -> bool {
+    !identity.is_empty()
+        && identity.len() <= 64
+        && !identity.contains("..")
+        && identity
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
 impl ServicePlatform {
     /// The stable lowercase name used in receipts.
     #[must_use]
