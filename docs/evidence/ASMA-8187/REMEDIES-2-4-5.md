@@ -277,3 +277,75 @@ and `receipted_at` is frozen alongside it.
   passing on a foreign-key error and never reached the check it claimed to prove;
   it now presents a genuine receipt. Several store fixtures used partial
   readbacks, exactly as the audit said, and have been rebuilt complete.
+
+
+---
+
+# Audit remediation — candidate `2ae5ae77`, three P2 findings
+
+Date: 2026-10-02
+Audit target: exact `2ae5ae778d209ceb4cd0a09548a9bbd50c048321`
+(tree `ec778366452b879afa2af919b28516987064240c`); source baseline
+`a088e037` — `2ae5` added evidence only. Mutation baseline for this round:
+`41f48e695bcf40498c807ca0a246b5d0c7ddb8a7`.
+
+## P2 — the readback is bound to the transition it commits
+
+A readback could be complete, internally coherent and correctly hashed while
+describing a different placement, on a different host, running a different
+route, retired at a different instant. Runtime kind, host, provider session and
+model route are carried by that document and by nothing else durable, so a field
+nobody compares is a field nobody records.
+
+The transition now reads the claim's three generations inside its own
+transaction and requires the readback to describe the exact seat rows, grant
+generation and retirement instant it is committing. Because the document is
+proved before it becomes durable and is immutable after, the effect latch and
+the daemon's reconciliation now compare the active seat against *it* rather than
+against the two identity columns beside it.
+
+Six rehashed wrong-field cases — successor runtime kind, host, provider session,
+model route; predecessor host; retirement instant — each refuse with zero route
+movement: no occupant change, no committed route, no history row.
+
+## P2 — the replay path is proved before it answers
+
+The receipt join and the readback verification now run *before* an identical
+bound receipt may answer `Unchanged`. Returning it earlier made the idempotent
+path the one path that proved nothing, which is backwards: a replay is the most
+common way the row is read, so it has to be the most verified.
+
+Migration `0122` additionally asks its own rule of the rows that predate it.
+Every already-bound succession must name a receipt demonstrably its own, across
+every supported upgrade path, and it fails **closed**: a realm carrying a binding
+this generation cannot vouch for does not open. Valid historical bindings cross
+untouched — the check reads and writes nothing, and the completion instant is
+preserved.
+
+## P2 — the two schema guards are proved independently
+
+`M-P22b` removed uniqueness and the frozen instant together, so its kill could
+not say which guard did the work. Both are now separate mutants with separate
+tests. Splitting them immediately showed that neither half had been proved; see
+the two retained survivals in `mutants/MANIFEST.md`.
+
+## Qualification frontier
+
+* **Two mutants survived their first run, and both found real test defects.**
+  `M-P22b1` survived because the second succession was incomplete, so `0120`'s
+  completeness rule refused before uniqueness was consulted. `M-P25` survived
+  because the test bound an *unbound* row and never reached the branch whose
+  order had changed. Both records are retained beside the kills.
+* **The binder's ledger-identity comparison is now double-guarded on the live
+  path.** With the readback bound to its transition, a disagreeing document can
+  no longer be committed, so `verify_succession_readback` is reachable only for a
+  row written by another path — which is what
+  `a_replayed_binding_is_proved_before_it_answers_unchanged` plants.
+* **The upgrade validation fails closed rather than quarantining.** No quarantine
+  table was designed, because a realm that cannot vouch for a binding should stop
+  rather than carry a second, weaker class of evidence.
+* **Runtime kind and host remain absent from the ledger.** They are now compared
+  against the *transition* at write time and against the stored readback
+  thereafter; nothing re-derives them from an independent durable source.
+* Carried forward unchanged: `M-P11a` is a weak kill; the daemon-level id-reuse
+  variant is unreachable in the fake.

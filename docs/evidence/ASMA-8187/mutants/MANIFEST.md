@@ -73,3 +73,38 @@ written by some path other than this one, and no test in this suite can
 demonstrate that without planting such a row.
 
 Recorded here rather than resolved by weakening the assertion.
+
+## Recorded runs (audit of `2ae5ae77` — P2 ×3)
+
+Baseline for every row below: **`41f48e695bcf40498c807ca0a246b5d0c7ddb8a7`**,
+clean tree, restored byte-identically after each run. Same harness, same
+recorded fields.
+
+| Mutant | Removes | Killed by | Outcome |
+|---|---|---|---|
+| `M-P22b1` | the receipt uniqueness index | `one_receipt_cannot_be_bound_to_two_successions` | killed |
+| `M-P22b2` | the frozen completion instant | `a_bound_succession_cannot_have_its_completion_instant_rewritten` | killed |
+| `M-P23` | the `0122` upgrade validation | `a_mismatched_historical_binding_stops_the_upgrade_at_0122` | killed |
+| `M-P24` | binding the readback to its transition | `every_readback_field_is_bound_to_the_transition_it_commits` | killed |
+| `M-P25` | the receipt join ordering | `a_replayed_binding_is_proved_before_it_answers_unchanged` | killed |
+
+### Two survivals, retained, because each one found a real defect
+
+The original `M-P22b` removed uniqueness **and** the frozen instant together, so
+its kill could not say which guard did the work. Splitting it is what this
+remedy asked for, and splitting it immediately showed that neither half had been
+proved:
+
+* **`M-P22b1-first-attempt-SURVIVED`** (baseline `129466cc`). Uniqueness removed,
+  test still green: the second succession in that version was committed but
+  incomplete, so `0120`'s "a receipt only once both effects have landed" rule
+  refused the planted binding before the index was consulted. The test now
+  carries that succession to complete.
+* **`M-P25-first-attempt-SURVIVED`** (baseline `e5aea100`). Ordering reverted,
+  test still green: the test binds an *unbound* row, so `bound` is `None` and the
+  early return whose order changed is never reached.
+  `a_replayed_binding_is_proved_before_it_answers_unchanged` was added to arrive
+  at it.
+
+Both patches and raw logs are kept beside the kills. The original `M-P22b`
+record and its limited claim are unchanged.
