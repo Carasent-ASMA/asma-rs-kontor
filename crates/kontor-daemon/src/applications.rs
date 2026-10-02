@@ -8564,10 +8564,27 @@ impl Services {
         // command produced, not the external id alone. A provider may reissue an
         // id it has already used, and a later occupancy wearing an earlier name
         // is a different native doing different work (ASMA-8187 P1).
+        //
+        // "This successor" is the committed readback's, compared whole. That
+        // document was proved against its own transition before it became
+        // durable and cannot be rewritten after, so it is the strongest
+        // description of what this command installed — stronger than the two
+        // identity columns beside it, which say nothing about runtime kind,
+        // host, provider session or route (ASMA-8187 P2).
+        let evidence: Option<CoreTeamRouteSuccessionReadback> = recorded
+            .readback
+            .clone()
+            .and_then(|readback| serde_json::from_value(readback).ok());
+        let Some(evidence) = evidence else {
+            return Err(self.deny(
+                ApiErrorCode::Unavailable,
+                "the recorded Core Team succession carries no readback to reconcile against",
+            ));
+        };
         let active = active
             .filter(|seat| {
-                seat.native_identity.native_id == successor_native_id
-                    && Some(seat.native_identity.generation) == recorded.successor_generation
+                evidence.successor_is(seat)
+                    && seat.native_identity.native_id == successor_native_id
                     && occupancy == Some(recorded.successor_occupancy_generation)
             })
             .ok_or_else(|| {

@@ -733,6 +733,78 @@ pub struct CoreTeamRouteSuccessionReadback {
 }
 
 impl CoreTeamRouteSuccessionReadback {
+    /// Whether this occupant *is* the seat row handed to the transition.
+    ///
+    /// Every field, not the identifying few. Runtime kind, host, provider
+    /// session and model route are carried by the readback and by nothing else
+    /// durable, so if they are never compared they are never evidence — a
+    /// coherent, correctly hashed document could describe a different placement
+    /// on a different host running a different route, and nothing downstream
+    /// would ever notice (ASMA-8187 P2).
+    #[must_use]
+    pub fn occupant_describes(
+        occupant: &CoreTeamRouteOccupant,
+        seat: &StoredHostedTopologySeat,
+        occupancy_generation: u64,
+    ) -> bool {
+        occupant.native_id == seat.native_identity.native_id
+            && occupant.runtime_kind == seat.native_identity.runtime_kind.as_str()
+            && occupant.host == seat.native_identity.host.as_str()
+            && occupant.generation == seat.native_identity.generation
+            && occupant.provider_session_id == seat.provider_session_id
+            && occupant.occupancy_generation == occupancy_generation
+            && occupant.model_route == seat.model_rung
+    }
+
+    /// Whether this readback describes the exact transition it is committed with.
+    ///
+    /// Asked *before* the transition, against the same values the transition
+    /// writes, so the document cannot describe one succession while the route
+    /// performs another. Afterwards the row is immutable, which is what lets
+    /// every later check treat it as evidence rather than as a claim.
+    ///
+    /// # Errors
+    /// Returns the rule that failed, as a stable `&'static str`.
+    pub fn check_describes_transition(
+        &self,
+        predecessor: &StoredHostedTopologySeat,
+        predecessor_occupancy: u64,
+        successor: &StoredHostedTopologySeat,
+        successor_occupancy: u64,
+        credential_generation: u64,
+        retired_at: Timestamp,
+    ) -> Result<(), &'static str> {
+        if self.seat_binding_id != predecessor.seat_binding_id {
+            return Err("the succession readback names another logical seat");
+        }
+        if !Self::occupant_describes(&self.predecessor, predecessor, predecessor_occupancy) {
+            return Err("the succession readback does not describe the predecessor being retired");
+        }
+        if !Self::occupant_describes(&self.successor, successor, successor_occupancy) {
+            return Err("the succession readback does not describe the successor being installed");
+        }
+        if self.grant_subject.generation != credential_generation
+            || self.grant_subject.subject_seat_binding_id != predecessor.seat_binding_id
+        {
+            return Err("the succession readback names another grant subject than the claim");
+        }
+        if self.retired_at != retired_at.to_string() {
+            return Err("the succession readback records another retirement instant");
+        }
+        Ok(())
+    }
+
+    /// Whether this seat row is the successor this readback already recorded.
+    ///
+    /// The readback was proved against the transition before it became durable,
+    /// so comparing against it is comparing against validated immutable
+    /// evidence rather than re-deriving a weaker answer from the two identity
+    /// columns the ledger happens to carry.
+    #[must_use]
+    pub fn successor_is(&self, seat: &StoredHostedTopologySeat) -> bool {
+        Self::occupant_describes(&self.successor, seat, self.successor.occupancy_generation)
+    }
+
     /// Whether this readback is coherent on its own terms.
     ///
     /// Everything here is checkable without reading anything else: the grant

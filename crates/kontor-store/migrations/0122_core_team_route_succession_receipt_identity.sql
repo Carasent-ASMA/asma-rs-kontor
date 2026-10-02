@@ -12,6 +12,42 @@
 -- could be rewritten afterwards while the receipt it names stayed put
 -- (ASMA-8187 P2).
 
+-- Rows bound before this generation were bound by a binder that proved none of
+-- this, so the rule has to be asked of them once, here, rather than assumed
+-- from the day it starts being enforced. Every already-bound succession must
+-- name a receipt that is demonstrably its own: same project, same idempotency
+-- key, same command kind, same target epic, same intent.
+--
+-- It fails *closed*. A realm carrying a binding this generation cannot vouch for
+-- does not open, because the alternative is a database that silently calls an
+-- unverifiable binding verified — and `0122` is reached by every supported
+-- upgrade path, so a realm that opens has been asked. Valid historical bindings
+-- are untouched: the check reads, and writes nothing.
+--
+-- Expressed as a one-row CHECK because `RAISE` is only available inside a
+-- trigger body; the table name is the diagnostic a reader gets.
+CREATE TEMP TABLE core_team_route_succession_bindings_are_coherent (
+    every_bound_succession_names_its_own_receipt INTEGER NOT NULL
+        CHECK (every_bound_succession_names_its_own_receipt = 1)
+);
+
+INSERT INTO core_team_route_succession_bindings_are_coherent
+SELECT CASE WHEN EXISTS (
+    SELECT 1
+      FROM core_team_route_successions s
+      LEFT JOIN command_receipts r ON r.id = s.receipt_id
+     WHERE s.receipt_id IS NOT NULL
+       AND (r.id IS NULL
+            OR r.project_id IS NOT s.project_id
+            OR r.idempotency_key IS NOT s.idempotency_key
+            OR r.kind IS NOT 'correct_core_team_route'
+            OR r.intent_hash IS NOT s.intent_hash
+            OR json_extract(r.target, '$.kind') IS NOT 'mini_project'
+            OR json_extract(r.target, '$.mini_project_id') IS NOT s.mini_project_id)
+) THEN 0 ELSE 1 END;
+
+DROP TABLE core_team_route_succession_bindings_are_coherent;
+
 -- One receipt binds at most one succession. Partial, because an unbound row is
 -- not a claim on any receipt and any number of them may be pending at once.
 CREATE UNIQUE INDEX ux_core_team_route_succession_receipt

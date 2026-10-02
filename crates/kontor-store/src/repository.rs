@@ -5520,6 +5520,40 @@ impl SqliteStore {
                     subject: "core team route succession",
                     rule,
                 })?;
+            // Coherent is not the same as true. The claim fixes the two
+            // generations this command produces, and the caller supplies the two
+            // seat rows and the retirement instant; the readback has to describe
+            // *those*, or it is an internally tidy account of a succession that
+            // did not happen. Runtime kind, host, provider session and model
+            // route are carried nowhere else durable, so this is the only place
+            // they can ever be checked (ASMA-8187 P2).
+            let claim: (i64, i64, i64) = transaction
+                .query_row(
+                    "SELECT predecessor_occupancy_generation, successor_occupancy_generation,
+                            successor_credential_generation
+                       FROM core_team_route_successions WHERE idempotency_key = ?1",
+                    params![succession.idempotency_key.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(backend)?
+                .ok_or(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "a succession outcome cannot commit onto a claim that was never taken",
+                })?;
+            typed
+                .check_describes_transition(
+                    predecessor,
+                    u64::try_from(claim.0).unwrap_or(u64::MAX),
+                    successor,
+                    u64::try_from(claim.1).unwrap_or(u64::MAX),
+                    u64::try_from(claim.2).unwrap_or(u64::MAX),
+                    retired_at,
+                )
+                .map_err(|rule| RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule,
+                })?;
             let readback = serde_json::to_string(&succession.readback).map_err(|error| {
                 RepositoryError::Backend {
                     detail: format!("a succession readback could not be encoded: {error}"),
@@ -5681,7 +5715,7 @@ impl SqliteStore {
                 .ok_or(RepositoryError::NotFound {
                     subject: "core team route succession",
                 })?;
-        let (Some(successor_native_id), Some(successor_generation), Some(_)) = (
+        let (Some(successor_native_id), Some(_), Some(_)) = (
             recorded.successor_native_id.clone(),
             recorded.successor_generation,
             recorded.route_committed_at,
@@ -5691,6 +5725,10 @@ impl SqliteStore {
                 rule: "a succession cannot commit effects before its route",
             });
         };
+        // The committed readback was proved against its own transition before it
+        // became durable and is immutable afterwards, so it — not the two
+        // identity columns beside it — is what the seat must still match.
+        let evidence = Self::committed_readback(&recorded)?;
 
         // Effect zero, and the one the other two are only meaningful under: the
         // seat is still standing in the occupancy this command produced. An
@@ -5732,8 +5770,7 @@ impl SqliteStore {
             self.get_seat_binding(recorded.project_id, recorded.seat_binding_id)?,
         ) {
             (Some(active), Some(binding)) => {
-                active.native_identity.native_id == successor_native_id
-                    && active.native_identity.generation == successor_generation
+                evidence.successor_is(&active)
                     && binding.last_attached_at == Some(active.observed_at)
             }
             _ => false,
@@ -5760,6 +5797,25 @@ impl SqliteStore {
             });
         }
         Ok(Applied::Updated)
+    }
+
+    /// The validated, immutable readback a committed succession recorded.
+    ///
+    /// Typed on the way in and proved against its own transition before it was
+    /// written, so decoding it here is reading evidence rather than trusting a
+    /// stored string. A row that cannot produce one is a row no later check can
+    /// stand on.
+    fn committed_readback(
+        recorded: &StoredCoreTeamRouteSuccession,
+    ) -> RepositoryResult<CoreTeamRouteSuccessionReadback> {
+        let readback = recorded.readback.clone().ok_or(RepositoryError::Conflict {
+            subject: "core team route succession",
+            rule: "a committed succession carries no readback to verify against",
+        })?;
+        serde_json::from_value(readback).map_err(|_| RepositoryError::Conflict {
+            subject: "core team route succession",
+            rule: "the stored succession readback is no longer a complete readback",
+        })
     }
 
     /// Bind one recorded succession to the receipt that completed it.
@@ -5849,17 +5905,6 @@ impl SqliteStore {
                 rule: "a receipt cannot bind a succession whose effects have not all landed",
             });
         }
-        if let Some(bound) = bound {
-            transaction.rollback().map_err(backend)?;
-            return if bound == receipt_id.to_string() {
-                Ok(Applied::Unchanged)
-            } else {
-                Err(RepositoryError::Conflict {
-                    subject: "core team route succession",
-                    rule: "the succession is already bound to another receipt",
-                })
-            };
-        }
         // A foreign key proves the receipt exists; it says nothing about whose
         // it is. Read it here, inside the same transaction, and require it to be
         // the receipt this exact command produced: same project, same key, same
@@ -5925,6 +5970,24 @@ impl SqliteStore {
         // layers wrote them, and agreement between the two is evidence rather
         // than a restatement.
         self.verify_succession_readback(&transaction, key)?;
+        // Only now may an identical binding answer `Unchanged`. Returning it
+        // earlier made the idempotent path the one path that proved nothing:
+        // a row bound by some other route — an upgrade, a restore, a direct
+        // write — would be re-affirmed on replay without its receipt or its
+        // readback ever being read. A replay is the most common way this row is
+        // looked at, so it has to be the most verified, not the least
+        // (ASMA-8187 P2).
+        if let Some(bound) = bound {
+            transaction.rollback().map_err(backend)?;
+            return if bound == receipt_id.to_string() {
+                Ok(Applied::Unchanged)
+            } else {
+                Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the succession is already bound to another receipt",
+                })
+            };
+        }
         transaction
             .execute(
                 "UPDATE core_team_route_successions

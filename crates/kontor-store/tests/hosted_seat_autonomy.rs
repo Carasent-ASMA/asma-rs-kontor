@@ -1190,14 +1190,17 @@ fn succession_effects_and_readback_are_proved_before_a_receipt_binds() {
         .expect("a coherent succession binds the receipt its command recorded");
 }
 
-/// A readback that disagrees with its ledger row cannot be receipted.
+/// A readback naming another successor never becomes durable.
 ///
-/// The write boundary proves the digest describes the bytes; it cannot know
-/// whether those bytes describe *this* succession. That is what the binder's
-/// field comparison is for, and it is reachable: a caller can present an
-/// internally valid, correctly hashed readback naming another native.
+/// This used to be a binder test: the write boundary could not know which
+/// successor the transition installed, so a coherent, correctly hashed document
+/// naming a different native was accepted and refused later. The boundary now
+/// compares the document against the exact seat rows it is committing, so the
+/// refusal has moved to where the truth is (ASMA-8187 P2). The binder's own
+/// comparison still stands behind it, and is exercised separately against a row
+/// written by another path.
 #[test]
-fn a_readback_naming_another_successor_is_refused_before_binding() {
+fn a_readback_naming_another_successor_never_becomes_durable() {
     let fixture = Fixture::build();
     let (seat, predecessor) = fixture.lsa(SeatAutonomy::Supervised);
     let successor = StoredHostedTopologySeat {
@@ -1206,37 +1209,16 @@ fn a_readback_naming_another_successor_is_refused_before_binding() {
         ..predecessor.clone()
     };
     let key = IdempotencyKey::parse("asma-8187-disagree").expect("a key");
-    let intent_hash = succession_intent(&key).hash().clone();
     let committed_at = at("2026-09-17T02:04:00Z");
+    claim_step(&fixture, &key, seat, &predecessor, 1);
 
-    // Correctly hashed, internally coherent — and naming a native this
-    // succession never installed.
     // Complete, correctly hashed, internally coherent — and naming a native
-    // this succession never installed. Completeness is what makes the identity
-    // comparison the thing under test rather than the shape check.
+    // this transition is not installing.
     let mut lying = full_readback(seat, &predecessor, 1, &successor, 2, committed_at);
     lying.successor.native_id = ExternalId::parse("someone-elses-native").expect("a native id");
     let (lying, lying_hash) = readback_document(&lying);
 
-    fixture
-        .store
-        .claim_core_team_route_succession(
-            &kontor_core::repository::NewCoreTeamRouteSuccessionClaim {
-                idempotency_key: key.clone(),
-                intent_hash: intent_hash.clone(),
-                project_id: fixture.project_id,
-                mini_project_id: fixture.mini_project_id,
-                seat_binding_id: seat,
-                predecessor_native_id: predecessor.native_identity.native_id.clone(),
-                predecessor_generation: predecessor.native_identity.generation,
-                predecessor_occupancy_generation: 1,
-                successor_occupancy_generation: 2,
-                successor_credential_generation: 2,
-                claimed_at: at("2026-09-17T02:03:00Z"),
-            },
-        )
-        .expect("the claim is taken");
-    fixture
+    let refused = fixture
         .store
         .replace_hosted_topology_seat_route(
             &predecessor,
@@ -1250,65 +1232,38 @@ fn a_readback_naming_another_successor_is_refused_before_binding() {
                 route_committed_at: committed_at,
             }),
         )
-        .expect("the write boundary accepts a well-formed, correctly hashed document");
-
-    // Land both effects honestly, so completeness is not what refuses.
-    fixture
-        .store
-        .prepare_hosted_seat_launch_intent(&StoredHostedSeatLaunchIntent {
-            project_id: fixture.project_id,
-            seat_binding_id: seat,
-            occupancy_generation: 2,
-            autonomy: SeatAutonomy::Supervised,
-            model_rung: rung(),
-            state: HostedSeatLaunchIntentState::Prepared,
-            observed_native_id: None,
-            prepared_at: at("2026-09-17T02:04:30Z"),
-            installed_at: None,
-        })
-        .expect("the intent prepares");
-    fixture
-        .store
-        .install_hosted_seat_launch_intent(
-            fixture.project_id,
-            seat,
-            2,
-            &successor.native_identity.native_id,
-            successor.observed_at,
-        )
-        .expect("the intent installs");
-    fixture
-        .store
-        .observe_seat_binding(
-            fixture.project_id,
-            seat,
-            &kontor_core::repository::SeatLivenessObservation {
-                attached_at: Some(successor.observed_at),
-                ..kontor_core::repository::SeatLivenessObservation::default()
-            },
-            successor.observed_at,
-        )
-        .expect("the binding is observed");
-    fixture
-        .store
-        .commit_core_team_route_succession_effects(&key)
-        .expect("the effects are genuinely landed");
-
-    // Named, not merely "an error". This suite mints no command receipts, so a
-    // receipt foreign key would refuse anything — and a test satisfied by that
-    // refusal would pass with the verification removed entirely.
-    let refused = fixture
-        .store
-        .bind_core_team_route_succession_receipt(
-            &key,
-            &intent_hash,
-            recorded_receipt(&fixture, &key),
-            at("2026-09-17T02:06:00Z"),
-        )
-        .expect_err("a readback naming another successor was receipted");
+        .expect_err("a readback naming another successor was persisted");
     assert!(
-        format!("{refused:?}").contains("disagrees with its own ledger identity"),
-        "the refusal did not come from the readback verification: {refused:?}"
+        matches!(
+            refused,
+            kontor_core::repository::RepositoryError::Conflict {
+                rule: "the succession readback does not describe the successor being installed",
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+
+    // Zero route movement: the predecessor is still the occupant and the claim
+    // is still uncommitted.
+    assert_eq!(
+        fixture
+            .store
+            .get_hosted_topology_seat(fixture.project_id, seat)
+            .expect("the seat reads")
+            .expect("the seat exists")
+            .native_identity
+            .native_id,
+        predecessor.native_identity.native_id
+    );
+    assert!(
+        fixture
+            .store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the claim survives")
+            .route_committed_at
+            .is_none()
     );
 }
 
@@ -2527,6 +2482,19 @@ fn a_succession_cannot_bind_a_receipt_recorded_for_another_command() {
         )
         .expect("a succession binds the receipt its own command recorded");
 
+    let _ = own;
+}
+
+/// The instant a succession completed cannot be rewritten afterwards.
+///
+/// Split from the uniqueness rule deliberately. Both arrived in one migration
+/// and were once proved by one assertion, so a mutant could remove either guard
+/// and still be caught by the other's failure — the test could not say which
+/// rule was doing the work (ASMA-8187 P2).
+#[test]
+fn a_bound_succession_cannot_have_its_completion_instant_rewritten() {
+    let fixture = Fixture::build();
+    let (_seat, key, _successor) = bound_succession(&fixture, "asma-8187-frozen-instant");
     let connection = Connection::open(&fixture.db_path).expect("the database opens");
     assert!(
         connection
@@ -2538,14 +2506,31 @@ fn a_succession_cannot_bind_a_receipt_recorded_for_another_command() {
             .is_err(),
         "the instant a succession completed was rewritten"
     );
+}
 
-    // And one receipt is one completion: a second succession cannot claim it,
-    // even by a route that never asks the binder.
+/// One receipt completes one succession, by any route at all.
+///
+/// Reached without asking the binder, because the binder already refuses a
+/// foreign receipt on identity: the rule under test here is the schema's, and a
+/// test that went through the binder would be proving the binder again.
+#[test]
+fn one_receipt_cannot_be_bound_to_two_successions() {
+    let fixture = Fixture::build();
+    let (seat, key, successor) = bound_succession(&fixture, "asma-8187-one-receipt");
+    let bound = fixture
+        .store
+        .get_core_team_route_succession(&key)
+        .expect("the ledger reads")
+        .expect("the row exists")
+        .receipt_id
+        .expect("the succession is bound");
+
+    // A second, committed succession on the same seat, deliberately unbound.
     let later = IdempotencyKey::parse("asma-8187-second-claimant").expect("a key");
     let third = StoredHostedTopologySeat {
         native_identity: identity("lsa-third", 3),
         observed_at: at("2026-09-17T09:04:00Z"),
-        ..predecessor.clone()
+        ..successor.clone()
     };
     claim_step(&fixture, &later, seat, &successor, 2);
     commit_step(
@@ -2557,17 +2542,59 @@ fn a_succession_cannot_bind_a_receipt_recorded_for_another_command() {
         2,
         at("2026-09-17T09:04:30Z"),
     );
+
+    let connection = Connection::open(&fixture.db_path).expect("the database opens");
     assert!(
         connection
             .execute(
                 "UPDATE core_team_route_successions
                     SET receipt_id = ?2, receipted_at = '2026-09-17T09:05:00Z'
                   WHERE idempotency_key = ?1",
-                rusqlite::params![later.as_str(), own.to_string()],
+                rusqlite::params![later.as_str(), bound.to_string()],
             )
             .is_err(),
         "one receipt was bound to two successions"
     );
+}
+
+/// One complete, receipted succession on a fresh seat.
+fn bound_succession(
+    fixture: &Fixture,
+    key: &str,
+) -> (SeatBindingId, IdempotencyKey, StoredHostedTopologySeat) {
+    let (seat, predecessor) = fixture.lsa(SeatAutonomy::Supervised);
+    let key = IdempotencyKey::parse(key).expect("a key");
+    let successor = StoredHostedTopologySeat {
+        native_identity: identity("lsa-second", 2),
+        observed_at: at("2026-09-17T09:01:00Z"),
+        ..predecessor.clone()
+    };
+    let committed_at = at("2026-09-17T09:01:30Z");
+    claim_step(fixture, &key, seat, &predecessor, 1);
+    commit_step(
+        fixture,
+        &key,
+        seat,
+        &predecessor,
+        &successor,
+        1,
+        committed_at,
+    );
+    land_effects(fixture, seat, &successor, 2);
+    fixture
+        .store
+        .commit_core_team_route_succession_effects(&key)
+        .expect("the effects are proved");
+    fixture
+        .store
+        .bind_core_team_route_succession_receipt(
+            &key,
+            succession_intent(&key).hash(),
+            recorded_receipt(fixture, &key),
+            at("2026-09-17T09:03:00Z"),
+        )
+        .expect("the succession binds its own receipt");
+    (seat, key, successor)
 }
 
 /// A complete readback for one succession step, built as the domain type.
@@ -2725,7 +2752,7 @@ fn a_readback_whose_derived_or_redundant_values_are_wrong_is_refused() {
         .check_internal_consistency()
         .expect("the drifting readback is coherent on its own terms");
     let value = serde_json::to_value(&drifting).expect("it serializes");
-    fixture
+    let refused = fixture
         .store
         .replace_hosted_topology_seat_route(
             &predecessor,
@@ -2739,29 +2766,376 @@ fn a_readback_whose_derived_or_redundant_values_are_wrong_is_refused() {
                 route_committed_at: committed_at,
             }),
         )
-        .expect("the write boundary cannot know which generation the ledger holds");
-    land_effects(&fixture, seat, &successor, 2);
-    fixture
-        .store
-        .commit_core_team_route_succession_effects(&key)
-        .expect("the effects are proved");
-    let refused = fixture
-        .store
-        .bind_core_team_route_succession_receipt(
-            &key,
-            succession_intent(&key).hash(),
-            recorded_receipt(&fixture, &key),
-            at("2026-09-17T10:03:00Z"),
-        )
-        .expect_err("a readback claiming another runtime generation was receipted");
+        .expect_err("a readback claiming another runtime generation was persisted");
     assert!(
         matches!(
             refused,
             kontor_core::repository::RepositoryError::Conflict {
-                rule: "the succession readback disagrees with its own ledger identity",
+                rule: "the succession readback does not describe the successor being installed",
                 ..
             }
         ),
         "{refused:?}"
     );
+    assert!(
+        fixture
+            .store
+            .get_core_team_route_succession(&key)
+            .expect("the ledger reads")
+            .expect("the claim survives")
+            .route_committed_at
+            .is_none(),
+        "a refused readback still committed its route"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8187 P2 — the upgrade asks the rule of the rows that predate it.
+// ---------------------------------------------------------------------------
+
+/// Rewind one realm to schema 121: drop what `0122` added, restore `0120`'s
+/// trigger, and say so in `user_version`.
+///
+/// The rewind is what makes the upgrade reachable from a test at all. A realm
+/// that has already run `0122` cannot run it again, so a fixture that wants to
+/// prove what the upgrade does to pre-existing rows has to put the realm back
+/// where those rows lived.
+fn rewind_to_schema_121(path: &std::path::Path) {
+    let connection = Connection::open(path).expect("the database opens");
+    connection
+        .execute_batch(
+            "DROP INDEX ux_core_team_route_succession_receipt;
+             DROP TRIGGER core_team_route_succession_claim_is_frozen;",
+        )
+        .expect("the generation-122 artefacts are removed");
+}
+
+/// Restore `0120`'s frozen-claim trigger and stamp the realm at 121.
+fn stamp_schema_121(path: &std::path::Path) {
+    let connection = Connection::open(path).expect("the database opens");
+    connection
+        .execute_batch(concat!(
+            r#"CREATE TRIGGER core_team_route_succession_claim_is_frozen
+BEFORE UPDATE ON core_team_route_successions
+WHEN OLD.idempotency_key IS NOT NEW.idempotency_key
+  OR OLD.intent_hash IS NOT NEW.intent_hash
+  OR OLD.project_id IS NOT NEW.project_id
+  OR OLD.mini_project_id IS NOT NEW.mini_project_id
+  OR OLD.seat_binding_id IS NOT NEW.seat_binding_id
+  OR OLD.predecessor_native_id IS NOT NEW.predecessor_native_id
+  OR OLD.predecessor_generation IS NOT NEW.predecessor_generation
+  OR OLD.predecessor_occupancy_generation IS NOT NEW.predecessor_occupancy_generation
+  OR OLD.successor_occupancy_generation IS NOT NEW.successor_occupancy_generation
+  OR OLD.successor_credential_generation IS NOT NEW.successor_credential_generation
+  OR OLD.claimed_at IS NOT NEW.claimed_at
+  -- A committed transition is immutable evidence.
+  OR (OLD.route_committed_at IS NOT NULL AND (
+         OLD.successor_native_id IS NOT NEW.successor_native_id
+      OR OLD.successor_generation IS NOT NEW.successor_generation
+      OR OLD.readback IS NOT NEW.readback
+      OR OLD.readback_hash IS NOT NEW.readback_hash
+      OR OLD.route_committed_at IS NOT NEW.route_committed_at))
+  -- The receipt binds once and never moves.
+  OR (OLD.receipt_id IS NOT NULL AND OLD.receipt_id IS NOT NEW.receipt_id)
+  -- Pending effects latch forward only.
+  OR (OLD.launch_intent_installed = 1 AND NEW.launch_intent_installed = 0)
+  OR (OLD.seat_binding_observed = 1 AND NEW.seat_binding_observed = 0)
+BEGIN
+    SELECT RAISE(ABORT,
+        'a Core Team route succession cannot rewrite its claim or its committed evidence');
+END;"#,
+            "\nPRAGMA user_version = 121;",
+        ))
+        .expect("the realm is stamped at 121");
+}
+
+/// A binding this generation cannot vouch for stops the upgrade.
+///
+/// `0122` starts proving that a bound receipt is its succession's own. Rows
+/// bound before it were bound by a binder that proved none of that, so the rule
+/// has to be asked of them once rather than assumed from the day enforcement
+/// begins. It fails closed: a realm carrying an unverifiable binding does not
+/// open, because the alternative is a database that quietly calls it verified
+/// (ASMA-8187 P2).
+#[test]
+fn a_mismatched_historical_binding_stops_the_upgrade_at_0122() {
+    let fixture = Fixture::build();
+    let (seat, predecessor) = fixture.lsa(SeatAutonomy::Supervised);
+    let key = IdempotencyKey::parse("asma-8187-upgrade-bad").expect("a key");
+    let stranger = IdempotencyKey::parse("asma-8187-upgrade-other").expect("a key");
+    let successor = StoredHostedTopologySeat {
+        native_identity: identity("lsa-second", 2),
+        observed_at: at("2026-09-17T11:01:00Z"),
+        ..predecessor.clone()
+    };
+    let committed_at = at("2026-09-17T11:01:30Z");
+    claim_step(&fixture, &key, seat, &predecessor, 1);
+    commit_step(
+        &fixture,
+        &key,
+        seat,
+        &predecessor,
+        &successor,
+        1,
+        committed_at,
+    );
+    land_effects(&fixture, seat, &successor, 2);
+    fixture
+        .store
+        .commit_core_team_route_succession_effects(&key)
+        .expect("the effects are proved");
+    fixture
+        .store
+        .bind_core_team_route_succession_receipt(
+            &key,
+            succession_intent(&key).hash(),
+            recorded_receipt(&fixture, &key),
+            at("2026-09-17T11:02:00Z"),
+        )
+        .expect("the succession binds its own receipt");
+    // A second, entirely real receipt — for a different command.
+    let foreign = recorded_receipt(&fixture, &stranger);
+    // Close the store but keep its directory: `TempDir` deletes on drop, and the
+    // reopen below needs the file to still be there.
+    let Fixture {
+        _home,
+        db_path,
+        store,
+        ..
+    } = fixture;
+    drop(store);
+    let path = db_path;
+
+    // Put the realm back where a pre-122 binder lived, repoint the binding at
+    // the foreign receipt the old binder would have accepted, and stamp it.
+    rewind_to_schema_121(&path);
+    Connection::open(&path)
+        .expect("the database opens")
+        .execute(
+            "UPDATE core_team_route_successions SET receipt_id = ?2 WHERE idempotency_key = ?1",
+            rusqlite::params![key.as_str(), foreign.to_string()],
+        )
+        .expect("the historical mis-binding is planted");
+    stamp_schema_121(&path);
+
+    // The upgrade must refuse to open it.
+    let refused = SqliteStore::open(&path);
+    assert!(
+        refused.is_err(),
+        "a realm carrying a binding this generation cannot vouch for was opened anyway"
+    );
+
+    // And refusing left the realm as it found it: the migration's work rolls
+    // back, so nothing is half-upgraded and the row is still there to inspect.
+    let connection = Connection::open(&path).expect("the database opens");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("the version reads");
+    assert_eq!(
+        version, 121,
+        "a refused upgrade left the realm part-migrated"
+    );
+    let bound: String = connection
+        .query_row(
+            "SELECT receipt_id FROM core_team_route_successions WHERE idempotency_key = ?1",
+            rusqlite::params![key.as_str()],
+            |row| row.get(0),
+        )
+        .expect("the row survives");
+    assert_eq!(
+        bound,
+        foreign.to_string(),
+        "a refused upgrade rewrote the row"
+    );
+}
+
+/// A valid historical binding upgrades untouched.
+///
+/// The companion to the refusal, and the reason the check reads rather than
+/// repairs: a realm whose bindings were already coherent must cross `0122`
+/// without anything being rewritten, quarantined or dropped.
+#[test]
+fn a_valid_historical_binding_survives_the_upgrade_to_0122() {
+    let fixture = Fixture::build();
+    let (seat, predecessor) = fixture.lsa(SeatAutonomy::Supervised);
+    let key = IdempotencyKey::parse("asma-8187-upgrade-good").expect("a key");
+    let successor = StoredHostedTopologySeat {
+        native_identity: identity("lsa-second", 2),
+        observed_at: at("2026-09-17T11:05:00Z"),
+        ..predecessor.clone()
+    };
+    let committed_at = at("2026-09-17T11:05:30Z");
+    claim_step(&fixture, &key, seat, &predecessor, 1);
+    commit_step(
+        &fixture,
+        &key,
+        seat,
+        &predecessor,
+        &successor,
+        1,
+        committed_at,
+    );
+    land_effects(&fixture, seat, &successor, 2);
+    fixture
+        .store
+        .commit_core_team_route_succession_effects(&key)
+        .expect("the effects are proved");
+    let receipt = recorded_receipt(&fixture, &key);
+    fixture
+        .store
+        .bind_core_team_route_succession_receipt(
+            &key,
+            succession_intent(&key).hash(),
+            receipt,
+            at("2026-09-17T11:06:00Z"),
+        )
+        .expect("the succession binds its own receipt");
+    let Fixture {
+        _home,
+        db_path,
+        store,
+        ..
+    } = fixture;
+    drop(store);
+    let path = db_path;
+
+    rewind_to_schema_121(&path);
+    stamp_schema_121(&path);
+
+    let reopened = SqliteStore::open(&path).expect("a coherent realm upgrades");
+    assert_eq!(
+        reopened.schema_version().expect("the version reads"),
+        kontor_store::SCHEMA_VERSION
+    );
+    let settled = reopened
+        .get_core_team_route_succession(&key)
+        .expect("the ledger reads")
+        .expect("the row survives the upgrade");
+    assert_eq!(
+        settled.receipt_id,
+        Some(receipt),
+        "the upgrade moved a valid binding"
+    );
+    assert!(settled.is_complete());
+    assert_eq!(
+        settled.receipted_at.map(|instant| instant.to_string()),
+        Some(at("2026-09-17T11:06:00Z").to_string()),
+        "the upgrade rewrote a valid completion instant"
+    );
+}
+
+/// Every readback field is compared to the transition, not just the ones the
+/// ledger happens to duplicate.
+///
+/// Runtime kind, host, provider session, model route and the retirement instant
+/// are carried by the readback and by nothing else durable. If they are never
+/// compared they are never evidence: a complete, internally coherent, correctly
+/// hashed document could describe a different placement, on a different host,
+/// running a different route, retired at a different time, and the ledger's two
+/// identity columns would agree with all of it.
+///
+/// Each case is rehashed after mutation, so the digest is never what refuses,
+/// and each must leave the route exactly where it was (ASMA-8187 P2).
+#[test]
+fn every_readback_field_is_bound_to_the_transition_it_commits() {
+    type Mutation = fn(&mut kontor_core::repository::CoreTeamRouteSuccessionReadback);
+    let committed_at = at("2026-09-17T12:01:30Z");
+    let successor_rule = "the succession readback does not describe the successor being installed";
+    let cases: [(&str, &str, Mutation); 6] = [
+        ("runtime kind", successor_rule, |readback| {
+            readback.successor.runtime_kind = "another.runtime".to_owned();
+        }),
+        ("host", successor_rule, |readback| {
+            readback.successor.host = "another-host".to_owned();
+        }),
+        ("provider session", successor_rule, |readback| {
+            readback.successor.provider_session_id =
+                Some(ExternalId::parse("another-session").expect("a session id"));
+        }),
+        ("model route", successor_rule, |readback| {
+            readback.successor.model_route.model =
+                kontor_core::spec::ModelRef("another-model".to_owned());
+        }),
+        (
+            "predecessor host",
+            "the succession readback does not describe the predecessor being retired",
+            |readback| readback.predecessor.host = "another-host".to_owned(),
+        ),
+        (
+            "retirement instant",
+            "the succession readback records another retirement instant",
+            |readback| readback.retired_at = at("2020-01-01T00:00:00Z").to_string(),
+        ),
+    ];
+
+    for (field, expected, mutate) in cases {
+        let fixture = Fixture::build();
+        let (seat, predecessor) = fixture.lsa(SeatAutonomy::Supervised);
+        let successor = StoredHostedTopologySeat {
+            native_identity: identity("lsa-second", 2),
+            provider_session_id: Some(ExternalId::parse("session-two").expect("a session id")),
+            observed_at: at("2026-09-17T12:01:00Z"),
+            ..predecessor.clone()
+        };
+        let key = IdempotencyKey::parse("asma-8187-field-bound").expect("a key");
+        claim_step(&fixture, &key, seat, &predecessor, 1);
+
+        let mut readback = full_readback(seat, &predecessor, 1, &successor, 2, committed_at);
+        mutate(&mut readback);
+        let (value, hash) = readback_document(&readback);
+
+        let refused = fixture
+            .store
+            .replace_hosted_topology_seat_route(
+                &predecessor,
+                &successor,
+                committed_at,
+                "field binding",
+                Some(&CoreTeamRouteSuccessionCommit {
+                    idempotency_key: key.clone(),
+                    readback: value,
+                    readback_hash: hash,
+                    route_committed_at: committed_at,
+                }),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                &refused,
+                kontor_core::repository::RepositoryError::Conflict { rule, .. } if *rule == expected
+            ),
+            "a wrong {field} was refused for the wrong reason: {refused:?}"
+        );
+
+        // Zero route movement, every time.
+        assert_eq!(
+            fixture
+                .store
+                .get_hosted_topology_seat(fixture.project_id, seat)
+                .expect("the seat reads")
+                .expect("the seat exists")
+                .native_identity
+                .native_id,
+            predecessor.native_identity.native_id,
+            "a refused {field} still replaced the occupant"
+        );
+        assert!(
+            fixture
+                .store
+                .get_core_team_route_succession(&key)
+                .expect("the ledger reads")
+                .expect("the claim survives")
+                .route_committed_at
+                .is_none(),
+            "a refused {field} still committed its route"
+        );
+        assert!(
+            fixture
+                .store
+                .list_hosted_topology_seat_history_native_ids(fixture.project_id, seat)
+                .expect("the history reads")
+                .is_empty(),
+            "a refused {field} still retired the predecessor"
+        );
+    }
 }
