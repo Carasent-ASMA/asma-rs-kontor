@@ -220,7 +220,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Barrier, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::Duration;
@@ -231,17 +231,20 @@ use harness::{
     name, secret,
 };
 use kontor_accounts::{KeychainBackend, KeychainFailure, KeychainTarget, UsageReading};
+use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_api::state::BarrierState;
 use kontor_api::state::RuntimeRegistry;
 use kontor_core::backlog_identity::EpicBacklogCode;
-use kontor_core::consultation::{ConsultationFamily, ConsultationRunId, ConsultationRunState};
+use kontor_core::consultation::{
+    ConsultationFamily, ConsultationRunId, ConsultationRunState, ConsultationSubject,
+};
 use kontor_core::id::{
-    AccountProfileId, AgentRunId, AggregateRevision, BoundedText, CanonicalDocument,
-    CommandReceiptId, ConnectorKey, ContentHash, ExternalId, ExternalIssueTypeKey, ExternalName,
-    ExternalProjectKey, IdempotencyKey, MiniProjectId, ProjectId, ProviderUsageObservationId,
-    QuickSessionId, QuotaObservationProvenanceId, RoleCode, RoleSlotId, RuntimeBindingId,
-    SCHEMA_VERSION, SeatBindingId, SpecVersion, TaskId, TaskWorkflowId, TeamRunId, TeamTemplateId,
-    TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId,
+    AccountProfileId, AdvisorRunId, AgentRunId, AggregateRevision, BoundedText, CanonicalDocument,
+    CommandReceiptId, CommitteeRunId, ConnectorKey, ContentHash, ExternalId, ExternalIssueTypeKey,
+    ExternalName, ExternalProjectKey, IdempotencyKey, MiniProjectId, ProjectId,
+    ProviderUsageObservationId, QuickSessionId, QuotaObservationProvenanceId, RoleCode, RoleSlotId,
+    RuntimeBindingId, SCHEMA_VERSION, SeatBindingId, SpecVersion, TaskId, TaskWorkflowId,
+    TeamRunId, TeamTemplateId, TicketLinkId, Timestamp, TopologyKindKey, TopologyNodeId,
 };
 use kontor_core::quota::{QuotaWindow, QuotaWindowKind};
 use kontor_core::receipt::{AggregateRef, CommandKind, CommandReceiptState};
@@ -251,10 +254,11 @@ use kontor_core::repository::{
     NewMiniProject, NewObservation, NewProject, NewProviderQuotaState, NewProviderUsageObservation,
     NewQuotaObservationProvenance, NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode,
     NewTask, NewTaskWorkflow, NewTeamRun, NewTicketLink, ProjectRepository,
-    ProviderUsageObservation, RealmRepository, RunClosure, RunRepository, RuntimeBinding,
-    SourceDisposition, SpecRepository, StoredCompletionWake, StoredConsultationProfileRevision,
-    StoredEpicCompletion, StoredEpicRoster, StoredPromotion, StoredQuickSession,
-    SuccessionRepository, TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
+    ProviderUsageObservation, RealmRepository, RepositoryError, RunClosure, RunRepository,
+    RuntimeBinding, SourceDisposition, SpecRepository, StoredCompletionWake,
+    StoredConsultationProfileRevision, StoredConsultationRun, StoredEpicCompletion,
+    StoredEpicRoster, StoredPromotion, StoredQuickSession, SuccessionRepository,
+    TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TicketRepository,
     TopologyRepository, WorkflowRepository,
 };
@@ -60856,11 +60860,23 @@ async fn a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently()
         };
         assert_eq!(loser.status, 409, "{}", loser.body);
         assert_eq!(loser.json()["code"], "idempotency_conflict");
-        assert!(
-            loser.json()["rule"].as_str().is_some_and(|rule| rule.contains(&format!(
+        assert_eq!(
+            loser.json()["rule"],
+            format!(
                 "consultation_semantic_duplicate: this {family_label} scope and topic already has one run"
-            ))),
+            ),
             "{}",
+            loser.body
+        );
+        assert_eq!(
+            loser.json()["subject"],
+            "consultation semantic identity",
+            "{}",
+            loser.body
+        );
+        assert!(
+            loser.json()["current_revision"].is_null(),
+            "a semantic duplicate is not a revision conflict: {}",
             loser.body
         );
         let winner_run = winner.json()[run_field]
@@ -60907,6 +60923,235 @@ async fn a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently()
         });
         assert_eq!(runs.len(), 1, "the losing invoke must leave no second run");
         assert_eq!(runs[0].id.as_text(), winner_run);
+    }
+}
+
+/// The daemon realm's own store, two concurrent writers, one semantic
+/// identity: the unique index refuses the loser, and the realm's transport
+/// mapping renders the exact sequential envelope — code, rule, subject,
+/// locator and action — for both families. The transactional path is entered
+/// directly through the realm store, so degrading only that mapping fails
+/// here.
+#[tokio::test]
+async fn concurrent_daemon_insert_losers_render_the_exact_sequential_envelope() {
+    let fixture = jira_key_consultation_fixture("/tmp/kontor-asma8114-insert-loser-envelope").await;
+    let ConsultationFixture {
+        composed, caller, ..
+    } = &fixture;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    let caller = SeatBindingId::parse(caller).expect("the LSA SeatBinding");
+
+    let presets = kontor_profiles::seeds::bundled_consultation_presets().expect("the presets load");
+    let template = presets.committee_templates[0].clone();
+    let document = template.canonicalize().expect("the template canonicalizes");
+    let committee_profile = template.template_id.to_string();
+    world.daemon.state().with_store(|store| {
+        store
+            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
+                project_id,
+                family: ConsultationFamily::Committee,
+                profile_id: committee_profile.clone(),
+                version: template.version,
+                name: template.name.clone(),
+                definition: document.json().to_owned(),
+                definition_hash: document.hash().clone(),
+                published_at: kontor_api::now(),
+            })
+            .expect("the Committee preset publishes");
+    });
+
+    let (epic_node, topology) = world.daemon.state().with_store(|store| {
+        let node = store
+            .list_topology_nodes(project_id, Some(epic_id))
+            .expect("the epic topology reads")
+            .into_iter()
+            .find(|node| node.kind.as_str() == "ESW")
+            .expect("the fixture materialized the epic node");
+        (node.id, node.topology)
+    });
+
+    for family in [ConsultationFamily::Advisor, ConsultationFamily::Committee] {
+        let family_label = match family {
+            ConsultationFamily::Advisor => "Advisor",
+            ConsultationFamily::Committee => "Committee",
+        };
+        let (profile_id, profile_version, definition_hash) =
+            world.daemon.state().with_store(|store| {
+                let revision = store
+                    .list_consultation_profile_revisions(project_id, family)
+                    .expect("the profile revisions read")
+                    .into_iter()
+                    .next_back()
+                    .expect("the fixture published a revision for this family");
+                (
+                    revision.profile_id,
+                    revision.version,
+                    revision.definition_hash,
+                )
+            });
+        let identity = ContentHash::of(format!("daemon insert loser {family}").as_bytes());
+        let prepared = |suffix: &str| {
+            let node_id = TopologyNodeId::generate();
+            let id = match family {
+                ConsultationFamily::Advisor => ConsultationRunId::Advisor(AdvisorRunId::generate()),
+                ConsultationFamily::Committee => {
+                    ConsultationRunId::Committee(CommitteeRunId::generate())
+                }
+            };
+            let question = BoundedText::parse("Which run owns this semantic identity?")
+                .expect("a bounded question");
+            let context = serde_json::json!({"schema_version": 1});
+            let context_hash = CanonicalDocument::from_serializable(&context)
+                .expect("canonical context")
+                .hash()
+                .clone();
+            let now = kontor_api::now();
+            let run = StoredConsultationRun {
+                id,
+                project_id,
+                mini_project_id: epic_id,
+                profile_id: profile_id.clone(),
+                profile_version,
+                definition_hash: definition_hash.clone(),
+                semantic_identity_hash: Some(identity.clone()),
+                subject: Some(ConsultationSubject::Epic),
+                topic: Some(ExternalName::parse("concurrent envelope").expect("a topic")),
+                question_hash: ContentHash::of(question.as_str().as_bytes()),
+                question,
+                context,
+                context_hash,
+                caller_seat_binding_id: caller,
+                topology_node_id: node_id,
+                invoke_key: IdempotencyKey::parse(&format!("insert-loser-{family}-{suffix}"))
+                    .expect("a key"),
+                invoke_intent_hash: ContentHash::of(
+                    format!("insert-loser-intent-{family}-{suffix}").as_bytes(),
+                ),
+                state: ConsultationRunState::Materializing,
+                round: 1,
+                result: None,
+                result_hash: None,
+                revision: AggregateRevision::INITIAL,
+                created_at: now,
+                updated_at: now,
+                settled_at: None,
+            };
+            let node = NewSessionTopologyNode {
+                id: node_id,
+                project_id,
+                mini_project_id: Some(epic_id),
+                topology: topology.clone(),
+                kind: TopologyKindKey::parse(match family {
+                    ConsultationFamily::Advisor => "ASW",
+                    ConsultationFamily::Committee => "CSW",
+                })
+                .expect("the consultation kind"),
+                parent_id: Some(epic_node),
+                task_id: None,
+                created_at: now,
+            };
+            (run, node)
+        };
+
+        let (first_run, first_node) = prepared("a");
+        let (second_run, second_node) = prepared("b");
+        let state = world.daemon.state();
+        let realm_id = state.realm_id();
+        let barrier = Arc::new(Barrier::new(2));
+        let outcomes: Vec<(TopologyNodeId, Result<(), RepositoryError>)> =
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = [(first_run, first_node), (second_run, second_node)]
+                    .into_iter()
+                    .map(|(run, node)| {
+                        let barrier = Arc::clone(&barrier);
+                        let writer = state.clone();
+                        scope.spawn(move || {
+                            barrier.wait();
+                            let outcome = writer.with_store(|store| {
+                                store.create_consultation_run(&run, &node, &[])
+                            });
+                            (node.id, outcome)
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().expect("the daemon writer completes"))
+                    .collect()
+            });
+
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|(_, outcome)| outcome.is_ok())
+                .count(),
+            1,
+            "exactly one daemon writer may freeze {family}"
+        );
+        let survivor = world.daemon.state().with_store(|store| {
+            store
+                .get_consultation_run_by_semantic_identity(project_id, &identity)
+                .expect("the identity lookup succeeds")
+                .expect("the surviving run remains")
+        });
+        let (loser_node, loser) = outcomes
+            .iter()
+            .find(|(_, outcome)| outcome.is_err())
+            .expect("one daemon writer must lose");
+        let loser = loser
+            .as_ref()
+            .expect_err("the losing writer's transaction is refused");
+        let (family_found, run_id) = match loser {
+            RepositoryError::DuplicateConsultation { family, run_id } => (*family, *run_id),
+            other => panic!("the daemon insert-loser must be the typed duplicate: {other}"),
+        };
+        assert_eq!(family_found, family);
+        assert_eq!(
+            run_id, survivor.id,
+            "the transactional refusal names the surviving run"
+        );
+
+        // The realm's transport mapping renders the exact sequential envelope.
+        let body = ApiError::from_repository(realm_id, loser).body();
+        assert_eq!(body.code, ApiErrorCode::IdempotencyConflict);
+        assert_eq!(body.code.status().as_u16(), 409);
+        assert_eq!(
+            body.rule,
+            format!(
+                "consultation_semantic_duplicate: this {family_label} scope and topic already has one run"
+            )
+        );
+        assert_eq!(body.subject, Some("consultation semantic identity"));
+        let expected_at = format!("consultation-runs/{}", survivor.id.as_text());
+        assert_eq!(body.at.as_deref(), Some(expected_at.as_str()));
+        assert_eq!(body.action, "read or resume the existing consultation run");
+        assert!(body.current_revision.is_none());
+
+        assert!(
+            world
+                .daemon
+                .state()
+                .with_store(|store| store
+                    .get_topology_node(project_id, *loser_node)
+                    .expect("the topology read succeeds"))
+                .is_none(),
+            "the losing transaction must roll back its own node"
+        );
+        assert_eq!(
+            world
+                .daemon
+                .state()
+                .with_store(|store| store
+                    .list_consultation_runs(project_id, epic_id, family)
+                    .expect("the runs read"))
+                .len(),
+            1,
+            "the losing writer must leave no run row"
+        );
     }
 }
 
