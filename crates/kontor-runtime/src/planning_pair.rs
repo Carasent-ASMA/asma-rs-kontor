@@ -32,6 +32,8 @@ use crate::workspace::WorkspaceRoot;
 
 pub mod caller;
 pub mod context;
+pub mod intent;
+pub mod recovery;
 
 /// The role catalog revision a member's registered role was resolved in.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -728,7 +730,7 @@ mod tests {
     };
     use kontor_core::spec::{ModelRef, ProviderRef};
 
-    fn identity(native_id: &str) -> NativeRuntimeIdentity {
+    pub(super) fn identity(native_id: &str) -> NativeRuntimeIdentity {
         NativeRuntimeIdentity {
             runtime_kind: RuntimeKindKey::parse("fake.runtime").expect("a runtime kind"),
             host: ExternalName::parse("fake-host").expect("a host"),
@@ -737,7 +739,7 @@ mod tests {
         }
     }
 
-    fn request() -> PlanningPairMemberReconcileRequest {
+    pub(super) fn request() -> PlanningPairMemberReconcileRequest {
         let provenance = crate::provenance::FleetLaunchProvenance {
             policy_hash: ContentHash::of(b"activated policy"),
             source_bundle_hash: None,
@@ -953,7 +955,10 @@ mod tests {
 
     /// A readback of `native` that matched every field and observed exactly
     /// the context's requested provenance, on the fake's surfaces.
-    fn matched_of(context: &PlanningPairLaunchContext, native: &str) -> ConsultationLaunchOutcome {
+    pub(super) fn matched_of(
+        context: &PlanningPairLaunchContext,
+        native: &str,
+    ) -> ConsultationLaunchOutcome {
         ConsultationLaunchOutcome {
             identity: identity(native),
             provider_session_id: Some(ExternalId::parse("provider-1").expect("a session")),

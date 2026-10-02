@@ -19,6 +19,7 @@
 - Frontier C, slice C-M (2026-10-02): the module readiness diagnostic, a source seam only, under the LSA's frontier C disposition (SHA-256 `084b7ca2…978b`). It is built on `98e5868f` (tree `9d150feb`) after verify and audit passed. It covers the shared member rule, the three-plane readiness seam and its tests; nothing exposes it yet. See "Frontier C, slice C-M" below.
 - Shared invocation, slice B1a (2026-10-02): pure frozen-caller eligibility and member launch and recovery context derivation, moved into `kontor-runtime::planning_pair` under the LSA's Q1–Q4 disposition (SHA-256 `212eab0c…0169`). It is built on `be9537aa` (tree `0712a7ea`). The daemon keeps every read, its order, authentication, replay, CAS, effects and the byte-identical refusals. See "Shared invocation, slice B1a" below.
 - B1a documentation rework (2026-10-02): the independent 6f audit failed `cabc4ac2` (tree `b92c9304`) solely for a stale current-state claim that the ASMA-8113 reviewer was unassigned; code and parity passed. The rework is built on `cabc4ac2`, dispatched by TPM, and corrects only this record. See "Audit 6f on `cabc4ac2`" under slice B1a.
+- Shared invocation, slice B1b (2026-10-02): the recovery plan and outcome and the five intent fingerprints, moved into `kontor-runtime::planning_pair`. It is built on the accepted `8cd2305f` (tree `1ab35adf`). The daemon keeps every read, authentication before replay, CAS, receipts, effects and the byte-identical refusals and intents. See "Shared invocation, slice B1b" below.
 - The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. At slice four it holds 53 files, which hash to `4ff4c1bc5cbe7c7ce505442d50827f91d64b0bb308cd18183a39d42339e49e87`: each file's SHA-256 in sorted path order, hashed again. Its files were last written at 2026-10-02 00:25 CEST. That run was not this writing session's (its only workspace run was on 2026-09-29), and slice four did not touch them. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
@@ -1592,12 +1593,126 @@ committed at 09:37Z, before the designation.
 - **Not re-run:** the Cargo suites, because no source changed.
 - **Unchanged limits:** every failed head, mutation result and trust limit above.
 
+## Shared invocation, slice B1b: recovery plan, outcome and intent fingerprints (2026-10-02)
+
+The LSA's Q1–Q4 disposition (SHA-256
+`212eab0c18fc860d722daa7d26529b84cdead587f05cb93336351728f94b0169`) was read in full again.
+
+**Starting point.** TPM consumed b887's verify and 6f's audit, both PASS, on the corrected
+`8cd2305f24534c5b81e16c444fc84d1ffdf0e36a` (tree `1ab35adf1a13b1cbf94eaa17382f736c8a6caf6a`).
+B1a's acceptance is complete; the original `cabc4ac2` FAIL is retained as history. TPM then
+authorized B1b from that exact head, in the unchanged 8282 TSW `wks_8062e92dee85f5b3` and
+session `3538e45e`.
+
+**Ownership before any write.**
+- The head was exact and every tracked file was clean.
+- The adapters (`.agents/`, `.asma/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md`) and `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` stay untracked and untouched.
+- B1b builds only in its own `CARGO_TARGET_DIR` (`/tmp/asma-8282-b1b-target`), `--offline --locked -j2`. It uses no reviewer's outputs, cache or lock.
+- No package, version, network, provider, daemon, native, install, Jira, root CLI or ECP effect was performed or needed.
+
+### What is implemented
+
+| Element | Source | What it does |
+| --- | --- | --- |
+| Intent fingerprints | `kontor-runtime` `planning_pair/intent.rs` | `Invoke` (with `InvokeMember`), `Contribution`, `Clarification`, `Disposition` and `Recovery`, each with one `document()`. Each is the daemon's former `json!` block moved verbatim, over typed inputs; `SeatGeneration` is a fingerprint input and authenticates nothing. The daemon still canonicalizes each document through its own `intent`, then replays, writes and answers as before. |
+| Recovery plan | `planning_pair/recovery.rs` | Three stages, in the service's order:<br>• `require_recoverable`, before the daemon's own revision check: a disposed run is `DomainError::Terminal { subject: "PlanningPairRun" }`, the existing domain refusal;<br>• `plan(RecoveryFacts, RecoveryAssertion)`, in order: member generation, known session (the bound seat's, else its own kept claim's), native session, provider conversation, the claim's frozen context;<br>• the plan itself, which holds the verified claim and whether the member holds a qualification. |
+| Recovery outcome | `RecoveryPlan::outcome` and `requalified` | Classify the runtime's answer as `Requalify`, `Withdraw(WithdrawReason)` or `NoObservation(RuntimeError)`. This is the former classification moved verbatim: the runtime's stale rule, lost correlation, not the same native, another conversation, then the shared `qualify_member_readback`. `requalified` builds the claim a qualified readback binds. |
+| Daemon adapter | `applications/planning_pair.rs` | Still owns every read, the authentication before replay, the revision check, the route refusal, the readback call, the withdrawal write, the compare-and-swap with its receipt, the DTOs and the wire mapping. The moved blocks are deleted; nothing is duplicated. The file goes from 2463 to 2395 lines. |
+| Refusal mapping | `applications/planning_pair/refusal.rs` | `recovery_refusal_rule` and `withdraw_rule`: each typed reason maps to its exact baseline code and rule. `Unqualified` maps through the existing `readback_refusal_rule`. |
+
+**Unchanged:**
+- the bearer and current generation, authentication before replay, replay itself, the store CAS and atomic receipt, native effects, claim reconciliation and topology;
+- the caller plane (`Unsupported { no_authenticated_caller_generation }`) and `native_actuation_authorized: false`;
+- recovery unserved; caller4, member3 and leadership; the Local four keys;
+- the API, OpenAPI, MCP, store, SQL and migrations.
+
+**Not added:** a B2 engine, crate, API dependency, inversion, second authenticator, parser,
+allocator, receipt interpreter, or credential, signature or lease mechanism.
+
+### Parity evidence
+
+1. **Refusal literals.** The eight recovery rules each occurred exactly once in `8cd2305f`'s `applications/planning_pair.rs`, at lines 1728, 1744, 1751, 1757, 1766, 1800, 1805 and 1808, with the same codes. They now occur exactly once in `refusal.rs` and nowhere else. A daemon unit test pins every variant to its literal and line.
+2. **Baseline run of the black-box tests.** The daemon `planning_pair.rs`, `refusal.rs` and runtime `planning_pair.rs` were restored to their `8cd2305f` blobs (`78eb2063…`, `45dd7eb6…`, `63537dbf…`). The new intent and recovery modules were run against them, twice, the second time on the final test files: 3 of 3 passed each time. The candidate was restored byte-exact and verified.
+3. **Canonical intent bytes.**
+   - **Unit:** each fingerprint is compared with the daemon's verbatim document over fixed hypothetical inputs. This covers both rounds, a ticket and none, and an asserted conversation and none. Eight canonical hashes are pinned as goldens.
+   - **Black-box:** every planning pair command kind (invoke, recovery, two findings, clarification, answer, disposition) records exactly the baseline document's canonical text and hash. The baseline document is rebuilt from the request sent and the facts the realm then holds, on both the baseline and the candidate. The invoke covers sorted, deduplicated unavailable accounts.
+
+### Tests
+
+**Hypothetical pure fixtures** are runtime unit tests only. **The trusted path** is daemon
+loopback.
+
+| Suite | New tests | What they prove |
+| --- | --- | --- |
+| `kontor-runtime` unit, intent (5) | invoke; finding and answer; clarification; disposition; recovery | Each equals the baseline document, with its golden hash; sorting and request order. |
+| `kontor-runtime` unit, recovery (6) | `recovery/tests.rs` | • Only `Disposed` is terminal.<br>• Each `RecoveryRefusal` in order, with double faults.<br>• The bound seat is its own session and conversation; an unbound seat is its own claim's; a peer's claim is ignored.<br>• The verified claim's fields; observed-at precedence: claim, then seat, then run.<br>• `holds_qualification`.<br>• Every `outcome` class and its order.<br>• An unknown conversation takes the one read back.<br>• `requalified`. |
+| `kontor-daemon` unit (2) | `refusal::tests` | Every recovery refusal and withdrawal against its baseline literal. |
+| Loopback `planning_pair::recovery` (2) | `every_recovery_refusal_answers_its_baseline_body` | Exact whole bodies:<br>• a stale revision before another generation;<br>• generation before session; session before conversation;<br>• runtime kind, host and runtime generation;<br>• another conversation, and none;<br>• an unknown seat;<br>• the frozen context, via a moved project root changing the derived cwd.<br>None of these reach the runtime. For an unbound member: an unqualified readback and a stopped session, each withdrawing nothing. Then the exact recovery (`created`), and its replay (`unchanged`, no runtime call). |
+| | `a_bound_member_withdraws_and_a_disposed_pair_refuses_exactly_as_before` | A bound member's stopped session is withdrawn: its claim is kept and the run needs a human. It is requalified. A disposed pair's `Terminal` body comes before a stale revision. A misreported create is "not the known session" and is withdrawn. |
+| Loopback `planning_pair::intents` (1) | `every_planning_pair_command_records_its_baseline_intent` | See parity evidence 3. |
+
+**Not staged black-box, with the reason** (each is covered by the pure and mapping tests):
+- **Lost correlation.** The claim-hash check refuses any context drift first, and the fake answers `CorrelationFailed` only for a session or context it did not launch.
+- **Another conversation in the readback.** The fake answers with the stored conversation.
+- **No observation.** The route refusal precedes the runtime errors the fake can raise.
+- **No known session.** The existing `a_recovery_asserts_the_exact_known_session_under_compare_and_swap` already asserts its code and rule text.
+
+### B1b gates (final tree)
+
+- `cargo fmt -p kontor-runtime -p kontor-daemon --check` and `cargo clippy -p kontor-runtime -p kontor-daemon --all-targets -- -D warnings`: clean. Clippy's `large_enum_variant` was fixed by boxing `Requalify`.
+- Test counts:
+  - `kontor-runtime` 113 (93 unit, 20 integration);
+  - `kontor-daemon` unit 153;
+  - loopback `planning_pair::` 42 (39 earlier, including caller4, recovery, readiness, B1a eligibility and Committee-route isolation, plus 3 new).
+  - No failure.
+- **Untouched, not rerun:**
+  - the loopback consultation, committee, advisor, recover, reroute and release filters (their shared `replayed`, `record` and `intent` wrappers in `applications.rs` are unchanged);
+  - `mcp_journey`;
+  - store, API/OpenAPI, MCP parity, SQL and migrations;
+  - CLI local resolve;
+  - the Paseo, AO and Codex contracts.
+  None of their sources changed.
+- **Newly changed files, within the 600-line limit:** `intent.rs` 258, `intent/tests.rs` 378, `recovery.rs` 254, `recovery/tests.rs` 426, `refusal.rs` 362, `planning_pair_recovery.rs` 449, `planning_pair_intents.rs` 311.
+
+### B1b mutation checks (seeded and run by this seat)
+
+There were 38 fresh single-site mutants on the final bytes:
+- `intent.rs` `401ae5ed…`;
+- `recovery.rs` `da3692d9…`;
+- `refusal.rs` `780a59fc…`;
+- `applications/planning_pair.rs` `0be51616…`.
+
+Each was run red, restored (with a touch) and run green, with the SHA equal before and after. No
+kill is borrowed from B1a or earlier history.
+
+| Ids | Site | Result |
+| --- | --- | --- |
+| B1B-MUT-01–11 | fingerprints: ticket, account order, vendor source, caller generation, round operation, member generation, addressed order, disposition, asserted conversation, runtime generation, context hash | 11 red, each failing exactly one runtime test |
+| B1B-MUT-12–29 | recovery: terminal state, generation, peer claim, bound conversation, claimed conversation, session, conversation, context, observed-at order, readback refusal, qualification, stale rule, same native, unknown conversation, qualification ignored, provenance not required, requalified refusal, requalified observation | 18 red: 14 fail one runtime test, 4 fail two or three |
+| B1B-MUT-30–31 | mapping: no known session as `StaleBinding`; the runtime's rule replaced | 2 red, each failing one daemon unit test |
+| B1B-MUT-32–38 | adapter: every recovery refusal as `StaleBinding`; revision before disposed; withdrawal of only an unbound member; invoke exclusions swapped; an answer fingerprinted as a finding; recovery context as placement; another presented generation | 7 red, each at its intended loopback assertion |
+
+There are no survivors and no equivalents. Three cases were added while planning these
+mutants, before seeding, because without them the mutant would have survived:
+- a bound seat beside a claim with another conversation (MUT-15);
+- an unbound seat with a conversation-bearing claim (MUT-16);
+- a disposed pair with a stale revision (MUT-33).
+
+### Limits kept accurate
+
+- **Source only.** No live, native, provider, credential or deployment effect, and no qualification. Every observation is the fake runtime's.
+- **Compatibility on this head.** B1b changes no identity vocabulary. Its technical compatibility parity is for review on the new head; no owner meaning is inherited.
+- **Reserved.** Igor decides the Q1 trust boundary. The B2 single-writer engine and direct actuation do not exist.
+- **Unchanged holds.** The calibration stays UNKNOWN. R3 stays at root `8ba` and module `419`. Neither TASK-004 nor TASK-002 is closed.
+
 ## Remaining capability gaps after slice four (current)
 
 - **ASMA-8113 identity compatibility.** Igor designated the 6f reviewer at 10:58:58Z ("can you do both? i allow you", recorded at checkpoint `a8560cb1`). As TPM relays, the exact-source owner compatibility review of `be9537aaa0245ce67cc683a8348f2b5f5addd5eb` (tree `0712a7ea7886723bf7adf2bb79dbee16a4b44012`) passed and was accepted.
   - **What it covers:** the reviewer-assignment and compatibility limb, for that frozen head only.
   - **What it grants:** nothing broader. There is no integration, deployment, native qualification, ADR or task-closure authority.
   - **Later heads:** a later head is not covered automatically. B1a changes no identity vocabulary, and the 6f audit of `cabc4ac2` rechecked its technical compatibility parity independently. That head's overall audit is still FAIL; see "Audit 6f on `cabc4ac2`" under slice B1a.
+  - **Accepted heads since:** B1a is accepted at the corrected `8cd2305f` (tree `1ab35adf`), after b887's verify and 6f's audit passed there, as TPM relays.
+  - **B1b:** it changes no identity vocabulary either. Its technical compatibility parity is for review on its own head, and nothing is inherited.
 - **Paseo member-surface capability (one row).**
 
   | Field | Value |
@@ -1623,7 +1738,10 @@ committed at 09:37Z, before the designation.
   - **Failure mode:** a lost or unqualified member fails closed.
 - **Caller serve profile.** An opt-in `planning_pair_caller` source profile now serves exactly the four caller tools when it is selected by name. No hosted seat is composed with it: no explicit optional selection seam exists, and none is inferred. The `leadership` profile is unchanged, so a hosted LSA still has no caller tools unless a client holding its scoped credential serves this profile.
 - **Direct-mode consumer.** The asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
-- **Shared invocation.** B1a moved the pure caller eligibility and member context. B1b (recovery plans, outcomes and intent fingerprints) waits for B1a's acceptance. Direct actuation, a direct caller verifier (Q1, Igor's trust-boundary decision) and one generation-fenced writer (Q3, B2) do not exist.
+- **Shared invocation.**
+  - **B1a:** moved the pure caller eligibility and member context. Accepted at `8cd2305f`.
+  - **B1b:** moves the recovery plan and outcome and the five intent fingerprints. It is implemented at source on this branch and awaits TPM's b887 and 6f review.
+  - **Do not exist:** direct actuation, a direct caller verifier (Q1, Igor's trust-boundary decision) and one generation-fenced writer (Q3, B2).
 - **TPM-owned placement.** No TPM operation, receipt or procedure wraps placement.
 - **Concurrent resume.** This is repaired for the planning pair:
   - the `running` advance is guarded by the run's CAS (the 6f rework, with a held launch gate);

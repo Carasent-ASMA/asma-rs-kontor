@@ -25,6 +25,10 @@ use kontor_core::spec::RoleCatalogRevision;
 
 #[path = "planning_pair_eligibility.rs"]
 mod eligibility;
+#[path = "planning_pair_intents.rs"]
+mod intents;
+#[path = "planning_pair_recovery.rs"]
+mod recovery;
 
 const PAIR_PROFILE: &str = "01991c00-0000-7000-8000-0000000000b1";
 

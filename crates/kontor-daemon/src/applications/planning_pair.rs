@@ -48,7 +48,9 @@ use kontor_core::state::NativeRuntimeIdentity;
 use kontor_fleet_activation::{PlanningPairMemberRequest, PlanningPairRequest};
 use kontor_runtime::planning_pair::caller::{self as eligibility, CallerRefusal, FrozenCallerAct};
 use kontor_runtime::planning_pair::context::{self as member_context, ContextRefusal};
-use refusal::{caller_refusal_rule, context_refusal_rule};
+use kontor_runtime::planning_pair::intent::{self as fingerprint, SeatGeneration};
+use kontor_runtime::planning_pair::recovery::{self as member_recovery, RecoveryOutcome};
+use refusal::{caller_refusal_rule, context_refusal_rule, recovery_refusal_rule, withdraw_rule};
 
 /// The logical role every planning pair member seat is held under, as
 /// `advisor` is for an Advisor seat.
@@ -198,29 +200,31 @@ impl Services {
             &spec,
             caller,
         )?;
-        let intent = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "invoke_planning_pair_run",
-            "project": project_id.to_string(),
-            "epic": epic_id.to_string(),
-            "protocol": ConsultationProtocol::PlanningPair.as_str(),
-            "profile": [
-                request.profile.id.as_str(),
-                request.profile.version.get(),
-                request.profile.definition_hash.as_str(),
-            ],
-            "topic": request.topic.as_str(),
-            "question": request.question.as_str(),
-            "task_id": request.task_id.map(|id| id.to_string()),
-            "members": request.members.iter().map(|member| serde_json::json!({
-                "slot": member.slot.slot().as_str(),
-                "binding_key": member.binding_key,
-                "unavailable_accounts": member.unavailable_accounts.iter().collect::<BTreeSet<_>>(),
-                "excluded_vendors": member.excluded_vendors.iter().collect::<BTreeSet<_>>(),
-            })).collect::<Vec<_>>(),
-            "caller_seat_binding_id": caller.seat_binding_id.to_string(),
-            "caller_occupancy_generation": caller.occupancy_generation,
-        }))?;
+        let members: Vec<fingerprint::InvokeMember<'_>> = request
+            .members
+            .iter()
+            .map(|member| fingerprint::InvokeMember {
+                slot: member.slot.slot(),
+                binding_key: &member.binding_key,
+                unavailable_accounts: &member.unavailable_accounts,
+                excluded_vendors: &member.excluded_vendors,
+            })
+            .collect();
+        let intent = self.intent(
+            &fingerprint::Invoke {
+                project_id,
+                epic_id,
+                profile_id: &request.profile.id,
+                profile_version: request.profile.version,
+                definition_hash: &request.profile.definition_hash,
+                topic: &request.topic,
+                question: &request.question,
+                task_id: request.task_id,
+                members: &members,
+                caller: presented(caller),
+            }
+            .document(),
+        )?;
         let target = AggregateRef::MiniProject {
             mini_project_id: epic_id,
         };
@@ -1406,26 +1410,21 @@ impl Services {
         let mut pair = self.planning_pair_state(&run)?;
         // Authentication before replay: a fenced member never replays.
         let slot = self.authenticated_member(&pair, member, true)?;
-        let (operation, kind) = match round {
-            PlanningPairRound::Findings => (
-                "record_planning_pair_finding",
-                CommandKind::RecordPlanningPairFinding,
-            ),
-            PlanningPairRound::Clarification => (
-                "record_planning_pair_answer",
-                CommandKind::RecordPlanningPairAnswer,
-            ),
+        let kind = match round {
+            PlanningPairRound::Findings => CommandKind::RecordPlanningPairFinding,
+            PlanningPairRound::Clarification => CommandKind::RecordPlanningPairAnswer,
         };
-        let intent = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "operation": operation,
-            "project": project_id.to_string(),
-            "run": run.id.as_text(),
-            "slot": slot.as_str(),
-            "advice": request.advice.as_str(),
-            "member_seat_binding_id": member.seat_binding_id.to_string(),
-            "member_occupancy_generation": member.occupancy_generation,
-        }))?;
+        let intent = self.intent(
+            &fingerprint::Contribution {
+                project_id,
+                run_id: run.id,
+                round,
+                slot,
+                advice: &request.advice,
+                member: presented(member),
+            }
+            .document(),
+        )?;
         let target = AggregateRef::MiniProject {
             mini_project_id: run.mini_project_id,
         };
@@ -1506,16 +1505,16 @@ impl Services {
         self.authenticated_caller(&run, caller)?;
         let addressed: Vec<PlanningPairSlot> =
             request.addressed.iter().map(|slot| slot.slot()).collect();
-        let intent = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "request_planning_pair_clarification",
-            "project": project_id.to_string(),
-            "run": run.id.as_text(),
-            "question": request.question.as_str(),
-            "addressed": addressed.iter().map(|slot| slot.as_str()).collect::<Vec<_>>(),
-            "caller_seat_binding_id": caller.seat_binding_id.to_string(),
-            "caller_occupancy_generation": caller.occupancy_generation,
-        }))?;
+        let intent = self.intent(
+            &fingerprint::Clarification {
+                project_id,
+                run_id: run.id,
+                question: &request.question,
+                addressed: &addressed,
+                caller: presented(caller),
+            }
+            .document(),
+        )?;
         let target = AggregateRef::MiniProject {
             mini_project_id: run.mini_project_id,
         };
@@ -1579,15 +1578,15 @@ impl Services {
                 .collect(),
             rationale: request.rationale.clone(),
         };
-        let intent = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "record_planning_pair_disposition",
-            "project": project_id.to_string(),
-            "run": run.id.as_text(),
-            "disposition": disposition,
-            "caller_seat_binding_id": caller.seat_binding_id.to_string(),
-            "caller_occupancy_generation": caller.occupancy_generation,
-        }))?;
+        let intent = self.intent(
+            &fingerprint::Disposition {
+                project_id,
+                run_id: run.id,
+                disposition: &disposition,
+                caller: presented(caller),
+            }
+            .document(),
+        )?;
         let target = AggregateRef::MiniProject {
             mini_project_id: run.mini_project_id,
         };
@@ -1678,30 +1677,22 @@ impl Services {
             native_id: expected.native_id.clone(),
         };
         let placement_hash = pair.placement.placement.hash().clone();
-        let intent = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "operation": "recover_planning_pair_seat",
-            "project": project_id.to_string(),
-            "run": run.id.as_text(),
-            "member_seat_binding_id": seat_binding_id.to_string(),
-            "slot": slot.as_str(),
-            "caller_seat_binding_id": caller.seat_binding_id.to_string(),
-            "caller_occupancy_generation": caller.occupancy_generation,
-            "expected_run_revision": request.expected_run_revision.get(),
-            "expected_member_occupancy_generation": request.expected_member_occupancy_generation,
-            "expected_native_identity": {
-                "runtime_kind": expected.runtime_kind.as_str(),
-                "host": expected.host.as_str(),
-                "generation": expected.generation,
-                "native_id": expected.native_id.as_str(),
-            },
-            "expected_provider_session_id": request
-                .expected_provider_session_id
-                .as_ref()
-                .map(ExternalId::as_str),
-            "member_context_hash": context_hash.as_str(),
-            "placement_hash": placement_hash.as_str(),
-        }))?;
+        let intent = self.intent(
+            &fingerprint::Recovery {
+                project_id,
+                run_id: run.id,
+                member_seat_binding_id: seat_binding_id,
+                slot,
+                caller: presented(caller),
+                expected_run_revision: request.expected_run_revision,
+                expected_member_occupancy_generation: request.expected_member_occupancy_generation,
+                expected_native_identity: &expected_identity,
+                expected_provider_session_id: request.expected_provider_session_id.as_ref(),
+                member_context_hash: &context_hash,
+                placement_hash: &placement_hash,
+            }
+            .document(),
+        )?;
         let target = AggregateRef::MiniProject {
             mini_project_id: run.mini_project_id,
         };
@@ -1716,114 +1707,51 @@ impl Services {
                 (receipt.id, AppliedDto::Unchanged),
             );
         }
-        if run.state == ConsultationRunState::Disposed {
-            return Err(self.refuse_domain(&kontor_core::DomainError::Terminal {
-                subject: "PlanningPairRun",
-            }));
-        }
+        member_recovery::require_recoverable(run.state)
+            .map_err(|error| self.refuse_domain(&error))?;
         self.expect_planning_pair_revision(&run, request.expected_run_revision)?;
-        if seat.occupancy_generation != request.expected_member_occupancy_generation {
-            return Err(self.deny(
-                ApiErrorCode::StaleBinding,
-                "the member's occupancy generation is not the one the caller read",
-            ));
-        }
         // The known session is the bound seat's or else its kept claim, never
         // one the request names: the body only asserts it.
-        let claim = pair
-            .known
-            .iter()
-            .find(|known| known.seat_binding_id == seat_binding_id)
-            .cloned();
-        let (known_identity, known_session) = match (&seat.native_identity, &claim) {
-            (Some(identity), _) => (identity.clone(), seat.provider_session_id.clone()),
-            (None, Some(claim)) => (claim.identity.clone(), claim.provider_session_id.clone()),
-            (None, None) => {
-                return Err(self.deny(
-                    ApiErrorCode::Unavailable,
-                    "the planning pair member has no known native session; nothing is discovered, created or substituted",
-                ));
-            }
-        };
-        if known_identity != expected_identity {
-            return Err(self.deny(
-                ApiErrorCode::StaleBinding,
-                "the expected native session is not the member's known one",
-            ));
-        }
-        if known_session != request.expected_provider_session_id {
-            return Err(self.deny(
-                ApiErrorCode::StaleBinding,
-                "the expected provider conversation is not the one recorded for the member's known session",
-            ));
-        }
-        if claim
-            .as_ref()
-            .is_some_and(|claim| claim.context_hash != context_hash)
-        {
-            return Err(self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the member's frozen context differs from the one its known session was launched under",
-            ));
-        }
+        let plan = member_recovery::plan(
+            member_recovery::RecoveryFacts {
+                run: &run,
+                seat: &seat,
+                known: &pair.known,
+                context_hash: &context_hash,
+                placement_hash: &placement_hash,
+            },
+            member_recovery::RecoveryAssertion {
+                member_occupancy_generation: request.expected_member_occupancy_generation,
+                native_identity: &expected_identity,
+                provider_session_id: request.expected_provider_session_id.as_ref(),
+            },
+        )
+        .map_err(|refusal| {
+            let (code, rule) = recovery_refusal_rule(refusal);
+            self.deny(code, rule)
+        })?;
         // Every real route is refused here, before any runtime effect.
         let state = self.state()?;
         let adapter = self.planning_pair_runtime()?;
         self.require_planning_pair_member_routes(adapter.as_ref(), pair.pair.members().members())?;
         let readback_request = kontor_runtime::planning_pair::PlanningPairMemberReconcileRequest {
-            context: context.clone(),
-            identity: known_identity.clone(),
+            context,
+            identity: plan.identity().clone(),
             requested_at: kontor_api::now(),
         };
-        let verified = StoredPlanningPairKnownNative {
-            run_id: run.id,
-            project_id,
-            seat_binding_id,
-            occupancy_generation: seat.occupancy_generation,
-            identity: known_identity.clone(),
-            provider_session_id: known_session.clone(),
-            context_hash,
-            placement_hash,
-            readback_refusal: claim.as_ref().and_then(|claim| claim.readback_refusal),
-            observed_at: claim
-                .as_ref()
-                .map(|claim| claim.observed_at)
-                .or(seat.observed_at)
-                .unwrap_or(run.updated_at),
-        };
-        let adverse = match adapter
+        let answer = adapter
             .reconcile_planning_pair_member(&readback_request)
-            .await
-        {
-            Err(kontor_runtime::RuntimeError::StaleBinding { rule }) => Err(rule),
-            Err(kontor_runtime::RuntimeError::CorrelationFailed) => Err(
-                "the planning pair member's known native session no longer carries its frozen correlation",
-            ),
-            Err(other) => return Err(ApiError::from_runtime(state.realm_id(), &other)),
-            Ok(outcome) => {
-                if readback_request.require_same_native(&outcome).is_err() {
-                    Err("the runtime did not answer with the member's known native session")
-                } else if known_session.is_some() && outcome.provider_session_id != known_session {
-                    Err(
-                        "the readback reported another provider conversation for the member's known session",
-                    )
-                } else {
-                    kontor_runtime::planning_pair::qualify_member_readback(
-                        &outcome,
-                        Some(&context.requested_fleet_provenance),
-                    )
-                    .map(|()| outcome)
-                    .map_err(|refusal| readback_refusal_rule(Some(refusal)))
-                }
+            .await;
+        let outcome = match plan.outcome(&readback_request, answer) {
+            RecoveryOutcome::Requalify(outcome) => *outcome,
+            RecoveryOutcome::NoObservation(error) => {
+                return Err(ApiError::from_runtime(state.realm_id(), &error));
             }
-        };
-        let outcome = match adverse {
-            Ok(outcome) => outcome,
-            Err(rule) => {
+            RecoveryOutcome::Withdraw(reason) => {
                 // Only this member's current qualification is withdrawn, and
                 // only if it held one: its claim, its peer and every finding
                 // stay, and a running pair needs a human.
-                if seat.native_identity.is_some() {
+                if plan.holds_qualification() {
                     state
                         .with_store(|store| {
                             store.disqualify_planning_pair_member(&PlanningPairMemberReadback {
@@ -1832,16 +1760,16 @@ impl Services {
                                 seat_binding_id,
                                 expected_revision: run.revision,
                                 occupancy_generation: seat.occupancy_generation,
-                                verified: verified.clone(),
+                                verified: plan.verified().clone(),
                                 applied_at: kontor_api::now(),
                             })
                         })
                         .map_err(|error| self.refuse_recovery_write(&error))?;
                 }
                 return Err(self
-                    .deny(ApiErrorCode::Unavailable, rule)
+                    .deny(ApiErrorCode::Unavailable, withdraw_rule(reason))
                     .about("planning pair member readback")
-                    .located_at(format!("native/{}", known_identity.native_id.as_str()))
+                    .located_at(format!("native/{}", plan.identity().native_id.as_str()))
                     .advising("confirmation unknown: the member's known native session is kept and is not qualified now; nothing was created, replaced or archived"));
             }
         };
@@ -1857,12 +1785,7 @@ impl Services {
             seat_binding_id,
             expected_revision: run.revision,
             occupancy_generation: seat.occupancy_generation,
-            verified: StoredPlanningPairKnownNative {
-                provider_session_id: outcome.provider_session_id.clone(),
-                readback_refusal: None,
-                observed_at: outcome.observed_at,
-                ..verified
-            },
+            verified: plan.requalified(&outcome),
             applied_at: now,
         };
         let envelope = ReceiptEnvelope::new(
@@ -1890,7 +1813,7 @@ impl Services {
             &pair,
             &seat,
             slot,
-            &known_identity,
+            plan.identity(),
             outcome.provider_session_id.as_ref(),
             next,
             (
@@ -2385,6 +2308,15 @@ impl Services {
             snapshot_cursor: self.cursor()?,
             receipt,
         })
+    }
+}
+
+/// The seat and generation a scoped credential authenticated, as a
+/// fingerprint names it.
+const fn presented(seat: PlanningPairSeat) -> SeatGeneration {
+    SeatGeneration {
+        seat_binding_id: seat.seat_binding_id,
+        occupancy_generation: seat.occupancy_generation,
     }
 }
 

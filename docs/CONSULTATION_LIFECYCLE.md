@@ -305,6 +305,20 @@ result is not a credential, capability, permission or generation lease. It
 never makes the readiness seam's caller plane established. Replay,
 compare-and-swap, receipts and every effect stay with the service.
 
+A member's same-native recovery is decided the same way, in
+`planning_pair::recovery`. The service first refuses a disposed run, before
+its own revision check. It then holds the request, in order, to:
+
+- the member's generation;
+- its known session: the bound seat's, or else its own kept claim's;
+- that session's provider conversation;
+- the claim's frozen context.
+
+Finally it classifies the runtime's readback. The service keeps the readback
+call, the withdrawal and the requalifying compare-and-swap.
+`planning_pair::intent` renders every planning pair command's intent
+document, and the service canonicalizes it exactly as before.
+
 None of this is a live qualification. The Committee seat recovery route,
 which replaces a native, is unchanged and cannot reach a planning pair member:
 it finds no such Committee run.
