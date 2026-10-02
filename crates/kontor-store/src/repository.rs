@@ -2495,8 +2495,8 @@ impl SqliteStore {
                 // the generic conflict rather than inventing one.
                 drop(transaction);
                 if let Some(hash) = run.semantic_identity_hash.as_ref()
-                    && let Some(existing) = self
-                        .get_consultation_run_by_semantic_identity(run.project_id, hash)?
+                    && let Some(existing) =
+                        self.get_consultation_run_by_semantic_identity(run.project_id, hash)?
                 {
                     return Err(RepositoryError::DuplicateConsultation {
                         family: run.id.family(),

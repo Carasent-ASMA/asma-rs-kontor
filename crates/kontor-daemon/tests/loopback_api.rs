@@ -60590,8 +60590,7 @@ async fn consultation_containers_follow_their_recorded_subject_not_their_caller(
 /// any run row or native effect exists.
 #[tokio::test]
 async fn a_legacy_item_code_is_forbidden_in_a_topic_even_when_the_template_does_not_render_it() {
-    let fixture =
-        jira_key_consultation_fixture("/tmp/kontor-asma8114-legacy-code-topic").await;
+    let fixture = jira_key_consultation_fixture("/tmp/kontor-asma8114-legacy-code-topic").await;
     let ConsultationFixture {
         composed,
         epic_key,
@@ -60776,8 +60775,7 @@ async fn a_legacy_item_code_is_forbidden_in_a_topic_even_when_the_template_does_
 /// of its own. Both families are raced so neither can be fixed alone.
 #[tokio::test]
 async fn a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently() {
-    let fixture =
-        jira_key_consultation_fixture("/tmp/kontor-asma8114-concurrent-duplicate").await;
+    let fixture = jira_key_consultation_fixture("/tmp/kontor-asma8114-concurrent-duplicate").await;
     let ConsultationFixture {
         composed, caller, ..
     } = &fixture;
@@ -60907,11 +60905,7 @@ async fn a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently()
                 .list_consultation_runs(project_id, epic_id, family)
                 .expect("the runs read")
         });
-        assert_eq!(
-            runs.len(),
-            1,
-            "the losing invoke must leave no second run"
-        );
+        assert_eq!(runs.len(), 1, "the losing invoke must leave no second run");
         assert_eq!(runs[0].id.as_text(), winner_run);
     }
 }

@@ -1136,9 +1136,7 @@ fn concurrent_semantic_identity_losers_get_the_typed_duplicate_naming_the_surviv
             let node_id = TopologyNodeId::generate();
             let mut run = base_run.clone();
             run.id = match family {
-                ConsultationFamily::Advisor => {
-                    ConsultationRunId::Advisor(AdvisorRunId::generate())
-                }
+                ConsultationFamily::Advisor => ConsultationRunId::Advisor(AdvisorRunId::generate()),
                 ConsultationFamily::Committee => {
                     run.profile_id = "01991c00-0000-7000-8000-00000000008c".to_owned();
                     run.definition_hash = committee_profile.hash().clone();
@@ -1165,7 +1163,10 @@ fn concurrent_semantic_identity_losers_get_the_typed_duplicate_naming_the_surviv
             .map(|writer| writer.join().expect("the writer completes"))
             .collect();
         assert_eq!(
-            results.iter().filter(|(_, outcome)| outcome.is_ok()).count(),
+            results
+                .iter()
+                .filter(|(_, outcome)| outcome.is_ok())
+                .count(),
             1,
             "exactly one writer may freeze {family}: {results:?}"
         );
