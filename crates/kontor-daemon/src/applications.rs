@@ -315,8 +315,8 @@ use kontor_teams::{
 };
 
 use crate::succession::{
-    SuccessionHandoffRequest, SuccessionRedactionPolicy, UnavailableSuccessionSummarizer,
-    produce_succession_handoff,
+    GovernedSuccessionSummarizer, SuccessionHandoffRequest, SuccessionRedactionPolicy,
+    SuccessionSummarizerTransport, UnavailableSuccessionSummarizer, produce_succession_handoff,
 };
 use crate::succession_supervision::{
     QuotaBlockedSeatIntent, SuccessionCoordinationError, SuccessionCoordinationOutcome,
@@ -36390,6 +36390,78 @@ impl Services {
             .map_err(|error| self.refuse(&error))
     }
 
+    /// Compose the summarizer for one handoff from the deployment's configured
+    /// data.
+    ///
+    /// The seat's exact declared chain — the fleet binding or frozen template
+    /// chain in force — is walked through the same account-before-rung headroom
+    /// resolution every launch uses, so a summary can never be dispatched onto
+    /// the account that just refused. The walk is unpinned on purpose: the
+    /// predecessor's own account is the one that is out.
+    ///
+    /// No declaration is an ordinary unconfigured realm, not an error: it
+    /// composes as unplaceable and the handoff keeps the typed degraded path.
+    /// Every other failure to decide a route is reported and also degrades —
+    /// a missing summary must never block the replacement.
+    fn governed_succession_summarizer<'a>(
+        &self,
+        attempt: &SuccessionAttempt,
+        now: Timestamp,
+        transport: &'a dyn SuccessionSummarizerTransport,
+    ) -> Result<GovernedSuccessionSummarizer<'a>, ApiError> {
+        let state = self.state()?;
+        let project_id = attempt.request.project_id;
+        let adapter = state
+            .runtimes()
+            .get(&attempt.request.predecessor_native_identity.runtime_kind)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::Unavailable,
+                    "the succession predecessor's runtime adapter is not composed",
+                )
+            })?;
+        let team = state
+            .with_store(|store| store.get_team_run(project_id, attempt.request.team_run_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "the succession team run disappeared before its handoff",
+                )
+            })?;
+        let slot = RoleSlotId::new(attempt.request.role.clone());
+        let Some(declared) = self
+            .declared_delivery_rungs(attempt.request.team_run_id, &team.snapshot, &slot)
+            .map_err(|error| self.refuse_domain(&error))?
+        else {
+            return Ok(GovernedSuccessionSummarizer::unplaceable(transport));
+        };
+        let accounts = self.eligible_accounts(project_id)?;
+        let states = self.admission_quota_states(project_id)?;
+        let outlook = QuotaOutlook {
+            states: &states,
+            account: None,
+            accounts: &accounts,
+            headroom: self.headroom_policy(),
+            freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+            now,
+        };
+        let effective = outlook
+            .effective_rungs(&declared.rungs)
+            .map_err(|error| self.refuse_domain(&error))?;
+        GovernedSuccessionSummarizer::resolve(
+            &effective,
+            &accounts,
+            &states,
+            &outlook.headroom,
+            now,
+            outlook.freshness,
+            |provider| adapter.provider_available(provider),
+            transport,
+        )
+        .map_err(|error| self.refuse_domain(&error))
+    }
+
     async fn produce_attempt_handoff(
         &self,
         attempt: &SuccessionAttempt,
@@ -36436,6 +36508,26 @@ impl Services {
             ContentHash::of(b"kontor-succession-redaction-v1"),
             Vec::new(),
         );
+        // No governed summarizer transport is configured in the composition
+        // root yet. The seam is composed either way, so the declared route is
+        // resolved and bound as provenance and the unavailable transport keeps
+        // the typed degraded path honest. A handoff with no stable timeline
+        // never consults placement at all.
+        let transport = UnavailableSuccessionSummarizer;
+        let summarizer = if timeline.is_some() {
+            match self.governed_succession_summarizer(attempt, produced_at, &transport) {
+                Ok(summarizer) => summarizer,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "succession.summarizer_placement_unresolved"
+                    );
+                    GovernedSuccessionSummarizer::unplaceable(&transport)
+                }
+            }
+        } else {
+            GovernedSuccessionSummarizer::unplaceable(&transport)
+        };
         produce_succession_handoff(
             SuccessionHandoffRequest {
                 attempt_id: attempt.request.id,
@@ -36443,13 +36535,13 @@ impl Services {
                 predecessor_runtime_binding_id: attempt.request.predecessor_runtime_binding_id,
                 predecessor_native_identity: attempt.request.predecessor_native_identity.clone(),
                 timeline,
-                // No governed summarizer transport is configured in the
-                // composition root. Keep the typed degraded path honest.
-                summarizer_model_rung: None,
+                // The exact route the declared-chain walk admitted. `None` is
+                // an explicit unplaceable decision and never an implicit route.
+                summarizer_model_rung: summarizer.admitted_rung().cloned(),
                 produced_at,
             },
             &redaction,
-            &UnavailableSuccessionSummarizer,
+            &summarizer,
         )
         .await
     }

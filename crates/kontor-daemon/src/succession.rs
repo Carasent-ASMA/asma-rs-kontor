@@ -12,6 +12,7 @@ use kontor_core::id::{
     AgentRunId, BoundedText, CanonicalDocument, ContentHash, RuntimeBindingId, SuccessionAttemptId,
     Timestamp, reject_sensitive_material, reject_sensitive_text,
 };
+use kontor_core::repository::ProviderQuotaState;
 use kontor_core::spec::ModelRung;
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_core::succession::{
@@ -19,6 +20,7 @@ use kontor_core::succession::{
     SuccessionRedactionPass, SuccessionRedactionReceipt, SuccessionTimelineRange,
 };
 use kontor_runtime::{BindingMessageTimeline, TimelinePosition};
+use kontor_scheduler::headroom::{EligibleAccount, HeadroomConfig, Placement, SeatClass};
 use serde::Serialize;
 
 /// Stable replacement for content removed by the succession redaction pass.
@@ -159,6 +161,102 @@ impl SuccessionSummarizerTransport for UnavailableSuccessionSummarizer {
         _request: &SuccessionSummaryRequest,
     ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError> {
         Err(SuccessionSummarizerError::Unplaceable)
+    }
+}
+
+/// Production composition of the governed summarizer seam.
+///
+/// The exact declared [`ModelRung`] a summary runs on is resolved through the
+/// shared headroom walk ([`kontor_scheduler::headroom::resolve`]) before any
+/// dispatch, from the deployment's configured data: the seat's declared chain,
+/// its enabled accounts, their recorded quota states and the effective headroom
+/// policy. The walk is account-before-rung, so the act of summarizing can never
+/// be placed on the account that just refused.
+///
+/// This type launches nothing and falls back to nothing. [`Placement::Wait`]
+/// and [`Placement::NeedsHuman`] compose as unplaceable, and every dispatch is
+/// guarded so only the exact admitted route can cross the transport boundary;
+/// a different route is refused rather than retried or re-resolved.
+pub struct GovernedSuccessionSummarizer<'a> {
+    admitted: Option<ModelRung>,
+    transport: &'a dyn SuccessionSummarizerTransport,
+}
+
+impl<'a> GovernedSuccessionSummarizer<'a> {
+    /// Resolve one exact declared route through the existing headroom walk.
+    ///
+    /// # Errors
+    /// Returns the domain's refusal for an empty declared chain. A walk that
+    /// admits no route is not an error: it composes as unplaceable so the
+    /// caller keeps the typed degraded handoff.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve<F>(
+        declared_rungs: &[ModelRung],
+        accounts: &[EligibleAccount],
+        states: &[ProviderQuotaState],
+        headroom: &HeadroomConfig,
+        now: Timestamp,
+        freshness: jiff::SignedDuration,
+        provider_enabled: F,
+        transport: &'a dyn SuccessionSummarizerTransport,
+    ) -> kontor_core::DomainResult<Self>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let placement = kontor_scheduler::headroom::resolve(
+            declared_rungs,
+            accounts,
+            states,
+            headroom,
+            SeatClass::Delivery,
+            now,
+            freshness,
+            provider_enabled,
+        )?;
+        let admitted = match placement {
+            Placement::Admit { rung, .. } => Some(rung),
+            Placement::Wait { .. } | Placement::NeedsHuman { .. } => None,
+        };
+        Ok(Self {
+            admitted,
+            transport,
+        })
+    }
+
+    /// Compose an explicitly unplaceable decision over one transport.
+    ///
+    /// This is the honest configuration root: no declared summarizer route is
+    /// admitted, so no dispatch happens and the handoff stays degraded.
+    #[must_use]
+    pub const fn unplaceable(transport: &'a dyn SuccessionSummarizerTransport) -> Self {
+        Self {
+            admitted: None,
+            transport,
+        }
+    }
+
+    /// The exact route the walk admitted, when it admitted one.
+    #[must_use]
+    pub fn admitted_rung(&self) -> Option<&ModelRung> {
+        self.admitted.as_ref()
+    }
+}
+
+#[async_trait]
+impl SuccessionSummarizerTransport for GovernedSuccessionSummarizer<'_> {
+    async fn summarize(
+        &self,
+        model_rung: &ModelRung,
+        request: &SuccessionSummaryRequest,
+    ) -> Result<SuccessionSummaryResponse, SuccessionSummarizerError> {
+        match self.admitted.as_ref() {
+            Some(admitted) if admitted == model_rung => {
+                self.transport.summarize(admitted, request).await
+            }
+            // No admitted route, or a route the declared walk did not admit.
+            // Either way nothing is dispatched and no provenance is invented.
+            _ => Err(SuccessionSummarizerError::Unplaceable),
+        }
     }
 }
 
