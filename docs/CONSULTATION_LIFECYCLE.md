@@ -132,20 +132,21 @@ runtime's creation-time tool policy. The guard runs as
 
 The runtime port's `validate_planning_pair_member_surface` is asked about both
 actual placed routes, once before the pair is frozen and again before its
-container is prepared. Through Paseo only a Claude route is composable:
+container is prepared. Its answer is a typed refusal per route.
 
-- the member guard, attested for the member profile before it is trusted;
-- the member serve profile in the cwd and in the creation frame;
-- the contained Claude tool restriction, in `default` mode.
+Through Paseo, every real route is refused today, before the launch claim and
+before any plane call, composed file, process or session:
 
-Every other route is refused with its provider named, before any plane call,
-file or session:
-
-- **Codex:** its read-only sandbox and `never` approval are not a closed tool
-  restriction.
-- **Cursor and OpenCode:** their `plan` modes are behavioral, not containment.
-
-With seat MCP composition switched off, a Claude member is refused too.
+- **Claude** (`restriction_unacknowledged`): its member guard, serve profile
+  and creation restriction are composable. But Paseo acknowledges no applied
+  closed tool restriction for a created session. `providerOptionsApplied` is an
+  optional flag about OpenCode provider options, not the session's exact tools,
+  guard or ambient MCP exclusion. That composition is proved only by
+  constructing it directly on source fixtures.
+- **Codex** (`closed_tools_unavailable`): its sandbox and `never` approval are
+  not a closed tool restriction.
+- **Cursor and OpenCode** (`read_only_unenforced`): `plan` is behavioral.
+- **Any other provider** (`not_composed`).
 
 Each member launch carries a typed, non-secret context that the service derives
 from durable state, and an Advisor or Committee launch must carry none. The
@@ -158,10 +159,15 @@ context names:
 - the frozen route and actual vendor;
 - the placement and the requested fleet provenance.
 
-The credential stays in the runtime's process-environment channel. A member is
-bound, and so may contribute, only when its readback observes exactly its
-requested provenance. If it does not, its native session is kept unbound and a
-replay adopts that same session. The readback cannot report the closed tool
-restriction, so that restriction is stated as unsupported, not as observed.
+The credential stays in the runtime's process-environment channel.
+
+A member is bound, and so may contribute, only when every mandatory
+member-surface field is observed as matched: its correlation, its route and its
+closed tool restriction. Its readback must also observe exactly its requested
+provenance. A missing observation, or any unmatched or unsupported field, is a
+typed refusal: the native session is kept unbound and named as confirmation
+unknown, the pair stays materializing with no receipt, and a replay meets that
+same session. Account authority is never observed and is stated separately; an
+account-qualified label is not credential ownership.
 None of this is a live qualification. Member seat recovery is not yet
 implemented for this family.

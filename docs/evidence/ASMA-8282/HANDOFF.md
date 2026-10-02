@@ -12,6 +12,7 @@
 - Audit 6f rework (2026-10-02): the independent 6f audit failed `4922a9a2` (tree `fcfcbdd5`), because a member role was resolved from the build's first catalog rather than the epic's selection. The rework is built on `4922a9a2` and dispatched by TPM, from the same writing session. It is bounded to the catalog authority fix, the selected-container safeguards and a concurrent-resume regression. See "Audit 6f rework" below.
 - Audit 6f turn-5 rework (2026-10-02): the independent 6f audit failed `420f82f5` (tree `2f49d3cb`). Two same-key requests could both answer `created` after the compare-and-swap. The rework is built on `420f82f5`, dispatched by TPM from the same writing session, and bounded to atomic receipt classification, its deterministic regression and mutation evidence, and the handoff. See "Audit 6f turn-5 rework" below.
 - D-3 member surface (2026-10-02): TPM dispatch from the accepted `b3457c31` (tree `169542e6`), after verify and audit passed. It covers the member guard, the serve profile, the typed member launch context and its readback, and route-specific capability, with mock and disposable-fixture tests only. See "D-3 member surface" below.
+- D-3 authority repair (2026-10-02): verify b887 on `1b1d5597` passed the composition and confirmed an authority hole, and the LSA granted no waiver. The repair: a member binds only when every mandatory member-surface field matches; every real Paseo route is refused before freeze; and Claude composition is proved on fixtures only. See "D-3 authority repair" below.
 - The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. At slice four it holds 53 files, which hash to `4ff4c1bc5cbe7c7ce505442d50827f91d64b0bb308cd18183a39d42339e49e87`: each file's SHA-256 in sorted path order, hashed again. Its files were last written at 2026-10-02 00:25 CEST. That run was not this writing session's (its only workspace run was on 2026-09-29), and slice four did not touch them. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
@@ -699,6 +700,11 @@ Limitations, disclosed:
 
 ## D-3 member surface (2026-10-02)
 
+> **Superseded in part — see "D-3 authority repair" below.** Verify b887 passed this composition
+> but confirmed an authority hole, and the LSA granted no waiver. Every real Paseo route,
+> Claude included, is now refused before freeze, and a member binds only when every mandatory
+> field matches. The route cells and qualification rule below are kept as written at `1b1d5597`.
+
 TPM's D3-MEMBER-SURFACE dispatch builds on `b3457c31a47f1cde27d4511fbfeb632986118288` (tree
 `169542e601644ea6d091f0e89a08e78c930bcacc`), after verify and audit passed on that exact head.
 The LSA domain contract D-3 / ADR-0008 applies. It is a domain contract, not a platform
@@ -808,13 +814,101 @@ These rows are this seat's evidence, not an independent reproduction. Every earl
 unchanged, including the failed `4922` and `420f` records, PP-MUT-23 marked schedule-only,
 and the draft survivors.
 
+## D-3 authority repair (2026-10-02)
+
+The b887 verify callback on `1b1d5597abbd863225be4e4ce851c4bf384e14da` (tree
+`ebd00a0d00e269041048cbd013cd4b397bfd0be8`) found the composition **passed**, but confirmed an
+**authority hole**. The daemon bound a member on a matching observed fleet provenance plus any
+`planning_pair` observation, even though correlation, route or tool restrictions might be
+`Unsupported`. The Paseo adapter also advertised Claude as launchable, although it acknowledges
+no applied restriction.
+
+The LSA granted no waiver. That verdict and its finding, the `1b1d` "D-3 member surface" section
+above, and every earlier failure and mutation record (`4922`, `420f`, the D3-MUT rows) are kept
+as written. Where they conflict, this section supersedes the `1b1d` route cells and its
+qualification rule.
+
+This repair owns only the source fail-closed member binding, the pre-freeze provider capability,
+their tests and this handoff. It adds no recovery and no caller tools, and has no native, daemon,
+provider, credential, network or deploy effect.
+
+### The repair
+
+- **Fail-closed binding** (`applications/planning_pair.rs` `planning_pair_member_qualifies`). A member is bound — so it holds current contribution authority and the pair can reach a qualified running receipt — only when all of these hold:
+  - its launch reported a `PlanningPairMemberObservation`;
+  - every mandatory field is `Matched` (`PlanningPairMemberObservation::unmatched_mandatory`): correlation, route and closed tool restriction;
+  - its readback observed exactly its requested fleet provenance.
+
+  Each failure has its own typed no-observation rule, under `unavailable` / `planning pair member readback`:
+  - "…launch reported no member-surface observation";
+  - "…did not observe its correlation";
+  - "…did not observe its route";
+  - "…did not observe its closed tool restriction";
+  - "…did not confirm its frozen provenance…".
+
+  The refusal names the kept native session (`native/<id>`) and says confirmation is unknown. Nothing is bound or receipted, and the pair stays materializing. A replay meets the same session, with no second create, replacement, retirement or archive.
+- **Account authority is separate.** The new `account_authority` field is always `Unsupported` and is never a qualification field. An account-qualified provider label is not credential ownership.
+- **Pre-freeze provider capability** (`kontor-runtime` `MemberSurfaceGap`, `RuntimeError::PlanningPairMemberSurfaceUnsupported { provider, gap }`, mapped to `unsupported_capability` at `providers/<provider>/<gap>`). In Paseo, every real route is refused by `validate_planning_pair_member_surface` and again by `launch_consultation`. The refusal comes after the context check and before the launch claim, any plane call, composed file, guard process or session:
+
+  | Route | Gap |
+  | --- | --- |
+  | Claude | `restriction_unacknowledged` |
+  | Codex | `closed_tools_unavailable` |
+  | Cursor, OpenCode | `read_only_unenforced` |
+  | Any other provider | `not_composed` |
+
+  The adapter's member launch branches are removed. No acknowledgement flag, config readback, production switch, label copy or attested binary was invented or treated as qualification.
+- **Claude composition is fixture-only.** It is kept and proved by direct construction on source fixtures: `SeatMcp::compose_planning_pair_member` and `verify_planning_pair_member_guard`, `PaseoRpc::planning_pair_member_agent_create` with `with_planning_pair_member_mcp`, and `wire::planning_pair_member_labels`. It is not an advertised runtime launch.
+- **The fake is a hypothetical contract.** Its default member observation has every mandatory field `Matched` and account authority `Unsupported`. That is a hypothetical, source-contract runtime, not a statement about any real one. `observing_planning_pair_member_field_unsupported(field)` and `omitting_planning_pair_member_observation()` model a runtime that claimed the whole surface before freeze and then could not observe it after create.
+- **No exact API was found.** The only applied flag on the recorded Paseo surface is `providerOptionsApplied`, an optional per-agent boolean. Its semantics are OpenCode provider options, not the exact session profile tools, guard hash, enforcement or ambient-MCP exclusion. Nothing was probed and no network was used.
+
+### Tests
+
+| Suite | Tests |
+| --- | --- |
+| daemon loopback (4 new, 22 in the module) | `a_member_with_an_unobserved_correlation_is_kept_unqualified`, `…_route_…`, `…_tool_restriction_…`, `a_member_without_a_member_surface_observation_is_kept_unqualified`. Each proves: the typed rule and the kept native named; confirmation unknown; no member bound; both member credentials `stale_binding`; the pair materializing; no receipt for the key; the replay on the same native; nothing retired or archived. The provenance-readback test is unchanged. The positive journey, sealed, cross-member, generation, receipt and resume tests stay green against the fully matched fake. |
+| Paseo `contract.rs` | `every_real_planning_pair_member_route_is_refused_before_any_effect`: 8 routes, each with its exact gap from both the surface check and the launch. Seat MCP and a member-enforcing guard are configured, and still: no plane call, no composed file, and the guard never runs. `the_claude_member_composition_is_constructible_on_source_fixtures_only`: guard attestation, including an older binary refused; cwd files; the creation frame with `toolPolicy` from the one list; labels; the secret only in the frame's secret environment; non-Claude frames unconstructible. `a_member_launch_with_a_missing_or_conflicting_context_is_refused_before_any_plane_call`: 11 cases, then a valid context refused for its route. The `1b1d` adapter-launch member tests are removed, because that launch no longer exists. |
+
+### Repair gates
+
+- `cargo fmt -p` and `cargo clippy --all-targets -D warnings` for `kontor-runtime`, `kontor-runtime-paseo`, `kontor-daemon` and `kontor-api`: clean.
+- `cargo test --no-fail-fast -p kontor-runtime -p kontor-runtime-paseo -p kontor-api -p kontor-mcp`: 619 passed, 0 failed, 6 ignored. Paseo contract 291; guard binary 3.
+- `-p kontor-daemon --lib`: 149.
+- `--test loopback_api -- planning_pair advisor committee consultation`: 44.
+- `kontor-tests-contract` `runtime_adapter`, `mcp_parity`, `mcp_cardinality` and `mcp_mutants`: 88.
+- `kontor-core` `consultation_identity_golden` and `planning_pair`: 27.
+- Not one failure. The broad 1764-test run was not repeated: this repair touches only planning pair paths and the fake's planning pair branches.
+
+### Repair mutation checks (seeded and run by this seat)
+
+Pre-mutation SHA-256 values, each confirmed equal after restore:
+- `kontor-runtime/src/planning_pair.rs` `6840287410ebe8efa2a26061e2a0d2b7ef992d763a0418c275565116de9f71f9`
+- `kontor-daemon/src/applications/planning_pair.rs` `511c456ca25e9c3620adafa3446a4df232afd3fa33ebdb935e74b277e2601eac`
+- `kontor-runtime-paseo/src/adapter.rs` `e6f29cca90cbd60c5821e7da8121913886857736c9aa411ea93cae7d8f87f8c1`
+
+| Id | Mutant | Filter (listed) | Red, then green |
+| --- | --- | --- | --- |
+| R-MUT-01 | Drop the tool-restriction check from the mandatory fields | restriction, correlation, route (3) | 2/3. **Only** the restriction test failed: the member bound and the invocation answered 200. 3/3 |
+| R-MUT-02 | Drop the route check | route, correlation, restriction (3) | 2/3. **Only** the route test failed. 3/3 |
+| R-MUT-03 | Drop the correlation check | correlation, route, restriction (3) | 2/3. **Only** the correlation test failed. 3/3 |
+| R-MUT-04 | A launch with no member-surface observation qualifies | no-observation, restriction (2) | 1/2. **Only** the no-observation test failed. 2/2 |
+| R-MUT-05 | Drop the provenance check | provenance, restriction (2) | 1/2. **Only** the provenance test failed. 2/2 |
+| R-MUT-06 | Paseo admits a Claude route at the surface check | every-route (1) | 0/1. `claude: Ok(())`. 1/1 |
+| R-MUT-07 | Paseo's launch refusal is removed | every-route (1) | 0/1. A Claude member launch reached the plane (`Transport`). 1/1 |
+
 ## Remaining capability gaps after slice four (current)
 
 - **ASMA-8113 fence.** The reviewer is unassigned, so the widened identity vocabulary's acceptance, integration and deployment wait on an explicit assignment and an exact verdict.
-- **Native member surface (D-3).** Paseo composes a Claude member under its closed surface, as source contract only; no live member session has been created or qualified.
-  - Codex, Cursor, OpenCode and every other route are refused as unsupported. The capability blocker (a supported, acknowledged closed tool restriction for Codex, and an enforced non-mutating boundary for Cursor and OpenCode) is returned to TPM and LSA.
-  - The member's tool restriction is not reported by any Paseo readback and is stated as unsupported.
-  - Next action: supervised native readback of a Claude member, under release authority.
+- **Paseo member-surface capability (one row).**
+
+  | Field | Value |
+  | --- | --- |
+  | Affected routes | Claude, Codex, Cursor and OpenCode members through Paseo |
+  | Owner | The Paseo provider/runtime capability owner |
+  | Next action | A supported, exact restriction readback for a created session: the applied closed tool set, the guard and the ambient-MCP exclusion. For Codex, a closed tool restriction that excludes the provider home's own servers; for Cursor and OpenCode, an enforced read-only boundary |
+  | Today | Every route is refused before freeze with zero effects |
+
+  This is not a Kontor orchestration repair, and no external-issue authority is claimed. TPM's plan row follows.
 - **No live effect.** Nothing native has been created or qualified:
   - no native workspace or seat;
   - no credential propagation;

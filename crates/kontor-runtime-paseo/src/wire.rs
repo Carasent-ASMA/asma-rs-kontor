@@ -290,6 +290,40 @@ pub mod label {
     ];
 }
 
+/// The correlation labels a planning pair member session would carry beside
+/// its consultation and fleet labels: its occupancy generation, document hash,
+/// placement hash and serve profile (ASMA-8282 D-3).
+///
+/// Composable and proved on source fixtures only. No member is launched
+/// through this adapter while every route is refused; and a label states what
+/// Kontor wrote, never account ownership or enforcement.
+#[must_use]
+pub fn planning_pair_member_labels(
+    context: &kontor_runtime::planning_pair::PlanningPairLaunchContext,
+) -> BTreeMap<String, String> {
+    [
+        (
+            label::OCCUPANCY_GENERATION,
+            context.occupancy_generation.to_string(),
+        ),
+        (
+            label::CONSULTATION_PROFILE_HASH,
+            context.profile.definition_hash.as_str().to_owned(),
+        ),
+        (
+            label::PLACEMENT_HASH,
+            context.placement_hash.as_str().to_owned(),
+        ),
+        (
+            label::SERVE_PROFILE,
+            kontor_core::planning_pair::MEMBER_SERVE_PROFILE.to_owned(),
+        ),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value))
+    .collect()
+}
+
 /// The native label surface fleet provenance is written to and read from.
 pub const FLEET_PROVENANCE_SURFACE: &str = "paseo.agent.labels";
 

@@ -2141,9 +2141,10 @@ async fn a_member_route_the_runtime_cannot_compose_freezes_nothing_and_names_its
         .await;
     assert_eq!(refused.code(), "unsupported_capability", "{}", refused.body);
     assert_eq!(refused.json()["subject"], "planning pair member route");
-    assert!(
-        refused.body.contains("providers/cursor"),
-        "the refusal names the provider: {}",
+    assert_eq!(
+        refused.json()["at"],
+        "providers/cursor/not_composed",
+        "the refusal names the provider and its gap: {}",
         refused.body
     );
     assert_eq!(realm.planning_pair_runs(), 0, "nothing was frozen");
@@ -2334,4 +2335,167 @@ async fn a_member_without_its_provenance_readback_is_kept_unqualified_and_never_
         native,
         "the replay met the same native session"
     );
+}
+
+/// One invocation whose member launch the fake reports as `withheld`
+/// describes, against a runtime that claimed the whole member surface before
+/// freeze: the member is kept unqualified under `rule`.
+///
+/// It proves, together: a typed no-observation refusal naming the kept native
+/// session and that confirmation is unknown; no member bound and no member
+/// credential able to contribute; the pair still materializing with no
+/// receipt for its key; and a replay meeting the same native session, with no
+/// second create, replacement or destruction.
+async fn assert_member_kept_unqualified(root: &str, withhold: impl Fn(&World), rule: &str) {
+    let realm = pair_realm(root).await;
+    let world = &realm.world;
+    withhold(world);
+    world.fake.take_calls();
+    let body = realm.invoke_body(&realm.profile, "Unobserved plan").await;
+    let first = realm
+        .invoke_with(&body, realm.caller_token(), "pp-unobserved")
+        .await;
+    assert_eq!(first.code(), "unavailable", "{}", first.body);
+    assert_eq!(first.json()["subject"], "planning pair member readback");
+    assert_eq!(first.json()["rule"], rule, "{}", first.body);
+    assert!(
+        first.body.contains("confirmation unknown"),
+        "the refusal says confirmation is unknown: {}",
+        first.body
+    );
+    let native = first.json()["at"].clone();
+    assert!(
+        native.as_str().is_some_and(|at| at.starts_with("native/")),
+        "the kept native session is named: {}",
+        first.body
+    );
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_runs(
+                realm.project_id,
+                MiniProjectId::parse(&realm.epic).expect("an epic id"),
+                ConsultationFamily::PlanningPair,
+            )
+            .expect("the runs read")
+            .pop()
+            .expect("the frozen pair")
+    });
+    assert_eq!(run.state, ConsultationRunState::Materializing);
+    let seats = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_seats(realm.project_id, run.id)
+            .expect("the seats read")
+    });
+    assert!(
+        seats.iter().all(|seat| seat.native_identity.is_none()),
+        "no member is bound"
+    );
+    let receipts: i64 = rusqlite::Connection::open(world.directory.path().join("kontor.db"))
+        .expect("the realm database opens")
+        .query_row(
+            "SELECT count(*) FROM command_receipts WHERE idempotency_key = 'pp-unobserved'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the receipts count");
+    assert_eq!(receipts, 0, "no qualified running receipt");
+    let kontor_core::consultation::ConsultationRunId::PlanningPair(run_id) = run.id else {
+        panic!("a planning pair run")
+    };
+    let pair = Pair {
+        run: run_id.to_string(),
+        seat_a: seats[0].seat_binding_id,
+        seat_b: seats[1].seat_binding_id,
+        invoked: serde_json::json!({}),
+    };
+    for seat in [pair.seat_a, pair.seat_b] {
+        let contribution = realm
+            .finding(
+                &pair,
+                seat,
+                "Not qualified.",
+                &format!("pp-unobserved-{seat}"),
+            )
+            .await;
+        assert_eq!(
+            contribution.code(),
+            "stale_binding",
+            "{}",
+            contribution.body
+        );
+    }
+    let replayed = realm
+        .invoke_with(&body, realm.caller_token(), "pp-unobserved")
+        .await;
+    assert_eq!(replayed.json()["rule"], rule, "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["at"],
+        native,
+        "the replay met the same native session"
+    );
+    assert!(
+        world.fake.take_calls().iter().all(|call| !matches!(
+            call,
+            AdapterCall::RetireConsultation(_) | AdapterCall::ArchiveContainer(_)
+        )),
+        "nothing was replaced or destroyed"
+    );
+}
+
+/// No waiver: a member whose correlation was not observed is not qualified.
+#[tokio::test]
+async fn a_member_with_an_unobserved_correlation_is_kept_unqualified() {
+    assert_member_kept_unqualified(
+        "/tmp/kontor-asma8282-pair-unobserved-correlation",
+        |world| {
+            world.fake.observing_planning_pair_member_field_unsupported(
+                kontor_runtime::planning_pair::MandatoryMemberField::Correlation,
+            );
+        },
+        "the planning pair member's readback did not observe its correlation",
+    )
+    .await;
+}
+
+/// No waiver: a member whose route was not observed is not qualified.
+#[tokio::test]
+async fn a_member_with_an_unobserved_route_is_kept_unqualified() {
+    assert_member_kept_unqualified(
+        "/tmp/kontor-asma8282-pair-unobserved-route",
+        |world| {
+            world.fake.observing_planning_pair_member_field_unsupported(
+                kontor_runtime::planning_pair::MandatoryMemberField::Route,
+            );
+        },
+        "the planning pair member's readback did not observe its route",
+    )
+    .await;
+}
+
+/// No waiver: a member whose closed tool restriction was not observed is not
+/// qualified, even with its correlation, route and provenance all observed.
+#[tokio::test]
+async fn a_member_with_an_unobserved_tool_restriction_is_kept_unqualified() {
+    assert_member_kept_unqualified(
+        "/tmp/kontor-asma8282-pair-unobserved-restriction",
+        |world| {
+            world.fake.observing_planning_pair_member_field_unsupported(
+                kontor_runtime::planning_pair::MandatoryMemberField::ToolRestrictions,
+            );
+        },
+        "the planning pair member's readback did not observe its closed tool restriction",
+    )
+    .await;
+}
+
+/// No waiver: a member launch that reports no member-surface observation at
+/// all is not qualified.
+#[tokio::test]
+async fn a_member_without_a_member_surface_observation_is_kept_unqualified() {
+    assert_member_kept_unqualified(
+        "/tmp/kontor-asma8282-pair-unobserved-surface",
+        |world| world.fake.omitting_planning_pair_member_observation(),
+        "the planning pair member's launch reported no member-surface observation",
+    )
+    .await;
 }

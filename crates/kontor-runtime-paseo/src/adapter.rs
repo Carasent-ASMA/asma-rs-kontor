@@ -171,10 +171,6 @@ const DEGRADED: &[RuntimeCapability] = &[RuntimeCapability::Discovery, RuntimeCa
 /// walk of the whole transcript.
 const RECONCILE_PAGE_BUDGET: usize = 4;
 
-/// The surface a planning pair member's launch is observed on: the agent
-/// snapshot this adapter reads back after creation or census adoption.
-const PLANNING_PAIR_MEMBER_SURFACE: &str = "paseo.agent.snapshot";
-
 /// How many complete cursor-free origin walks may be attempted after Paseo
 /// invalidates the numbering mid-walk.
 ///
@@ -5379,73 +5375,40 @@ impl PaseoAdapter {
         if let Some(provenance) = &request.fleet_provenance {
             labels.extend(crate::wire::fleet_provenance_labels(provenance)?);
         }
-        // A planning pair member's correlation also names its occupancy
-        // generation, document and placement, and the serve profile it was
-        // composed under, so its readback is held to all of them. Labels are
-        // what Kontor wrote; they prove no account ownership or enforcement.
-        if let Some(context) = &request.planning_pair {
-            labels.extend(
-                [
-                    (
-                        label::OCCUPANCY_GENERATION,
-                        context.occupancy_generation.to_string(),
-                    ),
-                    (
-                        label::CONSULTATION_PROFILE_HASH,
-                        context.profile.definition_hash.as_str().to_owned(),
-                    ),
-                    (
-                        label::PLACEMENT_HASH,
-                        context.placement_hash.as_str().to_owned(),
-                    ),
-                    (
-                        label::SERVE_PROFILE,
-                        kontor_core::planning_pair::MEMBER_SERVE_PROFILE.to_owned(),
-                    ),
-                ]
-                .map(|(key, value)| (key.to_owned(), value)),
-            );
-        }
         Ok(labels)
     }
 
-    /// Whether this adapter composes the closed planning pair member surface
-    /// for each route (ASMA-8282 D-3), decided with no plane call, no file
-    /// and no session.
+    /// Why this adapter cannot establish a planning pair member's closed
+    /// surface for one route (ASMA-8282 D-3), decided with no plane call, no
+    /// file, no process and no session.
     ///
-    /// Only a Claude route is composable: its member guard, member serve
-    /// profile and creation restriction are all Kontor's, and the guard binary
-    /// is attested for the member profile before it is trusted. A Codex route
-    /// is refused: its read-only sandbox and `never` approval are composable,
-    /// but no supported Paseo surface restricts its tools to the member
-    /// profile — `toolPolicy` only preapproves, and the provider home's own
-    /// MCP servers are not excluded — and a sandbox alone is not the closed
-    /// surface. Cursor's and OpenCode's `plan` modes and every historical
-    /// fallback are behavioral, not containment. Each refusal names its
-    /// provider; no route is substituted.
-    fn planning_pair_member_routes(&self, routes: &[&ModelRung]) -> RuntimeResult<()> {
-        for route in routes {
-            if crate::client::built_in_provider(&route.provider.0) != "claude" {
-                return Err(RuntimeError::PermissionModeUnsupported {
-                    provider: route.provider.0.clone(),
-                });
-            }
+    /// Every real route is refused today, each for its own reason:
+    ///
+    /// * **Claude.** The member guard, serve profile and creation restriction
+    ///   are composable, and their construction is proved on source fixtures.
+    ///   But this Paseo acknowledges no applied closed tool restriction for a
+    ///   created session: `providerOptionsApplied` is an optional per-agent
+    ///   flag about OpenCode provider options, not the session's exact tools,
+    ///   guard or ambient MCP exclusion. So the restriction could never be
+    ///   observed, and a member could never qualify.
+    /// * **Codex.** A read-only sandbox and `never` approval are not a closed
+    ///   tool restriction: `toolPolicy` only preapproves, and the provider
+    ///   home's own MCP servers are not excluded.
+    /// * **Cursor and OpenCode.** `plan` and every historical fallback are
+    ///   behavioral, not an enforced read-only boundary.
+    /// * **Anything else.** No member surface is composed.
+    fn planning_pair_member_route_gap(rung: &ModelRung) -> RuntimeError {
+        use kontor_runtime::planning_pair::MemberSurfaceGap;
+        let gap = match crate::client::built_in_provider(&rung.provider.0) {
+            "claude" => MemberSurfaceGap::RestrictionUnacknowledged,
+            "codex" => MemberSurfaceGap::ClosedToolsUnavailable,
+            "cursor" | "opencode" => MemberSurfaceGap::ReadOnlyUnenforced,
+            _ => MemberSurfaceGap::NotComposed,
+        };
+        RuntimeError::PlanningPairMemberSurfaceUnsupported {
+            provider: rung.provider.0.clone(),
+            gap,
         }
-        let seat_mcp = self
-            .config
-            .seat_mcp
-            .as_ref()
-            .ok_or(RuntimeError::LaunchNotAdmitted {
-                rule: "a planning pair member requires the scoped member MCP and its guard, and seat MCP composition is disabled",
-            })?;
-        seat_mcp
-            .verify_planning_pair_member_guard()
-            .map_err(|error| {
-                tracing::warn!(%error, "planning pair member guard probe failed");
-                RuntimeError::LaunchNotAdmitted {
-                    rule: "the MCP binary does not enforce the planning pair member guard",
-                }
-            })
     }
 
     /// What this launch observed of its fleet provenance: read back from the
@@ -5557,16 +5520,9 @@ impl PaseoAdapter {
                             .ok_or(RuntimeError::LaunchNotAdmitted {
                                 rule: "Claude consultation requires the scoped MCP and tool guard",
                             })?;
-                    let cwd = std::path::Path::new(request.cwd.as_str());
-                    if request.planning_pair.is_some() {
-                        seat_mcp
-                            .verify_planning_pair_member_guard()
-                            .and_then(|()| seat_mcp.compose_planning_pair_member(cwd))
-                    } else {
-                        seat_mcp
-                            .verify_consultation_guard()
-                            .and_then(|()| seat_mcp.compose_consultation(cwd))
-                    }
+                    seat_mcp.verify_consultation_guard().and_then(|()| {
+                        seat_mcp.compose_consultation(std::path::Path::new(request.cwd.as_str()))
+                    })
                 } else {
                     Ok(())
                 }
@@ -5576,36 +5532,19 @@ impl PaseoAdapter {
                         rule: "seat MCP composition failed in the consultation worktree",
                     }
                 })?;
-                let mut creation = if request.planning_pair.is_some() {
-                    PaseoRpc::planning_pair_member_agent_create(
-                        self.next_request_id(),
-                        &workspace_id,
-                        request.cwd.as_str(),
-                        &request.model_rung,
-                        request.display_name.as_str(),
-                        &labels,
-                        request.prompt.as_str(),
-                        request.credential.expose_secret(),
-                    )?
-                } else {
-                    PaseoRpc::consultation_agent_create(
-                        self.next_request_id(),
-                        &workspace_id,
-                        request.cwd.as_str(),
-                        &request.model_rung,
-                        &request.route_provenance,
-                        request.display_name.as_str(),
-                        &labels,
-                        request.prompt.as_str(),
-                        request.credential.expose_secret(),
-                    )?
-                };
+                let mut creation = PaseoRpc::consultation_agent_create(
+                    self.next_request_id(),
+                    &workspace_id,
+                    request.cwd.as_str(),
+                    &request.model_rung,
+                    &request.route_provenance,
+                    request.display_name.as_str(),
+                    &labels,
+                    request.prompt.as_str(),
+                    request.credential.expose_secret(),
+                )?;
                 if let Some(seat_mcp) = self.config.seat_mcp.as_ref() {
-                    if request.planning_pair.is_some() {
-                        creation.with_planning_pair_member_mcp(seat_mcp);
-                    } else {
-                        creation.with_consultation_mcp(seat_mcp);
-                    }
+                    creation.with_consultation_mcp(seat_mcp);
                 }
                 // A lost acknowledgement is confirmation-unknown. This call
                 // never launches a second process in response; a later replay
@@ -5655,18 +5594,7 @@ impl PaseoAdapter {
                 request.fleet_provenance.as_ref(),
                 &agent,
             )?,
-            // The correlation labels and the route were read back above; the
-            // agent snapshot carries no tool policy, so the closed restriction
-            // the member was created under is not claimed as observed.
-            planning_pair: request.planning_pair.as_ref().map(|_| {
-                kontor_runtime::planning_pair::PlanningPairMemberObservation {
-                    surface: PLANNING_PAIR_MEMBER_SURFACE.to_owned(),
-                    correlation: kontor_runtime::planning_pair::MemberSurfaceField::Matched,
-                    route: kontor_runtime::planning_pair::MemberSurfaceField::Matched,
-                    tool_restrictions:
-                        kontor_runtime::planning_pair::MemberSurfaceField::Unsupported,
-                }
-            }),
+            planning_pair: None,
         })
     }
 
@@ -6228,8 +6156,7 @@ impl RuntimeAdapter for PaseoAdapter {
         routes: &[kontor_runtime::planning_pair::PlanningPairMemberRoute],
     ) -> RuntimeResult<()> {
         kontor_runtime::planning_pair::PlanningPairMemberRoute::require_pair(routes)?;
-        let rungs: Vec<&ModelRung> = routes.iter().map(|route| &route.model_rung).collect();
-        self.planning_pair_member_routes(&rungs)
+        Err(Self::planning_pair_member_route_gap(&routes[0].model_rung))
     }
 
     fn declared_autonomy(&self) -> Option<SeatAutonomy> {
@@ -6716,11 +6643,11 @@ impl RuntimeAdapter for PaseoAdapter {
         request: &ConsultationLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         // ASMA-8282 D-3: the family and its frozen member context agree, and
-        // a member's route has the closed member surface, before any plane
-        // call. A planning pair is never launched under the Advisor and
-        // Committee consultation surface.
+        // then the member is refused for its route's own gap, before the launch
+        // claim, any plane call, any composed file or any session. A planning
+        // pair is never launched under the Advisor and Committee surface.
         if request.planning_pair_context()?.is_some() {
-            self.planning_pair_member_routes(&[&request.model_rung])?;
+            return Err(Self::planning_pair_member_route_gap(&request.model_rung));
         }
         {
             let state = &mut *self.lock();

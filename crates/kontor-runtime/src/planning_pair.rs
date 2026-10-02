@@ -101,6 +101,39 @@ impl PlanningPairMemberRoute {
     }
 }
 
+/// Why a runtime cannot establish a planning pair member's closed surface for
+/// one route. Each is its own refusal: no route is ever passed on a blanket
+/// answer, substituted, or launched under a weaker surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberSurfaceGap {
+    /// The harness can be composed, but the runtime acknowledges no applied
+    /// closed tool restriction for the created session, so the restriction
+    /// could never be observed (Claude through Paseo today).
+    RestrictionUnacknowledged,
+    /// No supported closed tool restriction exists for the route: its
+    /// sandbox and approval policy alone are not one, and its home's own MCP
+    /// servers are not excluded (Codex).
+    ClosedToolsUnavailable,
+    /// The route's read-only mode is behavioral, not an enforced boundary
+    /// (Cursor, OpenCode and their historical fallbacks).
+    ReadOnlyUnenforced,
+    /// This runtime composes no member surface for the route's provider.
+    NotComposed,
+}
+
+impl MemberSurfaceGap {
+    /// The stable name a refusal carries.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RestrictionUnacknowledged => "restriction_unacknowledged",
+            Self::ClosedToolsUnavailable => "closed_tools_unavailable",
+            Self::ReadOnlyUnenforced => "read_only_unenforced",
+            Self::NotComposed => "not_composed",
+        }
+    }
+}
+
 /// Whether one field of a member's native surface was read back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemberSurfaceField {
@@ -108,6 +141,18 @@ pub enum MemberSurfaceField {
     Matched,
     /// No surface of this runtime reports it, so nothing is claimed about it.
     Unsupported,
+}
+
+/// The fields a member must have observed, every one of them, before it is
+/// bound and may contribute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MandatoryMemberField {
+    /// [`PlanningPairMemberObservation::correlation`].
+    Correlation,
+    /// [`PlanningPairMemberObservation::route`].
+    Route,
+    /// [`PlanningPairMemberObservation::tool_restrictions`].
+    ToolRestrictions,
 }
 
 /// What a runtime observed of one planning pair member's native surface.
@@ -126,6 +171,31 @@ pub struct PlanningPairMemberObservation {
     pub route: MemberSurfaceField,
     /// The closed member tool restriction the session was created under.
     pub tool_restrictions: MemberSurfaceField,
+    /// Whether the session runs under the account its credential belongs to.
+    ///
+    /// An account-qualified provider label is not credential ownership, and no
+    /// runtime reports this, so it is stated separately and is never a field a
+    /// member qualifies on.
+    pub account_authority: MemberSurfaceField,
+}
+
+impl PlanningPairMemberObservation {
+    /// The first mandatory field this observation did not match, or `None`
+    /// when every one was.
+    #[must_use]
+    pub fn unmatched_mandatory(&self) -> Option<MandatoryMemberField> {
+        [
+            (MandatoryMemberField::Correlation, self.correlation),
+            (MandatoryMemberField::Route, self.route),
+            (
+                MandatoryMemberField::ToolRestrictions,
+                self.tool_restrictions,
+            ),
+        ]
+        .into_iter()
+        .find(|(_, field)| *field != MemberSurfaceField::Matched)
+        .map(|(name, _)| name)
+    }
 }
 
 impl ConsultationLaunchRequest {

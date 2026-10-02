@@ -802,6 +802,10 @@ struct FakeState {
     planning_pair_labels: BTreeMap<SeatBindingId, crate::provenance::FleetLaunchProvenance>,
     /// Whether member sessions are created without their provenance labels.
     planning_pair_labels_dropped: bool,
+    /// Mandatory member-surface fields this runtime reports as unsupported.
+    planning_pair_unobserved_fields: BTreeSet<crate::planning_pair::MandatoryMemberField>,
+    /// Whether member launches report no member-surface observation at all.
+    planning_pair_observation_omitted: bool,
     /// The gate every consultation launch waits at, when one is installed.
     consultation_launch_gate: Option<ConsultationLaunchGate>,
     /// Providers this runtime refuses specifically as recovery successors.
@@ -1481,6 +1485,8 @@ impl ScriptedFakeRuntime {
                 planning_pair_contexts: BTreeMap::new(),
                 planning_pair_labels: BTreeMap::new(),
                 planning_pair_labels_dropped: false,
+                planning_pair_unobserved_fields: BTreeSet::new(),
+                planning_pair_observation_omitted: false,
                 consultation_launch_gate: None,
                 unsupported_consultation_recovery_providers: BTreeSet::new(),
                 placements: BTreeSet::new(),
@@ -1613,6 +1619,21 @@ impl ScriptedFakeRuntime {
     /// through.
     pub fn dropping_planning_pair_provenance_labels(&self) {
         self.lock().planning_pair_labels_dropped = true;
+    }
+
+    /// Report one mandatory member-surface field as unsupported after create,
+    /// as a runtime that claimed the surface and then could not observe it
+    /// would.
+    pub fn observing_planning_pair_member_field_unsupported(
+        &self,
+        field: crate::planning_pair::MandatoryMemberField,
+    ) {
+        self.lock().planning_pair_unobserved_fields.insert(field);
+    }
+
+    /// Report no member-surface observation at all for member launches.
+    pub fn omitting_planning_pair_member_observation(&self) {
+        self.lock().planning_pair_observation_omitted = true;
     }
 
     /// The frozen context every planning pair member launch presented, by
@@ -2923,10 +2944,13 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 .planning_pair_withheld_providers
                 .contains(&route.model_rung.provider.0)
         }) {
-            return Err(RuntimeError::PermissionModeUnsupported {
+            return Err(RuntimeError::PlanningPairMemberSurfaceUnsupported {
                 provider: route.model_rung.provider.0.clone(),
+                gap: crate::planning_pair::MemberSurfaceGap::NotComposed,
             });
         }
+        // Otherwise this fake claims the whole surface: a hypothetical,
+        // source-contract runtime, not a statement about any real one.
         Ok(())
     }
 
@@ -3894,8 +3918,9 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 .planning_pair_withheld_providers
                 .contains(&request.model_rung.provider.0)
         {
-            return Err(RuntimeError::PermissionModeUnsupported {
+            return Err(RuntimeError::PlanningPairMemberSurfaceUnsupported {
                 provider: request.model_rung.provider.0.clone(),
+                gap: crate::planning_pair::MemberSurfaceGap::NotComposed,
             });
         }
         if state.unlaunchable.contains(request.role_slot_id.as_str()) {
@@ -3974,15 +3999,28 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                             provenance,
                         },
                     );
-                (
-                    observed,
-                    Some(crate::planning_pair::PlanningPairMemberObservation {
+                // A hypothetical runtime that observes every mandatory field
+                // unless a test withholds one. Account authority is never
+                // observed by any runtime.
+                let field = |name: crate::planning_pair::MandatoryMemberField| {
+                    if state.planning_pair_unobserved_fields.contains(&name) {
+                        crate::planning_pair::MemberSurfaceField::Unsupported
+                    } else {
+                        crate::planning_pair::MemberSurfaceField::Matched
+                    }
+                };
+                let observation = (!state.planning_pair_observation_omitted).then(|| {
+                    crate::planning_pair::PlanningPairMemberObservation {
                         surface: FAKE_SURFACE.to_owned(),
-                        correlation: crate::planning_pair::MemberSurfaceField::Matched,
-                        route: crate::planning_pair::MemberSurfaceField::Matched,
-                        tool_restrictions: crate::planning_pair::MemberSurfaceField::Unsupported,
-                    }),
-                )
+                        correlation: field(crate::planning_pair::MandatoryMemberField::Correlation),
+                        route: field(crate::planning_pair::MandatoryMemberField::Route),
+                        tool_restrictions: field(
+                            crate::planning_pair::MandatoryMemberField::ToolRestrictions,
+                        ),
+                        account_authority: crate::planning_pair::MemberSurfaceField::Unsupported,
+                    }
+                });
+                (observed, observation)
             }
             None => (
                 crate::provenance::FleetProvenanceObservation::without_surface(

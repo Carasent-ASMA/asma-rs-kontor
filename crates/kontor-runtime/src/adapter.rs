@@ -124,6 +124,15 @@ pub enum RuntimeError {
         /// The exact native caller Paseo refused.
         caller_agent_id: ExternalId,
     },
+    /// A planning pair member route whose closed member surface this runtime
+    /// cannot establish (ASMA-8282 D-3), named with its provider and gap.
+    #[error("runtime cannot establish the planning pair member surface for {provider}: {gap:?}")]
+    PlanningPairMemberSurfaceUnsupported {
+        /// The route's provider.
+        provider: String,
+        /// Why the surface cannot be established for it.
+        gap: crate::planning_pair::MemberSurfaceGap,
+    },
     /// The selected provider has no permission mode Kontor knows how to pin.
     #[error("provider {provider} has no pinned runtime permission mode")]
     PermissionModeUnsupported {

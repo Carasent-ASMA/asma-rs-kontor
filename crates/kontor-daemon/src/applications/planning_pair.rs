@@ -377,13 +377,16 @@ impl Services {
         adapter
             .validate_planning_pair_member_surface(&routes)
             .map_err(|error| match &error {
-                kontor_runtime::RuntimeError::PermissionModeUnsupported { provider } => self
+                kontor_runtime::RuntimeError::PlanningPairMemberSurfaceUnsupported {
+                    provider,
+                    gap,
+                } => self
                     .deny(
                         ApiErrorCode::UnsupportedCapability,
-                        "this runtime cannot compose the closed planning pair member surface for a member route's provider",
+                        "this runtime cannot establish the closed planning pair member surface for a member route",
                     )
                     .about("planning pair member route")
-                    .located_at(format!("providers/{provider}")),
+                    .located_at(format!("providers/{provider}/{}", gap.as_str())),
                 _ => ApiError::from_runtime(state.realm_id(), &error),
             })
     }
@@ -1140,25 +1143,20 @@ impl Services {
                 fleet_provenance.as_ref(),
                 &outcome.fleet_provenance,
             );
-            // A member is qualified — bound, so it can contribute — only on a
-            // readback that observed exactly its requested provenance and
-            // reported its member surface. Otherwise the native session is
-            // kept, unbound and named, and a replay adopts that same session
-            // rather than creating or replacing one.
-            let observed = matches!(
-                &outcome.fleet_provenance,
-                kontor_runtime::FleetProvenanceObservation::Observed { provenance, .. }
-                    if Some(provenance) == fleet_provenance.as_ref()
-            );
-            if !observed || outcome.planning_pair.is_none() {
+            // A member is qualified — bound, so it can contribute — only when
+            // its launch reported a member-surface observation, every mandatory
+            // field of it matched, and its readback observed exactly its
+            // requested provenance. Any missing, wrong or unsupported field is
+            // a typed no-observation refusal: the native session is kept,
+            // unbound and named, its credential is unqualified, the pair stays
+            // materializing with no receipt, and a replay meets that same
+            // session rather than creating, replacing or destroying one.
+            if let Err(rule) = planning_pair_member_qualifies(&outcome, fleet_provenance.as_ref()) {
                 return Err(self
-                    .deny(
-                        ApiErrorCode::Unavailable,
-                        "the planning pair member's native readback did not confirm its frozen provenance, so it is not qualified to contribute",
-                    )
+                    .deny(ApiErrorCode::Unavailable, rule)
                     .about("planning pair member readback")
                     .located_at(format!("native/{}", outcome.identity.native_id.as_str()))
-                    .advising("the member's native session is kept; repair the readback and invoke again with the same key"));
+                    .advising("confirmation unknown: the member's native session is kept unbound; repair its readback and invoke again with the same key"));
             }
             seat.native_identity = Some(outcome.identity);
             seat.provider_session_id = outcome.provider_session_id;
@@ -1926,6 +1924,44 @@ fn contribution_dto(contribution: &PlanningPairContribution) -> PlanningPairCont
         advice: contribution.advice.clone(),
         document_hash: contribution.document_hash.clone(),
     }
+}
+
+/// Whether one member launch's readback qualifies the member, or the typed
+/// rule naming the first thing it did not observe.
+fn planning_pair_member_qualifies(
+    outcome: &kontor_runtime::adapter::ConsultationLaunchOutcome,
+    requested: Option<&kontor_runtime::FleetLaunchProvenance>,
+) -> Result<(), &'static str> {
+    use kontor_runtime::planning_pair::MandatoryMemberField;
+    let observation = outcome
+        .planning_pair
+        .as_ref()
+        .ok_or("the planning pair member's launch reported no member-surface observation")?;
+    match observation.unmatched_mandatory() {
+        Some(MandatoryMemberField::Correlation) => {
+            return Err("the planning pair member's readback did not observe its correlation");
+        }
+        Some(MandatoryMemberField::Route) => {
+            return Err("the planning pair member's readback did not observe its route");
+        }
+        Some(MandatoryMemberField::ToolRestrictions) => {
+            return Err(
+                "the planning pair member's readback did not observe its closed tool restriction",
+            );
+        }
+        None => {}
+    }
+    let observed = matches!(
+        &outcome.fleet_provenance,
+        kontor_runtime::FleetProvenanceObservation::Observed { provenance, .. }
+            if Some(provenance) == requested
+    );
+    if !observed {
+        return Err(
+            "the planning pair member's native readback did not confirm its frozen provenance, so it is not qualified to contribute",
+        );
+    }
+    Ok(())
 }
 
 /// Findings and answers are kept in slot order, whatever order they arrive in.
