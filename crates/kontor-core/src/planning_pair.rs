@@ -62,6 +62,25 @@ pub const FINDINGS_ROUNDS: u32 = 1;
 /// when the caller asks for it.
 pub const MAX_CLARIFICATION_ROUNDS: u32 = 1;
 
+/// The serve profile every planning pair member is launched under (D-3).
+pub const MEMBER_SERVE_PROFILE: &str = "planning_pair_member";
+
+/// The closed member surface: exactly the three registered operations a
+/// planning pair member may call.
+///
+/// This is the one list. The registry's [`MEMBER_SERVE_PROFILE`] profile, the
+/// consultation tool guard that enforces it in a member's harness, and every
+/// runtime's creation-time tool policy are all generated from it, so the
+/// surface a member is offered, the one its guard permits and the one its
+/// runtime preapproves cannot drift apart. It names no caller operation, no
+/// Advisor or Committee tool, and nothing that publishes, gates, delegates or
+/// answers a permission.
+pub const MEMBER_MCP_TOOLS: [&str; 3] = [
+    "kontor_planning_pair_run_get",
+    "kontor_planning_pair_findings_record",
+    "kontor_planning_pair_answer_record",
+];
+
 /// The stable rule texts a refusal names.
 #[allow(
     missing_docs,

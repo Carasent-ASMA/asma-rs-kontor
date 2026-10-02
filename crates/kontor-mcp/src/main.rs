@@ -66,9 +66,24 @@ fn resolve_profile(name: &str) -> Result<&'static ServeProfile, String> {
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     // A local permission hook has no credential and opens no control-plane
-    // connection. Keep its protocol separate from MCP argument parsing.
-    if std::env::args().skip(1).eq(["--consultation-tool-guard"]) {
-        return consultation_guard::run();
+    // connection. Keep its protocol separate from MCP argument parsing: every
+    // argument list that begins with the guard flag is the guard's, so a
+    // malformed one is a guard that denies every tool rather than a clap error
+    // a hook runner might not treat as a refusal. An argument that is not
+    // UTF-8 is malformed the same way.
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if argv
+        .first()
+        .is_some_and(|flag| flag == "--consultation-tool-guard")
+    {
+        let rest: Vec<String> = argv[1..]
+            .iter()
+            .map(|arg| {
+                arg.to_str()
+                    .map_or_else(|| "\u{fffd}".to_owned(), str::to_owned)
+            })
+            .collect();
+        return consultation_guard::run(&rest);
     }
     let args = Args::parse();
     let tier = match CallerTier::parse(&args.credential_tier) {

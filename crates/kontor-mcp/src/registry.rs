@@ -986,13 +986,11 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
     // ASMA-8282: a planning pair member reads its own run and makes only its
     // two seat-authored writes. It cannot invoke, ask for clarification,
     // record a disposition, publish, or reach any gate or permission surface.
+    // The list is the domain's one closed member surface, which the guard and
+    // every runtime's creation policy are generated from too.
     ServeProfile {
-        name: "planning_pair_member",
-        tools: &[
-            "kontor_planning_pair_run_get",
-            "kontor_planning_pair_findings_record",
-            "kontor_planning_pair_answer_record",
-        ],
+        name: kontor_core::planning_pair::MEMBER_SERVE_PROFILE,
+        tools: &kontor_core::planning_pair::MEMBER_MCP_TOOLS,
     },
     ServeProfile {
         name: "leadership",

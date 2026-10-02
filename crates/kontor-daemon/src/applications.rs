@@ -13391,6 +13391,7 @@ impl Services {
                     fleet_provenance: fleet_provenance.clone(),
                     context_policy: context_policy.clone(),
                     requested_at: kontor_api::now(),
+                    planning_pair: None,
                 })
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -14062,6 +14063,7 @@ impl Services {
                     fleet_provenance: fleet_provenance.clone(),
                     context_policy: context_policy.clone(),
                     requested_at: kontor_api::now(),
+                    planning_pair: None,
                 })
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -14254,6 +14256,7 @@ impl Services {
                 fleet_provenance: fleet_provenance.clone(),
                 context_policy,
                 requested_at,
+                planning_pair: None,
             })
             .await
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;

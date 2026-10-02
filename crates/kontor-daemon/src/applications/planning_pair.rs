@@ -229,9 +229,6 @@ impl Services {
                 Some((receipt.id, AppliedDto::Unchanged)),
             );
         }
-        // A runtime that has not composed the member surface is the defined
-        // capability gap, answered before anything is frozen or prepared.
-        self.require_planning_pair_member_surface()?;
         let run = if let Some(existing) = self
             .state()?
             .with_store(|store| store.get_consultation_run_by_key(project_id, key))
@@ -358,20 +355,51 @@ impl Services {
         }
     }
 
-    /// Whether the runtime planning pair members are placed on composes their
-    /// closed member surface, asked without a native effect.
-    fn require_planning_pair_member_surface(&self) -> Result<(), ApiError> {
+    /// Whether the runtime planning pair members are placed on composes the
+    /// closed member surface for both actual frozen routes, asked without a
+    /// native effect (D-3). A route whose provider it cannot compose is
+    /// refused with that provider named; nothing is substituted.
+    fn require_planning_pair_member_routes(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        members: &[kontor_core::planning_pair::PlanningPairMember],
+    ) -> Result<(), ApiError> {
+        let state = self.state()?;
+        let routes: Vec<kontor_runtime::planning_pair::PlanningPairMemberRoute> = members
+            .iter()
+            .map(
+                |member| kontor_runtime::planning_pair::PlanningPairMemberRoute {
+                    slot: member.slot,
+                    model_rung: member.route.clone(),
+                },
+            )
+            .collect();
+        adapter
+            .validate_planning_pair_member_surface(&routes)
+            .map_err(|error| match &error {
+                kontor_runtime::RuntimeError::PermissionModeUnsupported { provider } => self
+                    .deny(
+                        ApiErrorCode::UnsupportedCapability,
+                        "this runtime cannot compose the closed planning pair member surface for a member route's provider",
+                    )
+                    .about("planning pair member route")
+                    .located_at(format!("providers/{provider}")),
+                _ => ApiError::from_runtime(state.realm_id(), &error),
+            })
+    }
+
+    /// The runtime planning pair members are placed on.
+    fn planning_pair_runtime(
+        &self,
+    ) -> Result<std::sync::Arc<dyn kontor_runtime::adapter::RuntimeAdapter>, ApiError> {
         let state = self.state()?;
         let runtime_kind = self.node_runtime_kind()?;
-        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
+        state.runtimes().get(&runtime_kind).ok_or_else(|| {
             self.deny(
                 ApiErrorCode::Unavailable,
                 "the runtime selected for planning pair placement is not configured",
             )
-        })?;
-        adapter
-            .validate_planning_pair_member_surface()
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))
+        })
     }
 
     /// The role catalog this epic selected, exactly as persisted.
@@ -759,6 +787,12 @@ impl Services {
                 )
                 .about("FleetActivation"));
         };
+        // The two actual placed routes must each have the closed member
+        // surface on this runtime before anything is frozen.
+        self.require_planning_pair_member_routes(
+            self.planning_pair_runtime()?.as_ref(),
+            members.members(),
+        )?;
         let placement_document = self.intent(&serde_json::json!({
             "schema_version": 1,
             "protocol": ConsultationProtocol::PlanningPair.as_str(),
@@ -938,16 +972,8 @@ impl Services {
                     "the planning pair's frozen topology node is missing",
                 )
             })?;
-        let runtime_kind = self.node_runtime_kind()?;
-        let adapter = state.runtimes().get(&runtime_kind).ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::Unavailable,
-                "the runtime selected for planning pair placement is not configured",
-            )
-        })?;
-        adapter
-            .validate_planning_pair_member_surface()
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let adapter = self.planning_pair_runtime()?;
+        self.require_planning_pair_member_routes(adapter.as_ref(), pair.pair.members().members())?;
         let epic_key = self.epic_tracker_key(run.project_id, run.mini_project_id)?;
         let cwd = self.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
         let mut seats = pair.seats.clone();
@@ -1077,6 +1103,16 @@ impl Services {
                 &topology_seat.role.role_code,
                 Some(&topology_seat.role_slot_id),
             )?;
+            let context = self.planning_pair_launch_context(
+                run,
+                &pair,
+                seat,
+                slot,
+                &node,
+                &cwd,
+                &catalog,
+                fleet_provenance.as_ref(),
+            )?;
             let outcome = adapter
                 .launch_consultation(&ConsultationLaunchRequest {
                     scope: scope.clone(),
@@ -1093,6 +1129,7 @@ impl Services {
                     fleet_provenance: fleet_provenance.clone(),
                     context_policy: context_policy.clone(),
                     requested_at: kontor_api::now(),
+                    planning_pair: Some(context),
                 })
                 .await
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -1103,6 +1140,26 @@ impl Services {
                 fleet_provenance.as_ref(),
                 &outcome.fleet_provenance,
             );
+            // A member is qualified — bound, so it can contribute — only on a
+            // readback that observed exactly its requested provenance and
+            // reported its member surface. Otherwise the native session is
+            // kept, unbound and named, and a replay adopts that same session
+            // rather than creating or replacing one.
+            let observed = matches!(
+                &outcome.fleet_provenance,
+                kontor_runtime::FleetProvenanceObservation::Observed { provenance, .. }
+                    if Some(provenance) == fleet_provenance.as_ref()
+            );
+            if !observed || outcome.planning_pair.is_none() {
+                return Err(self
+                    .deny(
+                        ApiErrorCode::Unavailable,
+                        "the planning pair member's native readback did not confirm its frozen provenance, so it is not qualified to contribute",
+                    )
+                    .about("planning pair member readback")
+                    .located_at(format!("native/{}", outcome.identity.native_id.as_str()))
+                    .advising("the member's native session is kept; repair the readback and invoke again with the same key"));
+            }
             seat.native_identity = Some(outcome.identity);
             seat.provider_session_id = outcome.provider_session_id;
             seat.observed_at = Some(outcome.observed_at);
@@ -1125,6 +1182,116 @@ impl Services {
                 .map_err(|error| self.refuse(&error))?;
         }
         Ok(())
+    }
+
+    /// The frozen context one member launch is held to, derived from durable
+    /// state and checked against it before any native effect (D-3).
+    ///
+    /// The occupancy generation is the frozen seat's own, which is also the
+    /// generation the member's credential is minted for; nothing here reads
+    /// the credential, defaults a generation or takes a caller's label.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every frozen input the context is derived from is passed explicitly"
+    )]
+    fn planning_pair_launch_context(
+        &self,
+        run: &StoredConsultationRun,
+        pair: &PairState,
+        seat: &StoredConsultationSeat,
+        slot: PlanningPairSlot,
+        node: &SessionTopologyNode,
+        cwd: &kontor_runtime::workspace::WorkspaceRoot,
+        catalog: &RoleCatalogRevision,
+        requested: Option<&kontor_runtime::FleetLaunchProvenance>,
+    ) -> Result<kontor_runtime::planning_pair::PlanningPairLaunchContext, ApiError> {
+        let refuse = |rule: &'static str| self.deny(ApiErrorCode::PlacementBlocked, rule);
+        let ConsultationRunId::PlanningPair(run_id) = run.id else {
+            return Err(refuse(
+                "a planning pair member launch requires a planning pair",
+            ));
+        };
+        let profile = pair.pair.pin().clone();
+        if profile.profile_id.to_string() != run.profile_id
+            || profile.version != run.profile_version
+            || profile.definition_hash != run.definition_hash
+        {
+            return Err(refuse(
+                "the member's document pin differs from the one the pair was frozen under",
+            ));
+        }
+        let member = pair
+            .pair
+            .members()
+            .members()
+            .iter()
+            .find(|member| member.slot == slot)
+            .ok_or_else(|| refuse("a frozen planning pair seat is absent from its placement"))?;
+        if member.route != seat.model_rung {
+            return Err(refuse(
+                "the member seat's route differs from the route its placement froze",
+            ));
+        }
+        if seat.occupancy_generation == 0 {
+            return Err(refuse("the member seat has no occupancy generation"));
+        }
+        let placement_hash = pair.placement.placement.hash().clone();
+        let frozen = |key: &str| run.context.get(key).cloned();
+        if frozen("placement_hash") != Some(serde_json::json!(placement_hash.as_str())) {
+            return Err(refuse("the frozen run names another placement"));
+        }
+        let team_definition = self
+            .state()?
+            .with_store(|store| {
+                store.get_mini_project_team_definition(run.project_id, run.mini_project_id)
+            })
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| refuse("the epic has no pinned Team Definition"))?
+            .definition;
+        if frozen("team_definition_id")
+            != Some(serde_json::json!(team_definition.definition_id.to_string()))
+            || frozen("team_definition_version")
+                != Some(serde_json::json!(team_definition.version.get()))
+            || frozen("team_definition_hash")
+                != Some(serde_json::json!(team_definition.canonical_hash.as_str()))
+        {
+            return Err(refuse(
+                "the epic's pinned Team Definition differs from the one the pair was frozen under",
+            ));
+        }
+        if self.epic_pin(run.project_id, run.mini_project_id)? != node.topology {
+            return Err(refuse(
+                "the member container's topology differs from the epic's pinned topology",
+            ));
+        }
+        let catalog_hash = catalog
+            .canonicalize()
+            .map_err(|error| self.refuse_domain(&error))?
+            .hash()
+            .clone();
+        let requested_fleet_provenance = requested.cloned().ok_or_else(|| {
+            refuse("the frozen placement names no fleet provenance for this member")
+        })?;
+        Ok(kontor_runtime::planning_pair::PlanningPairLaunchContext {
+            run_id,
+            seat_binding_id: seat.seat_binding_id,
+            slot,
+            occupancy_generation: seat.occupancy_generation,
+            profile,
+            topology: node.topology.clone(),
+            team_definition,
+            role_catalog: kontor_runtime::planning_pair::PlanningPairCatalogPin {
+                catalog_id: catalog.catalog_id,
+                version: catalog.version,
+                canonical_hash: catalog_hash,
+            },
+            topology_node_id: node.id,
+            cwd: cwd.clone(),
+            route: seat.model_rung.clone(),
+            vendor: member.vendor.clone(),
+            placement_hash,
+            requested_fleet_provenance,
+        })
     }
 
     // -----------------------------------------------------------------------

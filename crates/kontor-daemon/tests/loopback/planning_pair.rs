@@ -2124,3 +2124,214 @@ async fn a_mixed_or_unpersisted_roster_catalog_freezes_nothing() {
         restored.body
     );
 }
+
+/// D-3: the two actual placed routes are asked about before anything is
+/// frozen. A route whose provider the runtime cannot compose the closed
+/// member surface for is refused with that provider named: nothing is
+/// frozen, prepared or launched, and no other route is substituted.
+#[tokio::test]
+async fn a_member_route_the_runtime_cannot_compose_freezes_nothing_and_names_its_provider() {
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-route-surface").await;
+    let world = &realm.world;
+    world.fake.withholding_planning_pair_members_on("cursor");
+    world.fake.take_calls();
+    let body = realm.invoke_body(&realm.profile, "Route plan").await;
+    let refused = realm
+        .invoke_with(&body, realm.caller_token(), "pp-route-surface")
+        .await;
+    assert_eq!(refused.code(), "unsupported_capability", "{}", refused.body);
+    assert_eq!(refused.json()["subject"], "planning pair member route");
+    assert!(
+        refused.body.contains("providers/cursor"),
+        "the refusal names the provider: {}",
+        refused.body
+    );
+    assert_eq!(realm.planning_pair_runs(), 0, "nothing was frozen");
+    assert!(world.fake.take_calls().iter().all(|call| !matches!(
+        call,
+        AdapterCall::PrepareContainer(_) | AdapterCall::LaunchConsultation(_)
+    )));
+}
+
+/// D-3: every member launch carries the frozen context the service derived
+/// from durable state: the seat's actual occupancy generation, the pinned
+/// document, topology, Team Definition and role catalog, the frozen route and
+/// actual vendor, and the placement. A resumed member whose generation was
+/// fenced launches at the generation it now holds, never a default.
+#[tokio::test]
+async fn member_launches_carry_the_seats_current_generation_and_frozen_pins() {
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-context").await;
+    let world = &realm.world;
+    let seat_a = kontor_core::id::RoleSlotId::parse("seat-a").expect("a slot");
+    world.fake.refusing_launch_of(&seat_a);
+    let body = realm.invoke_body(&realm.profile, "Context plan").await;
+    let interrupted = realm
+        .invoke_with(&body, realm.caller_token(), "pp-context")
+        .await;
+    assert_ne!(interrupted.status, 200, "{}", interrupted.body);
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_runs(
+                realm.project_id,
+                MiniProjectId::parse(&realm.epic).expect("an epic id"),
+                ConsultationFamily::PlanningPair,
+            )
+            .expect("the runs read")
+            .pop()
+            .expect("the frozen pair")
+    });
+    let seats = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_seats(realm.project_id, run.id)
+            .expect("the seats read")
+    });
+    let seat_a_binding = seats
+        .iter()
+        .find(|seat| seat.role_slot_id.as_str() == "seat-a")
+        .expect("seat A")
+        .seat_binding_id;
+    // Fence seat A's occupancy to generation 2 before it ever launches.
+    let connection = rusqlite::Connection::open(world.directory.path().join("kontor.db"))
+        .expect("the realm database opens");
+    assert_eq!(
+        connection
+            .execute(
+                "UPDATE consultation_seats SET occupancy_generation = 2 WHERE seat_binding_id = ?1",
+                [seat_a_binding.to_string()],
+            )
+            .expect("the generation is fenced"),
+        1
+    );
+    world.fake.allowing_launch_of(&seat_a);
+    let resumed = realm
+        .invoke_with(&body, realm.caller_token(), "pp-context")
+        .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.body);
+
+    let contexts = world.fake.planning_pair_launch_contexts();
+    assert_eq!(contexts.len(), 2, "both members launched with a context");
+    let kontor_core::consultation::ConsultationRunId::PlanningPair(run_id) = run.id else {
+        panic!("a planning pair run")
+    };
+    let placement = world.daemon.state().with_store(|store| {
+        store
+            .planning_pair_placement(realm.project_id, run.id)
+            .expect("the placement reads")
+            .expect("the placement exists")
+    });
+    let roster_pin: String = connection
+        .query_row(
+            "SELECT catalog_hash FROM epic_rosters WHERE mini_project_id = ?1",
+            [&realm.epic],
+            |row| row.get(0),
+        )
+        .expect("the roster pin reads");
+    let team_definition = world.daemon.state().with_store(|store| {
+        store
+            .get_mini_project_team_definition(
+                realm.project_id,
+                MiniProjectId::parse(&realm.epic).expect("an epic id"),
+            )
+            .expect("the pin reads")
+            .expect("the epic is pinned")
+            .definition
+    });
+    for seat in &seats {
+        let context = &contexts[&seat.seat_binding_id];
+        let expected_generation = if seat.seat_binding_id == seat_a_binding {
+            2
+        } else {
+            1
+        };
+        assert_eq!(
+            context.occupancy_generation, expected_generation,
+            "the seat's actual generation, not a default: {context:?}"
+        );
+        assert_eq!(context.run_id, run_id);
+        assert_eq!(context.slot.as_str(), seat.role_slot_id.as_str());
+        assert_eq!(context.route, seat.model_rung);
+        assert_eq!(context.profile.definition_hash, run.definition_hash);
+        assert_eq!(context.placement_hash, *placement.placement.hash());
+        assert_eq!(context.role_catalog.canonical_hash.as_str(), roster_pin);
+        assert_eq!(context.team_definition, team_definition);
+        assert_eq!(context.topology_node_id, run.topology_node_id);
+        assert_eq!(context.vendor, context.requested_fleet_provenance.vendor);
+    }
+}
+
+/// D-3: a member qualifies — is bound, and so may contribute — only on a
+/// readback that observed exactly its requested provenance. One whose labels
+/// carry none is kept unbound and named, the pair stays materializing, its
+/// credential cannot contribute, and a replay meets the same native session
+/// rather than creating or replacing one.
+#[tokio::test]
+async fn a_member_without_its_provenance_readback_is_kept_unqualified_and_never_relaunched() {
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-readback").await;
+    let world = &realm.world;
+    world.fake.dropping_planning_pair_provenance_labels();
+    let body = realm.invoke_body(&realm.profile, "Readback plan").await;
+    let first = realm
+        .invoke_with(&body, realm.caller_token(), "pp-readback")
+        .await;
+    assert_eq!(first.code(), "unavailable", "{}", first.body);
+    assert_eq!(first.json()["subject"], "planning pair member readback");
+    let native = first.json()["at"].clone();
+    assert!(
+        native.as_str().is_some_and(|at| at.starts_with("native/")),
+        "the kept native session is named: {}",
+        first.body
+    );
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_runs(
+                realm.project_id,
+                MiniProjectId::parse(&realm.epic).expect("an epic id"),
+                ConsultationFamily::PlanningPair,
+            )
+            .expect("the runs read")
+            .pop()
+            .expect("the frozen pair")
+    });
+    assert_eq!(run.state, ConsultationRunState::Materializing);
+    let seats = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_seats(realm.project_id, run.id)
+            .expect("the seats read")
+    });
+    assert!(
+        seats.iter().all(|seat| seat.native_identity.is_none()),
+        "no member is bound"
+    );
+    let kontor_core::consultation::ConsultationRunId::PlanningPair(run_id) = run.id else {
+        panic!("a planning pair run")
+    };
+    let pair = Pair {
+        run: run_id.to_string(),
+        seat_a: seats[0].seat_binding_id,
+        seat_b: seats[1].seat_binding_id,
+        invoked: serde_json::json!({}),
+    };
+    let contribution = realm
+        .finding(
+            &pair,
+            pair.seat_a,
+            "Not yet qualified.",
+            "pp-readback-finding",
+        )
+        .await;
+    assert_eq!(
+        contribution.code(),
+        "stale_binding",
+        "{}",
+        contribution.body
+    );
+    let replayed = realm
+        .invoke_with(&body, realm.caller_token(), "pp-readback")
+        .await;
+    assert_eq!(replayed.code(), "unavailable", "{}", replayed.body);
+    assert_eq!(
+        replayed.json()["at"],
+        native,
+        "the replay met the same native session"
+    );
+}

@@ -116,9 +116,52 @@ pack declares no such container, so a realm invokes a pair only after
 publishing one. The members are placed by the shared allocator on one activated
 snapshot, on distinct actual vendors or not at all.
 
-No shipped runtime composes the member surface yet: its serve profile, the
-consultation guard and observed provenance. The runtime port's
-`validate_planning_pair_member_surface` refuses by default and is asked before
-anything is frozen or prepared. A governed invocation therefore answers
-`unsupported_capability` with no native effect until an adapter proves that
-surface. Member seat recovery is not yet implemented for this family.
+A member's surface is exactly three tools, `kontor_planning_pair_run_get`,
+`kontor_planning_pair_findings_record` and `kontor_planning_pair_answer_record`.
+That one list, `kontor_core::planning_pair::MEMBER_MCP_TOOLS`, generates the
+registry's `planning_pair_member` serve profile, the guard's allowlist and the
+runtime's creation-time tool policy. The guard runs as
+`kontor-mcp --consultation-tool-guard --serve-profile planning_pair_member`.
+
+- It permits `Read`, `Glob`, `Grep`, `ToolSearch` and exactly those three tools
+  under the `mcp__kontor__` prefix. No consultation tool is ever added, and no
+  fallback is taken.
+- Without the profile argument the guard is the Advisor and Committee surface,
+  unchanged.
+- Any other argument list denies every tool.
+
+The runtime port's `validate_planning_pair_member_surface` is asked about both
+actual placed routes, once before the pair is frozen and again before its
+container is prepared. Through Paseo only a Claude route is composable:
+
+- the member guard, attested for the member profile before it is trusted;
+- the member serve profile in the cwd and in the creation frame;
+- the contained Claude tool restriction, in `default` mode.
+
+Every other route is refused with its provider named, before any plane call,
+file or session:
+
+- **Codex:** its read-only sandbox and `never` approval are not a closed tool
+  restriction.
+- **Cursor and OpenCode:** their `plan` modes are behavioral, not containment.
+
+With seat MCP composition switched off, a Claude member is refused too.
+
+Each member launch carries a typed, non-secret context that the service derives
+from durable state, and an Advisor or Committee launch must carry none. The
+context names:
+
+- the run, SeatBinding and slot;
+- the seat's own occupancy generation;
+- the document, topology, Team Definition and role catalog pins;
+- the container and cwd;
+- the frozen route and actual vendor;
+- the placement and the requested fleet provenance.
+
+The credential stays in the runtime's process-environment channel. A member is
+bound, and so may contribute, only when its readback observes exactly its
+requested provenance. If it does not, its native session is kept unbound and a
+replay adopts that same session. The readback cannot report the closed tool
+restriction, so that restriction is stated as unsupported, not as observed.
+None of this is a live qualification. Member seat recovery is not yet
+implemented for this family.

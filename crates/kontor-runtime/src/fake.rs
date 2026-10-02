@@ -66,6 +66,9 @@ use crate::refusal::{RefusalProvenance, TransientRefusal};
 /// The native surface this fake reports for fleet provenance. It has none that
 /// can carry it, so a launch that requests provenance is told `unsupported`.
 const FAKE_SURFACE: &str = "fake.runtime";
+
+/// The fake surface a planning pair member's provenance labels are read from.
+const FAKE_LABEL_SURFACE: &str = "fake.runtime.labels";
 use crate::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationChallengeCompletionRequest,
     CorrelationChallengeRequest, CorrelationLabel, HistoryRequest, InspectRequest, LaunchRequest,
@@ -789,6 +792,16 @@ struct FakeState {
     unlaunchable: BTreeSet<String>,
     /// Whether this runtime withholds the planning pair member surface.
     planning_pair_surface_withheld: bool,
+    /// Providers whose planning pair member routes this runtime refuses.
+    planning_pair_withheld_providers: BTreeSet<String>,
+    /// The frozen context every planning pair member launch presented.
+    planning_pair_contexts:
+        BTreeMap<SeatBindingId, crate::planning_pair::PlanningPairLaunchContext>,
+    /// The provenance labels this runtime wrote on each member session, which
+    /// is the only place a member's readback comes from.
+    planning_pair_labels: BTreeMap<SeatBindingId, crate::provenance::FleetLaunchProvenance>,
+    /// Whether member sessions are created without their provenance labels.
+    planning_pair_labels_dropped: bool,
     /// The gate every consultation launch waits at, when one is installed.
     consultation_launch_gate: Option<ConsultationLaunchGate>,
     /// Providers this runtime refuses specifically as recovery successors.
@@ -1464,6 +1477,10 @@ impl ScriptedFakeRuntime {
                 canonical_root: None,
                 unlaunchable: BTreeSet::new(),
                 planning_pair_surface_withheld: false,
+                planning_pair_withheld_providers: BTreeSet::new(),
+                planning_pair_contexts: BTreeMap::new(),
+                planning_pair_labels: BTreeMap::new(),
+                planning_pair_labels_dropped: false,
                 consultation_launch_gate: None,
                 unsupported_consultation_recovery_providers: BTreeSet::new(),
                 placements: BTreeSet::new(),
@@ -1581,6 +1598,30 @@ impl ScriptedFakeRuntime {
     /// session, no binding, and the seat's reservation given back.
     pub fn refusing_launch_of(&self, slot: &kontor_core::id::RoleSlotId) {
         self.lock().unlaunchable.insert(slot.as_str().to_owned());
+    }
+
+    /// Refuse every planning pair member route on `provider`, as a runtime
+    /// that cannot compose that provider's closed member surface does.
+    pub fn withholding_planning_pair_members_on(&self, provider: &str) {
+        self.lock()
+            .planning_pair_withheld_providers
+            .insert(provider.to_owned());
+    }
+
+    /// Create planning pair member sessions without their provenance labels,
+    /// so their readback finds none: the drift a member must not qualify
+    /// through.
+    pub fn dropping_planning_pair_provenance_labels(&self) {
+        self.lock().planning_pair_labels_dropped = true;
+    }
+
+    /// The frozen context every planning pair member launch presented, by
+    /// SeatBinding.
+    #[must_use]
+    pub fn planning_pair_launch_contexts(
+        &self,
+    ) -> BTreeMap<SeatBindingId, crate::planning_pair::PlanningPairLaunchContext> {
+        self.lock().planning_pair_contexts.clone()
     }
 
     /// Hold every consultation launch from now on at one gate, until the
@@ -2866,10 +2907,24 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(())
     }
 
-    fn validate_planning_pair_member_surface(&self) -> RuntimeResult<()> {
-        if self.lock().planning_pair_surface_withheld {
+    fn validate_planning_pair_member_surface(
+        &self,
+        routes: &[crate::planning_pair::PlanningPairMemberRoute],
+    ) -> RuntimeResult<()> {
+        crate::planning_pair::PlanningPairMemberRoute::require_pair(routes)?;
+        let state = self.lock();
+        if state.planning_pair_surface_withheld {
             return Err(RuntimeError::UnsupportedCapability {
                 capability: RuntimeCapability::Launch,
+            });
+        }
+        if let Some(route) = routes.iter().find(|route| {
+            state
+                .planning_pair_withheld_providers
+                .contains(&route.model_rung.provider.0)
+        }) {
+            return Err(RuntimeError::PermissionModeUnsupported {
+                provider: route.model_rung.provider.0.clone(),
             });
         }
         Ok(())
@@ -3822,6 +3877,8 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         }
         let mut state = self.lock();
         state.require_plane()?;
+        // The family and its frozen context agree before anything else.
+        let context = request.planning_pair_context()?.cloned();
         if state.planning_pair_surface_withheld
             && matches!(
                 request.run_id,
@@ -3830,6 +3887,15 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         {
             return Err(RuntimeError::UnsupportedCapability {
                 capability: RuntimeCapability::Launch,
+            });
+        }
+        if context.is_some()
+            && state
+                .planning_pair_withheld_providers
+                .contains(&request.model_rung.provider.0)
+        {
+            return Err(RuntimeError::PermissionModeUnsupported {
+                provider: request.model_rung.provider.0.clone(),
             });
         }
         if state.unlaunchable.contains(request.role_slot_id.as_str()) {
@@ -3879,12 +3945,56 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             "native-consultation-{}",
             state.minted
         ))?);
-        let outcome = ConsultationLaunchOutcome {
-            fleet_provenance: crate::provenance::FleetProvenanceObservation::without_surface(
-                request.fleet_provenance.as_ref(),
-                FAKE_SURFACE,
-                &identity.native_id,
+        let (fleet_provenance, planning_pair) = match context {
+            // A member session carries its provenance on this fake's own
+            // labels, and its readback is those labels. The observation is the
+            // fake surface's: source-contract evidence only.
+            Some(context) => {
+                state
+                    .planning_pair_contexts
+                    .insert(request.seat_binding_id, context);
+                if !state.planning_pair_labels_dropped
+                    && let Some(requested) = &request.fleet_provenance
+                {
+                    state
+                        .planning_pair_labels
+                        .insert(request.seat_binding_id, requested.clone());
+                }
+                let observed = state
+                    .planning_pair_labels
+                    .get(&request.seat_binding_id)
+                    .cloned()
+                    .map_or_else(
+                        || crate::provenance::FleetProvenanceObservation::Unsupported {
+                            surface: FAKE_LABEL_SURFACE.to_owned(),
+                            native_id: identity.native_id.clone(),
+                        },
+                        |provenance| crate::provenance::FleetProvenanceObservation::Observed {
+                            surface: FAKE_LABEL_SURFACE.to_owned(),
+                            provenance,
+                        },
+                    );
+                (
+                    observed,
+                    Some(crate::planning_pair::PlanningPairMemberObservation {
+                        surface: FAKE_SURFACE.to_owned(),
+                        correlation: crate::planning_pair::MemberSurfaceField::Matched,
+                        route: crate::planning_pair::MemberSurfaceField::Matched,
+                        tool_restrictions: crate::planning_pair::MemberSurfaceField::Unsupported,
+                    }),
+                )
+            }
+            None => (
+                crate::provenance::FleetProvenanceObservation::without_surface(
+                    request.fleet_provenance.as_ref(),
+                    FAKE_SURFACE,
+                    &identity.native_id,
+                ),
+                None,
             ),
+        };
+        let outcome = ConsultationLaunchOutcome {
+            fleet_provenance,
             identity,
             provider_session_id: Some(ExternalId::parse(&format!(
                 "provider-consultation-{}",
@@ -3892,6 +4002,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             ))?),
             observed_at: request.requested_at,
             created: true,
+            planning_pair,
         };
         state
             .consultations
@@ -4134,6 +4245,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             ))?),
             observed_at: request.requested_at,
             created: true,
+            planning_pair: None,
         };
         state
             .hosted_seats
@@ -4310,6 +4422,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                 observed_at: preview.observed_at,
                 created: false,
                 fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
+                planning_pair: None,
             },
         );
         state
@@ -5797,6 +5910,7 @@ mod retitle_seat_generation_tests {
                     .expect("timestamp"),
                 created: true,
                 fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
+                planning_pair: None,
             },
         );
         let request = HostedSeatInspectRequest {
@@ -5888,6 +6002,7 @@ mod retitle_seat_generation_tests {
                     .expect("timestamp"),
                 created: true,
                 fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
+                planning_pair: None,
             },
         );
         let request = HostedSeatMessageRequest {
@@ -5931,6 +6046,7 @@ mod retitle_seat_generation_tests {
                 observed_at: request.sent_at,
                 created: true,
                 fleet_provenance: crate::provenance::FleetProvenanceObservation::NotRequested,
+                planning_pair: None,
             },
         );
         let successor_request = HostedSeatMessageRequest {

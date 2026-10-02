@@ -40,6 +40,7 @@ use kontor_core::id::{
     AgentRunId, CommitteeRunId, ExternalId, ExternalName, MiniProjectId, PlanningPairRunId,
     RoleSlotId, RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId,
 };
+use kontor_core::planning_pair::PlanningPairSlot;
 use kontor_core::spec::SeatAutonomy;
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
 use kontor_core::state::{
@@ -14424,94 +14425,679 @@ async fn a_delivery_launch_reads_its_fleet_provenance_back_from_the_agent() {
     );
 }
 
-/// ASMA-8282 D3: a planning pair member needs the closed member surface —
-/// serve profile, guard and observed provenance — that this adapter does not
-/// compose yet. Both the surface check and the launch itself are the defined
-/// capability gap: refused as unsupported before any plane call, never
-/// launched under the Advisor and Committee consultation surface.
-#[tokio::test]
-async fn a_planning_pair_member_launch_is_an_unsupported_capability_with_no_native_effect() {
-    let recorded = RecordedPaseo::new()
+// ---------------------------------------------------------------------------
+// ASMA-8282 D-3: the planning pair member surface.
+//
+// Every observation below is a sanitized recording or a scripted answer: it is
+// source-contract evidence about this adapter, never a live qualification of a
+// Paseo daemon, a provider or a member session. The guard is a stand-in script
+// with the decisions the real `kontor-mcp` guard makes, which `kontor-mcp`'s
+// own tests prove on the shipped binary.
+// ---------------------------------------------------------------------------
+
+/// A fixture `kontor-mcp` that answers the guard protocol as the real member
+/// guard does — or, when `honours` is false, as a binary that does not know
+/// the member profile and denies everything.
+fn member_guard(directory: &std::path::Path, honours: bool) -> String {
+    let path = directory.join("kontor-mcp");
+    let member = if honours {
+        r#"case "$*" in
+  "--consultation-tool-guard --serve-profile planning_pair_member")
+    case "$input" in
+      *'"mcp__kontor__kontor_planning_pair_run_get"'*|*'"mcp__kontor__kontor_planning_pair_findings_record"'*|*'"mcp__kontor__kontor_planning_pair_answer_record"'*) decision=allow;;
+    esac;;
+esac"#
+    } else {
+        ""
+    };
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\ninput=$(cat)\ndecision=deny\n{member}\nprintf '{{\"hookSpecificOutput\":{{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"%s\"}}}}\\n' \"$decision\"\n"
+        ),
+    )
+    .expect("the fixture guard is written");
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("the fixture guard is executable");
+    path.to_str().expect("a UTF-8 path").to_owned()
+}
+
+/// A temporary git worktree a member's surface is composed into.
+fn member_cwd() -> (tempfile::TempDir, WorkspaceRoot) {
+    let directory = tempfile::tempdir().expect("a temporary member cwd");
+    let output = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(directory.path())
+        .output()
+        .expect("git is available to the contract test");
+    assert!(output.status.success());
+    let canonical = std::fs::canonicalize(directory.path()).expect("a canonical cwd");
+    let root = WorkspaceRoot::parse(canonical.to_str().expect("a UTF-8 path"))
+        .expect("an absolute member cwd");
+    (directory, root)
+}
+
+/// A recorded fixture with its symbolic worktree path replaced by `cwd`.
+fn at_cwd(raw: &str, cwd: &WorkspaceRoot) -> serde_json::Value {
+    v(&raw.replace(CWD, cwd.as_str()))
+}
+
+fn member_rung(provider: &str, model: &str) -> ModelRung {
+    ModelRung {
+        provider: ProviderRef(provider.to_owned()),
+        model: ModelRef(model.to_owned()),
+        effort: None,
+    }
+}
+
+fn member_routes(
+    seat_a: ModelRung,
+    seat_b: ModelRung,
+) -> Vec<kontor_runtime::planning_pair::PlanningPairMemberRoute> {
+    vec![
+        kontor_runtime::planning_pair::PlanningPairMemberRoute {
+            slot: PlanningPairSlot::SeatA,
+            model_rung: seat_a,
+        },
+        kontor_runtime::planning_pair::PlanningPairMemberRoute {
+            slot: PlanningPairSlot::SeatB,
+            model_rung: seat_b,
+        },
+    ]
+}
+
+/// One member's frozen context and the launch request it travels on.
+fn member_request(
+    container: ContainerBindingSnapshot,
+    cwd: &WorkspaceRoot,
+    rung: ModelRung,
+    occupancy_generation: u64,
+) -> kontor_runtime::adapter::ConsultationLaunchRequest {
+    let run_id = PlanningPairRunId::generate();
+    let seat_binding_id = SeatBindingId::generate();
+    let placement_hash = ContentHash::of(b"placement receipt");
+    let mut requested = fleet_provenance();
+    requested.vendor = "anthropic".to_owned();
+    let context = kontor_runtime::planning_pair::PlanningPairLaunchContext {
+        run_id,
+        seat_binding_id,
+        slot: PlanningPairSlot::SeatA,
+        occupancy_generation,
+        profile: kontor_core::planning_pair::PlanningPairPin {
+            profile_id: kontor_core::id::PlanningPairProfileId::generate(),
+            version: kontor_core::id::SpecVersion::FIRST,
+            definition_hash: ContentHash::of(b"planning pair document"),
+        },
+        topology: topology(),
+        team_definition: kontor_core::spec::TeamDefinitionSnapshot {
+            definition_id: kontor_core::id::TeamDefinitionId::generate(),
+            version: kontor_core::id::SpecVersion::FIRST,
+            canonical_hash: ContentHash::of(b"team definition"),
+        },
+        role_catalog: kontor_runtime::planning_pair::PlanningPairCatalogPin {
+            catalog_id: kontor_core::id::RoleCatalogId::generate(),
+            version: kontor_core::id::SpecVersion::FIRST,
+            canonical_hash: ContentHash::of(b"role catalog"),
+        },
+        topology_node_id: container.topology_node_id(),
+        cwd: cwd.clone(),
+        route: rung.clone(),
+        vendor: "anthropic".to_owned(),
+        placement_hash: placement_hash.clone(),
+        requested_fleet_provenance: requested.clone(),
+    };
+    kontor_runtime::adapter::ConsultationLaunchRequest {
+        run_id: ConsultationRunId::PlanningPair(run_id),
+        seat_binding_id,
+        role_slot_id: slot("seat-a"),
+        display_name: name("SEAT A"),
+        container,
+        cwd: cwd.clone(),
+        scope: execution_scope(),
+        prompt: text("give one planning finding"),
+        credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+            "planning-pair-member-secret".to_owned(),
+        ),
+        model_rung: rung,
+        route_provenance: kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
+            placement_hash,
+        ),
+        fleet_provenance: Some(requested),
+        context_policy: standard_context_policy(),
+        requested_at: at("2026-10-02T09:10:00Z"),
+        planning_pair: Some(context),
+    }
+}
+
+/// Every label the adapter writes on one member session.
+fn member_labels(
+    request: &kontor_runtime::adapter::ConsultationLaunchRequest,
+) -> serde_json::Value {
+    let context = request.planning_pair.as_ref().expect("a member request");
+    let labels = serde_json::json!({
+        "kontor.consultation_run": format!(
+            "{}/{}", request.run_id.family().as_str(), request.run_id.as_text()
+        ),
+        "jira.epic": "ASMA-7744", "kontor.project_id": MINI_PROJECT,
+        "kontor.seat_binding_id": request.seat_binding_id.to_string(),
+        "kontor.role": "seat-a", "kontor.role_slot_id": "seat-a",
+        "kontor.workspace_id": WORKSPACE_ID, "kontor.worktree": request.cwd.as_str(),
+        "kontor.read_only": "true",
+        "kontor.occupancy_generation": context.occupancy_generation.to_string(),
+        "kontor.consultation_profile_hash": context.profile.definition_hash.as_str(),
+        "kontor.placement_hash": context.placement_hash.as_str(),
+        "kontor.serve_profile": "planning_pair_member",
+    });
+    with_fleet_labels(
+        labels,
+        request.fleet_provenance.as_ref().expect("requested"),
+    )
+}
+
+/// The member session Paseo reads back, carrying `labels`.
+fn member_agent(cwd: &WorkspaceRoot, labels: serde_json::Value) -> serde_json::Value {
+    let mut agent = at_cwd(AGENT, cwd);
+    agent["agent"]["provider"] = serde_json::json!("claude");
+    agent["agent"]["model"] = serde_json::json!("claude-opus-5");
+    agent["agent"]["currentModeId"] = serde_json::json!("default");
+    agent["agent"]["labels"] = labels;
+    agent
+}
+
+/// A plane scripted for one member launch into `cwd`, its seat MCP composed
+/// with `guard`, or with seat MCP composition disabled when it is `None`.
+async fn member_plane(
+    cwd: &WorkspaceRoot,
+    guard: Option<String>,
+    agents: serde_json::Value,
+    created: Option<serde_json::Value>,
+) -> (Plane, ContainerBindingSnapshot) {
+    let mut recorded = RecordedPaseo::new()
         .answering(&PaseoCommand::version(), VERSION)
         .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
         .announcing(&v(SERVER_INFO))
         .answering_rpc("project.list.request", v(PROJECT_LIST))
         .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
-        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE))
-        .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", at_cwd(WORKSPACE_LIST_NODE, cwd))
+        .answering_rpc("fetch_agents_request", agents)
         .answering_rpc(
             "create_agent_request",
             serde_json::json!({"status": "agent_created", "agent": {"id": AGENT_ID}}),
         );
-    let plane = Plane::fresh(recorded);
-    // The daemon asks this first, before it prepares any container.
-    assert!(
-        matches!(
-            plane.adapter.validate_planning_pair_member_surface(),
-            Err(RuntimeError::UnsupportedCapability {
-                capability: RuntimeCapability::Launch
-            })
-        ),
-        "Paseo does not compose the planning pair member surface"
+    if let Some(agent) = created {
+        recorded = recorded.answering_rpc("fetch_agent_request", agent);
+    }
+    let mut configured = config();
+    configured.seat_mcp = guard.map(|command| kontor_runtime_paseo::seat_mcp::SeatMcp {
+        command,
+        state_root: "/realm/state".into(),
+    });
+    let plane = Plane::build_with_config(
+        recorded,
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+        configured,
     );
     plane
         .adapter
         .prepare_project("cmd-planning-pair", &project_name())
         .await
         .expect("the epic project is prepared");
+    let mut request = child_request(node(NODE_A), Some(bound_root(node(NODE_B))));
+    request.cwd = Some(cwd.clone());
     let container = plane
         .adapter
-        .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+        .prepare_container(&request)
         .await
-        .expect("the consultation container is prepared")
+        .expect("the member container is prepared")
         .snapshot;
-    let before = plane.daemon.calls();
-    let request = kontor_runtime::adapter::ConsultationLaunchRequest {
-        run_id: ConsultationRunId::PlanningPair(PlanningPairRunId::generate()),
-        seat_binding_id: SeatBindingId::generate(),
-        role_slot_id: slot("seat-a"),
-        display_name: name("SEAT A"),
-        container,
-        cwd: root(),
-        scope: execution_scope(),
-        prompt: text("give one planning finding"),
-        credential: kontor_runtime::adapter::ScopedSeatCredential::new(
-            "planning-pair-secret".to_owned(),
-        ),
-        model_rung: ModelRung {
-            provider: ProviderRef("codex".to_owned()),
-            model: ModelRef("gpt-5.6-sol".to_owned()),
-            effort: None,
-        },
-        route_provenance: kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
-            fleet_provenance().policy_hash,
-        ),
-        fleet_provenance: Some(fleet_provenance()),
-        context_policy: standard_context_policy(),
-        requested_at: at("2026-10-02T09:10:00Z"),
-    };
-    let launched = plane.adapter.launch_consultation(&request).await;
-    assert!(
-        matches!(
-            launched,
-            Err(RuntimeError::UnsupportedCapability {
-                capability: RuntimeCapability::Launch
-            })
-        ),
-        "a planning pair member launch is the defined capability gap: {launched:?}"
+    plane.daemon.take_calls();
+    (plane, container)
+}
+
+/// A Claude member is composed, created and read back under its closed
+/// surface: the member serve profile and guard in its cwd, a creation frame
+/// preapproving exactly the three member tools with every write, shell,
+/// delegation and plan transition denied, correlation labels naming its run,
+/// seat, slot, generation, document, placement and serve profile, and the
+/// credential nowhere but the frame's secret environment. Its provenance is
+/// read back from the agent's labels; the tool restriction, which no Paseo
+/// snapshot reports, is stated as unsupported rather than observed.
+#[tokio::test]
+async fn a_claude_planning_pair_member_is_composed_created_and_read_back_under_its_closed_surface()
+{
+    let (_cwd_dir, cwd) = member_cwd();
+    let guard_dir = tempfile::tempdir().expect("a guard directory");
+    let guard = member_guard(guard_dir.path(), true);
+    let rung = member_rung("claude", "claude-opus-5");
+    let (plane, container) =
+        member_plane(&cwd, Some(guard.clone()), v(AGENT_LIST_EMPTY), None).await;
+    let request = member_request(container, &cwd, rung.clone(), 3);
+    plane.daemon.set_answer_rpc(
+        "fetch_agent_request",
+        member_agent(&cwd, member_labels(&request)),
+    );
+    plane
+        .adapter
+        .validate_planning_pair_member_surface(&member_routes(rung.clone(), rung.clone()))
+        .expect("a Claude pair has the closed member surface");
+    let outcome = plane
+        .adapter
+        .launch_consultation(&request)
+        .await
+        .expect("the member launches");
+    assert!(outcome.created);
+    assert_eq!(
+        outcome.fleet_provenance,
+        kontor_runtime::FleetProvenanceObservation::Observed {
+            surface: "paseo.agent.labels".to_owned(),
+            provenance: request.fleet_provenance.clone().expect("requested"),
+        }
     );
     assert_eq!(
-        plane.daemon.calls(),
-        before,
-        "the refusal made no plane call at all"
+        outcome.planning_pair,
+        Some(
+            kontor_runtime::planning_pair::PlanningPairMemberObservation {
+                surface: "paseo.agent.snapshot".to_owned(),
+                correlation: kontor_runtime::planning_pair::MemberSurfaceField::Matched,
+                route: kontor_runtime::planning_pair::MemberSurfaceField::Matched,
+                tool_restrictions: kontor_runtime::planning_pair::MemberSurfaceField::Unsupported,
+            }
+        )
     );
+
+    // The cwd composition: the member serve profile and the member guard.
+    let mcp: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(std::path::Path::new(cwd.as_str()).join(".mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        mcp["mcpServers"]["kontor"]["args"],
+        serde_json::json!([
+            "--state-root",
+            "/realm/state",
+            "--credential-tier",
+            "operator",
+            "--serve-profile",
+            "planning_pair_member"
+        ])
+    );
+    let settings: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(std::path::Path::new(cwd.as_str()).join(".claude/settings.local.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+        format!(
+            "'{guard}' --consultation-tool-guard --serve-profile planning_pair_member || exit 2"
+        )
+    );
+
+    // The creation frame.
+    let sent = plane.daemon.sent_messages("create_agent_request");
+    let [create] = sent.as_slice() else {
+        panic!("exactly one create: {sent:?}")
+    };
+    let config = &create["config"];
+    assert_eq!(config["provider"], "claude");
+    assert_eq!(config["modeId"], "default");
+    assert_eq!(
+        config["mcpServers"]["kontor"]["args"], mcp["mcpServers"]["kontor"]["args"],
+        "the creation frame names the same member surface as the cwd"
+    );
+    assert_eq!(
+        config["toolPolicy"]["preapproved"],
+        serde_json::json!(
+            kontor_core::planning_pair::MEMBER_MCP_TOOLS
+                .iter()
+                .map(|tool| serde_json::json!({"kind": "mcp", "server": "kontor", "tool": tool}))
+                .collect::<Vec<_>>()
+        ),
+        "exactly the three member tools, from the one closed list"
+    );
+    assert_eq!(
+        config["providerOptions"]["allowedTools"],
+        serde_json::json!(["Read", "Glob", "Grep", "ToolSearch"])
+    );
+    for denied in [
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+        "Agent",
+        "Task",
+        "Skill",
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "AskUserQuestion",
+    ] {
+        assert!(
+            config["providerOptions"]["disallowedTools"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(denied)),
+            "{denied}"
+        );
+    }
+    assert_eq!(create["labels"], member_labels(&request));
+    assert_eq!(create["initialPrompt"], "give one planning finding");
+
+    // The secret is in no label, config, prompt, composed file or checkpoint.
+    for surface in [
+        serde_json::to_string(&sent).unwrap(),
+        serde_json::to_string(&mcp).unwrap(),
+        serde_json::to_string(&settings).unwrap(),
+        format!("{:?}", plane.adapter.checkpoint()),
+        format!("{request:?}"),
+    ] {
+        assert!(
+            !surface.contains("planning-pair-member-secret"),
+            "{surface}"
+        );
+    }
+}
+
+/// D-3: only a route whose closed member surface is composed may launch.
+/// Codex's read-only sandbox and `never` approval alone are not the closed
+/// surface, and Cursor's and OpenCode's plan modes are behavioral. Each is
+/// refused with its own provider named, before any plane call, file or
+/// session, whether it is seat A or seat B.
+#[tokio::test]
+async fn planning_pair_member_routes_other_than_claude_are_refused_with_zero_effects() {
+    let claude = member_rung("claude", "claude-opus-5");
+    for (provider, model) in [
+        ("codex", "gpt-5.6-sol"),
+        ("codex-work", "gpt-5.6-sol"),
+        ("cursor", "grok-4.7"),
+        ("opencode", "deepseek/deepseek-flash"),
+        ("pi", "pi-1"),
+    ] {
+        let (_cwd_dir, cwd) = member_cwd();
+        let guard_dir = tempfile::tempdir().expect("a guard directory");
+        let guard = member_guard(guard_dir.path(), true);
+        let (plane, container) = member_plane(&cwd, Some(guard), v(AGENT_LIST_EMPTY), None).await;
+        let other = member_rung(provider, model);
+        for routes in [
+            member_routes(claude.clone(), other.clone()),
+            member_routes(other.clone(), claude.clone()),
+        ] {
+            let refused = plane.adapter.validate_planning_pair_member_surface(&routes);
+            assert!(
+                matches!(
+                    &refused,
+                    Err(RuntimeError::PermissionModeUnsupported { provider: named }) if named == provider
+                ),
+                "{provider}: {refused:?}"
+            );
+        }
+        let launched = plane
+            .adapter
+            .launch_consultation(&member_request(container, &cwd, other, 1))
+            .await;
+        assert!(
+            matches!(
+                &launched,
+                Err(RuntimeError::PermissionModeUnsupported { provider: named }) if named == provider
+            ),
+            "{provider}: {launched:?}"
+        );
+        assert!(plane.daemon.calls().is_empty(), "{provider}: no plane call");
+        assert!(
+            !std::path::Path::new(cwd.as_str())
+                .join(".mcp.json")
+                .exists()
+                && !std::path::Path::new(cwd.as_str()).join(".claude").exists(),
+            "{provider}: nothing composed"
+        );
+    }
+    // The pair is asked about exactly its two routes, seat A then seat B.
+    let (_cwd_dir, cwd) = member_cwd();
+    let (plane, _) = member_plane(&cwd, None, v(AGENT_LIST_EMPTY), None).await;
+    for routes in [
+        member_routes(claude.clone(), claude.clone())[..1].to_vec(),
+        {
+            let mut reversed = member_routes(claude.clone(), claude.clone());
+            reversed.reverse();
+            reversed
+        },
+    ] {
+        assert!(matches!(
+            plane.adapter.validate_planning_pair_member_surface(&routes),
+            Err(RuntimeError::LaunchNotAdmitted { .. })
+        ));
+    }
+}
+
+/// A Claude member needs seat MCP composition and a guard binary attested for
+/// the member profile. With composition disabled by the seat-MCP kill switch,
+/// or with a binary that does not enforce the member profile (an older or
+/// mixed installation), it is refused before any plane call, file or session.
+#[tokio::test]
+async fn a_claude_member_needs_seat_mcp_and_an_attested_member_guard() {
+    let claude = member_rung("claude", "claude-opus-5");
+    let guard_dir = tempfile::tempdir().expect("a guard directory");
+    for (guard, rule) in [
+        (
+            None,
+            "a planning pair member requires the scoped member MCP and its guard, and seat MCP composition is disabled",
+        ),
+        (
+            Some(member_guard(guard_dir.path(), false)),
+            "the MCP binary does not enforce the planning pair member guard",
+        ),
+    ] {
+        let (_cwd_dir, cwd) = member_cwd();
+        let (plane, container) = member_plane(&cwd, guard, v(AGENT_LIST_EMPTY), None).await;
+        let refused = plane
+            .adapter
+            .validate_planning_pair_member_surface(&member_routes(claude.clone(), claude.clone()));
+        assert!(
+            matches!(&refused, Err(RuntimeError::LaunchNotAdmitted { rule: found }) if *found == rule),
+            "{refused:?}"
+        );
+        let launched = plane
+            .adapter
+            .launch_consultation(&member_request(container, &cwd, claude.clone(), 1))
+            .await;
+        assert!(
+            matches!(&launched, Err(RuntimeError::LaunchNotAdmitted { rule: found }) if *found == rule),
+            "{launched:?}"
+        );
+        assert!(plane.daemon.calls().is_empty());
+        assert!(
+            !std::path::Path::new(cwd.as_str())
+                .join(".mcp.json")
+                .exists()
+        );
+    }
+}
+
+/// A member launch is held to its complete frozen context, and an Advisor or
+/// Committee launch to having none: a missing, conflicting or foreign context
+/// is refused before any plane call.
+#[tokio::test]
+async fn a_member_launch_with_a_missing_or_conflicting_context_is_refused_before_any_plane_call() {
+    let (_cwd_dir, cwd) = member_cwd();
+    let guard_dir = tempfile::tempdir().expect("a guard directory");
+    let guard = member_guard(guard_dir.path(), true);
+    let (plane, container) = member_plane(&cwd, Some(guard), v(AGENT_LIST_EMPTY), None).await;
+    let claude = member_rung("claude", "claude-opus-5");
+    let base = member_request(container, &cwd, claude, 2);
+    let mut cases: Vec<(&str, kontor_runtime::adapter::ConsultationLaunchRequest)> = Vec::new();
+    let mut missing = base.clone();
+    missing.planning_pair = None;
+    cases.push((
+        "a planning pair member launch requires its complete frozen context",
+        missing,
+    ));
+    let mut committee = base.clone();
+    committee.run_id = ConsultationRunId::Committee(CommitteeRunId::generate());
+    cases.push((
+        "an Advisor or Committee launch carries no planning pair context",
+        committee,
+    ));
+    let edit = |change: &dyn Fn(&mut kontor_runtime::planning_pair::PlanningPairLaunchContext)| {
+        let mut request = base.clone();
+        change(request.planning_pair.as_mut().expect("context"));
+        request
+    };
+    cases.push((
+        "the planning pair context names another run",
+        edit(&|context| context.run_id = PlanningPairRunId::generate()),
+    ));
+    cases.push((
+        "the planning pair context names another member seat",
+        edit(&|context| context.seat_binding_id = SeatBindingId::generate()),
+    ));
+    cases.push((
+        "the planning pair context names another member slot",
+        edit(&|context| context.slot = PlanningPairSlot::SeatB),
+    ));
+    cases.push((
+        "the planning pair context names no occupancy generation",
+        edit(&|context| context.occupancy_generation = 0),
+    ));
+    cases.push((
+        "the planning pair context froze another route",
+        edit(&|context| context.route.model = ModelRef("claude-sonnet-5".to_owned())),
+    ));
+    cases.push((
+        "the planning pair context names no actual vendor",
+        edit(&|context| context.vendor = "unknown".to_owned()),
+    ));
+    cases.push((
+        "the planning pair context names another member container",
+        edit(&|context| context.topology_node_id = node(NODE_B)),
+    ));
+    cases.push((
+        "the member route's provenance is not the frozen placement",
+        edit(&|context| context.placement_hash = ContentHash::of(b"another placement")),
+    ));
+    cases.push((
+        "the member launch requests another fleet provenance",
+        edit(&|context| context.requested_fleet_provenance.step = 9),
+    ));
+    for (rule, request) in cases {
+        let refused = plane.adapter.launch_consultation(&request).await;
+        assert!(
+            matches!(&refused, Err(RuntimeError::LaunchNotAdmitted { rule: found }) if *found == rule),
+            "{rule}: {refused:?}"
+        );
+    }
     assert!(
-        plane
-            .daemon
-            .sent_messages("create_agent_request")
-            .is_empty(),
-        "no agent was created"
+        plane.daemon.calls().is_empty(),
+        "no plane call for any refusal"
     );
+}
+
+/// A member whose readback drifts — here its occupancy-generation label — is
+/// not observed and never qualifies, and a replay finds the one live session
+/// carrying its SeatBinding instead of creating a second.
+#[tokio::test]
+async fn a_drifted_member_readback_is_refused_and_never_creates_a_second_session() {
+    let (_cwd_dir, cwd) = member_cwd();
+    let guard_dir = tempfile::tempdir().expect("a guard directory");
+    let guard = member_guard(guard_dir.path(), true);
+    let claude = member_rung("claude", "claude-opus-5");
+    let (plane, container) = member_plane(&cwd, Some(guard), v(AGENT_LIST_EMPTY), None).await;
+    let request = member_request(container, &cwd, claude, 2);
+    let mut drifted = member_labels(&request);
+    drifted["kontor.occupancy_generation"] = serde_json::json!("1");
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_request", member_agent(&cwd, drifted.clone()));
+    let refused = plane.adapter.launch_consultation(&request).await;
+    assert!(
+        refused.is_err(),
+        "a drifted member is not read back: {refused:?}"
+    );
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
+    // The replay's census finds the one live session carrying this binding.
+    let mut listed = v(AGENT_LIST_EMPTY);
+    let mut entry = member_agent(&cwd, drifted)["agent"].clone();
+    entry["id"] = serde_json::json!(AGENT_ID);
+    listed["entries"] = serde_json::json!([{"agent": entry}]);
+    plane.daemon.set_answer_rpc("fetch_agents_request", listed);
+    let replayed = plane.adapter.launch_consultation(&request).await;
+    assert!(replayed.is_err(), "{replayed:?}");
+    assert_eq!(
+        plane.daemon.count("rpc create_agent_request"),
+        1,
+        "no second create and no replacement"
+    );
+}
+
+/// A lost create acknowledgement is confirmation-unknown: the launch fails,
+/// and the replay's exact-label census adopts the one session it created, so
+/// one member has one native session.
+#[tokio::test]
+async fn a_lost_member_create_acknowledgement_adopts_the_one_exact_session_on_replay() {
+    let (_cwd_dir, cwd) = member_cwd();
+    let guard_dir = tempfile::tempdir().expect("a guard directory");
+    let guard = member_guard(guard_dir.path(), true);
+    let claude = member_rung("claude", "claude-opus-5");
+    let (plane, container) = member_plane(&cwd, Some(guard), v(AGENT_LIST_EMPTY), None).await;
+    let request = member_request(container, &cwd, claude, 1);
+    let agent = member_agent(&cwd, member_labels(&request));
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_request", agent.clone());
+    plane.daemon.lose_next_rpc("create_agent_request");
+    let lost = plane.adapter.launch_consultation(&request).await;
+    assert!(
+        lost.is_err(),
+        "a lost acknowledgement is not a launch: {lost:?}"
+    );
+    let mut listed = v(AGENT_LIST_EMPTY);
+    listed["entries"] = serde_json::json!([{"agent": agent["agent"].clone()}]);
+    plane.daemon.set_answer_rpc("fetch_agents_request", listed);
+    let adopted = plane
+        .adapter
+        .launch_consultation(&request)
+        .await
+        .expect("the replay adopts the exact session");
+    assert!(!adopted.created, "adopted, not created");
+    assert_eq!(adopted.identity.native_id.as_str(), AGENT_ID);
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
+}
+
+/// A relaunch of a member that was already created adopts its one session.
+///
+/// The recorded transport answers synchronously, so two launches cannot
+/// overlap in this harness; concurrent resumes are proved at the daemon with
+/// the fake runtime's launch gate. What this proves is that a second launch
+/// of the seat — a resume, a replay after a restart — reads the census first
+/// and adopts the exact session instead of creating another.
+#[tokio::test]
+async fn a_relaunched_member_adopts_its_one_session_and_never_creates_a_second() {
+    let (_cwd_dir, cwd) = member_cwd();
+    let guard_dir = tempfile::tempdir().expect("a guard directory");
+    let guard = member_guard(guard_dir.path(), true);
+    let claude = member_rung("claude", "claude-opus-5");
+    let (plane, container) = member_plane(&cwd, Some(guard), v(AGENT_LIST_EMPTY), None).await;
+    let request = member_request(container, &cwd, claude, 1);
+    let agent = member_agent(&cwd, member_labels(&request));
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_request", agent.clone());
+    let first = plane
+        .adapter
+        .launch_consultation(&request)
+        .await
+        .expect("the member is created");
+    assert!(first.created);
+    let mut listed = v(AGENT_LIST_EMPTY);
+    listed["entries"] = serde_json::json!([{"agent": agent["agent"].clone()}]);
+    plane.daemon.set_answer_rpc("fetch_agents_request", listed);
+    let second = plane
+        .adapter
+        .launch_consultation(&request)
+        .await
+        .expect("the relaunch adopts the session");
+    assert!(!second.created);
+    assert_eq!(second.identity, first.identity);
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
 }
 
 /// A consultation launch writes its fleet provenance beside the consultation
@@ -14593,6 +15179,7 @@ async fn a_consultation_launch_writes_and_reads_back_its_fleet_provenance() {
             fleet_provenance: Some(requested.clone()),
             context_policy: standard_context_policy(),
             requested_at: at("2026-08-16T09:10:00Z"),
+            planning_pair: None,
         };
         let launched = plane.adapter.launch_consultation(&request).await;
         if drifted {

@@ -214,6 +214,16 @@ pub mod label {
     pub const TITLE_RELEASED_FOR: &str = "kontor.title_released_for_seat_binding_id";
     /// Explicit non-mutating authority marker for consultation sessions.
     pub const READ_ONLY: &str = "kontor.read_only";
+    /// ASMA-8282 D-3: the occupancy generation of a planning pair member's
+    /// seat, which its credential was minted for.
+    pub const OCCUPANCY_GENERATION: &str = "kontor.occupancy_generation";
+    /// ASMA-8282 D-3: the canonical hash of the pinned planning pair document.
+    pub const CONSULTATION_PROFILE_HASH: &str = "kontor.consultation_profile_hash";
+    /// ASMA-8282 D-3: the canonical hash of a member's placement receipt.
+    pub const PLACEMENT_HASH: &str = "kontor.placement_hash";
+    /// ASMA-8282 D-3: the closed serve profile a member's MCP was composed
+    /// under. A label states what Kontor composed; it proves no enforcement.
+    pub const SERVE_PROFILE: &str = "kontor.serve_profile";
     /// Canonical profile hash for a risk-accepted behavioral fallback.
     ///
     /// Its presence deliberately replaces `READ_ONLY`; the two labels are
