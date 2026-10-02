@@ -5679,6 +5679,81 @@
         }
       }
     },
+    "/v1/projects/{project_id}/epics/{epic_id}/planning-pair-runs:invoke": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Invoke one planning pair as its caller's own scoped seat.",
+        "operationId": "invoke_planning_pair_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "epic_id",
+            "in": "path",
+            "description": "The epic",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvokePlanningPairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply": {
       "post": {
         "tags": [
@@ -6901,6 +6976,523 @@
         "responses": {
           "200": {
             "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-profiles": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Every published planning pair document revision.",
+        "operationId": "planning_pair_profiles",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileCatalogDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-profiles:apply": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Publish one planning pair document revision.",
+        "operationId": "apply_planning_pair_profile",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedProfileDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-profiles:preview": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Judge one planning pair document. Commits nothing.",
+        "operationId": "preview_planning_pair_profile",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfilePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfilePreviewDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}": {
+      "get": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Read one planning pair as its reader may see it.",
+        "operationId": "planning_pair_run",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "planning_pair_run_id",
+            "in": "path",
+            "description": "The planning pair",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/answers:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Record the authenticated addressed member's sealed answer.",
+        "operationId": "record_planning_pair_answer",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "planning_pair_run_id",
+            "in": "path",
+            "description": "The planning pair",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The member's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordPlanningPairContributionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/clarification:request": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Ask the caller's one clarification question.",
+        "operationId": "request_planning_pair_clarification",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "planning_pair_run_id",
+            "in": "path",
+            "description": "The planning pair",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestPlanningPairClarificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/disposition:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Record the caller's disposition. Terminal; never a settlement.",
+        "operationId": "record_planning_pair_disposition",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "planning_pair_run_id",
+            "in": "path",
+            "description": "The planning pair",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The caller's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordPlanningPairDispositionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/findings:record": {
+      "post": {
+        "tags": [
+          "applications"
+        ],
+        "summary": "Record the authenticated member's sealed finding.",
+        "operationId": "record_planning_pair_finding",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "description": "The owning project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "planning_pair_run_id",
+            "in": "path",
+            "description": "The planning pair",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "The member's stable key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordPlanningPairContributionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanningPairRunDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": ""
+          },
+          "403": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": "The owning application service is not composed"
           }
         }
       }
@@ -19512,6 +20104,57 @@
         },
         "additionalProperties": false
       },
+      "InvokePlanningPairRequest": {
+        "type": "object",
+        "description": "Invoke one planning pair against an epic, as its frozen caller.",
+        "required": [
+          "protocol",
+          "profile",
+          "topic",
+          "question",
+          "members",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The epic revision the caller read.",
+            "minimum": 0
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairMemberPlacementRequest"
+            },
+            "description": "Exactly two members, `seat-a` then `seat-b`."
+          },
+          "profile": {
+            "$ref": "#/components/schemas/PlanningPairProfileRefDto",
+            "description": "The exact document revision, including its canonical hash."
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/PlanningPairProtocolDto",
+            "description": "The protocol, named explicitly. Nothing substitutes another."
+          },
+          "question": {
+            "type": "string",
+            "description": "What the caller asks."
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional ticket scope inside the epic; absent means the epic."
+          },
+          "topic": {
+            "type": "string",
+            "description": "Short semantic subject the pinned Team Definition renders."
+          }
+        },
+        "additionalProperties": false
+      },
       "JiraBindingDto": {
         "type": "object",
         "description": "Confirmed Jira identity evidence, or an explicit awaiting state.",
@@ -20662,6 +21305,426 @@
             "minimum": 0
           }
         }
+      },
+      "PlanningPairClarificationDto": {
+        "type": "object",
+        "description": "The released clarification round.",
+        "required": [
+          "question",
+          "addressed",
+          "answers"
+        ],
+        "properties": {
+          "addressed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairSlotDto"
+            },
+            "description": "The members it addressed."
+          },
+          "answers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairContributionDto"
+            },
+            "description": "Every addressed member's answer."
+          },
+          "question": {
+            "type": "string",
+            "description": "The caller's question."
+          }
+        }
+      },
+      "PlanningPairContributionDto": {
+        "type": "object",
+        "description": "One released finding or answer.",
+        "required": [
+          "round",
+          "slot",
+          "advice",
+          "document_hash"
+        ],
+        "properties": {
+          "advice": {
+            "type": "string",
+            "description": "The advice, verbatim."
+          },
+          "document_hash": {
+            "type": "string",
+            "description": "Its canonical address."
+          },
+          "round": {
+            "type": "string",
+            "description": "`findings` or `clarification`."
+          },
+          "slot": {
+            "$ref": "#/components/schemas/PlanningPairSlotDto",
+            "description": "The member that gave it."
+          }
+        }
+      },
+      "PlanningPairDispositionRecordDto": {
+        "type": "object",
+        "description": "The caller's recorded disposition.",
+        "required": [
+          "members",
+          "rationale"
+        ],
+        "properties": {
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairMemberDispositionDto"
+            },
+            "description": "One entry per member, `seat-a` then `seat-b`."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "Why the caller decided as it did."
+          }
+        }
+      },
+      "PlanningPairMemberDispositionDto": {
+        "type": "object",
+        "description": "What the caller decided about one member's advice.",
+        "required": [
+          "slot",
+          "finding",
+          "disposition"
+        ],
+        "properties": {
+          "answer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact clarification answer, when the member gave one."
+          },
+          "disposition": {
+            "$ref": "#/components/schemas/AdviceDispositionDto",
+            "description": "Accepted, partially accepted or rejected."
+          },
+          "finding": {
+            "type": "string",
+            "description": "The exact finding the decision is about."
+          },
+          "slot": {
+            "$ref": "#/components/schemas/PlanningPairSlotDto",
+            "description": "The member."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanningPairMemberDto": {
+        "type": "object",
+        "description": "One frozen member.",
+        "required": [
+          "slot",
+          "label",
+          "seat_binding_id",
+          "occupancy_generation",
+          "binding_key",
+          "vendor",
+          "model_route"
+        ],
+        "properties": {
+          "binding_key": {
+            "type": "string",
+            "description": "The binding the TPM named."
+          },
+          "label": {
+            "type": "string",
+            "description": "The exact native seat title."
+          },
+          "model_route": {
+            "$ref": "#/components/schemas/RuntimeModelRouteRequest",
+            "description": "The route the shared allocator chose."
+          },
+          "observed_binding": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ObservedBindingDto",
+                "description": "The native readback, once a supported runtime launched the member.\nAbsent means no native launch is recorded: persistence alone never\nreports one."
+              }
+            ]
+          },
+          "occupancy_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The native-filler generation scoped credentials are fenced to.",
+            "minimum": 0
+          },
+          "seat_binding_id": {
+            "type": "string",
+            "description": "The persistent SeatBinding."
+          },
+          "slot": {
+            "$ref": "#/components/schemas/PlanningPairSlotDto",
+            "description": "The member slot."
+          },
+          "vendor": {
+            "type": "string",
+            "description": "The actual vendor the shared allocator held distinct."
+          }
+        }
+      },
+      "PlanningPairMemberPlacementRequest": {
+        "type": "object",
+        "description": "One member's placement: the existing binding the TPM names for it and the\neligibility it states. The route is the shared allocator's, never the\ncaller's.",
+        "required": [
+          "slot",
+          "binding_key"
+        ],
+        "properties": {
+          "binding_key": {
+            "type": "string",
+            "description": "The existing canonical binding this member resolves."
+          },
+          "excluded_vendors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Vendors this member must avoid."
+          },
+          "slot": {
+            "$ref": "#/components/schemas/PlanningPairSlotDto",
+            "description": "The member slot."
+          },
+          "unavailable_accounts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Account aliases that cannot take this member now."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanningPairProfileRefDto": {
+        "type": "object",
+        "description": "The exact published document revision an invocation pins.",
+        "required": [
+          "id",
+          "version",
+          "definition_hash"
+        ],
+        "properties": {
+          "definition_hash": {
+            "type": "string",
+            "description": "The canonical hash the caller read; a different published hash refuses."
+          },
+          "id": {
+            "type": "string",
+            "description": "The document id shared by every revision."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The pinned revision.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanningPairProtocolDto": {
+        "type": "string",
+        "description": "The protocol a caller explicitly selects. There is exactly one.",
+        "enum": [
+          "planning_pair@1"
+        ]
+      },
+      "PlanningPairRunDto": {
+        "type": "object",
+        "description": "One planning pair as its reader may see it.",
+        "required": [
+          "realm_id",
+          "planning_pair_run_id",
+          "epic_id",
+          "protocol",
+          "profile",
+          "topic",
+          "question",
+          "caller_seat_binding_id",
+          "topology_node_id",
+          "state",
+          "phase",
+          "placement_hash",
+          "members",
+          "viewer",
+          "record_revision",
+          "revision",
+          "snapshot_cursor"
+        ],
+        "properties": {
+          "caller_seat_binding_id": {
+            "type": "string",
+            "description": "The frozen caller seat."
+          },
+          "clarification": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlanningPairClarificationDto",
+                "description": "The clarification round, once every addressed member answered, and\nonly to the caller."
+              }
+            ]
+          },
+          "container_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The rendered container name, when the pinned Team Definition names it."
+          },
+          "disposition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlanningPairDispositionRecordDto",
+                "description": "The caller's disposition, once recorded."
+              }
+            ]
+          },
+          "epic_id": {
+            "type": "string",
+            "description": "The epic it advises."
+          },
+          "findings": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairContributionDto"
+            },
+            "description": "Both findings, once released and only to the caller."
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairMemberDto"
+            },
+            "description": "Both frozen members."
+          },
+          "own_contributions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairContributionDto"
+            },
+            "description": "A member reader's own contributions, sealed or not."
+          },
+          "phase": {
+            "type": "string",
+            "description": "The protocol phase the latest record restores to."
+          },
+          "placement_hash": {
+            "type": "string",
+            "description": "The frozen placement's canonical hash."
+          },
+          "planning_pair_run_id": {
+            "type": "string",
+            "description": "The consultation."
+          },
+          "profile": {
+            "$ref": "#/components/schemas/ProfileRevisionDto",
+            "description": "The pinned document revision."
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/PlanningPairProtocolDto",
+            "description": "Always `planning_pair@1`."
+          },
+          "question": {
+            "type": "string",
+            "description": "The caller's question."
+          },
+          "realm_id": {
+            "type": "string",
+            "description": "The Realm it belongs to."
+          },
+          "receipt": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MutationReceiptDto",
+                "description": "The receipt, for a write."
+              }
+            ]
+          },
+          "record_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The record revision the projection restored.",
+            "minimum": 0
+          },
+          "retained_dissent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairContributionDto"
+            },
+            "description": "The advice the caller did not wholly adopt, kept verbatim; to the\ncaller only."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision.",
+            "minimum": 0
+          },
+          "snapshot_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The control-plane position the answer is consistent with."
+          },
+          "state": {
+            "type": "string",
+            "description": "`materializing`, `running`, `needs_human` or `disposed`."
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ticket it advises, when it was invoked at one."
+          },
+          "topic": {
+            "type": "string",
+            "description": "The frozen semantic topic."
+          },
+          "topology_node_id": {
+            "type": "string",
+            "description": "The container node."
+          },
+          "viewer": {
+            "$ref": "#/components/schemas/PlanningPairViewerDto",
+            "description": "Who this projection was rendered for."
+          }
+        }
+      },
+      "PlanningPairSlotDto": {
+        "type": "string",
+        "description": "One of the two member slots.",
+        "enum": [
+          "seat-a",
+          "seat-b"
+        ]
+      },
+      "PlanningPairViewerDto": {
+        "type": "string",
+        "description": "Who the projection was rendered for, and so what it may contain.",
+        "enum": [
+          "caller",
+          "member",
+          "observer"
+        ]
       },
       "PreviewEpicDto": {
         "type": "object",
@@ -22866,6 +23929,56 @@
           }
         }
       },
+      "RecordPlanningPairContributionRequest": {
+        "type": "object",
+        "description": "One member's finding or clarification answer.",
+        "required": [
+          "advice",
+          "expected_revision"
+        ],
+        "properties": {
+          "advice": {
+            "type": "string",
+            "description": "The advice, verbatim."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision the member read.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "RecordPlanningPairDispositionRequest": {
+        "type": "object",
+        "description": "The caller's disposition. A decision, not a verdict.",
+        "required": [
+          "members",
+          "rationale",
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision the caller read.",
+            "minimum": 0
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairMemberDispositionDto"
+            },
+            "description": "One entry per member, `seat-a` then `seat-b`."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "Why the caller decided as it did."
+          }
+        },
+        "additionalProperties": false
+      },
       "RecordProviderQuotaRequest": {
         "type": "object",
         "description": "What `provider-quota-states:record` is asked for.\n\nThere is no free-text note and no place for the provider's own message. The\nmessage is vendor output carrying account hints and URLs; what a record needs\nfrom it is the state and the instant, and those are typed fields.",
@@ -23454,6 +24567,35 @@
               "null"
             ],
             "description": "The root-pointer revision, for a module that has one."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RequestPlanningPairClarificationRequest": {
+        "type": "object",
+        "description": "The caller's one clarification question.",
+        "required": [
+          "question",
+          "addressed",
+          "expected_revision"
+        ],
+        "properties": {
+          "addressed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanningPairSlotDto"
+            },
+            "description": "One or both members, each once."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The run revision the caller read.",
+            "minimum": 0
+          },
+          "question": {
+            "type": "string",
+            "description": "What the caller needs clarified."
           }
         },
         "additionalProperties": false

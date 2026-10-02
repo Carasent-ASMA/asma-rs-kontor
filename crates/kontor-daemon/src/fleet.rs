@@ -387,6 +387,18 @@ impl FleetSource {
     ///
     /// # Errors
     /// As [`Self::policy`].
+    /// Place one planning pair's two members (ASMA-8282) through the one
+    /// verified reader and the shared allocator, on one activated snapshot.
+    ///
+    /// There is no `fleet.yml` and no last-valid fallback: a planning pair is
+    /// placed only from an activation, exactly as the direct CLI places one.
+    pub(crate) fn planning_pair_placement(
+        &self,
+        request: &kontor_fleet_activation::PlanningPairRequest,
+    ) -> Result<kontor_fleet_activation::PlanningPairPlacement, FleetError> {
+        kontor_fleet_activation::place_planning_pair(&self.state_root, request)
+    }
+
     pub(crate) fn placement(&self) -> Result<Option<Placement>, FleetError> {
         let mut cache = self.lock();
         if let Err(error) = std::fs::symlink_metadata(self.state_root.join(FLEET_ACTIVATION_FILE))

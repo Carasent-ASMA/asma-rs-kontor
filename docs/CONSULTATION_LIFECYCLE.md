@@ -71,3 +71,50 @@ must not be pointed at schema 93 or forced past its schema-version check.
 Validation includes registry-bound tool denial tests, real Claude read/finding
 and denied-write probes, exact native correlation and archive replay contracts,
 and storage tests covering restart, bounded batches and immutable settled facts.
+
+## Governed planning pairs (ASMA-8282)
+
+`planning_pair@1` is the third closed consultation family. It is an opt-in
+protocol inside this domain: Advisor and Committee identity bytes, endpoints,
+schema and historical migrations are unchanged, and no other domain is bound to
+it. This is a domain contract decision (LSA disposition D-1 to D-3,
+2026-10-02), not a platform ADR. The ASMA-8113 owner's compatibility review
+fences acceptance of the widened identity vocabulary.
+
+Schema 122 widens the family checks to `advisor`, `committee` and
+`planning_pair` and conditions run state on the family. Advisor and Committee
+keep exactly their earlier states. A planning pair is only `materializing`,
+`running`, `needs_human` or `disposed`, with `result` and `settled_at` always
+NULL, so it can never be settled, judged or read as a verdict. Its run shares
+the semantic identity function and unique index with the other families. Its
+placement receipt, canonical record revisions and member contributions live in
+immutable tables keyed by the run, and `disposed` is terminal. Rolling schema
+122 back requires the pre-upgrade database snapshot.
+
+Nine registered operations cover it: the profile list, preview and apply; run
+invoke and get; a member's finding and answer; and the caller's one
+clarification and disposition. The registry tier is a floor. The caller is the
+exact frozen caller seat at its current hosted generation. A member is the exact
+frozen member seat at its current occupancy generation, and its slot comes from
+its credential, never from the body. Ambient Admin and Operator credentials
+reach only the catalog and an observer projection that carries no contribution.
+Authentication precedes the idempotent replay, so a retired generation never
+regains authority by repeating its key. Every write carries the expected run
+revision. The caller sees findings and answers only once the domain releases
+them. A member sees only its own words, and its serve profile,
+`planning_pair_member`, holds exactly the run read, the finding and the answer.
+
+Names and slots come only from explicit configuration. The published document
+selects a `container_kind`, which the epic's pinned Team Definition must declare
+read-only with exactly the display-named slots `seat-a` (`SEAT A`) and `seat-b`
+(`SEAT B`), and it names each member's registered `role_code`. The bundled
+pack declares no such container, so a realm invokes a pair only after
+publishing one. The members are placed by the shared allocator on one activated
+snapshot, on distinct actual vendors or not at all.
+
+No shipped runtime composes the member surface yet: its serve profile, the
+consultation guard and observed provenance. The runtime port's
+`validate_planning_pair_member_surface` refuses by default and is asked before
+anything is frozen or prepared. A governed invocation therefore answers
+`unsupported_capability` with no native effect until an adapter proves that
+surface. Member seat recovery is not yet implemented for this family.

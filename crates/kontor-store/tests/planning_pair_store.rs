@@ -61,6 +61,7 @@ fn stamp() -> Shareability {
 fn spec() -> PlanningPairSpec {
     let member = |slot| PlanningPairMemberSpec {
         slot,
+        role_code: RoleCode::parse("SA").expect("a registered role code"),
         specialty: text("Independent planning perspective"),
         behavior: text("Read the frozen plan and give one finding; change nothing."),
         context: ConsultationContextPolicy {

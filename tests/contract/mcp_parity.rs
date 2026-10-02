@@ -549,7 +549,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // slipping past unreviewed.
     assert_eq!(
         http().count(),
-        201,
+        210,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // ASMA-8280 B-1: the registry's local operations — in-process handlers
@@ -565,7 +565,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         http().count() - CLI_ONLY.len(),
-        200,
+        209,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -577,7 +577,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // route serves the document itself and is not self-documented.
     assert_eq!(
         documented().len(),
-        202,
+        211,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -871,6 +871,25 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         ("kontor_committee_permissions_inspect", CallerTier::Operator),
         ("kontor_committee_permission_respond", CallerTier::Operator),
         ("kontor_committee_run_settle", CallerTier::Operator),
+        // ASMA-8282 D2: a planning pair's member writes sit on the Operator
+        // floor and are then bound to the addressed member credential; the
+        // caller's writes are bound to the frozen caller. Neither tier admits
+        // an ambient Admin as a member or as the caller.
+        ("kontor_planning_pair_profiles_list", CallerTier::Observer),
+        ("kontor_planning_pair_profile_preview", CallerTier::Admin),
+        ("kontor_planning_pair_profile_apply", CallerTier::Admin),
+        ("kontor_planning_pair_run_invoke", CallerTier::Operator),
+        ("kontor_planning_pair_run_get", CallerTier::Observer),
+        ("kontor_planning_pair_findings_record", CallerTier::Operator),
+        (
+            "kontor_planning_pair_clarification_request",
+            CallerTier::Operator,
+        ),
+        ("kontor_planning_pair_answer_record", CallerTier::Operator),
+        (
+            "kontor_planning_pair_disposition_record",
+            CallerTier::Operator,
+        ),
         ("kontor_completion_profiles_list", CallerTier::Observer),
         ("kontor_completion_profile_preview", CallerTier::Admin),
         ("kontor_completion_profile_apply", CallerTier::Admin),

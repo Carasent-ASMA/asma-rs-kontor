@@ -106,6 +106,8 @@ pub enum ArgType {
     AdvisorRunId,
     /// A canonical v7 UUID naming one Committee consultation.
     CommitteeRunId,
+    /// A canonical v7 UUID naming one planning pair consultation.
+    PlanningPairRunId,
     /// An open, deployment-defined key.
     ///
     /// Its lexical rule — lowercase ASCII, digits, `.`, `_`, `-` — is also what
@@ -260,6 +262,45 @@ const FLEET_PLANNING_PAIR: &[FieldSpec] = &[field(
     "Exactly two members, seat-a then seat-b.",
 )];
 
+/// The exact published planning pair document an invocation pins.
+const PLANNING_PAIR_PROFILE_REF: &[FieldSpec] = &[
+    field(
+        "id",
+        ArgType::Text,
+        "The document id shared by every revision.",
+    ),
+    field("version", ArgType::U32, "The pinned revision."),
+    field(
+        "definition_hash",
+        ArgType::Text,
+        "The canonical hash the caller read; a different published hash refuses.",
+    ),
+];
+
+/// What the caller decided about one member's advice.
+const PLANNING_PAIR_MEMBER_DISPOSITION: &[FieldSpec] = &[
+    field(
+        "slot",
+        ArgType::Enum(&["seat-a", "seat-b"]),
+        "The member: seat-a then seat-b.",
+    ),
+    field(
+        "finding",
+        ArgType::Text,
+        "The exact finding hash the decision is about.",
+    ),
+    optional_field(
+        "answer",
+        ArgType::Text,
+        "The exact clarification answer hash, when the member gave one.",
+    ),
+    field(
+        "disposition",
+        ArgType::Enum(&["accepted", "partially_accepted", "rejected", "superseded"]),
+        "Accepted, partially accepted or rejected. Superseded is refused: this is the only decision.",
+    ),
+];
+
 /// The standing activation a bundle activation names (`kontor_fleet_bundle_activate`).
 const FLEET_ACTIVATION_FENCE: &[FieldSpec] = &[
     field(
@@ -316,6 +357,7 @@ impl ArgType {
             | Self::QuickSessionId
             | Self::AdvisorRunId
             | Self::CommitteeRunId
+            | Self::PlanningPairRunId
             | Self::OpenKey
             | Self::ExternalName
             | Self::ExternalId
@@ -939,6 +981,17 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
             "kontor_committee_run_get",
             "kontor_committee_artifact_get",
             "kontor_committee_findings_record",
+        ],
+    },
+    // ASMA-8282: a planning pair member reads its own run and makes only its
+    // two seat-authored writes. It cannot invoke, ask for clarification,
+    // record a disposition, publish, or reach any gate or permission surface.
+    ServeProfile {
+        name: "planning_pair_member",
+        tools: &[
+            "kontor_planning_pair_run_get",
+            "kontor_planning_pair_findings_record",
+            "kontor_planning_pair_answer_record",
         ],
     },
     ServeProfile {
@@ -7741,6 +7794,329 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Settle one Committee consultation.",
     },
     ToolSpec {
+        name: "kontor_planning_pair_profiles_list",
+        tier: CallerTier::Observer,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/planning-pair-profiles",
+        },
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "Every published planning_pair@1 document revision.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_profile_preview",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-profiles:preview",
+        },
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "definition",
+                Place::Body,
+                ArgType::Json,
+                "The complete candidate planning_pair@1 document.",
+            ),
+        ],
+        about: "Judge one planning_pair@1 document. Commits nothing.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_profile_apply",
+        tier: CallerTier::Admin,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-profiles:apply",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "definition",
+                Place::Body,
+                ArgType::Json,
+                "The complete candidate planning_pair@1 document.",
+            ),
+            req(
+                "preview_hash",
+                Place::Body,
+                ArgType::Text,
+                "The hash the preview answered with.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The revision the caller read.",
+            ),
+        ],
+        about: "Publish one planning_pair@1 document revision.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_run_invoke",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/epics/{epic_id}/planning-pair-runs:invoke",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req("epic_id", Place::Path, ArgType::EpicSelector, "The epic."),
+            IDEMPOTENCY,
+            req(
+                "protocol",
+                Place::Body,
+                ArgType::Enum(&["planning_pair@1"]),
+                "The protocol, named explicitly; nothing substitutes another.",
+            ),
+            req(
+                "profile",
+                Place::Body,
+                ArgType::Object(PLANNING_PAIR_PROFILE_REF),
+                "The exact published document revision, including its hash.",
+            ),
+            req(
+                "topic",
+                Place::Body,
+                ArgType::Text,
+                "Short semantic subject the pinned Team Definition renders.",
+            ),
+            req(
+                "question",
+                Place::Body,
+                ArgType::Text,
+                "What the caller asks.",
+            ),
+            opt(
+                "task_id",
+                Place::Body,
+                ArgType::TaskId,
+                "Optional ticket scope inside the epic.",
+            ),
+            req(
+                "members",
+                Place::Body,
+                ArgType::ObjectArray(FLEET_PLANNING_PAIR_MEMBER),
+                "Exactly two members, seat-a then seat-b, each naming an existing binding and its eligibility.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The epic revision the caller read.",
+            ),
+        ],
+        about: "Invoke one planning_pair@1 pair as the authenticated caller seat. Advice only; never a review gate.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_run_get",
+        tier: CallerTier::Observer,
+        execution: Execution::Http {
+            method: Method::Get,
+            path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}",
+        },
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "planning_pair_run_id",
+                Place::Path,
+                ArgType::PlanningPairRunId,
+                "The planning pair.",
+            ),
+        ],
+        about: "Read one planning pair. A member sees only its own contributions; the caller sees findings and answers only once released; an observer sees none.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_findings_record",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/findings:record",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "planning_pair_run_id",
+                Place::Path,
+                ArgType::PlanningPairRunId,
+                "The planning pair.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "advice",
+                Place::Body,
+                ArgType::Text,
+                "The member's one finding.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The run revision the member read.",
+            ),
+        ],
+        about: "Record the authenticated member's one sealed finding.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_clarification_request",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/clarification:request",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "planning_pair_run_id",
+                Place::Path,
+                ArgType::PlanningPairRunId,
+                "The planning pair.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "question",
+                Place::Body,
+                ArgType::Text,
+                "What the caller needs clarified.",
+            ),
+            req(
+                "addressed",
+                Place::Body,
+                ArgType::TextArray,
+                "One or both of seat-a and seat-b, each once.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The run revision the caller read.",
+            ),
+        ],
+        about: "Ask the authenticated caller's one clarification question.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_answer_record",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/answers:record",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "planning_pair_run_id",
+                Place::Path,
+                ArgType::PlanningPairRunId,
+                "The planning pair.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "advice",
+                Place::Body,
+                ArgType::Text,
+                "The addressed member's one answer.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The run revision the member read.",
+            ),
+        ],
+        about: "Record the authenticated addressed member's one sealed clarification answer.",
+    },
+    ToolSpec {
+        name: "kontor_planning_pair_disposition_record",
+        tier: CallerTier::Operator,
+        execution: Execution::Http {
+            method: Method::Post,
+            path: "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/disposition:record",
+        },
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "planning_pair_run_id",
+                Place::Path,
+                ArgType::PlanningPairRunId,
+                "The planning pair.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "members",
+                Place::Body,
+                ArgType::ObjectArray(PLANNING_PAIR_MEMBER_DISPOSITION),
+                "seat-a then seat-b, each with its exact finding and answer hashes; omitting or rewriting one is refused.",
+            ),
+            req(
+                "rationale",
+                Place::Body,
+                ArgType::Text,
+                "Why the caller decided as it did.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::Revision,
+                "The run revision the caller read.",
+            ),
+        ],
+        about: "Record the authenticated caller's disposition. A decision with retained dissent; never a verdict, a settlement or a gate.",
+    },
+    ToolSpec {
         name: "kontor_completion_profiles_list",
         tier: CallerTier::Observer,
         execution: Execution::Http {
@@ -8526,6 +8902,38 @@ mod tests {
             assert!(
                 !consultation.allows(excluded),
                 "the consultation profile must not serve {excluded}"
+            );
+        }
+    }
+
+    /// ASMA-8282 D2: a planning pair member reads its run and records its own
+    /// finding or answer. The caller's writes, every verdict or settlement and
+    /// the other consultation families stay off this surface.
+    #[test]
+    fn the_planning_pair_member_profile_is_the_exact_member_surface() {
+        let member = ServeProfile::find("planning_pair_member")
+            .expect("the planning pair member profile is declared");
+        assert_eq!(
+            member.tools,
+            [
+                "kontor_planning_pair_run_get",
+                "kontor_planning_pair_findings_record",
+                "kontor_planning_pair_answer_record",
+            ],
+        );
+        for excluded in [
+            "kontor_planning_pair_run_invoke",
+            "kontor_planning_pair_clarification_request",
+            "kontor_planning_pair_disposition_record",
+            "kontor_planning_pair_profile_apply",
+            "kontor_committee_run_settle",
+            "kontor_advisor_run_settle",
+            "kontor_committee_findings_record",
+            "kontor_gate_record",
+        ] {
+            assert!(
+                !member.allows(excluded),
+                "the planning pair member profile must not serve {excluded}"
             );
         }
     }

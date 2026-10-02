@@ -16,8 +16,8 @@ use kontor_core::consultation::{
     AdviceDisposition, ConsultationContextPolicy, ConsultationScope, MemoryAccess,
 };
 use kontor_core::id::{
-    BoundedText, ContentHash, CurrencyCode, ExternalName, Money, PlanningPairProfileId, RoleKey,
-    SCHEMA_VERSION, SpecVersion, TopologyKindKey,
+    BoundedText, ContentHash, CurrencyCode, ExternalName, Money, PlanningPairProfileId, RoleCode,
+    RoleKey, SCHEMA_VERSION, SpecVersion, TopologyKindKey,
 };
 use kontor_core::planning_pair::{
     ClarificationRequest, ConsultationProtocol, FINDINGS_ROUNDS, MAX_CLARIFICATION_ROUNDS,
@@ -57,6 +57,7 @@ fn run_refusal(rule: &'static str) -> DomainError {
 fn member_spec(slot: PlanningPairSlot) -> PlanningPairMemberSpec {
     PlanningPairMemberSpec {
         slot,
+        role_code: RoleCode::parse("SA").expect("a registered role code"),
         specialty: text("Independent planning perspective"),
         behavior: text("Read the frozen plan and give one finding; change nothing."),
         context: ConsultationContextPolicy {

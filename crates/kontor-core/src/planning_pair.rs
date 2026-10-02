@@ -45,8 +45,8 @@ use crate::consultation::{
     AdviceDisposition, ConsultationContextPolicy, ConsultationScope, has_duplicate,
 };
 use crate::id::{
-    BoundedText, CanonicalDocument, ContentHash, ExternalName, PlanningPairProfileId, RoleKey,
-    SCHEMA_VERSION, SchemaVersion, SpecVersion, TopologyKindKey,
+    BoundedText, CanonicalDocument, ContentHash, ExternalName, PlanningPairProfileId, RoleCode,
+    RoleKey, SCHEMA_VERSION, SchemaVersion, SpecVersion, TopologyKindKey,
 };
 use crate::spec::{BudgetBounds, ModelRung};
 use crate::{DomainError, DomainResult};
@@ -227,6 +227,12 @@ crate::closed_enum! {
 pub struct PlanningPairMemberSpec {
     /// Which of the two slots this is.
     pub slot: PlanningPairSlot,
+    /// The registered catalog role this member's seat is held under.
+    ///
+    /// Explicit, because nothing else may supply it: the Team Definition slot
+    /// that titles this member is display-named (`SEAT A`, `SEAT B`) and so
+    /// carries no role code, and no delivery default names one.
+    pub role_code: RoleCode,
     /// What this member brings that the other does not.
     pub specialty: BoundedText,
     /// The bounded behavioural prompt the member is launched with.

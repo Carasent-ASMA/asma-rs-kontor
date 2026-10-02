@@ -1729,6 +1729,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/planning-pair-runs:invoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Invoke one planning pair as its caller's own scoped seat. */
+        post: operations["invoke_planning_pair_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/roster:upgrade-apply": {
         parameters: {
             query?: never;
@@ -2092,6 +2109,142 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["tombstone"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every published planning pair document revision. */
+        get: operations["planning_pair_profiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-profiles:apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish one planning pair document revision. */
+        post: operations["apply_planning_pair_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-profiles:preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Judge one planning pair document. Commits nothing. */
+        post: operations["preview_planning_pair_profile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one planning pair as its reader may see it. */
+        get: operations["planning_pair_run"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/answers:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record the authenticated addressed member's sealed answer. */
+        post: operations["record_planning_pair_answer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/clarification:request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ask the caller's one clarification question. */
+        post: operations["request_planning_pair_clarification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/disposition:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record the caller's disposition. Terminal; never a settlement. */
+        post: operations["record_planning_pair_disposition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/planning-pair-runs/{planning_pair_run_id}/findings:record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record the authenticated member's sealed finding. */
+        post: operations["record_planning_pair_finding"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7286,6 +7439,26 @@ export interface components {
              */
             topic?: string | null;
         };
+        /** @description Invoke one planning pair against an epic, as its frozen caller. */
+        InvokePlanningPairRequest: {
+            /**
+             * Format: int64
+             * @description The epic revision the caller read.
+             */
+            expected_revision: number;
+            /** @description Exactly two members, `seat-a` then `seat-b`. */
+            members: components["schemas"]["PlanningPairMemberPlacementRequest"][];
+            /** @description The exact document revision, including its canonical hash. */
+            profile: components["schemas"]["PlanningPairProfileRefDto"];
+            /** @description The protocol, named explicitly. Nothing substitutes another. */
+            protocol: components["schemas"]["PlanningPairProtocolDto"];
+            /** @description What the caller asks. */
+            question: string;
+            /** @description Optional ticket scope inside the epic; absent means the epic. */
+            task_id?: string | null;
+            /** @description Short semantic subject the pinned Team Definition renders. */
+            topic: string;
+        };
         /** @description Confirmed Jira identity evidence, or an explicit awaiting state. */
         JiraBindingDto: {
             /**
@@ -7856,6 +8029,169 @@ export interface components {
              */
             version: number;
         };
+        /** @description The released clarification round. */
+        PlanningPairClarificationDto: {
+            /** @description The members it addressed. */
+            addressed: components["schemas"]["PlanningPairSlotDto"][];
+            /** @description Every addressed member's answer. */
+            answers: components["schemas"]["PlanningPairContributionDto"][];
+            /** @description The caller's question. */
+            question: string;
+        };
+        /** @description One released finding or answer. */
+        PlanningPairContributionDto: {
+            /** @description The advice, verbatim. */
+            advice: string;
+            /** @description Its canonical address. */
+            document_hash: string;
+            /** @description `findings` or `clarification`. */
+            round: string;
+            /** @description The member that gave it. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+        };
+        /** @description The caller's recorded disposition. */
+        PlanningPairDispositionRecordDto: {
+            /** @description One entry per member, `seat-a` then `seat-b`. */
+            members: components["schemas"]["PlanningPairMemberDispositionDto"][];
+            /** @description Why the caller decided as it did. */
+            rationale: string;
+        };
+        /** @description What the caller decided about one member's advice. */
+        PlanningPairMemberDispositionDto: {
+            /** @description The exact clarification answer, when the member gave one. */
+            answer?: string | null;
+            /** @description Accepted, partially accepted or rejected. */
+            disposition: components["schemas"]["AdviceDispositionDto"];
+            /** @description The exact finding the decision is about. */
+            finding: string;
+            /** @description The member. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+        };
+        /** @description One frozen member. */
+        PlanningPairMemberDto: {
+            /** @description The binding the TPM named. */
+            binding_key: string;
+            /** @description The exact native seat title. */
+            label: string;
+            /** @description The route the shared allocator chose. */
+            model_route: components["schemas"]["RuntimeModelRouteRequest"];
+            observed_binding?: null | components["schemas"]["ObservedBindingDto"];
+            /**
+             * Format: int64
+             * @description The native-filler generation scoped credentials are fenced to.
+             */
+            occupancy_generation: number;
+            /** @description The persistent SeatBinding. */
+            seat_binding_id: string;
+            /** @description The member slot. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+            /** @description The actual vendor the shared allocator held distinct. */
+            vendor: string;
+        };
+        /**
+         * @description One member's placement: the existing binding the TPM names for it and the
+         *     eligibility it states. The route is the shared allocator's, never the
+         *     caller's.
+         */
+        PlanningPairMemberPlacementRequest: {
+            /** @description The existing canonical binding this member resolves. */
+            binding_key: string;
+            /** @description Vendors this member must avoid. */
+            excluded_vendors?: string[];
+            /** @description The member slot. */
+            slot: components["schemas"]["PlanningPairSlotDto"];
+            /** @description Account aliases that cannot take this member now. */
+            unavailable_accounts?: string[];
+        };
+        /** @description The exact published document revision an invocation pins. */
+        PlanningPairProfileRefDto: {
+            /** @description The canonical hash the caller read; a different published hash refuses. */
+            definition_hash: string;
+            /** @description The document id shared by every revision. */
+            id: string;
+            /**
+             * Format: int32
+             * @description The pinned revision.
+             */
+            version: number;
+        };
+        /**
+         * @description The protocol a caller explicitly selects. There is exactly one.
+         * @enum {string}
+         */
+        PlanningPairProtocolDto: "planning_pair@1";
+        /** @description One planning pair as its reader may see it. */
+        PlanningPairRunDto: {
+            /** @description The frozen caller seat. */
+            caller_seat_binding_id: string;
+            clarification?: null | components["schemas"]["PlanningPairClarificationDto"];
+            /** @description The rendered container name, when the pinned Team Definition names it. */
+            container_name?: string | null;
+            disposition?: null | components["schemas"]["PlanningPairDispositionRecordDto"];
+            /** @description The epic it advises. */
+            epic_id: string;
+            /** @description Both findings, once released and only to the caller. */
+            findings?: components["schemas"]["PlanningPairContributionDto"][] | null;
+            /** @description Both frozen members. */
+            members: components["schemas"]["PlanningPairMemberDto"][];
+            /** @description A member reader's own contributions, sealed or not. */
+            own_contributions?: components["schemas"]["PlanningPairContributionDto"][];
+            /** @description The protocol phase the latest record restores to. */
+            phase: string;
+            /** @description The frozen placement's canonical hash. */
+            placement_hash: string;
+            /** @description The consultation. */
+            planning_pair_run_id: string;
+            /** @description The pinned document revision. */
+            profile: components["schemas"]["ProfileRevisionDto"];
+            /** @description Always `planning_pair@1`. */
+            protocol: components["schemas"]["PlanningPairProtocolDto"];
+            /** @description The caller's question. */
+            question: string;
+            /** @description The Realm it belongs to. */
+            realm_id: string;
+            receipt?: null | components["schemas"]["MutationReceiptDto"];
+            /**
+             * Format: int64
+             * @description The record revision the projection restored.
+             */
+            record_revision: number;
+            /**
+             * @description The advice the caller did not wholly adopt, kept verbatim; to the
+             *     caller only.
+             */
+            retained_dissent?: components["schemas"]["PlanningPairContributionDto"][];
+            /**
+             * Format: int64
+             * @description The run revision.
+             */
+            revision: number;
+            /**
+             * Format: int64
+             * @description The control-plane position the answer is consistent with.
+             */
+            snapshot_cursor: number;
+            /** @description `materializing`, `running`, `needs_human` or `disposed`. */
+            state: string;
+            /** @description The ticket it advises, when it was invoked at one. */
+            task_id?: string | null;
+            /** @description The frozen semantic topic. */
+            topic: string;
+            /** @description The container node. */
+            topology_node_id: string;
+            /** @description Who this projection was rendered for. */
+            viewer: components["schemas"]["PlanningPairViewerDto"];
+        };
+        /**
+         * @description One of the two member slots.
+         * @enum {string}
+         */
+        PlanningPairSlotDto: "seat-a" | "seat-b";
+        /**
+         * @description Who the projection was rendered for, and so what it may contain.
+         * @enum {string}
+         */
+        PlanningPairViewerDto: "caller" | "member" | "observer";
         /** @description The result of judging an epic with the exact apply rules and no writes. */
         PreviewEpicDto: {
             /** @description Whether apply would create the epic or find it unchanged. */
@@ -8862,6 +9198,28 @@ export interface components {
             /** @description The verdict. `waived` is an admin decision; the rest are operator work. */
             verdict: string;
         };
+        /** @description One member's finding or clarification answer. */
+        RecordPlanningPairContributionRequest: {
+            /** @description The advice, verbatim. */
+            advice: string;
+            /**
+             * Format: int64
+             * @description The run revision the member read.
+             */
+            expected_revision: number;
+        };
+        /** @description The caller's disposition. A decision, not a verdict. */
+        RecordPlanningPairDispositionRequest: {
+            /**
+             * Format: int64
+             * @description The run revision the caller read.
+             */
+            expected_revision: number;
+            /** @description One entry per member, `seat-a` then `seat-b`. */
+            members: components["schemas"]["PlanningPairMemberDispositionDto"][];
+            /** @description Why the caller decided as it did. */
+            rationale: string;
+        };
         /**
          * @description What `provider-quota-states:record` is asked for.
          *
@@ -9184,6 +9542,18 @@ export interface components {
             repository: string;
             /** @description The root-pointer revision, for a module that has one. */
             root_pointer_revision?: string | null;
+        };
+        /** @description The caller's one clarification question. */
+        RequestPlanningPairClarificationRequest: {
+            /** @description One or both members, each once. */
+            addressed: components["schemas"]["PlanningPairSlotDto"][];
+            /**
+             * Format: int64
+             * @description The run revision the caller read.
+             */
+            expected_revision: number;
+            /** @description What the caller needs clarified. */
+            question: string;
         };
         /** @description Exact Admin compare-and-swap for one native-less Committee seat. */
         RerouteUnmaterializedConsultationSeatRequest: {
@@ -16268,6 +16638,68 @@ export interface operations {
             };
         };
     };
+    invoke_planning_pair_run: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvokePlanningPairRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     apply_roster_upgrade: {
         parameters: {
             query?: never;
@@ -17207,6 +17639,461 @@ export interface operations {
         };
         responses: {
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    planning_pair_profiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileCatalogDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    apply_planning_pair_profile: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileApplyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppliedProfileDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_planning_pair_profile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfilePreviewRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfilePreviewDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    planning_pair_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_planning_pair_answer: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The member's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordPlanningPairContributionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    request_planning_pair_clarification: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequestPlanningPairClarificationRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_planning_pair_disposition: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The caller's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordPlanningPairDispositionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    record_planning_pair_finding: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The member's stable key */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The planning pair */
+                planning_pair_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordPlanningPairContributionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningPairRunDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

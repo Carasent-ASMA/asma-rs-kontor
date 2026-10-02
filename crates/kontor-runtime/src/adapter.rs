@@ -989,6 +989,19 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// Prove, without a native effect, that this runtime composes the closed
+    /// planning pair member surface (ASMA-8282): its member serve profile,
+    /// consultation guard and observed provenance.
+    ///
+    /// The default refuses, so a runtime that has not composed that surface is
+    /// asked before any container is prepared and never launches a member
+    /// under the Advisor and Committee consultation surface it must not reach.
+    fn validate_planning_pair_member_surface(&self) -> RuntimeResult<()> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Launch,
+        })
+    }
+
     /// The posture seats on this runtime get when their role slot declares none.
     ///
     /// A plane-wide operator default, subordinate to the role slot: a template

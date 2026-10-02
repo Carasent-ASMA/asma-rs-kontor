@@ -37,8 +37,8 @@ use std::sync::Arc;
 
 use kontor_core::consultation::ConsultationRunId;
 use kontor_core::id::{
-    AgentRunId, CommitteeRunId, ExternalId, ExternalName, MiniProjectId, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId,
+    AgentRunId, CommitteeRunId, ExternalId, ExternalName, MiniProjectId, PlanningPairRunId,
+    RoleSlotId, RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId,
 };
 use kontor_core::spec::SeatAutonomy;
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
@@ -14421,6 +14421,96 @@ async fn a_delivery_launch_reads_its_fleet_provenance_back_from_the_agent() {
     assert_eq!(
         outcome.fleet_provenance,
         kontor_runtime::FleetProvenanceObservation::NotRequested
+    );
+}
+
+/// ASMA-8282 D3: a planning pair member needs the closed member surface —
+/// serve profile, guard and observed provenance — that this adapter does not
+/// compose yet. Both the surface check and the launch itself are the defined
+/// capability gap: refused as unsupported before any plane call, never
+/// launched under the Advisor and Committee consultation surface.
+#[tokio::test]
+async fn a_planning_pair_member_launch_is_an_unsupported_capability_with_no_native_effect() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE))
+        .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+        .answering_rpc(
+            "create_agent_request",
+            serde_json::json!({"status": "agent_created", "agent": {"id": AGENT_ID}}),
+        );
+    let plane = Plane::fresh(recorded);
+    // The daemon asks this first, before it prepares any container.
+    assert!(
+        matches!(
+            plane.adapter.validate_planning_pair_member_surface(),
+            Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::Launch
+            })
+        ),
+        "Paseo does not compose the planning pair member surface"
+    );
+    plane
+        .adapter
+        .prepare_project("cmd-planning-pair", &project_name())
+        .await
+        .expect("the epic project is prepared");
+    let container = plane
+        .adapter
+        .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the consultation container is prepared")
+        .snapshot;
+    let before = plane.daemon.calls();
+    let request = kontor_runtime::adapter::ConsultationLaunchRequest {
+        run_id: ConsultationRunId::PlanningPair(PlanningPairRunId::generate()),
+        seat_binding_id: SeatBindingId::generate(),
+        role_slot_id: slot("seat-a"),
+        display_name: name("SEAT A"),
+        container,
+        cwd: root(),
+        scope: execution_scope(),
+        prompt: text("give one planning finding"),
+        credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+            "planning-pair-secret".to_owned(),
+        ),
+        model_rung: ModelRung {
+            provider: ProviderRef("codex".to_owned()),
+            model: ModelRef("gpt-5.6-sol".to_owned()),
+            effort: None,
+        },
+        route_provenance: kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
+            fleet_provenance().policy_hash,
+        ),
+        fleet_provenance: Some(fleet_provenance()),
+        context_policy: standard_context_policy(),
+        requested_at: at("2026-10-02T09:10:00Z"),
+    };
+    let launched = plane.adapter.launch_consultation(&request).await;
+    assert!(
+        matches!(
+            launched,
+            Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::Launch
+            })
+        ),
+        "a planning pair member launch is the defined capability gap: {launched:?}"
+    );
+    assert_eq!(
+        plane.daemon.calls(),
+        before,
+        "the refusal made no plane call at all"
+    );
+    assert!(
+        plane
+            .daemon
+            .sent_messages("create_agent_request")
+            .is_empty(),
+        "no agent was created"
     );
 }
 

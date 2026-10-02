@@ -8,7 +8,8 @@
 - Slice two (2026-09-30): the direct CLI `planning_pair@1` mode, committed as `d9dce9c8ecb8f529de4e3967e87ab25f78af112a` (tree `5deed40edebddcce49d6496f61b8cb3a744f92ed`). It is built on the accepted `d876055b` (tree `0b5b2cce`) and was dispatched by TPM generation 2 `7fc26706-dce2-4a02-be87-e0f933b25fd4` (predecessor `3c52abda-4fd0-4af6-b086-476bc51eb305`, archived). Every ancestor, `d876055b` included, is unchanged.
 - Slice three (2026-10-02): immutable profile identity, the run's durable record and MUT-003, with the reserved governed decisions reported rather than adopted. It is built on the accepted `d9dce9c8` (tree `5deed40e`), was dispatched by TPM successor `47cb9a74-a798-4f40-9b54-2a818afe0a42`, and was committed as `3b05abce237593b88d4bb83fc41440967479dd8e` (tree `7c92ee34dd825b1feaa7f46583174eb0ea2258d6`). Verify passed and audit 6f failed it: a sealed finding was readable through the public `PlanningPairRun::record()`.
 - Audit remediation (2026-10-02, this revision): it closes every public read path to a sealed finding or answer, and adds nothing else. It is built on `3b05abce` (tree `7c92ee34`) and dispatched by the same TPM. The writing seat is Paseo agent `45d0acc7-0773-4f43-858f-c6d6c8eecf78`, Claude session `3538e45e-113f-432b-9d1e-57e0d1b4af96`, in project `prj_e9f8052597f78919` and TSW `wks_8062e92dee85f5b3`. Every ancestor, `3b05abce` included, is unchanged.
-- The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
+- Slice four (2026-10-02): the additive governed slice under the D-1 to D-3 disposition. It is built on `832e60cc` (tree `678333e4`) after native verify `b887` and audit `6f` passed on that exact head. D-1 is checkpoint `8a27a851` (tree `d73c5f51`); D-2 and D-3 are the next checkpoint. The writing seat is the same Claude session `3538e45e-113f-432b-9d1e-57e0d1b4af96` in project `prj_e9f8052597f78919` and TSW `wks_8062e92dee85f5b3`. Every ancestor is unchanged. See "Slice four" below.
+- The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. At slice four it holds 53 files, which hash to `4ff4c1bc5cbe7c7ce505442d50827f91d64b0bb308cd18183a39d42339e49e87`: each file's SHA-256 in sorted path order, hashed again. Its files were last written at 2026-10-02 00:25 CEST. That run was not this writing session's (its only workspace run was on 2026-09-29), and slice four did not touch them. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
 does not close TASK-004 or TASK-002, and it claims no mutation acceptance.
@@ -365,7 +366,193 @@ independent reproduction, and acceptance remains the TPM-routed verify and audit
 - `cargo clippy -p kontor-core --all-targets -- -D warnings`: clean.
 - On the final code: `cargo test --no-fail-fast -p kontor-core` gave 353 passed across 19 targets (25 in `planning_pair`, plus 5 planning-pair doctests: the control and 4 `compile_fail`). `-p kontor-fleet-activation` gave 18 passed and `-p kontor-cli --test local_resolve` gave 9; both consume the changed types. No test failed. No unchanged broad suite was rerun.
 
+## Slice four — the governed planning pair (D-1 to D-3, additive)
+
+The contract is `/tmp/asma-orchestration-kickoff-20260927/task004-d1-d3-disposition-20261002.md`
+(SHA-256 `032496b8235b535e5779e22970391d989a3906e6bf6386e806390706b40fb25c`), read in full.
+It authorizes the owning domain's additive persistence, its registered operations and its
+source-authentication seam. It authorizes no platform ADR and no native effect. This slice
+is built on `832e60cc` (tree `678333e4`) after its verify and audit passed. The ASMA-8113
+compatibility reviewer is currently unassigned (Igor is the recorded owner), so the changed
+identity vocabulary's acceptance, integration and deployment stay fenced until a reviewer
+is assigned and gives an exact verdict. Nothing here claims that acceptance.
+
+There are two local checkpoints:
+
+- `8a27a8515788af53f5f0202e7d67536b4641c1f4` (tree `d73c5f51ac7a958825f56e61690c53b83e2a97af`, parent `832e60cc`) is D-1: the family, the run id, persistence and the identity proof.
+- The checkpoint this section was committed with is D-2 and D-3: the registered operations, source authentication and runtime ports. Its id is in the final report, because a commit cannot name itself.
+
+### D-1 — family, identity and persistence (`8a27a851`)
+
+| Element | Source | What it does |
+| --- | --- | --- |
+| Closed family and typed run id | `kontor-core` `id.rs` `PlanningPairRunId`; `consultation.rs` `ConsultationRunId::PlanningPair`, `ConsultationFamily::PlanningPair` (`planning_pair`), `ConsultationRunState::Disposed` | A third closed variant everywhere. Every exhaustive daemon site names it. The Committee- and Advisor-only paths refuse it or treat it as unreachable, and the completion verdict scan skips it, so advice is never a verdict candidate. |
+| Shared identity, golden bytes unchanged | `consultation_semantic_identity_of_kind` reuses `ConsultationIdentity::hash`; `tests/consultation_identity_golden.rs` | Advisor/epic, Advisor/task, Committee/task and Committee re-review digests are pinned as captured at `832e60cc`, and they still hold. A planning pair identity differs only by family, and still ignores retry mechanics. The schema version, the old endpoints and the historical migrations are untouched. |
+| Forward-only migration | `crates/kontor-store/migrations/0122_planning_pair_family.sql` (schema 122) | Rebuilds `consultation_profile_revisions` and `consultation_runs` with the family closed to three names. Run state is family-conditioned: Advisor and Committee keep exactly the v70 vocabulary, and a planning pair is only `materializing`, `running`, `needs_human` or `disposed`, never `awaiting_judge` or `settled`. A planning pair also requires `result` and `settled_at` to be NULL, its semantic identity, topic and subject to be present, and `round = 1`. The v96 indexes and triggers are recreated verbatim, `disposed` is terminal, and `command_receipts` gains the six kinds. |
+| Payload store keyed by the run | `planning_pair_placements`, `planning_pair_record_revisions`, `planning_pair_contributions` | These are foreign-keyed to the one run row, so there is no second identity registry. Each is immutable and permanent. A record revision must equal its run's revision, and none may follow a disposed record. A contribution is `(run, round, slot)` and cites the record revision that carried it. `result` is never written for a planning pair. |
+| Repository port | `kontor-core` `repository.rs` `StoredPlanningPair{Placement,Record,Contribution}`; store `create_planning_pair_run`, `planning_pair_placement`, `latest_planning_pair_record`, `planning_pair_contributions`, `append_planning_pair_record` | Freezing writes the run, node, seats, placement and first record in one transaction, through the same validation and insert as every consultation run. Each append is one compare-and-swap on the run revision, refused once the run is disposed, with the record and its contribution beside it. |
+
+### D-2 — registered operations and source authentication
+
+| Tool | Route (`/v1/projects/{project_id}` …) | Tier | Command kind |
+| --- | --- | --- | --- |
+| `kontor_planning_pair_profiles_list` | `GET /planning-pair-profiles` | Observer | — |
+| `kontor_planning_pair_profile_preview` | `POST /planning-pair-profiles:preview` | Admin | — |
+| `kontor_planning_pair_profile_apply` | `POST /planning-pair-profiles:apply` | Admin | `apply_planning_pair_profile` |
+| `kontor_planning_pair_run_invoke` | `POST /epics/{epic_id}/planning-pair-runs:invoke` | Operator, exact caller | `invoke_planning_pair_run` |
+| `kontor_planning_pair_run_get` | `GET /planning-pair-runs/{planning_pair_run_id}` | Observer, plus visibility | — |
+| `kontor_planning_pair_findings_record` | `POST …/findings:record` | Operator, plus member credential | `record_planning_pair_finding` |
+| `kontor_planning_pair_clarification_request` | `POST …/clarification:request` | Operator, plus frozen caller | `request_planning_pair_clarification` |
+| `kontor_planning_pair_answer_record` | `POST …/answers:record` | Operator, plus addressed member | `record_planning_pair_answer` |
+| `kontor_planning_pair_disposition_record` | `POST …/disposition:record` | Operator, plus frozen caller | `record_planning_pair_disposition` |
+
+The sources are `crates/kontor-api/src/planning_pair.rs` (DTOs and handlers), `lib.rs` (routes), `applications.rs` (port), `openapi.rs` with the regenerated `contract/openapi.json`, `apps/console/src/api/schema.d.ts`, and `crates/kontor-daemon/src/applications/planning_pair.rs` (the operations). In MCP, `registry.rs` has the nine rows and `ArgType::PlanningPairRunId`, and `dispatch.rs` the parse.
+
+- **Profiles** go through the shared consultation publication path: an exact preview hash, the expected catalog revision, the canonical id, version and hash, and the idempotency key.
+- **Authority is authentication.** The registry tier is a floor. Every write takes the actor from the scoped seat credential (`kontor-seat-v2`: seat binding and occupancy generation), never from the body.
+  - **The caller** is the exact frozen caller seat at its current hosted generation, on an active node of the epic. Its role is held to the pinned document's caller roles and scopes.
+  - **A member** is the exact frozen member seat at its current occupancy generation, and a write also needs an observed native identity. The slot comes from that seat alone.
+  - **Ambient credentials** reach only the catalog and the observer projection. An Admin or Operator credential cannot invoke, contribute, ask or decide.
+- **Order** is: authenticate, build the intent, replay, then check the revision.
+  - The intent includes the actor's binding and generation.
+  - Same key and same intent replays the original receipt (`unchanged`). Same key and another payload is `idempotency_conflict`.
+  - A retired generation is refused before its replay is looked up, so it never regains authority.
+- **Writes** carry the expected run revision (CAS) and a bounded payload. A clarification names one or both slots, once. The disposition cites both exact finding hashes and every given answer's hash, and dissent is retained. Nothing carries a verdict, settlement, Judge or aggregate.
+- **Visibility.**
+  - The caller sees findings, the clarification, the disposition and retained dissent only once the domain releases them.
+  - A member sees only its own words, sealed or not.
+  - An observer sees no contribution.
+- **Closed member serve profile.** `planning_pair_member` serves exactly `kontor_planning_pair_run_get`, `kontor_planning_pair_findings_record` and `kontor_planning_pair_answer_record`. No other profile is widened.
+
+### D-3 — source seams, placement and runtime ports
+
+- **Seats.** The existing SeatBindings, generation fencing and the semantic consultation container are reused. The members are slots `seat-a` and `seat-b` under logical role `planning_pair_member`. They are not reviewers or a Judge. The native correlation renders `planning_pair/<run uuid>` through the existing Paseo label.
+- **Names and slots, explicit only.**
+  - The published document names its `container_kind`.
+  - The epic's pinned Team Definition must declare that kind read-only, with exactly two display-named slots: `seat-a` titled `SEAT A` and `seat-b` titled `SEAT B`, each with capability profile `planning_pair_member`.
+  - A display-named slot carries no role code, so each member's registered role is the document's own explicit `members[].role_code`. **This field was added to `PlanningPairMemberSpec` in this slice** and is part of the document hash.
+  - Nothing is defaulted. The bundled realm declares no such container, so it cannot invoke.
+- **Placement** is the shared allocator on one activated snapshot (`Fleet::planning_pair_placement` → `kontor_fleet_activation::place_planning_pair`), under the caller's explicit binding keys and eligibility. The members land on distinct actual vendors or nothing is frozen. The run's placement document must hash to the shared reader's `placement_hash`.
+- **Runtime port.** `RuntimeAdapter::validate_planning_pair_member_surface` is new and refuses by default as `UnsupportedCapability { Launch }`.
+  - The daemon asks it before anything is frozen, and again before any container is prepared.
+  - The fake runtime composes the surface for tests, and `withholding_planning_pair_members()` withdraws it.
+  - Paseo, AO and Codex inherit the refusal, and Paseo's `launch_consultation` also refuses a planning pair run outright.
+  - The result is the exact capability gap, `unsupported_capability`, with no native effect. It is not a fake pass.
+- **Direct mode is unchanged.** `kontor-cli` and its `planning_pair@1` mode have no daemon dependency, no second parser or allocator and no control plane.
+
+### Decisions taken inside the contract, for review
+
+1. `container_kind` is part of the published document (D-3, "explicitly selected … Team Definition/profile"), validated against the epic's pin.
+2. `members[].role_code` is part of the published document. The Team Definition's display-named slot cannot carry one (`TeamDefinitionSpec::validate`: "exactly one role code or display name"). The only other source, the seeded delivery role binding, would be an invented default.
+3. The domain's own transition refusals keep the existing mapping:
+   - a second clarification, an unaddressed answer or a second finding is `invalid_request` (400, subject `PlanningPairRun`);
+   - any write to a disposed pair is `revision_conflict`, "the aggregate is terminal and immutable" (409).
+4. A planning pair's members carry no seat recovery yet (see the gaps).
+5. Receipts follow the established synchronous-command policy, which the Committee operations also use:
+   - an applied command records its receipt, targeting the epic, with the run id inside the intent hash;
+   - a refusal is returned in the existing error vocabulary and writes no receipt;
+   - "capability unavailable" is the existing `unsupported_capability` code, and no new code is added.
+6. The domain contract decision is recorded in `docs/CONSULTATION_LIFECYCLE.md` ("Governed planning pairs"). The plan record stays the TPM's, as sole plan writer.
+
+### Tests
+
+| Suite | Tests | What they prove |
+| --- | --- | --- |
+| `crates/kontor-daemon/tests/loopback/planning_pair.rs` (new, 7) | `a_planning_pair_releases_sealed_findings_to_its_caller_and_ends_in_a_disposition` | Through the registered routes, on a realm that publishes the PPW kind and container, selects them, activates one fleet policy and publishes the document: both members are placed on distinct vendors, launched and observed. Each sealed finding is invisible to the caller, the observer and the peer; release goes to the caller alone. There is one clarification to one member: the second is refused, and an unaddressed answer is refused. The disposition cites exact hashes and keeps seat B's rejected finding as dissent. The pair is then terminal: `disposed` with `result` and `settled_at` NULL, three contribution rows, and absent from the Committee and Advisor reads. |
+| | `only_the_frozen_caller_and_members_hold_authority_and_a_retired_generation_never_replays` | Refused with 403, freezing nothing: ambient Admin and Operator invoking, a TPM seat invoking, ambient Admin and Operator contributing, the caller contributing, another pair's member contributing or reading, and a member asking or deciding. A never-issued member generation is `stale_binding`. The slot and stored row are the authenticated member's. A current-generation replay is `unchanged`. After the member's generation, and then the caller's, is retired, their replays, reads, asks and invocation replay are `stale_binding`. |
+| | `planning_pair_commands_replay_exactly_and_refuse_reuse_staleness_and_duplicates` | The invocation replays, refuses another payload under its key, and refuses a second key on the same scope and topic (`consultation_semantic_duplicate`). The two members race on one revision: exactly one lands, and the other gets `revision_conflict` naming the current revision. The winner's key replays and refuses a rewrite. A second finding is refused, and the loser lands on re-read. |
+| | `concurrent_invocations_of_one_key_or_one_topic_admit_exactly_one_pair` | One key raced against itself: one pair, `created` and `unchanged`. Two keys raced on one topic: exactly one pair, plus `idempotency_conflict`. |
+| | `a_planning_pair_freezes_nothing_without_its_explicit_container_or_distinct_vendors` | A document selecting `CSW` (read-only, but not the pair's slots) or the absent `XPW`, and members the policy can only put on one vendor, are each `placement_blocked`. No run is frozen and no container is prepared or launched. |
+| | `a_runtime_without_the_member_surface_is_a_capability_gap_with_no_effect` | With the surface withheld: `unsupported_capability`, no run frozen, no container prepared, no member launched. |
+| | `a_reopened_realm_restores_a_sealed_planning_pair_and_continues_it` | A daemon reopened on the same state root restores the sealed pair from its records through the domain transitions, keeps it sealed, and releases it on the second finding. |
+| `crates/kontor-store/tests/planning_pair_store.rs` (7, in `8a27a851`); `schema_v1.rs` `v122_preserves_every_advisor_and_committee_row_and_rule` | | Freezing, CAS, rewrite refusal, disposed is terminal, unknown family and foreign state refused in SQL, the shared semantic index, and the payload only for a planning pair. The migration carries every v121 Advisor and Committee row, rule and receipt through unchanged. |
+| `crates/kontor-core/tests/consultation_identity_golden.rs` (2, in `8a27a851`) | | The golden Advisor and Committee bytes, and the planning pair's own family identity. |
+| `crates/kontor-runtime-paseo/tests/contract.rs` | `a_planning_pair_member_launch_is_an_unsupported_capability_with_no_native_effect` | Paseo refuses both the surface check and the launch as unsupported, with no plane call and no agent created. |
+| `crates/kontor-mcp` | `the_planning_pair_member_profile_is_the_exact_member_surface`, `the_planning_pair_member_profile_never_widens_observer_authority` | The closed member surface, and that an observer keeps only the read. |
+| `tests/contract/mcp_parity.rs`, `mcp_cardinality.rs` | | The nine tiers, the canary moving 201→210 mapped, 200→209 advertised and 202→211 documented, and the run-id sampler. |
+
+### Slice four gates and receipts
+
+- `cargo fmt -p <crate>` for the eight touched crates. Only this slice's lines changed.
+- `cargo clippy -p kontor-core -p kontor-store -p kontor-api -p kontor-daemon -p kontor-mcp -p kontor-runtime -p kontor-runtime-paseo -p kontor-tests-contract --all-targets -- -D warnings`: clean.
+- `cargo check --workspace --all-targets`: clean, so AO, Codex and every other consumer compile.
+- `cargo test --no-fail-fast -p kontor-core -p kontor-api -p kontor-runtime -p kontor-runtime-paseo -p kontor-mcp -p kontor-tests-contract -p kontor-daemon`: exit 0, 56 result lines, 1774 passed, 0 failed, 7 ignored. Within it, `loopback_api` had 504 passed and 1 ignored, and the Paseo `contract` 289 passed.
+- `cargo test -p kontor-store --test planning_pair_store`: 7 passed.
+- `kontor-cli` tests (33 passed) ran before the `role_code` field was added. The CLI does not consume that type, and the workspace check covers its build.
+- Console: `pnpm --filter kontor-console verify:api` and `typecheck` both passed.
+- The OpenAPI change is purely additive: 9 paths and 15 schemas added, and no existing path or schema changed.
+- The `8a27a851` checkpoint's gates were green when it was committed: `kontor-core`, the store suites, daemon lib 149, `loopback_api` 497 (1 ignored) and `schema_v1` 67.
+
+### Slice four mutation checks (seeded and run by this seat)
+
+The convention is MUT-003's:
+- One mutant at a time.
+- The file's SHA-256 captured before seeding and confirmed equal after a byte-exact restore and `touch`.
+- One `--exact` filter, with its `--list` count.
+- Red with the mutant in place, and green after restoring.
+
+The post-restore SHA-256 values are:
+- `crates/kontor-daemon/src/applications/planning_pair.rs` `753f7a7e3b91024fb6d19c749da0b3058fa32bcfc3f9f57f5d566bd50f4a028b`;
+- `crates/kontor-runtime-paseo/src/adapter.rs` `9730a456f14dc83a337750e3ebc61bab2e7f89185b4179c73a59038b3e6e840e`;
+- `crates/kontor-store/migrations/0122_planning_pair_family.sql` `91231d38cb7f3799784a3805788b86cfa3683254202a9beb30fb150c2e8e0866`;
+- `crates/kontor-core/src/planning_pair.rs` `2bc0b3aa18ffb09d52537aa3d0184988689a0bfc1483af113d1a34ec5ec52ee9`.
+
+Each row was 0 passed and N failed red, N passed green, with SHA-256 equal.
+
+| Id | Site and mutant | Killer (listed) | Red |
+| --- | --- | --- | --- |
+| PP-MUT-01 | `authenticated_member`: the generation fence becomes `if false && …` | authority test (1) | A never-issued generation-2 credential recorded seat A's finding (`created`) where `stale_binding` is required |
+| PP-MUT-02 | `authenticated_caller`: the exact-caller check becomes `if false && …` | authority test (1) | A member asking reached the hosted-generation check, giving 409 `stale_binding` where 403 is required |
+| PP-MUT-03 | invoke authenticates after the replay | authority test (1) | The retired caller generation replayed its invocation (`unchanged`) |
+| PP-MUT-04 | a member write authenticates after the replay (slot looked up unfenced) | authority test (1) | The retired seat-B generation replayed its finding (`unchanged`) |
+| PP-MUT-05 | released findings reach every viewer (`filter(\|_\| true)`) | journey (1) | The observer saw the released findings |
+| PP-MUT-06 | a member's own filter admits every slot | journey (1) | Seat B read seat A's sealed finding |
+| PP-MUT-07 | a member write skips the expected-revision check | idempotency test (1) | Both racing writes landed, `[200, 200]` |
+| PP-MUT-08 | invoke skips the surface check before freeze | unsupported test (1) | A run was frozen on an unsupporting runtime (`1` where `0` is required) |
+| PP-MUT-09 | the container becomes the delivery Committee kind instead of the document's `container_kind` | journey (1) | `placement_blocked` "the planning pair container must declare seat-a and seat-b exactly once each" |
+| PP-MUT-10 | Paseo's planning pair refusal becomes `if false && …` | Paseo contract test (1) | The launch went on instead of `UnsupportedCapability { Launch }` |
+| PP-MUT-11 | SQL: the planning pair state arm also admits `awaiting_judge` | `storage_refuses_an_unknown_family_and_a_state_outside_the_family` (1) | "awaiting_judge: SQL accepted 1 rows" |
+| PP-MUT-12 | SQL: the Advisor/Committee arm also admits `disposed` | same (1) | "SQL accepted the write (1 rows) that `CHECK constraint failed` forbids". The Advisor/Committee `disposed` copy is the only probe the mutant opens |
+| MUT-003-a (re-run 2) | `PlanningPairMembers::freeze` same-vendor check, `if false && …` | `members_on_one_actual_vendor_are_refused`, `a_stored_run_that_breaks_a_rule_fails_closed_on_that_rule` (2) | `left: Ok(PlanningPairMembers { … })` where `SAME_VENDOR` is required |
+| MUT-003-b (re-run 2) | `findings_complete` guard becomes `if false` | `a_findings_round_missing_a_member_releases_nothing`, `a_stored_run_that_breaks_a_rule_fails_closed_on_that_rule` (2) | `left: Ok(())` where `FINDINGS_INCOMPLETE` is required |
+| MUT-003-c (re-run 2) | `is_formal_review` becomes `!matches!(self, Self::Advisor)` | `advice_cannot_satisfy_a_formal_review_gate` (1) | `assertion failed: !protocol.is_formal_review()` |
+
+MUT-003 a–c were re-run because this slice changed `planning_pair.rs` (`container_kind`,
+`role_code`). Their historical rows, the remediation re-run and the `832e60cc` sealed
+repair are kept as written. Rows d–g are not re-run: their sites and killers are unchanged.
+
+Not run, and therefore not claimed:
+- The daemon's read-only and slot-title checks on the selected container. No test publishes a Team Definition whose selected container is writable or whose member slots are mistitled, so these two checks have no killer yet.
+- The completion scan's planning pair `continue`. That scan lists only `ConsultationFamily::Committee` runs, so the arm is unreachable.
+
+These rows are this seat's evidence, not an independent reproduction. Acceptance remains
+the TPM-routed verify and audit.
+
+## Remaining capability gaps after slice four (current)
+
+- **ASMA-8113 fence.** The reviewer is unassigned, so the widened identity vocabulary's acceptance, integration and deployment wait on an explicit assignment and an exact verdict.
+- **Native member surface.** Every real runtime is the capability gap: `unsupported_capability`, with no native effect.
+  - Paseo does not compose the `planning_pair_member` serve profile.
+  - The Claude consultation guard (`consultation_guard.rs`) still permits only the `consultation` profile.
+  - Observed member provenance is not read back.
+  - Owner: the runtime adapter. Next action: compose the guard and profile in the Paseo consultation launch, then a supervised native readback.
+- **No live effect.** Nothing native has been created or qualified:
+  - no native workspace or seat;
+  - no credential propagation;
+  - no topology or Team Definition publication on a live realm;
+  - no live policy deploy, pin migration or native qualification;
+  - no release.
+  The bundled pack declares no planning pair container, so a governed pair needs an explicitly published topology kind, Team Definition container and document. TPM owns that placement, and the owning release workflow owns deployment.
+- **Member seat recovery** (provider loss, credential propagation) is not implemented for a planning pair. The consultation recover routes refuse the family, so a lost member fails closed.
+- **Leadership serve profile.** No profile serves the caller tools (invoke, clarification, disposition) to a leadership seat. The `leadership` profile is unchanged, so the caller acts only through a client that holds its scoped credential.
+- **Direct-mode consumer.** The asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
+- **TPM-owned placement.** No TPM operation, receipt or procedure wraps placement.
+- **Concurrent resume.** Like the Advisor and Committee invocations, a resumed invocation that interleaves with another one before its `Running` advance is guarded by the run's CAS rather than retried. The fake runtime does not interleave there, so this is untested.
+- TASK-004 and TASK-002 are not closed by any slice.
+
 ## Remaining gaps after the audit remediation
+
+_Historical: kept as written at `832e60cc`. The current list is under slice four above._
 
 - **D-1, D-2 and D-3** were disposed by the LSA on 2026-10-02 (see the note under "Reserved decisions") for bounded implementation. The additive persistence, registered-operation and source-authentication slice follows only after verify and audit pass on this repair. The ASMA-8113 owner's compatibility review fences acceptance of the changed identity vocabulary. Live placement, release and qualification stay fenced under D-3.
 - **Persistence and identity.** The durable record, its explicit input-sourced seam (`PlanningPairRecord::admitted` plus each transition's own input and returned address) and its fail-closed restore exist, but no store keeps them: there are no tables or migration. The run id type and the semantic identity (dedupe) hash wait on D-1. ASMA-8113 stays open and is consumed, not reopened.

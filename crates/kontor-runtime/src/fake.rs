@@ -740,6 +740,8 @@ struct FakeState {
     canonical_root: Option<WorkspaceRoot>,
     /// Role slots this runtime will not launch, by slot id.
     unlaunchable: BTreeSet<String>,
+    /// Whether this runtime withholds the planning pair member surface.
+    planning_pair_surface_withheld: bool,
     /// Providers this runtime refuses specifically as recovery successors.
     unsupported_consultation_recovery_providers: BTreeSet<String>,
     /// Every seat whose *placement* this runtime can currently prove.
@@ -1412,6 +1414,7 @@ impl ScriptedFakeRuntime {
                 plane: PlaneRequirement::NotRequired,
                 canonical_root: None,
                 unlaunchable: BTreeSet::new(),
+                planning_pair_surface_withheld: false,
                 unsupported_consultation_recovery_providers: BTreeSet::new(),
                 placements: BTreeSet::new(),
                 runtime_kind: RuntimeKindKey::parse("fake.runtime").expect("valid runtime kind"),
@@ -1528,6 +1531,13 @@ impl ScriptedFakeRuntime {
     /// session, no binding, and the seat's reservation given back.
     pub fn refusing_launch_of(&self, slot: &kontor_core::id::RoleSlotId) {
         self.lock().unlaunchable.insert(slot.as_str().to_owned());
+    }
+
+    /// Withhold the planning pair member surface, as a runtime that has not
+    /// composed it does: the surface check and every member launch refuse it
+    /// as an unsupported capability.
+    pub fn withholding_planning_pair_members(&self) {
+        self.lock().planning_pair_surface_withheld = true;
     }
 
     /// Let a role slot that was deliberately refused become launchable again.
@@ -2798,6 +2808,15 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         Ok(())
     }
 
+    fn validate_planning_pair_member_surface(&self) -> RuntimeResult<()> {
+        if self.lock().planning_pair_surface_withheld {
+            return Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::Launch,
+            });
+        }
+        Ok(())
+    }
+
     fn provider_available(&self, provider: &str) -> bool {
         !self.lock().unavailable_providers.contains(provider)
     }
@@ -3741,6 +3760,16 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
         let mut state = self.lock();
         state.require_plane()?;
+        if state.planning_pair_surface_withheld
+            && matches!(
+                request.run_id,
+                kontor_core::consultation::ConsultationRunId::PlanningPair(_)
+            )
+        {
+            return Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::Launch,
+            });
+        }
         if state.unlaunchable.contains(request.role_slot_id.as_str()) {
             return Err(RuntimeError::Transport {
                 rule: "this runtime will not launch that consultation role slot",

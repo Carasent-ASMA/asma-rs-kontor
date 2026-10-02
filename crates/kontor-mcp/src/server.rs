@@ -386,6 +386,18 @@ mod tests {
         );
     }
 
+    /// An observer credential presented under the planning pair member profile
+    /// keeps only the read; the profile never lifts it to a member write.
+    #[test]
+    fn the_planning_pair_member_profile_never_widens_observer_authority() {
+        let served: BTreeSet<&str> = profiled(CallerTier::Observer, "planning_pair_member")
+            .served()
+            .iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(served, BTreeSet::from(["kontor_planning_pair_run_get"]));
+    }
+
     /// TEST-002: a tool the tier reaches but the profile excludes is refused at
     /// call time with a distinct error, and nothing is dispatched. A narrowed
     /// list with open calls would be a defect (REQ-003).

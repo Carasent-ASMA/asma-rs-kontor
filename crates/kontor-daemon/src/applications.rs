@@ -28,6 +28,7 @@
 mod artifact_submission;
 mod committee_evidence;
 mod open_questions;
+mod planning_pair;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -27181,6 +27182,106 @@ impl ApplicationOperations for Services {
             },
         })
     }
+    fn planning_pair_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
+        self.planning_pair_catalog(project_id)
+    }
+
+    fn preview_planning_pair_profile(
+        &self,
+        project_id: ProjectId,
+        request: &ProfilePreviewRequest,
+    ) -> Result<ProfilePreviewDto, ApiError> {
+        self.preview_planning_pair_document(project_id, request)
+    }
+
+    async fn apply_planning_pair_profile(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        request: &ProfileApplyRequest,
+    ) -> Result<AppliedProfileDto, ApiError> {
+        self.apply_planning_pair_document(key, project_id, request)
+    }
+
+    async fn invoke_planning_pair_run(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        caller: kontor_api::planning_pair::PlanningPairSeat,
+        request: &kontor_api::planning_pair::InvokePlanningPairRequest,
+    ) -> Result<kontor_api::planning_pair::PlanningPairRunDto, ApiError> {
+        self.invoke_planning_pair(key, project_id, epic_id, caller, request)
+            .await
+    }
+
+    fn planning_pair_run(
+        &self,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        reader: kontor_api::planning_pair::PlanningPairReader,
+    ) -> Result<kontor_api::planning_pair::PlanningPairRunDto, ApiError> {
+        self.read_planning_pair(project_id, run_id, reader)
+    }
+
+    async fn record_planning_pair_finding(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        member: kontor_api::planning_pair::PlanningPairSeat,
+        request: &kontor_api::planning_pair::RecordPlanningPairContributionRequest,
+    ) -> Result<kontor_api::planning_pair::PlanningPairRunDto, ApiError> {
+        self.record_planning_pair_contribution(
+            key,
+            project_id,
+            run_id,
+            member,
+            kontor_core::planning_pair::PlanningPairRound::Findings,
+            request,
+        )
+    }
+
+    async fn request_planning_pair_clarification(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        caller: kontor_api::planning_pair::PlanningPairSeat,
+        request: &kontor_api::planning_pair::RequestPlanningPairClarificationRequest,
+    ) -> Result<kontor_api::planning_pair::PlanningPairRunDto, ApiError> {
+        self.request_planning_pair_question(key, project_id, run_id, caller, request)
+    }
+
+    async fn record_planning_pair_answer(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        member: kontor_api::planning_pair::PlanningPairSeat,
+        request: &kontor_api::planning_pair::RecordPlanningPairContributionRequest,
+    ) -> Result<kontor_api::planning_pair::PlanningPairRunDto, ApiError> {
+        self.record_planning_pair_contribution(
+            key,
+            project_id,
+            run_id,
+            member,
+            kontor_core::planning_pair::PlanningPairRound::Clarification,
+            request,
+        )
+    }
+
+    async fn record_planning_pair_disposition(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        run_id: kontor_core::id::PlanningPairRunId,
+        caller: kontor_api::planning_pair::PlanningPairSeat,
+        request: &kontor_api::planning_pair::RecordPlanningPairDispositionRequest,
+    ) -> Result<kontor_api::planning_pair::PlanningPairRunDto, ApiError> {
+        self.record_planning_pair_decision(key, project_id, run_id, caller, request)
+    }
+
     fn advisor_profiles(&self, project_id: ProjectId) -> Result<ProfileCatalogDto, ApiError> {
         self.consultation_catalog(project_id, ConsultationFamily::Advisor)
     }
@@ -42204,6 +42305,29 @@ impl Services {
                 ));
             }
         };
+        self.consultation_semantic_identity_of_kind(
+            project_id, epic_id, task_id, family, kind, revision, definition, topic, re_review,
+        )
+    }
+
+    /// [`Self::consultation_semantic_identity`] for one explicit container
+    /// kind: the same validation and the same shared identity function.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the identity hash must receive every authority field explicitly"
+    )]
+    fn consultation_semantic_identity_of_kind(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        task_id: Option<TaskId>,
+        family: ConsultationFamily,
+        kind: &TopologyKindKey,
+        revision: &StoredConsultationProfileRevision,
+        definition: &TeamDefinitionSpec,
+        topic: &ExternalName,
+        re_review: Option<&CommitteeReReviewProvenance>,
+    ) -> Result<ContentHash, ApiError> {
         let container = definition.container(kind).ok_or_else(|| {
             self.deny(
                 ApiErrorCode::PlacementBlocked,

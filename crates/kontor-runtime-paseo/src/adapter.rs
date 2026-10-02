@@ -6599,6 +6599,19 @@ impl RuntimeAdapter for PaseoAdapter {
         &self,
         request: &ConsultationLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        // ASMA-8282: a planning pair member needs the closed planning-pair
+        // member surface — its serve profile, consultation guard and observed
+        // provenance — which this adapter does not compose yet. Refuse before
+        // any native effect rather than launch it under the Advisor and
+        // Committee consultation surface it must not reach.
+        if matches!(
+            request.run_id,
+            kontor_core::consultation::ConsultationRunId::PlanningPair(_)
+        ) {
+            return Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::Launch,
+            });
+        }
         {
             let state = &mut *self.lock();
             if !state.consultation_claims.insert(request.seat_binding_id) {

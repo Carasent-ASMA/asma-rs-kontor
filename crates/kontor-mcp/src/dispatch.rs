@@ -463,6 +463,7 @@ fn check_value(
         | ArgType::QuickSessionId
         | ArgType::AdvisorRunId
         | ArgType::CommitteeRunId
+        | ArgType::PlanningPairRunId
         | ArgType::OpenKey
         | ArgType::ExternalName
         | ArgType::ExternalId
@@ -623,6 +624,7 @@ fn parse_domain(ty: ArgType, text: &str) -> Result<(), kontor_core::DomainError>
         ArgType::QuickSessionId => id::QuickSessionId::parse(text).map(drop),
         ArgType::AdvisorRunId => id::AdvisorRunId::parse(text).map(drop),
         ArgType::CommitteeRunId => id::CommitteeRunId::parse(text).map(drop),
+        ArgType::PlanningPairRunId => id::PlanningPairRunId::parse(text).map(drop),
         ArgType::OpenKey => id::validate_open_key("OpenKey", text),
         ArgType::ExternalName => id::ExternalName::parse(text).map(drop),
         ArgType::ExternalId => id::ExternalId::parse(text).map(drop),
