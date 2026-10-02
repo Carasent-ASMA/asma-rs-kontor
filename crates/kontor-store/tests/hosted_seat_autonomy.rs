@@ -3150,3 +3150,58 @@ fn every_readback_field_is_bound_to_the_transition_it_commits() {
         );
     }
 }
+
+/// A replayed binding is proved before it may answer `Unchanged`.
+///
+/// The idempotent path used to return first and verify never. That made the
+/// most common way this row is read the one way it was never checked: a row
+/// bound by some other route — an upgrade, a restore, a direct write — would be
+/// re-affirmed on replay without its receipt or its readback being looked at
+/// once.
+///
+/// Reaching the ordering needs a row that is *already* bound and whose binding
+/// does not hold, which the binder itself will not produce; the planted state
+/// below is what another writer could leave behind (ASMA-8187 P2).
+#[test]
+fn a_replayed_binding_is_proved_before_it_answers_unchanged() {
+    let fixture = Fixture::build();
+    let (_seat, key, _successor) = bound_succession(&fixture, "asma-8187-replay-proof");
+    let stranger = IdempotencyKey::parse("asma-8187-replay-other").expect("a key");
+    let foreign = recorded_receipt(&fixture, &stranger);
+
+    // Repoint the existing binding at a receipt recorded for another command.
+    // The frozen trigger exists to stop exactly this, so it is taken out of the
+    // way first — that is the point: the binder must not depend on it.
+    let connection = Connection::open(&fixture.db_path).expect("the database opens");
+    connection
+        .execute_batch("DROP TRIGGER core_team_route_succession_claim_is_frozen;")
+        .expect("the freeze is lifted for the plant");
+    connection
+        .execute(
+            "UPDATE core_team_route_successions SET receipt_id = ?2 WHERE idempotency_key = ?1",
+            rusqlite::params![key.as_str(), foreign.to_string()],
+        )
+        .expect("the mis-binding is planted");
+
+    // Replaying with the receipt the row now names must be refused, not
+    // confirmed. An `Unchanged` here would be the ledger agreeing with itself.
+    let refused = fixture
+        .store
+        .bind_core_team_route_succession_receipt(
+            &key,
+            succession_intent(&key).hash(),
+            foreign,
+            at("2026-09-17T13:00:00Z"),
+        )
+        .expect_err("a replay confirmed a binding nobody had proved");
+    assert!(
+        matches!(
+            refused,
+            kontor_core::repository::RepositoryError::Conflict {
+                rule: "the receipt was recorded for another command",
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+}
