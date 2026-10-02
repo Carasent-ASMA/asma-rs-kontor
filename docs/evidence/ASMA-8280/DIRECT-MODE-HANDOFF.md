@@ -9,7 +9,8 @@
 - Slice four is built on accepted `a3bd2f99a5ffa4dcc8bd936550b01b27865f6ba8` and implements the LSA disposition of B-1 and B-2 (plan commit `671d49ca`, section "LSA disposition — direct resolution and roster (2026-09-28)") and G-4. Ancestors `1168c17a`, `2a96a650`, `ec68ec5a`, `0eee8f63`, `68de02fc`, `77722be0`, `b00a3328`, `09e7f5f0` and `a3bd2f99` are unchanged.
 - Slice five is built on accepted `0e04a89ab6f2970c8582effc9f17d431017e3374` (tree `d7d6329d`, parent `8a3365d1`). It implements the decided resolver tier, G-5 (joint Committee allocation on the same local operation, one shared allocator) and the rest of G-4 (explicit eligibility at the governed delivery and consultation boundary). Ancestors `8a3365d1`, `a3bd2f99`, `09e7f5f0`, `b00a3328`, `77722be0`, `68de02fc`, `0eee8f63`, `ec68ec5a`, `2a96a650` and `1168c17a` are unchanged.
 - Slice six is built on accepted `8fa1796827e2a9960c1c25be0623b7ce399974dc` (tree `efe0d5b5`, parent `0e04a89a`), 0 behind `origin/master` `173d399b`. It implements the decided S-1 (registered bundle operations), S-2 (registered proposal) and S-3 (a project Core Team published from a verified bundle through the existing contract). G-3, G-6 root authoring and the asma-cli consumer are not in it. Every accepted ancestor, `8fa17968` included, is unchanged.
-- Slice seven (this revision) is built on accepted `5662bea6d118ebb23cab598441df5a26a232b0b4` (tree `75d08395`, parent `8fa17968`). It implements G-3 only: one shared, optional fleet launch provenance at the runtime boundary, with what a launch requested kept apart from what its runtime natively observed. G-6 root authoring, the asma-cli consumer, deployment and the supervised qualification are not in it. Every accepted ancestor, `5662bea6` included, is unchanged.
+- Slice seven is built on accepted `5662bea6d118ebb23cab598441df5a26a232b0b4` (tree `75d08395`, parent `8fa17968`). It implements G-3 only: one shared, optional fleet launch provenance at the runtime boundary, with what a launch requested kept apart from what its runtime natively observed. G-6 root authoring, the asma-cli consumer, deployment and the supervised qualification are not in it. Every accepted ancestor, `5662bea6` included, is unchanged.
+- The MUT-001 pass (this revision) was run on the exact accepted head `739debaacfb0ace894b36114aaa1eef6835cdfc1` (tree `781e21ec`, parent `5662bea6`), following the `mutation-testing` skill. It adds evidence only; no implementation source changed. The results are under "MUT-001 — performed on `739debaa`" below.
 
 This record is implementation evidence and a handoff. It is not verification, does not
 close TASK-002, and claims no mutation acceptance.
@@ -176,9 +177,11 @@ Each is reversible and none is presented as a substitute decision.
   returns the full receipt. That residual is accepted as closed.
 - **G-6: root `config/orchestration/` files.** Prepared only in the ECP checkout,
   only after this module schema is reviewed, and not activated by being written.
-- **asma-cli consumer** (below), **MUT-001 acceptance** (below), **deployment** of a
-  daemon and CLI build through the owning release workflow, and the **supervised
-  qualification** launch (below). None was performed.
+- **asma-cli consumer** (below), **deployment** of a daemon and CLI build through the
+  owning release workflow, and the **supervised qualification** launch (below). None
+  was performed.
+- **MUT-001** was run on `739debaa` (below): all 12 mutants were killed. Verify and
+  audit have not yet read it back.
 
 ## asma-cli handoff (not written; another checkout)
 
@@ -189,7 +192,7 @@ Each is reversible and none is presented as a substitute decision.
 - **Tier:** `operator` (choice 1), which `_run_kontor` already passes.
 - **Candidate source:** `src/asma_cli/fleet_policy.py`, with `resolve_seat(state_root, key, eligibility) -> dict` calling `_run_kontor`. Unavailable accounts come from `fleet_availability` records; excluded vendors come from the implementer's previous receipt.
 
-## MUT-001 — prepared, not performed
+## MUT-001 — performed on `739debaa`
 
 MUT-001 is "unactivated YAML changes next placement". The activation decision now has
 these sites; mutate each separately:
@@ -209,8 +212,47 @@ Local preparation checks, which only confirm that the named killers exist:
 - Slice five, site 5 on the uncommitted tree (select under `Eligibility::default()`). Failed: `every_admitted_fleet_placement_is_recorded`, whose second takeover was refused (the chosen route had no admissible account). Site 6's governed diversity mapping forced to `None`. Failed: loopback `a_fleet_bound_committee_seats_reviewers_on_different_vendors` and both daemon `whole_committee_allocation_*` tests. Each source was restored and touched.
 - Slice six, site 7 on the uncommitted tree (`confirm_bundle_roster` short-circuited). Failed: `a_core_team_is_published_from_a_verified_bundle_through_the_existing_contract`, whose version-2 preview was admitted (200 where it requires 400). The source was restored and touched.
 
-Neither check is the supported mutation evidence. Acceptance still needs the
-supported mutation run on the reviewed candidate, and this record claims none.
+Those checks were preparation only. The results below supersede them.
+
+### Results on `739debaa` (2026-09-30)
+
+**Head.** `739debaacfb0ace894b36114aaa1eef6835cdfc1`, tree `781e21ec3aab928e939ecb2349c6833ab6640954`, clean.
+
+**Method.** The pass followed the `mutation-testing` skill (`.agents/skills/mutation-testing/SKILL.md` in asma-modules):
+
+- One mutant at a time, each seeded as one anchored edit that had to match exactly once.
+- The claimed killers ran with `cargo test --no-fail-fast`, one package or target per command, sequentially. For site 3 the whole `kontor-fleet-activation` library suite (14 tests) ran, so a killer outside the named ones would show.
+- After each mutant: `git checkout -- <file>` and `touch <file>`. The next mutant was seeded only once `git diff 739debaa` and `git status --porcelain` were both empty.
+- Every failure below is an assertion panic. No mutant failed to compile, and every command ran at least one test.
+
+**Baseline**, clean head, before any mutant: `cargo test --workspace --no-fail-fast` exited 0. 155 test targets ran: 3021 passed, 0 failed, 9 ignored.
+
+**Post-pass**, restored source, after touching every mutated file: every claimed killer and the full activation suite ran again. 32 passed, 0 failed, so no mutant is left in any binary.
+
+| ID | Site | Seed (file:line at `739debaa`) | Killers run | Result |
+| --- | --- | --- | --- | --- |
+| M01 | 1 | `crates/kontor-fleet/src/lib.rs:456`, `FleetSnapshot::published`: the P-07 content-hash equality is dropped. `activated` goes through it. | kontor-fleet `only_the_activated_bytes_are_admitted`; activation `a_rewritten_or_non_canonical_artifact_fails_closed`; daemon `a_direct_reader_of_the_activation_chooses_what_placement_chooses`, `a_tampered_published_policy_fails_closed_without_falling_back`; loopback `an_activated_policy_places_the_next_seat_and_fails_closed_when_unverifiable` | **KILLED** by all 5. Rewritten bytes were admitted; the loopback got 200 where the tampered activation must refuse. |
+| M02 | 2 | `crates/kontor-daemon/src/fleet.rs:392`, `FleetSource::placement`: `if true` serves `legacy()` unconditionally. | daemon `an_activated_policy_replaces_fleet_yml_for_placement`, `an_unactivated_edit_or_publication_has_no_live_effect`, `a_bundle_that_does_not_verify_is_never_activated_and_never_served`; loopback `an_activated_policy_places_the_next_seat_and_fails_closed_when_unverifiable` | **KILLED** by all 4. `fleet.yml`'s hash and route were served instead of the activated policy's. |
+| M03 | 3 | `crates/kontor-fleet-activation/src/lib.rs:506`, `load`: the A-11 record/manifest agreement guard is dropped. | activation library suite; CLI `the_local_read_fails_closed_and_never_falls_back` | **KILLED** by `a_record_that_disagrees_with_its_manifest_fails_closed`, which got `Ok`. The CLI test passed. |
+| M04 | 3 | `:404`, `verify_roster`: the C-08 part of the roster check. `from_stored(&text, hash)` becomes `from_value` of the parsed text, with no canonical or address check. | as M03 | **KILLED** by `a_rewritten_or_non_canonical_artifact_fails_closed`: the rewritten roster was refused as M-10, not C-08. The CLI test passed. |
+| M05 | 3 | `:405`, `verify_roster`: the shape part of the roster check. `LeadershipKey::pinned_slots` (L-01/L-02) is dropped. | as M03 | **KILLED** by `a_canonical_artifact_of_the_wrong_kind_fails_closed`: refused as M-10, not L-01. The CLI test passed. |
+| M06 | 3 | `:535`, `verify_contents`: the M-10 catalog-pin guard is dropped. | as M03 | **KILLED** by `a_manifest_pinning_another_role_catalog_fails_closed`, which got `Ok`. The CLI test passed. |
+| M07 | 4 | `crates/kontor-daemon/src/applications.rs:38819`, `Services::leadership_binding`: `&& false` skips the selected-roster confirmation. | loopback `an_aligned_activation_leads_only_the_epic_pinned_to_its_roster` | **KILLED**: 200 where 409 is required. |
+| M08 | 5 | `applications.rs:15503`, `place_fleet_routes`: it selects under `Eligibility::default()` instead of the translated eligibility. | loopback `every_admitted_fleet_placement_is_recorded` | **KILLED**: 400 where 200 is required. |
+| M09 | 6 | `crates/kontor-fleet/src/allocation.rs:302`, the allocator's `walk`: the held-key check is dropped. | kontor-fleet `reviewers_take_distinct_vendors_and_the_judge_is_unconstrained`, `the_search_backtracks_and_slot_order_breaks_the_tie`; daemon `whole_committee_allocation_*` (2); loopback `a_fleet_bound_committee_seats_reviewers_on_different_vendors`; CLI `a_joint_allocation_is_one_snapshot_through_the_shared_allocator` | **KILLED** by all 6. Reviewers shared a vendor. |
+| M10 | 6 | `applications.rs:15259`, `allocate_committee`: `DistinctProviderPerSlot` maps to `AllocationDiversity::None`. | as M09 | **KILLED** by both daemon `whole_committee_allocation_*` tests and the loopback. The kontor-fleet and CLI tests passed: they never call the governed mapping. |
+| M11 | 7 | `applications.rs:9088`, `confirm_bundle_roster`: `false &&` skips the byte-and-hash confirmation. | loopback `a_core_team_is_published_from_a_verified_bundle_through_the_existing_contract` | **KILLED**: the version-2 preview got 200 where 400 is required. |
+| M12 | 7 | `applications.rs:24638`, `publish_fleet_bundle`: `false &&` skips the comparison with the preview hash that `resolve_fleet_bundle` computes. | loopback `an_orchestration_bundle_is_published_and_activated_through_registered_operations` | **KILLED**: the unseen publication got 200 where 400 is required. |
+
+**Score.** 12 killed of 12 seeded; 0 survived, 0 equivalent.
+
+**Corrections to the site list above.**
+
+- **The CLI test is not a site-3 killer.** `the_local_read_fails_closed_and_never_falls_back` passed against all four site-3 mutants (M03–M06). The activation crate's own tests are the site-3 killers.
+- **Site 3 names the wrong missing-artifact test.** The list names `a_missing_named_artifact_fails_closed`, and it passed against all four site-3 mutants: a missing roster is still refused C-07 by the read. M04 and M05 were killed by `a_rewritten_or_non_canonical_artifact_fails_closed` and `a_canonical_artifact_of_the_wrong_kind_fails_closed`, which the list does not name. In both, the corrupted roster was still refused, by the later M-10 check, so only the exact-rule assertion catches the mutant.
+- **Site 6 has two killer sets.** The kontor-fleet and CLI tests kill only the allocator mutant (M09). The governed mapping (M10) is killed only by the daemon and loopback tests.
+
+**Scope.** MUT-001 covers the activation decision ("unactivated YAML changes next placement"); G-3 launch provenance was not in it. This pass records the evidence for one cell of TASK-002. Verify and audit have not yet read it back, and it does not close TASK-002.
 
 ## Launch specification (later supervised effect)
 
