@@ -30,6 +30,9 @@ use crate::adapter::{
 use crate::provenance::FleetLaunchProvenance;
 use crate::workspace::WorkspaceRoot;
 
+pub mod caller;
+pub mod context;
+
 /// The role catalog revision a member's registered role was resolved in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanningPairCatalogPin {

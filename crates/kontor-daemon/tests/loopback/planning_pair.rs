@@ -23,6 +23,9 @@ use kontor_core::planning_pair::PlanningPairSlot;
 use kontor_core::repository::{StoredConsultationRun, StoredPlanningPairContribution};
 use kontor_core::spec::RoleCatalogRevision;
 
+#[path = "planning_pair_eligibility.rs"]
+mod eligibility;
+
 const PAIR_PROFILE: &str = "01991c00-0000-7000-8000-0000000000b1";
 
 /// The topology kind and Team Definition container the fixture publishes.

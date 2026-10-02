@@ -285,6 +285,26 @@ unchanged: its answer is still exactly the placement. Exposing the readiness
 document to a direct consumer would change that pinned answer, so it is a
 decision for the LSA.
 
+The frozen caller's eligibility and a member's frozen launch context are pure
+decisions in the shared runtime core: `planning_pair::caller` and
+`planning_pair::context`. The service still reads every fact itself, in the
+same place and order, after it authenticates the bearer at its own boundary.
+It then hands each fact to one shared predicate or construction, stage by
+stage:
+
+- the scope;
+- the seat, its node and its current hosted generation;
+- the role;
+- the member's frozen run, document pin and placement;
+- the epic's pinned Team Definition and topology;
+- the context and its canonical hash.
+
+The core returns typed refusals and names no wire text. The service answers
+each one with the status, code, rule and action it answered before. A passing
+result is not a credential, capability, permission or generation lease. It
+never makes the readiness seam's caller plane established. Replay,
+compare-and-swap, receipts and every effect stay with the service.
+
 None of this is a live qualification. The Committee seat recovery route,
 which replaces a native, is unchanged and cannot reach a planning pair member:
 it finds no such Committee run.

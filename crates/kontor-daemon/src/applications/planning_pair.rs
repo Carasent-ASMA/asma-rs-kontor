@@ -20,6 +20,8 @@
 //! that supports the planning pair member surface performs one; persistence
 //! alone never reports a launch.
 
+mod refusal;
+
 use super::*;
 use kontor_api::applications::AdviceDispositionDto;
 use kontor_api::planning_pair::{
@@ -44,6 +46,9 @@ use kontor_core::repository::{
 };
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_fleet_activation::{PlanningPairMemberRequest, PlanningPairRequest};
+use kontor_runtime::planning_pair::caller::{self as eligibility, CallerRefusal, FrozenCallerAct};
+use kontor_runtime::planning_pair::context::{self as member_context, ContextRefusal};
+use refusal::{caller_refusal_rule, context_refusal_rule};
 
 /// The logical role every planning pair member seat is held under, as
 /// `advisor` is for an Advisor seat.
@@ -560,38 +565,17 @@ impl Services {
         spec: &PlanningPairSpec,
         caller: PlanningPairSeat,
     ) -> Result<kontor_core::state::SeatBinding, ApiError> {
-        if let Some(task_id) = task_id {
-            let task = self.task_row(project_id, task_id)?;
-            if task.mini_project_id != Some(epic_id) {
-                return Err(self.deny(
-                    ApiErrorCode::Forbidden,
-                    "the requested ticket does not belong to this epic",
-                ));
-            }
-            if !spec.allowed_scopes.contains(&ConsultationScope::Ticket) {
-                return Err(self.deny(
-                    ApiErrorCode::Forbidden,
-                    "the pinned planning pair document does not permit ticket-scoped invocation",
-                ));
-            }
-        } else if !spec.allowed_scopes.contains(&ConsultationScope::Epic) {
-            return Err(self.deny(
-                ApiErrorCode::Forbidden,
-                "the pinned planning pair document does not permit epic-scoped invocation",
-            ));
-        }
+        let scope = match task_id {
+            Some(task_id) => eligibility::InvocationScope::Ticket {
+                ticket_epic: self.task_row(project_id, task_id)?.mini_project_id,
+            },
+            None => eligibility::InvocationScope::Epic,
+        };
+        eligibility::require_invocation_scope(spec, epic_id, scope)
+            .map_err(|refusal| self.caller_refusal(refusal))?;
         let seat = self.active_epic_seat(project_id, epic_id, caller)?;
-        let slot_role = seat.role_slot_id.as_role_key().as_str();
-        let catalog_role = seat.role.role_code.as_str();
-        if !spec.allowed_caller_roles.iter().any(|allowed| {
-            allowed.as_str().eq_ignore_ascii_case(slot_role)
-                || allowed.as_str().eq_ignore_ascii_case(catalog_role)
-        }) {
-            return Err(self.deny(
-                ApiErrorCode::Forbidden,
-                "the authenticated seat's role may not convene this planning pair",
-            ));
-        }
+        eligibility::require_caller_role(spec, &seat)
+            .map_err(|refusal| self.caller_refusal(refusal))?;
         Ok(seat)
     }
 
@@ -606,47 +590,21 @@ impl Services {
         let state = self.state()?;
         let seat = state
             .with_store(|store| store.get_seat_binding(project_id, caller.seat_binding_id))
-            .map_err(|error| self.refuse(&error))?
-            .filter(|seat| seat.is_non_terminal() && !seat.closes_children())
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::StaleBinding,
-                    "the authenticated caller seat is not active",
-                )
-            })?;
+            .map_err(|error| self.refuse(&error))?;
+        let seat = eligibility::require_active_seat(seat)
+            .map_err(|refusal| self.caller_refusal(refusal))?;
         let node = state
             .with_store(|store| store.get_topology_node(project_id, seat.topology_node_id))
-            .map_err(|error| self.refuse(&error))?
-            .filter(|node| node.mini_project_id == Some(epic_id))
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::Forbidden,
-                    "the authenticated caller seat does not belong to this epic",
-                )
-            })?;
-        if node.lifecycle != TopologyLifecycle::Active {
-            return Err(self.deny(
-                ApiErrorCode::StaleBinding,
-                "the authenticated caller seat's topology node is not active",
-            ));
-        }
+            .map_err(|error| self.refuse(&error))?;
+        eligibility::require_active_epic_node(node.as_ref(), epic_id)
+            .map_err(|refusal| self.caller_refusal(refusal))?;
         let current = state
             .with_store(|store| {
                 store.hosted_topology_seat_occupancy_generation(project_id, caller.seat_binding_id)
             })
-            .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::StaleBinding,
-                    "the authenticated caller seat has no active hosted native occupancy",
-                )
-            })?;
-        if caller.occupancy_generation != current {
-            return Err(self.deny(
-                ApiErrorCode::StaleBinding,
-                "the caller credential belongs to a fenced native occupancy generation",
-            ));
-        }
+            .map_err(|error| self.refuse(&error))?;
+        eligibility::require_current_generation(caller.occupancy_generation, current)
+            .map_err(|refusal| self.caller_refusal(refusal))?;
         Ok(seat)
     }
 
@@ -1078,7 +1036,7 @@ impl Services {
             let route_provenance = ConsultationRouteProvenance::fleet_configuration(
                 pair.placement.placement.hash().clone(),
             );
-            let fleet_provenance = planning_pair_fleet_provenance(&receipt, slot);
+            let fleet_provenance = member_context::requested_fleet_provenance(&receipt, slot);
             adapter
                 .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
@@ -1239,93 +1197,37 @@ impl Services {
         catalog: &RoleCatalogRevision,
         requested: Option<&kontor_runtime::FleetLaunchProvenance>,
     ) -> Result<kontor_runtime::planning_pair::PlanningPairLaunchContext, ApiError> {
-        let refuse = |rule: &'static str| self.deny(ApiErrorCode::PlacementBlocked, rule);
-        let ConsultationRunId::PlanningPair(run_id) = run.id else {
-            return Err(refuse(
-                "a planning pair member launch requires a planning pair",
-            ));
-        };
-        let profile = pair.pair.pin().clone();
-        if profile.profile_id.to_string() != run.profile_id
-            || profile.version != run.profile_version
-            || profile.definition_hash != run.definition_hash
-        {
-            return Err(refuse(
-                "the member's document pin differs from the one the pair was frozen under",
-            ));
-        }
-        let member = pair
-            .pair
-            .members()
-            .members()
-            .iter()
-            .find(|member| member.slot == slot)
-            .ok_or_else(|| refuse("a frozen planning pair seat is absent from its placement"))?;
-        if member.route != seat.model_rung {
-            return Err(refuse(
-                "the member seat's route differs from the route its placement froze",
-            ));
-        }
-        if seat.occupancy_generation == 0 {
-            return Err(refuse("the member seat has no occupancy generation"));
-        }
-        let placement_hash = pair.placement.placement.hash().clone();
-        let frozen = |key: &str| run.context.get(key).cloned();
-        if frozen("placement_hash") != Some(serde_json::json!(placement_hash.as_str())) {
-            return Err(refuse("the frozen run names another placement"));
-        }
-        let team_definition = self
+        let refuse = |refusal| self.context_refusal(refusal);
+        let frozen = member_context::frozen_member(
+            run,
+            pair.pair.pin(),
+            pair.pair.members(),
+            pair.placement.placement.hash(),
+            seat,
+            slot,
+        )
+        .map_err(refuse)?;
+        let pinned = self
             .state()?
             .with_store(|store| {
                 store.get_mini_project_team_definition(run.project_id, run.mini_project_id)
             })
             .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| refuse("the epic has no pinned Team Definition"))?
-            .definition;
-        if frozen("team_definition_id")
-            != Some(serde_json::json!(team_definition.definition_id.to_string()))
-            || frozen("team_definition_version")
-                != Some(serde_json::json!(team_definition.version.get()))
-            || frozen("team_definition_hash")
-                != Some(serde_json::json!(team_definition.canonical_hash.as_str()))
-        {
-            return Err(refuse(
-                "the epic's pinned Team Definition differs from the one the pair was frozen under",
-            ));
-        }
-        if self.epic_pin(run.project_id, run.mini_project_id)? != node.topology {
-            return Err(refuse(
-                "the member container's topology differs from the epic's pinned topology",
-            ));
-        }
-        let catalog_hash = catalog
-            .canonicalize()
-            .map_err(|error| self.refuse_domain(&error))?
-            .hash()
-            .clone();
-        let requested_fleet_provenance = requested.cloned().ok_or_else(|| {
-            refuse("the frozen placement names no fleet provenance for this member")
-        })?;
-        Ok(kontor_runtime::planning_pair::PlanningPairLaunchContext {
-            run_id,
-            seat_binding_id: seat.seat_binding_id,
-            slot,
-            occupancy_generation: seat.occupancy_generation,
-            profile,
-            topology: node.topology.clone(),
-            team_definition,
-            role_catalog: kontor_runtime::planning_pair::PlanningPairCatalogPin {
-                catalog_id: catalog.catalog_id,
-                version: catalog.version,
-                canonical_hash: catalog_hash,
-            },
-            topology_node_id: node.id,
-            cwd: cwd.clone(),
-            route: seat.model_rung.clone(),
-            vendor: member.vendor.clone(),
-            placement_hash,
-            requested_fleet_provenance,
-        })
+            .map(|pin| pin.definition);
+        let team_definition = frozen.require_team_definition(pinned).map_err(refuse)?;
+        member_context::require_container_topology(
+            &self.epic_pin(run.project_id, run.mini_project_id)?,
+            node,
+        )
+        .map_err(refuse)?;
+        frozen
+            .into_context(team_definition, node, cwd, catalog, requested)
+            .map_err(|error| match error {
+                member_context::ContextBuildError::Refused(refusal) => {
+                    self.context_refusal(refusal)
+                }
+                member_context::ContextBuildError::Domain(error) => self.refuse_domain(&error),
+            })
     }
 
     // -----------------------------------------------------------------------
@@ -2071,12 +1973,12 @@ impl Services {
         spec: &PlanningPairSpec,
         caller: PlanningPairSeat,
     ) -> Result<(), ApiError> {
-        if caller.seat_binding_id != run.caller_seat_binding_id {
-            return Err(self.deny(
-                ApiErrorCode::Forbidden,
-                "only the planning pair's frozen caller recovers one of its members",
-            ));
-        }
+        eligibility::require_frozen_caller(
+            run.caller_seat_binding_id,
+            caller.seat_binding_id,
+            FrozenCallerAct::Recover,
+        )
+        .map_err(|refusal| self.caller_refusal(refusal))?;
         self.authorize_planning_pair_caller(
             run.project_id,
             run.mini_project_id,
@@ -2139,7 +2041,7 @@ impl Services {
                     "the frozen planning pair placement could not be decoded",
                 )
             })?;
-        let fleet_provenance = planning_pair_fleet_provenance(&receipt, slot);
+        let fleet_provenance = member_context::requested_fleet_provenance(&receipt, slot);
         self.planning_pair_launch_context(
             run,
             pair,
@@ -2158,40 +2060,9 @@ impl Services {
         &self,
         context: &kontor_runtime::planning_pair::PlanningPairLaunchContext,
     ) -> Result<ContentHash, ApiError> {
-        let document = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "planning_pair_run_id": context.run_id.to_string(),
-            "seat_binding_id": context.seat_binding_id.to_string(),
-            "slot": context.slot.as_str(),
-            "occupancy_generation": context.occupancy_generation,
-            "profile": [
-                context.profile.profile_id.to_string(),
-                context.profile.version.get(),
-                context.profile.definition_hash.as_str(),
-            ],
-            "topology": [
-                context.topology.spec_id.to_string(),
-                context.topology.version.get(),
-                context.topology.canonical_hash.as_str(),
-            ],
-            "team_definition": [
-                context.team_definition.definition_id.to_string(),
-                context.team_definition.version.get(),
-                context.team_definition.canonical_hash.as_str(),
-            ],
-            "role_catalog": [
-                context.role_catalog.catalog_id.to_string(),
-                context.role_catalog.version.get(),
-                context.role_catalog.canonical_hash.as_str(),
-            ],
-            "topology_node_id": context.topology_node_id.to_string(),
-            "cwd": context.cwd.as_str(),
-            "route": context.route,
-            "vendor": context.vendor,
-            "placement_hash": context.placement_hash.as_str(),
-            "requested_fleet_provenance": context.requested_fleet_provenance,
-        }))?;
-        Ok(document.hash().clone())
+        context
+            .frozen_hash()
+            .map_err(|error| self.refuse_domain(&error))
     }
 
     /// One recovery's answer: the pair as its caller now sees it, the member's
@@ -2230,18 +2101,32 @@ impl Services {
         })
     }
 
+    /// One frozen-caller eligibility refusal, answered exactly as before.
+    const fn caller_refusal(&self, refusal: CallerRefusal) -> ApiError {
+        let (code, rule) = caller_refusal_rule(refusal);
+        self.deny(code, rule)
+    }
+
+    /// One frozen-context refusal, answered exactly as before.
+    const fn context_refusal(&self, refusal: ContextRefusal) -> ApiError {
+        self.deny(
+            ApiErrorCode::PlacementBlocked,
+            context_refusal_rule(refusal),
+        )
+    }
+
     /// The exact frozen caller, at its current hosted generation.
     fn authenticated_caller(
         &self,
         run: &StoredConsultationRun,
         caller: PlanningPairSeat,
     ) -> Result<(), ApiError> {
-        if caller.seat_binding_id != run.caller_seat_binding_id {
-            return Err(self.deny(
-                ApiErrorCode::Forbidden,
-                "only the planning pair's frozen caller asks for clarification or records the disposition",
-            ));
-        }
+        eligibility::require_frozen_caller(
+            run.caller_seat_binding_id,
+            caller.seat_binding_id,
+            FrozenCallerAct::Decide,
+        )
+        .map_err(|refusal| self.caller_refusal(refusal))?;
         self.active_epic_seat(run.project_id, run.mini_project_id, caller)?;
         Ok(())
     }
@@ -2575,55 +2460,4 @@ const fn advice_disposition_dto(
         AdviceDisposition::Rejected => AdviceDispositionDto::Rejected,
         AdviceDisposition::Superseded => AdviceDispositionDto::Superseded,
     }
-}
-
-/// The fleet provenance one member's launch requests, read from the frozen
-/// shared-allocator receipt and never re-derived.
-fn planning_pair_fleet_provenance(
-    receipt: &serde_json::Value,
-    slot: PlanningPairSlot,
-) -> Option<kontor_runtime::FleetLaunchProvenance> {
-    let selection = receipt.get("selection")?;
-    let provenance = selection.get("provenance")?;
-    let member = selection
-        .get("slots")?
-        .as_array()?
-        .iter()
-        .find(|candidate| {
-            candidate.get("slot_id").and_then(serde_json::Value::as_str) == Some(slot.as_str())
-        })?;
-    let selected = member.get("selected")?;
-    let strings = |value: Option<&serde_json::Value>| -> BTreeSet<String> {
-        value
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(serde_json::Value::as_str)
-            .map(str::to_owned)
-            .collect()
-    };
-    Some(kontor_runtime::FleetLaunchProvenance {
-        policy_hash: ContentHash::parse(provenance.get("policy_hash")?.as_str()?).ok()?,
-        source_bundle_hash: provenance
-            .get("source_bundle_hash")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|hash| ContentHash::parse(hash).ok()),
-        binding_key: member.get("binding_key")?.as_str()?.to_owned(),
-        chain: member.get("chain")?.as_str()?.to_owned(),
-        step: u16::try_from(selected.get("step")?.as_u64()?).ok()?,
-        sub_step: u16::try_from(selected.get("sub_step")?.as_u64()?).ok()?,
-        vendor: selected.get("vendor")?.as_str()?.to_owned(),
-        eligibility: Some(kontor_runtime::LaunchEligibility {
-            unavailable_accounts: strings(
-                member
-                    .get("eligibility")
-                    .and_then(|value| value.get("unavailable_accounts")),
-            ),
-            excluded_vendors: strings(
-                member
-                    .get("eligibility")
-                    .and_then(|value| value.get("excluded_vendors")),
-            ),
-        }),
-    })
 }

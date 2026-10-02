@@ -17,6 +17,7 @@
 - Frontier A (2026-10-02): the same-native member reconcile seam, at source level only. It is built on `e7a9404a` (tree `62377b57`) after verify and audit passed. It covers an opt-in runtime port that is typed unsupported on every real runtime, a hypothetical fake, the second-seat-only and both-routes fixtures, and docs. The daemon recovery operation's authority is returned to the LSA. See "Frontier A" below.
 - Frontier A operation (2026-10-02): the frozen caller's same-native member recovery, under the LSA decision. It is built on `75f253cb` (tree `d9e728c7`) after its bounded verify and audit passed. It covers the operation, the forward migration 0123 with the pair's known-native claim, tests and docs, at source and fixture level only. See "Frontier A: the frozen caller's same-native member recovery" below.
 - Frontier C, slice C-M (2026-10-02): the module readiness diagnostic, a source seam only, under the LSA's frontier C disposition (SHA-256 `084b7ca2…978b`). It is built on `98e5868f` (tree `9d150feb`) after verify and audit passed. It covers the shared member rule, the three-plane readiness seam and its tests; nothing exposes it yet. See "Frontier C, slice C-M" below.
+- Shared invocation, slice B1a (2026-10-02): pure frozen-caller eligibility and member launch and recovery context derivation, moved into `kontor-runtime::planning_pair` under the LSA's Q1–Q4 disposition (SHA-256 `212eab0c…0169`). It is built on `be9537aa` (tree `0712a7ea`). The daemon keeps every read, its order, authentication, replay, CAS, effects and the byte-identical refusals. See "Shared invocation, slice B1a" below.
 - The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. At slice four it holds 53 files, which hash to `4ff4c1bc5cbe7c7ce505442d50827f91d64b0bb308cd18183a39d42339e49e87`: each file's SHA-256 in sorted path order, hashed again. Its files were last written at 2026-10-02 00:25 CEST. That run was not this writing session's (its only workspace run was on 2026-09-29), and slice four did not touch them. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
@@ -1441,6 +1442,125 @@ site. Earlier survivors and fake-fidelity rows above stay as history.
 - **First-blocker limit.** Route attribution follows the runtime's first-blocker answer, so a member behind the first blocker is honestly `RouteUnassessed`, not assumed composed.
 - **Not closed.** Neither TASK-004 nor TASK-002 is closed. TASK-005 and TASK-006 are not admitted. ASMA-8113 and 8114 identity compatibility awaits Igor's reviewer assignment. R3 stays bound to root `8ba` and module `419`, and offline installation awaits Igor's authorization.
 
+## Shared invocation, slice B1a: pure caller eligibility and member context (2026-10-02)
+
+The LSA's Q1–Q4 disposition is
+`/tmp/asma-orchestration-kickoff-20260927/task004-q1-q4-disposition-20261002.md`. Its SHA-256 is
+`212eab0c18fc860d722daa7d26529b84cdead587f05cb93336351728f94b0169`, and it was read in full. Its
+input packet's digest is `1346eaeb…e14e62e`. TPM authorized B1a after the research turn 13
+returned UNKNOWN. B1a starts at the exact `be9537aaa0245ce67cc683a8348f2b5f5addd5eb` (tree
+`0712a7ea7886723bf7adf2bb79dbee16a4b44012`, parent `98e5868f`), in the unchanged 8282 TSW
+`wks_8062e92dee85f5b3` and session `3538e45e`.
+
+**Ownership before any write.**
+- The branch was at that exact head with no tracked change.
+- `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md` and `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` stay untracked and untouched. The directory still holds 53 files, aggregate `4ff4c1bc…9e87`.
+- The 6f owner-compatibility review's isolated sources, outputs, cache and target are not touched. B1a builds only in its own `CARGO_TARGET_DIR` (`/tmp/asma-8282-b1a-target`), `--offline --locked -j2`.
+- No package, version, network, provider, daemon, native, install, Jira, root CLI or ECP effect was performed or needed.
+
+### What is implemented
+
+| Element | Source | What it does |
+| --- | --- | --- |
+| Caller eligibility | `kontor-runtime` `planning_pair/caller.rs` | Pure staged predicates over facts the service read:<br>• `require_frozen_caller` (with `FrozenCallerAct` Decide or Recover);<br>• `require_invocation_scope`: the ticket's epic, then the permitted scope;<br>• `require_active_seat`;<br>• `require_active_epic_node`: the epic, then the lifecycle;<br>• `require_current_generation`: no hosted occupancy, then fenced;<br>• `require_caller_role`: the slot or catalog role, without case.<br>They return a typed `CallerRefusal`. |
+| Member context | `planning_pair/context.rs` | Staged derivation:<br>• `frozen_member`: the run, document pin, placement slot, route, generation, then placement hash;<br>• `FrozenMember::require_team_definition`;<br>• `require_container_topology`;<br>• `FrozenMember::into_context`: canonicalize the catalog, then require the provenance.<br>It returns a typed `ContextRefusal`, or `ContextBuildError::Domain`. |
+| Context hash | `PlanningPairLaunchContext::frozen_hash` | The daemon's former `member_context_hash` document, moved verbatim. It is the hash a known claim and a recovery intent name. |
+| Requested provenance | `context::requested_fleet_provenance` | The daemon's former `planning_pair_fleet_provenance`, moved verbatim. |
+| Daemon adapter | `applications/planning_pair.rs` | Reads each fact where and when it did before, then calls the shared stage. It keeps the bearer, current generation, replay, CAS, receipts, effects and API mapping. The two moved implementations are deleted; nothing is duplicated. The file goes from 2629 to 2463 lines. |
+| Refusal mapping | `applications/planning_pair/refusal.rs` | `caller_refusal_rule` and `context_refusal_rule`: each typed refusal maps to the exact baseline `(code, rule)`. They are answered through the same `deny`, so status and action follow. The runtime never depends on `kontor-api`. |
+
+**Not moved, and why** (each is the daemon's, by the disposition):
+- Bearer verification and minting.
+- Every store read: seat, node, hosted generation, task, Team Definition pin, topology pin, catalog, placement receipt.
+- `require_member_role`, `member_catalog_role` and `epic_role_catalog`.
+- Member authentication.
+- Recovery plans, outcomes and intent fingerprints. These are B1b, after B1a's acceptance.
+
+**What the result is not.** An eligibility pass is not a credential, capability, permission or
+generation lease. The readiness seam's caller plane stays
+`Unsupported { no_authenticated_caller_generation }`, and `native_actuation_authorized` stays
+false. The Direct-mode Goal is retained and direct actuation stays unimplemented (Q1). No direct
+writer, cross-process lease, issuer or credential API exists (Q3).
+
+**Unchanged:**
+- the API, OpenAPI, MCP registry and its caller4, member3 and leadership profiles;
+- the unserved recovery tool and the store, SQL and migrations;
+- the Local four-key answer and the root consumer.
+
+### Parity evidence
+
+1. **Refusal literals.** Each of the 21 baseline rules occurs exactly once in `be9537aa`'s `applications/planning_pair.rs`. Each also occurs exactly once in the candidate's mapping, under the same code.
+   - Caller: `Forbidden` for not-frozen-caller (Decide or Recover), ticket outside the epic, ticket scope, epic scope, seat outside the epic and role. `StaleBinding` for seat inactive, node inactive, no hosted occupancy and fenced generation.
+   - Context: all `PlacementBlocked`, through the former local `refuse` closure.
+   - A daemon unit test pins every variant to the literal copied with its baseline line.
+2. **Baseline run of the black-box tests.** The daemon and runtime `planning_pair.rs` were restored to their `be9537aa` blobs (`cd0b21ad…`, `f85fc073…`). The new loopback module was then built and run against the baseline: 3 of 3 passed, with identical whole bodies. The candidate was restored byte-exact afterwards (`78eb2063…`, `63537dbf…`, verified).
+3. **Context hash.**
+   - The unit test compares `frozen_hash` with the verbatim baseline document over every field. It changes 16 fields one at a time, each changing the hash and each staying equal to the baseline. It pins the golden `4a6fcad2a061f25b45a069af834943fa9350016a1e11072cd5d93c9c3c07ce34` for fixed hypothetical fixtures.
+   - Black-box: every launched member's stored known claim names the baseline document's hash over the exact context the runtime received. This holds on both the baseline and the candidate.
+
+### Tests
+
+**Hypothetical pure fixtures** are runtime unit tests only. **The trusted path** is daemon
+loopback, with real seat credentials over real stored state.
+
+| Suite | New tests | What they prove |
+| --- | --- | --- |
+| `kontor-runtime` unit, caller (6) | frozen caller; scope; active seat; epic node; current generation; role | Every `CallerRefusal` and its pass. The order within each stage: ticket epic before permitted scope; foreign node before lifecycle; no occupancy before fenced. Retired, archived, released and replaced seats. Older and newer generations. The slot or catalog role, without case. |
+| `kontor-runtime` unit, context (8) | `context/tests.rs` | Every stageable `ContextRefusal` in order:<br>• an Advisor run; the pin's id, version and hash;<br>• route before generation; generation before placement; a missing placement;<br>• the Team Definition's absence, id, version and hash;<br>• the topology's spec, version and hash;<br>• the catalog before the provenance.<br>Also: the built fields; hash parity and golden; provenance per slot (lenient bundle, ordered eligibility); 9 missing-fact receipts. |
+| `kontor-daemon` unit (2) | `refusal::tests` | Every variant against its baseline literal. |
+| Loopback `planning_pair::eligibility` (3) | `the_caller_is_held_to_scope_seat_node_generation_and_role_exactly_as_before` | Exact bodies for:<br>• the TPM's role;<br>• an unissued generation;<br>• a ticket-only document at epic scope;<br>• a retired seat;<br>• a seat on the project root (outside the epic);<br>• a retired node.<br>Double faults, to pin the order: generation before role; scope before generation; node before generation; seat before node. Then the positive frozen caller at its current generation and its exact replay, and the TPM refused on clarification and disposition. After the caller's generation is fenced: the original key and body are refused, not replayed (authentication before replay), and so is a clarification; the current credential reads as `caller`. Finally, no hosted occupancy. |
+| | `only_the_frozen_caller_recovers_exactly_as_before` | The TPM at its current generation is refused with no member effect. |
+| | `a_resumed_launch_refuses_each_context_drift_and_claims_the_baseline_hash` | A frozen, materializing pair resumes under the same key. Three drifts are each refused with the exact body and no member effect: another route; another container topology; the epic re-pinned to a real successor Team Definition revision. Restored, both members launch, and each claim hash is the baseline document's. |
+
+**Not staged black-box, with the reason** (each stays covered by the pure and mapping tests):
+- **The ticket refusals.** The pair realm has no ticket fixture.
+- **Not a planning pair, document pin, placement.** `consultation_run_inputs_are_frozen` refuses the edit.
+- **Zero member generation.** `CHECK (occupancy_generation >= 1)`.
+- **Absent placement slot.** Unrepresentable: `PlanningPairMembers::freeze` admits exactly seat A then seat B.
+- **No pinned Team Definition, no provenance.** Not staged. A hash-only Team Definition drift is refused earlier, by the published-bytes check, at baseline and candidate alike.
+- **Order.** Container preparation may precede a context refusal, as at baseline. The tests assert no member effect.
+
+### B1a gates
+
+- `cargo fmt -p kontor-runtime -p kontor-daemon --check` and `cargo clippy -p kontor-runtime -p kontor-daemon --all-targets -- -D warnings`: clean.
+- Test counts:
+  - `kontor-runtime` 102 (82 unit, 20 integration);
+  - `kontor-daemon` unit 151;
+  - loopback `planning_pair::` 39 (36 existing, including caller4, recovery, readiness and Committee-route isolation, plus 3 new).
+  - No failure.
+- **Untouched, not rerun:**
+  - store, API/OpenAPI, MCP registry and parity, SQL and migrations;
+  - the CLI's Local four-key answer;
+  - the Paseo, AO and Codex contracts.
+  None of their sources changed, and no dependent glob-imports `kontor_runtime::planning_pair`. Neither the broad loopback run nor the workspace run was repeated.
+- **Newly changed files, within the 600-line limit:** `caller.rs` 390, `context.rs` 310, `context/tests.rs` 574, `refusal.rs` 231, `planning_pair_eligibility.rs` 516.
+
+### B1a mutation checks (seeded and run by this seat)
+
+There were 37 fresh single-site mutants of the moved sites. Each was its own unique edit on the
+final bytes:
+- `caller.rs` `713c32e2…`;
+- `context.rs` `d05ac0f4…`;
+- `refusal.rs` `45dd7eb6…`;
+- `applications/planning_pair.rs` `78eb2063…`.
+
+Each was listed, run red, restored (with a touch) and run green, with the SHA equal before and
+after. Moved sites borrow no earlier daemon-line kill.
+
+| Ids | Site | Result |
+| --- | --- | --- |
+| B1A-MUT-01–13 | caller predicates: frozen caller, ticket epic, ticket and epic scope, released or replaced seat, node epic and lifecycle, newer generation, missing occupancy, slot role, catalog role, case | 12 red, each failing exactly one runtime test of 21. **MUT-06 survives as an equivalent:** dropping `is_non_terminal()` changes nothing, because `closes_children()` already refuses every non-active lifecycle. The predicate is the baseline's, kept byte-faithful. |
+| B1A-MUT-14–28 | context: pin version and hash, route, zero generation, placement, Team Definition hash and version, topology, catalog-before-provenance order, hash schema version, hash omitting provenance, route and vendor swap, bundle key, step truncation, eligibility field | 15 red, each failing exactly one runtime test of 21 |
+| B1A-MUT-29–30 | mapping: fenced to `Forbidden`; another topology rule | 2 red, each failing exactly one daemon unit test of 2 |
+| B1A-MUT-31–37 | adapter: context code `Unavailable`; a decision skipping seat, node and generation; a recovery skipping the frozen-caller check; scope after seat; generation before node; launch skipping the topology stage; context hash not the frozen document | 7 red, each failing exactly one loopback test of 3, at its intended assertion |
+
+### Limits kept accurate
+
+- **Source only.** No live, native, provider, credential or deployment effect, and no qualification.
+- **B1b not started.** Recovery plans, outcomes and intent fingerprints follow only after B1a's exact-head verify (b887) and audit (6f), as TPM dispatches them.
+- **Reserved.** Igor decides the Q1 trust boundary on an actual proposal. No issuer, key, token endpoint or attestation API is proposed or added. The B2 single-writer design is a later gate.
+- **Unchanged holds.** The calibration stays UNKNOWN, with no flag or live pin change. R3 stays at root `8ba` and module `419`, with the install review independent. Neither TASK-004 nor TASK-002 is closed.
+
 ## Remaining capability gaps after slice four (current)
 
 - **ASMA-8113 fence.** The reviewer is unassigned, so the widened identity vocabulary's acceptance, integration and deployment wait on an explicit assignment and an exact verdict.
@@ -1469,6 +1589,7 @@ site. Earlier survivors and fake-fidelity rows above stay as history.
   - **Failure mode:** a lost or unqualified member fails closed.
 - **Caller serve profile.** An opt-in `planning_pair_caller` source profile now serves exactly the four caller tools when it is selected by name. No hosted seat is composed with it: no explicit optional selection seam exists, and none is inferred. The `leadership` profile is unchanged, so a hosted LSA still has no caller tools unless a client holding its scoped credential serves this profile.
 - **Direct-mode consumer.** The asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
+- **Shared invocation.** B1a moved the pure caller eligibility and member context. B1b (recovery plans, outcomes and intent fingerprints) waits for B1a's acceptance. Direct actuation, a direct caller verifier (Q1, Igor's trust-boundary decision) and one generation-fenced writer (Q3, B2) do not exist.
 - **TPM-owned placement.** No TPM operation, receipt or procedure wraps placement.
 - **Concurrent resume.** This is repaired for the planning pair:
   - the `running` advance is guarded by the run's CAS (the 6f rework, with a held launch gate);
