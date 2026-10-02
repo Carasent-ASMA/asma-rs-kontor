@@ -214,22 +214,17 @@ impl Services {
             )?
         };
         self.materialize_planning_pair_members(&run).await?;
-        let run = if run.state == ConsultationRunState::Materializing {
-            self.state()?
-                .with_store(|store| {
-                    store.advance_consultation_run(
-                        project_id,
-                        run.id,
-                        run.revision,
-                        ConsultationRunState::Running,
-                        None,
-                        kontor_api::now(),
-                    )
-                })
-                .map_err(|error| self.refuse(&error))?
-        } else {
-            run
-        };
+        let run = self.running_planning_pair(&run)?;
+        // A request for this key that resumed the run may have finished first;
+        // its receipt is then this request's answer.
+        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
+            let pair = self.planning_pair_state(&run)?;
+            return self.planning_pair_dto(
+                &pair,
+                Viewer::Caller,
+                Some((receipt.id, AppliedDto::Unchanged)),
+            );
+        }
         let receipt_id = self.record(
             key,
             project_id,
@@ -246,6 +241,48 @@ impl Services {
         )
     }
 
+    /// The run once its members are launched, advanced to `running`.
+    ///
+    /// Another request for the same key may have resumed the run and launched
+    /// with this one. The run's compare-and-swap admits exactly one advance
+    /// from the frozen revision. A request that loses it answers with the row
+    /// the winner wrote; only a run still materializing after that is a
+    /// refusal.
+    fn running_planning_pair(
+        &self,
+        frozen: &StoredConsultationRun,
+    ) -> Result<StoredConsultationRun, ApiError> {
+        if frozen.state != ConsultationRunState::Materializing {
+            return Ok(frozen.clone());
+        }
+        let ConsultationRunId::PlanningPair(run_id) = frozen.id else {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "this operation requires a planning pair",
+            ));
+        };
+        match self.state()?.with_store(|store| {
+            store.advance_consultation_run(
+                frozen.project_id,
+                frozen.id,
+                frozen.revision,
+                ConsultationRunState::Running,
+                None,
+                kontor_api::now(),
+            )
+        }) {
+            Ok(advanced) => Ok(advanced),
+            Err(error) => {
+                let after = self.stored_planning_pair(frozen.project_id, run_id)?;
+                if after.state == ConsultationRunState::Materializing {
+                    Err(self.refuse(&error))
+                } else {
+                    Ok(after)
+                }
+            }
+        }
+    }
+
     /// Whether the runtime planning pair members are placed on composes their
     /// closed member surface, asked without a native effect.
     fn require_planning_pair_member_surface(&self) -> Result<(), ApiError> {
@@ -260,6 +297,115 @@ impl Services {
         adapter
             .validate_planning_pair_member_surface()
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))
+    }
+
+    /// The role catalog this epic selected, exactly as persisted.
+    ///
+    /// The epic's frozen roster is the selection: every seat names one catalog
+    /// revision, and the roster pins that revision's exact bytes by
+    /// `catalog_hash`. The persisted revision must hash to that pin. A missing
+    /// roster, a roster spanning two catalogs, an unpersisted revision or a
+    /// hash mismatch refuses, because no other catalog the realm happens to
+    /// know is the one this epic chose.
+    fn epic_role_catalog(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<RoleCatalogRevision, ApiError> {
+        let roster = self
+            .optional_frozen_roster(project_id, epic_id)?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the epic has frozen no Core Team roster, so it has selected no role catalog",
+                )
+            })?;
+        let mut pins = roster
+            .revision
+            .seats
+            .iter()
+            .map(|seat| (seat.role.catalog_id, seat.role.catalog_revision));
+        let (catalog_id, version) = pins.next().ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the epic's frozen roster names no role catalog revision",
+            )
+        })?;
+        if pins.any(|pin| pin != (catalog_id, version)) {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the epic's frozen roster names more than one role catalog revision",
+            ));
+        }
+        let catalog = self
+            .state()?
+            .with_store(|store| store.get_role_catalog(catalog_id, version))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the epic's selected role catalog revision is not persisted in this realm",
+                )
+            })?;
+        let persisted = catalog
+            .canonicalize()
+            .map_err(|error| self.refuse_domain(&error))?;
+        if persisted.hash() != &roster.revision.catalog_hash {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the persisted role catalog does not hash to the epic's frozen catalog pin",
+            ));
+        }
+        Ok(catalog)
+    }
+
+    /// One member's registered role: its explicit code, as the epic's selected
+    /// catalog declares it, current, and provably that catalog's projection.
+    fn member_catalog_role(
+        &self,
+        catalog: &RoleCatalogRevision,
+        role_code: &kontor_core::id::RoleCode,
+    ) -> Result<CatalogRoleRef, ApiError> {
+        let entry = catalog.role(role_code).ok_or_else(|| {
+            self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the member's role code is absent from the epic's selected role catalog",
+            )
+        })?;
+        if entry.lifecycle != kontor_core::spec::CodeLifecycle::Current {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the member's role cannot open new seats in the epic's selected role catalog",
+            ));
+        }
+        let role = CatalogRoleRef {
+            catalog_id: catalog.catalog_id,
+            catalog_revision: catalog.version,
+            role_code: entry.role_code.clone(),
+            standard_title: entry.standard_title.clone(),
+            custom_display_name: None,
+        };
+        self.require_member_role(catalog, &role, role_code)?;
+        Ok(role)
+    }
+
+    /// A frozen member role corresponds to the member's explicit code and is
+    /// an exact projection of the epic's selected catalog.
+    fn require_member_role(
+        &self,
+        catalog: &RoleCatalogRevision,
+        role: &CatalogRoleRef,
+        role_code: &kontor_core::id::RoleCode,
+    ) -> Result<(), ApiError> {
+        role.validate_against(catalog)
+            .map_err(|error| self.refuse_domain(&error))?;
+        if &role.role_code != role_code {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "a frozen member role does not correspond to the document's member role code",
+            ));
+        }
+        Ok(())
     }
 
     /// The published document revision and its validated specification.
@@ -430,6 +576,7 @@ impl Services {
                 "a planning pair container must be read-only",
             ));
         }
+        let catalog = self.epic_role_catalog(project_id, epic_id)?;
         let mut slot_roles = Vec::with_capacity(2);
         for slot in PlanningPairSlot::ALL {
             let declared = container
@@ -443,17 +590,22 @@ impl Services {
                     "the planning pair container must declare seat-a and seat-b exactly once each",
                 ));
             };
-            if declared.display_name.as_ref().map(ExternalName::as_str) != Some(slot.label())
-                || declared.capability_profile.as_str() != MEMBER_CAPABILITY_PROFILE
-            {
+            if declared.display_name.as_ref().map(ExternalName::as_str) != Some(slot.label()) {
                 return Err(self.deny(
                     ApiErrorCode::PlacementBlocked,
-                    "a planning pair slot must be titled SEAT A or SEAT B and hold the planning_pair_member capability profile",
+                    "a planning pair slot must be titled SEAT A or SEAT B",
+                ));
+            }
+            if declared.capability_profile.as_str() != MEMBER_CAPABILITY_PROFILE {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a planning pair slot must hold the planning_pair_member capability profile",
                 ));
             }
             // The title is the Team Definition's; the registered role is the
             // pinned document's own explicit member role, since a
-            // display-named slot carries none.
+            // display-named slot carries none, resolved only in the catalog
+            // the epic itself selected.
             let member = spec
                 .members
                 .iter()
@@ -464,7 +616,7 @@ impl Services {
                         "the pinned planning pair document does not declare this member",
                     )
                 })?;
-            slot_roles.push(self.catalog_role_for_code(&member.role_code)?);
+            slot_roles.push(self.member_catalog_role(&catalog, &member.role_code)?);
         }
         if container.slots.len() != 2 {
             return Err(self.deny(
@@ -726,6 +878,35 @@ impl Services {
         let mut seats = pair.seats.clone();
         if seats.iter().all(|seat| seat.native_identity.is_some()) {
             return Ok(());
+        }
+        // Every frozen member role is proved again against the epic's
+        // selected catalog before any native effect, so a stored role that
+        // no longer corresponds to the member's explicit code never launches.
+        let catalog = self.epic_role_catalog(run.project_id, run.mini_project_id)?;
+        for seat in &seats {
+            let slot = PlanningPairSlot::parse(seat.role_slot_id.as_str())
+                .map_err(|error| self.refuse_domain(&error))?;
+            let member = pair
+                .spec
+                .members
+                .iter()
+                .find(|member| member.slot == slot)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "a frozen planning pair seat is absent from its pinned document",
+                    )
+                })?;
+            let binding = state
+                .with_store(|store| store.get_seat_binding(run.project_id, seat.seat_binding_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the planning pair member has no persistent topology binding",
+                    )
+                })?;
+            self.require_member_role(&catalog, &binding.role, &member.role_code)?;
         }
         let container = self
             .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())

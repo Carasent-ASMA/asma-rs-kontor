@@ -2441,6 +2441,46 @@ impl SqliteStore {
     }
 }
 
+/// Every planning pair member seat holds a role that is an exact projection
+/// of the role catalog its epic selected: persisted bytes that hash to the
+/// `catalog_hash` the epic's frozen roster pins. A seat's own catalog
+/// reference is never trusted on its own, so a role resolved in any other
+/// catalog the realm happens to hold is refused here, inside the transaction.
+fn planning_pair_member_roles_in(
+    transaction: &Transaction<'_>,
+    run: &StoredConsultationRun,
+    seats: &[(&StoredConsultationSeat, &NewSeatBinding)],
+) -> RepositoryResult<()> {
+    let pinned: Option<String> = transaction
+        .query_row(
+            "SELECT catalog_hash FROM epic_rosters
+             WHERE project_id = ?1 AND mini_project_id = ?2",
+            params![run.project_id.to_string(), run.mini_project_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    let pinned = pinned.ok_or(RepositoryError::Conflict {
+        subject: "planning pair member role",
+        rule: "the epic has frozen no roster, so it has selected no role catalog",
+    })?;
+    for (_, binding) in seats {
+        let catalog = role_catalog_in(
+            transaction,
+            binding.role.catalog_id,
+            binding.role.catalog_revision,
+        )?;
+        if catalog.canonicalize()?.hash().as_str() != pinned {
+            return Err(RepositoryError::Conflict {
+                subject: "planning pair member role",
+                rule: "a member role names a role catalog the epic did not select",
+            });
+        }
+        binding.role.validate_against(&catalog)?;
+    }
+    Ok(())
+}
+
 fn role_catalog_in(
     transaction: &Transaction<'_>,
     catalog_id: RoleCatalogId,
@@ -2688,6 +2728,7 @@ impl SqliteStore {
         }
         validate_frozen_consultation_run(run, node)?;
         let transaction = self.begin()?;
+        planning_pair_member_roles_in(&transaction, run, seats)?;
         insert_consultation_run_in(&transaction, run, node, seats)?;
         transaction
             .execute(

@@ -28,8 +28,9 @@ use kontor_core::planning_pair::{
 use kontor_core::repository::{
     MiniProjectTopologySnapshot, NewMiniProject, NewProject, NewSeatBinding,
     NewSessionTopologyNode, ProjectRepository, RepositoryError, StoredConsultationProfileRevision,
-    StoredConsultationRun, StoredConsultationSeat, StoredPlanningPairContribution,
-    StoredPlanningPairPlacement, StoredPlanningPairRecord, TopologyRepository,
+    StoredConsultationRun, StoredConsultationSeat, StoredEpicRoster,
+    StoredPlanningPairContribution, StoredPlanningPairPlacement, StoredPlanningPairRecord,
+    TopologyRepository,
 };
 use kontor_core::spec::{
     BudgetBounds, CatalogRoleRef, ModelRef, ModelRung, ProviderRef, Shareability, ShareabilityTier,
@@ -148,9 +149,22 @@ fn world() -> World {
     let canonical_hash = store
         .publish_topology_spec(project_id, &topology_spec, &stamp(), created_at)
         .expect("the topology publishes");
-    store
+    let catalog_hash = store
         .publish_role_catalog(&catalog, &stamp(), created_at)
         .expect("the catalog publishes");
+    // The epic's frozen roster is its role catalog selection.
+    store
+        .put_epic_roster(&StoredEpicRoster {
+            project_id,
+            mini_project_id,
+            core_team_version: SpecVersion::FIRST,
+            catalog_hash,
+            seats: serde_json::json!([]),
+            quick_session_id: None,
+            revision: AggregateRevision::INITIAL,
+            pinned_at: created_at,
+        })
+        .expect("the epic freezes its roster");
     let topology = TopologySnapshot {
         spec_id: topology_spec.spec_id,
         version: topology_spec.version,
@@ -250,6 +264,16 @@ struct Frozen {
 }
 
 fn freeze(world: &World, key: &str, semantic: ContentHash) -> Result<Frozen, RepositoryError> {
+    freeze_as(world, key, semantic, &role(&world.catalog, "SA"))
+}
+
+/// Freeze one pair whose two member seats hold `member_role`.
+fn freeze_as(
+    world: &World,
+    key: &str,
+    semantic: ContentHash,
+    member_role: &CatalogRoleRef,
+) -> Result<Frozen, RepositoryError> {
     let created_at = at("2026-10-02T12:30:00Z");
     let run_id = ConsultationRunId::PlanningPair(PlanningPairRunId::generate());
     let placement = CanonicalDocument::from_value(&serde_json::json!({
@@ -316,7 +340,7 @@ fn freeze(world: &World, key: &str, semantic: ContentHash) -> Result<Frozen, Rep
             project_id: world.project_id,
             topology_node_id: node_id,
             role_slot_id: RoleSlotId::parse(slot.as_str()).expect("a slot"),
-            role: role(&world.catalog, "SA"),
+            role: member_role.clone(),
             task_id: None,
             team_run_id: None,
             attach_deadline: at("2026-10-02T12:40:00Z"),
@@ -827,4 +851,86 @@ fn placement_and_records_belong_only_to_a_planning_pair() {
         ),
         "CHECK constraint failed",
     );
+}
+
+/// ASMA-8282 audit 6f: a member seat's role is an exact projection of the role
+/// catalog its epic selected, proved inside the freezing transaction. Another
+/// persisted catalog revision, a rewritten title, a code the catalog does not
+/// declare and an epic with no frozen roster each write nothing.
+#[test]
+fn a_member_role_outside_the_epics_selected_catalog_is_refused_in_storage() {
+    let world = world();
+    let mut unselected = world.catalog.clone();
+    unselected.version = SpecVersion::parse(2).expect("a later revision");
+    world
+        .store
+        .publish_role_catalog(&unselected, &stamp(), at("2026-10-02T12:05:00Z"))
+        .expect("an unselected revision is persisted beside the selected one");
+    assert_eq!(
+        conflict_rule(freeze_as(
+            &world,
+            "pp-store-unselected",
+            ContentHash::of(b"unselected"),
+            &role(&unselected, "SA"),
+        )),
+        "a member role names a role catalog the epic did not select"
+    );
+    let mut retitled = role(&world.catalog, "SA");
+    retitled.standard_title = name("Self-appointed architect");
+    let refused = freeze_as(
+        &world,
+        "pp-store-retitled",
+        ContentHash::of(b"retitled"),
+        &retitled,
+    );
+    assert!(
+        matches!(
+            &refused,
+            Err(RepositoryError::Domain(kontor_core::DomainError::Invalid {
+                rule: "standard title differs from the catalog",
+                ..
+            }))
+        ),
+        "{refused:?}"
+    );
+    let mut unknown = role(&world.catalog, "SA");
+    unknown.role_code = RoleCode::parse("ZZZ").expect("a well-formed code");
+    let refused = freeze_as(
+        &world,
+        "pp-store-unknown",
+        ContentHash::of(b"unknown"),
+        &unknown,
+    );
+    assert!(
+        matches!(
+            &refused,
+            Err(RepositoryError::Domain(kontor_core::DomainError::Invalid {
+                rule: "names a role code absent from the pinned catalog",
+                ..
+            }))
+        ),
+        "{refused:?}"
+    );
+    raw(&world)
+        .execute(
+            "DELETE FROM epic_rosters WHERE mini_project_id = ?1",
+            [world.mini_project_id.to_string()],
+        )
+        .expect("the roster row is removed");
+    assert_eq!(
+        conflict_rule(freeze(
+            &world,
+            "pp-store-no-roster",
+            ContentHash::of(b"no roster")
+        )),
+        "the epic has frozen no roster, so it has selected no role catalog"
+    );
+    let runs: i64 = raw(&world)
+        .query_row(
+            "SELECT count(*) FROM consultation_runs WHERE family = 'planning_pair'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the runs count");
+    assert_eq!(runs, 0, "no refused freeze wrote a run");
 }

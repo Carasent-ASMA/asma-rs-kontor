@@ -731,6 +731,53 @@ impl FakeNativePause {
     }
 }
 
+/// Holds every consultation launch until released, so a test can interleave
+/// two invocations at the one point a live runtime would: after the container
+/// is prepared and before any member is launched. Like [`FakeNativePause`] it
+/// needs no executor; unlike it, it holds every waiting launch, not one.
+#[derive(Debug, Clone, Default)]
+pub struct ConsultationLaunchGate {
+    state: Arc<Mutex<ConsultationLaunchGateState>>,
+}
+
+#[derive(Debug, Default)]
+struct ConsultationLaunchGateState {
+    waiting: usize,
+    released: bool,
+    held: Vec<std::task::Waker>,
+}
+
+impl ConsultationLaunchGate {
+    /// How many launches have reached the gate so far.
+    #[must_use]
+    pub fn waiting(&self) -> usize {
+        self.state.lock().expect("gate lock").waiting
+    }
+
+    /// Let every held and every later launch through.
+    pub fn release(&self) {
+        let mut state = self.state.lock().expect("gate lock");
+        state.released = true;
+        for waker in state.held.drain(..) {
+            waker.wake();
+        }
+    }
+
+    async fn pass(&self) {
+        self.state.lock().expect("gate lock").waiting += 1;
+        std::future::poll_fn(|context| {
+            let mut state = self.state.lock().expect("gate lock");
+            if state.released {
+                std::task::Poll::Ready(())
+            } else {
+                state.held.push(context.waker().clone());
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+    }
+}
+
 #[derive(Debug)]
 struct FakeState {
     /// Whether this runtime holds a plane-level container, and whether it has
@@ -742,6 +789,8 @@ struct FakeState {
     unlaunchable: BTreeSet<String>,
     /// Whether this runtime withholds the planning pair member surface.
     planning_pair_surface_withheld: bool,
+    /// The gate every consultation launch waits at, when one is installed.
+    consultation_launch_gate: Option<ConsultationLaunchGate>,
     /// Providers this runtime refuses specifically as recovery successors.
     unsupported_consultation_recovery_providers: BTreeSet<String>,
     /// Every seat whose *placement* this runtime can currently prove.
@@ -1415,6 +1464,7 @@ impl ScriptedFakeRuntime {
                 canonical_root: None,
                 unlaunchable: BTreeSet::new(),
                 planning_pair_surface_withheld: false,
+                consultation_launch_gate: None,
                 unsupported_consultation_recovery_providers: BTreeSet::new(),
                 placements: BTreeSet::new(),
                 runtime_kind: RuntimeKindKey::parse("fake.runtime").expect("valid runtime kind"),
@@ -1531,6 +1581,14 @@ impl ScriptedFakeRuntime {
     /// session, no binding, and the seat's reservation given back.
     pub fn refusing_launch_of(&self, slot: &kontor_core::id::RoleSlotId) {
         self.lock().unlaunchable.insert(slot.as_str().to_owned());
+    }
+
+    /// Hold every consultation launch from now on at one gate, until the
+    /// returned gate is released.
+    pub fn holding_consultation_launches(&self) -> ConsultationLaunchGate {
+        let gate = ConsultationLaunchGate::default();
+        self.lock().consultation_launch_gate = Some(gate.clone());
+        gate
     }
 
     /// Withhold the planning pair member surface, as a runtime that has not
@@ -3758,6 +3816,10 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
         &self,
         request: &ConsultationLaunchRequest,
     ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        let gate = self.lock().consultation_launch_gate.clone();
+        if let Some(gate) = gate {
+            gate.pass().await;
+        }
         let mut state = self.lock();
         state.require_plane()?;
         if state.planning_pair_surface_withheld

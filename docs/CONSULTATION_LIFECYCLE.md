@@ -107,7 +107,11 @@ them. A member sees only its own words, and its serve profile,
 Names and slots come only from explicit configuration. The published document
 selects a `container_kind`, which the epic's pinned Team Definition must declare
 read-only with exactly the display-named slots `seat-a` (`SEAT A`) and `seat-b`
-(`SEAT B`), and it names each member's registered `role_code`. The bundled
+(`SEAT B`), and it names each member's registered `role_code`. That code must
+be a current role of the catalog the epic's frozen roster selected, read from
+its persisted bytes under the roster's `catalog_hash` pin. No other catalog the
+realm holds is consulted, and the store re-proves the role when it freezes the
+seats. The bundled
 pack declares no such container, so a realm invokes a pair only after
 publishing one. The members are placed by the shared allocator on one activated
 snapshot, on distinct actual vendors or not at all.

@@ -9,6 +9,7 @@
 - Slice three (2026-10-02): immutable profile identity, the run's durable record and MUT-003, with the reserved governed decisions reported rather than adopted. It is built on the accepted `d9dce9c8` (tree `5deed40e`), was dispatched by TPM successor `47cb9a74-a798-4f40-9b54-2a818afe0a42`, and was committed as `3b05abce237593b88d4bb83fc41440967479dd8e` (tree `7c92ee34dd825b1feaa7f46583174eb0ea2258d6`). Verify passed and audit 6f failed it: a sealed finding was readable through the public `PlanningPairRun::record()`.
 - Audit remediation (2026-10-02, this revision): it closes every public read path to a sealed finding or answer, and adds nothing else. It is built on `3b05abce` (tree `7c92ee34`) and dispatched by the same TPM. The writing seat is Paseo agent `45d0acc7-0773-4f43-858f-c6d6c8eecf78`, Claude session `3538e45e-113f-432b-9d1e-57e0d1b4af96`, in project `prj_e9f8052597f78919` and TSW `wks_8062e92dee85f5b3`. Every ancestor, `3b05abce` included, is unchanged.
 - Slice four (2026-10-02): the additive governed slice under the D-1 to D-3 disposition. It is built on `832e60cc` (tree `678333e4`) after native verify `b887` and audit `6f` passed on that exact head. D-1 is checkpoint `8a27a851` (tree `d73c5f51`); D-2 and D-3 are the next checkpoint. The writing seat is the same Claude session `3538e45e-113f-432b-9d1e-57e0d1b4af96` in project `prj_e9f8052597f78919` and TSW `wks_8062e92dee85f5b3`. Every ancestor is unchanged. See "Slice four" below.
+- Audit 6f rework (2026-10-02): the independent 6f audit failed `4922a9a2` (tree `fcfcbdd5`), because a member role was resolved from the build's first catalog rather than the epic's selection. The rework is built on `4922a9a2` and dispatched by TPM, from the same writing session. It is bounded to the catalog authority fix, the selected-container safeguards and a concurrent-resume regression. See "Audit 6f rework" below.
 - The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. At slice four it holds 53 files, which hash to `4ff4c1bc5cbe7c7ce505442d50827f91d64b0bb308cd18183a39d42339e49e87`: each file's SHA-256 in sorted path order, hashed again. Its files were last written at 2026-10-02 00:25 CEST. That run was not this writing session's (its only workspace run was on 2026-09-29), and slice four did not touch them. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
@@ -528,6 +529,104 @@ Not run, and therefore not claimed:
 These rows are this seat's evidence, not an independent reproduction. Acceptance remains
 the TPM-routed verify and audit.
 
+## Audit 6f rework — the epic's selected catalog, container safeguards and concurrent resume
+
+The independent 6f audit **failed** `4922a9a21644d5254ae74addfcd857b4e46fc52e` (tree
+`fcfcbdd5f7e5b97912800ad4195300869f2b0161`). That checkpoint and its slice-four rows
+above (PP-MUT-01 to 12, MUT-003 a–c re-run 2) are kept as written: they are the record
+of the failed candidate, not of this repair. TPM's rework dispatch owns only:
+- the catalog authority fix;
+- the selected-container safeguard tests and their mutations;
+- a concurrent-resume regression.
+
+### The finding
+
+At `4922`, `freeze_planning_pair` (`planning_pair.rs:467`) resolved each member's role with
+`catalog_role_for_code` (`applications.rs:41474`). That function reads
+`self.domain.role_catalogs.first()`, the build's first catalog, not the catalog the epic
+selected. The store then inserted the `CatalogRoleRef` without `validate_against`.
+
+Two failures followed:
+- a role that only the build's first catalog declares could freeze, even when the epic selected another revision;
+- a role valid only in the selected revision was refused.
+
+### Source authority (existing, unchanged)
+
+The epic's catalog selection already exists and is immutable:
+- **The roster.** `StoredEpicRoster` (`kontor-core` `repository.rs:927`) is frozen at promotion from the project's published Core Team revision. That revision resolved against one explicitly named catalog revision.
+- **The pin.** `CoreTeamRevision::resolve` (`kontor-teams` `operational.rs:111`) records that revision's canonical hash as `catalog_hash`, and every roster seat names `(catalog_id, catalog_revision)`.
+- **The bytes.** The catalog's persisted bytes sit in `role_catalog_revisions`, written by `publish_role_catalog` (`kontor-store` `repository.rs:9365`). `get_role_catalog` re-reads them under their stored definition hash.
+- **The check.** `CatalogRoleRef::validate_against` (`kontor-core` `spec.rs:630`) proves a reference is an exact projection of one catalog.
+
+Nothing new is selected, sorted, defaulted or retargeted. No pin is migrated. The Advisor and Committee path, `catalog_role_for_code` included, is unchanged.
+
+### The repair
+
+Four places now hold a member's role to the epic's selected catalog:
+- **`Services::epic_role_catalog`** (`applications/planning_pair.rs`) resolves the catalog. It reads the epic's frozen roster and the one catalog revision every seat names, loads that revision's persisted bytes, and requires their canonical hash to equal the roster's `catalog_hash`. Each failure is `placement_blocked`, before anything is frozen:
+  - no roster;
+  - a roster naming two revisions;
+  - an unpersisted revision;
+  - a hash mismatch.
+- **`member_catalog_role`** builds each member's role. It takes the document's explicit `role_code` from that catalog alone, requires its lifecycle to be `Current`, and proves the result with `validate_against` and code correspondence (`require_member_role`).
+- **`materialize_planning_pair_members`** proves every frozen SeatBinding role again before any container is prepared or member launched. The check is `validate_against` the epic's catalog plus correspondence to the member's explicit code, so a resumed run with a drifted role never launches.
+- **The store** (`create_planning_pair_run` → `planning_pair_member_roles_in`, `repository.rs:2449`) proves each member binding's role inside the freezing transaction. The epic must have a roster; the role's catalog revision must be persisted and hash to the roster pin; and the role must pass `validate_against`. This is the planning pair path only, and `insert_consultation_run_in` is unchanged.
+- **Unchanged contract.** `role_code` is still required only in new immutable planning pair documents, per the LSA's approval. There is no title, delivery, caller, model or fleet default. Old document bytes, hashes, goldens and read/restore are unchanged, and there were no previously persisted pair revisions under schema 122.
+
+Two smaller changes:
+- **Split slot predicates.** The slot-title and capability-profile checks are now two predicates with their own rules: "a planning pair slot must be titled SEAT A or SEAT B" and "… must hold the planning_pair_member capability profile". Each can be tested and mutated alone.
+- **Concurrent resume.** When two requests for one key interleave, `running_planning_pair` advances the run from its frozen revision. The run's compare-and-swap admits exactly one advance, and the loser answers with the winner's row rather than `revision_conflict`. A replay check before recording then reports the second request as `unchanged`. This repairs the planning pair invocation only. The Advisor and Committee invocations keep the same pattern and are not repaired here: that would be a broad, unrelated repair, out of this dispatch.
+- **Test-only fake control.** `ScriptedFakeRuntime::holding_consultation_launches` returns a `ConsultationLaunchGate` that holds every consultation launch until released. It needs no executor, like `FakeNativePause`. It is not live qualification.
+
+### Tests
+
+| Suite | Test | What it proves |
+| --- | --- | --- |
+| loopback (now 13) | `a_member_role_only_the_epics_selected_catalog_declares_is_frozen_from_it` | The epic selects a persisted successor revision declaring `PPM`. Both member SeatBindings hold `PPM` from that revision, and `validate_against` it succeeds. |
+| | `a_member_role_outside_the_epics_selected_catalog_freezes_nothing` | The selected revision drops `SA` and keeps `AUD` only for compatibility. `SA` (which the build's first catalog declares as current) is refused as absent, and `AUD` because it "cannot open new seats". No run is frozen, and nothing is prepared or launched. |
+| | `a_mismatched_catalog_pin_or_member_role_fails_closed_before_any_native_effect` | A roster pin the persisted catalog does not hash to freezes nothing. A run frozen with a failed first launch, whose stored seat-A role is then rewritten to another exact catalog role (`AUD`), is refused on resume ("does not correspond") with no prepare or launch. |
+| | `a_writable_selected_container_freezes_nothing` | `PWW` is valid but writable, and is refused: "a planning pair container must be read-only". |
+| | `a_mistitled_member_seat_freezes_nothing` | `PMW` is read-only but seat B is titled `SEAT C`, and is refused: "… must be titled SEAT A or SEAT B". |
+| | `a_resumed_invocation_interleaved_with_its_original_launches_nothing_twice` | Both same-key requests are held at the member launch, then released. Both answer 200 with one pair, `created` and `unchanged`, on the same node and container, with the same two natives. The run is `running`. |
+| `planning_pair_store.rs` (now 8) | `a_member_role_outside_the_epics_selected_catalog_is_refused_in_storage` | Each writes no run: an unselected persisted revision ("names a role catalog the epic did not select"), a rewritten title, an undeclared code, and an epic with no roster. The fixture now freezes the epic's roster. |
+
+**Regression red before its fix:** `a_resumed_invocation_interleaved_with_its_original_launches_nothing_twice` was run with the `4922` advance in place and failed. One of the two requests answered 409 `revision_conflict`, "a persistence rule refused the write against the presented state". The log is `/tmp/pp2-evidence/resume-regression-red-before-fix.log` and is not committed.
+
+### Rework mutation checks (seeded and run by this seat)
+
+The convention is unchanged. The final source SHA-256 values, confirmed equal after each restore, are:
+- `crates/kontor-daemon/src/applications/planning_pair.rs` `794360c9bf8336077a49031052718f2ed787915c8695474b4f7c275f0ada51bb`;
+- `crates/kontor-store/src/repository.rs` `6b55fbf9b2982ab3c15e3db63c7a8a994db012a34a9e5516f82df8a270209913`.
+
+| Id | Site and mutant | Filter (listed) | Red, then green |
+| --- | --- | --- | --- |
+| PP-MUT-13 | Freeze resolves the member role with `catalog_role_for_code`, the `4922` defect restored | selected-only, outside (2) | 0/2. `PPM` was refused, "the seeded delivery binding names a role the catalog does not declare". Unselected `SA` froze in the daemon, and the store guard alone refused it (`revision_conflict`). 2/2 green |
+| PP-MUT-14 | The persisted-bytes pin check becomes `if false && …` | mismatch (1) | 0/1. The daemon accepted the mismatched pin, and the store guard refused (`revision_conflict`). 1/1 |
+| PP-MUT-15 | The frozen-role/explicit-code correspondence becomes `if false && …` | mismatch (1) | 0/1. The drifted run resumed, launched both members and reached `running`. 1/1 |
+| PP-MUT-16 | The `Current` lifecycle check becomes `if false && …` | outside (1) | 0/1. The compatibility-only `AUD` froze and launched. 1/1 |
+| PP-MUT-17 | Store: the in-transaction role guard is not called | store boundary (1) | 0/1. The unselected revision froze (`Ok(Frozen …)`). 1/1 |
+| PP-MUT-18 | Store: the roster-pin comparison becomes `if false && …` | store boundary (1) | 0/1. The same. 1/1 |
+| PP-MUT-19 | The read-only predicate becomes `if false && …` | writable, mistitled (2) | 1/2. **Only** the writable test failed: `PWW` froze and launched. The mistitled test passed. 2/2 |
+| PP-MUT-20 | The slot-title predicate becomes `if false && …` | mistitled, writable (2) | 1/2. **Only** the mistitled test failed: `PMW` froze and launched. The writable test passed. 2/2 |
+| PP-MUT-21 | The lost advance refuses instead of answering with the winner's row | resume (1) | 0/1. 409 `revision_conflict`. 1/1 |
+| PP-MUT-23 | The resumed request skips the replay check before recording | resume (1) | 0/1. `["created", "created"]` where `["created", "unchanged"]` is required. 1/1 |
+
+Disclosed, not counted:
+- **A redundant guard.** A first draft of the resume fix also re-read the row before advancing. Run on that draft (daemon SHA-256 `a8d96921…`), the re-read mutant and the lost-advance mutant each survived, because each guard alone was sufficient. The draft was reduced to the single compare-and-swap guard above, and the daemon mutants were re-run at the final hash (the table).
+- **Superseded draft runs.** PP-MUT-13 to 16, 19 and 20 were also killed on that draft. Those runs are superseded by the final-hash rows.
+- **Not re-run.** The slice-four rows PP-MUT-01 to 12 were not re-run at the new hash. Their killer tests are green on the final source (the gates below).
+- **The completion-scan arm is no positive proof.** The planning pair `continue` in the completion verdict scan is unreachable, because that scan lists only `ConsultationFamily::Committee` runs. No mutant can kill it, and none is claimed.
+
+### Rework gates
+
+- `cargo fmt -p <crate> -- --check` is clean for `kontor-daemon`, `kontor-store` and `kontor-runtime`. `cargo clippy` on those three, all targets, `-D warnings`, is clean. `cargo check --workspace --all-targets` is clean.
+- `kontor-core`: `consultation_identity_golden` 2 and `planning_pair` 25. The core is unchanged; this is the old-golden gate.
+- `kontor-store`: `planning_pair_store` 8, `schema_v1` 67 (migration compatibility), `repository_roundtrip` 89, `advisor_multi_seat_advice` 3 and `consultation_profiles` 9.
+- `kontor-runtime`: 81 (lib 61, plus three targets with 20).
+- `kontor-daemon`: lib 149. `loopback_api` filtered to `planning_pair advisor committee consultation`: 35 passed, among them the 13 planning pair tests covering auth, replay, sealed reads, member authority, vendors, catalog and resume.
+- `kontor-mcp` lib 69. `mcp_parity`, `mcp_cardinality` and `mcp_mutants`: 36. The Paseo planning pair contract test: 1.
+- Not one test failed. The broad 1774-test run was not repeated. Only the planning pair module, the store's planning pair insert, the fake runtime and tests changed.
+
 ## Remaining capability gaps after slice four (current)
 
 - **ASMA-8113 fence.** The reviewer is unassigned, so the widened identity vocabulary's acceptance, integration and deployment wait on an explicit assignment and an exact verdict.
@@ -547,7 +646,8 @@ the TPM-routed verify and audit.
 - **Leadership serve profile.** No profile serves the caller tools (invoke, clarification, disposition) to a leadership seat. The `leadership` profile is unchanged, so the caller acts only through a client that holds its scoped credential.
 - **Direct-mode consumer.** The asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
 - **TPM-owned placement.** No TPM operation, receipt or procedure wraps placement.
-- **Concurrent resume.** Like the Advisor and Committee invocations, a resumed invocation that interleaves with another one before its `Running` advance is guarded by the run's CAS rather than retried. The fake runtime does not interleave there, so this is untested.
+- **Concurrent resume.** This is repaired for the planning pair in the 6f rework, where it is guarded by the run's CAS and regression-tested with a held launch gate. The Advisor and Committee invocations keep the earlier pattern. They are not repaired in this dispatch, which allows no broad unrelated repair.
+- **Catalog authority.** A member's role now comes only from the epic's frozen-roster catalog. An epic promoted with no published Core Team still freezes the build's catalog, through the existing `epic_bootstrap_roster`. That is the epic's recorded selection, not a planning pair default.
 - TASK-004 and TASK-002 are not closed by any slice.
 
 ## Remaining gaps after the audit remediation
