@@ -496,6 +496,64 @@ pub struct StoredConsultationSeat {
     pub observed_at: Option<Timestamp>,
 }
 
+/// One planning pair's frozen placement (ASMA-8282): the shared allocator's
+/// receipt from one activated snapshot, under its canonical content address.
+///
+/// Protocol payload keyed by the consultation run, not a second identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlanningPairPlacement {
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The canonical placement document; its hash is the placement hash every
+    /// frozen member and contribution is bound to.
+    pub placement: CanonicalDocument,
+    /// When the placement was frozen.
+    pub created_at: Timestamp,
+}
+
+/// One immutable revision of a planning pair's canonical record, written
+/// beside the run revision it describes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlanningPairRecord {
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// Owning project.
+    pub project_id: ProjectId,
+    /// The run revision this record describes.
+    pub revision: AggregateRevision,
+    /// The protocol phase the record restores to.
+    pub phase: crate::planning_pair::PlanningPairState,
+    /// The canonical record document.
+    pub record: CanonicalDocument,
+    /// When the revision was written.
+    pub created_at: Timestamp,
+}
+
+/// One member's finding or answer as storage proves it: its round, slot and
+/// address, the exact authenticated seat and generation that gave it, and the
+/// record revision that first held it. The advice itself is in the record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlanningPairContribution {
+    /// The planning pair's consultation run.
+    pub run_id: ConsultationRunId,
+    /// Findings or clarification.
+    pub round: crate::planning_pair::PlanningPairRound,
+    /// The member slot.
+    pub slot: crate::planning_pair::PlanningPairSlot,
+    /// The contribution's canonical address.
+    pub document_hash: ContentHash,
+    /// The authenticated member seat that recorded it.
+    pub seat_binding_id: SeatBindingId,
+    /// The occupancy generation it was recorded under.
+    pub occupancy_generation: u64,
+    /// The record revision that first held it.
+    pub record_revision: AggregateRevision,
+    /// When it was recorded.
+    pub created_at: Timestamp,
+}
+
 /// Durable receipt-first intent for replacing one consultation native filler.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredConsultationRecoveryAttempt {

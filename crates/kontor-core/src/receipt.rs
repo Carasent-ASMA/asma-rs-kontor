@@ -240,6 +240,22 @@ closed_enum! {
         /// Change the frozen route of a native-less materializing Committee
         /// seat under an exact Admin compare-and-swap.
         RerouteUnmaterializedConsultationSeat => "reroute_unmaterialized_consultation_seat",
+        /// Publish the next immutable `planning_pair@1` document revision.
+        ///
+        /// The project is the aggregate, as for an Advisor profile: a document
+        /// seats nobody until a pair is invoked under it.
+        ApplyPlanningPairProfile => "apply_planning_pair_profile",
+        /// Invoke one planning pair under a pinned document and one frozen
+        /// shared-allocator placement.
+        InvokePlanningPairRun => "invoke_planning_pair_run",
+        /// Record one member's sealed finding.
+        RecordPlanningPairFinding => "record_planning_pair_finding",
+        /// Record the caller's one clarification question.
+        RequestPlanningPairClarification => "request_planning_pair_clarification",
+        /// Record one addressed member's sealed clarification answer.
+        RecordPlanningPairAnswer => "record_planning_pair_answer",
+        /// Record the caller's disposition. Terminal; never a settlement.
+        RecordPlanningPairDisposition => "record_planning_pair_disposition",
         /// Open one ad-hoc Quick session under the project's session base.
         ///
         /// The project is the aggregate. A Quick session creates no MiniProject
@@ -604,9 +620,9 @@ impl CommandKind {
             // template is project configuration; an epic here would let a
             // receipt claim that publishing one changed a running consultation,
             // which is exactly what pinning a revision prevents.
-            Self::ApplyAdvisorProfile | Self::ApplyCommitteeTemplate => {
-                witness(matches!(target, A::Project))
-            }
+            Self::ApplyAdvisorProfile
+            | Self::ApplyCommitteeTemplate
+            | Self::ApplyPlanningPairProfile => witness(matches!(target, A::Project)),
             // The epic each of these is about. Promotion names the epic it
             // creates rather than the project it creates it in: the receipt has
             // to be findable from the thing that now exists.
@@ -630,9 +646,12 @@ impl CommandKind {
             | Self::RecordCommitteeFindings
             | Self::SettleCommitteeRun
             | Self::RecoverConsultationSeat
-            | Self::RerouteUnmaterializedConsultationSeat => {
-                witness(matches!(target, A::MiniProject))
-            }
+            | Self::RerouteUnmaterializedConsultationSeat
+            | Self::InvokePlanningPairRun
+            | Self::RecordPlanningPairFinding
+            | Self::RequestPlanningPairClarification
+            | Self::RecordPlanningPairAnswer
+            | Self::RecordPlanningPairDisposition => witness(matches!(target, A::MiniProject)),
         }
     }
 

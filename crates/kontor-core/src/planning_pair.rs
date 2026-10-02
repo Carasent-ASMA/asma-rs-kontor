@@ -46,7 +46,7 @@ use crate::consultation::{
 };
 use crate::id::{
     BoundedText, CanonicalDocument, ContentHash, ExternalName, PlanningPairProfileId, RoleKey,
-    SCHEMA_VERSION, SchemaVersion, SpecVersion,
+    SCHEMA_VERSION, SchemaVersion, SpecVersion, TopologyKindKey,
 };
 use crate::spec::{BudgetBounds, ModelRung};
 use crate::{DomainError, DomainResult};
@@ -255,6 +255,13 @@ pub struct PlanningPairSpec {
     pub name: ExternalName,
     /// The planning question this pair is convened for.
     pub charter: BoundedText,
+    /// The Team Definition container kind a governed pair is placed in.
+    ///
+    /// An explicit selection, never a default: the epic's pinned Team
+    /// Definition must declare exactly this kind, read-only, with exactly the
+    /// slots `seat-a` and `seat-b`, or the pair cannot be invoked. It is part
+    /// of the document, and so of its hash and of every run's identity.
+    pub container_kind: TopologyKindKey,
     /// Exactly two members, `seat-a` then `seat-b`.
     pub members: Vec<PlanningPairMemberSpec>,
     /// Roles allowed to convene it. Never empty.

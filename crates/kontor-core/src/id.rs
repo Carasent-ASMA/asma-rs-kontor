@@ -265,6 +265,11 @@ entity_ids! {
     AdvisorRunId,
     /// Identifies one consultation of a Committee.
     CommitteeRunId,
+    /// Identifies one consultation of a `planning_pair@1` pair.
+    ///
+    /// Its own type, never a Committee run id, so a planning pair can never
+    /// be read or settled as a Committee.
+    PlanningPairRunId,
     /// Identifies one Advisor profile across its revisions.
     ///
     /// The profile is the identity a run pins; a revision is a version within

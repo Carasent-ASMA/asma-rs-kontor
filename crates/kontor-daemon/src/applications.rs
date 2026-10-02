@@ -186,6 +186,7 @@ use kontor_core::id::{
 use kontor_core::naming::{
     NativeNameSegment, NativeNameTemplate, NativeNameToken, NativeNameValues,
 };
+use kontor_core::planning_pair::PlanningPairSpec;
 use kontor_core::publication::{
     CommitSha, PublicationBinding, PublicationDecision, PublicationIdentity, evaluate,
 };
@@ -9642,6 +9643,7 @@ impl Services {
             match family {
                 ConsultationFamily::Advisor => CommandKind::ApplyAdvisorProfile,
                 ConsultationFamily::Committee => CommandKind::ApplyCommitteeTemplate,
+                ConsultationFamily::PlanningPair => CommandKind::ApplyPlanningPairProfile,
             },
             AggregateRef::Project { project_id },
             project.revision,
@@ -12264,7 +12266,7 @@ impl Services {
         let (_, template) = self.committee_template(run)?;
         let committee_run_id = match run.id {
             ConsultationRunId::Committee(id) => id,
-            ConsultationRunId::Advisor(_) => {
+            ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => {
                 return Err(self.deny(
                     ApiErrorCode::InvalidRequest,
                     "this result reconstruction requires a Committee run",
@@ -12403,7 +12405,7 @@ impl Services {
     ) -> Result<ContentHash, ApiError> {
         let committee_run_id = match run.id {
             ConsultationRunId::Committee(id) => id,
-            ConsultationRunId::Advisor(_) => unreachable!(),
+            ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => unreachable!(),
         };
         let (remediation, remediation_hash) = self
             .state()?
@@ -13437,7 +13439,7 @@ impl Services {
             .map_err(|error| self.refuse(&error))?;
         let advisor_run_id = match run.id {
             ConsultationRunId::Advisor(id) => id,
-            ConsultationRunId::Committee(_) => {
+            ConsultationRunId::Committee(_) | ConsultationRunId::PlanningPair(_) => {
                 return Err(self.deny(
                     ApiErrorCode::InvalidRequest,
                     "this projection requires an Advisor run",
@@ -13900,7 +13902,9 @@ impl Services {
                         run.project_id,
                         match run.id {
                             ConsultationRunId::Committee(id) => id,
-                            ConsultationRunId::Advisor(_) => unreachable!(),
+                            ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => {
+                                unreachable!()
+                            }
                         },
                         run.round,
                     )
@@ -14128,7 +14132,9 @@ impl Services {
         let evidence = if slot.role == CommitteeRole::Judge {
             let committee_run_id = match run.id {
                 ConsultationRunId::Committee(id) => id,
-                ConsultationRunId::Advisor(_) => unreachable!(),
+                ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => {
+                    unreachable!()
+                }
             };
             let findings = state
                 .with_store(|store| {
@@ -14286,7 +14292,7 @@ impl Services {
             .map_err(|error| self.refuse(&error))?;
         let committee_run_id = match run.id {
             ConsultationRunId::Committee(id) => id,
-            ConsultationRunId::Advisor(_) => {
+            ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => {
                 return Err(self.deny(
                     ApiErrorCode::InvalidRequest,
                     "this projection requires a Committee run",
@@ -16276,6 +16282,8 @@ enum ConsultationDefinition {
     Advisor(Box<AdvisorProfileSpec>),
     /// A Committee template.
     Committee(Box<CommitteeTemplateSpec>),
+    /// A `planning_pair@1` document.
+    PlanningPair(Box<PlanningPairSpec>),
 }
 
 impl ConsultationDefinition {
@@ -16284,6 +16292,7 @@ impl ConsultationDefinition {
         match self {
             Self::Advisor(spec) => spec.profile_id.to_string(),
             Self::Committee(spec) => spec.template_id.to_string(),
+            Self::PlanningPair(spec) => spec.profile_id.to_string(),
         }
     }
 
@@ -16291,6 +16300,7 @@ impl ConsultationDefinition {
         match self {
             Self::Advisor(spec) => spec.version,
             Self::Committee(spec) => spec.version,
+            Self::PlanningPair(spec) => spec.version,
         }
     }
 
@@ -16298,6 +16308,7 @@ impl ConsultationDefinition {
         match self {
             Self::Advisor(spec) => spec.name.clone(),
             Self::Committee(spec) => spec.name.clone(),
+            Self::PlanningPair(spec) => spec.name.clone(),
         }
     }
 
@@ -16306,6 +16317,7 @@ impl ConsultationDefinition {
         match self {
             Self::Advisor(spec) => spec.canonicalize(),
             Self::Committee(spec) => spec.canonicalize(),
+            Self::PlanningPair(spec) => spec.canonicalize(),
         }
     }
 }
@@ -16340,6 +16352,12 @@ fn consultation_definition(
                 .map_err(|error| format!("not a valid Committee template: {error}"))?;
             spec.validate().map_err(|error| error.to_string())?;
             Ok(ConsultationDefinition::Committee(Box::new(spec)))
+        }
+        ConsultationFamily::PlanningPair => {
+            let spec: PlanningPairSpec = serde_json::from_value(definition.clone())
+                .map_err(|error| format!("not a valid planning_pair@1 document: {error}"))?;
+            spec.validate().map_err(|error| error.to_string())?;
+            Ok(ConsultationDefinition::PlanningPair(Box::new(spec)))
         }
     }
 }
@@ -17776,7 +17794,11 @@ impl Services {
                     };
                     let committee_run_id = match run.id {
                         ConsultationRunId::Committee(id) => id,
-                        ConsultationRunId::Advisor(_) => continue,
+                        // Advice is never a verdict: neither an Advisor nor a
+                        // planning pair is a completion verdict candidate.
+                        ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => {
+                            continue;
+                        }
                     };
                     if selected_committee_run_id
                         .is_some_and(|selected| selected != committee_run_id)
@@ -17890,7 +17912,9 @@ impl Services {
                     .expect("the exact Committee candidate count was checked");
                 let committee_run_id = match settled.id {
                     ConsultationRunId::Committee(id) => id,
-                    ConsultationRunId::Advisor(_) => unreachable!(),
+                    ConsultationRunId::Advisor(_) | ConsultationRunId::PlanningPair(_) => {
+                        unreachable!()
+                    }
                 };
                 let consultation = ExternalName::parse(&committee_run_id.to_string())
                     .map_err(|error| self.refuse_domain(&error))?;
@@ -42170,6 +42194,15 @@ impl Services {
         let kind = match family {
             ConsultationFamily::Advisor => &self.domain.delivery.advisor_kind,
             ConsultationFamily::Committee => &self.domain.delivery.committee_kind,
+            // A planning pair's container kind is never the domain's: its own
+            // published document names it explicitly, and only the planning
+            // pair invocation path passes it.
+            ConsultationFamily::PlanningPair => {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "a planning pair names its container kind in its own document",
+                ));
+            }
         };
         let container = definition.container(kind).ok_or_else(|| {
             self.deny(

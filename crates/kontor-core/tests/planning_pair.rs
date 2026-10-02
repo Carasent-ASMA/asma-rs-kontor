@@ -17,7 +17,7 @@ use kontor_core::consultation::{
 };
 use kontor_core::id::{
     BoundedText, ContentHash, CurrencyCode, ExternalName, Money, PlanningPairProfileId, RoleKey,
-    SCHEMA_VERSION, SpecVersion,
+    SCHEMA_VERSION, SpecVersion, TopologyKindKey,
 };
 use kontor_core::planning_pair::{
     ClarificationRequest, ConsultationProtocol, FINDINGS_ROUNDS, MAX_CLARIFICATION_ROUNDS,
@@ -80,6 +80,7 @@ fn spec() -> PlanningPairSpec {
         version: SpecVersion::FIRST,
         name: ExternalName::parse("Planning pair").expect("name"),
         charter: text("Is this plan the smallest sound next step?"),
+        container_kind: TopologyKindKey::parse("PPW").expect("kind"),
         members: vec![member_spec(SeatA), member_spec(SeatB)],
         allowed_caller_roles: vec![RoleKey::parse("lead").expect("role")],
         allowed_scopes: vec![ConsultationScope::Epic, ConsultationScope::Ticket],

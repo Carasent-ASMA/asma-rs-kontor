@@ -65,6 +65,10 @@ const EXPECTED_TABLES: &[&str] = &[
     "committee_remediations",
     "committee_re_review_claims",
     "advisor_advice_artifacts",
+    // Schema v122 (ASMA-8282): the planning pair's run-keyed protocol payload.
+    "planning_pair_placements",
+    "planning_pair_record_revisions",
+    "planning_pair_contributions",
     "context_packs",
     "core_team_revisions",
     // Schema v32 (KON-OP-06): published Completion Profile revisions, one durable
@@ -760,7 +764,10 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // restores the binding permanence triggers the v28 rebuild dropped
     // (ASMA-8280).
     // v121 binds fleet bundle publication and activation keys the same way.
-    assert_eq!(SCHEMA_VERSION, 121);
+    // v122 adds the closed `planning_pair` consultation family, its
+    // family-conditioned run states, its run-keyed placement, record and
+    // contribution payload, and its six command kinds (ASMA-8282).
+    assert_eq!(SCHEMA_VERSION, 122);
 }
 
 #[test]
@@ -6245,3 +6252,315 @@ fn v121_fleet_bundle_keys_bind_once_and_every_binding_stays_bound() {
         );
     }
 }
+
+/// v122 (ASMA-8282) rebuilds the consultation registry, its document catalog
+/// and the receipt ledger to admit the closed `planning_pair` family. Every
+/// Advisor and Committee row, constraint, trigger and index must come through
+/// it byte for byte, including a settled run's terminal evidence.
+#[test]
+fn v122_preserves_every_advisor_and_committee_row_and_rule() {
+    const PROJECT: &str = "0193f000-0000-7000-8000-000000000101";
+    const EPIC: &str = "0193f000-0000-7000-8000-000000000102";
+    const CALLER: &str = "0193f000-0000-7000-8000-000000000103";
+    const ADVISOR_RUN: &str = "0193f000-0000-7000-8000-000000000104";
+    const COMMITTEE_RUN: &str = "0193f000-0000-7000-8000-000000000105";
+    const NODE_A: &str = "0193f000-0000-7000-8000-000000000106";
+    const NODE_C: &str = "0193f000-0000-7000-8000-000000000107";
+    const PROFILE: &str = "0193f000-0000-7000-8000-000000000108";
+    const RECEIPT: &str = "0193f000-0000-7000-8000-000000000109";
+    const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const HASH_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+    let connection = Connection::open_in_memory().expect("the migration fixture opens");
+    // The parents 0122 references, as stubs; then the exact v121 shapes of the
+    // three tables it rebuilds, with their triggers and indexes.
+    connection
+        .execute_batch(&format!(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE mini_projects (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE tasks (id TEXT PRIMARY KEY, project_id TEXT, mini_project_id TEXT) STRICT;
+             CREATE TABLE topology_nodes (id TEXT PRIMARY KEY) STRICT;
+             CREATE TABLE seat_bindings (id TEXT PRIMARY KEY) STRICT;
+             {profiles}
+             {runs}
+             {receipts}
+             CREATE TABLE consultation_seats (
+                 run_id TEXT NOT NULL REFERENCES consultation_runs(run_id),
+                 role_slot_id TEXT NOT NULL,
+                 PRIMARY KEY (run_id, role_slot_id)
+             ) STRICT;
+             CREATE TABLE advisor_advice_artifacts (
+                 advisor_run_id TEXT NOT NULL, project_id TEXT NOT NULL
+             ) STRICT;
+             CREATE TRIGGER advisor_advice_belongs_to_its_attested_seat
+             BEFORE INSERT ON advisor_advice_artifacts
+             WHEN NOT EXISTS (
+                 SELECT 1 FROM consultation_runs AS run
+                  WHERE run.project_id = NEW.project_id
+                    AND run.run_id = NEW.advisor_run_id
+                    AND run.family = 'advisor'
+             )
+             BEGIN SELECT RAISE(ABORT, 'advice needs its Advisor run'); END;",
+            profiles = include_str!("../migrations/0034_consultation_profiles.sql")
+                .split("-- Widen the closed command-kind list")
+                .next()
+                .expect("the v34 catalog definition"),
+            runs = V121_CONSULTATION_RUNS,
+            receipts = V108_COMMAND_RECEIPTS,
+        ))
+        .expect("the v121 shapes are created");
+    connection
+        .execute_batch(&format!(
+            "INSERT INTO projects VALUES ('{PROJECT}');
+             INSERT INTO mini_projects VALUES ('{EPIC}');
+             INSERT INTO seat_bindings VALUES ('{CALLER}');
+             INSERT INTO topology_nodes VALUES ('{NODE_A}'), ('{NODE_C}');
+             INSERT INTO consultation_profile_revisions VALUES
+                 ('{PROJECT}', 'advisor', '{PROFILE}', 1, 'Advisor', '{{}}', '{HASH_A}', '2026-10-01T10:00:00Z'),
+                 ('{PROJECT}', 'committee', '{PROFILE}', 1, 'Committee', '{{}}', '{HASH_B}', '2026-10-01T10:00:00Z');
+             INSERT INTO consultation_runs
+                 (run_id, project_id, mini_project_id, family, profile_id, profile_version,
+                  definition_hash, question, question_hash, context, context_hash,
+                  caller_seat_binding_id, topology_node_id, invoke_key, invoke_intent_hash,
+                  state, round, result, result_hash, revision, created_at, updated_at, settled_at,
+                  topic, semantic_identity_hash, subject_kind, subject_task_id)
+             VALUES
+                 ('{ADVISOR_RUN}', '{PROJECT}', '{EPIC}', 'advisor', '{PROFILE}', 1, '{HASH_A}',
+                  'Why?', '{HASH_A}', '{{}}', '{HASH_A}', '{CALLER}', '{NODE_A}', 'advisor-key',
+                  '{HASH_A}', 'running', 1, NULL, NULL, 3, '2026-10-01T10:00:00Z',
+                  '2026-10-01T11:00:00Z', NULL, 'Naming', '{HASH_A}', 'epic', NULL),
+                 ('{COMMITTEE_RUN}', '{PROJECT}', '{EPIC}', 'committee', '{PROFILE}', 1, '{HASH_B}',
+                  'Is it compliant?', '{HASH_B}', '{{}}', '{HASH_B}', '{CALLER}', '{NODE_C}',
+                  'committee-key', '{HASH_B}', 'settled', 2, '{{\"verdict\":\"compliant\"}}', '{HASH_C}',
+                  7, '2026-10-01T10:00:00Z', '2026-10-01T12:00:00Z', '2026-10-01T12:00:00Z',
+                  'Review', '{HASH_B}', 'epic', NULL);
+             INSERT INTO consultation_seats VALUES ('{COMMITTEE_RUN}', 'reviewer-a');
+             INSERT INTO command_receipts
+                 (id, project_id, idempotency_key, kind, target, target_revision, intent,
+                  intent_hash, state, correlation, native_identity, result_ref, attempts,
+                  created_at, updated_at, execution_mode)
+             VALUES ('{RECEIPT}', '{PROJECT}', 'settle-key', 'settle_committee_run', '{{}}', 1,
+                     '{{}}', '{HASH_C}', 'confirmed', NULL, NULL, NULL, 0,
+                     '2026-10-01T12:00:00Z', '2026-10-01T12:00:00Z', 'local');"
+        ))
+        .expect("the historical rows are written");
+
+    let snapshot = |table: &str, order: &str| -> Vec<String> {
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM {table} ORDER BY {order}"))
+            .expect("the table is readable");
+        let width = statement.column_count();
+        statement
+            .query_map([], |row| {
+                (0..width)
+                    .map(|index| {
+                        row.get::<_, rusqlite::types::Value>(index)
+                            .map(|value| format!("{value:?}"))
+                    })
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map(|values| values.join("|"))
+            })
+            .expect("rows")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("rows")
+    };
+    let before = (
+        snapshot("consultation_runs", "run_id"),
+        snapshot("consultation_profile_revisions", "family"),
+        snapshot("command_receipts", "id"),
+    );
+
+    // Exactly as `migrate()` applies a generation: foreign keys off for the
+    // batch, then a full foreign-key check of the result below.
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .expect("the migration runner's pragma");
+    connection
+        .execute_batch(include_str!("../migrations/0122_planning_pair_family.sql"))
+        .expect("v122 applies over the historical rows");
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("the runner restores foreign keys");
+
+    assert_eq!(
+        (
+            snapshot("consultation_runs", "run_id"),
+            snapshot("consultation_profile_revisions", "family"),
+            snapshot("command_receipts", "id"),
+        ),
+        before,
+        "every historical row is copied byte for byte"
+    );
+    assert!(
+        connection
+            .prepare("PRAGMA foreign_key_check")
+            .expect("the check runs")
+            .query([])
+            .expect("rows")
+            .next()
+            .expect("readable")
+            .is_none(),
+        "the child seat and every reference still resolve"
+    );
+    let refused = |sql: &str, needle: &str| match connection.execute(sql, []) {
+        Err(error) => assert!(error.to_string().contains(needle), "{sql}: {error}"),
+        Ok(rows) => panic!("{sql}: {rows} rows were accepted"),
+    };
+    // The settled Committee keeps its terminal evidence; the frozen input and
+    // permanence rules survive; the old vocabularies are exactly the old ones.
+    refused(
+        &format!("UPDATE consultation_runs SET result = '{{}}' WHERE run_id = '{COMMITTEE_RUN}'"),
+        "cannot rewrite frozen input or settled evidence",
+    );
+    refused(
+        &format!("UPDATE consultation_runs SET question = 'Who?' WHERE run_id = '{ADVISOR_RUN}'"),
+        "cannot rewrite frozen input or settled evidence",
+    );
+    refused(
+        &format!("UPDATE consultation_runs SET state = 'disposed' WHERE run_id = '{ADVISOR_RUN}'"),
+        "CHECK constraint failed",
+    );
+    refused(
+        "UPDATE consultation_profile_revisions SET name = 'Renamed'",
+        "is immutable",
+    );
+    refused(
+        &format!("DELETE FROM command_receipts WHERE id = '{RECEIPT}'"),
+        "not deletable",
+    );
+    refused(
+        &format!(
+            "INSERT INTO consultation_profile_revisions VALUES
+                 ('{PROJECT}', 'jury', '{PROFILE}', 1, 'Jury', '{{}}', '{HASH_C}', '2026-10-02T10:00:00Z')"
+        ),
+        "CHECK constraint failed",
+    );
+    refused(
+        &format!("INSERT INTO advisor_advice_artifacts VALUES ('{COMMITTEE_RUN}', '{PROJECT}')"),
+        "advice needs its Advisor run",
+    );
+    connection
+        .execute(
+            &format!("INSERT INTO advisor_advice_artifacts VALUES ('{ADVISOR_RUN}', '{PROJECT}')"),
+            [],
+        )
+        .expect("another table's trigger still reads the rebuilt registry");
+    // The shared semantic identity index still refuses a duplicate.
+    refused(
+        &format!(
+            "UPDATE consultation_runs SET semantic_identity_hash = '{HASH_B}', revision = revision + 1
+              WHERE run_id = '{ADVISOR_RUN}'"
+        ),
+        "UNIQUE constraint failed",
+    );
+    // And the third family is admitted only where it was added.
+    connection
+        .execute(
+            &format!(
+                "INSERT INTO consultation_profile_revisions VALUES
+                     ('{PROJECT}', 'planning_pair', '{PROFILE}', 1, 'Pair', '{{}}', '{HASH_C}',
+                      '2026-10-02T10:00:00Z')"
+            ),
+            [],
+        )
+        .expect("a planning_pair document publishes into the shared catalog");
+    let kinds: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master
+              WHERE name = 'command_receipts' AND sql LIKE '%record_planning_pair_disposition%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the receipt shape is readable");
+    assert_eq!(
+        kinds, 1,
+        "the six planning pair command kinds are closed in"
+    );
+}
+
+/// The exact v121 shape of `consultation_runs`: the v70 table, the four
+/// columns v77, v91 and v96 added, and the v91 and v96 indexes and triggers.
+const V121_CONSULTATION_RUNS: &str = "
+CREATE TABLE consultation_runs (
+    run_id TEXT NOT NULL PRIMARY KEY CHECK (length(run_id) = 36 AND run_id NOT GLOB '*[^0-9a-f-]*'),
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+    mini_project_id TEXT NOT NULL REFERENCES mini_projects(id) ON DELETE RESTRICT,
+    family TEXT NOT NULL CHECK (family IN ('advisor', 'committee')),
+    profile_id TEXT NOT NULL,
+    profile_version INTEGER NOT NULL CHECK (profile_version >= 1),
+    definition_hash TEXT NOT NULL CHECK (length(definition_hash) = 64 AND definition_hash NOT GLOB '*[^0-9a-f]*'),
+    question TEXT NOT NULL CHECK (length(question) BETWEEN 1 AND 32768),
+    question_hash TEXT NOT NULL CHECK (length(question_hash) = 64 AND question_hash NOT GLOB '*[^0-9a-f]*'),
+    context TEXT NOT NULL CHECK (json_valid(context)),
+    context_hash TEXT NOT NULL CHECK (length(context_hash) = 64 AND context_hash NOT GLOB '*[^0-9a-f]*'),
+    caller_seat_binding_id TEXT NOT NULL REFERENCES seat_bindings(id) ON DELETE RESTRICT,
+    topology_node_id TEXT NOT NULL UNIQUE REFERENCES topology_nodes(id) ON DELETE RESTRICT,
+    invoke_key TEXT NOT NULL UNIQUE CHECK (length(invoke_key) BETWEEN 1 AND 256),
+    invoke_intent_hash TEXT NOT NULL CHECK (length(invoke_intent_hash) = 64 AND invoke_intent_hash NOT GLOB '*[^0-9a-f]*'),
+    state TEXT NOT NULL CHECK (state IN ('materializing', 'running', 'awaiting_judge', 'settled', 'needs_human')),
+    round INTEGER NOT NULL CHECK (round BETWEEN 1 AND 255),
+    result TEXT NULL CHECK (result IS NULL OR json_valid(result)),
+    result_hash TEXT NULL CHECK (result_hash IS NULL OR (length(result_hash) = 64 AND result_hash NOT GLOB '*[^0-9a-f]*')),
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    settled_at TEXT NULL,
+    FOREIGN KEY (project_id, family, profile_id, profile_version)
+        REFERENCES consultation_profile_revisions(project_id, family, profile_id, version)
+        ON DELETE RESTRICT,
+    CHECK ((result IS NULL) = (result_hash IS NULL)),
+    CHECK ((state = 'settled') = (settled_at IS NOT NULL)),
+    UNIQUE (project_id, run_id)
+) STRICT;
+ALTER TABLE consultation_runs ADD COLUMN topic TEXT NULL
+    CHECK (topic IS NULL OR length(topic) BETWEEN 1 AND 512);
+ALTER TABLE consultation_runs ADD COLUMN semantic_identity_hash TEXT NULL
+    CHECK (semantic_identity_hash IS NULL OR (length(semantic_identity_hash) = 64 AND semantic_identity_hash NOT GLOB '*[^0-9a-f]*'));
+ALTER TABLE consultation_runs ADD COLUMN subject_kind TEXT NULL
+    CHECK (subject_kind IS NULL OR subject_kind IN ('epic', 'task'));
+ALTER TABLE consultation_runs ADD COLUMN subject_task_id TEXT NULL
+    REFERENCES tasks(id) ON DELETE RESTRICT
+    CHECK ((subject_kind IS NULL AND subject_task_id IS NULL)
+           OR (subject_kind IS 'epic' AND subject_task_id IS NULL)
+           OR (subject_kind IS 'task' AND subject_task_id IS NOT NULL));
+CREATE INDEX ix_consultation_runs_epic
+    ON consultation_runs(project_id, mini_project_id, family, created_at, run_id);
+CREATE UNIQUE INDEX consultation_runs_by_semantic_identity
+    ON consultation_runs (project_id, semantic_identity_hash)
+    WHERE semantic_identity_hash IS NOT NULL;
+CREATE TRIGGER consultation_run_inputs_are_frozen
+BEFORE UPDATE ON consultation_runs
+WHEN OLD.question <> NEW.question
+  OR (OLD.result IS NOT NULL AND NOT (OLD.result IS NEW.result))
+BEGIN
+    SELECT RAISE(ABORT, 'a consultation run cannot rewrite frozen input or settled evidence');
+END;
+";
+
+/// The exact v108 receipt ledger shape, with its index and triggers.
+const V108_COMMAND_RECEIPTS: &str = "
+CREATE TABLE command_receipts (
+    id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36 AND id NOT GLOB '*[^0-9a-f-]*'),
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+    idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) BETWEEN 1 AND 256),
+    kind TEXT NOT NULL CHECK (kind IN ('settle_committee_run', 'invoke_advisor_run')),
+    target TEXT NOT NULL CHECK (json_valid(target)),
+    target_revision INTEGER NOT NULL CHECK (target_revision >= 1),
+    intent TEXT NOT NULL CHECK (json_valid(intent)),
+    intent_hash TEXT NOT NULL CHECK (length(intent_hash) = 64 AND intent_hash NOT GLOB '*[^0-9a-f]*'),
+    state TEXT NOT NULL CHECK (state IN ('intent_persisted','dispatch_pending','dispatched',
+        'acknowledged','confirmation_unknown','confirmed','failed')),
+    correlation TEXT NULL CHECK (correlation IS NULL OR length(correlation) BETWEEN 1 AND 256),
+    native_identity TEXT NULL CHECK (native_identity IS NULL OR json_valid(native_identity)),
+    result_ref TEXT NULL CHECK (result_ref IS NULL OR length(result_ref) BETWEEN 1 AND 256),
+    attempts INTEGER NOT NULL CHECK (attempts >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    execution_mode TEXT NOT NULL DEFAULT 'dispatch' CHECK (execution_mode IN ('local','dispatch')),
+    UNIQUE (project_id, id)
+) STRICT;
+CREATE INDEX ix_command_receipts_state ON command_receipts(project_id, state);
+CREATE TRIGGER command_receipts_no_delete BEFORE DELETE ON command_receipts
+BEGIN SELECT RAISE(ABORT, 'command receipts are not deletable'); END;
+";

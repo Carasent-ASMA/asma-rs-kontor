@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 121;
+pub const SCHEMA_VERSION: i64 = 122;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -422,6 +422,7 @@ const MIGRATIONS: &[&str] = &[
     // Schema v121. Realm idempotency bindings for fleet bundle publication and
     // activation (ASMA-8280 S-1).
     include_str!("../migrations/0121_fleet_bundle_operations.sql"),
+    include_str!("../migrations/0122_planning_pair_family.sql"),
 ];
 
 const _: () = assert!(
