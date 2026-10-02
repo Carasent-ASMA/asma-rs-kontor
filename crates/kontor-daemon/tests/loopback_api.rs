@@ -60769,6 +60769,153 @@ async fn a_legacy_item_code_is_forbidden_in_a_topic_even_when_the_template_does_
     );
 }
 
+/// Two different idempotency keys, one semantic identity, both dispatched
+/// before either can answer: exactly one invoke freezes the run, and the other
+/// receives the sequential refusal shape — code, rule, the existing run's
+/// locator and read/resume guidance — with no second row and no native effect
+/// of its own. Both families are raced so neither can be fixed alone.
+#[tokio::test]
+async fn a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently() {
+    let fixture =
+        jira_key_consultation_fixture("/tmp/kontor-asma8114-concurrent-duplicate").await;
+    let ConsultationFixture {
+        composed, caller, ..
+    } = &fixture;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    let caller = caller.clone();
+
+    let presets = kontor_profiles::seeds::bundled_consultation_presets().expect("the presets load");
+    let template = presets.committee_templates[0].clone();
+    let document = template.canonicalize().expect("the template canonicalizes");
+    let committee_profile = template.template_id.to_string();
+    world.daemon.state().with_store(|store| {
+        store
+            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
+                project_id,
+                family: ConsultationFamily::Committee,
+                profile_id: committee_profile.clone(),
+                version: template.version,
+                name: template.name.clone(),
+                definition: document.json().to_owned(),
+                definition_hash: document.hash().clone(),
+                published_at: kontor_api::now(),
+            })
+            .expect("the Committee preset publishes");
+    });
+
+    for family in [ConsultationFamily::Advisor, ConsultationFamily::Committee] {
+        let family_label = match family {
+            ConsultationFamily::Advisor => "Advisor",
+            ConsultationFamily::Committee => "Committee",
+        };
+        let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(world, "observer")
+            .send(world)
+            .await;
+        let (uri, profile, run_field) = match family {
+            ConsultationFamily::Advisor => (
+                format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
+                serde_json::json!({"id": ADVISOR_PROFILE, "version": 1}),
+                "advisor_run_id",
+            ),
+            ConsultationFamily::Committee => (
+                format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+                serde_json::json!({"id": committee_profile, "version": template.version.get()}),
+                "committee_run_id",
+            ),
+        };
+        let body = serde_json::json!({
+            "profile": profile,
+            "topic": "concurrent completion",
+            "question": "Which run owns this semantic identity?",
+            "caller_seat_binding_id": caller,
+            "expected_revision": epic_read.json()["revision"],
+        });
+        prepare_fake_provider_headroom(world, project).await;
+        world.fake.take_calls();
+        let first = Call::post(&uri, &body)
+            .signed_as(world, "operator")
+            .with_key(format!("asma8114-concurrent-{family}-a"))
+            .send(world);
+        let second = Call::post(&uri, &body)
+            .signed_as(world, "operator")
+            .with_key(format!("asma8114-concurrent-{family}-b"))
+            .send(world);
+        let (first, second) = tokio::join!(first, second);
+        let (winner, loser) = if first.status == 200 {
+            (first, second)
+        } else if second.status == 200 {
+            (second, first)
+        } else {
+            panic!(
+                "one concurrent invoke must freeze the {family} run: {} / {}",
+                first.body, second.body
+            );
+        };
+        assert_eq!(loser.status, 409, "{}", loser.body);
+        assert_eq!(loser.json()["code"], "idempotency_conflict");
+        assert!(
+            loser.json()["rule"].as_str().is_some_and(|rule| rule.contains(&format!(
+                "consultation_semantic_duplicate: this {family_label} scope and topic already has one run"
+            ))),
+            "{}",
+            loser.body
+        );
+        let winner_run = winner.json()[run_field]
+            .as_str()
+            .expect("the winning run id")
+            .to_owned();
+        assert_eq!(
+            loser.json()["at"],
+            format!("consultation-runs/{winner_run}"),
+            "{}",
+            loser.body
+        );
+        assert_eq!(
+            loser.json()["action"],
+            "read or resume the existing consultation run"
+        );
+        let winner_seats: Vec<String> = winner.json()["seats"]
+            .as_array()
+            .expect("the winning seats")
+            .iter()
+            .filter_map(|seat| seat["seat_binding_id"].as_str().map(str::to_owned))
+            .collect();
+        let launched: Vec<String> = world
+            .fake
+            .take_calls()
+            .iter()
+            .filter_map(|call| match call {
+                AdapterCall::LaunchConsultation(seat) => Some(seat.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !launched.is_empty(),
+            "the winning run must launch at least one consultation seat"
+        );
+        assert!(
+            launched.iter().all(|seat| winner_seats.contains(seat)),
+            "only the winning run's seats may launch: {launched:?} vs {winner_seats:?}"
+        );
+        let runs = world.daemon.state().with_store(|store| {
+            store
+                .list_consultation_runs(project_id, epic_id, family)
+                .expect("the runs read")
+        });
+        assert_eq!(
+            runs.len(),
+            1,
+            "the losing invoke must leave no second run"
+        );
+        assert_eq!(runs[0].id.as_text(), winner_run);
+    }
+}
+
 /// A consultation invoked before the subject was recorded has no subject to
 /// render. Naming it refuses rather than reaching for the caller's seat or the
 /// epic that happens to contain it.
