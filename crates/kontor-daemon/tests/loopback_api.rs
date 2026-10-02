@@ -60583,6 +60583,192 @@ async fn consultation_containers_follow_their_recorded_subject_not_their_caller(
     );
 }
 
+/// The derived Kontor item code is server-owned name material whether or not
+/// the pinned Team Definition renders it. The Jira-key successor templates here
+/// render the confirmed key instead, so the legacy code must still be refused
+/// as caller-supplied topic material, for both consultation families, before
+/// any run row or native effect exists.
+#[tokio::test]
+async fn a_legacy_item_code_is_forbidden_in_a_topic_even_when_the_template_does_not_render_it() {
+    let fixture =
+        jira_key_consultation_fixture("/tmp/kontor-asma8114-legacy-code-topic").await;
+    let ConsultationFixture {
+        composed,
+        epic_key,
+        caller,
+        ..
+    } = &fixture;
+    let world = &composed.world;
+    let project = &composed.project;
+    let epic = &composed.epic;
+    let project_id = ProjectId::parse(project).expect("a project id");
+    let epic_id = MiniProjectId::parse(epic).expect("an epic id");
+    let (epic_key, caller) = (epic_key.clone(), caller.clone());
+
+    // The epic owns an active immutable namespace and a confirmed key, so the
+    // derived legacy code exists and is exactly the material under test.
+    let item_code = world.daemon.state().with_store(|store| {
+        let code = store
+            .epic_backlog_code(project_id, epic_id)
+            .expect("the epic namespace reads")
+            .expect("the composed epic has an active immutable backlog code");
+        let key = store
+            .confirmed_jira_epic_key(project_id, epic_id)
+            .expect("the epic binding reads")
+            .expect("the composed epic is confirmed");
+        kontor_core::backlog_identity::JiraItemCode::derive(&code, &key)
+            .expect("the legacy item code derives")
+            .as_str()
+            .to_owned()
+    });
+    assert_ne!(
+        item_code,
+        epic_key.as_str(),
+        "the fixture must distinguish the derived code from the confirmed key"
+    );
+    let bad_topic = format!("{item_code} operational completion");
+
+    // The Committee preset is published through the store because this suite
+    // does not exercise the Committee authoring routes.
+    let presets = kontor_profiles::seeds::bundled_consultation_presets().expect("the presets load");
+    let template = presets.committee_templates[0].clone();
+    let document = template.canonicalize().expect("the template canonicalizes");
+    let committee_profile = template.template_id.to_string();
+    world.daemon.state().with_store(|store| {
+        store
+            .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
+                project_id,
+                family: ConsultationFamily::Committee,
+                profile_id: committee_profile.clone(),
+                version: template.version,
+                name: template.name.clone(),
+                definition: document.json().to_owned(),
+                definition_hash: document.hash().clone(),
+                published_at: kontor_api::now(),
+            })
+            .expect("the Committee preset publishes");
+    });
+    prepare_fake_provider_headroom(world, project).await;
+
+    let read_epic_revision = || async {
+        let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
+            .signed_as(world, "observer")
+            .send(world)
+            .await;
+        epic_read.json()["revision"].clone()
+    };
+
+    // Committee first, then Advisor: both families freeze the same semantic
+    // identity shape and both must refuse the legacy code as topic material.
+    let committee_revision = read_epic_revision().await;
+    let committee_body = serde_json::json!({
+        "profile": {"id": committee_profile, "version": template.version.get()},
+        "topic": bad_topic,
+        "question": "Which confirmed key names this consultation?",
+        "caller_seat_binding_id": caller,
+        "expected_revision": committee_revision,
+    });
+    let calls_before = world.fake.calls().len();
+    let committee_refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &committee_body,
+    )
+    .signed_as(world, "operator")
+    .with_key("asma8114-legacy-code-committee")
+    .send(world)
+    .await;
+    assert_eq!(committee_refused.status, 400, "{}", committee_refused.body);
+    assert_eq!(committee_refused.json()["code"], "invalid_request");
+    assert!(
+        committee_refused.json()["rule"]
+            .as_str()
+            .is_some_and(|rule| rule.contains("consultation_topic_repeats_scope_code")),
+        "{}",
+        committee_refused.body
+    );
+    assert_eq!(committee_refused.json()["subject"], "ConsultationTopic");
+    assert_eq!(committee_refused.json()["at"], "topic");
+    assert!(
+        !committee_refused.body.contains(&item_code),
+        "the refusal must not echo the caller's topic material: {}",
+        committee_refused.body
+    );
+
+    let advisor_revision = read_epic_revision().await;
+    let advisor_body = serde_json::json!({
+        "profile": {"id": ADVISOR_PROFILE, "version": 1},
+        "topic": bad_topic,
+        "question": "Which confirmed key names this consultation?",
+        "caller_seat_binding_id": caller,
+        "expected_revision": advisor_revision,
+    });
+    let advisor_refused = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/advisor-runs:invoke"),
+        &advisor_body,
+    )
+    .signed_as(world, "operator")
+    .with_key("asma8114-legacy-code-advisor")
+    .send(world)
+    .await;
+    assert_eq!(advisor_refused.status, 400, "{}", advisor_refused.body);
+    assert_eq!(advisor_refused.json()["code"], "invalid_request");
+    assert!(
+        advisor_refused.json()["rule"]
+            .as_str()
+            .is_some_and(|rule| rule.contains("consultation_topic_repeats_scope_code")),
+        "{}",
+        advisor_refused.body
+    );
+    assert_eq!(advisor_refused.json()["subject"], "ConsultationTopic");
+    assert_eq!(advisor_refused.json()["at"], "topic");
+    assert!(
+        !advisor_refused.body.contains(&item_code),
+        "the refusal must not echo the caller's topic material: {}",
+        advisor_refused.body
+    );
+
+    // Neither refusal reached the runtime or froze a run.
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before,
+        "a refused topic reached the native runtime"
+    );
+    let frozen = world.daemon.state().with_store(|store| {
+        let advisor = store
+            .list_consultation_runs(project_id, epic_id, ConsultationFamily::Advisor)
+            .expect("the Advisor runs read");
+        let committee = store
+            .list_consultation_runs(project_id, epic_id, ConsultationFamily::Committee)
+            .expect("the Committee runs read");
+        advisor.len() + committee.len()
+    });
+    assert_eq!(frozen, 0, "a refused topic froze a run");
+
+    // And the pinned template really does not render the code: a clean topic
+    // still succeeds, titled from the confirmed key and not the legacy code.
+    let clean_revision = read_epic_revision().await;
+    let clean_body = serde_json::json!({
+        "profile": {"id": committee_profile, "version": template.version.get()},
+        "topic": "operational completion",
+        "question": "Which confirmed key names this consultation?",
+        "caller_seat_binding_id": caller,
+        "expected_revision": clean_revision,
+    });
+    let invited = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
+        &clean_body,
+    )
+    .signed_as(world, "operator")
+    .with_key("asma8114-legacy-code-clean")
+    .send(world)
+    .await;
+    assert_eq!(invited.status, 200, "{}", invited.body);
+    assert_eq!(
+        invited.json()["container_name"],
+        format!("CSW • {epic_key} • operational completion")
+    );
+}
+
 /// A consultation invoked before the subject was recorded has no subject to
 /// render. Naming it refuses rather than reaching for the caller's seat or the
 /// epic that happens to contain it.
