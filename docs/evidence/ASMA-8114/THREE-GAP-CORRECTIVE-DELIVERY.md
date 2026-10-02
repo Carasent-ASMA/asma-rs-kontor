@@ -4,7 +4,8 @@ Status: frozen candidate on `feat/ASMA-8114-three-gap-corrective-delivery`,
 based on module default `f95e206563bca88b6871f48528623441e5e1a231` (PR278).
 Nothing was pushed, merged, deployed, restarted or materialized; no Jira,
 Keychain, credential or runtime effect was exercised. Qualification and review
-are dispatched separately.
+are dispatched separately. The rework that answers the independent LSA
+qualification of `083232ca` is recorded in the final section of this document.
 
 ## Commits
 
@@ -196,18 +197,101 @@ the archived `50cf` state were not read, written, renamed, retitled, archived or
 otherwise touched. The pre-existing `docs/evidence/ASMA-8114/HIGH-SCOPE-
 RECORD.md` and `OPERATIONAL-GAPS.md` remain unmodified.
 
+## Rework after LSA qualification (`083232ca` → final HEAD)
+
+The independent qualification of `083232ca87b0fd0d0d789e8849291d24378628ef`
+returned `does-not-qualify`: no P0, one P1 (Gap 3 catalog identity), two P2
+(Gap 2 daemon coverage; committed-export gate pending). Corrections:
+
+| Commit | Concern |
+| --- | --- |
+| `0b871236` | P1 — one shared task key across catalog slug and branch; task presence tracked |
+| `da0acbb2` | P2 — deterministic daemon insert-loser envelope and exact API mapping regression |
+
+### P1 — catalog identity (LSA-8114-01)
+
+- `crates/kontor-runtime-paseo/src/checkout.rs`: `ManagedBranchBinding` now
+  tracks `task_present` separately from the parsed `tasks` (line 27); a
+  task-bearing scope whose key is absent or non-canonical refuses with
+  `binding_unconfirmed` instead of falling back to the epic.
+  `ensure_catalog_identity` (line 107) selects the one task key whose lowercase
+  spelling equals the slug and requires the actual canonical branch to carry
+  that same key. Epic-level scopes and the branch-encoded
+  `ensure_creatable`/`verify_checkout` paths are unchanged.
+- Regressions added: `a_catalog_checkout_binds_its_slug_and_branch_to_one_
+  shared_task_key` (`checkout.rs:561`) and `a_task_scope_without_a_confirmed_
+  task_key_cannot_be_treated_as_epic_level` (`checkout.rs:590`); `preparation_
+  refuses_a_catalog_branch_bound_to_a_different_task_key` — the LSA two-key
+  counterexample — (`tests/contract.rs:3290`) and the coherent-key positive
+  `preparation_accepts_a_catalog_checkout_on_the_configured_task_key`
+  (`tests/contract.rs:3320`). Each refusal asserts zero workspace creates.
+- Witness: changing `task_present = true` to `false` made all three named
+  regressions fail exit 101 (unit shared-key, unit presence, contract two-key);
+  bytes restored, all green.
+
+### P2 — transactional transport witness (LSA-8114-02)
+
+- `crates/kontor-api/tests/error_envelope.rs`:
+  `the_transactional_duplicate_carries_the_exact_sequential_envelope`
+  (line 212) constructs `DuplicateConsultation` for both families and asserts
+  code/status/rule/subject/at/action and that the generic `Conflict` still maps
+  to `revision_conflict` without leaking the internal subject.
+- `crates/kontor-daemon/tests/loopback_api.rs`: `concurrent_daemon_insert_
+  losers_render_the_exact_sequential_envelope` (line 60710) races two real
+  writers through
+  the daemon realm's own store (barrier, scoped threads), asserts exactly one
+  winner and the typed loser naming the survivor, then feeds that exact store
+  error through the realm's transport mapping (`ApiError::from_repository`)
+  and asserts the same exact envelope for both families, plus loser node
+  rollback and one run per family. The joined endpoint race now asserts exact
+  rule and subject equality and a null `current_revision`.
+- Witness: changing only the `DuplicateConsultation` mapping to
+  `RevisionConflict` made both new tests fail exit 101; bytes restored, both
+  green.
+
+### Committed-export gate (LSA-8114-03)
+
+`scripts/verify-tree.py --mode archive` was mirrored gate-for-gate on
+`git archive HEAD` of the corrected candidate. Exact results:
+
+| Gate | Command | Exit |
+| --- | --- | --- |
+| lock | `cargo metadata --locked --format-version 1` | 0 |
+| fmt | `cargo fmt --all -- --check` | 0 |
+| clippy | `cargo clippy --workspace --all-targets -- -D warnings` | 0 |
+| tests | `cargo test --workspace --locked -- --skip system_keychain_reports_a_missing_entry_as_not_found` | 0 (2953 passed, 0 failed, 9 ignored) |
+| audit | `cargo audit` | 0 (0 vulnerabilities; 10 allowed warnings) |
+| deny | `cargo deny check` | **1 — pre-existing** |
+| js install | `pnpm install --frozen-lockfile` | 0 |
+| js types | `pnpm -r typecheck` | 0 |
+| js tests | `pnpm -r test` | 0 (305 passed) |
+| js audit | `pnpm audit --prod` | 0 |
+
+Two exact-facts exceptions, no waiver claimed:
+
+1. The one `--skip` is `system_keychain_reports_a_missing_entry_as_not_found`
+   (`crates/kontor-accounts/tests/account_security.rs:1947`): it queries the
+   real macOS Keychain. The rework constraint forbids Keychain access
+   whatsoever, so the suite was run without it; the independent qualification
+   excluded the same test with the same exact `--skip`.
+2. `cargo deny check` fails on `yoke-derive 0.8.3` (yanked; `advisories
+   FAILED`). The identical command on the base export
+   `f95e206563bca88b6871f48528623441e5e1a231` fails identically, so it is
+   pre-existing in the untouched lockfile and not attributable to this
+   candidate.
+
+The full `python3 scripts/verify-tree.py --mode archive` entry point was
+therefore not invoked as a single command; every gate it runs was executed on
+the same archive export with the exact results above.
+
 ## Notes and unresolved findings
 
-- On a current-thread test runtime the daemon-level joined race may resolve
-  through the sequential pre-check; the transactional loser is deterministically
-  witnessed by the store-level two-writer test. Both produce the identical
-  refusal shape, which the daemon test asserts.
+- The joined endpoint race may resolve through the sequential pre-check on a
+  current-thread runtime; the transactional insert-loser is now deterministically
+  witnessed through the daemon realm store and its exact transport envelope for
+  both families.
 - The evidence logs for every command above were captured locally during this
   delivery; this document records their exact commands and results.
-- `scripts/verify-tree.py --mode archive` (the full export gate, including
-  network advisory checks and the JavaScript gates) was not run for this
-  scoped Rust-only candidate; the applicable Rust gates were run directly and
-  are recorded above.
 - Process note: the local formatting commit `e350432f` was amended once from an
   AI-generated subject that named Gap 3 while the staged diff was formatting
   only. Nothing was pushed; the content is unchanged and the message now names
