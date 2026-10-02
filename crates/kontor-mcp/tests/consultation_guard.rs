@@ -86,6 +86,7 @@ fn a_malformed_guard_binary_invocation_denies_and_still_exits_zero() {
         &["--serve-profile"],
         &["--state-root", "/tmp", "--credential-tier", "operator"],
         &["--serve-profile", "planning_pair_member", "extra"],
+        &["--serve-profile", "planning_pair_caller"],
     ] {
         assert_eq!(decision(args, "Read"), "deny", "{args:?}");
     }

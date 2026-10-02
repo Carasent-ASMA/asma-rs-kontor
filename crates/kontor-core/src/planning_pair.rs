@@ -81,6 +81,29 @@ pub const MEMBER_MCP_TOOLS: [&str; 3] = [
     "kontor_planning_pair_answer_record",
 ];
 
+/// The opt-in serve profile a planning pair's caller may be served under.
+///
+/// Distinct from every leadership profile, and selected only by naming it:
+/// nothing infers it from a seat's role, title or pinned document, and no
+/// profile defaults to it.
+pub const CALLER_SERVE_PROFILE: &str = "planning_pair_caller";
+
+/// The closed caller surface: exactly the four registered operations a
+/// planning pair's caller uses.
+///
+/// Like [`MEMBER_MCP_TOOLS`] this is the one list the registry's
+/// [`CALLER_SERVE_PROFILE`] profile is generated from. It carries no member
+/// contribution, no publication, no gate, permission or delegation tool, and
+/// no Advisor or Committee operation. Serving it grants nothing: the caller
+/// is still authenticated as the exact frozen caller seat at its current
+/// hosted generation, under the document's allowed roles.
+pub const CALLER_MCP_TOOLS: [&str; 4] = [
+    "kontor_planning_pair_run_get",
+    "kontor_planning_pair_run_invoke",
+    "kontor_planning_pair_clarification_request",
+    "kontor_planning_pair_disposition_record",
+];
+
 /// The stable rule texts a refusal names.
 #[allow(
     missing_docs,

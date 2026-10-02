@@ -169,5 +169,28 @@ typed refusal: the native session is kept unbound and named as confirmation
 unknown, the pair stays materializing with no receipt, and a replay meets that
 same session. Account authority is never observed and is stated separately; an
 account-qualified label is not credential ownership.
+A pair's caller may be served under a distinct, opt-in profile,
+`planning_pair_caller`. It has exactly four tools:
+
+- `kontor_planning_pair_run_get`;
+- `kontor_planning_pair_run_invoke`;
+- `kontor_planning_pair_clarification_request`;
+- `kontor_planning_pair_disposition_record`.
+
+They are generated from `kontor_core::planning_pair::CALLER_MCP_TOOLS`.
+
+The profile is selected only by naming it, as
+`kontor-mcp --serve-profile planning_pair_caller`. An omitted profile is the
+tier's whole surface, as before. Nothing infers the caller profile from a
+seat's role, title or pinned document, and no hosted seat is composed with it:
+the leadership profile, and the hosted leadership MCP built from it, are
+unchanged. The caller profile is not a guard profile; a guard named with it
+denies every tool.
+
+Serving the profile grants nothing. The daemon still requires the exact frozen
+caller seat at its current hosted generation, under the document's allowed
+roles. A member, a TPM seat and an ambient Admin or Operator are refused under
+it, and the caller cannot contribute under the member profile.
+
 None of this is a live qualification. Member seat recovery is not yet
 implemented for this family.

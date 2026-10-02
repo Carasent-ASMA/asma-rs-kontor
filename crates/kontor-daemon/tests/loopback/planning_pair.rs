@@ -2499,3 +2499,424 @@ async fn a_member_without_a_member_surface_observation_is_kept_unqualified() {
     )
     .await;
 }
+
+/// A `kontor-mcp` transport over this realm's own router, presenting one
+/// bearer: a seat's scoped credential or an ambient tier secret.
+///
+/// No socket and no process: the production dispatcher — registry, serve
+/// profile, gate, schema validation, one request — runs unchanged above this
+/// seam, and the daemon's real authentication runs below it.
+struct SeatTransport {
+    router: axum::Router,
+    tier: kontor_mcp::CallerTier,
+    bearer: String,
+    requests: std::sync::atomic::AtomicUsize,
+}
+
+impl std::fmt::Debug for SeatTransport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SeatTransport")
+            .field("tier", &self.tier)
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait::async_trait]
+impl kontor_mcp::Transport for SeatTransport {
+    fn tier(&self) -> kontor_mcp::CallerTier {
+        self.tier
+    }
+
+    fn base_url(&self) -> String {
+        "http://127.0.0.1:7717".to_owned()
+    }
+
+    async fn call(
+        &self,
+        request: &kontor_mcp::Request,
+    ) -> Result<kontor_mcp::Reply, kontor_mcp::TransportFailure> {
+        use tower::ServiceExt as _;
+        self.requests
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut builder = axum::http::Request::builder()
+            .method(match request.method {
+                kontor_mcp::Method::Get => axum::http::Method::GET,
+                kontor_mcp::Method::Post => axum::http::Method::POST,
+            })
+            .uri(&request.path)
+            .header("host", "127.0.0.1:7717")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {}", self.bearer));
+        if let Some(key) = &request.idempotency_key {
+            builder = builder.header("idempotency-key", key);
+        }
+        let body = request
+            .body
+            .as_ref()
+            .map_or_else(axum::body::Body::empty, |document| {
+                axum::body::Body::from(serde_json::to_vec(document).expect("a JSON body"))
+            });
+        let response = self
+            .router
+            .clone()
+            .oneshot(builder.body(body).expect("a well-formed request"))
+            .await
+            .expect("the router answers");
+        let status = response.status().as_u16();
+        let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .expect("the whole body");
+        Ok(kontor_mcp::Reply {
+            status,
+            body: serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        })
+    }
+
+    async fn frames(
+        &self,
+        request: &kontor_mcp::Request,
+        _budget: kontor_mcp::FrameBudget,
+    ) -> Result<kontor_mcp::Reply, kontor_mcp::TransportFailure> {
+        Err(kontor_mcp::TransportFailure::Protocol {
+            path: request.path.clone(),
+            status: None,
+            detail: "no streamed read is part of the planning pair surface",
+        })
+    }
+}
+
+/// One `kontor-mcp` dispatcher presenting `bearer` at `tier` under `profile`.
+fn seat_dispatcher(
+    world: &World,
+    tier: kontor_mcp::CallerTier,
+    bearer: String,
+    profile: &str,
+) -> (kontor_mcp::Dispatcher, std::sync::Arc<SeatTransport>) {
+    let transport = std::sync::Arc::new(SeatTransport {
+        router: world.router.clone(),
+        tier,
+        bearer,
+        requests: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let dispatcher = kontor_mcp::Dispatcher::new(Box::new(std::sync::Arc::clone(&transport)))
+        .with_profile(kontor_mcp::ServeProfile::find(profile).expect("a declared profile"));
+    (dispatcher, transport)
+}
+
+/// Read one planning pair through a dispatcher.
+async fn mcp_read(
+    dispatcher: &kontor_mcp::Dispatcher,
+    project: &str,
+    run: &str,
+) -> kontor_mcp::Envelope {
+    dispatcher
+        .call(
+            "kontor_planning_pair_run_get",
+            &serde_json::json!({"project_id": project, "planning_pair_run_id": run}),
+        )
+        .await
+        .expect("the read is dispatched")
+}
+
+/// Record one finding through a dispatcher, at the revision it reads first.
+async fn mcp_finding(
+    dispatcher: &kontor_mcp::Dispatcher,
+    project: &str,
+    run: &str,
+    advice: &str,
+    key: &str,
+) -> kontor_mcp::Envelope {
+    let current = mcp_read(dispatcher, project, run).await;
+    dispatcher
+        .call(
+            "kontor_planning_pair_findings_record",
+            &serde_json::json!({
+                "project_id": project,
+                "planning_pair_run_id": run,
+                "advice": advice,
+                "expected_revision": current.body["revision"],
+                "idempotency_key": key,
+            }),
+        )
+        .await
+        .expect("the finding is dispatched")
+}
+
+fn excluded_by_profile(result: &Result<kontor_mcp::Envelope, kontor_mcp::Failure>) -> bool {
+    matches!(
+        result,
+        Err(kontor_mcp::Failure::Denied(
+            kontor_mcp::Denied::ProfileExcluded { .. }
+        ))
+    )
+}
+
+/// ASMA-8282 frontier B: the opt-in `planning_pair_caller` serve profile,
+/// driven end to end through the production `kontor-mcp` dispatcher.
+///
+/// It serves exactly the four caller tools and grants nothing: the caller is
+/// still authenticated by the daemon as the exact frozen caller seat at its
+/// current hosted generation, under the document's allowed roles. A member,
+/// a TPM seat and an ambient Admin are refused under it; the caller cannot
+/// contribute under the member profile; a member tool is excluded by the
+/// caller profile before any request; and a retired caller generation never
+/// replays its invocation through it. The protocol holds through it: sealed
+/// reads, one clarification, a disposition that keeps dissent, no verdict.
+#[tokio::test]
+async fn the_opt_in_caller_profile_drives_a_pair_through_its_four_tools_and_grants_nothing() {
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-caller-profile").await;
+    let world = &realm.world;
+    let operator = kontor_mcp::CallerTier::Operator;
+    let (caller, caller_requests) = seat_dispatcher(
+        world,
+        operator,
+        realm.caller_token(),
+        "planning_pair_caller",
+    );
+    assert_eq!(
+        caller
+            .tools()
+            .map(|tool| tool.name)
+            .collect::<BTreeSet<_>>(),
+        kontor_core::planning_pair::CALLER_MCP_TOOLS
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        "exactly the four caller tools are served"
+    );
+    let mut invoke = realm
+        .invoke_body(&realm.profile, "Caller profile plan")
+        .await;
+    invoke["project_id"] = serde_json::json!(realm.project);
+    invoke["epic_id"] = serde_json::json!(realm.epic);
+    invoke["idempotency_key"] = serde_json::json!("pp-caller-invoke");
+    let invoked = caller
+        .call("kontor_planning_pair_run_invoke", &invoke)
+        .await
+        .expect("the invocation is dispatched");
+    assert_eq!(invoked.status, 200, "{}", invoked.body);
+    let run = invoked.body["planning_pair_run_id"]
+        .as_str()
+        .expect("a planning pair run")
+        .to_owned();
+    let seat = |slot: &str| {
+        SeatBindingId::parse(
+            invoked.body["members"]
+                .as_array()
+                .expect("two members")
+                .iter()
+                .find(|member| member["slot"] == slot)
+                .expect("a member")["seat_binding_id"]
+                .as_str()
+                .expect("a seat"),
+        )
+        .expect("a seat id")
+    };
+    let (seat_a, seat_b) = (seat("seat-a"), seat("seat-b"));
+    let at =
+        |run: &str| serde_json::json!({"project_id": realm.project, "planning_pair_run_id": run});
+    let revision = |envelope: &kontor_mcp::Envelope| envelope.body["revision"].clone();
+    let project = realm.project.clone();
+
+    // The caller profile excludes a member's write before any request.
+    let before = caller_requests
+        .requests
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let mut contribution = at(&run);
+    contribution["advice"] = serde_json::json!("A caller pretending to be a member.");
+    contribution["expected_revision"] = revision(&invoked);
+    contribution["idempotency_key"] = serde_json::json!("pp-caller-as-member");
+    for tool in [
+        "kontor_planning_pair_findings_record",
+        "kontor_planning_pair_answer_record",
+        "kontor_planning_pair_profile_apply",
+        "kontor_committee_run_settle",
+    ] {
+        assert!(
+            excluded_by_profile(&caller.call(tool, &contribution).await),
+            "{tool} is not on the caller profile"
+        );
+    }
+    assert_eq!(
+        caller_requests
+            .requests
+            .load(std::sync::atomic::Ordering::SeqCst),
+        before,
+        "an excluded tool makes no request"
+    );
+
+    // Members contribute under their own profile; the caller's read stays
+    // sealed until both have.
+    let member = |seat| {
+        seat_dispatcher(
+            world,
+            operator,
+            realm.member_token(seat, 1),
+            "planning_pair_member",
+        )
+        .0
+    };
+    let (member_a, member_b) = (member(seat_a), member(seat_b));
+    assert!(
+        excluded_by_profile(
+            &member_a
+                .call("kontor_planning_pair_run_invoke", &invoke)
+                .await
+        ),
+        "a member profile serves no caller tool"
+    );
+    let first = mcp_finding(
+        &member_a,
+        &project,
+        &run,
+        "Split the migration.",
+        "pp-caller-a",
+    )
+    .await;
+    assert_eq!(first.status, 200, "{}", first.body);
+    let sealed = mcp_read(&caller, &project, &run).await;
+    assert_eq!(sealed.body["viewer"], "caller");
+    assert!(sealed.body["findings"].is_null(), "sealed: {}", sealed.body);
+    // The caller cannot contribute even under the member profile.
+    let (caller_as_member, _) = seat_dispatcher(
+        world,
+        operator,
+        realm.caller_token(),
+        "planning_pair_member",
+    );
+    let refused = mcp_finding(
+        &caller_as_member,
+        &project,
+        &run,
+        "Not a member.",
+        "pp-caller-member-profile",
+    )
+    .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    let second = mcp_finding(&member_b, &project, &run, "Keep it whole.", "pp-caller-b").await;
+    assert_eq!(second.status, 200, "{}", second.body);
+    let released = mcp_read(&caller, &project, &run).await;
+    assert_eq!(slots(&released.body["findings"]), ["seat-a", "seat-b"]);
+
+    // One clarification, through the caller profile.
+    let mut ask = at(&run);
+    ask["question"] = serde_json::json!("Which step reverts alone?");
+    ask["addressed"] = serde_json::json!(["seat-a"]);
+    ask["expected_revision"] = revision(&released);
+    ask["idempotency_key"] = serde_json::json!("pp-caller-ask");
+    let asked = caller
+        .call("kontor_planning_pair_clarification_request", &ask)
+        .await
+        .expect("the clarification is dispatched");
+    assert_eq!(asked.status, 200, "{}", asked.body);
+    ask["expected_revision"] = revision(&asked);
+    ask["idempotency_key"] = serde_json::json!("pp-caller-ask-again");
+    let again = caller
+        .call("kontor_planning_pair_clarification_request", &ask)
+        .await
+        .expect("the second clarification is dispatched");
+    assert_eq!(again.status, 400, "one clarification only: {}", again.body);
+    let mut answer = at(&run);
+    answer["advice"] = serde_json::json!("The schema step reverts alone.");
+    answer["expected_revision"] = revision(&asked);
+    answer["idempotency_key"] = serde_json::json!("pp-caller-answer");
+    let answered = member_a
+        .call("kontor_planning_pair_answer_record", &answer)
+        .await
+        .expect("the answer is dispatched");
+    assert_eq!(answered.status, 200, "{}", answered.body);
+
+    // The disposition keeps dissent and is no verdict.
+    let current = mcp_read(&caller, &project, &run).await;
+    let finding_hash = |slot: &str| {
+        current.body["findings"]
+            .as_array()
+            .expect("released findings")
+            .iter()
+            .find(|entry| entry["slot"] == slot)
+            .expect("a finding")["document_hash"]
+            .clone()
+    };
+    let mut decide = at(&run);
+    decide["members"] = serde_json::json!([
+        {"slot": "seat-a", "finding": finding_hash("seat-a"),
+         "answer": current.body["clarification"]["answers"][0]["document_hash"],
+         "disposition": "accepted"},
+        {"slot": "seat-b", "finding": finding_hash("seat-b"), "disposition": "rejected"},
+    ]);
+    decide["rationale"] = serde_json::json!("Split first.");
+    decide["expected_revision"] = revision(&current);
+    decide["idempotency_key"] = serde_json::json!("pp-caller-dispose");
+    let disposed = caller
+        .call("kontor_planning_pair_disposition_record", &decide)
+        .await
+        .expect("the disposition is dispatched");
+    assert_eq!(disposed.status, 200, "{}", disposed.body);
+    assert_eq!(disposed.body["state"], "disposed");
+    assert_eq!(slots(&disposed.body["retained_dissent"]), ["seat-b"]);
+    for absent in ["verdict", "settled_at", "result", "judge"] {
+        assert!(
+            disposed.body.get(absent).is_none(),
+            "no {absent} on a planning pair: {}",
+            disposed.body
+        );
+    }
+
+    // The profile grants nothing to anyone else.
+    let mut other = invoke.clone();
+    other["topic"] = serde_json::json!("Another caller plan");
+    other["idempotency_key"] = serde_json::json!("pp-caller-other");
+    for (bearer, tier, status, code, why) in [
+        (
+            realm.member_token(seat_a, 1),
+            operator,
+            409,
+            "stale_binding",
+            "a member seat holds no hosted caller occupancy",
+        ),
+        (
+            realm.seat_token(realm.tpm, realm.hosted_generation(realm.tpm)),
+            operator,
+            403,
+            "forbidden",
+            "a TPM seat is not an allowed caller role",
+        ),
+        (
+            secret(world, "admin"),
+            kontor_mcp::CallerTier::Admin,
+            403,
+            "forbidden",
+            "an ambient Admin is no caller seat",
+        ),
+        (
+            secret(world, "operator"),
+            operator,
+            403,
+            "forbidden",
+            "an ambient Operator is no caller seat",
+        ),
+    ] {
+        let (dispatcher, _) = seat_dispatcher(world, tier, bearer, "planning_pair_caller");
+        let refused = dispatcher
+            .call("kontor_planning_pair_run_invoke", &other)
+            .await
+            .expect("the invocation is dispatched");
+        assert_eq!(refused.status, status, "{why}: {}", refused.body);
+        assert_eq!(refused.body["code"], code, "{why}: {}", refused.body);
+    }
+    assert_eq!(
+        realm.planning_pair_runs(),
+        1,
+        "no refused caller froze a pair"
+    );
+    // A retired caller generation never replays its invocation through it.
+    let retired = realm.caller_token();
+    retire_caller_generation(&realm);
+    let (fenced, _) = seat_dispatcher(world, operator, retired, "planning_pair_caller");
+    let replay = fenced
+        .call("kontor_planning_pair_run_invoke", &invoke)
+        .await
+        .expect("the replay is dispatched");
+    assert_eq!(replay.status, 409, "{}", replay.body);
+    assert_eq!(replay.body["code"], "stale_binding", "{}", replay.body);
+}

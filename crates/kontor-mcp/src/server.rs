@@ -386,6 +386,33 @@ mod tests {
         );
     }
 
+    /// The opt-in caller profile at operator tier serves exactly its four
+    /// tools; at observer tier it serves only the read, so a profile never
+    /// lifts a credential to the caller's writes.
+    #[test]
+    fn the_planning_pair_caller_profile_serves_its_four_tools_within_the_tier() {
+        let served = |tier| -> BTreeSet<&str> {
+            profiled(tier, "planning_pair_caller")
+                .served()
+                .iter()
+                .map(|tool| tool.name)
+                .collect()
+        };
+        assert_eq!(
+            served(CallerTier::Operator),
+            BTreeSet::from([
+                "kontor_planning_pair_run_get",
+                "kontor_planning_pair_run_invoke",
+                "kontor_planning_pair_clarification_request",
+                "kontor_planning_pair_disposition_record",
+            ])
+        );
+        assert_eq!(
+            served(CallerTier::Observer),
+            BTreeSet::from(["kontor_planning_pair_run_get"])
+        );
+    }
+
     /// An observer credential presented under the planning pair member profile
     /// keeps only the read; the profile never lifts it to a member write.
     #[test]

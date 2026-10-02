@@ -992,6 +992,15 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
         name: kontor_core::planning_pair::MEMBER_SERVE_PROFILE,
         tools: &kontor_core::planning_pair::MEMBER_MCP_TOOLS,
     },
+    // ASMA-8282: a planning pair's caller, opt-in and selected only by name.
+    // It reads its run, invokes the pair, asks the one clarification and
+    // records the disposition. It is not the leadership profile and widens
+    // it nowhere; it records no finding or answer, and reaches no publication,
+    // gate, permission or delegation tool.
+    ServeProfile {
+        name: kontor_core::planning_pair::CALLER_SERVE_PROFILE,
+        tools: &kontor_core::planning_pair::CALLER_MCP_TOOLS,
+    },
     ServeProfile {
         name: "leadership",
         tools: &[
@@ -8933,6 +8942,73 @@ mod tests {
                 !member.allows(excluded),
                 "the planning pair member profile must not serve {excluded}"
             );
+        }
+    }
+
+    /// ASMA-8282: the opt-in caller profile is exactly the four caller tools,
+    /// generated from the domain's one closed list, and nothing a member,
+    /// publisher, gate or permission holder uses.
+    #[test]
+    fn the_planning_pair_caller_profile_is_the_exact_caller_surface() {
+        let caller = ServeProfile::find("planning_pair_caller")
+            .expect("the planning pair caller profile is declared");
+        assert_eq!(
+            caller.tools,
+            [
+                "kontor_planning_pair_run_get",
+                "kontor_planning_pair_run_invoke",
+                "kontor_planning_pair_clarification_request",
+                "kontor_planning_pair_disposition_record",
+            ],
+        );
+        assert_eq!(caller.tools, kontor_core::planning_pair::CALLER_MCP_TOOLS);
+        for excluded in [
+            "kontor_planning_pair_findings_record",
+            "kontor_planning_pair_answer_record",
+            "kontor_planning_pair_profile_apply",
+            "kontor_planning_pair_profile_preview",
+            "kontor_planning_pair_profiles_list",
+            "kontor_committee_run_settle",
+            "kontor_committee_permission_respond",
+            "kontor_advisor_run_settle",
+            "kontor_gate_record",
+            "kontor_completion_remediate",
+            "kontor_session_message_send",
+        ] {
+            assert!(
+                !caller.allows(excluded),
+                "the caller profile must not serve {excluded}"
+            );
+        }
+        // A member and the caller share only the read.
+        let member = ServeProfile::find("planning_pair_member").expect("the member profile");
+        let shared: Vec<&&str> = caller
+            .tools
+            .iter()
+            .filter(|tool| member.allows(tool))
+            .collect();
+        assert_eq!(shared, [&"kontor_planning_pair_run_get"]);
+    }
+
+    /// No other profile reaches a planning pair caller write: the leadership,
+    /// worker, consultation and member surfaces are exactly what they were.
+    #[test]
+    fn no_other_profile_serves_a_planning_pair_caller_write() {
+        for profile in SERVE_PROFILES {
+            if profile.name == "planning_pair_caller" {
+                continue;
+            }
+            for tool in [
+                "kontor_planning_pair_run_invoke",
+                "kontor_planning_pair_clarification_request",
+                "kontor_planning_pair_disposition_record",
+            ] {
+                assert!(
+                    !profile.allows(tool),
+                    "`{}` must not serve {tool}",
+                    profile.name
+                );
+            }
         }
     }
 

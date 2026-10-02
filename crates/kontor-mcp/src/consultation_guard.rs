@@ -290,6 +290,9 @@ mod tests {
             &["--serve-profile", "planning_pair_member", "extra"],
             &["--serve-profile=planning_pair_member"],
             &["--profile", "planning_pair_member"],
+            // The planning pair caller profile is a served surface, never a
+            // guard profile: a guard naming it denies every tool.
+            &["--serve-profile", "planning_pair_caller"],
         ] {
             for tool in ["Read", "mcp__kontor__kontor_planning_pair_run_get"] {
                 let (allowed, reason) = decide(&args(rest), &event(tool));

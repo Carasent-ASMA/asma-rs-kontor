@@ -13,6 +13,7 @@
 - Audit 6f turn-5 rework (2026-10-02): the independent 6f audit failed `420f82f5` (tree `2f49d3cb`). Two same-key requests could both answer `created` after the compare-and-swap. The rework is built on `420f82f5`, dispatched by TPM from the same writing session, and bounded to atomic receipt classification, its deterministic regression and mutation evidence, and the handoff. See "Audit 6f turn-5 rework" below.
 - D-3 member surface (2026-10-02): TPM dispatch from the accepted `b3457c31` (tree `169542e6`), after verify and audit passed. It covers the member guard, the serve profile, the typed member launch context and its readback, and route-specific capability, with mock and disposable-fixture tests only. See "D-3 member surface" below.
 - D-3 authority repair (2026-10-02): verify b887 on `1b1d5597` passed the composition and confirmed an authority hole, and the LSA granted no waiver. The repair: a member binds only when every mandatory member-surface field matches; every real Paseo route is refused before freeze; and Claude composition is proved on fixtures only. See "D-3 authority repair" below.
+- Frontier B (2026-10-02): the opt-in `planning_pair_caller` source profile, built on `8b6ee064` (tree `aef842f6`) after verify and audit 6f passed with no findings. It covers the registry profile and explicit selection, plus tests and docs. No composition and no daemon source change. See "Frontier B" below.
 - The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. At slice four it holds 53 files, which hash to `4ff4c1bc5cbe7c7ce505442d50827f91d64b0bb308cd18183a39d42339e49e87`: each file's SHA-256 in sorted path order, hashed again. Its files were last written at 2026-10-02 00:25 CEST. That run was not this writing session's (its only workspace run was on 2026-09-29), and slice four did not touch them. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
@@ -896,6 +897,74 @@ Pre-mutation SHA-256 values, each confirmed equal after restore:
 | R-MUT-06 | Paseo admits a Claude route at the surface check | every-route (1) | 0/1. `claude: Ok(())`. 1/1 |
 | R-MUT-07 | Paseo's launch refusal is removed | every-route (1) | 0/1. A Claude member launch reached the plane (`Transport`). 1/1 |
 
+## Frontier B: the opt-in `planning_pair_caller` source profile (2026-10-02)
+
+TPM's next independent source slice builds on `8b6ee064fa84d02d4365e2d28819150907da3745` (tree
+`aef842f666e3e94fd7dccf3937db87745e7728f4`), after verify and audit 6f passed with no findings.
+
+This checkout owns one distinct, opt-in caller source profile plus its tests and docs. It
+adds no recovery, no placement, no direct CLI and no daemon source change. It has no native,
+provider, credential, network, deploy or source-policy effect, and does not widen the
+leadership profile or deploy any change to it.
+
+### What is implemented
+
+| Element | Source | What it does |
+| --- | --- | --- |
+| One closed caller list | `kontor-core` `planning_pair.rs` `CALLER_SERVE_PROFILE`, `CALLER_MCP_TOOLS` | Exactly the four registered caller tools, with names confirmed in the registry: `kontor_planning_pair_run_get`, `kontor_planning_pair_run_invoke`, `kontor_planning_pair_clarification_request` and `kontor_planning_pair_disposition_record`. No new route. |
+| Registry profile | `kontor-mcp` `registry.rs` | `planning_pair_caller` is generated from that list; there is no second allowlist. Every entry is at or below the Operator floor; the read is Observer. No member, publication, gate, permission, delegation, Advisor or Committee tool. The leadership, worker, consultation and member profiles are unchanged. |
+| Explicit selection | `kontor-mcp` `main.rs` `selected_profile` | The caller profile is served only when named exactly: `--serve-profile planning_pair_caller`. An omitted profile is the tier's whole surface, as before. A near spelling is refused, and the refusal lists the declared profiles. |
+| Composition | — | **Not composed.** No hosted seat, pin, role, title or document selects it. The hosted leadership MCP (`with_leadership_mcp`) stays `leadership`. Composing the caller profile into a hosted seat would be a new explicit optional selection, and none exists. |
+| Guard | `consultation_guard.rs` | The caller profile is not a guard profile. `--consultation-tool-guard --serve-profile planning_pair_caller` is malformed and denies every tool, so the guard still accepts exactly `consultation` and `planning_pair_member`. |
+| Authority | daemon, unchanged | Serving the profile grants nothing. The caller is still the exact frozen caller seat at its current hosted generation, under the document's original allowed roles, and authentication still precedes replay. |
+
+### Tests
+
+| Suite | Tests |
+| --- | --- |
+| `kontor-mcp` registry | `the_planning_pair_caller_profile_is_the_exact_caller_surface`: the exact four tools from the one list; member, publication, gate, permission, Advisor, Committee, completion and session tools excluded; the member profile shares only the read. `no_other_profile_serves_a_planning_pair_caller_write`. |
+| `kontor-mcp` server | `the_planning_pair_caller_profile_serves_its_four_tools_within_the_tier`: four at Operator, only the read at Observer. |
+| `kontor-mcp` main | `the_caller_profile_is_selected_only_by_its_exact_name`: omitted selects nothing; exact name only; six near or foreign names refused. |
+| `kontor-mcp` guard (unit and binary) | The caller profile denies every tool as a guard profile. |
+| daemon loopback (new, 23 in the module) | `the_opt_in_caller_profile_drives_a_pair_through_its_four_tools_and_grants_nothing`, which runs the production `kontor-mcp` dispatcher over the realm's real router with each seat's own credential. It shows, in order: (1) exactly the four tools are served; (2) the invocation runs through them; (3) the member writes, the profile publication and the Committee settle are excluded by the profile, with no request made; (4) members contribute under their own profile, which serves no caller tool; (5) the caller's read stays sealed until both findings, and the caller is refused (403) under the member profile; (6) one clarification, the second refused; (7) a disposition that keeps seat B's dissent, with no verdict, settlement, result or Judge. Under the caller profile, refusals are: member credential 409 `stale_binding` (no hosted caller occupancy); TPM 403 (role); ambient Admin 403; ambient Operator 403. No pair is frozen by any of them. A retired caller generation's replay of its own invocation key is 409 `stale_binding`. |
+
+The existing old-path tests stay green: the leadership profile and the hosted leadership composition (6 preapproved tools, `leadership`), registry parity and cardinality, identity goldens, atomic receipts, sealed reads, cross-member and stale-before-replay, and every real Paseo route refused before freeze.
+
+### Frontier B gates
+
+- `cargo fmt -p` and `cargo clippy --all-targets -D warnings` for `kontor-core`, `kontor-mcp` and `kontor-daemon`: clean.
+- `kontor-core` golden and `planning_pair`: 27.
+- `-p kontor-mcp` (lib, bin, guard binary, seats): 89.
+- `mcp_parity`, `mcp_cardinality` and `mcp_mutants`: 36.
+- Paseo contract, filtered to `hosted_leadership`, `member` and `planning_pair`: 5.
+- Daemon `loopback_api planning_pair::`: 23. `mcp_journey`: 2.
+- Not one failure. The broad 1764-test run was not repeated: no daemon, runtime or adapter source changed.
+
+### Frontier B mutation checks (seeded and run by this seat)
+
+Pre-mutation SHA-256 values, each confirmed equal after restore:
+- `kontor-core/src/planning_pair.rs` `be05929e4044a023ffeeb4525080ade6f3853906c289bd9272c66f3c2c7cf399`
+- `kontor-mcp/src/registry.rs` `fd676a04270b0dda66e0d474d04ccaec6f309a50cfbff455aac4224b0b1b684c`
+- `kontor-mcp/src/main.rs` `101fb34c256a860ebc3fb495c79e146a0665a5897a384aabf57e83ece5115a90`
+- `kontor-runtime-paseo/src/client.rs` `02beaa2f63b10e26a424f4a6e1628b95f77cae049208206a24331b02f2b6ead7`
+- `kontor-mcp/src/consultation_guard.rs` `c809cbc51a16dcf5418be09bd9cf2d45e8490120558fa743bbbdf99ab4362e41`
+- `kontor-daemon/src/applications/planning_pair.rs` `511c456ca25e9c3620adafa3446a4df232afd3fa33ebdb935e74b277e2601eac`
+
+| Id | Mutant | Filter (listed) | Red, then green |
+| --- | --- | --- | --- |
+| C-MUT-01 | Caller profile widening: the closed caller list gains the member's finding write | caller registry, caller server (2) | 0/2: both caller-surface tests failed. 2/2 |
+| C-MUT-02 | Leadership widening: the leadership profile gains the caller's invoke | no-other-profile, caller registry (2) | 1/2. **Only** no-other-profile failed: "`leadership` must not serve kontor_planning_pair_run_invoke". 2/2 |
+| C-MUT-03 | Implicit selection: an omitted `--serve-profile` selects the caller profile | caller selection, declared resolve (2) | 1/2. **Only** caller selection failed: "an omitted profile selects nothing". 2/2 |
+| C-MUT-04 | Implicit selection at composition: a hosted leadership seat is composed with the caller profile | hosted leadership launch (1) | 0/1: "codex must receive its own leadership MCP". 1/1 |
+| C-MUT-05 | Guard union: the guard accepts the caller profile as a member guard | malformed guard, member guard (2) | 1/2. **Only** the malformed test failed: the caller-profile guard allowed `Read`. 2/2 |
+| C-MUT-06 | Auth generation bypass: the caller's hosted generation is not compared | caller-profile E2E, authority (2) | 0/2: both failed. Under the caller profile, the retired generation's replay was answered. 2/2 |
+
+### Limits kept accurate (from audit 6f on `8b6ee064`)
+
+- **Second-seat readback failure is untested, and qualification is per member.** Every readback-refusal test fails the first member launched (seat A). If seat B's readback failed after seat A was bound, seat A would stay bound; the pair would stay materializing with no receipt, and seat B would be unbound. No contract that unbinds both members is invented here.
+- **The route refusal reports the first blocker only.** The surface refusal names only the first refused route, in seat order. When both routes are refused, it carries seat A's provider and gap and omits seat B's. This is a diagnostic limit, not an admission: every route is still refused before freeze.
+- **The fully matched fake remains the hypothetical positive** that every caller-side protocol test runs against. Every real Paseo route is still refused before freeze with no effect, and with no match there is no authority.
+
 ## Remaining capability gaps after slice four (current)
 
 - **ASMA-8113 fence.** The reviewer is unassigned, so the widened identity vocabulary's acceptance, integration and deployment wait on an explicit assignment and an exact verdict.
@@ -917,7 +986,7 @@ Pre-mutation SHA-256 values, each confirmed equal after restore:
   - no release.
   The bundled pack declares no planning pair container, so a governed pair needs an explicitly published topology kind, Team Definition container and document. TPM owns that placement, and the owning release workflow owns deployment.
 - **Member seat recovery** (provider loss, credential propagation) is not implemented for a planning pair. The consultation recover routes refuse the family, so a lost member fails closed.
-- **Leadership serve profile.** No profile serves the caller tools (invoke, clarification, disposition) to a leadership seat. The `leadership` profile is unchanged, so the caller acts only through a client that holds its scoped credential.
+- **Caller serve profile.** An opt-in `planning_pair_caller` source profile now serves exactly the four caller tools when it is selected by name. No hosted seat is composed with it: no explicit optional selection seam exists, and none is inferred. The `leadership` profile is unchanged, so a hosted LSA still has no caller tools unless a client holding its scoped credential serves this profile.
 - **Direct-mode consumer.** The asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
 - **TPM-owned placement.** No TPM operation, receipt or procedure wraps placement.
 - **Concurrent resume.** This is repaired for the planning pair:
