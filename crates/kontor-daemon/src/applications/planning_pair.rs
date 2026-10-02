@@ -60,6 +60,61 @@ pub(super) struct PairState {
     seats: Vec<StoredConsultationSeat>,
 }
 
+/// A black-box test's hold before a planning pair invocation receipt is
+/// written: every invocation that reaches the write waits until released.
+///
+/// It needs no executor, and it changes only when the receipt is written,
+/// never what is written or whether. No composed daemon installs one.
+#[doc(hidden)]
+#[derive(Debug, Clone, Default)]
+pub struct PlanningPairReceiptHold {
+    state: std::sync::Arc<std::sync::Mutex<ReceiptHoldState>>,
+}
+
+#[derive(Debug, Default)]
+struct ReceiptHoldState {
+    waiting: usize,
+    released: bool,
+    held: Vec<std::task::Waker>,
+}
+
+impl PlanningPairReceiptHold {
+    /// How many invocations have reached the receipt write so far.
+    #[must_use]
+    pub fn waiting(&self) -> usize {
+        self.lock().waiting
+    }
+
+    /// Let every held and every later invocation write its receipt.
+    pub fn release(&self) {
+        let mut state = self.lock();
+        state.released = true;
+        for waker in state.held.drain(..) {
+            waker.wake();
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ReceiptHoldState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    async fn pass(&self) {
+        self.lock().waiting += 1;
+        std::future::poll_fn(|context| {
+            let mut state = self.lock();
+            if state.released {
+                std::task::Poll::Ready(())
+            } else {
+                state.held.push(context.waker().clone());
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+    }
+}
+
 /// Who a projection is rendered for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Viewer {
@@ -215,17 +270,11 @@ impl Services {
         };
         self.materialize_planning_pair_members(&run).await?;
         let run = self.running_planning_pair(&run)?;
-        // A request for this key that resumed the run may have finished first;
-        // its receipt is then this request's answer.
-        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
-            let pair = self.planning_pair_state(&run)?;
-            return self.planning_pair_dto(
-                &pair,
-                Viewer::Caller,
-                Some((receipt.id, AppliedDto::Unchanged)),
-            );
-        }
-        let receipt_id = self.record(
+        self.planning_pair_receipt_hold_point().await;
+        // A request for this key that resumed the run may record alongside
+        // this one. Whether this request wrote the receipt is decided where
+        // the receipt is written, so exactly one of them answers `created`.
+        let (receipt_id, inserted) = self.record_classified(
             key,
             project_id,
             CommandKind::InvokePlanningPairRun,
@@ -233,12 +282,38 @@ impl Services {
             run.revision,
             &intent,
         )?;
+        let applied = if inserted {
+            AppliedDto::Created
+        } else {
+            AppliedDto::Unchanged
+        };
         let pair = self.planning_pair_state(&run)?;
-        self.planning_pair_dto(
-            &pair,
-            Viewer::Caller,
-            Some((receipt_id, AppliedDto::Created)),
-        )
+        self.planning_pair_dto(&pair, Viewer::Caller, Some((receipt_id, applied)))
+    }
+
+    /// Hold every invocation that reaches its receipt write, for a black-box
+    /// test that must line two requests up after the run's compare-and-swap
+    /// and before either receipt exists.
+    #[doc(hidden)]
+    pub fn hold_planning_pair_invocation_receipts(&self) -> PlanningPairReceiptHold {
+        let hold = PlanningPairReceiptHold::default();
+        *self
+            .planning_pair_receipt_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hold.clone());
+        hold
+    }
+
+    /// Wait at an installed test hold; with none installed, return at once.
+    async fn planning_pair_receipt_hold_point(&self) {
+        let hold = self
+            .planning_pair_receipt_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(hold) = hold {
+            hold.pass().await;
+        }
     }
 
     /// The run once its members are launched, advanced to `running`.

@@ -1585,6 +1585,11 @@ async fn a_reopened_realm_restores_a_sealed_planning_pair_and_continues_it() {
 /// the run the first froze while the first is still launching. The run's
 /// compare-and-swap admits one `running` advance, both requests answer with
 /// the one pair on its one frozen node, and no member is launched twice.
+///
+/// On this current-thread runtime the first released request then runs to
+/// its receipt before the second resumes, so this test does not line the two
+/// up at the receipt write. That interleaving is
+/// `two_requests_held_at_the_receipt_write_classify_one_created_and_one_unchanged`.
 #[tokio::test]
 async fn a_resumed_invocation_interleaved_with_its_original_launches_nothing_twice() {
     let realm = pair_realm("/tmp/kontor-asma8282-pair-resume").await;
@@ -1958,4 +1963,164 @@ async fn a_mistitled_member_seat_freezes_nothing() {
         call,
         AdapterCall::PrepareContainer(_) | AdapterCall::LaunchConsultation(_)
     )));
+}
+
+/// Audit 6f (turn 5): two requests for one key, both past the run's
+/// compare-and-swap and both held immediately before the receipt write, so
+/// neither has seen a receipt when the other writes. The write itself decides
+/// which request recorded the command: exactly one answers `created`, the
+/// other `unchanged`, both with the one receipt, the one pair on its one node
+/// and container, and the same two natives.
+#[tokio::test]
+async fn two_requests_held_at_the_receipt_write_classify_one_created_and_one_unchanged() {
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-receipt").await;
+    let world = &realm.world;
+    let body = realm.invoke_body(&realm.profile, "Receipt plan").await;
+    let token = realm.caller_token();
+    let hold = world.daemon.hold_planning_pair_invocation_receipts();
+    let open = async {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while hold.waiting() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both requests reach the receipt write before either writes");
+        hold.release();
+    };
+    let (first, second, ()) = tokio::join!(
+        realm.invoke_with(&body, token.clone(), "pp-receipt"),
+        realm.invoke_with(&body, token.clone(), "pp-receipt"),
+        open,
+    );
+    assert_eq!(first.status, 200, "{}", first.body);
+    assert_eq!(second.status, 200, "{}", second.body);
+    let mut applied = [
+        first.json()["receipt"]["applied"].clone(),
+        second.json()["receipt"]["applied"].clone(),
+    ];
+    applied.sort_by_key(ToString::to_string);
+    assert_eq!(
+        applied,
+        [serde_json::json!("created"), serde_json::json!("unchanged")],
+        "exactly one request wrote the receipt: {} / {}",
+        first.body,
+        second.body
+    );
+    assert_eq!(
+        first.json()["receipt"]["receipt_id"],
+        second.json()["receipt"]["receipt_id"],
+        "one receipt"
+    );
+    for field in ["planning_pair_run_id", "topology_node_id", "container_name"] {
+        assert_eq!(first.json()[field], second.json()[field], "{field}");
+    }
+    let natives = |answer: &Answer| {
+        answer.json()["members"]
+            .as_array()
+            .expect("two members")
+            .iter()
+            .map(|member| {
+                member["observed_binding"]["native_id"]
+                    .as_str()
+                    .expect("an observed member")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(natives(&first), natives(&second));
+    assert_eq!(natives(&first).iter().collect::<BTreeSet<_>>().len(), 2);
+    assert_eq!(realm.planning_pair_runs(), 1);
+    let receipts: i64 = rusqlite::Connection::open(world.directory.path().join("kontor.db"))
+        .expect("the realm database opens")
+        .query_row(
+            "SELECT count(*) FROM command_receipts WHERE idempotency_key = 'pp-receipt'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the receipts count");
+    assert_eq!(receipts, 1, "one key, one stored receipt");
+}
+
+/// Audit 6f (turn 5): the roster's catalog selection is one exact persisted
+/// revision. A roster whose seats name two revisions, or one revision this
+/// realm never persisted, freezes nothing; the same roster restored invokes.
+#[tokio::test]
+async fn a_mixed_or_unpersisted_roster_catalog_freezes_nothing() {
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-roster-catalog").await;
+    let world = &realm.world;
+    let connection = rusqlite::Connection::open(world.directory.path().join("kontor.db"))
+        .expect("the realm database opens");
+    let epic = realm.epic.clone();
+    let original: String = connection
+        .query_row(
+            "SELECT seats FROM epic_rosters WHERE mini_project_id = ?1",
+            [&epic],
+            |row| row.get(0),
+        )
+        .expect("the roster seats read");
+    let write_seats = |seats: &serde_json::Value| {
+        assert_eq!(
+            connection
+                .execute(
+                    "UPDATE epic_rosters SET seats = ?1 WHERE mini_project_id = ?2",
+                    rusqlite::params![seats.to_string(), epic],
+                )
+                .expect("the roster seats are written"),
+            1
+        );
+    };
+    let unpersisted = 7;
+    let seats: serde_json::Value = serde_json::from_str(&original).expect("roster seats JSON");
+    assert!(
+        seats.as_array().is_some_and(|seats| seats.len() >= 2),
+        "the roster has seats to disagree: {seats}"
+    );
+    let mut mixed = seats.clone();
+    let last = mixed.as_array().expect("seats").len() - 1;
+    mixed[last]["role"]["catalog_revision"] = serde_json::json!(unpersisted);
+    let mut moved = seats.clone();
+    for seat in moved.as_array_mut().expect("seats") {
+        seat["role"]["catalog_revision"] = serde_json::json!(unpersisted);
+    }
+    world.fake.take_calls();
+    let body = realm
+        .invoke_body(&realm.profile, "Roster catalog plan")
+        .await;
+    for (roster, key, rule) in [
+        (
+            &mixed,
+            "pp-roster-mixed",
+            "the epic's frozen roster names more than one role catalog revision",
+        ),
+        (
+            &moved,
+            "pp-roster-unpersisted",
+            "the epic's selected role catalog revision is not persisted in this realm",
+        ),
+    ] {
+        write_seats(roster);
+        let refused = realm.invoke_with(&body, realm.caller_token(), key).await;
+        assert_eq!(
+            refused.code(),
+            "placement_blocked",
+            "{key}: {}",
+            refused.body
+        );
+        assert_eq!(refused.json()["rule"], rule, "{key}");
+    }
+    assert_eq!(realm.planning_pair_runs(), 0);
+    assert!(world.fake.take_calls().iter().all(|call| !matches!(
+        call,
+        AdapterCall::PrepareContainer(_) | AdapterCall::LaunchConsultation(_)
+    )));
+    write_seats(&seats);
+    let restored = realm
+        .invoke_with(&body, realm.caller_token(), "pp-roster-restored")
+        .await;
+    assert_eq!(
+        restored.status, 200,
+        "the restored roster invokes: {}",
+        restored.body
+    );
 }

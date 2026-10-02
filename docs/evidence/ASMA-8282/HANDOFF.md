@@ -10,6 +10,7 @@
 - Audit remediation (2026-10-02, this revision): it closes every public read path to a sealed finding or answer, and adds nothing else. It is built on `3b05abce` (tree `7c92ee34`) and dispatched by the same TPM. The writing seat is Paseo agent `45d0acc7-0773-4f43-858f-c6d6c8eecf78`, Claude session `3538e45e-113f-432b-9d1e-57e0d1b4af96`, in project `prj_e9f8052597f78919` and TSW `wks_8062e92dee85f5b3`. Every ancestor, `3b05abce` included, is unchanged.
 - Slice four (2026-10-02): the additive governed slice under the D-1 to D-3 disposition. It is built on `832e60cc` (tree `678333e4`) after native verify `b887` and audit `6f` passed on that exact head. D-1 is checkpoint `8a27a851` (tree `d73c5f51`); D-2 and D-3 are the next checkpoint. The writing seat is the same Claude session `3538e45e-113f-432b-9d1e-57e0d1b4af96` in project `prj_e9f8052597f78919` and TSW `wks_8062e92dee85f5b3`. Every ancestor is unchanged. See "Slice four" below.
 - Audit 6f rework (2026-10-02): the independent 6f audit failed `4922a9a2` (tree `fcfcbdd5`), because a member role was resolved from the build's first catalog rather than the epic's selection. The rework is built on `4922a9a2` and dispatched by TPM, from the same writing session. It is bounded to the catalog authority fix, the selected-container safeguards and a concurrent-resume regression. See "Audit 6f rework" below.
+- Audit 6f turn-5 rework (2026-10-02): the independent 6f audit failed `420f82f5` (tree `2f49d3cb`). Two same-key requests could both answer `created` after the compare-and-swap. The rework is built on `420f82f5`, dispatched by TPM from the same writing session, and bounded to atomic receipt classification, its deterministic regression and mutation evidence, and the handoff. See "Audit 6f turn-5 rework" below.
 - The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. At slice four it holds 53 files, which hash to `4ff4c1bc5cbe7c7ce505442d50827f91d64b0bb308cd18183a39d42339e49e87`: each file's SHA-256 in sorted path order, hashed again. Its files were last written at 2026-10-02 00:25 CEST. That run was not this writing session's (its only workspace run was on 2026-09-29), and slice four did not touch them. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
@@ -627,6 +628,74 @@ Disclosed, not counted:
 - `kontor-mcp` lib 69. `mcp_parity`, `mcp_cardinality` and `mcp_mutants`: 36. The Paseo planning pair contract test: 1.
 - Not one test failed. The broad 1774-test run was not repeated. Only the planning pair module, the store's planning pair insert, the fake runtime and tests changed.
 
+## Audit 6f turn-5 rework — atomic receipt classification
+
+The independent 6f audit (codex turn 5) **failed** `420f82f5c4417b0a24ce5a7c3aefb0c604411935`
+(tree `2f49d3cb893407a6c01c605d42c550be84d4c51b`). It and the `4922` failure are kept as written:
+- the `420f` rework rows above, PP-MUT-13 to 21 and 23, with the draft survivors disclosed there;
+- the slice-four rows.
+
+The audit otherwise accepted the catalog authority and the writable and mistitled guards. Their bytes and scope are unchanged here.
+
+### The finding
+
+The run's compare-and-swap, node and native effects were deduplicated, but the receipt was classified by check-then-act:
+- After the CAS, both same-key workers could call `replayed()` (`planning_pair.rs:217` at `420f`) and both find no receipt.
+- The first `record()` then inserted. The second returned the existing receipt (`applications.rs:6297`), and both answered `created`.
+- `created` plus `unchanged` was therefore not guaranteed.
+
+The `420f` regression ran on the default current-thread runtime and held only the member launch, so the first released request always ran through its receipt before the second resumed. The PP-MUT-23 kill was therefore schedule-only, and its claim was too strong. That row is kept, with this limitation.
+
+### The repair
+
+- **`Services::record_classified`** (`applications.rs`) is the existing `record` body with an outcome. It reads the key and inserts inside the one store critical section, the `with_store` closure that holds the store mutex, around `record_local_command_in_realm`, whose transaction is `insert_local_command`. An existing exact replay is `false`; the stored receipt carrying the id this call generated is `true`.
+- **`record`** now delegates and drops the outcome. Its callers, receipts and errors are unchanged, including the same-key, different-payload `idempotency_conflict`.
+- **The invocation tail** drops its own `replayed()` pre-check and answers `created` or `unchanged` from that outcome. Authentication, generation and the replay check at the top of the invocation are unchanged.
+- **Advisor and Committee** behavior is unchanged.
+- **Test hold.** A `#[doc(hidden)]` `Daemon::hold_planning_pair_invocation_receipts` returns a `PlanningPairReceiptHold`. It is executor-free and holds every planning pair invocation immediately before its receipt write, after the compare-and-swap. No composed daemon installs one, and with none installed the hold point returns at once. It follows the daemon's existing `#[doc(hidden)]` black-box seams, such as `start_with_usage_poller`.
+- **Not used:** a test-only lock, a serialized runtime, or a repeated check before the write.
+
+### Tests
+
+| Test | What it proves |
+| --- | --- |
+| `two_requests_held_at_the_receipt_write_classify_one_created_and_one_unchanged` (new) | Two same-key requests are held after the CAS at the receipt write, so neither has seen a receipt. The test requires both to arrive before releasing. Then: one `created` and one `unchanged`; the same `receipt_id`; the same run, `topology_node_id` and `container_name`; the same two natives; one planning pair run; one stored receipt row for the key. |
+| `a_mixed_or_unpersisted_roster_catalog_freezes_nothing` (new) | A roster whose seats name two revisions is refused ("names more than one role catalog revision"). A roster naming a revision this realm never persisted is refused ("is not persisted in this realm"). Neither freezes, prepares or launches anything, and the same roster, restored, invokes. |
+| `a_resumed_invocation_interleaved_with_its_original_launches_nothing_twice` | Its doc comment now states its scope: the launch interleaving and the `running` CAS. It does not line the two requests up at the receipt write. |
+
+### Red, mutants and green (seeded and run by this seat)
+
+The final SHA-256 values, confirmed equal after each restore, are:
+- `crates/kontor-daemon/src/applications/planning_pair.rs` `bc8d457e2c3c9b5138b310e9098f24d6034a36f0694466b5f4d596704836e037`;
+- `crates/kontor-daemon/src/applications.rs` `3d7f2116803ba274d4f1ac2bd3e9459ecbdb03e14dde84939842f1c5e792f39f`.
+
+| Id | Site and mutant | Filter (listed) | Red, then green |
+| --- | --- | --- | --- |
+| PP-RED-420F | The `420f` classification at its own site: `replayed()` pre-check, then `record()` answered `created`. Only the receipt hold is added before the write | new receipt test, old resume test (2) | 1/2. The new receipt test failed with `["created", "created"]` and the **same** `receipt_id`, exactly the audit's finding. The old resume test **passed** on that same `420f` form, confirming it could not see the defect. 2/2 green |
+| PP-MUT-24 | `record_classified`: an existing exact replay is classified as this call's write | receipt (1) | 0/1. `["created", "created"]`. 1/1 |
+| PP-MUT-25 | The invocation ignores the classification and always answers `created` | receipt (1) | 0/1. `["created", "created"]`. 1/1 |
+| PP-MUT-26 | The roster's one-revision check becomes `if false && …` | mixed/unpersisted (1) | 0/1. The mixed roster froze and launched (`running`, `created`). 1/1 |
+| PP-MUT-27 | An unpersisted selected revision falls back to the build's first catalog | mixed/unpersisted (1) | 0/1. The unpersisted roster froze and launched. 1/1 |
+
+Limitations, disclosed:
+- **Unreachable branch.** The insert branch's `receipt.id == generated` cannot see another writer within this process, because the store mutex serializes the read-and-insert closure. That comparison is the store's exact outcome, but no in-process schedule reaches its `false` arm, and no kill of it is claimed.
+- **Unchanged mutant sites.** The `420f` mutant sites PP-MUT-13 to 16 and 19 to 21 are byte-identical in the new source. `git diff 420f82f5` touches only the hold type and the invocation tail, so those rows were not re-run.
+- **Removed site.** The PP-MUT-23 site, the pre-record `replayed()`, no longer exists.
+- **No positive proof from the completion scan.** Its planning pair arm stays unreachable (the scan lists only Committee runs) and is no qualification.
+- **Out of scope.** The Advisor and Committee invocation tails keep their own pre-existing patterns.
+
+### Turn-5 gates
+
+- `cargo fmt -p kontor-daemon -- --check` and `cargo clippy -p kontor-daemon --all-targets -- -D warnings` are clean. `cargo check --workspace --all-targets` is clean.
+- `cargo test --no-fail-fast -p kontor-daemon`: 712 passed, 0 failed, 1 ignored.
+  - lib 149 and main 2;
+  - `loopback_api` 512, including the 15 planning pair tests;
+  - `account_pinning` 5, `container_recreation` 12, `mcp_journey` 2, `quota_observation` 21, `recovery_security` 6 and `succession_handoff` 3.
+  - The whole daemon was run because the shared `record` now delegates. Every authority operation passes through it.
+- Core: golden 2, `planning_pair` 25. Store: `planning_pair_store` 8, `schema_v1` 67.
+- MCP: lib 69, plus `mcp_parity`, `mcp_cardinality` and `mcp_mutants` 36. Paseo planning pair contract: 1.
+- The broad workspace run was not repeated.
+
 ## Remaining capability gaps after slice four (current)
 
 - **ASMA-8113 fence.** The reviewer is unassigned, so the widened identity vocabulary's acceptance, integration and deployment wait on an explicit assignment and an exact verdict.
@@ -646,7 +715,10 @@ Disclosed, not counted:
 - **Leadership serve profile.** No profile serves the caller tools (invoke, clarification, disposition) to a leadership seat. The `leadership` profile is unchanged, so the caller acts only through a client that holds its scoped credential.
 - **Direct-mode consumer.** The asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
 - **TPM-owned placement.** No TPM operation, receipt or procedure wraps placement.
-- **Concurrent resume.** This is repaired for the planning pair in the 6f rework, where it is guarded by the run's CAS and regression-tested with a held launch gate. The Advisor and Committee invocations keep the earlier pattern. They are not repaired in this dispatch, which allows no broad unrelated repair.
+- **Concurrent resume.** This is repaired for the planning pair:
+  - the `running` advance is guarded by the run's CAS (the 6f rework, with a held launch gate);
+  - the receipt is classified where it is written (turn 5, regression-tested with a hold after the CAS and before the write).
+  The hold is a `#[doc(hidden)]` black-box seam in daemon code that no composed daemon installs. The Advisor and Committee invocations keep the earlier pattern. They are not repaired in this dispatch, which allows no broad unrelated repair.
 - **Catalog authority.** A member's role now comes only from the epic's frozen-roster catalog. An epic promoted with no published Core Team still freezes the build's catalog, through the existing `epic_bootstrap_roster`. That is the epic's recorded selection, not a planning pair default.
 - TASK-004 and TASK-002 are not closed by any slice.
 

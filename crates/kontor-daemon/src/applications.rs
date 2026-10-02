@@ -29,6 +29,8 @@ mod artifact_submission;
 mod committee_evidence;
 mod open_questions;
 mod planning_pair;
+#[doc(hidden)]
+pub use planning_pair::PlanningPairReceiptHold;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -891,6 +893,10 @@ pub struct Services {
     /// next placement with no restart or republish, and an invalid edit keeps
     /// the last valid snapshot inside the source.
     fleet: Arc<crate::fleet::FleetSource>,
+    /// A black-box test's hold immediately before a planning pair invocation
+    /// receipt is written. Absent in every composed daemon unless a test
+    /// installs one, and then it changes only when, never what, is written.
+    planning_pair_receipt_hold: std::sync::Mutex<Option<PlanningPairReceiptHold>>,
 }
 
 struct CompletionCommit<'a> {
@@ -955,6 +961,7 @@ impl Services {
             native_lifecycle_guard: tokio::sync::RwLock::new(()),
             quota_signals,
             fleet,
+            planning_pair_receipt_hold: std::sync::Mutex::new(None),
         }))
     }
 
@@ -6290,6 +6297,27 @@ impl Services {
         target_revision: AggregateRevision,
         document: &CanonicalDocument,
     ) -> Result<CommandReceiptId, ApiError> {
+        self.record_classified(key, project_id, kind, target, target_revision, document)
+            .map(|(receipt, _)| receipt)
+    }
+
+    /// As [`Self::record`], and whether this call is the one that wrote it.
+    ///
+    /// Decided where the receipt is written, inside the one store critical
+    /// section that reads the key and inserts it: an existing receipt for the
+    /// exact replay is `false`, and the stored receipt carrying the id this call
+    /// generated is `true`. A caller that answers `created` or `unchanged` from
+    /// this needs no check of its own beforehand, so two requests that both
+    /// found no receipt still classify exactly one write as theirs.
+    fn record_classified(
+        &self,
+        key: &IdempotencyKey,
+        project_id: ProjectId,
+        kind: CommandKind,
+        target: AggregateRef,
+        target_revision: AggregateRevision,
+        document: &CanonicalDocument,
+    ) -> Result<(CommandReceiptId, bool), ApiError> {
         let state = self.state()?;
         let realm_id = state.realm_id();
         let document = document.clone();
@@ -6305,13 +6333,14 @@ impl Services {
                         "the idempotency key was already used for a different operation",
                     )
                 })?;
-                return Ok(existing.id);
+                return Ok((existing.id, false));
             }
+            let generated = CommandReceiptId::generate();
             let envelope = ReceiptEnvelope::new(
                 realm_id,
                 NewLocalCommand {
                     project_id,
-                    receipt_id: CommandReceiptId::generate(),
+                    receipt_id: generated,
                     idempotency_key: key.clone(),
                     kind,
                     target,
@@ -6322,7 +6351,7 @@ impl Services {
             );
             store
                 .record_local_command_in_realm(&envelope)
-                .map(|receipt| receipt.id)
+                .map(|receipt| (receipt.id, receipt.id == generated))
                 .map_err(|error| self.refuse(&error))
         })?;
         state.signals().appended();
