@@ -3,6 +3,7 @@
 //! those decisions moved, and nothing else. The runtime names no wire text.
 
 use kontor_api::error::ApiErrorCode;
+use kontor_runtime::planning_pair::application::InvokeRefusal;
 use kontor_runtime::planning_pair::caller::{CallerRefusal, FrozenCallerAct};
 use kontor_runtime::planning_pair::context::ContextRefusal;
 use kontor_runtime::planning_pair::recovery::{RecoveryRefusal, WithdrawReason};
@@ -131,6 +132,102 @@ pub(super) const fn withdraw_rule(reason: WithdrawReason) -> &'static str {
             "the readback reported another provider conversation for the member's known session"
         }
         WithdrawReason::Unqualified(refusal) => super::readback_refusal_rule(Some(refusal)),
+    }
+}
+
+/// The code and rule one invocation-sequence refusal is answered with
+/// (ASMA-8282 W3a). The answer's own modifiers (revision, subject, location,
+/// action) are applied by the caller, as they were at each call site.
+pub(super) const fn invoke_refusal_rule(refusal: &InvokeRefusal) -> (ApiErrorCode, &'static str) {
+    match refusal {
+        InvokeRefusal::DocumentHashDiffers => (
+            ApiErrorCode::InvalidRequest,
+            "the pinned planning pair document hash is not the published one",
+        ),
+        InvokeRefusal::ReceiptWithoutRun => (
+            ApiErrorCode::Unavailable,
+            "the invocation receipt has no durable planning pair",
+        ),
+        InvokeRefusal::KeyReused => (
+            ApiErrorCode::IdempotencyConflict,
+            "the idempotency key was already used for a different consultation",
+        ),
+        InvokeRefusal::EpicMoved { .. } => (
+            ApiErrorCode::RevisionConflict,
+            "the epic moved since the planning pair invocation was prepared",
+        ),
+        InvokeRefusal::NotPlanningPair => (
+            ApiErrorCode::InvalidRequest,
+            "this operation requires a planning pair",
+        ),
+        InvokeRefusal::NoPinnedTeamDefinition => (
+            ApiErrorCode::PlacementBlocked,
+            "the epic has no pinned Team Definition for planning pair placement",
+        ),
+        InvokeRefusal::NoContainerOfKind => (
+            ApiErrorCode::PlacementBlocked,
+            "the pinned Team Definition declares no container of the kind this planning pair selects",
+        ),
+        InvokeRefusal::ContainerNotReadOnly => (
+            ApiErrorCode::PlacementBlocked,
+            "a planning pair container must be read-only",
+        ),
+        InvokeRefusal::SlotNotDeclaredOnce => (
+            ApiErrorCode::PlacementBlocked,
+            "the planning pair container must declare seat-a and seat-b exactly once each",
+        ),
+        InvokeRefusal::SlotTitle => (
+            ApiErrorCode::PlacementBlocked,
+            "a planning pair slot must be titled SEAT A or SEAT B",
+        ),
+        InvokeRefusal::SlotCapabilityProfile => (
+            ApiErrorCode::PlacementBlocked,
+            "a planning pair slot must hold the planning_pair_member capability profile",
+        ),
+        InvokeRefusal::MemberUndeclared => (
+            ApiErrorCode::PlacementBlocked,
+            "the pinned planning pair document does not declare this member",
+        ),
+        InvokeRefusal::ContainerSlotCount => (
+            ApiErrorCode::PlacementBlocked,
+            "the planning pair container must declare exactly its two member slots",
+        ),
+        InvokeRefusal::SemanticDuplicate { .. } => (
+            ApiErrorCode::IdempotencyConflict,
+            "consultation_semantic_duplicate: this planning pair scope and topic already has one run",
+        ),
+        InvokeRefusal::NoCompletePlacement => (
+            ApiErrorCode::PlacementBlocked,
+            "no complete placement gives both planning pair members an eligible route on distinct actual vendors",
+        ),
+        InvokeRefusal::PlacementReceiptNotCanonical => (
+            ApiErrorCode::Unavailable,
+            "the planning pair placement receipt is not the shared reader's canonical receipt",
+        ),
+        InvokeRefusal::ContextUndecodable => (
+            ApiErrorCode::Unavailable,
+            "the frozen planning pair context could not be decoded",
+        ),
+        InvokeRefusal::NodeMissing => (
+            ApiErrorCode::PlacementBlocked,
+            "the planning pair's frozen topology node is missing",
+        ),
+        InvokeRefusal::SeatAbsentFromDocument => (
+            ApiErrorCode::PlacementBlocked,
+            "a frozen planning pair seat is absent from its pinned document",
+        ),
+        InvokeRefusal::SeatUnbound => (
+            ApiErrorCode::PlacementBlocked,
+            "the planning pair member has no persistent topology binding",
+        ),
+        InvokeRefusal::PlacementUndecodable => (
+            ApiErrorCode::Unavailable,
+            "the frozen planning pair placement could not be decoded",
+        ),
+        InvokeRefusal::MemberKeptUnqualified { refusal, .. } => (
+            ApiErrorCode::Unavailable,
+            super::readback_refusal_rule(*refusal),
+        ),
     }
 }
 
@@ -357,6 +454,144 @@ mod tests {
         ];
         for (reason, rule) in baseline {
             assert_eq!(withdraw_rule(reason), rule, "{reason:?}");
+        }
+    }
+
+    /// Each invocation-sequence refusal against the code and rule its call
+    /// site answered at `8c706eec`, in `applications/planning_pair.rs` there.
+    #[test]
+    fn every_invocation_refusal_answers_its_baseline_code_and_rule() {
+        let identity = kontor_core::state::NativeRuntimeIdentity {
+            runtime_kind: kontor_core::id::RuntimeKindKey::parse("fake.runtime").expect("a kind"),
+            host: kontor_core::id::ExternalName::parse("fake-host").expect("a host"),
+            generation: 1,
+            native_id: kontor_core::id::ExternalId::parse("native-1").expect("a native"),
+        };
+        let baseline: [(InvokeRefusal, ApiErrorCode, &str); 22] = [
+            (
+                InvokeRefusal::DocumentHashDiffers,
+                ApiErrorCode::InvalidRequest,
+                "the pinned planning pair document hash is not the published one",
+            ),
+            (
+                InvokeRefusal::ReceiptWithoutRun,
+                ApiErrorCode::Unavailable,
+                "the invocation receipt has no durable planning pair",
+            ),
+            (
+                InvokeRefusal::KeyReused,
+                ApiErrorCode::IdempotencyConflict,
+                "the idempotency key was already used for a different consultation",
+            ),
+            (
+                InvokeRefusal::EpicMoved {
+                    current: kontor_core::id::AggregateRevision::INITIAL,
+                },
+                ApiErrorCode::RevisionConflict,
+                "the epic moved since the planning pair invocation was prepared",
+            ),
+            (
+                InvokeRefusal::NotPlanningPair,
+                ApiErrorCode::InvalidRequest,
+                "this operation requires a planning pair",
+            ),
+            (
+                InvokeRefusal::NoPinnedTeamDefinition,
+                ApiErrorCode::PlacementBlocked,
+                "the epic has no pinned Team Definition for planning pair placement",
+            ),
+            (
+                InvokeRefusal::NoContainerOfKind,
+                ApiErrorCode::PlacementBlocked,
+                "the pinned Team Definition declares no container of the kind this planning pair selects",
+            ),
+            (
+                InvokeRefusal::ContainerNotReadOnly,
+                ApiErrorCode::PlacementBlocked,
+                "a planning pair container must be read-only",
+            ),
+            (
+                InvokeRefusal::SlotNotDeclaredOnce,
+                ApiErrorCode::PlacementBlocked,
+                "the planning pair container must declare seat-a and seat-b exactly once each",
+            ),
+            (
+                InvokeRefusal::SlotTitle,
+                ApiErrorCode::PlacementBlocked,
+                "a planning pair slot must be titled SEAT A or SEAT B",
+            ),
+            (
+                InvokeRefusal::SlotCapabilityProfile,
+                ApiErrorCode::PlacementBlocked,
+                "a planning pair slot must hold the planning_pair_member capability profile",
+            ),
+            (
+                InvokeRefusal::MemberUndeclared,
+                ApiErrorCode::PlacementBlocked,
+                "the pinned planning pair document does not declare this member",
+            ),
+            (
+                InvokeRefusal::ContainerSlotCount,
+                ApiErrorCode::PlacementBlocked,
+                "the planning pair container must declare exactly its two member slots",
+            ),
+            (
+                InvokeRefusal::SemanticDuplicate {
+                    existing: kontor_core::consultation::ConsultationRunId::PlanningPair(
+                        kontor_core::id::PlanningPairRunId::generate(),
+                    ),
+                },
+                ApiErrorCode::IdempotencyConflict,
+                "consultation_semantic_duplicate: this planning pair scope and topic already has one run",
+            ),
+            (
+                InvokeRefusal::NoCompletePlacement,
+                ApiErrorCode::PlacementBlocked,
+                "no complete placement gives both planning pair members an eligible route on distinct actual vendors",
+            ),
+            (
+                InvokeRefusal::PlacementReceiptNotCanonical,
+                ApiErrorCode::Unavailable,
+                "the planning pair placement receipt is not the shared reader's canonical receipt",
+            ),
+            (
+                InvokeRefusal::ContextUndecodable,
+                ApiErrorCode::Unavailable,
+                "the frozen planning pair context could not be decoded",
+            ),
+            (
+                InvokeRefusal::NodeMissing,
+                ApiErrorCode::PlacementBlocked,
+                "the planning pair's frozen topology node is missing",
+            ),
+            (
+                InvokeRefusal::SeatAbsentFromDocument,
+                ApiErrorCode::PlacementBlocked,
+                "a frozen planning pair seat is absent from its pinned document",
+            ),
+            (
+                InvokeRefusal::SeatUnbound,
+                ApiErrorCode::PlacementBlocked,
+                "the planning pair member has no persistent topology binding",
+            ),
+            (
+                InvokeRefusal::PlacementUndecodable,
+                ApiErrorCode::Unavailable,
+                "the frozen planning pair placement could not be decoded",
+            ),
+            (
+                InvokeRefusal::MemberKeptUnqualified {
+                    identity,
+                    refusal: Some(
+                        kontor_core::planning_pair::PlanningPairReadbackRefusal::RouteUnobserved,
+                    ),
+                },
+                ApiErrorCode::Unavailable,
+                "the planning pair member's readback did not observe its route",
+            ),
+        ];
+        for (refusal, code, rule) in baseline {
+            assert_eq!(invoke_refusal_rule(&refusal), (code, rule), "{refusal:?}");
         }
     }
 }

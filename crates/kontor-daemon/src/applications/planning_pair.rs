@@ -20,6 +20,7 @@
 //! that supports the planning pair member surface performs one; persistence
 //! alone never reports a launch.
 
+mod invocation;
 mod refusal;
 
 use super::*;
@@ -35,10 +36,9 @@ use kontor_api::planning_pair::{
 };
 use kontor_core::id::PlanningPairRunId;
 use kontor_core::planning_pair::{
-    ClarificationRequest, ConsultationProtocol, MemberDisposition, PlanningPairActor,
-    PlanningPairContribution, PlanningPairDisposition, PlanningPairReadbackRefusal,
-    PlanningPairRecord, PlanningPairRound, PlanningPairRun, PlanningPairSlot,
-    RecordedClarification, RecordedContribution,
+    ClarificationRequest, MemberDisposition, PlanningPairActor, PlanningPairContribution,
+    PlanningPairDisposition, PlanningPairReadbackRefusal, PlanningPairRecord, PlanningPairRound,
+    PlanningPairRun, PlanningPairSlot, RecordedClarification, RecordedContribution,
 };
 use kontor_core::repository::{
     PlanningPairMemberReadback, StoredPlanningPairContribution, StoredPlanningPairKnownNative,
@@ -46,34 +46,17 @@ use kontor_core::repository::{
 };
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_fleet_activation::{PlanningPairMemberRequest, PlanningPairRequest};
+use kontor_runtime::planning_pair::application::{
+    self as invocation_sequence, InvokeInput, InvokeRefusal, PairState,
+};
 use kontor_runtime::planning_pair::caller::{self as eligibility, CallerRefusal, FrozenCallerAct};
 use kontor_runtime::planning_pair::context::{self as member_context, ContextRefusal};
 use kontor_runtime::planning_pair::intent::{self as fingerprint, SeatGeneration};
 use kontor_runtime::planning_pair::recovery::{self as member_recovery, RecoveryOutcome};
-use refusal::{caller_refusal_rule, context_refusal_rule, recovery_refusal_rule, withdraw_rule};
-
-/// The logical role every planning pair member seat is held under, as
-/// `advisor` is for an Advisor seat.
-const MEMBER_LOGICAL_ROLE: &str = "planning_pair_member";
-
-/// The capability profile the pinned Team Definition must declare for both
-/// member slots: the closed member surface (run get, finding, answer).
-const MEMBER_CAPABILITY_PROFILE: &str = "planning_pair_member";
-
-/// Everything one planning pair operation reads, restored through the domain.
-pub(super) struct PairState {
-    run: StoredConsultationRun,
-    revision: StoredConsultationProfileRevision,
-    spec: PlanningPairSpec,
-    placement: StoredPlanningPairPlacement,
-    record_revision: AggregateRevision,
-    record: PlanningPairRecord,
-    pair: PlanningPairRun,
-    seats: Vec<StoredConsultationSeat>,
-    /// Each member's known native claim at its current occupancy generation,
-    /// when a trusted runtime outcome recorded one. Never a qualification.
-    known: Vec<StoredPlanningPairKnownNative>,
-}
+use refusal::{
+    caller_refusal_rule, context_refusal_rule, invoke_refusal_rule, recovery_refusal_rule,
+    withdraw_rule,
+};
 
 /// A black-box test's hold before a planning pair invocation receipt is
 /// written: every invocation that reaches the write waits until released.
@@ -179,27 +162,7 @@ impl Services {
         caller: PlanningPairSeat,
         request: &InvokePlanningPairRequest,
     ) -> Result<PlanningPairRunDto, ApiError> {
-        let _native_activity = self.native_activity()?;
         let PlanningPairProtocolDto::PlanningPairV1 = request.protocol;
-        // The pinned document first: its caller roles and scopes decide who
-        // may invoke it, and its exact hash must be the one the caller read.
-        let (revision, spec) =
-            self.planning_pair_document(project_id, &request.profile.id, request.profile.version)?;
-        if revision.definition_hash != request.profile.definition_hash {
-            return Err(self.deny(
-                ApiErrorCode::InvalidRequest,
-                "the pinned planning pair document hash is not the published one",
-            ));
-        }
-        // Authentication before any replay: a retired caller credential never
-        // regains authority by repeating a key it once used.
-        let caller_seat = self.authorize_planning_pair_caller(
-            project_id,
-            epic_id,
-            request.task_id,
-            &spec,
-            caller,
-        )?;
         let members: Vec<fingerprint::InvokeMember<'_>> = request
             .members
             .iter()
@@ -210,10 +173,13 @@ impl Services {
                 excluded_vendors: &member.excluded_vendors,
             })
             .collect();
-        let intent = self.intent(
-            &fingerprint::Invoke {
-                project_id,
-                epic_id,
+        invocation_sequence::invoke(
+            &invocation::InvokePorts(self),
+            key,
+            project_id,
+            epic_id,
+            caller,
+            &InvokeInput {
                 profile_id: &request.profile.id,
                 profile_version: request.profile.version,
                 definition_hash: &request.profile.definition_hash,
@@ -221,88 +187,10 @@ impl Services {
                 question: &request.question,
                 task_id: request.task_id,
                 members: &members,
-                caller: presented(caller),
-            }
-            .document(),
-        )?;
-        let target = AggregateRef::MiniProject {
-            mini_project_id: epic_id,
-        };
-        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
-            let run = self
-                .state()?
-                .with_store(|store| store.get_consultation_run_by_key(project_id, key))
-                .map_err(|error| self.refuse(&error))?
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::Unavailable,
-                        "the invocation receipt has no durable planning pair",
-                    )
-                })?;
-            let pair = self.planning_pair_state(&run)?;
-            return self.planning_pair_dto(
-                &pair,
-                Viewer::Caller,
-                Some((receipt.id, AppliedDto::Unchanged)),
-            );
-        }
-        let run = if let Some(existing) = self
-            .state()?
-            .with_store(|store| store.get_consultation_run_by_key(project_id, key))
-            .map_err(|error| self.refuse(&error))?
-        {
-            if existing.id.family() != ConsultationFamily::PlanningPair
-                || existing.mini_project_id != epic_id
-                || existing.invoke_intent_hash != *intent.hash()
-            {
-                return Err(self.deny(
-                    ApiErrorCode::IdempotencyConflict,
-                    "the idempotency key was already used for a different consultation",
-                ));
-            }
-            existing
-        } else {
-            let epic = self.epic_row(project_id, epic_id)?;
-            if epic.revision != request.expected_revision {
-                return Err(self
-                    .deny(
-                        ApiErrorCode::RevisionConflict,
-                        "the epic moved since the planning pair invocation was prepared",
-                    )
-                    .with_revision(Some(epic.revision)));
-            }
-            self.freeze_planning_pair(
-                key,
-                &intent,
-                project_id,
-                epic_id,
-                request,
-                &revision,
-                &spec,
-                &caller_seat,
-            )?
-        };
-        self.materialize_planning_pair_members(&run).await?;
-        let run = self.running_planning_pair(&run)?;
-        self.planning_pair_receipt_hold_point().await;
-        // A request for this key that resumed the run may record alongside
-        // this one. Whether this request wrote the receipt is decided where
-        // the receipt is written, so exactly one of them answers `created`.
-        let (receipt_id, inserted) = self.record_classified(
-            key,
-            project_id,
-            CommandKind::InvokePlanningPairRun,
-            target,
-            run.revision,
-            &intent,
-        )?;
-        let applied = if inserted {
-            AppliedDto::Created
-        } else {
-            AppliedDto::Unchanged
-        };
-        let pair = self.planning_pair_state(&run)?;
-        self.planning_pair_dto(&pair, Viewer::Caller, Some((receipt_id, applied)))
+                expected_revision: request.expected_revision,
+            },
+        )
+        .await
     }
 
     /// Hold every invocation that reaches its receipt write, for a black-box
@@ -327,48 +215,6 @@ impl Services {
             .clone();
         if let Some(hold) = hold {
             hold.pass().await;
-        }
-    }
-
-    /// The run once its members are launched, advanced to `running`.
-    ///
-    /// Another request for the same key may have resumed the run and launched
-    /// with this one. The run's compare-and-swap admits exactly one advance
-    /// from the frozen revision. A request that loses it answers with the row
-    /// the winner wrote; only a run still materializing after that is a
-    /// refusal.
-    fn running_planning_pair(
-        &self,
-        frozen: &StoredConsultationRun,
-    ) -> Result<StoredConsultationRun, ApiError> {
-        if frozen.state != ConsultationRunState::Materializing {
-            return Ok(frozen.clone());
-        }
-        let ConsultationRunId::PlanningPair(run_id) = frozen.id else {
-            return Err(self.deny(
-                ApiErrorCode::InvalidRequest,
-                "this operation requires a planning pair",
-            ));
-        };
-        match self.state()?.with_store(|store| {
-            store.advance_consultation_run(
-                frozen.project_id,
-                frozen.id,
-                frozen.revision,
-                ConsultationRunState::Running,
-                None,
-                kontor_api::now(),
-            )
-        }) {
-            Ok(advanced) => Ok(advanced),
-            Err(error) => {
-                let after = self.stored_planning_pair(frozen.project_id, run_id)?;
-                if after.state == ConsultationRunState::Materializing {
-                    Err(self.refuse(&error))
-                } else {
-                    Ok(after)
-                }
-            }
         }
     }
 
@@ -610,574 +456,6 @@ impl Services {
         eligibility::require_current_generation(caller.occupancy_generation, current)
             .map_err(|refusal| self.caller_refusal(refusal))?;
         Ok(seat)
-    }
-
-    /// Freeze one new planning pair before any native effect: the run in the
-    /// shared registry under its shared semantic identity, its container node
-    /// and two member seats from the pinned Team Definition, the shared
-    /// allocator's placement on one activated snapshot, and the first record.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "every frozen authority input is passed explicitly"
-    )]
-    fn freeze_planning_pair(
-        &self,
-        key: &IdempotencyKey,
-        intent: &CanonicalDocument,
-        project_id: ProjectId,
-        epic_id: MiniProjectId,
-        request: &InvokePlanningPairRequest,
-        revision: &StoredConsultationProfileRevision,
-        spec: &PlanningPairSpec,
-        caller: &kontor_core::state::SeatBinding,
-    ) -> Result<StoredConsultationRun, ApiError> {
-        let state = self.state()?;
-        let definition = self
-            .pinned_team_definition(project_id, epic_id)?
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "the epic has no pinned Team Definition for planning pair placement",
-                )
-            })?;
-        let container = definition.container(&spec.container_kind).ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the pinned Team Definition declares no container of the kind this planning pair selects",
-            )
-        })?;
-        if !container.read_only {
-            return Err(self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "a planning pair container must be read-only",
-            ));
-        }
-        let catalog = self.epic_role_catalog(project_id, epic_id)?;
-        let mut slot_roles = Vec::with_capacity(2);
-        for slot in PlanningPairSlot::ALL {
-            let declared = container
-                .slots
-                .iter()
-                .filter(|declared| declared.slot_id.as_str() == slot.as_str())
-                .collect::<Vec<_>>();
-            let [declared] = declared.as_slice() else {
-                return Err(self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "the planning pair container must declare seat-a and seat-b exactly once each",
-                ));
-            };
-            if declared.display_name.as_ref().map(ExternalName::as_str) != Some(slot.label()) {
-                return Err(self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "a planning pair slot must be titled SEAT A or SEAT B",
-                ));
-            }
-            if declared.capability_profile.as_str() != MEMBER_CAPABILITY_PROFILE {
-                return Err(self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "a planning pair slot must hold the planning_pair_member capability profile",
-                ));
-            }
-            // The title is the Team Definition's; the registered role is the
-            // pinned document's own explicit member role, since a
-            // display-named slot carries none, resolved only in the catalog
-            // the epic itself selected.
-            let member = spec
-                .members
-                .iter()
-                .find(|member| member.slot == *slot)
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "the pinned planning pair document does not declare this member",
-                    )
-                })?;
-            slot_roles.push(self.member_catalog_role(&catalog, &member.role_code)?);
-        }
-        if container.slots.len() != 2 {
-            return Err(self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "the planning pair container must declare exactly its two member slots",
-            ));
-        }
-        let semantic_identity_hash = self.consultation_semantic_identity_of_kind(
-            project_id,
-            epic_id,
-            request.task_id,
-            ConsultationFamily::PlanningPair,
-            &spec.container_kind,
-            revision,
-            &definition,
-            &request.topic,
-            None,
-        )?;
-        if let Some(existing) = state
-            .with_store(|store| {
-                store.get_consultation_run_by_semantic_identity(project_id, &semantic_identity_hash)
-            })
-            .map_err(|error| self.refuse(&error))?
-        {
-            return Err(self
-                .deny(
-                    ApiErrorCode::IdempotencyConflict,
-                    "consultation_semantic_duplicate: this planning pair scope and topic already has one run",
-                )
-                .about("consultation semantic identity")
-                .located_at(format!("consultation-runs/{}", existing.id.as_text()))
-                .advising("read or resume the existing consultation run"));
-        }
-        // One activated snapshot, the shared allocator, distinct actual
-        // vendors. A blocked placement freezes nothing.
-        let placement = self
-            .fleet
-            .planning_pair_placement(&PlanningPairRequest {
-                members: request
-                    .members
-                    .iter()
-                    .map(|member| PlanningPairMemberRequest {
-                        slot: member.slot.slot(),
-                        binding_key: member.binding_key.clone(),
-                        unavailable_accounts: member.unavailable_accounts.iter().cloned().collect(),
-                        excluded_vendors: member.excluded_vendors.iter().cloned().collect(),
-                    })
-                    .collect(),
-            })
-            .map_err(|error| {
-                self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    match error {
-                        kontor_fleet::FleetError::Invalid { rule } => rule,
-                        _ => "the activated fleet policy cannot place this planning pair",
-                    },
-                )
-                .about("FleetActivation")
-            })?;
-        let Some(members) = placement.members.clone() else {
-            return Err(self
-                .deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "no complete placement gives both planning pair members an eligible route on distinct actual vendors",
-                )
-                .about("FleetActivation"));
-        };
-        // The two actual placed routes must each have the closed member
-        // surface on this runtime before anything is frozen.
-        self.require_planning_pair_member_routes(
-            self.planning_pair_runtime()?.as_ref(),
-            members.members(),
-        )?;
-        let placement_document = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "protocol": ConsultationProtocol::PlanningPair.as_str(),
-            "selection": placement.selection,
-        }))?;
-        if placement_document.hash() != &placement.placement_hash {
-            return Err(self.deny(
-                ApiErrorCode::Unavailable,
-                "the planning pair placement receipt is not the shared reader's canonical receipt",
-            ));
-        }
-        let pair = PlanningPairRun::admit(spec, members, request.question.clone())
-            .map_err(|error| self.refuse_domain(&error))?;
-        let record = PlanningPairRecord::admitted(&pair);
-        let topology = self.project_topology(project_id)?;
-        let epic_node = self.ensure_scope_chain(
-            project_id,
-            &TopologyScope {
-                node_id: None,
-                kind: Some(self.domain.delivery.epic_kind.clone()),
-                epic_id: Some(epic_id),
-                task_id: None,
-                key: format!("epic:{epic_id}"),
-            },
-        )?;
-        let now = kontor_api::now();
-        let run_id = ConsultationRunId::PlanningPair(PlanningPairRunId::generate());
-        let node_id = TopologyNodeId::generate();
-        let definition_snapshot = TeamDefinitionSnapshot::from_revision(&definition)
-            .map_err(|error| self.refuse_domain(&error))?;
-        let question_hash = ContentHash::of(request.question.as_str().as_bytes());
-        let context = self.intent(&serde_json::json!({
-            "schema_version": 1,
-            "realm_id": state.realm_id().to_string(),
-            "project_id": project_id.to_string(),
-            "epic_id": epic_id.to_string(),
-            "task_id": request.task_id.map(|id| id.to_string()),
-            "protocol": ConsultationProtocol::PlanningPair.as_str(),
-            "caller_seat_binding_id": caller.id.to_string(),
-            "caller_role_slot": caller.role_slot_id.as_str(),
-            "profile_id": revision.profile_id,
-            "profile_version": revision.version.get(),
-            "profile_hash": revision.definition_hash.as_str(),
-            "container_kind": spec.container_kind.as_str(),
-            "team_definition_id": definition_snapshot.definition_id.to_string(),
-            "team_definition_version": definition_snapshot.version.get(),
-            "team_definition_hash": definition_snapshot.canonical_hash.as_str(),
-            "topic": request.topic.as_str(),
-            "question_hash": question_hash.as_str(),
-            "placement_hash": placement.placement_hash.as_str(),
-        }))?;
-        let run = StoredConsultationRun {
-            id: run_id,
-            project_id,
-            mini_project_id: epic_id,
-            profile_id: revision.profile_id.clone(),
-            profile_version: revision.version,
-            definition_hash: revision.definition_hash.clone(),
-            semantic_identity_hash: Some(semantic_identity_hash),
-            subject: Some(ConsultationSubject::from_requested_task(request.task_id)),
-            topic: Some(request.topic.clone()),
-            question: request.question.clone(),
-            question_hash,
-            context: serde_json::from_str(context.json()).map_err(|_| {
-                self.deny(
-                    ApiErrorCode::Unavailable,
-                    "the frozen planning pair context could not be decoded",
-                )
-            })?,
-            context_hash: context.hash().clone(),
-            caller_seat_binding_id: caller.id,
-            topology_node_id: node_id,
-            invoke_key: key.clone(),
-            invoke_intent_hash: intent.hash().clone(),
-            state: ConsultationRunState::Materializing,
-            round: 1,
-            result: None,
-            result_hash: None,
-            revision: AggregateRevision::INITIAL,
-            created_at: now,
-            updated_at: now,
-            settled_at: None,
-        };
-        let node = NewSessionTopologyNode {
-            id: node_id,
-            project_id,
-            mini_project_id: Some(epic_id),
-            topology,
-            kind: spec.container_kind.clone(),
-            parent_id: Some(epic_node.id),
-            task_id: request.task_id,
-            created_at: now,
-        };
-        let deadline = now
-            .checked_add(jiff::SignedDuration::from_secs(SEAT_ATTACH_SECONDS))
-            .unwrap_or(now);
-        let logical_role =
-            RoleKey::parse(MEMBER_LOGICAL_ROLE).map_err(|error| self.refuse_domain(&error))?;
-        let mut seats = Vec::with_capacity(2);
-        let mut bindings = Vec::with_capacity(2);
-        for (member, role) in pair.members().members().iter().zip(slot_roles) {
-            let seat_binding_id = SeatBindingId::generate();
-            let role_slot_id = RoleSlotId::parse(member.slot.as_str())
-                .map_err(|error| self.refuse_domain(&error))?;
-            seats.push(StoredConsultationSeat {
-                run_id,
-                role_slot_id: role_slot_id.clone(),
-                committee_role: None,
-                logical_role: logical_role.clone(),
-                seat_binding_id,
-                model_rung: member.route.clone(),
-                occupancy_generation: 1,
-                native_identity: None,
-                provider_session_id: None,
-                observed_at: None,
-            });
-            bindings.push(NewSeatBinding {
-                id: seat_binding_id,
-                project_id,
-                topology_node_id: node_id,
-                role_slot_id,
-                role,
-                task_id: request.task_id,
-                team_run_id: None,
-                attach_deadline: deadline,
-                parent_seat_binding_id: Some(caller.id),
-                created_at: now,
-            });
-        }
-        let record_document = record
-            .canonicalize()
-            .map_err(|error| self.refuse_domain(&error))?;
-        let pairs: Vec<_> = seats.iter().zip(bindings.iter()).collect();
-        state
-            .with_store(|store| {
-                store.create_planning_pair_run(
-                    &run,
-                    &node,
-                    &pairs,
-                    &StoredPlanningPairPlacement {
-                        run_id,
-                        project_id,
-                        placement: placement_document.clone(),
-                        created_at: now,
-                    },
-                    &StoredPlanningPairRecord {
-                        run_id,
-                        project_id,
-                        revision: AggregateRevision::INITIAL,
-                        phase: pair.state(),
-                        record: record_document.clone(),
-                        created_at: now,
-                    },
-                )
-            })
-            .map_err(|error| self.refuse(&error))?;
-        Ok(run)
-    }
-
-    /// Launch both members through the runtime port, each with its own scoped
-    /// credential, its frozen route and the read-only member surface. A runtime
-    /// that does not support planning pair members refuses here, before any
-    /// native effect, and the run stays materializing.
-    async fn materialize_planning_pair_members(
-        &self,
-        run: &StoredConsultationRun,
-    ) -> Result<(), ApiError> {
-        let state = self.state()?;
-        let pair = self.planning_pair_state(run)?;
-        let project = self.project_row(run.project_id)?;
-        let node = state
-            .with_store(|store| store.get_topology_node(run.project_id, run.topology_node_id))
-            .map_err(|error| self.refuse(&error))?
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::PlacementBlocked,
-                    "the planning pair's frozen topology node is missing",
-                )
-            })?;
-        let adapter = self.planning_pair_runtime()?;
-        self.require_planning_pair_member_routes(adapter.as_ref(), pair.pair.members().members())?;
-        let epic_key = self.epic_tracker_key(run.project_id, run.mini_project_id)?;
-        let cwd = self.consultation_root(project.root_path.as_str(), epic_key.as_ref(), node.id)?;
-        let mut seats = pair.seats.clone();
-        if seats.iter().all(|seat| seat.native_identity.is_some()) {
-            return Ok(());
-        }
-        // Every frozen member role is proved again against the epic's
-        // selected catalog before any native effect, so a stored role that
-        // no longer corresponds to the member's explicit code never launches.
-        let catalog = self.epic_role_catalog(run.project_id, run.mini_project_id)?;
-        for seat in &seats {
-            let slot = PlanningPairSlot::parse(seat.role_slot_id.as_str())
-                .map_err(|error| self.refuse_domain(&error))?;
-            let member = pair
-                .spec
-                .members
-                .iter()
-                .find(|member| member.slot == slot)
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "a frozen planning pair seat is absent from its pinned document",
-                    )
-                })?;
-            let binding = state
-                .with_store(|store| store.get_seat_binding(run.project_id, seat.seat_binding_id))
-                .map_err(|error| self.refuse(&error))?
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "the planning pair member has no persistent topology binding",
-                    )
-                })?;
-            self.require_member_role(&catalog, &binding.role, &member.role_code)?;
-        }
-        let container = self
-            .ensure_container(run.project_id, &node, &cwd, adapter.as_ref())
-            .await?;
-        let scope = self.execution_scope(
-            run.project_id,
-            run.mini_project_id,
-            node.task_id,
-            adapter.as_ref(),
-        )?;
-        let capabilities = adapter
-            .discover_capabilities()
-            .await
-            .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-        let context_policy = ContextPolicySnapshot::standard(
-            &capabilities.limits.context_window,
-            capabilities.supports(RuntimeCapability::ContextPolicy),
-            SCHEMA_VERSION,
-            kontor_api::now(),
-        )
-        .map_err(|error| self.refuse_domain(&error))?;
-        let receipt: serde_json::Value = serde_json::from_str(pair.placement.placement.json())
-            .map_err(|_| {
-                self.deny(
-                    ApiErrorCode::Unavailable,
-                    "the frozen planning pair placement could not be decoded",
-                )
-            })?;
-        for seat in &mut seats {
-            if seat.native_identity.is_some() {
-                continue;
-            }
-            // A member whose launch was already read back keeps that exact
-            // session: a replay or a restart meets it again from its durable
-            // claim, with no runtime call and no second create. Only the
-            // caller's recovery can requalify it.
-            if let Some(known) = pair
-                .known
-                .iter()
-                .find(|known| known.seat_binding_id == seat.seat_binding_id)
-            {
-                return Err(self.unqualified_member(&known.identity, known.readback_refusal));
-            }
-            let slot = PlanningPairSlot::parse(seat.role_slot_id.as_str())
-                .map_err(|error| self.refuse_domain(&error))?;
-            let member = pair
-                .spec
-                .members
-                .iter()
-                .find(|member| member.slot == slot)
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "a frozen planning pair seat is absent from its pinned document",
-                    )
-                })?;
-            let route_provenance = ConsultationRouteProvenance::fleet_configuration(
-                pair.placement.placement.hash().clone(),
-            );
-            let fleet_provenance = member_context::requested_fleet_provenance(&receipt, slot);
-            adapter
-                .validate_consultation_model_rung(&seat.model_rung, &route_provenance)
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-            let credential = state
-                .credentials()
-                .consultation_seat_credential_for_generation(
-                    seat.seat_binding_id,
-                    seat.occupancy_generation,
-                );
-            let prompt = BoundedText::parse(&format!(
-                "Read-only planning pair member {label}. You may inspect evidence but must not \
-                 mutate code, Jira, topology, scheduling, or runtime state, and you cannot see \
-                 the other member's finding until both are recorded. Charter: {charter} \
-                 Specialty: {specialty} Role instructions: {behavior} Question: {question} \
-                 Record exactly one finding with kontor_planning_pair_findings_record and, only \
-                 if the caller asks one, one answer with kontor_planning_pair_answer_record. Your \
-                 scoped Kontor tools inherit authentication automatically. Context: project_id \
-                 {project}, planning_pair_run_id {run_id}, expected_revision {revision}, \
-                 seat_binding_id {seat_binding}. Never disclose credentials.",
-                label = slot.label(),
-                charter = pair.spec.charter.as_str(),
-                specialty = member.specialty.as_str(),
-                behavior = member.behavior.as_str(),
-                question = run.question.as_str(),
-                project = run.project_id,
-                run_id = run.id.as_text(),
-                revision = run.revision.get(),
-                seat_binding = seat.seat_binding_id,
-            ))
-            .map_err(|error| self.refuse_domain(&error))?;
-            let topology_seat = state
-                .with_store(|store| store.get_seat_binding(run.project_id, seat.seat_binding_id))
-                .map_err(|error| self.refuse(&error))?
-                .ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::PlacementBlocked,
-                        "the planning pair member has no persistent topology binding",
-                    )
-                })?;
-            let display_name = self.seat_name(
-                run.project_id,
-                &node,
-                &scope,
-                &topology_seat.role.role_code,
-                Some(&topology_seat.role_slot_id),
-            )?;
-            let context = self.planning_pair_launch_context(
-                run,
-                &pair,
-                seat,
-                slot,
-                &node,
-                &cwd,
-                &catalog,
-                fleet_provenance.as_ref(),
-            )?;
-            let context_hash = self.member_context_hash(&context)?;
-            let outcome = adapter
-                .launch_consultation(&ConsultationLaunchRequest {
-                    scope: scope.clone(),
-                    run_id: run.id,
-                    seat_binding_id: seat.seat_binding_id,
-                    role_slot_id: seat.role_slot_id.clone(),
-                    display_name,
-                    container: container.clone(),
-                    cwd: cwd.clone(),
-                    prompt,
-                    credential: ConsultationCredential::new(credential),
-                    model_rung: seat.model_rung.clone(),
-                    route_provenance,
-                    fleet_provenance: fleet_provenance.clone(),
-                    context_policy: context_policy.clone(),
-                    requested_at: kontor_api::now(),
-                    planning_pair: Some(context),
-                })
-                .await
-                .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-            self.record_launch_provenance(
-                "consultation",
-                seat.seat_binding_id.to_string(),
-                &outcome.identity.native_id,
-                fleet_provenance.as_ref(),
-                &outcome.fleet_provenance,
-            );
-            // A member is qualified — bound, so it can contribute — only when
-            // its launch reported a member-surface observation, every mandatory
-            // field of it matched, and its readback observed exactly its
-            // requested provenance. Whatever the readback proved, the exact
-            // session it named is kept first as the member's known native
-            // claim, in the same transaction as the bind when it qualified.
-            // Any missing, wrong or unsupported field is then a typed
-            // no-observation refusal: the session is kept, unbound and named,
-            // its credential is unqualified, the pair stays materializing with
-            // no receipt, and a replay meets that same claim rather than
-            // creating, replacing or destroying a session.
-            let refusal = kontor_runtime::planning_pair::qualify_member_readback(
-                &outcome,
-                fleet_provenance.as_ref(),
-            )
-            .err();
-            let claim = StoredPlanningPairKnownNative {
-                run_id: run.id,
-                project_id: run.project_id,
-                seat_binding_id: seat.seat_binding_id,
-                occupancy_generation: seat.occupancy_generation,
-                identity: outcome.identity.clone(),
-                provider_session_id: outcome.provider_session_id.clone(),
-                context_hash,
-                placement_hash: pair.placement.placement.hash().clone(),
-                readback_refusal: refusal,
-                observed_at: outcome.observed_at,
-            };
-            state
-                .with_store(|store| store.record_planning_pair_member_launch(&claim))
-                .map_err(|error| self.refuse(&error))?;
-            if let Some(refusal) = refusal {
-                return Err(self.unqualified_member(&outcome.identity, Some(refusal)));
-            }
-            seat.native_identity = Some(outcome.identity);
-            seat.provider_session_id = outcome.provider_session_id;
-            seat.observed_at = Some(outcome.observed_at);
-            state
-                .with_store(|store| {
-                    store.observe_seat_binding(
-                        run.project_id,
-                        seat.seat_binding_id,
-                        &SeatLivenessObservation {
-                            attached_at: Some(outcome.observed_at),
-                            runtime_reported: Some(kontor_core::state::ObservedRunState::Running),
-                            ..SeatLivenessObservation::default()
-                        },
-                        outcome.observed_at,
-                    )
-                })
-                .map_err(|error| self.refuse(&error))?;
-        }
-        Ok(())
     }
 
     /// The frozen context one member launch is held to, derived from durable
@@ -2028,6 +1306,24 @@ impl Services {
     const fn caller_refusal(&self, refusal: CallerRefusal) -> ApiError {
         let (code, rule) = caller_refusal_rule(refusal);
         self.deny(code, rule)
+    }
+
+    /// One invocation-sequence refusal, answered exactly as before.
+    fn invoke_refusal(&self, refusal: InvokeRefusal) -> ApiError {
+        let (code, rule) = invoke_refusal_rule(&refusal);
+        let denied = self.deny(code, rule);
+        match refusal {
+            InvokeRefusal::EpicMoved { current } => denied.with_revision(Some(current)),
+            InvokeRefusal::SemanticDuplicate { existing } => denied
+                .about("consultation semantic identity")
+                .located_at(format!("consultation-runs/{}", existing.as_text()))
+                .advising("read or resume the existing consultation run"),
+            InvokeRefusal::NoCompletePlacement => denied.about("FleetActivation"),
+            InvokeRefusal::MemberKeptUnqualified { identity, refusal } => {
+                self.unqualified_member(&identity, refusal)
+            }
+            _ => denied,
+        }
     }
 
     /// One frozen-context refusal, answered exactly as before.

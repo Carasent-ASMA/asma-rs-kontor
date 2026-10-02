@@ -1740,6 +1740,178 @@ the distribution. The rework changes only this file:
 - B1a is accepted at `8cd2305f` (tree `1ab35adf`), after b887's verify and 6f's audit passed there.
 - `cabc4ac2` and `6ed03f2c` each stay FAIL.
 
+## Shared invocation, slice W3a: the shared invocation coordinator (2026-10-02)
+
+**Starting point.** TPM dispatched W3a for implementation under LSA admission at 18:59:21Z. It
+starts from the exact `8c706eeccd7506f48a81ea8e8482e4812f3fdf4e` (tree
+`c96abf244096a24ad793917ecdcca6ec6d821fee`, parent `6ed03f2c`), in the unchanged 8282 TSW
+`wks_8062e92dee85f5b3` and session `3538e45e`. The published module `5f45a561` (tree `0b295cd6`)
+is an accepted mapping only. This slice does not check it out, pull it or rebase on it, and takes
+over no TPM clone.
+
+**Ownership before any write.**
+- The head was exact and every tracked file was clean.
+- The adapters (`.agents/`, `.asma/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md`: 13 files, aggregate `035d95fb98b04e29…`) and `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` (53 files, `4ff4c1bc5cbe7c7c…`) stay untracked and untouched. Both aggregates are the same before the first write and after the last gate.
+- W3a builds only in its own `CARGO_TARGET_DIR` (`/tmp/asma-8282-w3a-target`), `--offline --locked -j2`, with its outputs under `/tmp/asma-8282-w3a/`. It uses no reviewer's outputs, cache or lock.
+- No package, version, network, provider, daemon, database initialization, native, install, Jira, root plan, pin, activation, merge, ECP or calibration effect was performed or needed.
+
+### What is implemented
+
+| Element | Source | What it does |
+| --- | --- | --- |
+| Coordinator | `kontor-runtime` `planning_pair/application.rs` | `invoke`, the daemon's former `invoke_planning_pair` body, moved in its order:<br>1. the pinned document and its exact hash;<br>2. the caller, authorized by the owner **before** the intent and any replay;<br>3. the intent (the B1b `Invoke` fingerprint) and its replay, which answers its own receipt `unchanged`;<br>4. the run this key froze, under the same family, epic and intent hash, or else the epic revision check and a new freeze;<br>5. materialization;<br>6. `running`: one compare-and-swap advance from the frozen revision; a loser answers the winner's row, and only a run still materializing refuses;<br>7. the receipt hold, then the receipt, classified where it is written.<br>`PairState` moved with it. |
+| Freeze | `planning_pair/application/freeze.rs` | The former `freeze_planning_pair`, moved verbatim: Team Definition container and slots, the epic's catalog roles, the shared semantic identity and its duplicate refusal, the one placement, the route check on its two actual routes, the placement's canonical receipt hash, the domain admission, the epic's topology node (ensured, as before), then the run, node, seats, placement and first record in one owner `create_run` call (the store's existing `create_planning_pair_run`). |
+| Materialize | `planning_pair/application/materialize.rs` | The former `materialize_planning_pair_members`, moved verbatim:<br>• a fully bound pair launches nothing;<br>• the route check comes before any container;<br>• each member's frozen role is proved again;<br>• a kept known native is never relaunched and answers its kept refusal;<br>• the B1a context and its frozen hash;<br>• the readback is judged; the launch's known-native claim is recorded either way; an unqualified member is then kept and refused; only a qualified readback reaches `observe_member_attached` and binds. |
+| Owner port | `InvokeOwner` | One trait, the only way the coordinator reaches the world:<br>• the trusted caller boundary and its current generation (`authorize_caller`, `presented`);<br>• store reads, the run CAS, replay and the classified receipt (`replayed`, `record`, `advance_to_running`, `create_run`);<br>• the one activated allocator snapshot (`place`);<br>• topology and containers, credentials, the `RuntimeAdapter`, and the rendering of the answer.<br>Its associated types keep the runtime free of `kontor-api`, jiff and fleet-activation types. The coordinator constructs no caller, credential, grant or authority; a fact handed in authorizes nothing. |
+| Typed refusals | `InvokeRefusal` (22 variants) | Every refusal the moved sequence decides, without a code or wire byte. |
+| Daemon owner | `applications/planning_pair/invocation.rs` | `InvokePorts(&Services)`: each port is the existing helper or store call, with the same mapping, from the same place. The daemon stays the only production owner, authorizer and store writer. |
+| Daemon adapter | `applications/planning_pair.rs` | `invoke_planning_pair` keeps its signature and calls the coordinator. `invoke_refusal` maps each typed refusal to the exact baseline error, with the baseline's revision, subject, location and advice. The moved blocks are deleted, so nothing is duplicated. The file goes from 2395 to 1691 lines. |
+| Refusal mapping | `applications/planning_pair/refusal.rs` | `invoke_refusal_rule`: each variant to its baseline code and rule. A kept member maps through the existing `readback_refusal_rule` and `unqualified_member`. |
+
+**Unchanged:**
+- **Caller authority and replay:** bearer authentication, the current generation, scope and seat checks, authentication before replay, replay itself, the CAS and the atomic receipt.
+- **Rejected before an effect:** every native effect, every refusal precedence, and the full DTO mapping.
+- **The seam's defaults:** the caller plane (`Unsupported { no_authenticated_caller_generation }`) and `native_actuation_authorized: false`.
+- **Daemon helpers still:** recovery, the four contributions and caller serve.
+- **Surfaces:** the API, OpenAPI, MCP registry and tools, the store, SQL, migrations and schema.
+- **Other families:** Advisor and Committee; the shared `replayed`, `record`, `record_classified` and `intent` wrappers in `applications.rs`.
+
+**Not added:** a second interpreter, crate, dependency, operation, wire field, authority constructor,
+profile, Direct host, operator secret, signed verifier, `verified: true` bypass, or another
+family's extraction.
+
+### Parity evidence
+
+1. **Ordered owner-port traces.** Eleven runtime tests drive `invoke` over a recording fake owner. Each asserts the exact ordered port trace, and a port a scenario does not expect fails. The shared prefix is the activity, the pinned document, the caller authorization, the presented generation, the intent and the replay.
+2. **Black-box full bodies, old against new.** The daemon `planning_pair.rs`, `refusal.rs` and runtime `planning_pair.rs` were restored to their `8c706eec` blobs (`97085ce6`, `b1fcd500`, `7402d560`). The two `invoke_parity` loopbacks were run against them twice; 2 of 2 passed each time. They were then run on the candidate. Each run prints ten normalized `PARITY` lines: created, replayed, document moved, epic moved, semantic duplicate, caller role, route unsupported, interrupted, resumed and kept unqualified. The three outputs are byte-identical (SHA-256 `2040a1c368c7b7d22aa947a16c03e7412e6ada2f8338dc238b60de9967a7b8b1`). The candidate was restored byte-exact and verified.
+3. **What normalization keeps.** Ids and 64-hex values become placeholders in order of first appearance, and instants become `<instant>`, so the lines compare structure, status and value relations. The exact bytes are pinned elsewhere:
+   - each refusal body is asserted whole, against its baseline error, on both sources;
+   - the intent hashes are covered by `intents::every_planning_pair_command_records_its_baseline_intent`;
+   - the context hash is covered by `eligibility::a_resumed_launch_refuses_each_context_drift_and_claims_the_baseline_hash`.
+4. **Refusal literals.** All 21 rule literals in `invoke_refusal_rule` occur verbatim in `8c706eec`'s daemon file. A daemon unit test pins all 22 variants to their code and rule.
+5. **Argued equivalences**, each a direct reading of the moved code:
+   - the advance maps a store error eagerly, through the same pure `refuse`;
+   - a `state()` failure answers the same error on both paths;
+   - `realm_id` is the same `store.realm_id()` value;
+   - `replayed` hands back only the receipt id, which is all the coordinator used.
+
+### Tests
+
+**Hypothetical fake ports** are runtime unit tests only, and they are not qualification. **The
+trusted path** is daemon loopback, on the fake runtime.
+
+| Suite | New tests | What they prove |
+| --- | --- | --- |
+| `kontor-runtime` unit, `planning_pair::application` (11) | `tests.rs`, `tests/fake.rs` | • Replay is authorized first and answers `unchanged`.<br>• An unauthorized caller never reaches the intent or replay.<br>• A moved document refuses before authorization.<br>• A receipt without its run refuses.<br>• A reused key refuses before any freeze or launch.<br>• A moved epic refuses before any freeze.<br>• A new pair freezes only after the epic check.<br>• A bound pair launches nothing and classifies its receipt.<br>• An uncomposable route refuses before any container.<br>• A lost advance answers the winner's row, and a run still materializing refuses.<br>• A running pair is not advanced again. |
+| `kontor-daemon` unit (1) | `refusal::tests::every_invocation_refusal_answers_its_baseline_code_and_rule` | All 22 variants against the baseline code and rule. |
+| Loopback `planning_pair::invoke_parity` (2) | `every_invocation_outcome_answers_its_full_baseline_body`; `interrupted_and_unqualified_invocations_answer_their_full_baseline_bodies` | See parity evidence 2. They also assert:<br>• two launches on create and none on replay;<br>• no container or launch before the route refusal;<br>• a kept member's exact unqualified body;<br>• no relaunch of a kept member. |
+
+**The dispatch's source proofs, each with its test.** All run green on the candidate.
+
+| Proof | Tests |
+| --- | --- |
+| Current-generation authentication before replay | The two authorization traces; `only_the_frozen_caller_and_members_hold_authority_and_a_retired_generation_never_replays`; `eligibility::the_caller_is_held_to_scope_seat_node_generation_and_role_exactly_as_before` |
+| Frozen profile, catalog, placement and route provenance from one activated snapshot | `member_launches_carry_the_seats_current_generation_and_frozen_pins`; `a_member_role_only_the_epics_selected_catalog_declares_is_frozen_from_it`; `a_mismatched_catalog_pin_or_member_role_fails_closed_before_any_native_effect`; `a_planning_pair_freezes_nothing_without_its_explicit_container_or_distinct_vendors` |
+| No duplicate run, native or receipt on replay | `invoke_parity` (two launches, then none); `planning_pair_commands_replay_exactly_and_refuse_reuse_staleness_and_duplicates`; `a_resumed_invocation_interleaved_with_its_original_launches_nothing_twice` |
+| A known native, a lost-ack materializing pair and `correlation_unknown` are never recreated | `a_durable_unqualified_member_survives_a_restart_without_a_second_create`; `a_member_without_its_provenance_readback_is_kept_unqualified_and_never_relaunched`; `a_member_with_an_unobserved_correlation_is_kept_unqualified`; `a_second_seat_readback_failure_keeps_the_first_member_bound_and_the_pair_materializing` |
+| Unsupported mandatory restrictions: zero native effects and no qualified bind | `a_member_with_an_unobserved_tool_restriction_is_kept_unqualified`; `a_runtime_without_the_member_surface_is_a_capability_gap_with_no_effect`; `a_member_route_the_runtime_cannot_compose_freezes_nothing_and_names_its_provider`; `invoke_parity` route unsupported |
+| Sealed findings, dissent and projection | `a_planning_pair_releases_sealed_findings_to_its_caller_and_ends_in_a_disposition`; `a_qualified_member_contributes_alone_sealed_and_the_pair_survives_requalification`; `a_reopened_realm_restores_a_sealed_planning_pair_and_continues_it` |
+| Deterministic concurrent invocations with atomic receipts | `concurrent_invocations_of_one_key_or_one_topic_admit_exactly_one_pair`; `two_requests_held_at_the_receipt_write_classify_one_created_and_one_unchanged`; `recoveries_invocations_and_contributions_classify_atomically_at_their_barriers` |
+| Legacy Advisor and Committee; registry, tool, wire and schema | No changed byte outside the planning pair files listed below. The legacy loopback limb ran green (see gates), including `the_contract_document_lists_every_application_route_and_no_unsafe_surface` and `the_authority_tiers_are_enforced_per_route`. |
+
+### W3a gates (final tree)
+
+- `cargo fmt -p kontor-runtime -p kontor-daemon --check` and `cargo clippy -p kontor-runtime -p kontor-daemon --all-targets --offline --locked -j2 -- -D warnings`: clean.
+- Test counts:
+  - `kontor-runtime` 124 (104 unit, 20 integration);
+  - `kontor-daemon` unit 154;
+  - loopback `planning_pair::` 44 (42 earlier, plus 2 new);
+  - the loopback legacy limb, 60: the `advisor`, `committee`, `consultation`, `recover` and `reroute` filters, the route contract document and the per-route authority tiers.
+  - No failure.
+- **Untouched, not rerun:**
+  - the rest of loopback;
+  - `mcp_journey`;
+  - store, API/OpenAPI, MCP parity, SQL and migrations;
+  - CLI local resolve;
+  - the Paseo, AO and Codex contracts.
+  None of their sources changed, and the diff touches only the planning pair files below.
+- **Newly changed files, within the 600-line limit:** `application.rs` 594, `application/freeze.rs` 264, `application/materialize.rs` 241, `application/tests.rs` 399, `application/tests/fake.rs` 469, `invocation.rs` 480, `refusal.rs` 597, `planning_pair_invoke_parity.rs` 354. The existing daemon `planning_pair.rs` shrinks to 1691 lines. The runtime `planning_pair.rs` and the loopback `planning_pair.rs` each gain only their module line.
+- **Repaired before any gate.** The first `member_credential` port fell back to an empty credential when the realm state was unreadable. That fabricated a credential the daemon never had, so the port now fails exactly as the daemon did. The trace tests were split under the 600-line limit. A fixture gained its `schema_version`. A first parity count of 8 lines was an interleaving artifact of captured output; the lines are now extracted whole, and there are 10.
+
+### W3a mutation checks (seeded and run by this seat)
+
+There were 21 fresh single-site mutants on the final bytes:
+- `application.rs` `22ceffcf…`;
+- `application/freeze.rs` `eb342a6e…`;
+- `application/materialize.rs` `b7825531…`;
+- `applications/planning_pair.rs` `abd94fae…`;
+- `refusal.rs` `da5419d6…`;
+- `invocation.rs` `b7fd9c9d…`.
+
+Each was run red, restored (with a touch) and run green, with the SHA equal before and after; each
+before-SHA is the final production hash. The runtime mutants ran the 11 coordinator tests, the
+mapping mutant the 5 daemon `refusal` tests, and the rest the 44 loopback `planning_pair::` tests.
+No kill is borrowed from B1a, B1b or earlier history.
+
+| Id | Site | Killed by |
+| --- | --- | --- |
+| W3A-MUT-01 | the caller authorized after the replay | 10 of 11 coordinator traces (all but the moved-document one, which refuses first) |
+| W3A-MUT-02 | a moved document not refused | `a_moved_document_refuses_before_the_caller_is_authorized` |
+| W3A-MUT-03 | a key reused under another intent resumes | `a_key_reused_for_another_consultation_refuses_before_any_freeze_or_launch` |
+| W3A-MUT-04 | a moved epic not refused | `a_moved_epic_refuses_before_any_freeze` |
+| W3A-MUT-05 | the receipt classification inverted | 3 traces: running pair, bound pair, lost advance |
+| W3A-MUT-06 | a materializing run never advanced | 2 traces: lost advance, bound pair |
+| W3A-MUT-07 | a lost advance accepted while still materializing | `a_lost_advance_answers_the_winners_row_and_a_still_materializing_run_refuses` |
+| W3A-MUT-08 | the receipt hold before the advance | 2 traces: lost advance, bound pair |
+| W3A-MUT-09 | a writable container freezes | `a_writable_selected_container_freezes_nothing` |
+| W3A-MUT-10 | a mistitled slot freezes | `a_mistitled_member_seat_freezes_nothing` |
+| W3A-MUT-11 | a semantic duplicate not refused | 3 loopbacks: concurrent invocations, `invoke_parity` outcomes, replay and reuse |
+| W3A-MUT-12 | routes not checked before the freeze | 3 loopbacks: uncomposable route, both routes refused, runtime without the member surface |
+| W3A-MUT-13 | a fully bound pair launched again | 3 traces: bound pair, running pair, lost advance |
+| W3A-MUT-14 | routes not checked before materialization | 4 traces: uncomposable route, bound pair, lost advance, running pair |
+| W3A-MUT-15 | a frozen member role not proved again | `a_mismatched_catalog_pin_or_member_role_fails_closed_before_any_native_effect` |
+| W3A-MUT-16 | a kept member relaunched | 3 loopbacks: restart without a second create, second-seat readback failure, `invoke_parity` interrupted and kept |
+| W3A-MUT-17 | an unqualified readback binds | 17 loopbacks: each kept-unqualified case, readiness, recovery, requalification, contribution and barrier |
+| W3A-MUT-18 | an unqualified session not kept as a claim | 12 loopbacks: the same recovery, readiness, restart and barrier families |
+| W3A-MUT-19 | a moved epic answers without its current revision | `invoke_parity::every_invocation_outcome_answers_its_full_baseline_body` |
+| W3A-MUT-20 | a reused key answers a revision conflict | `refusal::tests::every_invocation_refusal_answers_its_baseline_code_and_rule` |
+| W3A-MUT-21 | the invocation receipt recorded as a finding | 2 loopbacks: `intents::every_planning_pair_command_records_its_baseline_intent`, the classification barriers |
+
+**In all:** 21 red. 9 fail exactly one test (MUT-02, 03, 04, 07, 09, 10, 15, 19 and 20), and 12 fail
+more: MUT-01 fails 10, MUT-17 17, MUT-18 12, MUT-14 4; MUT-05, 11, 12, 13 and 16 fail 3 each; MUT-06,
+08 and 21 fail 2 each. These counts are this seat's retained records
+(`/tmp/asma-8282-w3a/mut/results.jsonl`, specs in `specs.json`). There are no survivors, no
+equivalents and no compile-error kills.
+
+### The exact remaining boundary
+
+The invocation sequence is extracted whole: create, replay and resume-materialization. No reserved
+authority change was needed for it. What stays outside, and why:
+
+- **The owner.** `InvokeOwner` has exactly one production implementation, the daemon's `InvokePorts`. A second owner needs its own `authorize_caller`, one that establishes a trusted current caller generation without the daemon's bearer. It also needs its own fenced writer for `create_run`, `advance_to_running` and `record`. Those are the B2 reserved decisions: issuer, key custody, revocation, bearer versus possession, native fencing and transfer. Nothing here implements or presumes them.
+- **Daemon helpers, by the dispatch.** These stay daemon helpers, unchanged and not moved:
+  - member recovery (`recover_planning_pair_member`, which uses the B1b plan and outcome);
+  - the four contributions: finding, answer, clarification and disposition;
+  - the opt-in caller serve profile.
+- **Next source boundary.** It is the recovery and contribution command sequences of `applications/planning_pair.rs`: the authorization, replay, CAS, readback and receipt order around the B1b plan and outcome. That is the same kind of move, to the same `planning_pair/application` module, behind the same owner pattern, with the daemon still the only owner. Whether and when to take it is TPM's and the LSA's decision. This record does not start it.
+
+### Review lineage and holds
+
+- **Owner compatibility.** The exact-source owner compatibility PASS covers the frozen `be9537aa` (tree `0712a7ea`) only.
+- **Technical parity only.** For the affected `8c706eec` and the published `5f45a561` mapping, what exists is technical compatibility parity, not a blanket owner PASS. W3a inherits no owner meaning from either.
+- **ASMA-8113 owner context.** The context `e1dec` is consumed as context only. W3a creates no new reviewer delegation, no ASW and no adoption.
+- **Owner meaning.** W3a changes no identity vocabulary: no id, semantic identity, intent byte, receipt kind, wire field or schema. So no owner limb is frozen. If a reviewer finds a changed owner meaning, only that limb freezes and the exact candidate is called back; technical review may proceed.
+- **Review routing.** TPM alone routes b887's verify and then 6f's audit, and the findings return to this seat. This seat dispatches nothing.
+- **History preserved.** The B1a `cabc4ac2` and B1b `6ed03f2c` FAILs and their corrections stand as written. B1b's review state at `8c706eec` is TPM's to relay; this record claims none.
+- **B2.** `fbb08011…` remains a corrected proposal. New issuer, key custody, revocation, bearer versus possession, native fencing and transfer stay reserved. The W1 guard, W4 trust code, epoch, schema and new crate are not admitted. The uncertain-effects barrier stays closed, with no Goal reduction.
+- **Calibration.** Root owns the calibration envelope `144ea9f5`. W3a does no calibration work and sets no probe or flag.
+
+### Limits kept accurate
+
+- **Source only.** No live, native, provider, credential or deployment effect, and no qualification. Every runtime observation is the fake runtime's, and every coordinator trace is a hypothetical fake owner's.
+- **No Direct host.** The coordinator is API-independent, but nothing composes it outside the daemon. A test host with fake ports is not a qualified owner.
+- **Unchanged holds.** The calibration stays UNKNOWN. R3 stays at root `8ba` and module `419`. Neither TASK-004 nor TASK-002 is closed.
+
 ## Remaining capability gaps after slice four (current)
 
 - **ASMA-8113 identity compatibility.** Igor designated the 6f reviewer at 10:58:58Z ("can you do both? i allow you", recorded at checkpoint `a8560cb1`). As TPM relays, the exact-source owner compatibility review of `be9537aaa0245ce67cc683a8348f2b5f5addd5eb` (tree `0712a7ea7886723bf7adf2bb79dbee16a4b44012`) passed and was accepted.
@@ -1776,6 +1948,7 @@ the distribution. The rework changes only this file:
 - **Shared invocation.**
   - **B1a:** moved the pure caller eligibility and member context. Accepted at `8cd2305f`.
   - **B1b:** moves the recovery plan and outcome and the five intent fingerprints, at source on this branch. The 6f audit of `6ed03f2c` failed solely on this record's mutation distribution; its technical source and compatibility parity passed. The corrected record awaits TPM's fresh b887 and 6f review.
+  - **W3a:** moves the invocation coordinator (create, replay, resume-materialization) into `kontor-runtime` `planning_pair::application`, behind one owner port the daemon alone implements. It is at source on this branch, for TPM's b887 and 6f review. See "Shared invocation, slice W3a".
   - **Do not exist:** direct actuation, a direct caller verifier (Q1, Igor's trust-boundary decision) and one generation-fenced writer (Q3, B2).
 - **TPM-owned placement.** No TPM operation, receipt or procedure wraps placement.
 - **Concurrent resume.** This is repaired for the planning pair:
