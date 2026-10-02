@@ -16,13 +16,16 @@
 
 use kontor_core::consultation::ConsultationRunId;
 use kontor_core::id::{
-    ContentHash, PlanningPairRunId, RoleCatalogId, SeatBindingId, SpecVersion, TopologyNodeId,
+    ContentHash, PlanningPairRunId, RoleCatalogId, SeatBindingId, SpecVersion, Timestamp,
+    TopologyNodeId,
 };
 use kontor_core::planning_pair::{PlanningPairPin, PlanningPairSlot};
 use kontor_core::spec::{ModelRung, TeamDefinitionSnapshot, TopologySnapshot};
+use kontor_core::state::NativeRuntimeIdentity;
 
 use crate::adapter::{
-    ConsultationLaunchRequest, ConsultationRouteProvenance, RuntimeError, RuntimeResult,
+    ConsultationLaunchOutcome, ConsultationLaunchRequest, ConsultationRouteProvenance,
+    RuntimeError, RuntimeResult,
 };
 use crate::provenance::FleetLaunchProvenance;
 use crate::workspace::WorkspaceRoot;
@@ -198,6 +201,72 @@ impl PlanningPairMemberObservation {
     }
 }
 
+/// Reconcile one planning pair member's exact known native session in place
+/// (ASMA-8282 frontier A).
+///
+/// Everything stays what it was frozen to: the logical SeatBinding, its slot
+/// and occupancy generation, the route and actual vendor, the document,
+/// catalog and placement pins, and the native session itself. A runtime reads
+/// that session back, member surface and provenance included, and where it
+/// supports one resumes that same session where it is. It never creates,
+/// replaces, archives or reroutes a member here, and never moves its
+/// generation.
+///
+/// No credential travels. The same session keeps the process environment it
+/// was created with, which holds the credential of the generation stated
+/// here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanningPairMemberReconcileRequest {
+    /// Everything the member is frozen to, derived from durable state.
+    pub context: PlanningPairLaunchContext,
+    /// The exact native session the member is known by.
+    pub identity: NativeRuntimeIdentity,
+    /// Reconciliation instant.
+    pub requested_at: Timestamp,
+}
+
+impl PlanningPairMemberReconcileRequest {
+    /// Refuse a request whose own context cannot name one exact member.
+    ///
+    /// # Errors
+    /// [`RuntimeError::LaunchNotAdmitted`] for a context with no occupancy
+    /// generation, no actual vendor, or a requested provenance on another
+    /// vendor.
+    pub fn validate(&self) -> RuntimeResult<()> {
+        let refuse = |rule: &'static str| Err(RuntimeError::LaunchNotAdmitted { rule });
+        if self.context.occupancy_generation == 0 {
+            return refuse("a planning pair member reconcile names no occupancy generation");
+        }
+        let vendor = self.context.vendor.trim();
+        if vendor.is_empty() || vendor == "unknown" {
+            return refuse("a planning pair member reconcile names no actual vendor");
+        }
+        if self.context.requested_fleet_provenance.vendor != self.context.vendor {
+            return refuse("a planning pair member reconcile requests another fleet provenance");
+        }
+        Ok(())
+    }
+
+    /// Hold a runtime's answer to this request: that same native session,
+    /// never a created one.
+    ///
+    /// # Errors
+    /// [`RuntimeError::LaunchNotAdmitted`] when the runtime reports it created
+    /// a session, and [`RuntimeError::CorrelationFailed`] for any session but
+    /// the one requested.
+    pub fn require_same_native(&self, outcome: &ConsultationLaunchOutcome) -> RuntimeResult<()> {
+        if outcome.created {
+            return Err(RuntimeError::LaunchNotAdmitted {
+                rule: "a planning pair member reconcile never creates a native session",
+            });
+        }
+        if !outcome.identity.same_session(&self.identity) {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        Ok(())
+    }
+}
+
 impl ConsultationLaunchRequest {
     /// The planning pair context this launch is held to, once its family and
     /// its context are proved to agree.
@@ -266,5 +335,167 @@ impl PlanningPairLaunchContext {
             return refuse("the member launch requests another fleet provenance");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kontor_core::id::{
+        ExternalId, ExternalName, PlanningPairProfileId, RuntimeKindKey, TeamDefinitionId,
+        TopologySpecId,
+    };
+    use kontor_core::spec::{ModelRef, ProviderRef};
+
+    fn identity(native_id: &str) -> NativeRuntimeIdentity {
+        NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse("fake.runtime").expect("a runtime kind"),
+            host: ExternalName::parse("fake-host").expect("a host"),
+            generation: 3,
+            native_id: ExternalId::parse(native_id).expect("a native id"),
+        }
+    }
+
+    fn request() -> PlanningPairMemberReconcileRequest {
+        let provenance = crate::provenance::FleetLaunchProvenance {
+            policy_hash: ContentHash::of(b"activated policy"),
+            source_bundle_hash: None,
+            binding_key: "advisor/pair".to_owned(),
+            chain: "pair".to_owned(),
+            step: 1,
+            sub_step: 1,
+            vendor: "anthropic".to_owned(),
+            eligibility: None,
+        };
+        PlanningPairMemberReconcileRequest {
+            context: PlanningPairLaunchContext {
+                run_id: PlanningPairRunId::generate(),
+                seat_binding_id: SeatBindingId::generate(),
+                slot: PlanningPairSlot::SeatB,
+                occupancy_generation: 2,
+                profile: PlanningPairPin {
+                    profile_id: PlanningPairProfileId::generate(),
+                    version: SpecVersion::FIRST,
+                    definition_hash: ContentHash::of(b"planning pair document"),
+                },
+                topology: TopologySnapshot {
+                    spec_id: TopologySpecId::generate(),
+                    version: SpecVersion::FIRST,
+                    canonical_hash: ContentHash::of(b"topology"),
+                },
+                team_definition: TeamDefinitionSnapshot {
+                    definition_id: TeamDefinitionId::generate(),
+                    version: SpecVersion::FIRST,
+                    canonical_hash: ContentHash::of(b"team definition"),
+                },
+                role_catalog: PlanningPairCatalogPin {
+                    catalog_id: RoleCatalogId::generate(),
+                    version: SpecVersion::FIRST,
+                    canonical_hash: ContentHash::of(b"role catalog"),
+                },
+                topology_node_id: TopologyNodeId::generate(),
+                cwd: WorkspaceRoot::parse("/realm/pair").expect("a member cwd"),
+                route: ModelRung {
+                    provider: ProviderRef("claude-personal".to_owned()),
+                    model: ModelRef("claude-opus-5".to_owned()),
+                    effort: None,
+                },
+                vendor: "anthropic".to_owned(),
+                placement_hash: ContentHash::of(b"placement"),
+                requested_fleet_provenance: provenance,
+            },
+            identity: identity("native-member-b"),
+            requested_at: "2026-10-02T09:10:00Z".parse().expect("an instant"),
+        }
+    }
+
+    fn answer(native: NativeRuntimeIdentity, created: bool) -> ConsultationLaunchOutcome {
+        ConsultationLaunchOutcome {
+            identity: native.clone(),
+            provider_session_id: None,
+            observed_at: "2026-10-02T09:10:01Z".parse().expect("an instant"),
+            created,
+            fleet_provenance: crate::provenance::FleetProvenanceObservation::Unsupported {
+                surface: "fixture".to_owned(),
+                native_id: native.native_id,
+            },
+            planning_pair: None,
+        }
+    }
+
+    fn refused_rule(result: RuntimeResult<()>) -> &'static str {
+        match result {
+            Err(RuntimeError::LaunchNotAdmitted { rule }) => rule,
+            other => panic!("expected a typed refusal, got {other:?}"),
+        }
+    }
+
+    /// A reconcile names one exact member: its own generation, an actual
+    /// vendor, and the provenance requested on that vendor.
+    #[test]
+    fn a_reconcile_request_names_one_exact_member() {
+        assert_eq!(request().validate(), Ok(()));
+
+        let mut fenceless = request();
+        fenceless.context.occupancy_generation = 0;
+        assert_eq!(
+            refused_rule(fenceless.validate()),
+            "a planning pair member reconcile names no occupancy generation"
+        );
+
+        for vendor in ["", "  ", "unknown"] {
+            let mut vendorless = request();
+            vendorless.context.vendor = vendor.to_owned();
+            vendorless.context.requested_fleet_provenance.vendor = vendor.to_owned();
+            assert_eq!(
+                refused_rule(vendorless.validate()),
+                "a planning pair member reconcile names no actual vendor",
+                "{vendor:?}"
+            );
+        }
+
+        let mut elsewhere = request();
+        elsewhere.context.requested_fleet_provenance.vendor = "openai".to_owned();
+        assert_eq!(
+            refused_rule(elsewhere.validate()),
+            "a planning pair member reconcile requests another fleet provenance"
+        );
+    }
+
+    /// The answer is the requested session itself, never a created one and
+    /// never another session, generation or host.
+    #[test]
+    fn a_reconcile_answer_is_the_same_native_and_never_a_created_one() {
+        let request = request();
+        assert_eq!(
+            request.require_same_native(&answer(request.identity.clone(), false)),
+            Ok(())
+        );
+        assert_eq!(
+            refused_rule(request.require_same_native(&answer(request.identity.clone(), true))),
+            "a planning pair member reconcile never creates a native session"
+        );
+        let mut other_session = request.identity.clone();
+        other_session.native_id = ExternalId::parse("native-member-b-2").expect("a native id");
+        let mut other_generation = request.identity.clone();
+        other_generation.generation += 1;
+        let mut other_host = request.identity.clone();
+        other_host.host = ExternalName::parse("another-host").expect("a host");
+        for other in [other_session, other_generation, other_host] {
+            assert_eq!(
+                request.require_same_native(&answer(other.clone(), false)),
+                Err(RuntimeError::CorrelationFailed),
+                "{other:?}"
+            );
+        }
+    }
+
+    /// No secret travels: the request has no credential, so neither its
+    /// value nor its debug form can carry one.
+    #[test]
+    fn a_reconcile_request_carries_no_credential() {
+        let rendered = format!("{:?}", request());
+        assert!(!rendered.contains("REDACTED"), "{rendered}");
+        assert!(!rendered.contains("credential"), "{rendered}");
     }
 }

@@ -14,6 +14,7 @@
 - D-3 member surface (2026-10-02): TPM dispatch from the accepted `b3457c31` (tree `169542e6`), after verify and audit passed. It covers the member guard, the serve profile, the typed member launch context and its readback, and route-specific capability, with mock and disposable-fixture tests only. See "D-3 member surface" below.
 - D-3 authority repair (2026-10-02): verify b887 on `1b1d5597` passed the composition and confirmed an authority hole, and the LSA granted no waiver. The repair: a member binds only when every mandatory member-surface field matches; every real Paseo route is refused before freeze; and Claude composition is proved on fixtures only. See "D-3 authority repair" below.
 - Frontier B (2026-10-02): the opt-in `planning_pair_caller` source profile, built on `8b6ee064` (tree `aef842f6`) after verify and audit 6f passed with no findings. It covers the registry profile and explicit selection, plus tests and docs. No composition and no daemon source change. See "Frontier B" below.
+- Frontier A (2026-10-02): the same-native member reconcile seam, at source level only. It is built on `e7a9404a` (tree `62377b57`) after verify and audit passed. It covers an opt-in runtime port that is typed unsupported on every real runtime, a hypothetical fake, the second-seat-only and both-routes fixtures, and docs. The daemon recovery operation's authority is returned to the LSA. See "Frontier A" below.
 - The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. At slice four it holds 53 files, which hash to `4ff4c1bc5cbe7c7ce505442d50827f91d64b0bb308cd18183a39d42339e49e87`: each file's SHA-256 in sorted path order, hashed again. Its files were last written at 2026-10-02 00:25 CEST. That run was not this writing session's (its only workspace run was on 2026-09-29), and slice four did not touch them. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
@@ -965,6 +966,120 @@ Pre-mutation SHA-256 values, each confirmed equal after restore:
 - **The route refusal reports the first blocker only.** The surface refusal names only the first refused route, in seat order. When both routes are refused, it carries seat A's provider and gap and omits seat B's. This is a diagnostic limit, not an admission: every route is still refused before freeze.
 - **The fully matched fake remains the hypothetical positive** that every caller-side protocol test runs against. Every real Paseo route is still refused before freeze with no effect, and with no match there is no authority.
 
+## Frontier A: same-native member reconciliation, source seam only (2026-10-02)
+
+TPM's separate frontier A dispatch builds on `e7a9404aa871c3f8c1ed29616182909b9b518ff7` (tree
+`62377b57cbf057674759e2987095e1199c2cf03f`), after verify and audit passed.
+
+This checkout owns the bounded runtime seam, its fake and fixture tests, and the docs. It has
+no native, session, reconcile, probe, provider, credential, network, daemon-start, deploy or
+policy effect. The caller profile, the leadership composition, placement and the root CLI are
+unchanged. **The daemon recovery operation is not implemented.** Its authority is a genuine
+authority question, returned to the LSA below instead of invented. The independent parts
+continued.
+
+### Returned to the LSA: who may recover a planning pair member
+
+The only existing recovery is `kontor_consultation_seat_recover`
+(`POST …/committee-runs/{id}/seats/{seat}/recover`). It is Committee-only, at the Admin tier
+with ambient Admin authority, and it **replaces** the native: it archives the predecessor and
+launches a successor at the next generation. This frontier forbids exactly that. A same-native
+operation needs an actor, and the contracts point two ways:
+
+- **Deriving the existing recovery's tier gives Admin.** But D-2 says that, for a planning pair,
+  ambient credentials reach only the catalog and the observer projection, and that every write
+  takes its actor from a scoped seat credential. With Admin as the actor, "a retired credential
+  is denied before replay" has no generation to apply to.
+- **D-2's actor model gives the frozen caller,** at its current hosted generation, on an Operator
+  floor, with a retired generation refused before replay. That would be a fifth caller act, which
+  the four-tool caller profile does not serve. This candidate allows no caller-profile widening.
+
+| Option | Actor | What it needs |
+| --- | --- | --- |
+| A (this seat's recommendation) | The exact frozen caller at its current hosted generation | A new `kontor_planning_pair_seat_recover` at the Operator floor, served by no profile in this candidate. The request does compare-and-swap on the expected revision, the expected native id and the member's expected occupancy generation. The receipt kind is its own, `recover_planning_pair_seat`, which needs a migration widening the closed command-kind CHECK. |
+| B | Ambient Admin, as for `kontor_consultation_seat_recover` | An explicit amendment to D-2's ambient-credential rule. |
+| C | No new operation | Only the caller's existing invoke resume reconciles a materializing pair's known native. That needs the unqualified native identity persisted durably, which is a new identity meaning. Recovery of a running pair stays unsupported. |
+
+**A second fact is returned with it, and is not changed here.** Qualification is per member, so a
+bound seat A can record a finding while seat B is unqualified and the pair is still
+materializing. That finding stays sealed from the caller. No contract decides whether a bound
+member may contribute before its pair runs. The fixture below pins the behaviour as it is.
+
+### What is implemented
+
+| Element | Source | What it does |
+| --- | --- | --- |
+| Reconcile request | `kontor-runtime` `planning_pair.rs` `PlanningPairMemberReconcileRequest` | The frozen `PlanningPairLaunchContext`, the exact known `NativeRuntimeIdentity` and an instant. It carries **no credential**: the same session keeps the environment it was created with. `validate()` refuses a context with no occupancy generation, no actual vendor, or a requested provenance on another vendor. `require_same_native(outcome)` refuses a created session (`LaunchNotAdmitted`) and any other session, including another runtime generation or host (`CorrelationFailed`). |
+| Runtime port | `adapter.rs` `RuntimeAdapter::reconcile_planning_pair_member` | An additive, opt-in method. It answers the existing `ConsultationLaunchOutcome` for the same session, `created` false, with the member surface and provenance read back again. An absent session is `StaleBinding`; another session or a drifted label is `CorrelationFailed`; an unreadable field is `Unsupported`. The **default** is `UnsupportedCapability { Resume }` before any effect. Paseo, AO and Codex keep the default, so no real route reconciles. |
+| Fake runtime (hypothetical) | `fake.rs` | It reconciles only the exact session it created, under exactly the frozen context it was created with: any other run, seat, slot, generation, pin, route, vendor or placement is `CorrelationFailed`. It reads the surface back at call time, not from the launch's cached answer, and never mints. `losing_consultation_native(seat)` makes a session absent. `observing_planning_pair_member_field_unsupported_in(slot, field)` fails one slot's readback. Member launch and reconcile share one readback helper. |
+| Daemon | unchanged | No operation calls the seam. The Committee recover route still cannot reach a member (test below). |
+
+### Tests
+
+| Suite | Test | What it proves |
+| --- | --- | --- |
+| `kontor-runtime` unit (3, new) | `a_reconcile_request_names_one_exact_member` | Generation 0, no vendor (`""`, blank or `unknown`) and provenance on another vendor are each refused with their own rule. |
+| | `a_reconcile_answer_is_the_same_native_and_never_a_created_one` | Same session passes. A create is refused, and so are another native id, another runtime generation and another host. |
+| | `a_reconcile_request_carries_no_credential` | The request's debug form names no credential. |
+| Paseo contract (1, new) | `paseo_reconciles_no_planning_pair_member_native_and_refuses_before_any_effect` | Claude, Codex and Cursor routes, with seat MCP and a member-enforcing guard configured, are each refused as `UnsupportedCapability { Resume }`. There is no plane call, no composed file and no guard run. |
+| Daemon loopback (4, new; 27 in the module) | `a_second_seat_readback_failure_keeps_the_first_member_bound_and_the_pair_materializing` | Only seat B's route is unobserved. Seat A launched first and stays bound to the same native; seat B stays unbound, named as `native/…`. There is no receipt and the pair stays materializing. The replay relaunches only seat B, on its same native, and nothing is retired or archived. Seat B's finding is `stale_binding`. Seat A's finding is recorded (200, still materializing) and sealed from the caller. |
+| | `a_pair_whose_two_routes_are_both_refused_names_only_the_first_blocker` | Seat B's route alone is refused as `providers/claude-personal/not_composed`. With both refused, only `providers/cursor/not_composed` is named, `claude-personal` is absent, and nothing is frozen or launched. |
+| | `the_hypothetical_fake_reconciles_only_the_exact_known_member_native_in_place` | Daemon-derived contexts drive these cases. Both members reconcile as the same native, with `created` false, provenance observed and every field matched, and no credential in the request. Seven drifts are each `CorrelationFailed`: another member's native, generation, route, vendor, placement, document and slot. A field withheld after launch reads back `Unsupported`. A lost native is `StaleBinding`. A withheld route is refused before the runtime is asked. Only reconcile calls are made: no launch, retire or archive. |
+| | `the_committee_seat_recovery_route_never_reaches_a_planning_pair_member` | An Admin's exact Committee recover request on a pair's seat is `not_found` ("no such consultation run exists in this project"). No native is retired or launched, and both seats are unchanged. |
+
+Several dispatch cells need the recovery operation and wait for the LSA's answer: retired before
+replay, sealed findings and dissent kept through recovery, a disposed pair immutable under
+recovery, exact replay against a different intent, and a concurrent resume's atomic receipt
+under recovery. The existing invoke tests for those properties are unchanged and green.
+
+### Frontier A gates
+
+- `cargo fmt -p` for `kontor-runtime`, `kontor-runtime-paseo` and `kontor-daemon`: clean. Only this slice's files changed.
+- `cargo clippy --all-targets -D warnings` for `kontor-runtime`, `-paseo`, `-ao`, `-codex` and `kontor-daemon`: clean.
+- `-p kontor-runtime`: 64 lib tests, plus the 5, 7 and 8 integration tests.
+- Paseo contract: all 292.
+- Daemon `loopback_api planning_pair::`: 27.
+- The `consultation`, `committee` and `advisor` filters: 23, the new Committee-route test included. The `recover`, `reroute` and `release` filters: 40, run before that test was added.
+- `-p kontor-mcp`: 89. Guard profiles, the caller's 4 tools and the member's 3 are unchanged.
+- Contract tests: `runtime_adapter` 52, `mcp_parity` 12, `mcp_cardinality` 12, `mcp_mutants` 12.
+- `kontor-core`: `consultation_identity_golden` 2 and `planning_pair` 25.
+- Not one failure. The broad 1764-test run was not repeated: daemon source is unchanged, the runtime change is an additive default method, and the fake refactor is covered by every planning pair test.
+
+### Frontier A mutation checks (seeded and run by this seat)
+
+Pre-mutation SHA-256 values, each confirmed equal after restore:
+- `kontor-runtime/src/planning_pair.rs` `0e8927bd8ddf600c29cb6ce25488f3ab3c2ac3297642be856d5da7145e76e759`
+- `kontor-runtime/src/adapter.rs` `b644af3fb6d37fc00b84ef8e20551ac1f9b9aa9e2365f2bfe29abb8b19dcb991`
+- `kontor-runtime/src/fake.rs` `812123222f4de012b6b9fd9d732cc63c6c42c243e633f38cd13da9824e7ab6c3`
+- `kontor-daemon/src/applications/planning_pair.rs` `511c456ca25e9c3620adafa3446a4df232afd3fa33ebdb935e74b277e2601eac`
+
+Each mutant was reseeded on its own from clean source. The labels say whether it hits
+production code or the fake's fidelity; a fake-fidelity kill is test-infrastructure evidence,
+not production evidence.
+
+| Id | Label | Mutant | Listed | Red (passed of listed), then green |
+| --- | --- | --- | --- | --- |
+| FA-MUT-01 | production, generation | A reconcile with occupancy generation 0 is accepted. | 3 | 2/3; only `…names_one_exact_member` failed. 3/3 |
+| FA-MUT-02 | production, provenance | An `unknown` vendor counts as an actual vendor. | 3 | 2/3; only the same test failed. 3/3 |
+| FA-MUT-03 | production, provenance | Provenance requested on another vendor is accepted. | 3 | 2/3; only the same test failed. 3/3 |
+| FA-MUT-04 | production, no create | A created session passes as the same native. | 3 | 2/3; only `…never_a_created_one` failed. 3/3 |
+| FA-MUT-05 | production, same-native correlation | The same native is compared by native id only, ignoring runtime generation and host. | 3 | 2/3; only the same test failed, at runtime generation 4. 3/3 |
+| FA-MUT-06 | production, typed unsupported | The default reconcile answers `CorrelationFailed`. | 2 | 1/2; only the Paseo reconcile test failed. 2/2 |
+| FA-MUT-07 | production, per-member qualification | The daemon checks qualification for seat A only, so seat B binds on a failed readback. | 6 | 5/6. **Only** the second-seat fixture failed: the invoke answered 200. The four older unqualified-member tests and the provenance test stayed green, because they never fail seat B alone. 6/6 |
+| FA-MUT-08 | fake fidelity, frozen route, generation and pins | The fake's reconcile ignores the frozen context. | 1 | 0/1: "another generation" answered `Ok`. 1/1 |
+| FA-MUT-09 | fake fidelity, no create | The fake's reconcile reports a create. | 1 | 0/1: `require_same_native` refused it. 1/1 |
+| FA-MUT-10 | fake fidelity, readback now | The fake returns the launch-time observation. | 1 | 0/1: `Matched` where `Unsupported` was expected. 1/1 |
+| FA-MUT-11 | fake fidelity, per-slot readback | The slot-scoped unobserved field is ignored. | 2 | 0/2: the seam test and the second-seat fixture. 2/2 |
+
+### Limits kept accurate
+
+- **No recovery operation exists.** No daemon path reconciles, resumes or rebinds a member. The seam is tested against the fake alone, as a hypothetical. Every real route keeps the typed unsupported default, and every real Paseo member route is still refused before freeze.
+- **Per-member qualification is not atomic.** This is now tested, not just stated: seat A stays bound when seat B's readback fails. Seat A can contribute, sealed, while the pair is materializing. No contract unbinds both members, and none was invented.
+- **The route refusal names the first blocker only.** This is now tested: with both routes refused, only seat A's provider and gap appear. It is a diagnostic limit, not an admission.
+- **The kept unqualified native is not persisted.** It is named only in the refusal (`at`) and in the runtime's own labels. That is why option C would need a new durable identity record.
+- **Resume is declared, not exercised.** The port allows a runtime to resume the same session in place. The fake models no stopped session.
+- This is not a live qualification. Recovery's native effects need separate authorization.
+
 ## Remaining capability gaps after slice four (current)
 
 - **ASMA-8113 fence.** The reviewer is unassigned, so the widened identity vocabulary's acceptance, integration and deployment wait on an explicit assignment and an exact verdict.
@@ -985,7 +1100,7 @@ Pre-mutation SHA-256 values, each confirmed equal after restore:
   - no live policy deploy, pin migration or native qualification;
   - no release.
   The bundled pack declares no planning pair container, so a governed pair needs an explicitly published topology kind, Team Definition container and document. TPM owns that placement, and the owning release workflow owns deployment.
-- **Member seat recovery** (provider loss, credential propagation) is not implemented for a planning pair. The consultation recover routes refuse the family, so a lost member fails closed.
+- **Member seat recovery.** The replacing recovery (provider loss, credential propagation) is not implemented for a planning pair, and the Committee recover route cannot reach a member, which is now tested. A same-native reconcile seam exists on the runtime port, typed unsupported on every real runtime and implemented only by the fake. No daemon operation uses it: its authority is returned to the LSA (see "Frontier A"). A lost or unqualified member fails closed.
 - **Caller serve profile.** An opt-in `planning_pair_caller` source profile now serves exactly the four caller tools when it is selected by name. No hosted seat is composed with it: no explicit optional selection seam exists, and none is inferred. The `leadership` profile is unchanged, so a hosted LSA still has no caller tools unless a client holding its scoped credential serves this profile.
 - **Direct-mode consumer.** The asma-cli consumer (`_tools/asma-cli`, another checkout) is not written.
 - **TPM-owned placement.** No TPM operation, receipt or procedure wraps placement.

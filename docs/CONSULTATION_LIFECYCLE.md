@@ -169,6 +169,15 @@ typed refusal: the native session is kept unbound and named as confirmation
 unknown, the pair stays materializing with no receipt, and a replay meets that
 same session. Account authority is never observed and is stated separately; an
 account-qualified label is not credential ownership.
+
+Qualification is per member, not one atomic step. If only seat B's readback
+fails, seat A, which launched first and was fully observed, stays bound. Its
+credential can record a finding while the pair is still materializing. That
+finding stays sealed from the caller. Seat B stays unbound and its writes are
+refused. The pair has no receipt, and a replay asks again only for seat B, on
+its same native session. Nothing unbinds both members. When both routes are
+refused, the refusal names only the first blocker, seat A's provider and gap.
+
 A pair's caller may be served under a distinct, opt-in profile,
 `planning_pair_caller`. It has exactly four tools:
 
@@ -192,5 +201,20 @@ caller seat at its current hosted generation, under the document's allowed
 roles. A member, a TPM seat and an ambient Admin or Operator are refused under
 it, and the caller cannot contribute under the member profile.
 
-None of this is a live qualification. Member seat recovery is not yet
-implemented for this family.
+The runtime port has an additive, opt-in seam for reconciling a member in
+place: `RuntimeAdapter::reconcile_planning_pair_member`. Its request,
+`PlanningPairMemberReconcileRequest`, carries the member's frozen context and
+the exact native session it is known by, and no credential: the same session
+keeps the environment it was created with. The answer must be that same
+session, never a created one, read back again with its member surface and
+provenance. An absent session, another session, or a session labelled for any
+other run, seat, slot, generation, pin, route, vendor or placement is refused.
+The default refuses as an unsupported capability before any native effect.
+Paseo, AO and Codex keep that default, so no real route can reconcile a
+member. Only the fake runtime implements the seam, as a hypothetical surface
+that observes every field.
+
+None of this is a live qualification. No daemon operation reconciles or
+recovers a member yet: who may invoke one is a decision returned to the LSA.
+The Committee seat recovery route, which replaces a native, cannot reach a
+planning pair member: it finds no such Committee run.

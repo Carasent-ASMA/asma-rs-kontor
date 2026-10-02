@@ -1136,6 +1136,27 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// Reconcile one planning pair member's exact known native session in
+    /// place (ASMA-8282 frontier A), reading its member surface and
+    /// provenance back as a launch does.
+    ///
+    /// The answer is that same session with `created` false. A runtime never
+    /// creates, replaces, archives or reroutes a member here. An absent
+    /// session is [`RuntimeError::StaleBinding`]; another session, or one
+    /// whose correlation labels name anything but the request's frozen
+    /// context, is [`RuntimeError::CorrelationFailed`]; a field it cannot read
+    /// back is reported `Unsupported`, never matched. The default refuses as
+    /// an unsupported capability before any native effect, so a runtime that
+    /// has not composed this never answers it.
+    async fn reconcile_planning_pair_member(
+        &self,
+        _request: &crate::planning_pair::PlanningPairMemberReconcileRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Resume,
+        })
+    }
+
     /// Retire one idle consultation predecessor after exact identity, route and
     /// SeatBinding correlation. This is not a generic consultation reaper.
     async fn retire_consultation_seat(

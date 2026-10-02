@@ -2500,6 +2500,457 @@ async fn a_member_without_a_member_surface_observation_is_kept_unqualified() {
     .await;
 }
 
+/// Audit 6f's untested limit, now a fixture. Qualification is per member, not
+/// one atomic step: when only seat B's readback fails, seat A, launched first
+/// and fully observed, stays bound and qualified. Seat B stays unbound and
+/// named, the pair stays materializing with no receipt for its key, and a
+/// replay relaunches only seat B and meets its same native session.
+///
+/// Seat A's credential is therefore qualified while the pair is still
+/// materializing: its finding is recorded, sealed from the caller, and seat
+/// B's is refused. This pins the behaviour as it is. No contract unbinds both
+/// members, and none gates a bound member on the pair's state.
+#[tokio::test]
+async fn a_second_seat_readback_failure_keeps_the_first_member_bound_and_the_pair_materializing() {
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-second-seat").await;
+    let world = &realm.world;
+    world
+        .fake
+        .observing_planning_pair_member_field_unsupported_in(
+            PlanningPairSlot::SeatB,
+            kontor_runtime::planning_pair::MandatoryMemberField::Route,
+        );
+    world.fake.take_calls();
+    let body = realm.invoke_body(&realm.profile, "Second seat plan").await;
+    let first = realm
+        .invoke_with(&body, realm.caller_token(), "pp-second-seat")
+        .await;
+    assert_eq!(first.code(), "unavailable", "{}", first.body);
+    assert_eq!(first.json()["subject"], "planning pair member readback");
+    assert_eq!(
+        first.json()["rule"],
+        "the planning pair member's readback did not observe its route",
+        "{}",
+        first.body
+    );
+    let run = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_runs(
+                realm.project_id,
+                MiniProjectId::parse(&realm.epic).expect("an epic id"),
+                ConsultationFamily::PlanningPair,
+            )
+            .expect("the runs read")
+            .pop()
+            .expect("the frozen pair")
+    });
+    assert_eq!(run.state, ConsultationRunState::Materializing);
+    let seats = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_seats(realm.project_id, run.id)
+            .expect("the seats read")
+    });
+    let seat = |slot: &str| {
+        seats
+            .iter()
+            .find(|seat| seat.role_slot_id.as_str() == slot)
+            .unwrap_or_else(|| panic!("the {slot} seat"))
+            .clone()
+    };
+    let (seat_a, seat_b) = (seat("seat-a"), seat("seat-b"));
+    let bound_a = seat_a
+        .native_identity
+        .clone()
+        .expect("seat A stays bound to its observed native");
+    assert!(seat_b.native_identity.is_none(), "seat B is not bound");
+    let native_b = first.json()["at"].clone();
+    assert!(
+        native_b
+            .as_str()
+            .is_some_and(|at| at.starts_with("native/")),
+        "seat B's kept native session is named: {}",
+        first.body
+    );
+    assert_ne!(
+        native_b,
+        serde_json::json!(format!("native/{}", bound_a.native_id.as_str())),
+        "the refusal names seat B's native, not seat A's"
+    );
+    let launched = |calls: Vec<AdapterCall>| -> Vec<SeatBindingId> {
+        calls
+            .into_iter()
+            .filter_map(|call| match call {
+                AdapterCall::LaunchConsultation(seat) => Some(seat),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        launched(world.fake.take_calls()),
+        vec![seat_a.seat_binding_id, seat_b.seat_binding_id],
+        "seat A launched and was bound before seat B's readback failed"
+    );
+    let receipts: i64 = rusqlite::Connection::open(world.directory.path().join("kontor.db"))
+        .expect("the realm database opens")
+        .query_row(
+            "SELECT count(*) FROM command_receipts WHERE idempotency_key = 'pp-second-seat'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the receipts count");
+    assert_eq!(receipts, 0, "no qualified pair receipt");
+
+    let replayed = realm
+        .invoke_with(&body, realm.caller_token(), "pp-second-seat")
+        .await;
+    assert_eq!(
+        replayed.json()["rule"],
+        first.json()["rule"],
+        "{}",
+        replayed.body
+    );
+    assert_eq!(
+        replayed.json()["at"],
+        native_b,
+        "the replay met seat B's same native session"
+    );
+    let calls = world.fake.take_calls();
+    assert!(
+        calls.iter().all(|call| !matches!(
+            call,
+            AdapterCall::RetireConsultation(_) | AdapterCall::ArchiveContainer(_)
+        )),
+        "nothing was replaced or destroyed"
+    );
+    assert_eq!(
+        launched(calls),
+        vec![seat_b.seat_binding_id],
+        "the replay skipped bound seat A and asked again only for seat B"
+    );
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_seats(realm.project_id, run.id)
+            .expect("the seats read")
+    });
+    assert_eq!(
+        after
+            .iter()
+            .find(|seat| seat.seat_binding_id == seat_a.seat_binding_id)
+            .and_then(|seat| seat.native_identity.as_ref()),
+        Some(&bound_a),
+        "seat A is still bound to the same native"
+    );
+    assert!(
+        after
+            .iter()
+            .find(|seat| seat.seat_binding_id == seat_b.seat_binding_id)
+            .is_some_and(|seat| seat.native_identity.is_none()),
+        "seat B is still unbound"
+    );
+    let kontor_core::consultation::ConsultationRunId::PlanningPair(run_id) = run.id else {
+        panic!("a planning pair run")
+    };
+    let pair = Pair {
+        run: run_id.to_string(),
+        seat_a: seat_a.seat_binding_id,
+        seat_b: seat_b.seat_binding_id,
+        invoked: serde_json::json!({}),
+    };
+    let refused_b = realm
+        .finding(&pair, pair.seat_b, "Not qualified.", "pp-second-seat-b")
+        .await;
+    assert_eq!(refused_b.code(), "stale_binding", "{}", refused_b.body);
+    let recorded_a = realm
+        .finding(&pair, pair.seat_a, "Qualified alone.", "pp-second-seat-a")
+        .await;
+    assert_eq!(recorded_a.status, 200, "{}", recorded_a.body);
+    assert_eq!(recorded_a.json()["state"], "materializing");
+    let caller = realm.read_with(&pair, Some(realm.caller_token())).await;
+    assert_eq!(caller.status, 200, "{}", caller.body);
+    assert!(
+        caller.json().get("findings").is_none(),
+        "seat A's finding is sealed from the caller: {}",
+        caller.body
+    );
+    assert_eq!(
+        realm.stored_run(&pair).state,
+        ConsultationRunState::Materializing,
+        "the pair is still materializing"
+    );
+}
+
+/// The route refusal's diagnostic limit, pinned. Seat B's route alone is
+/// refused under its own provider; once seat A's route is refused too, the
+/// refusal names only the first blocker, seat A's provider and gap, and never
+/// seat B's. Each is still a refusal before anything is frozen.
+#[tokio::test]
+async fn a_pair_whose_two_routes_are_both_refused_names_only_the_first_blocker() {
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-both-routes").await;
+    let world = &realm.world;
+    world.fake.take_calls();
+    let body = realm.invoke_body(&realm.profile, "Both routes plan").await;
+    world
+        .fake
+        .withholding_planning_pair_members_on("claude-personal");
+    let seat_b_only = realm
+        .invoke_with(&body, realm.caller_token(), "pp-seat-b-route")
+        .await;
+    assert_eq!(
+        seat_b_only.code(),
+        "unsupported_capability",
+        "{}",
+        seat_b_only.body
+    );
+    assert_eq!(
+        seat_b_only.json()["at"],
+        "providers/claude-personal/not_composed",
+        "seat B's route is refused on its own: {}",
+        seat_b_only.body
+    );
+    world.fake.withholding_planning_pair_members_on("cursor");
+    let refused = realm
+        .invoke_with(&body, realm.caller_token(), "pp-both-routes")
+        .await;
+    assert_eq!(refused.code(), "unsupported_capability", "{}", refused.body);
+    assert_eq!(refused.json()["subject"], "planning pair member route");
+    assert_eq!(
+        refused.json()["at"],
+        "providers/cursor/not_composed",
+        "only seat A's provider and gap are named: {}",
+        refused.body
+    );
+    assert!(
+        !refused.body.contains("claude-personal"),
+        "seat B's refused provider is not named: {}",
+        refused.body
+    );
+    assert_eq!(realm.planning_pair_runs(), 0, "nothing was frozen");
+    assert!(world.fake.take_calls().iter().all(|call| !matches!(
+        call,
+        AdapterCall::PrepareContainer(_) | AdapterCall::LaunchConsultation(_)
+    )));
+}
+
+/// Frontier A's runtime seam on the hypothetical fake, which observes every
+/// field (source contract, not live proof). Each member's exact known native
+/// is reconciled in place against the frozen context the daemon derived for
+/// it: the same session, never a create, read back now rather than cached.
+/// Another session, another frozen field, an absent session or a withheld
+/// route is refused, and nothing is created, retired or archived. No daemon
+/// operation calls this yet; its authority is returned to the LSA.
+#[tokio::test]
+async fn the_hypothetical_fake_reconciles_only_the_exact_known_member_native_in_place() {
+    use kontor_runtime::planning_pair::{
+        MandatoryMemberField, MemberSurfaceField, PlanningPairMemberReconcileRequest,
+    };
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-reconcile-seam").await;
+    let world = &realm.world;
+    let pair = realm.invoke("Reconcile plan", "pp-reconcile-seam").await;
+    let run = realm.stored_run(&pair);
+    let seats = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_seats(realm.project_id, run.id)
+            .expect("the seats read")
+    });
+    let contexts = world.fake.planning_pair_launch_contexts();
+    let known = |seat: SeatBindingId| {
+        seats
+            .iter()
+            .find(|stored| stored.seat_binding_id == seat)
+            .and_then(|stored| stored.native_identity.clone())
+            .expect("a bound member native")
+    };
+    let request = |seat: SeatBindingId| PlanningPairMemberReconcileRequest {
+        context: contexts
+            .get(&seat)
+            .cloned()
+            .expect("the frozen member context"),
+        identity: known(seat),
+        requested_at: kontor_api::now(),
+    };
+    world.fake.take_calls();
+
+    for seat in [pair.seat_a, pair.seat_b] {
+        let exact = request(seat);
+        let outcome = world
+            .fake
+            .reconcile_planning_pair_member(&exact)
+            .await
+            .expect("the exact known native reconciles");
+        assert_eq!(exact.require_same_native(&outcome), Ok(()));
+        assert!(!outcome.created, "never a create");
+        assert_eq!(outcome.identity, known(seat), "the same native session");
+        assert!(matches!(
+            &outcome.fleet_provenance,
+            kontor_runtime::FleetProvenanceObservation::Observed { provenance, .. }
+                if *provenance == exact.context.requested_fleet_provenance
+        ));
+        let observed = outcome.planning_pair.expect("a member-surface readback");
+        assert_eq!(observed.unmatched_mandatory(), None, "every field matched");
+        assert!(
+            !format!("{exact:?}").contains(&realm.member_token(seat, 1)),
+            "no member credential travels"
+        );
+    }
+
+    let wrong = PlanningPairMemberReconcileRequest {
+        identity: known(pair.seat_b),
+        ..request(pair.seat_a)
+    };
+    let drifted: Vec<(&str, PlanningPairMemberReconcileRequest)> = vec![
+        ("another member's native", wrong),
+        ("another generation", {
+            let mut drift = request(pair.seat_a);
+            drift.context.occupancy_generation += 1;
+            drift
+        }),
+        ("another route", {
+            let mut drift = request(pair.seat_a);
+            drift.context.route.model.0.push_str("-next");
+            drift
+        }),
+        ("another vendor", {
+            let mut drift = request(pair.seat_a);
+            drift.context.vendor = "openai".to_owned();
+            drift.context.requested_fleet_provenance.vendor = "openai".to_owned();
+            drift
+        }),
+        ("another placement", {
+            let mut drift = request(pair.seat_a);
+            drift.context.placement_hash = kontor_core::id::ContentHash::of(b"another placement");
+            drift
+        }),
+        ("another document", {
+            let mut drift = request(pair.seat_a);
+            drift.context.profile.definition_hash =
+                kontor_core::id::ContentHash::of(b"another document");
+            drift
+        }),
+        ("another slot", {
+            let mut drift = request(pair.seat_a);
+            drift.context.slot = PlanningPairSlot::SeatB;
+            drift
+        }),
+    ];
+    for (why, drift) in drifted {
+        assert_eq!(
+            world.fake.reconcile_planning_pair_member(&drift).await,
+            Err(kontor_runtime::RuntimeError::CorrelationFailed),
+            "{why}"
+        );
+    }
+
+    // The readback is taken now: a field the runtime can no longer observe
+    // is reported unsupported, never the launch's cached match.
+    world
+        .fake
+        .observing_planning_pair_member_field_unsupported_in(
+            PlanningPairSlot::SeatB,
+            MandatoryMemberField::ToolRestrictions,
+        );
+    let unobserved = world
+        .fake
+        .reconcile_planning_pair_member(&request(pair.seat_b))
+        .await
+        .expect("the same native is read back");
+    assert_eq!(
+        unobserved
+            .planning_pair
+            .expect("a member-surface readback")
+            .tool_restrictions,
+        MemberSurfaceField::Unsupported
+    );
+
+    world.fake.losing_consultation_native(pair.seat_a);
+    assert!(matches!(
+        world
+            .fake
+            .reconcile_planning_pair_member(&request(pair.seat_a))
+            .await,
+        Err(kontor_runtime::RuntimeError::StaleBinding { .. })
+    ));
+    world
+        .fake
+        .withholding_planning_pair_members_on("claude-personal");
+    assert!(matches!(
+        world
+            .fake
+            .reconcile_planning_pair_member(&request(pair.seat_b))
+            .await,
+        Err(kontor_runtime::RuntimeError::PlanningPairMemberSurfaceUnsupported { .. })
+    ));
+
+    let calls = world.fake.take_calls();
+    assert!(
+        calls
+            .iter()
+            .all(|call| matches!(call, AdapterCall::ReconcilePlanningPairMember(_))),
+        "nothing but reconciles: no launch, retire or archive: {calls:?}"
+    );
+    assert_eq!(
+        calls.len(),
+        2 + 7 + 1 + 1,
+        "the withheld route is refused before the runtime is asked"
+    );
+}
+
+/// The existing Committee seat recovery, which replaces a native, never
+/// reaches a planning pair member: its run id names no Committee, so even an
+/// Admin's exact request finds nothing and no native is retired or launched.
+#[tokio::test]
+async fn the_committee_seat_recovery_route_never_reaches_a_planning_pair_member() {
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-committee-recover").await;
+    let world = &realm.world;
+    let pair = realm.invoke("Recover plan", "pp-committee-recover").await;
+    let run = realm.stored_run(&pair);
+    let seats = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_seats(realm.project_id, run.id)
+            .expect("the seats read")
+    });
+    let native = seats
+        .iter()
+        .find(|seat| seat.seat_binding_id == pair.seat_a)
+        .and_then(|seat| seat.native_identity.clone())
+        .expect("seat A is bound");
+    world.fake.take_calls();
+    let refused = Call::post(
+        format!(
+            "/v1/projects/{}/committee-runs/{}/seats/{}/recover",
+            realm.project, pair.run, pair.seat_a
+        ),
+        &serde_json::json!({
+            "expected_revision": realm.revision(&pair).await,
+            "expected_native_id": native.native_id.as_str(),
+            "reason": "credential_propagation",
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("pp-committee-recover-seat")
+    .send(world)
+    .await;
+    assert_eq!(refused.code(), "not_found", "{}", refused.body);
+    assert_eq!(
+        refused.json()["rule"],
+        "no such consultation run exists in this project",
+        "{}",
+        refused.body
+    );
+    assert!(
+        world.fake.take_calls().iter().all(|call| !matches!(
+            call,
+            AdapterCall::RetireConsultation(_) | AdapterCall::LaunchConsultation(_)
+        )),
+        "no native was retired or launched"
+    );
+    let after = world.daemon.state().with_store(|store| {
+        store
+            .list_consultation_seats(realm.project_id, run.id)
+            .expect("the seats read")
+    });
+    assert_eq!(after, seats, "both member seats are unchanged");
+}
+
 /// A `kontor-mcp` transport over this realm's own router, presenting one
 /// bearer: a seat's scoped credential or an ambient tier secret.
 ///

@@ -14717,6 +14717,52 @@ async fn every_real_planning_pair_member_route_is_refused_before_any_effect() {
     }
 }
 
+/// Frontier A, typed unsupported: Paseo composes no same-native planning pair
+/// member reconcile, so every route, Claude included, is refused as an
+/// unsupported capability before any plane call, composed file or guard run.
+/// Nothing is created, resumed, retired or archived.
+#[tokio::test]
+async fn paseo_reconciles_no_planning_pair_member_native_and_refuses_before_any_effect() {
+    for (provider, model) in [
+        ("claude", "claude-opus-5"),
+        ("codex", "gpt-5.6-sol"),
+        ("cursor", "grok-4.7"),
+    ] {
+        let (_cwd_dir, cwd) = member_cwd();
+        let guard_dir = tempfile::tempdir().expect("a guard directory");
+        let guard = member_guard(guard_dir.path(), true);
+        let (plane, container) = member_plane(&cwd, Some(guard)).await;
+        let launch = member_request(container.clone(), &cwd, member_rung(provider, model), 1);
+        let request = kontor_runtime::planning_pair::PlanningPairMemberReconcileRequest {
+            context: launch.planning_pair.expect("a member context"),
+            identity: NativeRuntimeIdentity {
+                native_id: ExternalId::parse(AGENT_ID).expect("a native id"),
+                ..container.binding.identity.clone()
+            },
+            requested_at: at("2026-10-02T09:20:00Z"),
+        };
+        assert_eq!(
+            plane.adapter.reconcile_planning_pair_member(&request).await,
+            Err(RuntimeError::UnsupportedCapability {
+                capability: kontor_runtime::capability::RuntimeCapability::Resume,
+            }),
+            "{provider}"
+        );
+        assert!(plane.daemon.calls().is_empty(), "{provider}: no plane call");
+        assert!(
+            !std::path::Path::new(cwd.as_str())
+                .join(".mcp.json")
+                .exists()
+                && !std::path::Path::new(cwd.as_str()).join(".claude").exists(),
+            "{provider}: nothing composed"
+        );
+        assert!(
+            !guard_dir.path().join("ran").exists(),
+            "{provider}: the guard binary was never run"
+        );
+    }
+}
+
 /// The Claude member composition, constructed directly on source fixtures. It
 /// is reusable composition only: no runtime launch uses it while every route
 /// is refused, and nothing here is an acknowledgement or a qualification.

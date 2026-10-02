@@ -376,6 +376,9 @@ pub enum AdapterCall {
     Launch(AgentRunId),
     /// A read-only consultation seat was launched or recovered.
     LaunchConsultation(SeatBindingId),
+    /// One planning pair member's exact known native session was reconciled
+    /// in place.
+    ReconcilePlanningPairMember(SeatBindingId),
     /// An exact idle consultation predecessor was retired for recovery.
     RetireConsultation(SeatBindingId),
     /// One consultation seat's pending permissions were read.
@@ -804,6 +807,12 @@ struct FakeState {
     planning_pair_labels_dropped: bool,
     /// Mandatory member-surface fields this runtime reports as unsupported.
     planning_pair_unobserved_fields: BTreeSet<crate::planning_pair::MandatoryMemberField>,
+    /// Mandatory member-surface fields reported as unsupported for one member
+    /// slot only.
+    planning_pair_unobserved_slot_fields: BTreeSet<(
+        kontor_core::planning_pair::PlanningPairSlot,
+        crate::planning_pair::MandatoryMemberField,
+    )>,
     /// Whether member launches report no member-surface observation at all.
     planning_pair_observation_omitted: bool,
     /// The gate every consultation launch waits at, when one is installed.
@@ -1044,6 +1053,56 @@ impl SeatFacts for FakeSeatFacts<'_> {
 }
 
 impl FakeState {
+    /// What this fake reads back of one member session's provenance labels.
+    fn planning_pair_provenance_readback(
+        &self,
+        seat: SeatBindingId,
+        native_id: &ExternalId,
+    ) -> crate::provenance::FleetProvenanceObservation {
+        self.planning_pair_labels.get(&seat).cloned().map_or_else(
+            || crate::provenance::FleetProvenanceObservation::Unsupported {
+                surface: FAKE_LABEL_SURFACE.to_owned(),
+                native_id: native_id.clone(),
+            },
+            |provenance| crate::provenance::FleetProvenanceObservation::Observed {
+                surface: FAKE_LABEL_SURFACE.to_owned(),
+                provenance,
+            },
+        )
+    }
+
+    /// What this fake observes of one member's surface, read at the moment
+    /// it is asked: a hypothetical runtime that observes every mandatory
+    /// field unless a test withholds one. Account authority is never observed
+    /// by any runtime.
+    fn planning_pair_member_observation(
+        &self,
+        slot: kontor_core::planning_pair::PlanningPairSlot,
+    ) -> Option<crate::planning_pair::PlanningPairMemberObservation> {
+        let field = |name: crate::planning_pair::MandatoryMemberField| {
+            if self.planning_pair_unobserved_fields.contains(&name)
+                || self
+                    .planning_pair_unobserved_slot_fields
+                    .contains(&(slot, name))
+            {
+                crate::planning_pair::MemberSurfaceField::Unsupported
+            } else {
+                crate::planning_pair::MemberSurfaceField::Matched
+            }
+        };
+        (!self.planning_pair_observation_omitted).then(|| {
+            crate::planning_pair::PlanningPairMemberObservation {
+                surface: FAKE_SURFACE.to_owned(),
+                correlation: field(crate::planning_pair::MandatoryMemberField::Correlation),
+                route: field(crate::planning_pair::MandatoryMemberField::Route),
+                tool_restrictions: field(
+                    crate::planning_pair::MandatoryMemberField::ToolRestrictions,
+                ),
+                account_authority: crate::planning_pair::MemberSurfaceField::Unsupported,
+            }
+        })
+    }
+
     /// What a recreation census proves about one node's canonical place.
     ///
     /// Read-only. `created: true` means "nothing is there, a create is
@@ -1486,6 +1545,7 @@ impl ScriptedFakeRuntime {
                 planning_pair_labels: BTreeMap::new(),
                 planning_pair_labels_dropped: false,
                 planning_pair_unobserved_fields: BTreeSet::new(),
+                planning_pair_unobserved_slot_fields: BTreeSet::new(),
                 planning_pair_observation_omitted: false,
                 consultation_launch_gate: None,
                 unsupported_consultation_recovery_providers: BTreeSet::new(),
@@ -1629,6 +1689,26 @@ impl ScriptedFakeRuntime {
         field: crate::planning_pair::MandatoryMemberField,
     ) {
         self.lock().planning_pair_unobserved_fields.insert(field);
+    }
+
+    /// Report one mandatory member-surface field as unsupported after create
+    /// for the member in `slot` alone, as a runtime whose readback fails for
+    /// one member and not the other would.
+    pub fn observing_planning_pair_member_field_unsupported_in(
+        &self,
+        slot: kontor_core::planning_pair::PlanningPairSlot,
+        field: crate::planning_pair::MandatoryMemberField,
+    ) {
+        self.lock()
+            .planning_pair_unobserved_slot_fields
+            .insert((slot, field));
+    }
+
+    /// Lose one consultation seat's native session, as a runtime whose
+    /// session was removed out of band would: a reconcile then finds it
+    /// absent.
+    pub fn losing_consultation_native(&self, seat: SeatBindingId) {
+        self.lock().consultations.remove(&seat);
     }
 
     /// Report no member-surface observation at all for member launches.
@@ -3975,6 +4055,7 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             // labels, and its readback is those labels. The observation is the
             // fake surface's: source-contract evidence only.
             Some(context) => {
+                let slot = context.slot;
                 state
                     .planning_pair_contexts
                     .insert(request.seat_binding_id, context);
@@ -3985,41 +4066,11 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
                         .planning_pair_labels
                         .insert(request.seat_binding_id, requested.clone());
                 }
-                let observed = state
-                    .planning_pair_labels
-                    .get(&request.seat_binding_id)
-                    .cloned()
-                    .map_or_else(
-                        || crate::provenance::FleetProvenanceObservation::Unsupported {
-                            surface: FAKE_LABEL_SURFACE.to_owned(),
-                            native_id: identity.native_id.clone(),
-                        },
-                        |provenance| crate::provenance::FleetProvenanceObservation::Observed {
-                            surface: FAKE_LABEL_SURFACE.to_owned(),
-                            provenance,
-                        },
-                    );
-                // A hypothetical runtime that observes every mandatory field
-                // unless a test withholds one. Account authority is never
-                // observed by any runtime.
-                let field = |name: crate::planning_pair::MandatoryMemberField| {
-                    if state.planning_pair_unobserved_fields.contains(&name) {
-                        crate::planning_pair::MemberSurfaceField::Unsupported
-                    } else {
-                        crate::planning_pair::MemberSurfaceField::Matched
-                    }
-                };
-                let observation = (!state.planning_pair_observation_omitted).then(|| {
-                    crate::planning_pair::PlanningPairMemberObservation {
-                        surface: FAKE_SURFACE.to_owned(),
-                        correlation: field(crate::planning_pair::MandatoryMemberField::Correlation),
-                        route: field(crate::planning_pair::MandatoryMemberField::Route),
-                        tool_restrictions: field(
-                            crate::planning_pair::MandatoryMemberField::ToolRestrictions,
-                        ),
-                        account_authority: crate::planning_pair::MemberSurfaceField::Unsupported,
-                    }
-                });
+                let observed = state.planning_pair_provenance_readback(
+                    request.seat_binding_id,
+                    &identity.native_id,
+                );
+                let observation = state.planning_pair_member_observation(slot);
                 (observed, observation)
             }
             None => (
@@ -4057,6 +4108,62 @@ impl RuntimeAdapter for ScriptedFakeRuntime {
             ),
         );
         Ok(outcome)
+    }
+
+    async fn reconcile_planning_pair_member(
+        &self,
+        request: &crate::planning_pair::PlanningPairMemberReconcileRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        let mut state = self.lock();
+        state.require_plane()?;
+        request.validate()?;
+        let context = &request.context;
+        if state.planning_pair_surface_withheld {
+            return Err(RuntimeError::UnsupportedCapability {
+                capability: RuntimeCapability::Resume,
+            });
+        }
+        if state
+            .planning_pair_withheld_providers
+            .contains(&context.route.provider.0)
+        {
+            return Err(RuntimeError::PlanningPairMemberSurfaceUnsupported {
+                provider: context.route.provider.0.clone(),
+                gap: crate::planning_pair::MemberSurfaceGap::NotComposed,
+            });
+        }
+        state.calls.push(AdapterCall::ReconcilePlanningPairMember(
+            context.seat_binding_id,
+        ));
+        let held = state
+            .consultations
+            .get(&context.seat_binding_id)
+            .cloned()
+            .ok_or(RuntimeError::StaleBinding {
+                rule: "the planning pair member's known native session is absent",
+            })?;
+        // This fake's correlation labels are the frozen context the session
+        // was created under, so the exact session must carry exactly the
+        // requested one: any other run, seat, slot, generation, pin, route,
+        // vendor or placement is another member's, never this one's.
+        if !held.identity.same_session(&request.identity)
+            || state.planning_pair_contexts.get(&context.seat_binding_id) != Some(context)
+        {
+            return Err(RuntimeError::CorrelationFailed);
+        }
+        // The same session, read back again now, never a create: a
+        // hypothetical runtime, source-contract evidence only.
+        Ok(ConsultationLaunchOutcome {
+            fleet_provenance: state.planning_pair_provenance_readback(
+                context.seat_binding_id,
+                &held.identity.native_id,
+            ),
+            planning_pair: state.planning_pair_member_observation(context.slot),
+            identity: held.identity,
+            provider_session_id: held.provider_session_id,
+            observed_at: request.requested_at,
+            created: false,
+        })
     }
 
     async fn message_consultation(
