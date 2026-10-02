@@ -2525,7 +2525,13 @@ fn one_receipt_cannot_be_bound_to_two_successions() {
         .receipt_id
         .expect("the succession is bound");
 
-    // A second, committed succession on the same seat, deliberately unbound.
+    // A second succession on the same seat, carried all the way to complete and
+    // deliberately left unbound.
+    //
+    // Complete matters: `0120` already forbids a receipt on a row whose effects
+    // have not landed, so an incomplete second row would be refused by *that*
+    // rule and the uniqueness index would never be reached. The first version of
+    // this test made exactly that mistake, and the uniqueness mutant survived it.
     let later = IdempotencyKey::parse("asma-8187-second-claimant").expect("a key");
     let third = StoredHostedTopologySeat {
         native_identity: identity("lsa-third", 3),
@@ -2542,6 +2548,11 @@ fn one_receipt_cannot_be_bound_to_two_successions() {
         2,
         at("2026-09-17T09:04:30Z"),
     );
+    land_effects(&fixture, seat, &third, 3);
+    fixture
+        .store
+        .commit_core_team_route_succession_effects(&later)
+        .expect("the second succession's effects are proved");
 
     let connection = Connection::open(&fixture.db_path).expect("the database opens");
     assert!(
