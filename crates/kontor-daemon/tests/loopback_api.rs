@@ -47,6 +47,9 @@ mod replacement_bridges;
 #[path = "loopback/legacy_consultation_reads.rs"]
 mod legacy_consultation_reads;
 
+#[path = "loopback/experience_launch.rs"]
+mod experience_launch;
+
 #[tokio::test]
 async fn open_question_commands_preserve_authority_history_and_completion_blockers() {
     use kontor_core::id::OpenQuestionId;
@@ -10563,12 +10566,11 @@ async fn resolving_a_task_context_tracks_approved_memory_and_returns_no_content(
         first.json()["context_pack_id"].is_null(),
         "a preview freezes nothing"
     );
-    // Below the canonical ceiling the whole approved set is carried, and the
-    // selector says so rather than being silently active.
+    // Typed recall is always bounded, even for an empty project.
     assert_eq!(
         first.json()["memory_selection"]["narrowed"],
-        serde_json::json!(false),
-        "a project under the ceiling is never narrowed: {}",
+        serde_json::json!(true),
+        "typed recall selection is active: {}",
         first.body
     );
     assert!(
@@ -10592,10 +10594,12 @@ async fn resolving_a_task_context_tracks_approved_memory_and_returns_no_content(
         .daemon
         .state()
         .with_store(|store| {
-            let document = CanonicalDocument::from_value(&serde_json::json!({
-                "schema_version": 1,
-                "text": "Read the approved project conventions before changing code"
-            }))?;
+            let mut value: serde_json::Value = serde_json::from_str(include_str!(
+                "../../kontor-core/tests/fixtures/experience-v1.json"
+            ))
+            .unwrap();
+            value["future_cues"] = serde_json::json!(["The task"]);
+            let document = CanonicalDocument::from_value(&value)?;
             let provenance = kontor_store::memory::MemoryProvenance {
                 source: "operator".to_owned(),
                 source_id: None,
@@ -10634,10 +10638,12 @@ async fn resolving_a_task_context_tracks_approved_memory_and_returns_no_content(
             .as_array()
             .expect("provenance")
             .iter()
-            .any(|entry| entry["path"] == "/memory/project-conventions/text"
-                && entry["source_id"]
-                    .as_str()
-                    .is_some_and(|source| source.starts_with("memory."))),
+            .any(
+                |entry| entry["path"] == "/memory/project-conventions/lesson"
+                    && entry["source_id"]
+                        .as_str()
+                        .is_some_and(|source| source.starts_with("memory."))
+            ),
         "approved memory is attributable in the Context Pack: {}",
         again.body
     );
@@ -10675,13 +10681,9 @@ async fn resolving_a_task_context_tracks_approved_memory_and_returns_no_content(
 }
 
 #[tokio::test]
-async fn approved_memory_past_the_canonical_ceiling_still_resolves_a_context() {
-    // Each document is individually well within the 1 MiB canonical ceiling;
-    // together they are past it. This is the live shape of ASMA-8234's realm,
-    // where 247 approved items total 1,779,910 bytes and the largest single
-    // document is 531,749 — every item valid, the aggregate not. Before the
-    // selector this resolved to 400 invalid_request / CanonicalDocument, so a
-    // project simply stopped being able to resolve a context at all.
+async fn generic_corpus_past_the_general_ceiling_is_excluded_by_typed_recall() {
+    // Individually valid generic documents exceed the general ceiling together.
+    // Typed recall excludes them without reading a full-corpus prefix.
     const ITEMS: usize = 5;
     const DOCUMENT_BYTES: usize = 250_000;
 
@@ -10743,66 +10745,18 @@ async fn approved_memory_past_the_canonical_ceiling_still_resolves_a_context() {
         .to_owned();
     assert_eq!(hash.len(), 64, "the pack still has a real content digest");
 
-    // The narrowing is stated, never silent.
     let selection = resolved.json()["memory_selection"].clone();
     assert_eq!(selection["narrowed"], serde_json::json!(true));
-    assert_eq!(selection["selector_version"], serde_json::json!(1));
-    assert_eq!(selection["ceiling_bytes"], serde_json::json!(1_048_576u64));
-    let included = selection["included"].as_u64().expect("an included count") as usize;
-    let omitted = selection["omitted"].as_array().expect("omitted").clone();
+    assert_eq!(selection["selector_version"], serde_json::json!(2));
+    assert_eq!(selection["ceiling_bytes"], serde_json::json!(32768));
+    assert_eq!(selection["included"], serde_json::json!(0));
+    assert_eq!(selection["omitted"], serde_json::json!([]));
+    let provenance = resolved.json()["provenance"].as_array().unwrap().clone();
     assert!(
-        (1..ITEMS).contains(&included),
-        "some approved memory is carried and some is not: {}",
-        resolved.body
+        provenance
+            .iter()
+            .all(|entry| !entry["path"].as_str().unwrap().contains("bulk-note-"))
     );
-    assert_eq!(
-        omitted.len(),
-        ITEMS - included,
-        "every approved revision is either carried or named as omitted"
-    );
-
-    // The omitted revisions are the tail of the store's own order, so the choice
-    // is reproducible rather than arbitrary.
-    let omitted_items: Vec<String> = omitted
-        .iter()
-        .map(|entry| entry["item_id"].as_str().expect("an item id").to_owned())
-        .collect();
-    let expected_tail: Vec<String> = (included..ITEMS)
-        .map(|index| format!("bulk-note-{index:02}"))
-        .collect();
-    assert_eq!(
-        omitted_items, expected_tail,
-        "omission follows the deterministic order, taking the tail"
-    );
-    for entry in &omitted {
-        assert!(
-            entry["revision_id"]
-                .as_str()
-                .is_some_and(|id| !id.is_empty()),
-            "an omitted revision is named by its immutable revision id"
-        );
-    }
-
-    // What is carried is attributable, and what is not carried is absent from
-    // the pack rather than half-present in it.
-    let provenance = resolved.json()["provenance"].as_array().expect("p").clone();
-    let paths: Vec<String> = provenance
-        .iter()
-        .map(|entry| entry["path"].as_str().unwrap_or_default().to_owned())
-        .collect();
-    for index in 0..included {
-        let item = format!("bulk-note-{index:02}");
-        assert!(
-            paths.iter().any(|path| path.contains(&item)),
-            "a carried revision is attributable: {item}"
-        );
-    }
-    for item in &omitted_items {
-        assert!(
-            !paths.iter().any(|path| path.contains(item)),
-            "an omitted revision contributes nothing to the pack: {item}"
-        );
-    }
 
     // Same inputs, same bytes — under a fresh key and under the original one.
     let stable = Call::post(&uri, &serde_json::json!({"snapshot": false}))
