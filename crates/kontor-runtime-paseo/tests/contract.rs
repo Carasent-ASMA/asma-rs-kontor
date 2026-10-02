@@ -14763,6 +14763,104 @@ async fn paseo_reconciles_no_planning_pair_member_native_and_refuses_before_any_
     }
 }
 
+/// Frontier C, C-M: every real Paseo route's pre-effect answer, read through
+/// the readiness seam, is a typed route refusal for the first blocker and an
+/// unassessed peer. The selected policy stays a selection, the caller plane
+/// stays unsupported, and nothing is authorized; there is no plane call, no
+/// composed file and no guard run.
+#[tokio::test]
+async fn every_real_route_reads_as_a_route_refusal_in_the_readiness_seam() {
+    use kontor_runtime::planning_pair::{CallerPlane, MemberPlane, PlanningPairReadiness};
+    let member = |slot, provider: &str, model: &str, vendor: &str| {
+        kontor_core::planning_pair::PlanningPairMember {
+            slot,
+            binding_key: format!("pair/{provider}"),
+            route: member_rung(provider, model),
+            vendor: vendor.to_owned(),
+        }
+    };
+    for ((a, a_model, a_vendor, gap), (b, b_model, b_vendor)) in [
+        (
+            (
+                "claude",
+                "claude-opus-5",
+                "anthropic",
+                "restriction_unacknowledged",
+            ),
+            ("codex", "gpt-5.6-sol", "openai"),
+        ),
+        (
+            (
+                "codex-work",
+                "gpt-5.6-sol",
+                "openai",
+                "closed_tools_unavailable",
+            ),
+            ("cursor", "grok-4.7", "xai"),
+        ),
+        (
+            ("cursor", "grok-4.7", "xai", "read_only_unenforced"),
+            ("claude-work", "claude-opus-5", "anthropic"),
+        ),
+        (
+            (
+                "opencode",
+                "deepseek/deepseek-flash",
+                "deepseek",
+                "read_only_unenforced",
+            ),
+            ("claude", "claude-opus-5", "anthropic"),
+        ),
+    ] {
+        let (_cwd_dir, cwd) = member_cwd();
+        let guard_dir = tempfile::tempdir().expect("a guard directory");
+        let guard = member_guard(guard_dir.path(), true);
+        let (plane, _container) = member_plane(&cwd, Some(guard)).await;
+        let placement = kontor_core::planning_pair::PlanningPairMembers::freeze(
+            ContentHash::of(b"placement"),
+            vec![
+                member(PlanningPairSlot::SeatA, a, a_model, a_vendor),
+                member(PlanningPairSlot::SeatB, b, b_model, b_vendor),
+            ],
+        )
+        .expect("two members on distinct vendors");
+        let answer = plane
+            .adapter
+            .validate_planning_pair_member_surface(&member_routes(
+                member_rung(a, a_model),
+                member_rung(b, b_model),
+            ));
+        let readiness = PlanningPairReadiness::assess(Some(&placement), &answer, [None, None]);
+        assert_eq!(
+            readiness.members[0].plane,
+            MemberPlane::RouteUnsupported {
+                provider: a.to_owned(),
+                gap,
+            },
+            "{a}"
+        );
+        assert_eq!(
+            readiness.members[1].plane,
+            MemberPlane::RouteUnassessed,
+            "{a}"
+        );
+        assert!(matches!(readiness.caller, CallerPlane::Unsupported { .. }));
+        assert!(!readiness.every_plane_established());
+        assert!(!readiness.native_actuation_authorized());
+        assert!(plane.daemon.calls().is_empty(), "{a}: no plane call");
+        assert!(
+            !std::path::Path::new(cwd.as_str())
+                .join(".mcp.json")
+                .exists(),
+            "{a}: nothing composed"
+        );
+        assert!(
+            !guard_dir.path().join("ran").exists(),
+            "{a}: the guard binary was never run"
+        );
+    }
+}
+
 /// The Claude member composition, constructed directly on source fixtures. It
 /// is reusable composition only: no runtime launch uses it while every route
 /// is refused, and nothing here is an acknowledgement or a qualification.

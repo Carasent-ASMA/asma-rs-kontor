@@ -816,3 +816,68 @@ fn the_three_request_forms_are_mutually_exclusive() {
         );
     }
 }
+
+/// Frontier C, C-M: a planning pair request carries no caller authority. The
+/// closed schema refuses a caller seat, a caller or member generation, a
+/// native id and labels before anything is read, and the answer to a valid
+/// request is still exactly the placement: no readiness, launch or
+/// authorization field a consumer could read as authority.
+#[test]
+fn a_planning_pair_request_carries_no_caller_or_native_authority() {
+    let realm = Realm::aligned();
+    let lsa = realm.leadership("lsa");
+    let pair = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut request =
+            serde_json::json!({"members": [member("seat-a", TEAM), member("seat-b", &lsa)]});
+        edit(&mut request);
+        request
+    };
+    for (request, property) in [
+        (
+            pair(&|request| {
+                request["caller_seat_binding_id"] = "01991c00-0000-7000-8000-000000000001".into();
+            }),
+            "planning_pair.caller_seat_binding_id",
+        ),
+        (
+            pair(&|request| request["caller_occupancy_generation"] = 7.into()),
+            "planning_pair.caller_occupancy_generation",
+        ),
+        (
+            pair(&|request| request["labels"] = serde_json::json!({"kontor.caller": "lsa"})),
+            "planning_pair.labels",
+        ),
+        (
+            pair(&|request| request["members"][0]["occupancy_generation"] = 1.into()),
+            "planning_pair.members[0].occupancy_generation",
+        ),
+        (
+            pair(&|request| request["members"][1]["native_id"] = "native-member-b".into()),
+            "planning_pair.members[1].native_id",
+        ),
+    ] {
+        let (exit, document) = place(realm.path(), &request, &[]);
+        assert_eq!(exit, 2, "{property}: {document}");
+        assert_eq!(document["code"], "invalid_request", "{document}");
+        assert_eq!(document["dispatched"], false, "{document}");
+        assert!(
+            document["rule"]
+                .as_str()
+                .is_some_and(|rule| rule.contains(property)),
+            "{property}: {document}"
+        );
+    }
+    let (exit, envelope) = place(realm.path(), &pair(&|_| {}), &[]);
+    assert_eq!(exit, 0, "{envelope}");
+    let keys: BTreeSet<&str> = envelope["body"]
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        BTreeSet::from(["members", "placement_hash", "protocol", "selection"]),
+        "placement evidence only"
+    );
+}

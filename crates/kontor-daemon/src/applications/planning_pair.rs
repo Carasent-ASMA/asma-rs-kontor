@@ -1174,7 +1174,11 @@ impl Services {
             // its credential is unqualified, the pair stays materializing with
             // no receipt, and a replay meets that same claim rather than
             // creating, replacing or destroying a session.
-            let refusal = planning_pair_member_qualifies(&outcome, fleet_provenance.as_ref()).err();
+            let refusal = kontor_runtime::planning_pair::qualify_member_readback(
+                &outcome,
+                fleet_provenance.as_ref(),
+            )
+            .err();
             let claim = StoredPlanningPairKnownNative {
                 run_id: run.id,
                 project_id: run.project_id,
@@ -1902,7 +1906,7 @@ impl Services {
                         "the readback reported another provider conversation for the member's known session",
                     )
                 } else {
-                    planning_pair_member_qualifies(
+                    kontor_runtime::planning_pair::qualify_member_readback(
                         &outcome,
                         Some(&context.requested_fleet_provenance),
                     )
@@ -2506,40 +2510,6 @@ fn contribution_dto(contribution: &PlanningPairContribution) -> PlanningPairCont
         advice: contribution.advice.clone(),
         document_hash: contribution.document_hash.clone(),
     }
-}
-
-/// Whether one member readback qualifies the member, or the typed refusal
-/// naming the first thing it did not observe.
-fn planning_pair_member_qualifies(
-    outcome: &kontor_runtime::adapter::ConsultationLaunchOutcome,
-    requested: Option<&kontor_runtime::FleetLaunchProvenance>,
-) -> Result<(), PlanningPairReadbackRefusal> {
-    use kontor_runtime::planning_pair::MandatoryMemberField;
-    let observation = outcome
-        .planning_pair
-        .as_ref()
-        .ok_or(PlanningPairReadbackRefusal::NoMemberSurface)?;
-    match observation.unmatched_mandatory() {
-        Some(MandatoryMemberField::Correlation) => {
-            return Err(PlanningPairReadbackRefusal::CorrelationUnobserved);
-        }
-        Some(MandatoryMemberField::Route) => {
-            return Err(PlanningPairReadbackRefusal::RouteUnobserved);
-        }
-        Some(MandatoryMemberField::ToolRestrictions) => {
-            return Err(PlanningPairReadbackRefusal::ToolRestrictionUnobserved);
-        }
-        None => {}
-    }
-    let observed = matches!(
-        &outcome.fleet_provenance,
-        kontor_runtime::FleetProvenanceObservation::Observed { provenance, .. }
-            if Some(provenance) == requested
-    );
-    if !observed {
-        return Err(PlanningPairReadbackRefusal::ProvenanceUnconfirmed);
-    }
-    Ok(())
 }
 
 /// The stable rule a member readback refusal is answered with. A member

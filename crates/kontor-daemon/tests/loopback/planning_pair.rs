@@ -4859,3 +4859,187 @@ async fn recoveries_invocations_and_contributions_classify_atomically_at_their_b
     assert_eq!(realm.receipts_of("recover_planning_pair_seat"), 2);
     assert_eq!(realm.revision(&pair).await, revision_after + 2);
 }
+
+/// Frontier C, C-M: the readiness seam on one real frozen pair, as a
+/// diagnostic consumer reads it.
+///
+/// It reads only immutable existing facts: the frozen placement from the
+/// pair's own record, the daemon-derived member contexts, and the known
+/// claims from the claim boundary. It adds hypothetical readbacks from the
+/// fake runtime. It keeps the three planes apart:
+/// - the selected policy is the frozen placement;
+/// - the caller plane is unsupported, although this realm holds a caller
+///   credential, because nothing reaches the seam as an authenticated
+///   current generation;
+/// - seat A is matched on the fake's surface and seat B is unqualified by its
+///   unobserved route.
+///
+/// Nothing is authorized. It writes nothing: no run revision, receipt, claim
+/// or binding moves, and the runtime is asked only for readbacks. A changed
+/// activation is never read again: the readiness of the frozen pair names
+/// the same placement after another fleet policy is activated.
+#[tokio::test]
+async fn a_frozen_pairs_readiness_keeps_its_three_planes_apart_and_writes_nothing() {
+    use kontor_runtime::planning_pair::{
+        CallerGap, CallerPlane, MemberEvidence, MemberPlane, MemberReadinessGap,
+        PlanningPairMemberReconcileRequest, PlanningPairMemberRoute, PlanningPairReadiness,
+        PolicyPlane,
+    };
+    let realm = pair_realm("/tmp/kontor-asma8282-pair-readiness").await;
+    let world = &realm.world;
+    let (pair, _) = unqualified_pair(
+        &realm,
+        PlanningPairSlot::SeatB,
+        kontor_runtime::planning_pair::MandatoryMemberField::Route,
+        "Readiness plan",
+        "pp-readiness-invoke",
+    )
+    .await;
+    let run = realm.stored_run(&pair);
+    let durable = || {
+        let seats = world.daemon.state().with_store(|store| {
+            store
+                .list_consultation_seats(realm.project_id, run.id)
+                .expect("the seats read")
+        });
+        let receipts: i64 = rusqlite::Connection::open(world.directory.path().join("kontor.db"))
+            .expect("the realm database opens")
+            .query_row("SELECT count(*) FROM command_receipts", [], |row| {
+                row.get(0)
+            })
+            .expect("the receipts count");
+        (
+            realm.stored_run(&pair).revision,
+            receipts,
+            seats,
+            realm.known_claim(&pair, pair.seat_a),
+            realm.known_claim(&pair, pair.seat_b),
+        )
+    };
+    let before = durable();
+    let frozen = || {
+        let record: kontor_core::planning_pair::PlanningPairRecord = world
+            .daemon
+            .state()
+            .with_store(|store| store.latest_planning_pair_record(realm.project_id, run.id))
+            .expect("the record reads")
+            .expect("the pair's record")
+            .record
+            .deserialize()
+            .expect("a planning pair record");
+        kontor_core::planning_pair::PlanningPairMembers::freeze(
+            record.placement_hash,
+            record.members,
+        )
+        .expect("the frozen members")
+    };
+    let placement = frozen();
+    let contexts = world.fake.planning_pair_launch_contexts();
+    let context = |seat: SeatBindingId| contexts.get(&seat).cloned().expect("a frozen context");
+    let (context_a, context_b) = (context(pair.seat_a), context(pair.seat_b));
+    let claim_a = realm
+        .known_claim(&pair, pair.seat_a)
+        .expect("seat A's claim");
+    let claim_b = realm
+        .known_claim(&pair, pair.seat_b)
+        .expect("seat B's claim");
+    world.fake.take_calls();
+
+    let policy_only = PlanningPairReadiness::policy_only(Some(&placement));
+    assert!(
+        policy_only
+            .members
+            .iter()
+            .all(|member| member.plane == MemberPlane::Unobserved)
+    );
+    let routes: Vec<PlanningPairMemberRoute> = placement
+        .members()
+        .iter()
+        .map(|member| PlanningPairMemberRoute {
+            slot: member.slot,
+            model_rung: member.route.clone(),
+        })
+        .collect();
+    let answer = world.fake.validate_planning_pair_member_surface(&routes);
+    let readback =
+        |context: &kontor_runtime::planning_pair::PlanningPairLaunchContext,
+         claim: &kontor_core::repository::StoredPlanningPairKnownNative| {
+            PlanningPairMemberReconcileRequest {
+                context: context.clone(),
+                identity: claim.identity.clone(),
+                requested_at: kontor_api::now(),
+            }
+        };
+    let readback_a = world
+        .fake
+        .reconcile_planning_pair_member(&readback(&context_a, &claim_a))
+        .await
+        .expect("seat A is read back");
+    let readback_b = world
+        .fake
+        .reconcile_planning_pair_member(&readback(&context_b, &claim_b))
+        .await
+        .expect("seat B is read back");
+    let readiness = PlanningPairReadiness::assess(
+        Some(&placement),
+        &answer,
+        [
+            Some(MemberEvidence {
+                context: &context_a,
+                known: Some(&claim_a),
+                readback: Some(&readback_a),
+            }),
+            Some(MemberEvidence {
+                context: &context_b,
+                known: Some(&claim_b),
+                readback: Some(&readback_b),
+            }),
+        ],
+    );
+    assert_eq!(
+        readiness.policy,
+        PolicyPlane::Selected {
+            placement_hash: placement.placement_hash().clone(),
+            members: placement.members().to_vec(),
+        }
+    );
+    assert_eq!(
+        readiness.caller,
+        CallerPlane::Unsupported {
+            gap: CallerGap::NoAuthenticatedCallerGeneration,
+        },
+        "a realm caller credential is not an authenticated generation at this seam"
+    );
+    assert_eq!(
+        readiness.members[0].plane,
+        MemberPlane::Matched {
+            surface: "fake.runtime".to_owned(),
+        }
+    );
+    assert_eq!(
+        readiness.members[1].plane,
+        MemberPlane::Unqualified {
+            reason: MemberReadinessGap::RouteUnobserved,
+        }
+    );
+    assert!(!readiness.every_plane_established());
+    assert!(!readiness.native_actuation_authorized());
+    assert_eq!(readiness.document()["native_actuation_authorized"], false);
+    let calls = world.fake.take_calls();
+    assert_eq!(
+        member_effects(&calls),
+        vec![
+            AdapterCall::ReconcilePlanningPairMember(pair.seat_a),
+            AdapterCall::ReconcilePlanningPairMember(pair.seat_b),
+        ],
+        "only readbacks: no launch, retirement or archive"
+    );
+    assert_eq!(durable(), before, "the diagnostic wrote nothing");
+
+    activate_fleet_policy(world, &pair_fleet_yaml("cursor-grok"));
+    let after = PlanningPairReadiness::policy_only(Some(&frozen()));
+    assert_eq!(
+        after.policy, policy_only.policy,
+        "the frozen pair's policy is its own placement, never a second allocation"
+    );
+}

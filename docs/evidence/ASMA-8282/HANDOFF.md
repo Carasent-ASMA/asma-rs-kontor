@@ -16,6 +16,7 @@
 - Frontier B (2026-10-02): the opt-in `planning_pair_caller` source profile, built on `8b6ee064` (tree `aef842f6`) after verify and audit 6f passed with no findings. It covers the registry profile and explicit selection, plus tests and docs. No composition and no daemon source change. See "Frontier B" below.
 - Frontier A (2026-10-02): the same-native member reconcile seam, at source level only. It is built on `e7a9404a` (tree `62377b57`) after verify and audit passed. It covers an opt-in runtime port that is typed unsupported on every real runtime, a hypothetical fake, the second-seat-only and both-routes fixtures, and docs. The daemon recovery operation's authority is returned to the LSA. See "Frontier A" below.
 - Frontier A operation (2026-10-02): the frozen caller's same-native member recovery, under the LSA decision. It is built on `75f253cb` (tree `d9e728c7`) after its bounded verify and audit passed. It covers the operation, the forward migration 0123 with the pair's known-native claim, tests and docs, at source and fixture level only. See "Frontier A: the frozen caller's same-native member recovery" below.
+- Frontier C, slice C-M (2026-10-02): the module readiness diagnostic, a source seam only, under the LSA's frontier C disposition (SHA-256 `084b7ca2…978b`). It is built on `98e5868f` (tree `9d150feb`) after verify and audit passed. It covers the shared member rule, the three-plane readiness seam and its tests; nothing exposes it yet. See "Frontier C, slice C-M" below.
 - The untracked directory `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` is disclosed e2e test evidence from slice one's workspace run. It is not part of any commit and is preserved untouched. At slice four it holds 53 files, which hash to `4ff4c1bc5cbe7c7ce505442d50827f91d64b0bb308cd18183a39d42339e49e87`: each file's SHA-256 in sorted path order, hashed again. Its files were last written at 2026-10-02 00:25 CEST. That run was not this writing session's (its only workspace run was on 2026-09-29), and slice four did not touch them. The untracked `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md` and `CLAUDE.md` are adapter installations owned by others, and are likewise untouched and uncommitted.
 
 This record is implementation evidence and a handoff. It is not verification. It
@@ -1331,6 +1332,114 @@ survived as a redundant guard.
 - **No receipt for an adverse recovery.** A refused recovery that withdrew a qualification records no receipt; the run revision and the seat show the change.
 - **Per-member qualification is not atomic.** This is unchanged and tested. No contract unbinds both members. The first-blocker route diagnostic is unchanged.
 - **Ancestors.** The Committee replacing recovery and every Advisor and Committee route, golden, receipt, authentication and generation rule are unchanged.
+
+## Frontier C, slice C-M: the module readiness diagnostic (2026-10-02)
+
+The LSA's frontier C disposition is
+`/tmp/asma-orchestration-kickoff-20260927/task004-frontier-c-disposition-20261002.md`. Its SHA-256
+is `084b7ca2f1029d8fecfddc60e2b5ad50b671d5c45331e40b6f6870f84f0a978b`, and it was read in full. TPM
+authorized the bounded C-M source continuation. It starts at the exact
+`98e5868f2b8837d7e16ec1c6628a80ed3e85c1fb` (tree `9d150feb4837271278466fcfdf7fe86640161444`), after
+verify and audit passed, in the unchanged 8282 TSW `wks_8062e92dee85f5b3` and session `3538e45e`.
+
+**Ownership readback before any write.**
+- Branch `feat/ASMA-8282-qualify-shared-advisor-and-committee-protocols` is at the exact head with no tracked change.
+- `.agents/`, `.asma/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md` and `docs/evidence/KON-MVP-18/run-4d1b209d3fa9ea8e/` are untracked, others' or historical, and untouched (aggregate `4ff4c1bc…9e87`).
+- CLI owner 462 owns the root CLI (C-P). Nothing here writes its checkout or `_tools/asma-cli`.
+- No native session, workspace, seat, placement, credential, provider, network or daemon effect was performed or needed. Every observation is the fake runtime's or a recorded Paseo fixture's.
+- Capacity was not read: this slice runs no probe.
+
+### What is implemented
+
+| Element | Source | What it does |
+| --- | --- | --- |
+| One shared member rule | `kontor-runtime` `planning_pair.rs` `qualify_member_readback` | The daemon's private qualification rule, moved without change. A member-surface observation must show correlation, route and the closed tool restriction each `Matched`, and exactly the requested fleet provenance observed. The daemon's launch and recovery now call this one rule, so readiness cannot drift from the authority it describes. |
+| Readiness seam | `planning_pair.rs` `PlanningPairReadiness`, `PolicyPlane`, `CallerPlane`, `MemberPlane`, `MemberReadinessGap`, `MemberEvidence` | Three planes kept apart. **Policy:** the frozen `PlanningPairMembers` (placement hash and members), or `Blocked`. **Caller:** always `Unsupported { no_authenticated_caller_generation }`; the seam takes no caller input at all. **Members:** `RouteUnsupported`, `RouteUnassessed` (behind the first blocker), `Unobserved`, `Unqualified { reason }` or `Matched { surface }`. `policy_only` serves a direct consumer that holds only the allocator's placement. `assess` adds the runtime's pre-effect route answer and, per member, the frozen context, the kept known-native claim and a trusted readback. |
+| Diagnostic document | `PlanningPairReadiness::document` | The planes, `every_plane_established` (never true, because the caller plane cannot be established) and `native_actuation_authorized: false` (a `const fn` that is always false). There is no `Deserialize`, receipt, credential, `launchable` or verdict field. |
+| Daemon | `applications/planning_pair.rs` | Calls the shared rule; nothing else changed. |
+
+**Member checks.** The member checks are the existing mandatory ones, now applied through the
+shared rule:
+- the frozen context must be this placement's member: slot, route, vendor and placement hash;
+- a known claim must exist and be the same run, SeatBinding, occupancy generation and placement;
+- the readback must not be a create, and must be the same session (runtime kind, host, runtime generation, native id) with the same provider conversation when one is recorded;
+- correlation, route and closed-tool fields must match;
+- the requested provenance must be observed.
+
+Account ownership is not part of qualification; it stays unknown where unsupported. A label or
+`providerOptionsApplied` proves nothing.
+
+**What it never does.** Building a readiness is read-only. It creates no run, receipt row,
+credential, SeatBinding, configuration, native session or claim. It never re-reads an
+activation, never allocates a second time, and never treats a CLI-supplied native id as a claim.
+
+**Unchanged.** The planning pair local operation (`kontor_fleet_policy_resolve` `--planning-pair`),
+the old recovery operations, the unserved pair recovery, the member's three tools and the caller's
+four are all unchanged.
+
+### Capability gaps and source dependencies, returned to the LSA through TPM
+
+1. **Exposing readiness to the root consumer.** No direct consumer emits this document yet. The accepted local operation's 200 answer is pinned to exactly four keys, "placement evidence only" (`kontor-cli/tests/local_resolve.rs` `a_planning_pair_is_one_placement_through_the_shared_reader`), and the disposition forbids another local operation. A CLI-visible readiness therefore needs an LSA decision across the module/CLI boundary:
+   - an additive key in that pinned answer; or
+   - the root consumer stating the planes itself, as its schema 2 `resolution_succeeded` / `native_actuation_authorized: false` already plans.
+   C-M changes neither.
+2. **Authenticated caller generation at a direct consumer.** None exists, so the caller plane is permanently unsupported there. The next action is a supported authenticated-generation API at the service boundary, not a Python or runtime copy of the daemon's authentication, a local credential registry, or a daemon reading the direct-mode fallback.
+3. **Effective closed-tool restriction and readback on real Paseo routes.** Still unsupported under the existing capability owner. Every real route reads as `RouteUnsupported` before any effect.
+4. **Direct actuation.** This would need one shared invocation, store and receipt implementation extracted for direct use, not a second authority beside the daemon service. It is not part of C-M.
+
+### Tests
+
+| Suite | Test | What it proves |
+| --- | --- | --- |
+| `kontor-runtime` unit (4 new) | `a_policy_selection_alone_is_never_caller_or_member_readiness` | `Selected` with the exact placement; caller unsupported; both members unobserved; not established; nothing authorized; the document's planes, with no `launchable`, `authorized`, `verdict`, `receipt` or `credential` key. `Blocked` when nothing is placed |
+| | `a_fully_matched_hypothetical_pair_still_authorizes_nothing` | Both members matched on `fake.runtime`, yet the caller is unsupported, the planes are not established and nothing is authorized |
+| | `every_member_check_holds_a_readback_to_the_exact_known_session` | 19 seat B cases, each its own gap while seat A stays matched: another route, vendor or placement; no known native; a claim of another generation, seat, run or placement; a created session; another native id, runtime generation or provider conversation; no member surface; unobserved correlation, route or closed tools; unconfirmed or different provenance; no readback (unobserved) |
+| | `a_route_answer_is_attributed_to_its_first_blocker_only` | Seat A blocked leaves seat B unassessed; seat B blocked leaves seat A assessed; an uncomposed runtime refuses both as `not_composed`; an answer naming neither provider assesses neither |
+| Paseo contract (1 new) | `every_real_route_reads_as_a_route_refusal_in_the_readiness_seam` | Claude, Codex, Cursor and OpenCode first routes, with seat MCP and a member-enforcing guard, read as `RouteUnsupported` with their gap and an unassessed peer. Caller unsupported, nothing authorized, no plane call, no composed file, no guard run |
+| Daemon loopback (1 new; 36 in the module) | `a_frozen_pairs_readiness_keeps_its_three_planes_apart_and_writes_nothing` | A real frozen pair, read from its immutable record, daemon-derived contexts, kept claims and hypothetical fake readbacks. Policy is the frozen placement; the caller is unsupported despite the realm's caller credential; seat A matched, seat B `route_unobserved`; nothing authorized. Only two readback calls; the run revision, receipts, seats and both claims are unchanged. After another fleet policy is activated, the frozen pair's policy plane is the same placement |
+| `kontor-cli` (1 new) | `a_planning_pair_request_carries_no_caller_or_native_authority` | A caller seat, caller generation, labels, a member generation and a member native id are each refused by the closed schema before anything is read. A valid answer is still exactly the four placement keys |
+
+### Frontier C, C-M gates
+
+- `cargo fmt -p` and `cargo clippy --all-targets -D warnings` for `kontor-runtime`, `kontor-daemon`, `kontor-runtime-paseo`, `kontor-cli`, `kontor-runtime-ao` and `kontor-runtime-codex`: clean.
+- Test counts:
+  - `kontor-runtime` 88;
+  - Paseo contract 293;
+  - `kontor-cli` 34;
+  - daemon loopback `planning_pair::` 36;
+  - loopback consultation, committee, advisor, recover, reroute and release filters: 63;
+  - `mcp_journey` 2;
+  - contract `runtime_adapter` and `mcp_parity`: 64.
+- Not one failure. The store, API, MCP registry and migrations are unchanged, so their suites and the broad 1764-test run were not repeated.
+
+### Frontier C, C-M mutation checks (seeded and run by this seat)
+
+The pre-mutation SHA-256 of `kontor-runtime/src/planning_pair.rs` was
+`f85fc0737408d514463b7fea1bb4f3dd0e7cbb66175fdcec1ca0b8e94e3099f9`, confirmed equal after every
+restore. Each mutant was reseeded on its own from clean source, and every one is a producer
+site. Earlier survivors and fake-fidelity rows above stay as history.
+
+| Id | Label | Mutant | Listed | Red (passed of listed), then green |
+| --- | --- | --- | --- | --- |
+| C-MUT-01 | never authority | Native actuation reported as authorized | 7 | 4/7: the policy-only, matched-pair and member-check tests failed. 7/7 |
+| C-MUT-02 | caller plane | Every plane counts as established without the caller | 7 | 6/7. **Only** the matched-pair test failed. 7/7 |
+| C-MUT-03 | current generation | A claim of another occupancy generation is accepted | 7 | 6/7: "a claim of another generation". 7/7 |
+| C-MUT-04 | exact native session | The session is compared by native id only | 7 | 6/7: "another runtime generation". 7/7 |
+| C-MUT-05 | never a create | A created session reads as the known one | 7 | 6/7: "a created session". 7/7 |
+| C-MUT-06 | provider conversation | Another provider conversation is accepted | 7 | 6/7: "another provider conversation". 7/7 |
+| C-MUT-07 | frozen route | A context on another route counts as this placement's member | 7 | 6/7: "another route". 7/7 |
+| C-MUT-08 | first-blocker attribution | A member after the first blocker is assessed | 7 | 6/7. **Only** the attribution test failed. 7/7 |
+| C-MUT-09 | uncomposed runtime | A runtime with no member surface leaves its routes assessed | 7 | 6/7: the attribution test. 7/7 |
+| C-MUT-10 | shared rule, provenance (daemon) | The shared rule accepts an unconfirmed provenance | 1 | 0/1: the daemon's provenance-readback test answered 200. 1/1 |
+| C-MUT-11 | shared rule, closed tools (daemon) | The shared rule accepts an unobserved closed tool restriction | 1 | 0/1: the daemon's tool-restriction test answered 200. 1/1 |
+| C-MUT-12 | shared rule, closed tools (seam) | As C-MUT-11, against the seam | 7 | 6/7: "ToolRestrictions". 7/7 |
+
+### Limits kept accurate
+
+- **Diagnostic only.** Nothing here authorizes, invokes, freezes, binds, launches or recovers. Every matched member is on the hypothetical fake. Every real Paseo route stays refused before any effect, and the readiness says so.
+- **No consumer yet.** No CLI or daemon output emits the document (gap 1). The caller plane has no authenticated variant, because nothing at this seam can establish one (gap 2).
+- **First-blocker limit.** Route attribution follows the runtime's first-blocker answer, so a member behind the first blocker is honestly `RouteUnassessed`, not assumed composed.
+- **Not closed.** Neither TASK-004 nor TASK-002 is closed. TASK-005 and TASK-006 are not admitted. ASMA-8113 and 8114 identity compatibility awaits Igor's reviewer assignment. R3 stays bound to root `8ba` and module `419`, and offline installation awaits Igor's authorization.
 
 ## Remaining capability gaps after slice four (current)
 

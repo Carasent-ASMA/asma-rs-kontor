@@ -257,6 +257,34 @@ Paseo, AO and Codex keep that default, so no real route can reconcile a
 member. Only the fake runtime implements the seam, as a hypothetical surface
 that observes every field.
 
+A consumer can read a pair's readiness through one effect-free seam,
+`kontor_runtime::planning_pair::PlanningPairReadiness`. It keeps three planes
+apart and authorizes nothing:
+
+- **Policy.** The shared allocator's selection as frozen: a placement hash
+  and its two members, or blocked. A selection is never authority to invoke,
+  freeze, bind or launch.
+- **Caller.** Always unsupported at this seam
+  (`no_authenticated_caller_generation`). Only the authenticated service
+  boundary establishes the exact frozen caller at its current generation, and
+  the seam takes no caller input. A CLI argument, label, prompt, receipt echo,
+  account alias, self-report or JSON object never establishes it.
+- **Members.** Each member is assessed from the runtime's pre-effect route
+  answer, its frozen context, its known-native claim and a trusted readback.
+  The rule is the one the daemon holds a member to, now shared as
+  `qualify_member_readback`. The result is a route refusal (the first blocker
+  only, its peer unassessed), unobserved, a typed unqualified gap, or matched
+  on the surface named. A match on the fake is hypothetical
+  source-contract evidence.
+
+`native_actuation_authorized` is always false, and the planes are never all
+established, because the caller plane cannot be. Building a readiness creates
+no run, receipt, credential, binding, configuration, claim or native session,
+and its document is not a receipt. The planning pair local operation is
+unchanged: its answer is still exactly the placement. Exposing the readiness
+document to a direct consumer would change that pinned answer, so it is a
+decision for the LSA.
+
 None of this is a live qualification. The Committee seat recovery route,
 which replaces a native, is unchanged and cannot reach a planning pair member:
 it finds no such Committee run.
