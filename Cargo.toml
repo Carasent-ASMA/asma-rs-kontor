@@ -16,6 +16,7 @@ members = [
     "crates/kontor-jira",
     "crates/kontor-api",
     "crates/kontor-daemon",
+    "crates/kontor-bootstrap",
     "crates/kontor-cli",
     "crates/kontor-mcp",
     "crates/kontor-profiles",

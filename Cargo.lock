@@ -3137,6 +3137,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "kontor-bootstrap"
+version = "0.2.1"
+dependencies = [
+ "assert_cmd",
+ "clap",
+ "fs4",
+ "hex",
+ "predicates",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "toml_edit 0.25.13+spec-1.1.0",
+]
+
+[[package]]
 name = "kontor-calendar"
 version = "0.2.1"
 dependencies = [

@@ -1,0 +1,27 @@
+[package]
+name = "kontor-bootstrap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Local, agent-runnable bootstrap of one coherent Kontor artifact set and its MCP client entries."
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { workspace = true }
+fs4 = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+toml_edit = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }
