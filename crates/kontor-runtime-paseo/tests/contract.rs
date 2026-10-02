@@ -3287,6 +3287,76 @@ async fn preparation_refuses_a_task_catalog_branch_bound_to_the_epic_key() {
 }
 
 #[tokio::test]
+async fn preparation_refuses_a_catalog_branch_bound_to_a_different_task_key() {
+    // The compatibility scope may carry the ticket's stored key and the
+    // plane's configured key. The slug selects one of them, and the actual
+    // branch must carry that same key: mixing the two is refused.
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-7755-other-task";
+    let (runtime_config, worktree_root, worktree) =
+        managed_catalog_module_worktree(&repository, "asma-8062", branch);
+    let (adapter, recorded) =
+        adapter_with_prepared_project(runtime_config, "cmd-task-two-keys").await;
+
+    let refused = adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-8062",
+            worktree_root,
+            &worktree,
+        ))
+        .await
+        .expect_err("a slug and branch naming different task keys must be refused");
+    assert_eq!(
+        refused,
+        RuntimeError::WorkspacePreparationFailed {
+            rule: "branch_binding_mismatch: the branch key is not the confirmed tracker key of the epic or task it serves"
+        }
+    );
+    assert_eq!(recorded.count("workspace create"), 0);
+}
+
+#[tokio::test]
+async fn preparation_accepts_a_catalog_checkout_on_the_configured_task_key() {
+    // The same ticket spelled with the plane's configured key in both fields
+    // is one coherent identity, and the checkout is attested.
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-7755-other-task";
+    let (runtime_config, worktree_root, worktree) =
+        managed_catalog_module_worktree(&repository, "asma-7755", branch);
+    let readback = workspace_readback_at(WORKSPACE_LIST_ONE, &worktree_root, branch);
+
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    let recorded = Arc::new(
+        recorded
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", readback),
+    );
+    let adapter = PaseoAdapter::new(
+        runtime_config,
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a fresh adapter");
+    adapter
+        .prepare_project("cmd-catalog-configured-task", &project_name())
+        .await
+        .expect("the epic project is prepared");
+
+    adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-8062",
+            worktree_root,
+            &worktree,
+        ))
+        .await
+        .expect("a checkout whose slug and branch share the configured task key is attested");
+    assert_eq!(recorded.count("workspace create"), 1);
+}
+
+#[tokio::test]
 async fn preparation_refuses_an_epic_catalog_slug_for_a_task_checkout() {
     // The inverse mismatch: the containing epic's key may not name the slug of
     // a checkout that serves one of its tasks.

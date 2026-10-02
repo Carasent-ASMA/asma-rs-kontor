@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use kontor_core::branch::{BranchName, TrackerKey};
+use kontor_core::branch::{BranchName, BranchRefusal, TrackerKey};
 use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
 use kontor_runtime::scope::ExecutionScope;
 use kontor_runtime::workspace::WorkspaceRoot;
@@ -26,10 +26,13 @@ use kontor_runtime::workspace::WorkspaceRoot;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedBranchBinding {
     confirmed: Vec<TrackerKey>,
-    /// The confirmed task keys the scopes name. When non-empty, the catalog
-    /// worktree slug and its actual branch must carry one of these; an epic key
-    /// cannot stand in for the task a checkout serves.
+    /// The confirmed task keys the scopes name. A catalog checkout must bind
+    /// its slug and its actual branch to one shared key from this set.
     tasks: Vec<TrackerKey>,
+    /// Whether any scope names a ticket at all, even one whose key is absent or
+    /// not canonical. A task-bearing scope may never fall back to the
+    /// epic-level binding: a missing task key is a refusal, not an epic.
+    task_present: bool,
 }
 
 impl ManagedBranchBinding {
@@ -42,24 +45,30 @@ impl ManagedBranchBinding {
     pub(crate) fn from_scopes<'a>(scopes: impl IntoIterator<Item = &'a ExecutionScope>) -> Self {
         let mut confirmed: Vec<TrackerKey> = Vec::with_capacity(4);
         let mut tasks: Vec<TrackerKey> = Vec::with_capacity(2);
+        let mut task_present = false;
         for scope in scopes {
             if let Ok(key) = TrackerKey::from_external(&scope.epic.external_epic_key)
                 && !confirmed.contains(&key)
             {
                 confirmed.push(key);
             }
-            if let Some(task) = scope.task.as_ref()
-                && let Ok(key) = TrackerKey::from_external(&task.external_issue_key)
-            {
-                if !confirmed.contains(&key) {
-                    confirmed.push(key.clone());
-                }
-                if !tasks.contains(&key) {
-                    tasks.push(key);
+            if let Some(task) = scope.task.as_ref() {
+                task_present = true;
+                if let Ok(key) = TrackerKey::from_external(&task.external_issue_key) {
+                    if !confirmed.contains(&key) {
+                        confirmed.push(key.clone());
+                    }
+                    if !tasks.contains(&key) {
+                        tasks.push(key);
+                    }
                 }
             }
         }
-        Self { confirmed, tasks }
+        Self {
+            confirmed,
+            tasks,
+            task_present,
+        }
     }
 
     /// Refuse to create `branch` unless it is canonical and bound to this work.
@@ -85,30 +94,43 @@ impl ManagedBranchBinding {
             .any(|key| key.as_str().to_ascii_lowercase() == slug)
     }
 
-    /// Whether `slug` is the exact lowercase worktree slug of one confirmed
-    /// task key the scopes name.
-    fn contains_task_worktree_slug(&self, slug: &str) -> bool {
-        self.tasks
-            .iter()
-            .any(|key| key.as_str().to_ascii_lowercase() == slug)
-    }
-
     /// Attest the two identity fields of an ASMA CLI catalog checkout: the
     /// worktree slug and the actual canonical branch.
     ///
-    /// When the scope names a task, both must carry exactly a confirmed task
-    /// key: a task checkout may not be named or branched after the containing
-    /// epic, and an epic-keyed checkout may not carry a task's work. An
-    /// epic-level scope keeps its epic-or-task binding, which is what lets
-    /// legitimately approved epic and milestone branches be adopted in their
-    /// own integration contexts.
+    /// When the scope names a task, the slug selects exactly one confirmed task
+    /// key and the actual branch must carry that same key: a task checkout may
+    /// not mix two compatibility spellings, may not be named or branched after
+    /// the containing epic, and may not be adopted when the task key is absent
+    /// or non-canonical. An epic-level scope keeps its epic-or-task binding,
+    /// which is what lets legitimately approved epic and milestone branches be
+    /// adopted in their own integration contexts.
     fn ensure_catalog_identity(&self, slug: &str, branch: &str) -> RuntimeResult<()> {
-        let (slug_bound, bound) = if self.tasks.is_empty() {
-            (self.contains_asma_worktree_slug(slug), &self.confirmed)
-        } else {
-            (self.contains_task_worktree_slug(slug), &self.tasks)
-        };
-        if !slug_bound {
+        if self.task_present {
+            let Some(selected) = self
+                .tasks
+                .iter()
+                .find(|key| key.as_str().to_ascii_lowercase() == slug)
+            else {
+                return Err(RuntimeError::WorkspacePreparationFailed {
+                    rule: if self.tasks.is_empty() {
+                        BranchRefusal::BindingUnconfirmed.rule()
+                    } else {
+                        "the managed catalog worktree slug is not the confirmed task key"
+                    },
+                });
+            };
+            let parsed = BranchName::parse(branch).map_err(|refusal| {
+                RuntimeError::WorkspacePreparationFailed {
+                    rule: refusal.rule(),
+                }
+            })?;
+            return parsed
+                .ensure_bound_to(std::iter::once(selected))
+                .map_err(|refusal| RuntimeError::WorkspacePreparationFailed {
+                    rule: refusal.rule(),
+                });
+        }
+        if !self.contains_asma_worktree_slug(slug) {
             return Err(RuntimeError::WorkspacePreparationFailed {
                 rule: "the managed catalog worktree slug is not the confirmed task key",
             });
@@ -118,11 +140,11 @@ impl ManagedBranchBinding {
                 rule: refusal.rule(),
             }
         })?;
-        parsed
-            .ensure_bound_to(bound)
-            .map_err(|refusal| RuntimeError::WorkspacePreparationFailed {
+        parsed.ensure_bound_to(&self.confirmed).map_err(|refusal| {
+            RuntimeError::WorkspacePreparationFailed {
                 rule: refusal.rule(),
-            })
+            }
+        })
     }
 }
 
@@ -428,11 +450,14 @@ fn git(cwd: &Path) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kontor_core::id::{ExternalId, ExternalName, MiniProjectId, TaskId};
+    use kontor_runtime::scope::{EpicScope, TaskScope};
 
     fn binding(key: &str) -> ManagedBranchBinding {
         ManagedBranchBinding {
             confirmed: vec![TrackerKey::parse(key).expect("a canonical key")],
             tasks: Vec::new(),
+            task_present: false,
         }
     }
 
@@ -442,7 +467,27 @@ mod tests {
         ManagedBranchBinding {
             confirmed: vec![epic, task.clone()],
             tasks: vec![task],
+            task_present: true,
         }
+    }
+
+    /// One real task scope as the plane receives it: the epic key and the
+    /// ticket's own external spelling.
+    fn task_scope(epic_key: &str, task_key: &str) -> ExecutionScope {
+        ExecutionScope::for_task(
+            EpicScope {
+                mini_project_id: MiniProjectId::generate(),
+                external_epic_key: ExternalId::parse(epic_key).expect("an epic key"),
+                short_title: ExternalName::parse("Epic").expect("a title"),
+            },
+            TaskScope {
+                task_id: TaskId::generate(),
+                external_issue_key: ExternalId::parse(task_key).expect("a task key"),
+                short_code: None,
+                worktree: WorkspaceRoot::parse("/fixture/.worktrees/asma-8114/asma-rs-kontor")
+                    .expect("an absolute worktree"),
+            },
+        )
     }
 
     #[test]
@@ -507,6 +552,65 @@ mod tests {
             Err(RuntimeError::WorkspacePreparationFailed { rule })
                 if rule.starts_with("branch_type_unknown")
         ));
+    }
+
+    /// The two compatibility spellings of one ticket must not be mixed: the
+    /// slug selects one confirmed task key, and the actual branch must carry
+    /// that same key.
+    #[test]
+    fn a_catalog_checkout_binds_its_slug_and_branch_to_one_shared_task_key() {
+        let binding = ManagedBranchBinding::from_scopes([
+            &task_scope("ASMA-7744", "ASMA-8062"),
+            &task_scope("ASMA-7744", "ASMA-7755"),
+        ]);
+        assert_eq!(
+            binding.ensure_catalog_identity("asma-8062", "feat/ASMA-8062-native-naming"),
+            Ok(())
+        );
+        assert_eq!(
+            binding.ensure_catalog_identity("asma-7755", "feat/ASMA-7755-other-task"),
+            Ok(())
+        );
+        assert!(matches!(
+            binding.ensure_catalog_identity("asma-8062", "feat/ASMA-7755-other-task"),
+            Err(RuntimeError::WorkspacePreparationFailed { rule })
+                if rule.starts_with("branch_binding_mismatch")
+        ));
+        assert!(matches!(
+            binding.ensure_catalog_identity("asma-7755", "feat/ASMA-8062-native-naming"),
+            Err(RuntimeError::WorkspacePreparationFailed { rule })
+                if rule.starts_with("branch_binding_mismatch")
+        ));
+    }
+
+    /// A scope that names a ticket but carries no canonical task key is not an
+    /// epic-level scope: its catalog checkout must refuse, while the true
+    /// epic-level and branch-encoded paths keep their existing binding.
+    #[test]
+    fn a_task_scope_without_a_confirmed_task_key_cannot_be_treated_as_epic_level() {
+        let binding =
+            ManagedBranchBinding::from_scopes([&task_scope("ASMA-7744", "legacy-ticket")]);
+        assert!(matches!(
+            binding.ensure_catalog_identity("asma-7744", "feat/ASMA-7744-epic-integration"),
+            Err(RuntimeError::WorkspacePreparationFailed { rule })
+                if rule.starts_with("binding_unconfirmed")
+        ));
+        assert_eq!(
+            binding.ensure_creatable("feat/ASMA-7744-epic-integration"),
+            Ok(()),
+            "the branch-encoded creation path keeps its epic-or-task binding"
+        );
+        let epic_level =
+            ManagedBranchBinding::from_scopes([&ExecutionScope::for_epic(EpicScope {
+                mini_project_id: MiniProjectId::generate(),
+                external_epic_key: ExternalId::parse("ASMA-7744").expect("an epic key"),
+                short_title: ExternalName::parse("Epic").expect("a title"),
+            })]);
+        assert_eq!(
+            epic_level.ensure_catalog_identity("asma-7744", "feat/ASMA-7744-epic-integration"),
+            Ok(()),
+            "a true epic-level scope keeps its integration binding"
+        );
     }
 
     #[test]
