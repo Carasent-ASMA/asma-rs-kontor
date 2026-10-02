@@ -329,6 +329,7 @@ fn managed_worktree(
 
 fn managed_catalog_module_worktree(
     repository: &tempfile::TempDir,
+    slug: &str,
     branch: &str,
 ) -> (PaseoConfig, WorkspaceRoot, std::path::PathBuf) {
     let module_source = tempfile::tempdir().expect("a temporary module source");
@@ -375,7 +376,9 @@ fn managed_catalog_module_worktree(
 
     let path = repository
         .path()
-        .join(".worktrees/asma-8062/asma-rs-kontor");
+        .join(".worktrees")
+        .join(slug)
+        .join("asma-rs-kontor");
     std::fs::create_dir_all(path.parent().expect("the worktree has a parent"))
         .expect("the fixture worktree parent is created");
     let worktree = std::process::Command::new("git")
@@ -3158,7 +3161,7 @@ async fn preparation_accepts_an_asma_managed_catalog_module_worktree() {
     let repository = temporary_repository();
     let branch = "feat/ASMA-8062-native-naming";
     let (runtime_config, worktree_root, worktree) =
-        managed_catalog_module_worktree(&repository, branch);
+        managed_catalog_module_worktree(&repository, "asma-8062", branch);
     let readback = workspace_readback_at(WORKSPACE_LIST_ONE, &worktree_root, branch);
 
     let recorded = daemon();
@@ -3208,7 +3211,8 @@ async fn preparation_accepts_an_asma_managed_catalog_module_worktree() {
 async fn preparation_refuses_a_catalog_module_worktree_on_an_unrelated_branch() {
     let repository = temporary_repository();
     let branch = "feat/ASMA-9999-unrelated";
-    let (runtime_config, worktree_root, _) = managed_catalog_module_worktree(&repository, branch);
+    let (runtime_config, worktree_root, _) =
+        managed_catalog_module_worktree(&repository, "asma-8062", branch);
 
     let recorded = Arc::new(daemon());
     let adapter = PaseoAdapter::new(
@@ -3248,6 +3252,109 @@ async fn preparation_refuses_a_catalog_module_worktree_on_an_unrelated_branch() 
         RuntimeError::WorkspacePreparationFailed {
             rule: "branch_binding_mismatch: the branch key is not the confirmed tracker key of the epic or task it serves"
         }
+    );
+    assert_eq!(recorded.count("workspace create"), 0);
+}
+
+#[tokio::test]
+async fn preparation_refuses_a_task_catalog_branch_bound_to_the_epic_key() {
+    // The defect: slug and branch were each checked against the whole confirmed
+    // set, so a task-owned catalog checkout could ride the containing epic's
+    // branch. A task checkout binds both fields to the task key.
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-7744-epic-integration";
+    let (runtime_config, worktree_root, worktree) =
+        managed_catalog_module_worktree(&repository, "asma-8062", branch);
+    let (adapter, recorded) =
+        adapter_with_prepared_project(runtime_config, "cmd-task-epic-branch").await;
+
+    let refused = adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-8062",
+            worktree_root,
+            &worktree,
+        ))
+        .await
+        .expect_err("a task checkout may not ride the containing epic's branch");
+    assert_eq!(
+        refused,
+        RuntimeError::WorkspacePreparationFailed {
+            rule: "branch_binding_mismatch: the branch key is not the confirmed tracker key of the epic or task it serves"
+        }
+    );
+    assert_eq!(recorded.count("workspace create"), 0);
+}
+
+#[tokio::test]
+async fn preparation_refuses_an_epic_catalog_slug_for_a_task_checkout() {
+    // The inverse mismatch: the containing epic's key may not name the slug of
+    // a checkout that serves one of its tasks.
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-8062-native-naming";
+    let (runtime_config, worktree_root, worktree) =
+        managed_catalog_module_worktree(&repository, "asma-7744", branch);
+    let (adapter, recorded) =
+        adapter_with_prepared_project(runtime_config, "cmd-epic-slug-task").await;
+
+    let refused = adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-8062",
+            worktree_root,
+            &worktree,
+        ))
+        .await
+        .expect_err("a task checkout may not be named after the containing epic");
+    assert_eq!(
+        refused,
+        RuntimeError::WorkspacePreparationFailed {
+            rule: "the managed catalog worktree slug is not the confirmed task key"
+        }
+    );
+    assert_eq!(recorded.count("workspace create"), 0);
+}
+
+#[tokio::test]
+async fn preparation_refuses_an_absent_catalog_module_worktree() {
+    // The ASMA CLI owns catalog checkout creation. An absent two-segment
+    // worktree is refused rather than minted under a guessed branch.
+    let repository = temporary_repository();
+    let path = repository
+        .path()
+        .join(".worktrees/asma-8062/asma-rs-kontor");
+    let mut runtime_config = config();
+    runtime_config.scope.project_root_cwd = WorkspaceRoot::parse(
+        repository
+            .path()
+            .to_str()
+            .expect("the temporary path is UTF-8"),
+    )
+    .expect("an absolute project root");
+    let worktree_root = WorkspaceRoot::parse(path.to_str().expect("the temporary path is UTF-8"))
+        .expect("an absolute task worktree");
+    runtime_config.scope.canonical_worktree_cwd = worktree_root.clone();
+
+    let (adapter, recorded) =
+        adapter_with_prepared_project(runtime_config, "cmd-absent-catalog").await;
+    let refused = adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-8062",
+            worktree_root,
+            &path,
+        ))
+        .await
+        .expect_err("an absent catalog worktree is refused");
+    assert_eq!(
+        refused,
+        RuntimeError::WorkspacePreparationFailed {
+            rule: "the ASMA CLI catalog worktree must exist before Kontor can attach it"
+        }
+    );
+    assert!(
+        !path.exists(),
+        "Kontor must not synthesize the catalog checkout"
     );
     assert_eq!(recorded.count("workspace create"), 0);
 }

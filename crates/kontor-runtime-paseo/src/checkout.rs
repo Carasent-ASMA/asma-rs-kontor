@@ -21,10 +21,15 @@ use kontor_runtime::adapter::{RuntimeError, RuntimeResult};
 use kontor_runtime::scope::ExecutionScope;
 use kontor_runtime::workspace::WorkspaceRoot;
 
-/// The confirmed tracker keys a newly created managed branch may carry.
+/// The confirmed tracker keys a newly created managed branch may carry, and
+/// the confirmed task keys an ASMA CLI catalog checkout must bind to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedBranchBinding {
     confirmed: Vec<TrackerKey>,
+    /// The confirmed task keys the scopes name. When non-empty, the catalog
+    /// worktree slug and its actual branch must carry one of these; an epic key
+    /// cannot stand in for the task a checkout serves.
+    tasks: Vec<TrackerKey>,
 }
 
 impl ManagedBranchBinding {
@@ -36,20 +41,25 @@ impl ManagedBranchBinding {
     /// refused rather than named after a UUID.
     pub(crate) fn from_scopes<'a>(scopes: impl IntoIterator<Item = &'a ExecutionScope>) -> Self {
         let mut confirmed: Vec<TrackerKey> = Vec::with_capacity(4);
-        let mut admit = |candidate: Result<TrackerKey, _>| {
-            if let Ok(key) = candidate
+        let mut tasks: Vec<TrackerKey> = Vec::with_capacity(2);
+        for scope in scopes {
+            if let Ok(key) = TrackerKey::from_external(&scope.epic.external_epic_key)
                 && !confirmed.contains(&key)
             {
                 confirmed.push(key);
             }
-        };
-        for scope in scopes {
-            admit(TrackerKey::from_external(&scope.epic.external_epic_key));
-            if let Some(task) = scope.task.as_ref() {
-                admit(TrackerKey::from_external(&task.external_issue_key));
+            if let Some(task) = scope.task.as_ref()
+                && let Ok(key) = TrackerKey::from_external(&task.external_issue_key)
+            {
+                if !confirmed.contains(&key) {
+                    confirmed.push(key.clone());
+                }
+                if !tasks.contains(&key) {
+                    tasks.push(key);
+                }
             }
         }
-        Self { confirmed }
+        Self { confirmed, tasks }
     }
 
     /// Refuse to create `branch` unless it is canonical and bound to this work.
@@ -73,6 +83,46 @@ impl ManagedBranchBinding {
         self.confirmed
             .iter()
             .any(|key| key.as_str().to_ascii_lowercase() == slug)
+    }
+
+    /// Whether `slug` is the exact lowercase worktree slug of one confirmed
+    /// task key the scopes name.
+    fn contains_task_worktree_slug(&self, slug: &str) -> bool {
+        self.tasks
+            .iter()
+            .any(|key| key.as_str().to_ascii_lowercase() == slug)
+    }
+
+    /// Attest the two identity fields of an ASMA CLI catalog checkout: the
+    /// worktree slug and the actual canonical branch.
+    ///
+    /// When the scope names a task, both must carry exactly a confirmed task
+    /// key: a task checkout may not be named or branched after the containing
+    /// epic, and an epic-keyed checkout may not carry a task's work. An
+    /// epic-level scope keeps its epic-or-task binding, which is what lets
+    /// legitimately approved epic and milestone branches be adopted in their
+    /// own integration contexts.
+    fn ensure_catalog_identity(&self, slug: &str, branch: &str) -> RuntimeResult<()> {
+        let (slug_bound, bound) = if self.tasks.is_empty() {
+            (self.contains_asma_worktree_slug(slug), &self.confirmed)
+        } else {
+            (self.contains_task_worktree_slug(slug), &self.tasks)
+        };
+        if !slug_bound {
+            return Err(RuntimeError::WorkspacePreparationFailed {
+                rule: "the managed catalog worktree slug is not the confirmed task key",
+            });
+        }
+        let parsed = BranchName::parse(branch).map_err(|refusal| {
+            RuntimeError::WorkspacePreparationFailed {
+                rule: refusal.rule(),
+            }
+        })?;
+        parsed
+            .ensure_bound_to(bound)
+            .map_err(|refusal| RuntimeError::WorkspacePreparationFailed {
+                rule: refusal.rule(),
+            })
     }
 }
 
@@ -246,8 +296,11 @@ fn verify_checkout(project: &Path, task: &Path, branch: &str) -> RuntimeResult<(
 /// Its Git common directory is deliberately not the catalog root's: it belongs
 /// to one registered submodule under `<catalog .git>/modules`. The checkout is
 /// nevertheless safe only when every identity agrees — managed two-segment
-/// path, confirmed task-key slug, submodule name, Git top-level and the actual
-/// canonical branch's confirmed tracker key.
+/// path, submodule name, Git top-level, and a slug and actual canonical branch
+/// that both bind to the same confirmed key. When the scope names a task, that
+/// key is the task's: the containing epic's key may not name the checkout or
+/// its branch. An epic-level scope keeps the epic-or-task binding its
+/// integration contexts already rely on.
 fn verify_catalog_module_checkout(
     project: &Path,
     task: &Path,
@@ -300,22 +353,8 @@ fn verify_catalog_module_checkout(
             rule: "the managed catalog worktree slug is not valid UTF-8",
         },
     )?;
-    if !binding.contains_asma_worktree_slug(slug) {
-        return Err(RuntimeError::WorkspacePreparationFailed {
-            rule: "the managed catalog worktree slug is not the confirmed task key",
-        });
-    }
     let observed_branch = git_text(task, &["branch", "--show-current"])?;
-    let parsed = BranchName::parse(&observed_branch).map_err(|refusal| {
-        RuntimeError::WorkspacePreparationFailed {
-            rule: refusal.rule(),
-        }
-    })?;
-    parsed
-        .ensure_bound_to(&binding.confirmed)
-        .map_err(|refusal| RuntimeError::WorkspacePreparationFailed {
-            rule: refusal.rule(),
-        })
+    binding.ensure_catalog_identity(slug, &observed_branch)
 }
 
 fn default_branch_ref(project: &Path) -> RuntimeResult<String> {
@@ -393,16 +432,30 @@ mod tests {
     fn binding(key: &str) -> ManagedBranchBinding {
         ManagedBranchBinding {
             confirmed: vec![TrackerKey::parse(key).expect("a canonical key")],
+            tasks: Vec::new(),
+        }
+    }
+
+    fn task_binding(epic: &str, task: &str) -> ManagedBranchBinding {
+        let epic = TrackerKey::parse(epic).expect("a canonical epic key");
+        let task = TrackerKey::parse(task).expect("a canonical task key");
+        ManagedBranchBinding {
+            confirmed: vec![epic, task.clone()],
+            tasks: vec![task],
         }
     }
 
     #[test]
     fn asma_catalog_path_is_recognized_by_its_exact_confirmed_key_slug() {
-        let binding = binding("ASMA-8114");
+        let binding = task_binding("ASMA-7744", "ASMA-8114");
         assert!(catalog_module_relative(
             Path::new("asma-8114/asma-rs-kontor"),
             &binding
         ));
+        assert!(
+            catalog_module_relative(Path::new("asma-7744/asma-rs-kontor"), &binding),
+            "an epic-keyed catalog path is recognized so it can be refused as a task mismatch"
+        );
         assert!(!catalog_module_relative(
             Path::new("asma-811/asma-rs-kontor"),
             &binding
@@ -429,6 +482,45 @@ mod tests {
             binding
                 .ensure_creatable("asma-8114/asma-rs-kontor")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn a_task_catalog_checkout_binds_both_its_slug_and_branch_to_the_task_key() {
+        let binding = task_binding("ASMA-7744", "ASMA-8114");
+        assert_eq!(
+            binding.ensure_catalog_identity("asma-8114", "feat/ASMA-8114-consultation-identity"),
+            Ok(())
+        );
+        assert!(matches!(
+            binding.ensure_catalog_identity("asma-8114", "feat/ASMA-7744-epic-integration"),
+            Err(RuntimeError::WorkspacePreparationFailed { rule })
+                if rule.starts_with("branch_binding_mismatch")
+        ));
+        assert!(matches!(
+            binding.ensure_catalog_identity("asma-7744", "feat/ASMA-8114-task-branch"),
+            Err(RuntimeError::WorkspacePreparationFailed { rule })
+                if rule == "the managed catalog worktree slug is not the confirmed task key"
+        ));
+        assert!(matches!(
+            binding.ensure_catalog_identity("asma-8114", "asma-8114/asma-rs-kontor"),
+            Err(RuntimeError::WorkspacePreparationFailed { rule })
+                if rule.starts_with("branch_type_unknown")
+        ));
+    }
+
+    #[test]
+    fn an_epic_level_catalog_checkout_keeps_its_epic_or_task_binding() {
+        let binding = binding("ASMA-7744");
+        assert_eq!(
+            binding.ensure_catalog_identity("asma-7744", "feat/ASMA-7744-epic-integration"),
+            Ok(())
+        );
+        assert!(
+            binding
+                .ensure_catalog_identity("asma-8114", "feat/ASMA-8114-task-branch")
+                .is_err(),
+            "an epic-level binding cannot adopt a task slug it never carried"
         );
     }
 }
