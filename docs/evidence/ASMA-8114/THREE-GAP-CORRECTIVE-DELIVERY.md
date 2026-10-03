@@ -382,8 +382,9 @@ mcp_mutants 11, profiles_teams 11, runtime_adapter 52, scheduling 2).
 The candidate was rebased with `git rebase --onto 6e0b3557… c93b1e43…` (all 10
 lane commits replayed, no conflicts). This is the third and final refresh: the
 default now contains the merged slot-1 and slot-2 lanes plus the PR #286 MCP
-parity fix. Lane diff `6e0b3557..HEAD` is the same expected 10 files (1774
-insertions, 136 deletions); `Cargo.lock` and `Cargo.toml` are identical to the
+parity fix. Lane diff `6e0b3557..HEAD` is the same expected 10 files (1800
+insertions, 136 deletions; the pre-final tip `117edd66` measured 1774
+insertions / 136 deletions — the final docs-only commit adds 26 net); `Cargo.lock` and `Cargo.toml` are identical to the
 default; the parity fix is intact (`crates/kontor-mcp/src/registry.rs`
 mappings present, `tests/contract/mcp_parity.rs` canary
 `documented().len() == 195`).
