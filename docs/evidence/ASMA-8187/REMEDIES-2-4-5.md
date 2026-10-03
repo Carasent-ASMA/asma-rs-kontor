@@ -427,6 +427,12 @@ already covered by the earlier audits, not drift from this join.
   from here use `asma git commit --include-unstaged --include-untracked`, which
   stages through the supported flow.
 
-* **Branch distance.** 0 behind / **16** ahead of published `408e7895`. An
-  earlier report said 15, measured at `7646bcd9` before `55cab6a8` existed and
-  then not restated.
+* **Branch distance.** 0 behind published `408e7895`; ahead by every commit in
+  the lineage since it — **16 as of `55cab6a8`**, and one more for each evidence
+  commit after that.
+
+  Anchored to a commit on purpose. An earlier report said "15 ahead" with no
+  anchor: true when measured at `7646bcd9`, wrong the moment the next commit
+  landed, and then carried forward as if it were a fact about the branch rather
+  than about one moment. A distance with no commit attached is a number that
+  goes stale silently, which is how the first error happened.
