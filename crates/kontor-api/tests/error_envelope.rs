@@ -9,7 +9,9 @@
 
 use kontor_api::error::{ApiError, ApiErrorCode};
 use kontor_core::DomainError;
-use kontor_core::id::RealmId;
+use kontor_core::consultation::{ConsultationFamily, ConsultationRunId};
+use kontor_core::id::{AdvisorRunId, CommitteeRunId, RealmId};
+use kontor_core::repository::RepositoryError;
 
 /// The sentence that must never be the answer for a variant this build knows.
 const UNCLASSIFIED: &str = "a domain rule refused the request and this build cannot classify it";
@@ -200,6 +202,66 @@ fn asking_for_the_state_an_aggregate_already_holds_is_advised_differently() {
         "\"it is already there\" and \"it cannot go there\" need different advice"
     );
     assert!(same.action.contains("already"));
+}
+
+/// A transactional consultation duplicate is the one store conflict whose
+/// transport answer is not a revision conflict: it carries the surviving run's
+/// locator and the read/resume action, for both families, and every other
+/// conflict keeps the merged revision-conflict mapping.
+#[test]
+fn the_transactional_duplicate_carries_the_exact_sequential_envelope() {
+    let realm_id = RealmId::generate();
+    for family in [ConsultationFamily::Advisor, ConsultationFamily::Committee] {
+        let run_id = match family {
+            ConsultationFamily::Advisor => ConsultationRunId::Advisor(AdvisorRunId::generate()),
+            ConsultationFamily::Committee => {
+                ConsultationRunId::Committee(CommitteeRunId::generate())
+            }
+        };
+        let label = match family {
+            ConsultationFamily::Advisor => "Advisor",
+            ConsultationFamily::Committee => "Committee",
+        };
+        let refusal = ApiError::from_repository(
+            realm_id,
+            &RepositoryError::DuplicateConsultation { family, run_id },
+        );
+        assert_eq!(refusal.code, ApiErrorCode::IdempotencyConflict);
+        assert_eq!(refusal.code.status().as_u16(), 409);
+        let body = serde_json::to_value(refusal.body()).expect("the envelope serializes");
+        assert_eq!(body["code"], "idempotency_conflict");
+        assert_eq!(
+            body["rule"],
+            format!(
+                "consultation_semantic_duplicate: this {label} scope and topic already has one run"
+            )
+        );
+        assert_eq!(body["subject"], "consultation semantic identity");
+        assert_eq!(
+            body["at"],
+            format!("consultation-runs/{}", run_id.as_text())
+        );
+        assert_eq!(
+            body["action"],
+            "read or resume the existing consultation run"
+        );
+        assert!(body["current_revision"].is_null());
+    }
+
+    // Every other conflict keeps the merged refusal-diagnostics mapping: the
+    // same revision-conflict code, now naming its own static subject and rule,
+    // and still carrying no consultation-run locator.
+    let conflict = ApiError::from_repository(
+        realm_id,
+        &RepositoryError::Conflict {
+            subject: "native container binding",
+            rule: "this topology node is bound to another native container",
+        },
+    );
+    assert_eq!(conflict.code, ApiErrorCode::RevisionConflict);
+    assert_eq!(conflict.subject(), Some("native container binding"));
+    let rendered = serde_json::to_string(&conflict.body()).expect("the envelope serializes");
+    assert!(!rendered.contains("consultation-runs"), "{rendered}");
 }
 
 /// Every code carries an action, including the ones no domain error produces.

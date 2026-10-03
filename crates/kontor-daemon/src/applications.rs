@@ -40672,26 +40672,47 @@ impl Services {
     }
 
     /// Derive the one display item code for an explicit epic or task subject.
+    ///
+    /// `None` is the honest answer when the epic has no active immutable
+    /// backlog code: there is then no derived legacy code to name or forbid.
+    /// A template that requires the code still refuses, through the strict
+    /// [`Self::item_code_for_subject`] wrapper below.
+    fn derivable_item_code_for_subject(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        task_id: Option<TaskId>,
+    ) -> Result<Option<JiraItemCode>, ApiError> {
+        let Some(backlog_code) = self
+            .state()?
+            .with_store(|store| store.epic_backlog_code(project_id, epic_id))
+            .map_err(|error| self.refuse(&error))?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(JiraItemCode::from_confirmed(
+            &backlog_code,
+            &self.jira_key_for_subject(project_id, epic_id, task_id)?,
+        )))
+    }
+
+    /// Derive the one display item code for an explicit epic or task subject.
+    ///
+    /// Strict form: a caller that renders the code into a container name cannot
+    /// proceed without it.
     fn item_code_for_subject(
         &self,
         project_id: ProjectId,
         epic_id: MiniProjectId,
         task_id: Option<TaskId>,
     ) -> Result<JiraItemCode, ApiError> {
-        let backlog_code = self
-            .state()?
-            .with_store(|store| store.epic_backlog_code(project_id, epic_id))
-            .map_err(|error| self.refuse(&error))?
+        self.derivable_item_code_for_subject(project_id, epic_id, task_id)?
             .ok_or_else(|| {
                 self.deny(
                     ApiErrorCode::PlacementBlocked,
                     "the epic has no active immutable backlog code",
                 )
-            })?;
-        Ok(JiraItemCode::from_confirmed(
-            &backlog_code,
-            &self.jira_key_for_subject(project_id, epic_id, task_id)?,
-        ))
+            })
     }
 
     /// Validate the caller's topic as semantic input and derive the one
@@ -40737,15 +40758,23 @@ impl Services {
                     "the consultation scope has no confirmed Jira binding",
                 )
             })?;
-        let item_code =
-            if template_uses_token(&container.name_template, NativeNameToken::EpicItemCode)
+        // One server-owned derived code, whether or not this template renders
+        // it. The code exists whenever the epic has an active immutable backlog
+        // code and the subject's confirmed binding, and it is caller-forbidden
+        // name material in every family. A template that *does* render it
+        // cannot proceed without one; an epic that has none simply has no
+        // legacy code to forbid.
+        let renders_item_code =
+            template_uses_token(&container.name_template, NativeNameToken::EpicItemCode)
                 || template_uses_token(&container.name_template, NativeNameToken::TaskItemCode)
-                || template_uses_token(&container.name_template, NativeNameToken::ScopeItemCode)
-            {
-                Some(self.item_code_for_subject(project_id, epic_id, task_id)?)
-            } else {
-                None
-            };
+                || template_uses_token(&container.name_template, NativeNameToken::ScopeItemCode);
+        let item_code = self.derivable_item_code_for_subject(project_id, epic_id, task_id)?;
+        if renders_item_code && item_code.is_none() {
+            return Err(self.deny(
+                ApiErrorCode::PlacementBlocked,
+                "the epic has no active immutable backlog code",
+            ));
+        }
         let mut forbidden_scope_fragments = vec![jira_key.as_str()];
         if let Some(item_code) = item_code.as_ref() {
             forbidden_scope_fragments.push(item_code.as_str());

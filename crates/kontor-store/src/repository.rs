@@ -171,6 +171,24 @@ pub(crate) fn conflict(subject: &'static str, rule: &'static str) -> RepositoryE
     RepositoryError::Conflict { subject, rule }
 }
 
+/// Whether a failed write was refused by the unique index that binds one
+/// server-derived consultation semantic identity.
+///
+/// Matched on the exact index identity the schema declares, so no other
+/// uniqueness, check or immutability violation is reclassified.
+fn is_duplicate_semantic_identity(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, detail)
+            if failure.code == rusqlite::ErrorCode::ConstraintViolation
+                && detail.as_deref().is_some_and(|detail| {
+                    detail.contains(
+                        "consultation_runs.project_id, consultation_runs.semantic_identity_hash"
+                    ) || detail.contains("consultation_runs_by_semantic_identity")
+                })
+    )
+}
+
 pub(crate) fn text(timestamp: Timestamp) -> String {
     format_utc_timestamp(timestamp)
 }
@@ -2425,64 +2443,73 @@ impl SqliteStore {
             .as_ref()
             .map(|value| canonical_json(value, "consultation result"))
             .transpose()?;
-        transaction
-            .execute(
-                "INSERT INTO consultation_runs
-                     (run_id, project_id, mini_project_id, family, profile_id,
-                      profile_version, definition_hash, semantic_identity_hash, question, question_hash,
-                      context, context_hash, caller_seat_binding_id, topology_node_id,
-                      invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
-                      updated_at, settled_at, topic, subject_kind, subject_task_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                         ?26, ?27)",
-                params![
-                    run.id.as_text(),
-                    run.project_id.to_string(),
-                    run.mini_project_id.to_string(),
-                    run.id.family().as_str(),
-                    run.profile_id,
-                    version_column(run.profile_version),
-                    run.definition_hash.as_str(),
-                    run.semantic_identity_hash.as_ref().map(ContentHash::as_str),
-                    run.question.as_str(),
-                    run.question_hash.as_str(),
-                    context,
-                    run.context_hash.as_str(),
-                    run.caller_seat_binding_id.to_string(),
-                    run.topology_node_id.to_string(),
-                    run.invoke_key.as_str(),
-                    run.invoke_intent_hash.as_str(),
-                    run.state.as_str(),
-                    i64::from(run.round),
-                    result,
-                    run.result_hash.as_ref().map(ContentHash::as_str),
-                    i64::try_from(run.revision.get()).unwrap_or(i64::MAX),
-                    text(run.created_at),
-                    text(run.updated_at),
-                    run.settled_at.map(text),
-                    run.topic.as_ref().map(ExternalName::as_str),
-                    run.subject.map(ConsultationSubject::as_str),
-                    run.subject
-                        .and_then(ConsultationSubject::task_id)
-                        .map(|task_id| task_id.to_string()),
-                ],
-            )
-            .map_err(|error| match error {
-                rusqlite::Error::SqliteFailure(failure, detail)
-                    if failure.code == rusqlite::ErrorCode::ConstraintViolation
-                        && detail.as_deref().is_some_and(|detail| {
-                            detail.contains("consultation_runs.project_id, consultation_runs.semantic_identity_hash")
-                                || detail.contains("consultation_runs_by_semantic_identity")
-                        }) =>
+        let inserted = transaction.execute(
+            "INSERT INTO consultation_runs
+                 (run_id, project_id, mini_project_id, family, profile_id,
+                  profile_version, definition_hash, semantic_identity_hash, question, question_hash,
+                  context, context_hash, caller_seat_binding_id, topology_node_id,
+                  invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
+                  updated_at, settled_at, topic, subject_kind, subject_task_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                     ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+                     ?26, ?27)",
+            params![
+                run.id.as_text(),
+                run.project_id.to_string(),
+                run.mini_project_id.to_string(),
+                run.id.family().as_str(),
+                run.profile_id,
+                version_column(run.profile_version),
+                run.definition_hash.as_str(),
+                run.semantic_identity_hash.as_ref().map(ContentHash::as_str),
+                run.question.as_str(),
+                run.question_hash.as_str(),
+                context,
+                run.context_hash.as_str(),
+                run.caller_seat_binding_id.to_string(),
+                run.topology_node_id.to_string(),
+                run.invoke_key.as_str(),
+                run.invoke_intent_hash.as_str(),
+                run.state.as_str(),
+                i64::from(run.round),
+                result,
+                run.result_hash.as_ref().map(ContentHash::as_str),
+                i64::try_from(run.revision.get()).unwrap_or(i64::MAX),
+                text(run.created_at),
+                text(run.updated_at),
+                run.settled_at.map(text),
+                run.topic.as_ref().map(ExternalName::as_str),
+                run.subject.map(ConsultationSubject::as_str),
+                run.subject
+                    .and_then(ConsultationSubject::task_id)
+                    .map(|task_id| task_id.to_string()),
+            ],
+        );
+        if let Err(error) = inserted {
+            if is_duplicate_semantic_identity(&error) {
+                // The unique index is the authority; this only names the row it
+                // refused. Roll the loser's transaction back first, so the read
+                // below sees the committed survivor and never this attempt's own
+                // topology node, then carry the exact surviving run out to the
+                // transport. A row that is unexpectedly invisible falls back to
+                // the generic conflict rather than inventing one.
+                drop(transaction);
+                if let Some(hash) = run.semantic_identity_hash.as_ref()
+                    && let Some(existing) =
+                        self.get_consultation_run_by_semantic_identity(run.project_id, hash)?
                 {
-                    conflict(
-                        "consultation semantic identity",
-                        "an Advisor or Committee run already owns this family, scope, template and topic",
-                    )
+                    return Err(RepositoryError::DuplicateConsultation {
+                        family: run.id.family(),
+                        run_id: existing.id,
+                    });
                 }
-                other => backend(other),
-            })?;
+                return Err(conflict(
+                    "consultation semantic identity",
+                    "an Advisor or Committee run already owns this family, scope, template and topic",
+                ));
+            }
+            return Err(backend(error));
+        }
 
         if let Some(provenance) = run
             .context
