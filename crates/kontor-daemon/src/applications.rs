@@ -82,10 +82,11 @@ use kontor_api::applications::{
     CoreTeamSeatClaimPreviewDto, CoreTeamSeatClaimPreviewRequest, CoreTeamSeatDto,
     CoreTeamSeatPersonaDto, CoreTeamSeatRouteRequest, CoreTeamSeatSelectionDto,
     CoreTeamSeatTitleConflictDto, DeliberationStepDto, EnsureQuickSessionRequest,
-    HostedSeatMessageDto, HostedSeatMessageRequestDto, IntegrationRecordDto, InvokeAdvisorRequest,
-    InvokeConsultationRequest, NeedsHumanDto, PartialAdmissionSeatDto, ProfileApplyRequest,
-    ProfileCatalogDto, ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto,
-    PromotedSessionDto, PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
+    HostedSeatMessageDto, HostedSeatMessageRequestDto, HostedSeatOccupancyChainDto,
+    HostedSeatOccupancyDto, IntegrationRecordDto, InvokeAdvisorRequest, InvokeConsultationRequest,
+    NeedsHumanDto, PartialAdmissionSeatDto, ProfileApplyRequest, ProfileCatalogDto,
+    ProfilePreviewDto, ProfilePreviewRequest, ProfileRevisionDto, PromotedSessionDto,
+    PromotionApplyRequest, PromotionPreviewDto, QuickRolesDto, QuickSessionDto,
     RecordFindingsRequest, RecordedCloseoutDto, RecoverConsultationSeatRequest,
     RemediateCompletionRequest, RemediationActionDto, RemediationAuthorityDto,
     RemediationAuthorizationDto, RemediationRecordDto, RepositoryOutcomeDto,
@@ -8255,19 +8256,53 @@ impl Services {
             // Read for the occupancy actually filling the seat, so a replaced
             // seat reports the persona *its own* generation was launched under
             // rather than inheriting the predecessor's.
+            //
+            // The generation comes from the seat, not from the persona table.
+            // `latest_hosted_seat_role_persona` answers a different question --
+            // the highest generation that happens to *have* a persona row -- and
+            // the two diverge exactly where it matters: a seat claim opens the
+            // next occupancy through `replace_hosted_topology_seat_route`
+            // without recording a persona, so after a claim supersedes a
+            // launched occupancy the maximum persona row is the predecessor's.
+            // Reporting it here would attribute a retired native's persona to
+            // the claimant, while the occupancy chain truthfully says null.
+            // A current generation with no row is null, which is the same
+            // answer the chain gives and the only honest one.
             seat.role_persona = match seat.seat_binding_id {
-                Some(seat_binding_id) => state
-                    .with_store(|store| {
-                        store.latest_hosted_seat_role_persona(project_id, seat_binding_id)
-                    })
-                    .map_err(|error| self.refuse(&error))?
-                    .map(|(occupancy_generation, persona)| CoreTeamSeatPersonaDto {
-                        role_code: persona.role_code,
-                        prompt_hash: persona.prompt_hash,
-                        delivery: persona.delivery.as_str().to_owned(),
-                        occupancy_generation,
-                        frozen_at: persona.frozen_at,
-                    }),
+                Some(seat_binding_id) => {
+                    // The store's own definition of the current occupancy --
+                    // `1 + count(history)` -- which is what the occupancy chain
+                    // derives positionally. One rule, read twice, never two.
+                    let current_generation = state
+                        .with_store(|store| {
+                            store.hosted_topology_seat_occupancy_generation(
+                                project_id,
+                                seat_binding_id,
+                            )
+                        })
+                        .map_err(|error| self.refuse(&error))?;
+                    match current_generation {
+                        Some(occupancy_generation) => state
+                            .with_store(|store| {
+                                store.get_hosted_seat_role_persona(
+                                    project_id,
+                                    seat_binding_id,
+                                    occupancy_generation,
+                                )
+                            })
+                            .map_err(|error| self.refuse(&error))?
+                            .map(|persona| CoreTeamSeatPersonaDto {
+                                role_code: persona.role_code,
+                                prompt_hash: persona.prompt_hash,
+                                delivery: persona.delivery.as_str().to_owned(),
+                                occupancy_generation,
+                                frozen_at: persona.frozen_at,
+                            }),
+                        // No bound occupancy is no current persona, rather than
+                        // the newest one some earlier occupancy happened to have.
+                        None => None,
+                    }
+                }
                 None => None,
             };
         }
@@ -8277,6 +8312,92 @@ impl Services {
             seats,
             revision: roster.revision_of_epic,
             snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    /// The seat binding one epic's control plane actually holds.
+    ///
+    /// Membership is proven against the epic named in the route rather than
+    /// trusted from the path, and a seat belonging to another epic answers
+    /// NotFound rather than Forbidden: a caller scoped to one control plane
+    /// learns nothing about what exists in another, and a hosted seat's native
+    /// identities are exactly what must not leak across one.
+    fn epic_control_seat_binding(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> Result<SeatBinding, ApiError> {
+        let state = self.state()?;
+        let control = state
+            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|node| node.kind == self.domain.delivery.control_kind)
+            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "this epic has no control plane"))?;
+        state
+            .with_store(|store| store.list_seat_bindings(project_id, control.id))
+            .map_err(|error| self.refuse(&error))?
+            .into_iter()
+            .find(|binding| binding.id == seat_binding_id)
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::NotFound,
+                    "this epic's control plane holds no such seat",
+                )
+            })
+    }
+
+    /// One occupancy, with the persona frozen for that exact generation.
+    ///
+    /// The persona is looked up by the occupancy generation rather than carried
+    /// from the seat row, so a retired occupancy reports what *it* was opened
+    /// under and never inherits its successor's.
+    fn hosted_seat_occupancy_dto(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+        is_current: bool,
+        seat: &StoredHostedTopologySeat,
+    ) -> Result<HostedSeatOccupancyDto, ApiError> {
+        let persona = self
+            .state()?
+            .with_store(|store| {
+                store.get_hosted_seat_role_persona(
+                    project_id,
+                    seat_binding_id,
+                    occupancy_generation,
+                )
+            })
+            .map_err(|error| self.refuse(&error))?
+            .map(|persona| CoreTeamSeatPersonaDto {
+                role_code: persona.role_code,
+                prompt_hash: persona.prompt_hash,
+                delivery: persona.delivery.as_str().to_owned(),
+                occupancy_generation,
+                frozen_at: persona.frozen_at,
+            });
+        Ok(HostedSeatOccupancyDto {
+            occupancy_generation,
+            lifecycle: if is_current { "current" } else { "retired" }.to_owned(),
+            native: CoreTeamNativeSeatDto {
+                runtime_kind: seat.native_identity.runtime_kind.clone(),
+                host: seat.native_identity.host.as_str().to_owned(),
+                generation: seat.native_identity.generation,
+                native_id: seat.native_identity.native_id.clone(),
+                provider_session_id: seat.provider_session_id.clone(),
+                model_route: RuntimeModelRouteRequest {
+                    provider: seat.model_rung.provider.0.clone(),
+                    model: seat.model_rung.model.0.clone(),
+                    effort: seat
+                        .model_rung
+                        .effort
+                        .map(|effort| effort.as_str().to_owned()),
+                },
+                observed_at: seat.observed_at,
+            },
+            role_persona: persona,
         })
     }
 
@@ -24427,6 +24548,75 @@ impl ApplicationOperations for Services {
             // an `epic_id` this one does not have.
             seats: self.core_team_seat_dtos(&stored)?,
             revision: core_team_revision_of(Some(&stored)),
+            snapshot_cursor: self.cursor()?,
+        })
+    }
+
+    fn epic_core_team(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+    ) -> Result<CoreTeamDto, ApiError> {
+        // Exactly what the mutating epic routes already return. Composing a
+        // second projector here is how the read and the write start disagreeing
+        // about the same seats, so this one reuses theirs.
+        let roster = self.frozen_roster(project_id, epic_id)?;
+        self.epic_core_team_dto(project_id, epic_id, &roster)
+    }
+
+    fn epic_hosted_seat_occupancies(
+        &self,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> Result<HostedSeatOccupancyChainDto, ApiError> {
+        let state = self.state()?;
+        // The membership fence comes first and answers NotFound, not Forbidden:
+        // a caller scoped to one epic learns nothing about whether a seat id
+        // exists in another. A seat's native identities are precisely what must
+        // not leak across control planes.
+        let binding = self.epic_control_seat_binding(project_id, epic_id, seat_binding_id)?;
+        let history = state
+            .with_store(|store| {
+                store.list_hosted_topology_seat_history(project_id, seat_binding_id)
+            })
+            .map_err(|error| self.refuse(&error))?;
+        let current = state
+            .with_store(|store| store.get_hosted_topology_seat(project_id, seat_binding_id))
+            .map_err(|error| self.refuse(&error))?;
+        let mut occupancies = Vec::with_capacity(history.len().saturating_add(1));
+        // Occupancy generation is positional by the store's own definition --
+        // `1 + count(history)` -- and the history read is already ordered by
+        // retirement. Deriving it the same way here keeps one rule instead of
+        // two that can drift apart. It is deliberately *not*
+        // `native_identity.generation`, which counts runtime readbacks.
+        for seat in history {
+            let generation = u64::try_from(occupancies.len().saturating_add(1)).unwrap_or(u64::MAX);
+            occupancies.push(self.hosted_seat_occupancy_dto(
+                project_id,
+                seat_binding_id,
+                generation,
+                false,
+                &seat,
+            )?);
+        }
+        if let Some(seat) = current {
+            let generation = u64::try_from(occupancies.len().saturating_add(1)).unwrap_or(u64::MAX);
+            occupancies.push(self.hosted_seat_occupancy_dto(
+                project_id,
+                seat_binding_id,
+                generation,
+                true,
+                &seat,
+            )?);
+        }
+        Ok(HostedSeatOccupancyChainDto {
+            realm_id: state.realm_id(),
+            project_id,
+            epic_id,
+            seat_binding_id,
+            role_code: binding.role.role_code.clone(),
+            occupancies,
             snapshot_cursor: self.cursor()?,
         })
     }

@@ -1252,6 +1252,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One epic's materialized Core Team.
+         * @description Pure. It records no command, calls no runtime, and changes nothing; the
+         *     mutating epic routes already return this projection and this route only
+         *     stops a caller from having to mutate in order to see it.
+         */
+        get: operations["epic_core_team"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede": {
         parameters: {
             query?: never;
@@ -1331,6 +1353,28 @@ export interface paths {
         put?: never;
         /** Preview attachment of one exact already-running session to a Core Team seat. */
         post: operations["preview_core_team_seat_claim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every occupancy one hosted seat has had, oldest first.
+         * @description Pure, and deliberately a separate route from the roster: the roster answers
+         *     what is true now, and carrying every seat's whole history inside it would
+         *     make the common read pay for the rare one.
+         */
+        get: operations["epic_hosted_seat_occupancies"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6750,6 +6794,50 @@ export interface components {
         HostedSeatMessageRequestDto: {
             /** @description Instruction delivered to the exact native session. */
             body: string;
+        };
+        /** @description The immutable occupancy chain of one logical hosted seat inside one epic. */
+        HostedSeatOccupancyChainDto: {
+            /** @description The epic whose control plane owns the seat. */
+            epic_id: string;
+            /** @description Every occupancy, oldest generation first. */
+            occupancies: components["schemas"]["HostedSeatOccupancyDto"][];
+            /** @description The project it serves. */
+            project_id: string;
+            /** @description The Realm it was read in. */
+            realm_id: string;
+            /** @description The standard role the seat is held under. */
+            role_code: string;
+            /** @description The logical seat whose occupancies these are. */
+            seat_binding_id: string;
+            /**
+             * Format: int64
+             * @description The position this read is consistent with.
+             */
+            snapshot_cursor: number;
+        };
+        /**
+         * @description One occupancy of a logical hosted seat: the native that filled it and the
+         *     persona that occupancy was opened under.
+         *
+         *     A seat outlives its natives. Reporting only the current one answers "who is
+         *     here" but not "what was this seat ever opened under", and the second question
+         *     is the one a no-overwrite qualification has to ask.
+         */
+        HostedSeatOccupancyDto: {
+            /**
+             * @description `current` for the occupancy filling the seat now, `retired` for one it
+             *     superseded. Stated rather than inferred from position, so a reader does
+             *     not have to know the ordering rule to know which native is live.
+             */
+            lifecycle: string;
+            /** @description Exact native session that filled this occupancy. */
+            native: components["schemas"]["CoreTeamNativeSeatDto"];
+            /**
+             * Format: int64
+             * @description The occupancy generation this native filled.
+             */
+            occupancy_generation: number;
+            role_persona?: null | components["schemas"]["CoreTeamSeatPersonaDto"];
         };
         ImportBody: {
             entries: Record<string, never>[];
@@ -14401,6 +14489,55 @@ export interface operations {
             };
         };
     };
+    epic_core_team: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic whose control plane holds the seats */
+                epic_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoreTeamDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     supersede_core_team_launch_intent: {
         parameters: {
             query?: never;
@@ -14751,6 +14888,58 @@ export interface operations {
                 content?: never;
             };
             /** @description The runtime could not be reached */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    epic_hosted_seat_occupancies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The owning project */
+                project_id: string;
+                /** @description The epic whose control plane holds the seat */
+                epic_id: string;
+                /** @description The logical seat */
+                seat_binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostedSeatOccupancyChainDto"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such seat in this epic */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The owning application service is not composed */
             503: {
                 headers: {
                     [name: string]: unknown;
