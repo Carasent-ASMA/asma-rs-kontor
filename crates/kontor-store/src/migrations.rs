@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 120;
+pub const SCHEMA_VERSION: i64 = 121;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -417,6 +417,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0119_publication_attestations_immutable.sql"),
     // Schema v120. Typed experience eligibility, immutable projections and recall metadata.
     include_str!("../migrations/0120_experience_memory_projection.sql"),
+    include_str!("../migrations/0121_memory_projection_rebuild_receipts.sql"),
 ];
 
 const _: () = assert!(

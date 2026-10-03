@@ -7011,7 +7011,7 @@ pub trait ApplicationOperations: Send + Sync {
         key: Option<&IdempotencyKey>,
     ) -> Result<kontor_store::memory::RecalledMemory, ApiError>;
     /// Rebuild through the qualified optional adapter, never claiming success while absent.
-    fn rebuild_memory_projection(
+    async fn rebuild_memory_projection(
         &self,
         project_id: ProjectId,
         key: &IdempotencyKey,

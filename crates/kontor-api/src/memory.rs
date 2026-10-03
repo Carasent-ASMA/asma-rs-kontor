@@ -765,7 +765,8 @@ pub async fn projection_rebuild(
     let key = crate::control::idempotency_key(&state, &headers)?;
     let projection = state
         .applications()
-        .rebuild_memory_projection(project, &key, &body)?;
+        .rebuild_memory_projection(project, &key, &body)
+        .await?;
     Ok(Json(ProjectionResponse {
         realm_id: state.realm_id(),
         projection,

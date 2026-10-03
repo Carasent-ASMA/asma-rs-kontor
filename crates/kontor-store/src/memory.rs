@@ -1,6 +1,9 @@
 //! Native, project-isolated memory ledger and its rebuildable FTS projection.
 #![allow(missing_docs)]
 
+mod projection_rebuild;
+pub use projection_rebuild::{ProjectionRebuildInput, ProjectionRebuildStage};
+
 use kontor_core::authority::AuthoritySubject;
 use kontor_core::id::{
     AggregateRevision, CanonicalDocument, ContentHash, ProjectId, Timestamp, parse_utc_timestamp,
@@ -1654,7 +1657,7 @@ pub struct ProjectionPreview {
     pub entries: Vec<ProjectionEntry>,
     pub active_generation: u64,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectionReadback {
     pub active: Option<ProjectionSnapshot>,
     pub generation: u64,
@@ -1842,14 +1845,7 @@ impl SqliteStore {
         project_id: ProjectId,
     ) -> Result<ProjectionPreview, MemoryError> {
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
-        let preview = projection_preview_in(&tx, project_id)?;
-        let snapshot = &preview.snapshot;
-        tx.execute("INSERT INTO memory_projection_snapshots(project_id,memory_cursor,dataset,digest,identities,created_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING", params![project_id.to_string(), snapshot.memory_cursor, snapshot.dataset, snapshot.digest.as_str(), serde_json::to_string(&snapshot.identities)?, Timestamp::now().to_string()])?;
-        let stored =
-            read_snapshot(&tx, project_id, snapshot.memory_cursor)?.ok_or(MemoryError::NotFound)?;
-        if stored.digest != snapshot.digest || stored.identities != snapshot.identities {
-            return Err(MemoryError::Refused(MemoryRefusal::ProjectionConflict));
-        }
+        let preview = stage_projection_in(&tx, project_id)?;
         tx.commit()?;
         Ok(preview)
     }
@@ -1862,23 +1858,50 @@ impl SqliteStore {
         qualification: &ProjectionQualification,
     ) -> Result<ProjectionReadback, MemoryError> {
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
-        if !qualification.added || !qualification.cognified || !qualification.canary_passed {
-            return Err(MemoryError::Refused(MemoryRefusal::ProjectionUnavailable));
-        }
-        let snapshot = read_snapshot(&tx, project_id, cursor)?.ok_or(MemoryError::NotFound)?;
-        let preview = projection_preview_in(&tx, project_id)?;
-        if preview.active_generation != expected_generation
-            || snapshot.digest != qualification.digest
-            || snapshot.digest != preview.snapshot.digest
-            || cursor != preview.snapshot.memory_cursor
-        {
-            return Err(MemoryError::Refused(MemoryRefusal::ProjectionConflict));
-        }
-        tx.execute("INSERT INTO memory_projection_active(project_id,memory_cursor,generation) VALUES (?1,?2,?3) ON CONFLICT(project_id) DO UPDATE SET memory_cursor=excluded.memory_cursor,generation=excluded.generation", params![project_id.to_string(), cursor, sql_u64(expected_generation + 1)?])?;
-        let result = projection_readback_in(&tx, project_id)?;
+        let result =
+            activate_projection_in(&tx, project_id, cursor, expected_generation, qualification)?;
         tx.commit()?;
         Ok(result)
     }
+}
+
+fn stage_projection_in(
+    tx: &Transaction<'_>,
+    project_id: ProjectId,
+) -> Result<ProjectionPreview, MemoryError> {
+    let preview = projection_preview_in(tx, project_id)?;
+    let snapshot = &preview.snapshot;
+    tx.execute("INSERT INTO memory_projection_snapshots(project_id,memory_cursor,dataset,digest,identities,created_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING", params![project_id.to_string(), snapshot.memory_cursor, snapshot.dataset, snapshot.digest.as_str(), serde_json::to_string(&snapshot.identities)?, Timestamp::now().to_string()])?;
+    let stored =
+        read_snapshot(tx, project_id, snapshot.memory_cursor)?.ok_or(MemoryError::NotFound)?;
+    if stored.digest != snapshot.digest || stored.identities != snapshot.identities {
+        return Err(MemoryError::Refused(MemoryRefusal::ProjectionConflict));
+    }
+    Ok(preview)
+}
+
+fn activate_projection_in(
+    tx: &Transaction<'_>,
+    project_id: ProjectId,
+    cursor: i64,
+    expected_generation: u64,
+    qualification: &ProjectionQualification,
+) -> Result<ProjectionReadback, MemoryError> {
+    if !qualification.added || !qualification.cognified || !qualification.canary_passed {
+        return Err(MemoryError::Refused(MemoryRefusal::ProjectionUnavailable));
+    }
+    let snapshot = read_snapshot(tx, project_id, cursor)?.ok_or(MemoryError::NotFound)?;
+    let preview = projection_preview_in(tx, project_id)?;
+    if preview.active_generation != expected_generation
+        || snapshot.digest != qualification.digest
+        || snapshot.digest != preview.snapshot.digest
+        || cursor != preview.snapshot.memory_cursor
+    {
+        return Err(MemoryError::Refused(MemoryRefusal::ProjectionConflict));
+    }
+    tx.execute("INSERT INTO memory_projection_active(project_id,memory_cursor,generation) VALUES (?1,?2,?3) ON CONFLICT(project_id) DO UPDATE SET memory_cursor=excluded.memory_cursor,generation=excluded.generation", params![project_id.to_string(), cursor, sql_u64(expected_generation + 1)?])?;
+    let result = projection_readback_in(tx, project_id)?;
+    Ok(result)
 }
 
 struct RankedExperience {

@@ -13,6 +13,9 @@ for command/hash evidence, or for the later authorized release frontier.
 
 | Artifact | Purpose |
 | --- | --- |
+| [Composed production preparation](production-prep/2026-10-03-10-55-report-composed-production-prep.md) | Current async composition, final mutations, F4/F3, synthetic rehearsal, docs/default divergence and blockers |
+| [Igor credential decision packet](production-prep/2026-10-03-10-32-analysis-igor-cognee-credential-binding.md) | Documentation-only supplier/interface and alias/consumer/target proposal; real resolution stays reserved |
+| [Runnable synthetic census/rehearsal](production-prep/2026-10-03-10-43-plan-synthetic-census-rehearsal.md) | Exact supported operation/command shapes, synthetic provenance and copied-live gates |
 | [Production-prep boundary stop](2026-10-03-09-41-report-production-prep-boundary-stop.md) | Reserved credential decision, exact remote pins/divergence, consumed lane map and unperformed resumption obligations |
 | [Boundary-stop reproduction](verify-boundary-stop.py) / [receipt](receipts/production-prep-boundary-stop.json) | Read-only commands, runner provenance, accepted source integrity and hashed source excerpts |
 | [Combined report](2026-10-03-01-11-report-combined-integration.md) | Pins, integrated source, exact commands/results, mutations and remaining owners/frontiers |
@@ -31,5 +34,7 @@ for command/hash evidence, or for the later authorized release frontier.
 
 The committed candidate SHA and tree accompany the writer's final handoff;
 embedding the commit's own hash in its contents would be self-referential.
-Only this directory is writer-owned. Accepted source and inherited evidence
-remain exact; adapters and other worktrees are excluded from staging.
+The initial package preserved accepted source exactly. The LSA-disposed resumption
+adds the explicitly owned composition, idempotency and synthetic-test paths listed
+in the current report. Historical receipts remain frozen; adapters and other
+worktrees are excluded from staging.

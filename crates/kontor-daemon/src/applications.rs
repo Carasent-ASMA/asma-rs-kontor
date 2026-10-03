@@ -27,7 +27,9 @@
 
 mod artifact_submission;
 mod committee_evidence;
+mod memory_projection;
 mod open_questions;
+pub use memory_projection::ProjectionQualifier;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -19260,29 +19262,18 @@ impl ApplicationOperations for Services {
             })
             .map_err(|error| kontor_api::memory::map(state, error))
     }
-    fn rebuild_memory_projection(
+    async fn rebuild_memory_projection(
         &self,
         project_id: ProjectId,
-        _key: &IdempotencyKey,
+        key: &IdempotencyKey,
         request: &kontor_api::memory::ProjectionRebuildRequest,
     ) -> Result<kontor_store::memory::ProjectionReadback, ApiError> {
-        let state = self.state()?;
-        let preview = state
-            .with_store(|store| store.projection_preview(project_id))
-            .map_err(|error| kontor_api::memory::map(state, error))?;
-        if request.expected_generation != preview.active_generation
-            || request.expected_memory_cursor != preview.snapshot.memory_cursor
-            || request.preview_digest != preview.snapshot.digest
-        {
-            return Err(self.deny(
-                ApiErrorCode::ProjectionConflict,
-                "the projection preview is stale",
-            ));
-        }
-        Err(self.deny(
-            ApiErrorCode::ProjectionUnavailable,
-            "the semantic projection adapter is unavailable",
-        ))
+        let qualifier = self
+            .memory_cognee
+            .get()
+            .map(|client| client as &dyn ProjectionQualifier);
+        self.rebuild_memory_projection_with_qualifier(project_id, key, request, qualifier)
+            .await
     }
 
     fn open_questions(

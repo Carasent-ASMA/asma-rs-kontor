@@ -134,6 +134,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "memory_experience_proposals",
     "memory_projection_active",
     "memory_projection_snapshots",
+    "memory_projection_rebuild_keys",
+    "memory_projection_rebuild_results",
     "memory_recall_metadata",
     "memory_recall_keys",
     "memory_fts",
@@ -763,7 +765,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // v119 makes publication attestations immutable, append-only evidence
     // (ASMA-8102); both guards must survive migration and reopen.
     // v120 adds typed experience eligibility, projections and immutable recall metadata.
-    assert_eq!(SCHEMA_VERSION, 120);
+    assert_eq!(SCHEMA_VERSION, 121);
 }
 
 #[test]
@@ -6177,10 +6179,10 @@ fn v120_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts(
     // now has the exact v119 table set and ledger, and opens through the real chain.
     let database = directory.path().join("kontor.db");
     let connection = Connection::open(&database).unwrap();
-    connection.execute_batch("DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; PRAGMA user_version=119;").unwrap();
+    connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; PRAGMA user_version=119;").unwrap();
     drop(connection);
     let store = SqliteStore::open(&database).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 120);
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
     assert_eq!(store.list_memory(project).unwrap()[0].document, document);
     assert_eq!(
         store
