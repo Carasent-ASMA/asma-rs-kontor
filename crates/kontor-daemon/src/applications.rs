@@ -882,6 +882,7 @@ const fn projection_barrier_pause() {}
 /// A projection assembled from several acquisitions can describe a state the
 /// database never held. Capturing first and mapping afterwards is what keeps
 /// the answer attributable to a single instant (ASMA-8187 × ASMA-8196).
+#[allow(clippy::large_enum_variant)]
 enum CapturedOccupancyChain {
     /// The epic has no control plane.
     NoControlPlane,

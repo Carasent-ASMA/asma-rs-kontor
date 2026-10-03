@@ -5873,6 +5873,7 @@ impl SqliteStore {
             });
         }
         let transaction = self.begin()?;
+        #[allow(clippy::type_complexity)]
         let row: Option<(
             String,
             Option<String>,
@@ -5937,6 +5938,7 @@ impl SqliteStore {
         // the receipt this exact command produced: same project, same key, same
         // command kind, same target epic, same intent. Anything else is a
         // succession pointing at somebody else's completion (ASMA-8187 P2).
+        #[allow(clippy::type_complexity)]
         let receipt: Option<(
             String,
             String,
