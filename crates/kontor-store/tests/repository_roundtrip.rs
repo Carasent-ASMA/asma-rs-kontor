@@ -2805,14 +2805,24 @@ fn atomic_local_gate_and_done_survive_restart_and_replay_after_reopen() {
 /// has to be undone here: the reopen at the end of the v115 test replays them,
 /// and a table or column left behind turns that replay into a collision instead
 /// of a migration. 0116 adds one table, 0117 two columns and 0118 the two
-/// delivery-proof tables, and 0119 the publication-attestation guards;
+/// delivery-proof tables, and 0119 the publication-attestation guards. 0120
+/// adds the six memory projection/eligibility/receipt tables, and 0121 the two
+/// projection rebuild receipt tables;
 /// a future migration that adds anything must undo it
 /// here too, and the replay is what notices when it does not.
 fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
     let connection = Connection::open(&fixture.path).expect("migration connection");
     connection
         .execute_batch(
-            "DROP TABLE local_command_results;
+            "DROP TABLE memory_projection_rebuild_results;
+         DROP TABLE memory_projection_rebuild_keys;
+         DROP TABLE memory_recall_keys;
+         DROP TABLE memory_recall_metadata;
+         DROP TABLE memory_experience_proposals;
+         DROP TABLE memory_projection_active;
+         DROP TABLE memory_projection_snapshots;
+         DROP TABLE memory_experience_eligibility;
+         DROP TABLE local_command_results;
          DROP TABLE legacy_dispatch_local_confirmation_provenance;
          DROP TABLE hosted_seat_role_personas;
          ALTER TABLE runtime_message_issuances DROP COLUMN boundary_epoch;
