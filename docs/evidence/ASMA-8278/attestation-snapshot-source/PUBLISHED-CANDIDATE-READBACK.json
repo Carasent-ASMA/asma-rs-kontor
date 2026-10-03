@@ -17,6 +17,7 @@
     "codec_tests": 7,
     "assertion_killed_mutants": 4
   },
-  "independent_review": "Pending exact published candidate review; no independent verdict claimed.",
-  "source_only": true
+  "independent_review": "Completed bounded source findings at exact845e36c; no substantiated source blocker, no formal/live acceptance.",
+  "source_only": true,
+  "evidence_limit": "Original bundle lacks saved mutation runner; definitions and kill criterion not independently inspectable. Four assertion kills corroborated by raw logs; isolated target reused earlier owner target, not independently inspected. No retrospective runner fabrication."
 }
