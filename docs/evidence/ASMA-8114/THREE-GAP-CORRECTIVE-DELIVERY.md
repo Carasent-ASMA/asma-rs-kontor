@@ -1,14 +1,15 @@
 # ASMA-8114 three-gap corrective delivery — delivered unit evidence
 
 Status: frozen candidate on `feat/ASMA-8114-three-gap-corrective-delivery`,
-rebased onto module default `c93b1e43e482a6bd89d5bd3cbc87e1f8eb051845`
-(ASMA-8234 refusal diagnostics #285 on ASMA-8196 roster occupancy #284 on the
-yoke-derive refresh #283); the initial delivery was based on
-`f95e206563bca88b6871f48528623441e5e1a231` (PR278). Nothing was pushed,
-merged, deployed, restarted or materialized; no Jira, Keychain, credential or
-runtime effect was exercised. Qualification and review are dispatched
-separately. The rework that answers the independent LSA qualification of
-`083232ca` is recorded in the final section of this document.
+rebased onto module default `6e0b3557ec5270f12694fc3b3beb9de0942c6caa`
+(ASMA-8196 MCP parity #286 on ASMA-8234 refusal diagnostics #285 on ASMA-8196
+roster occupancy #284 on the yoke-derive refresh #283); this is the third and
+final refresh, with the slot-1 and slot-2 lanes merged. The initial delivery
+was based on `f95e206563bca88b6871f48528623441e5e1a231` (PR278). Nothing was
+pushed, merged, deployed, restarted or materialized; no Jira, Keychain,
+credential or runtime effect was exercised. Qualification and review are
+dispatched separately. The rework that answers the independent LSA
+qualification of `083232ca` is recorded in the final section of this document.
 
 ## Commits
 
@@ -376,11 +377,36 @@ parity decision belongs to the merged lane, not to this reconciliation. All
 other contract-crate binaries pass (guardrails 5, mcp_cardinality 11,
 mcp_mutants 11, profiles_teams 11, runtime_adapter 52, scheduling 2).
 
+### Third and final refresh onto `6e0b3557`
+
+The candidate was rebased with `git rebase --onto 6e0b3557… c93b1e43…` (all 10
+lane commits replayed, no conflicts). This is the third and final refresh: the
+default now contains the merged slot-1 and slot-2 lanes plus the PR #286 MCP
+parity fix. Lane diff `6e0b3557..HEAD` is the same expected 10 files (1774
+insertions, 136 deletions); `Cargo.lock` and `Cargo.toml` are identical to the
+default; the parity fix is intact (`crates/kontor-mcp/src/registry.rs`
+mappings present, `tests/contract/mcp_parity.rs` canary
+`documented().len() == 195`).
+
+Reruns on the refreshed tree:
+
+| Check | Command | Exit |
+| --- | --- | --- |
+| fmt | `cargo fmt --all -- --check` | 0 |
+| clippy | `cargo clippy --workspace --all-targets -- -D warnings` | 0 |
+| deny | `cargo deny --offline --locked check` | 0 (`advisories ok, bans ok, licenses ok, sources ok`) |
+| combined | `cargo test --offline --locked -p kontor-core -p kontor-store -p kontor-api -p kontor-runtime-paseo` | 0 (1384 passed, 0 failed, 6 ignored) |
+| contract crate | `cargo test --offline --locked --no-fail-fast -p kontor-tests-contract` | 0 — `mcp_parity` 12 passed; the merged-default parity gap found in the previous slot-3 refresh is closed by PR #286 |
+| daemon witness 1 | `a_legacy_item_code_is_forbidden_in_a_topic_even_when_the_template_does_not_render_it` | 0 |
+| daemon witness 2 | `a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently` | 0 |
+| daemon witness 3 | `concurrent_daemon_insert_losers_render_the_exact_sequential_envelope` | 0 |
+| mutations | G1 item-code, G2 store duplicate, G3 catalog binding, P2 mapping | 101 under each mutation; bytes restored; all green |
+
 ## Notes and unresolved findings
 
-- Merged-default contract gap: `mcp_parity` fails on the two default-added
-  operations (`core-team` and `.../occupancies`) on `c93b1e43` itself, recorded
-  in the slot-3 subsection; its parity decision belongs to the owning lane.
+- Merged-default contract gap (closed): the `mcp_parity` failures observed on
+  `c93b1e43` in the previous refresh are fixed by PR #286 in `6e0b3557`; the
+  contract crate now passes `mcp_parity` 12/12 on the final refresh.
 - The joined endpoint race may resolve through the sequential pre-check on a
   current-thread runtime; the transactional insert-loser is now deterministically
   witnessed through the daemon realm store and its exact transport envelope for
