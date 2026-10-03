@@ -13,6 +13,8 @@ for command/hash evidence, or for the later authorized release frontier.
 
 | Artifact | Purpose |
 | --- | --- |
+| [Production-prep boundary stop](2026-10-03-09-41-report-production-prep-boundary-stop.md) | Reserved credential decision, exact remote pins/divergence, consumed lane map and unperformed resumption obligations |
+| [Boundary-stop reproduction](verify-boundary-stop.py) / [receipt](receipts/production-prep-boundary-stop.json) | Read-only commands, runner provenance, accepted source integrity and hashed source excerpts |
 | [Combined report](2026-10-03-01-11-report-combined-integration.md) | Pins, integrated source, exact commands/results, mutations and remaining owners/frontiers |
 | [Frozen docs join](2026-10-03-01-11-report-frozen-docs-join.md) | Precise DOC-01–03 findings; source operation/configuration names |
 | [Census and rehearsal](2026-10-03-01-11-plan-corpus-census-and-rehearsal.md) | Exact historical cohort reconciliation and copied-database/hash-preservation procedure |
