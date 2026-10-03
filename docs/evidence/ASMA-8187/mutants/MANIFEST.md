@@ -413,3 +413,112 @@ This is the third naming defect in this evidence set — after the overwrite and
 the bare-name table above — and they share one cause: an abbreviation that let
 two different artifacts answer to the same name. The ellipses are gone from the
 restored-carrier table for the same reason.
+
+## The barrier regressions could still hang, and no longer can
+
+An audit and an independent QA pass agreed on one blocking finding: the
+coherence regressions could hang under an ordinary `cargo test`. The harness
+limiter that bounds *mutation* runs does nothing for a developer or a CI job
+invoking the daemon suite directly, so the bound has to be in the test.
+
+### What was actually wrong
+
+`std::thread::scope` joins every thread it spawned on the way out — including
+while a panic is unwinding — and `JoinHandle::join` has no deadline. Three
+assertions sat inside the scope:
+
+* `barrier.wait_entered()` asserted at its 30s deadline, while the reader was
+  still parked at the barrier and *before* `release()` had been called;
+* the 60s completion loop asserted that the workers had finished — firing
+  precisely when one had not, and then unwinding into a join of that very
+  worker;
+* `reader.join().expect(...)` propagated a worker panic while the other handle
+  was still outstanding.
+
+Each of those turns a failing run into a hang. The second is the sharpest: the
+assertion's own precondition guarantees the join behind it cannot return.
+
+### The mechanism now
+
+No scope. The workers are `'static` and owned, so nothing is joined implicitly
+and a panic has no cleanup to block in.
+
+1. Every wait is bounded. `pause()` and `wait_entered()` each take a deadline,
+   now per-instance so the tests of the bounds can use milliseconds.
+2. `wait_entered()` **reports** instead of asserting. It is called with workers
+   running, which is the one place a panic must not happen.
+3. Completion is observed through `settled_within`, which polls under a
+   deadline and never blocks on an unfinished worker.
+4. On the unsettled path the handles are **dropped, not joined**. Dropping a
+   `JoinHandle` detaches the thread and returns immediately, so the failure
+   path terminates whatever the worker is doing; the stranded thread dies with
+   the test process.
+5. Only once both workers are accounted for does the harness assert anything.
+   From that point a panic cannot strand a worker and a join cannot block.
+
+So every failure path reaches a verdict without an external limiter.
+
+### All four bounds are killable, including the one I expected not to be
+
+Three were obviously killable, because breaking them produces a *wrong answer*:
+a settle that always succeeds, an entry wait that panics instead of reporting,
+a pause that forgets to record its timeout.
+
+`M-HANG-PAUSE-UNBOUNDED` — removing the deadline from `pause()` entirely, which
+is the original defect — was written expecting a **timeout**, on the reasoning
+that removing a bound produces the very hang the bound prevents, and that a
+hang is scored here as inconclusive rather than as a kill. That expectation was
+wrong, and the run says so:
+
+```text
+test result: FAILED. 0 passed; 1 failed ... finished in 5.01s
+panicked at: pause must bound its own wait even when nothing ever releases it
+```
+
+Killed in five seconds. The reason is the point of the whole restructure: the
+*test* is bounded independently of the thing it tests. `settled_within` gave up
+on the never-finishing worker after five seconds and the assertion fired, so a
+missing bound in the production barrier produced a definitive failure instead
+of a hang.
+
+That is a stronger result than the one aimed for. A no-hang property normally
+cannot be demonstrated by a kill — you cannot exhibit the absence of a hang by
+producing one — and the only reason it can be here is that the harness no
+longer depends on the code under test to terminate. The expectation is recorded
+alongside the result rather than quietly replaced by it.
+
+### A round was started under the wrong suffix and discarded
+
+The first attempt at this mutant round was launched with ids suffixed
+`-2f9e20d6` while `HEAD` was already `b236eda7`. The logs' recorded
+`baseline commit` was correct, but the filenames asserted a baseline the runs
+had not been taken at — the same class of defect as the overwrite, the bare
+names and the wrong patch citations above.
+
+It was stopped after two runs and the four untracked carriers were deleted
+before any commit. Nothing committed ever carried the wrong suffix, and no
+prior evidence was touched. Recorded because the round happened, and because
+a discard that is not written down is indistinguishable from one that never
+needed to happen.
+
+The source was restored byte-identically by the harness's `EXIT` trap even
+though the run was killed mid-flight, which is the behaviour that trap was
+added for.
+
+### Results of the four bound mutants
+
+| Mutant | Breaks | Caught by | Outcome |
+|---|---|---|---|
+| `M-HANG-SETTLE-ALWAYS-b236eda7` | `settled_within` reports an unfinished worker as settled | `the_harness_fails_a_stuck_worker_instead_of_waiting_for_it` | killed (101) |
+| `M-HANG-WAIT-ASSERTS-b236eda7` | `wait_entered` panics instead of reporting | `an_unreached_barrier_reports_instead_of_asserting` | killed (101), in 0.06s |
+| `M-HANG-NO-TIMEOUT-FLAG-b236eda7` | `pause` stops recording that it timed out | `a_projection_left_unreleased_stops_waiting_at_its_deadline` | killed (101) |
+| `M-HANG-PAUSE-UNBOUNDED-b236eda7` | `pause` waits with no deadline at all — the original defect | the same regression's own `settled_within` bound | killed (101), in 5.01s |
+
+`M-HANG-WAIT-ASSERTS` needed a second attempt: the first failed to apply,
+because `cargo fmt` had joined `else {` onto the preceding line and the
+mutation script still expected the pre-format shape. A patch script that does
+not match is recorded as a failure to apply, never as a survival — the two are
+not interchangeable, and a script that silently matched nothing would have
+reported a green test as evidence of nothing at all. The corrected script
+distinguishes this site from the identically opened one in `pause()` by the
+`return false;` beneath it.
