@@ -89,6 +89,8 @@ pub fn restore_snapshot(
     // Inspect ledger continuity before existing SQLite classification can create
     // WAL sidecars beside a refused destination. Offline restore must not ignore
     // committed state that still resides in a WAL.
+    // WAL evidence must survive even if its main file is absent or empty.
+    refuse_nonempty_wal(destination)?;
     if std::fs::metadata(destination).is_ok_and(|found| found.len() > 0) {
         refuse_nonempty_attestation_ledger(destination)?;
     }
@@ -129,7 +131,7 @@ pub fn restore_snapshot(
     })
 }
 
-fn refuse_nonempty_attestation_ledger(database: &Path) -> Result<(), BackupError> {
+fn refuse_nonempty_wal(database: &Path) -> Result<(), BackupError> {
     let refusal = || BackupError::Verification {
         detail: "public key authority ledger could not be inspected without changing files",
     };
@@ -141,6 +143,14 @@ fn refuse_nonempty_attestation_ledger(database: &Path) -> Result<(), BackupError
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return Err(refusal()),
     }
+    Ok(())
+}
+
+fn refuse_nonempty_attestation_ledger(database: &Path) -> Result<(), BackupError> {
+    refuse_nonempty_wal(database)?;
+    let refusal = || BackupError::Verification {
+        detail: "public key authority ledger could not be inspected without changing files",
+    };
     let absolute = if database.is_absolute() {
         database.to_path_buf()
     } else {

@@ -284,6 +284,116 @@ fn an_uncheckpointed_public_ledger_refusal_leaves_all_target_files_unchanged() {
     }
 }
 
+/// Real SQLite-generated committed WAL/SHM bytes from a disposable ledger.
+/// The destination main-file loss/truncation below is deliberately simulated;
+/// this is residue-preservation evidence, not live crash-recovery qualification.
+fn assert_missing_or_zero_main_with_committed_wal_is_preserved(missing_main: bool) {
+    let home = TempDir::new().expect("home");
+    let source = home.path().join("source.db");
+    drop(SqliteStore::open(&source).expect("empty source"));
+    let snapshot = create_snapshot(
+        &source,
+        &home.path().join("backups"),
+        at("2026-10-03T19:00:00Z"),
+    )
+    .expect("empty snapshot");
+
+    let donor = home.path().join("donor.db");
+    let store = SqliteStore::open(&donor).expect("disposable WAL donor");
+    register_public_ledger_key(&store);
+    let reader =
+        rusqlite::Connection::open_with_flags(&donor, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("independent donor reader");
+    let committed: i64 = reader.query_row("SELECT count(*) FROM attestation_authority_keys WHERE issuer='test-issuer' AND key_id='test-key' AND public_key_der=x'010203'", [], |row| row.get(0)).expect("committed public metadata");
+    assert_eq!(
+        committed, 1,
+        "the copied WAL comes from committed real SQLite state"
+    );
+    let wal = std::fs::read(home.path().join("donor.db-wal")).expect("real WAL bytes");
+    let shm = std::fs::read(home.path().join("donor.db-shm")).expect("real SHM bytes");
+    assert!(wal.len() > 32);
+    assert!(matches!(
+        &wal[..4],
+        [0x37, 0x7f, 0x06, 0x82] | [0x37, 0x7f, 0x06, 0x83]
+    ));
+    assert!(!shm.is_empty());
+
+    let directory = home.path().join("target");
+    std::fs::create_dir(&directory).expect("fixture directory");
+    let destination = directory.join("kontor.db");
+    let destination_wal = directory.join("kontor.db-wal");
+    let destination_shm = directory.join("kontor.db-shm");
+    if !missing_main {
+        std::fs::write(&destination, []).expect("simulate zero-length main");
+    }
+    std::fs::write(&destination_wal, &wal).expect("copy committed WAL without changing its bytes");
+    std::fs::write(&destination_shm, &shm).expect("copy SHM without changing its bytes");
+    let main_before = std::fs::read(&destination).ok();
+    assert_eq!(
+        main_before,
+        if missing_main { None } else { Some(Vec::new()) }
+    );
+    let names = listing(&directory);
+
+    assert!(matches!(
+        restore_snapshot(&snapshot.snapshot, &destination, at("2026-10-03T19:01:00Z")),
+        Err(BackupError::Verification { .. })
+    ));
+    assert_eq!(std::fs::read(&destination).ok(), main_before);
+    assert_eq!(std::fs::read(&destination_wal).expect("preserved WAL"), wal);
+    assert_eq!(std::fs::read(&destination_shm).expect("preserved SHM"), shm);
+    assert_eq!(listing(&directory), names);
+}
+
+#[test]
+fn missing_main_with_committed_wal_refuses_without_changing_destination_files() {
+    assert_missing_or_zero_main_with_committed_wal_is_preserved(true);
+}
+
+#[test]
+fn zero_main_with_committed_wal_refuses_without_changing_destination_files() {
+    assert_missing_or_zero_main_with_committed_wal_is_preserved(false);
+}
+
+#[test]
+fn missing_and_zero_main_without_nonempty_wal_retain_supported_restore() {
+    let home = TempDir::new().expect("home");
+    let source = home.path().join("source.db");
+    drop(SqliteStore::open(&source).expect("empty source"));
+    let snapshot = create_snapshot(
+        &source,
+        &home.path().join("backups"),
+        at("2026-10-03T19:00:00Z"),
+    )
+    .expect("empty snapshot");
+    for (name, zero_main, empty_wal) in [
+        ("missing", false, false),
+        ("zero", true, false),
+        ("missing-empty-wal", false, true),
+        ("zero-empty-wal", true, true),
+    ] {
+        let directory = home.path().join(name);
+        std::fs::create_dir(&directory).expect("fixture directory");
+        let destination = directory.join("kontor.db");
+        if zero_main {
+            std::fs::write(&destination, []).expect("zero main");
+        }
+        if empty_wal {
+            std::fs::write(directory.join("kontor.db-wal"), []).expect("empty WAL");
+        }
+        let restored =
+            restore_snapshot(&snapshot.snapshot, &destination, at("2026-10-03T19:01:00Z"))
+                .expect("supported restore has no nonempty WAL");
+        assert!(restored.superseded.is_none());
+        assert_eq!(
+            SqliteStore::open(&destination)
+                .expect("restored store")
+                .realm_id(),
+            snapshot.manifest.realm_id
+        );
+    }
+}
+
 #[test]
 fn corrupted124_missing_ledger_tables_is_not_an_empty_restore_fallback() {
     let home = TempDir::new().expect("home");
