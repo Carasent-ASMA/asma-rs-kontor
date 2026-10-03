@@ -907,6 +907,7 @@ async fn committee_verdict_boundary(root: &str, slug: &str) -> VerdictBoundary {
         .await;
     assert_eq!(epic_read.status, 200, "{}", epic_read.body);
     prepare_fake_provider_headroom(world, &project.to_string()).await;
+    write_fleet(world, &formal_review_fleet_yaml());
     let invoked = Call::post(
         format!("/v1/projects/{project}/epics/{epic}/committee-runs:invoke"),
         &serde_json::json!({
@@ -34869,7 +34870,8 @@ fn advisor_fleet_key() -> String {
 /// The two `claude-then-*` chains deliberately open on the same vendor (step 1
 /// is the Claude domain) and diverge afterwards, so a reviewer that may not
 /// share its peer's vendor is visibly forced down to its next step.
-/// `cursor-grok` carries a single step, a vendor no template revision names.
+/// `cursor-grok` carries a single step, a vendor no template revision names;
+/// `codex-sol` is the one-step Sol chain a formal fixture binds its judge to.
 fn committee_fleet_yaml(bindings: &[(&str, &str)]) -> String {
     let bindings: String = bindings
         .iter()
@@ -34879,9 +34881,22 @@ fn committee_fleet_yaml(bindings: &[(&str, &str)]) -> String {
         "schema_version: 1\n\
          domains:\n  claude: {{ provider: claude, accounts: [claude-personal, claude-work] }}\n  codex: {{ provider: codex, accounts: [codex-work] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n\
          models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai }}\n  grok: {{ domain: cursor, id: grok-4.7, vendor: xai }}\n\
-         chains:\n  claude-then-codex:\n    - [opus]\n    - [sol]\n  claude-then-grok:\n    - [opus]\n    - [grok]\n  cursor-grok:\n    - [grok]\n\
+         chains:\n  claude-then-codex:\n    - [opus]\n    - [sol]\n  claude-then-grok:\n    - [opus]\n    - [grok]\n  cursor-grok:\n    - [grok]\n  codex-sol:\n    - [sol]\n\
          bindings:\n{bindings}"
     )
+}
+
+/// The explicit selected fleet a formal Independent Review fixture is admitted
+/// under, now that the pinned template's own routes seat two Claude seats and
+/// the formal protocol allows one (ASMA-8280).
+///
+/// It binds only the judge, to `codex-sol`, so the judge takes `codex-work`
+/// Sol at step 1. Reviewer A keeps the template's `claude-work` Opus route and
+/// reviewer B its Codex Sol route on `codex-work`; this policy names both
+/// makers. Prerequisites: enabled `claude-work` and `codex-work` accounts, as
+/// the fake headroom fixture registers. One Claude seat: reviewer A.
+fn formal_review_fleet_yaml() -> String {
+    committee_fleet_yaml(&[(&committee_fleet_key("judge"), "codex-sol")])
 }
 
 /// One LF-04 `fleet.yml` whose reviewers open on the same provider *family*
@@ -35096,9 +35111,12 @@ async fn a_fleet_bound_committee_seats_reviewers_on_different_vendors() {
     )
     .await;
     let world = &realm.world;
+    // The judge is bound to Sol: the pinned template's judge route is Claude,
+    // and the formal review seats one Claude seat (ASMA-8280).
     let fleet = committee_fleet_yaml(&[
         (&committee_fleet_key("reviewer-a"), "claude-then-codex"),
         (&committee_fleet_key("reviewer-b"), "claude-then-grok"),
+        (&committee_fleet_key("judge"), "codex-sol"),
     ]);
     write_fleet(world, &fleet);
     let fleet_hash = ContentHash::of(fleet.as_bytes());
@@ -37493,6 +37511,7 @@ async fn a_committee_seat_recovery_fails_closed_on_an_unverifiable_activation() 
     )
     .await;
     let world = &realm.world;
+    write_fleet(world, &formal_review_fleet_yaml());
     let invoked = invoke_fleet_committee(
         &realm,
         "Activated seat recovery",
@@ -37583,6 +37602,7 @@ async fn a_native_less_consultation_reroute_fails_closed_on_an_unverifiable_acti
     )
     .await;
     let world = &realm.world;
+    write_fleet(world, &formal_review_fleet_yaml());
     let reviewer_a = RoleSlotId::parse("reviewer-a").expect("a role slot");
     world.fake.refusing_launch_of(&reviewer_a);
     let invoked = invoke_fleet_committee(
@@ -37679,9 +37699,11 @@ async fn a_fleet_bound_reviewer_that_loses_its_provider_recovers_on_the_fleet_ch
     )
     .await;
     let world = &realm.world;
-    // The predecessor is placed from the pinned template; the fleet arrives
-    // only for the recovery, which is what makes the successor route evidence
-    // of the chain the recovery consulted.
+    // The predecessor is placed from the pinned template: the explicit
+    // fixture fleet binds only the judge (ASMA-8280). The reviewer-a binding
+    // arrives only for the recovery, which is what makes the successor route
+    // evidence of the chain the recovery consulted.
+    write_fleet(world, &formal_review_fleet_yaml());
     let invoked = invoke_fleet_committee(
         &realm,
         "Fleet seat recovery provenance",
@@ -37794,16 +37816,104 @@ async fn a_fleet_bound_reviewer_that_loses_its_provider_recovers_on_the_fleet_ch
     );
 }
 
-/// LF-04: with no `fleet.yml`, Committee allocation is exactly the pinned
-/// template's, and no placement records a fleet decision.
+/// ASMA-8280: the pinned formal template's own routes seat two Claude seats,
+/// and the formal Independent Review allows one, counting its judge. With no
+/// `fleet.yml` no selected policy names any route's maker, so no seat can be
+/// shown to keep the cap; with a policy that lists those routes but binds no
+/// slot, their makers are named and no whole allocation keeps the cap. Either
+/// way the invocation is refused, typed, before any run, seat, receipt or
+/// native effect, and the immutable revision reads back with its hash. Only an
+/// explicit compliant selection is admitted, and its frozen routes say which
+/// source each came from.
 #[tokio::test]
-async fn without_fleet_yml_committee_allocation_is_unchanged() {
+async fn without_a_compliant_fleet_the_formal_committee_is_refused_before_any_effect() {
     let realm = consultation_realm("/tmp/kontor-lf04-committee-no-fleet", &[]).await;
     let world = &realm.world;
-    let invoked =
+    let project_id = ProjectId::parse(&realm.project).expect("a project id");
+    let bundled_hash = kontor_profiles::seeds::bundled_consultation_presets()
+        .expect("the presets load")
+        .committee_templates
+        .remove(0)
+        .canonicalize()
+        .expect("the preset canonicalizes")
+        .hash()
+        .clone();
+    let calls_before = world.fake.calls().len();
+
+    let unlisted =
         invoke_fleet_committee(&realm, "Pinned template allocation", "lf04-no-fleet-invoke").await;
-    assert_eq!(invoked.status, 200, "{}", invoked.body);
-    let run = invoked.json()["committee_run_id"]
+    assert_eq!(unlisted.status, 409, "{}", unlisted.body);
+    assert_eq!(unlisted.code(), "placement_blocked");
+    assert_eq!(
+        unlisted.json()["rule"],
+        "a Committee slot has no currently admissible governed route"
+    );
+
+    // Lists the template's routes and their makers; binds only the Advisor.
+    write_fleet(
+        world,
+        &committee_fleet_yaml(&[(&advisor_fleet_key(), "codex-sol")]),
+    );
+    let capped = invoke_fleet_committee(
+        &realm,
+        "Pinned template allocation",
+        "lf04-listing-fleet-invoke",
+    )
+    .await;
+    assert_eq!(capped.status, 409, "{}", capped.body);
+    assert_eq!(capped.code(), "placement_blocked");
+    assert_eq!(
+        capped.json()["rule"],
+        "no currently admissible whole-Committee allocation keeps the formal Independent Review to one Claude seat"
+    );
+
+    assert_eq!(
+        world.fake.calls().len(),
+        calls_before,
+        "a refused Committee reached the native runtime"
+    );
+    let (runs, receipts) = world.daemon.state().with_store(|store| {
+        let epic = MiniProjectId::parse(&realm.epic).expect("an epic id");
+        let runs = store
+            .list_consultation_runs(project_id, epic, ConsultationFamily::Committee)
+            .expect("Committee runs list");
+        let receipts = ["lf04-no-fleet-invoke", "lf04-listing-fleet-invoke"].map(|key| {
+            store
+                .get_receipt_by_key(&IdempotencyKey::parse(key).expect("a key"))
+                .expect("the receipt reads")
+        });
+        (runs, receipts)
+    });
+    assert!(
+        runs.is_empty(),
+        "a refused Committee created a run: {runs:?}"
+    );
+    assert!(receipts.iter().all(Option::is_none), "{receipts:?}");
+    let catalog = Call::get(format!(
+        "/v1/projects/{}/committee-templates",
+        realm.project
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(catalog.status, 200, "{}", catalog.body);
+    assert_eq!(catalog.json()["revisions"][0]["id"], COMMITTEE_PRESET);
+    assert_eq!(catalog.json()["revisions"][0]["version"], 1);
+    assert_eq!(
+        catalog.json()["revisions"][0]["definition_hash"],
+        bundled_hash.as_str(),
+        "the refusal changed the immutable v1 revision"
+    );
+
+    write_fleet(world, &formal_review_fleet_yaml());
+    let admitted = invoke_fleet_committee(
+        &realm,
+        "Pinned template allocation",
+        "lf04-compliant-fleet-invoke",
+    )
+    .await;
+    assert_eq!(admitted.status, 200, "{}", admitted.body);
+    let run = admitted.json()["committee_run_id"]
         .as_str()
         .expect("a Committee run")
         .to_owned();
@@ -37817,51 +37927,26 @@ async fn without_fleet_yml_committee_allocation_is_unchanged() {
     let routes = context["admission"]["routes"]
         .as_array()
         .expect("frozen admission routes");
-    assert!(
-        routes
-            .iter()
-            .all(|route| route.get("eligibility").is_none()),
-        "a template-routed admission keeps its exact shape: {routes:?}"
-    );
-    let reviewer_a = admission_route_for_slot(routes, "reviewer-a");
-    assert_eq!(
-        reviewer_a["model_route"]["provider"], "claude-work",
-        "{}",
-        reviewer_a
-    );
-    assert_eq!(
-        reviewer_a["model_route"]["model"], "claude-opus-5",
-        "{}",
-        reviewer_a
-    );
-    let reviewer_b = admission_route_for_slot(routes, "reviewer-b");
-    assert_eq!(
-        reviewer_b["model_route"]["provider"], "codex-work",
-        "{}",
-        reviewer_b
-    );
-    assert_eq!(
-        reviewer_b["model_route"]["model"], "gpt-5.6-sol",
-        "{}",
-        reviewer_b
-    );
-    let judge = admission_route_for_slot(routes, "judge");
-    assert_eq!(judge["model_route"]["provider"], "claude-work", "{}", judge);
-    assert_eq!(judge["model_route"]["model"], "claude-opus-5", "{}", judge);
-    for route in [reviewer_a, reviewer_b, judge] {
-        assert_eq!(
-            route["source"], "template",
-            "a template-routed slot was stamped with another policy: {route}"
-        );
-        assert_eq!(
-            route["profile_hash"], context["template_hash"],
-            "the frozen route is not the pinned template revision: {route}"
-        );
+    for (slot, provider, model, source) in [
+        ("reviewer-a", "claude-work", "claude-opus-5", "template"),
+        ("reviewer-b", "codex-work", "gpt-5.6-sol", "template"),
+        ("judge", "codex-work", "gpt-5.6-sol", "fleet_configuration"),
+    ] {
+        let route = admission_route_for_slot(routes, slot);
+        assert_eq!(route["model_route"]["provider"], provider, "{route}");
+        assert_eq!(route["model_route"]["model"], model, "{route}");
+        assert_eq!(route["source"], source, "{route}");
+        assert_eq!(route["rank"], 1, "{route}");
     }
-    assert!(
-        !world.directory.path().join("fleet-decisions").exists(),
-        "a placement without a fleet wrote a fleet decision"
-    );
+    let judge = admission_route_for_slot(routes, "judge");
+    assert_eq!(judge["fleet_provenance"]["chain"], "codex-sol", "{judge}");
+    assert_eq!(judge["fleet_provenance"]["step"], 1, "{judge}");
+    assert_eq!(judge["fleet_provenance"]["vendor"], "openai", "{judge}");
+    for slot in ["reviewer-a", "reviewer-b"] {
+        let route = admission_route_for_slot(routes, slot);
+        assert_eq!(route["profile_hash"], context["template_hash"], "{route}");
+        assert!(route.get("fleet_provenance").is_none(), "{route}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -52683,6 +52768,19 @@ async fn initial_committee_recovery_is_admin_fenced_diverse_frozen_and_replayabl
     }
 
     prepare_fake_provider_headroom(world, project).await;
+    // ASMA-8280: a formal Committee seat needs a maker the selected policy
+    // names. This policy names the maker of every template and recovery route
+    // below and binds no Committee slot, so the accepted recovery routes keep
+    // their own ordinals: reviewer A takes OpenCode DeepSeek and the judge
+    // Codex Sol, both at recovery rung 1, while Claude is exhausted.
+    write_fleet(
+        world,
+        "schema_version: 1\n\
+         domains:\n  claude: { provider: claude, accounts: [claude-work, claude-personal] }\n  codex: { provider: codex, accounts: [codex-work, codex-personal] }\n  opencode: { provider: opencode, accounts: [opencode] }\n\
+         models:\n  opus: { domain: claude, id: claude-opus-5, vendor: anthropic }\n  sol: { domain: codex, id: gpt-5.6-sol, vendor: openai }\n  deepseek: { domain: opencode, id: deepseek/deepseek-v4-flash, vendor: deepseek }\n\
+         chains: {}\n\
+         bindings: {}\n",
+    );
     let epic_read = Call::get(format!("/v1/projects/{project}/epics/{epic}"))
         .signed_as(world, "observer")
         .send(world)
@@ -53892,6 +53990,28 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .send(world)
         .await;
     assert_eq!(seeded_committee.status, 200, "{}", seeded_committee.body);
+    ensure_consultation_account(
+        world,
+        project,
+        "Committee Cursor",
+        "committee-cursor",
+        "cursor",
+    )
+    .await;
+    prepare_fake_provider_headroom(world, project).await;
+    let compliant_fleet =
+        committee_fleet_yaml(&[(&committee_fleet_key("judge"), "judge-recovery")]).replace(
+            "bindings:\n",
+            "  judge-recovery:\n    - [grok]\n    - [sol@xhigh]\n\nbindings:\n",
+        );
+    let compliant_fleet = compliant_fleet
+        .replace(
+            "id: gpt-5.6-sol, vendor: openai",
+            "id: gpt-5.6-sol, vendor: openai, efforts: [xhigh]",
+        )
+        .replace("[sol]", "[sol@xhigh]");
+    assert!(kontor_fleet::FleetSnapshot::parse(&compliant_fleet).is_ok());
+    write_fleet(world, &compliant_fleet);
     let mut legacy_template = kontor_profiles::seeds::bundled_consultation_presets()
         .expect("the bundled presets load")
         .committee_templates
@@ -54194,7 +54314,8 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         .collect();
     assert_eq!(ordinary_routes["reviewer-a"], "claude-work");
     assert_eq!(ordinary_routes["reviewer-b"], "codex-work");
-    assert_eq!(ordinary_routes["judge"], "claude-work");
+    // The explicit fixture gives the Judge Cursor R1, then Sol R2 for recovery.
+    assert_eq!(ordinary_routes["judge"], "cursor");
     let reviewer_ids: Vec<String> = seats
         .iter()
         .filter(|seat| {
@@ -54362,62 +54483,6 @@ async fn a_seeded_committee_runs_and_settles_instead_of_returning_503() {
         premature_judge_read.status, 403,
         "an unlaunched Judge may not read independent work"
     );
-
-    // Deployed Committees predating immutable per-slot admission provenance
-    // still freeze their exact template revision and each seat's exact route.
-    // Reproduce that historical row shape and prove recovery accepts only the
-    // route declared by the pinned template rather than abandoning the run.
-    let mut legacy_context = frozen_invocation.context.clone();
-    legacy_context
-        .as_object_mut()
-        .expect("the frozen Committee context is an object")
-        .remove("admission");
-    let legacy_context_document = CanonicalDocument::from_value(&legacy_context)
-        .expect("the legacy Committee context canonicalizes");
-    let database = world.directory.path().join(kontor_daemon::DATABASE_FILE);
-    let connection = rusqlite::Connection::open(database).expect("the Realm database opens");
-    connection
-        .execute_batch("DROP TRIGGER consultation_run_inputs_are_frozen;")
-        .expect("the isolated fixture may reproduce the deployed legacy row");
-    connection
-        .execute(
-            "UPDATE consultation_runs
-             SET context = ?1, context_hash = ?2
-             WHERE project_id = ?3 AND run_id = ?4 AND family = 'committee'",
-            rusqlite::params![
-                legacy_context_document.json(),
-                legacy_context_document.hash().as_str(),
-                project,
-                run,
-            ],
-        )
-        .expect("the deployed pre-provenance Committee row is reproduced");
-    connection
-        .execute_batch(
-            "CREATE TRIGGER consultation_run_inputs_are_frozen
-             BEFORE UPDATE ON consultation_runs
-             WHEN OLD.project_id <> NEW.project_id
-               OR OLD.mini_project_id <> NEW.mini_project_id
-               OR OLD.family <> NEW.family
-               OR OLD.profile_id <> NEW.profile_id
-               OR OLD.profile_version <> NEW.profile_version
-               OR OLD.definition_hash <> NEW.definition_hash
-               OR OLD.question <> NEW.question
-               OR OLD.question_hash <> NEW.question_hash
-               OR OLD.context <> NEW.context
-               OR OLD.context_hash <> NEW.context_hash
-               OR OLD.caller_seat_binding_id <> NEW.caller_seat_binding_id
-               OR OLD.topology_node_id <> NEW.topology_node_id
-               OR OLD.invoke_key <> NEW.invoke_key
-               OR OLD.invoke_intent_hash <> NEW.invoke_intent_hash
-               OR OLD.created_at <> NEW.created_at
-               OR OLD.result IS NOT NULL
-             BEGIN
-                 SELECT RAISE(ABORT, 'a consultation run cannot rewrite frozen input or settled evidence');
-             END;",
-        )
-        .expect("the frozen-input guard is restored after fixture setup");
-    drop(connection);
 
     // An admin may replace an exact idle native filler without changing the
     // logical Committee seat or inventing a finding. Recovery advances the
@@ -62625,6 +62690,7 @@ async fn committee_containers_follow_their_recorded_subject_not_their_caller() {
             })
             .expect("the Committee preset publishes");
     });
+    write_fleet(world, &formal_review_fleet_yaml());
 
     let invoke_committee = |topic: &'static str, task: Option<String>, key: &'static str| {
         let caller = caller.clone();

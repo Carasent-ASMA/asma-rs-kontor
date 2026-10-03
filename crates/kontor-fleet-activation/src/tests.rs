@@ -974,3 +974,189 @@ fn every_rule_string_is_stable() {
         "name exactly one of binding_key, allocation and planning_pair"
     );
 }
+
+// --- ASMA-8280: the formal Independent Review's one-Claude cap ---------------
+
+const FORMAL: &str = "committee/01991c00-0000-7000-8000-000000000001";
+const GENERIC: &str = "team/01936f5a-0000-7000-8000-000000000002";
+
+/// The formal Committee's three chains as the 95037ece policy writes them, a
+/// DEC-010-style unavailable domain and an uncalibrated model included; the
+/// same chains are bound to a generic Team so the two differ only in protocol.
+fn committee_policy() -> String {
+    format!(
+        "schema_version: 2\n\
+         domains:\n  claude: {{ provider: claude, accounts: [claude-work, claude-personal] }}\n  codex: {{ provider: codex, accounts: [codex-work, codex-personal] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n  deepseek: {{ provider: opencode, accounts: [opencode], model_prefix: \"deepseek/\" }}\n\
+         unavailable:\n  domains: [deepseek]\n  accounts: []\n\
+         models:\n  opus-5.5: {{ domain: claude, id: claude-opus-5-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: false }}\n  opus-5: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}\n  sol: {{ domain: codex, id: gpt-6.1-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}\n  grok-4.6: {{ domain: cursor, id: grok-4.6, vendor: xai, efforts: [xhigh], vision: true, calibrated: true }}\n  deepseek-flash: {{ domain: deepseek, id: deepseek/deepseek-flash, vendor: deepseek, efforts: [max], vision: false, calibrated: false }}\n\
+         chains:\n  review-a:\n    - [sol@xhigh]\n    - [deepseek-flash@max]\n    - [opus-5.5@xhigh, opus-5@xhigh]\n  review-b:\n    - [opus-5.5@xhigh, opus-5@xhigh]\n    - [sol@xhigh]\n  consult-claude-first:\n    - [opus-5.5@xhigh, opus-5@xhigh]\n    - [sol@xhigh]\n    - [grok-4.6@xhigh]\n\
+         bindings:\n  {FORMAL}/reviewer-a: review-a\n  {FORMAL}/reviewer-b: review-b\n  {FORMAL}/judge: consult-claude-first\n  {GENERIC}/researcher-a: review-a\n  {GENERIC}/researcher-b: review-b\n  {GENERIC}/judge: consult-claude-first\n\
+         rules:\n  calibration_required:\n    - {FORMAL}/reviewer-a\n    - {FORMAL}/reviewer-b\n    - {FORMAL}/judge\n    - {GENERIC}/researcher-a\n    - {GENERIC}/researcher-b\n    - {GENERIC}/judge\n"
+    )
+}
+
+/// The policy admitted exactly as an activation admits it, held in memory.
+fn committee_snapshot() -> Activated {
+    let yaml = committee_policy();
+    let policy_hash = ContentHash::of(yaml.as_bytes());
+    Activated {
+        policy: FleetSnapshot::activated(&policy_hash, 2, &yaml).expect("the policy admits"),
+        record: FleetActivation {
+            schema_version: ACTIVATION_V1,
+            source_bundle_hash: None,
+            policy_hash,
+            policy_schema_version: 2,
+            core_team_revision_hash: None,
+            activated_at: "2026-10-02T00:00:00Z".to_owned(),
+        },
+        bundle: None,
+    }
+}
+
+fn committee(prefix: &str, slots: [&str; 3]) -> serde_json::Value {
+    serde_json::json!({
+        "diversity": "distinct_vendor_per_reviewer",
+        "slots": [
+            {"slot_id": "reviewer-a", "role": "reviewer", "binding_key": format!("{prefix}/{}", slots[0])},
+            {"slot_id": "reviewer-b", "role": "reviewer", "binding_key": format!("{prefix}/{}", slots[1])},
+            {"slot_id": "judge", "role": "judge", "binding_key": format!("{prefix}/{}", slots[2])},
+        ],
+    })
+}
+
+fn seated(selection: &JointSelection) -> Vec<(String, String, u16)> {
+    selection
+        .slots
+        .iter()
+        .map(|slot| {
+            let selected = slot.allocation.selected.as_ref().expect("selected");
+            (
+                selected.rung.provider.0.clone(),
+                selected.rung.model.0.clone(),
+                selected.step,
+            )
+        })
+        .collect()
+}
+
+fn owned(rows: [(&str, &str, u16); 3]) -> Vec<(String, String, u16)> {
+    rows.map(|(provider, model, step)| (provider.to_owned(), model.to_owned(), step))
+        .to_vec()
+}
+
+#[test]
+fn the_formal_review_seats_one_claude_and_moves_the_judge_to_sol() {
+    let activated = committee_snapshot();
+    let formal = activated
+        .allocate(&joint(committee(
+            FORMAL,
+            ["reviewer-a", "reviewer-b", "judge"],
+        )))
+        .expect("allocates");
+    assert!(formal.is_complete());
+    assert_eq!(
+        seated(&formal),
+        owned([
+            ("codex-work", "gpt-6.1-sol", 1),
+            ("claude-work", "claude-opus-5", 1),
+            ("codex-work", "gpt-6.1-sol", 2),
+        ])
+    );
+    let judge = &formal.slots[2].allocation;
+    assert_eq!(judge.considered.len(), 5);
+    for passed in &judge.considered[..2] {
+        assert_eq!(
+            passed.excluded,
+            Some(kontor_fleet::AllocationExclusion::VendorCapReached)
+        );
+        assert_eq!(passed.conflicts_with.as_deref(), Some("reviewer-b"));
+    }
+    assert_eq!(
+        judge.considered[4].excluded,
+        Some(kontor_fleet::AllocationExclusion::RungBeyondVerdict)
+    );
+    // The uncalibrated model never reached the allocator.
+    assert!(!formal.slots[2].excluded_by_policy.is_empty());
+    let receipt = serde_json::to_value(&formal).expect("JSON");
+    assert_eq!(receipt["slots"][2]["selected"]["vendor"], "openai");
+    assert_eq!(
+        receipt["slots"][2]["considered"][0]["excluded"],
+        "vendor_cap_reached"
+    );
+    assert!(receipt.get("constraints").is_none());
+
+    // The same chains under a generic protocol stay uncapped: two Claude seats.
+    let generic = activated
+        .allocate(&joint(committee(
+            GENERIC,
+            ["researcher-a", "researcher-b", "judge"],
+        )))
+        .expect("allocates");
+    assert_eq!(
+        seated(&generic),
+        owned([
+            ("codex-work", "gpt-6.1-sol", 1),
+            ("claude-work", "claude-opus-5", 1),
+            ("claude-work", "claude-opus-5", 1),
+        ])
+    );
+
+    // One formal slot holds the whole request: rebinding the judge to a
+    // generic key does not relax the cap.
+    let mut mixed = committee(FORMAL, ["reviewer-a", "reviewer-b", "judge"]);
+    mixed["slots"][2]["binding_key"] = format!("{GENERIC}/judge").into();
+    let mixed = activated.allocate(&joint(mixed)).expect("allocates");
+    assert_eq!(seated(&mixed)[2], seated(&formal)[2]);
+}
+
+#[test]
+fn a_formal_review_with_no_admissible_judge_is_blocked_whole() {
+    let activated = committee_snapshot();
+    let mut request = committee(FORMAL, ["reviewer-a", "reviewer-b", "judge"]);
+    request["slots"][2]["unavailable_accounts"] =
+        serde_json::json!(["codex-work", "codex-personal"]);
+    let blocked = activated
+        .allocate(&joint(request))
+        .expect("a defined block result");
+    assert_eq!(blocked.blocked, Some(AllocationFailure::VendorCapExceeded));
+    assert!(
+        blocked
+            .slots
+            .iter()
+            .all(|slot| slot.allocation.selected.is_none()
+                && slot.allocation.failure == Some(AllocationFailure::VendorCapExceeded))
+    );
+    let receipt = serde_json::to_value(&blocked).expect("JSON");
+    assert_eq!(receipt["blocked"], "vendor_cap_exceeded");
+    assert_eq!(
+        receipt["slots"][2]["considered"][4]["excluded"],
+        "rung_beyond_verdict"
+    );
+    // The judge may not escape to Claude by avoiding OpenAI either.
+    let mut request = committee(FORMAL, ["reviewer-a", "reviewer-b", "judge"]);
+    request["slots"][2]["excluded_vendors"] = serde_json::json!(["openai"]);
+    assert_eq!(
+        activated
+            .allocate(&joint(request))
+            .expect("a defined block result")
+            .blocked,
+        Some(AllocationFailure::VendorCapExceeded)
+    );
+    // The request has no field that could carry or relax a cap.
+    for (path, field) in [
+        ("request", "constraints"),
+        ("slot", "vendor_cap"),
+        ("slot", "max_rung"),
+    ] {
+        let mut request = committee(FORMAL, ["reviewer-a", "reviewer-b", "judge"]);
+        if path == "request" {
+            request[field] = serde_json::json!({});
+        } else {
+            request["slots"][2][field] = serde_json::json!(3);
+        }
+        assert!(
+            serde_json::from_value::<JointAllocationRequest>(request).is_err(),
+            "{path}.{field}"
+        );
+    }
+}

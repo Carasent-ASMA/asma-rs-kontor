@@ -2024,3 +2024,16 @@ _Historical: kept as written at `832e60cc`. The current list is under slice four
 - **In-process authority is nominal.** A `PlanningPairActor` is a value. The governed service must authenticate the member and caller (D-2, D-3) before a transition runs.
 - **Independent Review stays separate.** The general Committee cardinality fixture (`cardinality_is_data_not_three`: two reviewers, no Judge) is not `independent_review@1` and is not treated as one here. Independent Review remains the only formal gate, and its template and Judge requirement are decided separately.
 - TASK-004 and TASK-002 are not closed by any slice.
+
+## Root-led consolidation (2026-10-03)
+
+Igor authorized root direct delivery, parallel owned child implementation and
+consolidated QA/audit at the end. Root now owns epic plan/integration publication;
+the existing TPM and LSA have frozen automatic dispatch and clone writes.
+
+The successor source work is recorded in
+[ROOT-LED-CONSOLIDATION.md](ROOT-LED-CONSOLIDATION.md): the reviewed TASK002 cap
+contribution is integrated beside W3a, and W3b moves the recovery and four
+contribution sequences behind the same API-independent owner pattern. Historical
+receipts above are unchanged. B2 authority, unsupported native routes and live
+qualification remain separate; this update is no independent audit or closure.

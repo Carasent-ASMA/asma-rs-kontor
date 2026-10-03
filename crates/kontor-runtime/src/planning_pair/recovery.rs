@@ -1,21 +1,23 @@
 //! A planning pair member's same-native recovery, decided purely from facts the
 //! service read (ASMA-8282 B1b).
 //!
-//! Before anything here runs, the service has:
+//! The shared W3b application sequence calls these pure decisions after its
+//! owner has:
 //! - authenticated the frozen caller at its current hosted generation;
 //! - derived the member's frozen context and its hash;
 //! - canonicalized the intent;
 //! - answered an exact replay.
 //!
-//! Then, stage by stage in its own order, it calls:
+//! Then, stage by stage in the same order, the sequence calls:
 //! 1. [`require_recoverable`], before it holds the run to the expected revision;
 //! 2. [`plan`], once it has;
 //! 3. [`RecoveryPlan::outcome`], on the runtime's answer to the readback the plan names.
 //!
-//! The service keeps every read, the route refusal, the readback call, the
-//! withdrawal, the compare-and-swap with its receipt, and every write. Nothing
-//! here creates, replaces, discovers or substitutes a session, and a plan is
-//! not a credential or a lease.
+//! The sequence reaches every read, route refusal, readback, withdrawal and
+//! compare-and-swap through `application::commands::recovery::RecoveryOwner`.
+//! The daemon remains the sole production owner and writer. Nothing here
+//! creates, replaces, discovers or substitutes a session, and a plan is not
+//! a credential or a lease.
 
 use kontor_core::DomainError;
 use kontor_core::consultation::ConsultationRunState;

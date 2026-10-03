@@ -4,6 +4,14 @@
 
 mod fake;
 
+/// A domain-restored fixture for the shared command boundary tests.
+pub(super) fn command_pair() -> PairState {
+    pair_state(
+        &run(&ContentHash::of(b"command"), ConsultationRunState::Running),
+        true,
+    )
+}
+
 use super::*;
 use fake::{Fake, Scenario};
 use kontor_core::spec::ModelRung;

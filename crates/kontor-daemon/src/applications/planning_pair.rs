@@ -20,6 +20,7 @@
 //! that supports the planning pair member surface performs one; persistence
 //! alone never reports a launch.
 
+mod commands;
 mod invocation;
 mod refusal;
 
@@ -36,9 +37,9 @@ use kontor_api::planning_pair::{
 };
 use kontor_core::id::PlanningPairRunId;
 use kontor_core::planning_pair::{
-    ClarificationRequest, MemberDisposition, PlanningPairActor, PlanningPairContribution,
-    PlanningPairDisposition, PlanningPairReadbackRefusal, PlanningPairRecord, PlanningPairRound,
-    PlanningPairRun, PlanningPairSlot, RecordedClarification, RecordedContribution,
+    MemberDisposition, PlanningPairContribution, PlanningPairDisposition,
+    PlanningPairReadbackRefusal, PlanningPairRecord, PlanningPairRound, PlanningPairRun,
+    PlanningPairSlot, RecordedContribution,
 };
 use kontor_core::repository::{
     PlanningPairMemberReadback, StoredPlanningPairContribution, StoredPlanningPairKnownNative,
@@ -46,13 +47,15 @@ use kontor_core::repository::{
 };
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_fleet_activation::{PlanningPairMemberRequest, PlanningPairRequest};
+use kontor_runtime::planning_pair::application::commands::{
+    contribution as contribution_sequence, recovery as recovery_sequence,
+};
 use kontor_runtime::planning_pair::application::{
     self as invocation_sequence, InvokeInput, InvokeRefusal, PairState,
 };
 use kontor_runtime::planning_pair::caller::{self as eligibility, CallerRefusal, FrozenCallerAct};
 use kontor_runtime::planning_pair::context::{self as member_context, ContextRefusal};
 use kontor_runtime::planning_pair::intent::{self as fingerprint, SeatGeneration};
-use kontor_runtime::planning_pair::recovery::{self as member_recovery, RecoveryOutcome};
 use refusal::{
     caller_refusal_rule, context_refusal_rule, invoke_refusal_rule, recovery_refusal_rule,
     withdraw_rule,
@@ -684,89 +687,15 @@ impl Services {
         round: PlanningPairRound,
         request: &RecordPlanningPairContributionRequest,
     ) -> Result<PlanningPairRunDto, ApiError> {
-        let run = self.stored_planning_pair(project_id, run_id)?;
-        let mut pair = self.planning_pair_state(&run)?;
-        // Authentication before replay: a fenced member never replays.
-        let slot = self.authenticated_member(&pair, member, true)?;
-        let kind = match round {
-            PlanningPairRound::Findings => CommandKind::RecordPlanningPairFinding,
-            PlanningPairRound::Clarification => CommandKind::RecordPlanningPairAnswer,
-        };
-        let intent = self.intent(
-            &fingerprint::Contribution {
-                project_id,
-                run_id: run.id,
-                round,
-                slot,
-                advice: &request.advice,
-                member: presented(member),
-            }
-            .document(),
-        )?;
-        let target = AggregateRef::MiniProject {
-            mini_project_id: run.mini_project_id,
-        };
-        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
-            return self.planning_pair_dto(
-                &pair,
-                Viewer::Member(slot),
-                Some((receipt.id, AppliedDto::Unchanged)),
-            );
-        }
-        self.expect_planning_pair_revision(&run, request.expected_revision)?;
-        let actor = PlanningPairActor::Member(slot);
-        let document_hash = match round {
-            PlanningPairRound::Findings => {
-                pair.pair
-                    .record_finding(actor, slot, request.advice.clone())
-            }
-            PlanningPairRound::Clarification => {
-                pair.pair.record_answer(actor, slot, request.advice.clone())
-            }
-        }
-        .map_err(|error| self.refuse_domain(&error))?;
-        let contribution = RecordedContribution {
-            slot,
-            advice: request.advice.clone(),
-            document_hash: document_hash.clone(),
-        };
-        match round {
-            PlanningPairRound::Findings => in_slot_order(&mut pair.record.findings, contribution),
-            PlanningPairRound::Clarification => {
-                let clarification = pair.record.clarification.as_mut().ok_or_else(|| {
-                    self.deny(
-                        ApiErrorCode::Unavailable,
-                        "the accepted answer has no stored clarification",
-                    )
-                })?;
-                in_slot_order(&mut clarification.answers, contribution);
-            }
-        }
-        let next = run
-            .revision
-            .next()
-            .map_err(|error| self.refuse_domain(&error))?;
-        let now = kontor_api::now();
-        let stored = self.append_planning_pair_revision(
-            &pair,
-            run.state,
-            Some(&StoredPlanningPairContribution {
-                run_id: run.id,
-                round,
-                slot,
-                document_hash,
-                seat_binding_id: member.seat_binding_id,
-                occupancy_generation: member.occupancy_generation,
-                record_revision: next,
-                created_at: now,
-            }),
-        )?;
-        let receipt_id = self.record(key, project_id, kind, target, stored.revision, &intent)?;
-        let pair = self.planning_pair_state(&stored)?;
-        self.planning_pair_dto(
-            &pair,
-            Viewer::Member(slot),
-            Some((receipt_id, AppliedDto::Created)),
+        contribution_sequence::record(
+            &commands::CommandPorts(self),
+            key,
+            project_id,
+            run_id,
+            member,
+            round,
+            &request.advice,
+            request.expected_revision,
         )
     }
 
@@ -778,57 +707,17 @@ impl Services {
         caller: PlanningPairSeat,
         request: &RequestPlanningPairClarificationRequest,
     ) -> Result<PlanningPairRunDto, ApiError> {
-        let run = self.stored_planning_pair(project_id, run_id)?;
-        let mut pair = self.planning_pair_state(&run)?;
-        self.authenticated_caller(&run, caller)?;
         let addressed: Vec<PlanningPairSlot> =
             request.addressed.iter().map(|slot| slot.slot()).collect();
-        let intent = self.intent(
-            &fingerprint::Clarification {
-                project_id,
-                run_id: run.id,
-                question: &request.question,
-                addressed: &addressed,
-                caller: presented(caller),
-            }
-            .document(),
-        )?;
-        let target = AggregateRef::MiniProject {
-            mini_project_id: run.mini_project_id,
-        };
-        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
-            return self.planning_pair_dto(
-                &pair,
-                Viewer::Caller,
-                Some((receipt.id, AppliedDto::Unchanged)),
-            );
-        }
-        self.expect_planning_pair_revision(&run, request.expected_revision)?;
-        let clarification = ClarificationRequest {
-            question: request.question.clone(),
-            addressed,
-        };
-        pair.pair
-            .request_clarification(PlanningPairActor::Caller, clarification.clone())
-            .map_err(|error| self.refuse_domain(&error))?;
-        pair.record.clarification = Some(RecordedClarification {
-            request: clarification,
-            answers: Vec::new(),
-        });
-        let stored = self.append_planning_pair_revision(&pair, run.state, None)?;
-        let receipt_id = self.record(
+        contribution_sequence::clarify(
+            &commands::CommandPorts(self),
             key,
             project_id,
-            CommandKind::RequestPlanningPairClarification,
-            target,
-            stored.revision,
-            &intent,
-        )?;
-        let pair = self.planning_pair_state(&stored)?;
-        self.planning_pair_dto(
-            &pair,
-            Viewer::Caller,
-            Some((receipt_id, AppliedDto::Created)),
+            run_id,
+            caller,
+            &request.question,
+            &addressed,
+            request.expected_revision,
         )
     }
 
@@ -840,9 +729,6 @@ impl Services {
         caller: PlanningPairSeat,
         request: &RecordPlanningPairDispositionRequest,
     ) -> Result<PlanningPairRunDto, ApiError> {
-        let run = self.stored_planning_pair(project_id, run_id)?;
-        let mut pair = self.planning_pair_state(&run)?;
-        self.authenticated_caller(&run, caller)?;
         let disposition = PlanningPairDisposition {
             members: request
                 .members
@@ -856,45 +742,14 @@ impl Services {
                 .collect(),
             rationale: request.rationale.clone(),
         };
-        let intent = self.intent(
-            &fingerprint::Disposition {
-                project_id,
-                run_id: run.id,
-                disposition: &disposition,
-                caller: presented(caller),
-            }
-            .document(),
-        )?;
-        let target = AggregateRef::MiniProject {
-            mini_project_id: run.mini_project_id,
-        };
-        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
-            return self.planning_pair_dto(
-                &pair,
-                Viewer::Caller,
-                Some((receipt.id, AppliedDto::Unchanged)),
-            );
-        }
-        self.expect_planning_pair_revision(&run, request.expected_revision)?;
-        pair.pair
-            .record_disposition(PlanningPairActor::Caller, disposition.clone())
-            .map_err(|error| self.refuse_domain(&error))?;
-        pair.record.disposition = Some(disposition);
-        let stored =
-            self.append_planning_pair_revision(&pair, ConsultationRunState::Disposed, None)?;
-        let receipt_id = self.record(
+        contribution_sequence::decide(
+            &commands::CommandPorts(self),
             key,
             project_id,
-            CommandKind::RecordPlanningPairDisposition,
-            target,
-            stored.revision,
-            &intent,
-        )?;
-        let pair = self.planning_pair_state(&stored)?;
-        self.planning_pair_dto(
-            &pair,
-            Viewer::Caller,
-            Some((receipt_id, AppliedDto::Created)),
+            run_id,
+            caller,
+            &disposition,
+            request.expected_revision,
         )
     }
 
@@ -928,25 +783,6 @@ impl Services {
         caller: PlanningPairSeat,
         request: &RecoverPlanningPairSeatRequest,
     ) -> Result<PlanningPairSeatRecoveryDto, ApiError> {
-        let _native_activity = self.native_activity()?;
-        let run = self.stored_planning_pair(project_id, run_id)?;
-        let pair = self.planning_pair_state(&run)?;
-        self.authenticated_recovering_caller(&run, &pair.spec, caller)?;
-        let seat = pair
-            .seats
-            .iter()
-            .find(|seat| seat.seat_binding_id == seat_binding_id)
-            .cloned()
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::NotFound,
-                    "the planning pair has no such member seat",
-                )
-            })?;
-        let slot = PlanningPairSlot::parse(seat.role_slot_id.as_str())
-            .map_err(|error| self.refuse_domain(&error))?;
-        let context = self.planning_pair_member_context(&run, &pair, &seat, slot)?;
-        let context_hash = self.member_context_hash(&context)?;
         let expected = &request.expected_native_identity;
         let expected_identity = NativeRuntimeIdentity {
             runtime_kind: expected.runtime_kind.clone(),
@@ -954,155 +790,21 @@ impl Services {
             generation: expected.generation,
             native_id: expected.native_id.clone(),
         };
-        let placement_hash = pair.placement.placement.hash().clone();
-        let intent = self.intent(
-            &fingerprint::Recovery {
-                project_id,
-                run_id: run.id,
-                member_seat_binding_id: seat_binding_id,
-                slot,
-                caller: presented(caller),
-                expected_run_revision: request.expected_run_revision,
-                expected_member_occupancy_generation: request.expected_member_occupancy_generation,
-                expected_native_identity: &expected_identity,
-                expected_provider_session_id: request.expected_provider_session_id.as_ref(),
-                member_context_hash: &context_hash,
-                placement_hash: &placement_hash,
-            }
-            .document(),
-        )?;
-        let target = AggregateRef::MiniProject {
-            mini_project_id: run.mini_project_id,
-        };
-        if let Some(receipt) = self.replayed(key, &intent, Some(&target))? {
-            return self.planning_pair_recovery_dto(
-                &pair,
-                &seat,
-                slot,
-                &expected_identity,
-                request.expected_provider_session_id.as_ref(),
-                receipt.target_revision,
-                (receipt.id, AppliedDto::Unchanged),
-            );
-        }
-        member_recovery::require_recoverable(run.state)
-            .map_err(|error| self.refuse_domain(&error))?;
-        self.expect_planning_pair_revision(&run, request.expected_run_revision)?;
-        // The known session is the bound seat's or else its kept claim, never
-        // one the request names: the body only asserts it.
-        let plan = member_recovery::plan(
-            member_recovery::RecoveryFacts {
-                run: &run,
-                seat: &seat,
-                known: &pair.known,
-                context_hash: &context_hash,
-                placement_hash: &placement_hash,
-            },
-            member_recovery::RecoveryAssertion {
-                member_occupancy_generation: request.expected_member_occupancy_generation,
-                native_identity: &expected_identity,
-                provider_session_id: request.expected_provider_session_id.as_ref(),
-            },
-        )
-        .map_err(|refusal| {
-            let (code, rule) = recovery_refusal_rule(refusal);
-            self.deny(code, rule)
-        })?;
-        // Every real route is refused here, before any runtime effect.
-        let state = self.state()?;
-        let adapter = self.planning_pair_runtime()?;
-        self.require_planning_pair_member_routes(adapter.as_ref(), pair.pair.members().members())?;
-        let readback_request = kontor_runtime::planning_pair::PlanningPairMemberReconcileRequest {
-            context,
-            identity: plan.identity().clone(),
-            requested_at: kontor_api::now(),
-        };
-        let answer = adapter
-            .reconcile_planning_pair_member(&readback_request)
-            .await;
-        let outcome = match plan.outcome(&readback_request, answer) {
-            RecoveryOutcome::Requalify(outcome) => *outcome,
-            RecoveryOutcome::NoObservation(error) => {
-                return Err(ApiError::from_runtime(state.realm_id(), &error));
-            }
-            RecoveryOutcome::Withdraw(reason) => {
-                // Only this member's current qualification is withdrawn, and
-                // only if it held one: its claim, its peer and every finding
-                // stay, and a running pair needs a human.
-                if plan.holds_qualification() {
-                    state
-                        .with_store(|store| {
-                            store.disqualify_planning_pair_member(&PlanningPairMemberReadback {
-                                project_id,
-                                run_id: run.id,
-                                seat_binding_id,
-                                expected_revision: run.revision,
-                                occupancy_generation: seat.occupancy_generation,
-                                verified: plan.verified().clone(),
-                                applied_at: kontor_api::now(),
-                            })
-                        })
-                        .map_err(|error| self.refuse_recovery_write(&error))?;
-                }
-                return Err(self
-                    .deny(ApiErrorCode::Unavailable, withdraw_rule(reason))
-                    .about("planning pair member readback")
-                    .located_at(format!("native/{}", plan.identity().native_id.as_str()))
-                    .advising("confirmation unknown: the member's known native session is kept and is not qualified now; nothing was created, replaced or archived"));
-            }
-        };
-        self.planning_pair_recovery_hold_point().await;
-        let now = kontor_api::now();
-        let next = run
-            .revision
-            .next()
-            .map_err(|error| self.refuse_domain(&error))?;
-        let readback = PlanningPairMemberReadback {
+        recovery_sequence::recover(
+            &commands::CommandPorts(self),
+            key,
             project_id,
-            run_id: run.id,
+            run_id,
             seat_binding_id,
-            expected_revision: run.revision,
-            occupancy_generation: seat.occupancy_generation,
-            verified: plan.requalified(&outcome),
-            applied_at: now,
-        };
-        let envelope = ReceiptEnvelope::new(
-            state.realm_id(),
-            NewLocalCommand {
-                project_id,
-                receipt_id: CommandReceiptId::generate(),
-                idempotency_key: key.clone(),
-                kind: CommandKind::RecoverPlanningPairSeat,
-                target,
-                target_revision: next,
-                intent: intent.clone(),
-                created_at: now,
+            caller,
+            recovery_sequence::Input {
+                expected_revision: request.expected_run_revision,
+                expected_member_generation: request.expected_member_occupancy_generation,
+                expected_identity: &expected_identity,
+                expected_provider_session_id: request.expected_provider_session_id.as_ref(),
             },
-        );
-        // The qualification and its receipt are one compare-and-swap: a
-        // concurrent request for this key answers the receipt the winner
-        // wrote, and any other write that moved the run refuses this one.
-        let (after, receipt_id, created) = state
-            .with_store(|store| store.requalify_planning_pair_member(&readback, &envelope))
-            .map_err(|error| self.refuse_recovery_write(&error))?;
-        state.signals().appended();
-        let pair = self.planning_pair_state(&after)?;
-        self.planning_pair_recovery_dto(
-            &pair,
-            &seat,
-            slot,
-            plan.identity(),
-            outcome.provider_session_id.as_ref(),
-            next,
-            (
-                receipt_id,
-                if created {
-                    AppliedDto::Created
-                } else {
-                    AppliedDto::Unchanged
-                },
-            ),
         )
+        .await
     }
 
     /// Hold every member recovery that reaches its compare-and-swap, for a
@@ -1253,17 +955,6 @@ impl Services {
             &catalog,
             fleet_provenance.as_ref(),
         )
-    }
-
-    /// The canonical hash of one member's frozen launch context. Nothing in it
-    /// is secret.
-    fn member_context_hash(
-        &self,
-        context: &kontor_runtime::planning_pair::PlanningPairLaunchContext,
-    ) -> Result<ContentHash, ApiError> {
-        context
-            .frozen_hash()
-            .map_err(|error| self.refuse_domain(&error))
     }
 
     /// One recovery's answer: the pair as its caller now sees it, the member's
@@ -1655,15 +1346,6 @@ fn native_identity_dto(identity: &NativeRuntimeIdentity) -> PlanningPairNativeId
         generation: identity.generation,
         native_id: identity.native_id.clone(),
     }
-}
-
-/// Findings and answers are kept in slot order, whatever order they arrive in.
-fn in_slot_order(list: &mut Vec<RecordedContribution>, contribution: RecordedContribution) {
-    let at = list
-        .iter()
-        .position(|kept| kept.slot > contribution.slot)
-        .unwrap_or(list.len());
-    list.insert(at, contribution);
 }
 
 const fn advice_disposition(

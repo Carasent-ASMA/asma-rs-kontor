@@ -1094,3 +1094,344 @@ fn there_is_no_partial_allocation() {
         "{receipt}"
     );
 }
+
+// --- ASMA-8280: the formal Independent Review's one-Claude cap ---------------
+
+fn formal() -> AllocationConstraints {
+    committee_constraints(
+        INDEPENDENT_REVIEW_TEMPLATE_ID,
+        ["reviewer-a", "reviewer-b", "judge"],
+    )
+}
+
+fn anthropic_seats(allocation: &JointAllocation) -> usize {
+    allocation
+        .slots
+        .iter()
+        .filter(|slot| {
+            slot.selected
+                .as_ref()
+                .and_then(|selected| selected.vendor.as_deref())
+                == Some("anthropic")
+        })
+        .count()
+}
+
+/// The shape the 95037ece policy gives the formal Committee: Sol for reviewer
+/// A, Opus for reviewer B, and a judge chain of Opus, then Sol, then Grok.
+fn shaped_committee() -> Vec<AllocationSlot> {
+    vec![
+        slot(
+            "reviewer-a",
+            AllocationRole::Reviewer,
+            vec![
+                candidate("codex-work", 1, Some("openai")),
+                candidate("codex-personal", 1, Some("openai")),
+            ],
+        ),
+        slot(
+            "reviewer-b",
+            AllocationRole::Reviewer,
+            vec![
+                candidate("claude-work", 1, Some("anthropic")),
+                candidate("claude-personal", 1, Some("anthropic")),
+            ],
+        ),
+        slot(
+            "judge",
+            AllocationRole::Judge,
+            vec![
+                candidate("claude-work", 1, Some("anthropic")),
+                candidate("claude-personal", 1, Some("anthropic")),
+                candidate("codex-work", 2, Some("openai")),
+                candidate("codex-personal", 2, Some("openai")),
+                candidate("cursor", 3, Some("xai")),
+            ],
+        ),
+    ]
+}
+
+#[test]
+fn the_formal_review_seats_one_claude_and_moves_the_judge_to_rung_two() {
+    let slots = shaped_committee();
+    let diversity = AllocationDiversity::DistinctVendorPerReviewer;
+    let generic = allocate(diversity, &slots);
+    assert_eq!(
+        chosen_providers(&generic),
+        ["codex-work", "claude-work", "claude-work"]
+    );
+    assert_eq!(
+        anthropic_seats(&generic),
+        2,
+        "a generic Committee is uncapped"
+    );
+    assert!(generic.constraints.is_none());
+
+    let allocation = allocate_constrained(diversity, &slots, &formal());
+    assert_eq!(
+        chosen_providers(&allocation),
+        ["codex-work", "claude-work", "codex-work"]
+    );
+    assert_eq!(anthropic_seats(&allocation), 1);
+    let judge = &allocation.slots[2];
+    assert_eq!(
+        judge.selected.as_ref().map(|selected| selected.step),
+        Some(2)
+    );
+    for passed in &judge.considered[..2] {
+        assert_eq!(passed.excluded, Some(AllocationExclusion::VendorCapReached));
+        assert_eq!(passed.conflicts_with.as_deref(), Some("reviewer-b"));
+    }
+    assert_eq!(judge.considered[2].excluded, None);
+    assert_eq!(
+        judge.considered[4].excluded,
+        Some(AllocationExclusion::RungBeyondVerdict)
+    );
+    // Reviewer diversity binds reviewers only: the judge shares reviewer A's vendor.
+    assert_eq!(
+        allocation.slots[0]
+            .selected
+            .as_ref()
+            .and_then(|selected| selected.vendor.as_deref()),
+        judge
+            .selected
+            .as_ref()
+            .and_then(|selected| selected.vendor.as_deref())
+    );
+    assert_eq!(allocation.constraints, Some(formal()));
+    assert_eq!(
+        allocate_constrained(diversity, &slots, &formal()),
+        allocation
+    );
+}
+
+#[test]
+fn the_cap_counts_the_judge_and_every_alias_and_blocks_whole() {
+    let diversity = AllocationDiversity::DistinctVendorPerReviewer;
+    // Neither Sol account can take the judge: below rung 3 only Claude is left.
+    let mut slots = shaped_committee();
+    slots[2].eligibility.unavailable_accounts =
+        BTreeSet::from(["codex-work".to_owned(), "codex-personal".to_owned()]);
+    let blocked = allocate_constrained(diversity, &slots, &formal());
+    assert_eq!(blocked.blocked, Some(AllocationFailure::VendorCapExceeded));
+    assert!(blocked.chosen().is_none());
+    for slot in &blocked.slots {
+        assert!(slot.selected.is_none(), "{}", slot.slot_id);
+        assert_eq!(slot.failure, Some(AllocationFailure::VendorCapExceeded));
+        assert!(
+            slot.considered
+                .iter()
+                .all(|passed| passed.excluded.is_some())
+        );
+    }
+    assert_eq!(
+        blocked.slots[2].considered[4].excluded,
+        Some(AllocationExclusion::RungBeyondVerdict)
+    );
+    assert_eq!(anthropic_seats(&allocate(diversity, &slots)), 2);
+
+    // Two account aliases are one physical vendor.
+    let aliases = vec![
+        slot(
+            "reviewer-a",
+            AllocationRole::Reviewer,
+            vec![candidate("codex-work", 1, Some("openai"))],
+        ),
+        slot(
+            "reviewer-b",
+            AllocationRole::Reviewer,
+            vec![candidate("claude-personal", 1, Some("anthropic"))],
+        ),
+        slot(
+            "judge",
+            AllocationRole::Judge,
+            vec![candidate("claude-work", 1, Some("anthropic"))],
+        ),
+    ];
+    assert_eq!(
+        allocate_constrained(diversity, &aliases, &formal()).blocked,
+        Some(AllocationFailure::VendorCapExceeded)
+    );
+    assert!(allocate(diversity, &aliases).is_complete());
+}
+
+#[test]
+fn the_cap_is_searched_jointly_not_greedily() {
+    let diversity = AllocationDiversity::DistinctVendorPerReviewer;
+    // Reviewer A's first route is Claude; taking it would strand the judge,
+    // whose only route is Claude too. The search moves reviewer A instead.
+    let slots = vec![
+        slot(
+            "reviewer-a",
+            AllocationRole::Reviewer,
+            vec![
+                candidate("claude-work", 1, Some("anthropic")),
+                candidate("codex-work", 1, Some("openai")),
+            ],
+        ),
+        slot(
+            "reviewer-b",
+            AllocationRole::Reviewer,
+            vec![candidate("cursor", 1, Some("xai"))],
+        ),
+        slot(
+            "judge",
+            AllocationRole::Judge,
+            vec![candidate("claude-personal", 1, Some("anthropic"))],
+        ),
+    ];
+    let allocation = allocate_constrained(diversity, &slots, &formal());
+    assert_eq!(
+        chosen_providers(&allocation),
+        ["codex-work", "cursor", "claude-personal"]
+    );
+    assert_eq!(
+        allocation.slots[0].considered[0].excluded,
+        Some(AllocationExclusion::VendorCapReached)
+    );
+    assert_eq!(
+        allocation.slots[0].considered[0].conflicts_with.as_deref(),
+        Some("judge")
+    );
+}
+
+#[test]
+fn an_unknown_maker_cannot_evade_the_cap() {
+    let diversity = AllocationDiversity::DistinctVendorPerReviewer;
+    let mut slots = shaped_committee();
+    slots[2].candidates = vec![
+        candidate("cursor", 1, None),
+        candidate("cursor-auto", 1, Some("unknown")),
+        candidate("claude-personal", 1, Some("anthropic")),
+    ];
+    let blocked = allocate_constrained(diversity, &slots, &formal());
+    assert_eq!(blocked.blocked, Some(AllocationFailure::VendorCapExceeded));
+    for unnamed in &blocked.slots[2].considered[..2] {
+        assert_eq!(unnamed.excluded, Some(AllocationExclusion::VendorUnknown));
+    }
+    // A generic judge is never held to a known vendor and takes the first.
+    assert_eq!(chosen_providers(&allocate(diversity, &slots))[2], "cursor");
+}
+
+#[test]
+fn no_governed_slot_is_seated_below_rung_two() {
+    let diversity = AllocationDiversity::DistinctVendorPerReviewer;
+    let slots = vec![
+        slot(
+            "reviewer-a",
+            AllocationRole::Reviewer,
+            vec![candidate("codex-work", 3, Some("openai"))],
+        ),
+        slot(
+            "reviewer-b",
+            AllocationRole::Reviewer,
+            vec![candidate("claude-work", 1, Some("anthropic"))],
+        ),
+        slot(
+            "judge",
+            AllocationRole::Judge,
+            vec![candidate("cursor", 2, Some("xai"))],
+        ),
+    ];
+    let blocked = allocate_constrained(diversity, &slots, &formal());
+    assert_eq!(
+        blocked.blocked,
+        Some(AllocationFailure::NoEligibleCandidate)
+    );
+    assert_eq!(
+        blocked.slots[0].considered[0].excluded,
+        Some(AllocationExclusion::RungBeyondVerdict)
+    );
+    assert_eq!(
+        blocked.slots[0].failure,
+        Some(AllocationFailure::NoEligibleCandidate)
+    );
+    assert!(
+        allocate(diversity, &slots).is_complete(),
+        "a generic Committee keeps every rung"
+    );
+}
+
+#[test]
+fn constraints_hold_only_the_protocols_slots() {
+    let diversity = AllocationDiversity::DistinctVendorPerReviewer;
+    let slots = shaped_committee();
+    let other = committee_constraints(
+        "01991c00-0000-7000-8000-000000000999",
+        ["reviewer-a", "reviewer-b", "judge"],
+    );
+    assert!(other.is_empty());
+    assert_eq!(
+        allocate_constrained(diversity, &slots, &other),
+        allocate(diversity, &slots)
+    );
+    // Only the judge governed: one governed Claude seat is within the cap.
+    let judge_only = committee_constraints(INDEPENDENT_REVIEW_TEMPLATE_ID, ["judge"]);
+    assert_eq!(
+        chosen_providers(&allocate_constrained(diversity, &slots, &judge_only)),
+        ["codex-work", "claude-work", "claude-work"]
+    );
+}
+
+#[test]
+fn only_the_formal_independent_review_binding_names_the_protocol() {
+    assert_eq!(
+        committee_template_of(COMMITTEE),
+        Some(INDEPENDENT_REVIEW_TEMPLATE_ID)
+    );
+    for key in [
+        "committee/01991c00-0000-7000-8000-000000000001",
+        "committee//judge",
+        "committee/01991c00-0000-7000-8000-000000000001/judge/extra",
+        "team/01991c00-0000-7000-8000-000000000001/judge",
+        "Committee/01991c00-0000-7000-8000-000000000001/judge",
+        "committee/01991c00-0000-7000-8000-0000000000011/judge",
+    ] {
+        assert_ne!(
+            committee_template_of(key),
+            Some(INDEPENDENT_REVIEW_TEMPLATE_ID),
+            "{key}"
+        );
+    }
+    let constraints = formal();
+    assert_eq!(
+        constraints.vendor_cap,
+        Some(VendorCap {
+            vendor: "anthropic".to_owned(),
+            max: 1,
+        })
+    );
+    assert_eq!(constraints.max_rung, Some(VERDICT_RUNG_LIMIT));
+    assert_eq!(VERDICT_RUNG_LIMIT, 2);
+    assert_eq!(
+        constraints.slots,
+        BTreeSet::from(["reviewer-a", "reviewer-b", "judge"].map(str::to_owned))
+    );
+}
+
+#[test]
+fn a_governed_slot_cannot_take_a_route_whose_rung_is_unstated() {
+    let diversity = AllocationDiversity::DistinctVendorPerReviewer;
+    let mut slots = shaped_committee();
+    // Reviewer B's Opus route states no rung; its second account does.
+    slots[1].candidates[0].step = 0;
+    let allocation = allocate_constrained(diversity, &slots, &formal());
+    assert_eq!(chosen_providers(&allocation)[1], "claude-personal");
+    assert_eq!(
+        allocation.slots[1].considered[0].excluded,
+        Some(AllocationExclusion::RungUnknown)
+    );
+    // With neither stated, reviewer B has nothing the protocol admits.
+    slots[1].candidates[1].step = 0;
+    let blocked = allocate_constrained(diversity, &slots, &formal());
+    assert_eq!(
+        blocked.blocked,
+        Some(AllocationFailure::NoEligibleCandidate)
+    );
+    assert_eq!(
+        blocked.slots[1].failure,
+        Some(AllocationFailure::NoEligibleCandidate)
+    );
+    // A generic allocation reads no rung at all.
+    assert!(allocate(diversity, &slots).is_complete());
+}

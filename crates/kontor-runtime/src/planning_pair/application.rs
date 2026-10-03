@@ -18,6 +18,8 @@
 //! [`InvokeOwner::authorize_caller`], and the coordinator never constructs a
 //! caller, a credential or a grant.
 
+pub mod commands;
+
 mod freeze;
 mod materialize;
 #[cfg(test)]

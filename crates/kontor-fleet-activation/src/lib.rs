@@ -723,12 +723,16 @@ impl Activated {
     }
 
     /// Allocate one Committee's slots together against this one verified
-    /// snapshot, through [`kontor_fleet::allocate`].
+    /// snapshot, through [`kontor_fleet::allocate_constrained`].
     ///
     /// Every slot's binding is resolved first, exactly as a single binding is,
     /// and any slot that cannot be resolved refuses the whole request: there
     /// is no partial allocation. Each route carries the policy's vendor; a
     /// vendor the policy names `unknown` gives a reviewer no independence key.
+    /// A request with any slot bound to the formal Independent Review holds
+    /// every slot to that protocol's constraints
+    /// ([`kontor_fleet::committee_constraints`]); any other request is
+    /// allocated exactly as before.
     ///
     /// # Errors
     /// J-03 for no slot, J-04 for a repeated `slot_id`, then as
@@ -771,7 +775,23 @@ impl Activated {
                     .collect(),
             })
             .collect();
-        let allocation = kontor_fleet::allocate(request.diversity, &slots);
+        // The formal Independent Review's constraints follow from the slots'
+        // own bindings: one slot bound to its protocol holds every slot of the
+        // request, and the request has no field that could relax them.
+        let constraints = request
+            .slots
+            .iter()
+            .filter_map(|slot| kontor_fleet::committee_template_of(&slot.binding_key))
+            .map(|template| {
+                kontor_fleet::committee_constraints(
+                    template,
+                    request.slots.iter().map(|slot| slot.slot_id.clone()),
+                )
+            })
+            .find(|constraints| !constraints.is_empty())
+            .unwrap_or_default();
+        let allocation =
+            kontor_fleet::allocate_constrained(request.diversity, &slots, &constraints);
         Ok(JointSelection {
             provenance: self.provenance(),
             diversity: allocation.diversity,

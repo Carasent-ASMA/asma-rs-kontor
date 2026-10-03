@@ -31,8 +31,11 @@ use kontor_core::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
 
 pub use allocation::{
-    AllocationCandidate, AllocationDiversity, AllocationExclusion, AllocationFailure,
-    AllocationRole, AllocationSlot, ConsideredCandidate, JointAllocation, SlotAllocation, allocate,
+    AllocationCandidate, AllocationConstraints, AllocationDiversity, AllocationExclusion,
+    AllocationFailure, AllocationRole, AllocationSlot, ConsideredCandidate,
+    INDEPENDENT_REVIEW_CAPPED_SEATS, INDEPENDENT_REVIEW_CAPPED_VENDOR,
+    INDEPENDENT_REVIEW_TEMPLATE_ID, JointAllocation, SlotAllocation, VERDICT_RUNG_LIMIT, VendorCap,
+    allocate, allocate_constrained, committee_constraints, committee_template_of,
 };
 pub use leadership::LeadershipKey;
 

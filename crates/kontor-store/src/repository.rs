@@ -4492,6 +4492,69 @@ impl SqliteStore {
             .transpose()
     }
 
+    /// Read the frozen profile for the current consultation generation, including
+    /// an unresolved recovery reservation. No runtime observation makes it terminal.
+    pub fn get_consultation_generation_profile(
+        &self,
+        project_id: ProjectId,
+        seat: &StoredConsultationSeat,
+    ) -> RepositoryResult<Option<(CanonicalDocument, String)>> {
+        let generation = i64::try_from(seat.occupancy_generation).map_err(|_| {
+            conflict(
+                "consultation profile",
+                "the generation cannot be represented",
+            )
+        })?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT recovery_profile, recovery_profile_hash, state
+             FROM consultation_seat_recovery_attempts
+             WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+               AND successor_occupancy_generation = ?4
+             UNION ALL
+             SELECT recovery_profile, recovery_profile_hash, 'installed'
+             FROM consultation_seat_materialization_reroutes
+             WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+               AND successor_generation = ?4",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![
+                    project_id.to_string(),
+                    seat.run_id.as_text(),
+                    seat.role_slot_id.as_str(),
+                    generation
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        if rows.len() > 1 {
+            return Err(conflict(
+                "consultation profile",
+                "the current generation has ambiguous recovery provenance",
+            ));
+        }
+        rows.into_iter()
+            .next()
+            .map(|(json, hash, state)| {
+                Ok((
+                    CanonicalDocument::from_stored(&json, &ContentHash::parse(&hash)?)?,
+                    state,
+                ))
+            })
+            .transpose()
+    }
+
     /// Read an already-committed native-less reroute by its exact intent.
     pub fn get_consultation_materialization_reroute_by_intent(
         &self,

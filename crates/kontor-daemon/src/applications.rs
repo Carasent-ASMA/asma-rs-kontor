@@ -12892,6 +12892,9 @@ impl Services {
                     Some(kontor_fleet::AllocationFailure::NoDistinctReviewerVendors) => {
                         "no currently admissible whole-Committee allocation preserves the pinned provider-family diversity"
                     }
+                    Some(kontor_fleet::AllocationFailure::VendorCapExceeded) => {
+                        "no currently admissible whole-Committee allocation keeps the formal Independent Review to one Claude seat"
+                    }
                     _ => "a Committee slot has no currently admissible governed route",
                 },
             ));
@@ -13879,6 +13882,267 @@ impl Services {
             .map_err(|error| self.refuse_domain(&error))
     }
 
+    /// Evaluate one formal Committee snapshot. Unaffected seats, including a
+    /// deferred Judge, have exactly one candidate; only the target may vary.
+    fn formal_committee_placement(
+        &self,
+        run: &StoredConsultationRun,
+        template: &CommitteeTemplateSpec,
+        target: Option<(
+            &StoredConsultationSeat,
+            &[kontor_fleet::AllocationCandidate],
+            &kontor_fleet::Eligibility,
+        )>,
+        fleet: Option<&crate::fleet::FleetSnapshot>,
+        allow_same_route_pending_finding: bool,
+    ) -> Result<kontor_fleet::JointAllocation, ApiError> {
+        let constraints = kontor_fleet::committee_constraints(
+            &run.profile_id,
+            template.slots.iter().map(|slot| slot.id.as_str()),
+        );
+        let (revision, snapshot) = self
+            .state()?
+            .with_store(|store| -> Result<_, RepositoryError> {
+                let current = store.get_consultation_run(run.project_id, run.id)?.ok_or(
+                    RepositoryError::NotFound {
+                        subject: "formal Committee snapshot",
+                    },
+                )?;
+                let seats = store.list_consultation_seats(run.project_id, run.id)?;
+                let snapshot = seats
+                    .into_iter()
+                    .map(|seat| {
+                        let profile =
+                            store.get_consultation_generation_profile(run.project_id, &seat)?;
+                        Ok((seat, profile))
+                    })
+                    .collect::<Result<Vec<_>, RepositoryError>>()?;
+                Ok((current.revision, snapshot))
+            })
+            .map_err(|error| self.refuse(&error))?;
+        if revision != run.revision {
+            return Err(self
+                .deny(
+                    ApiErrorCode::RevisionConflict,
+                    "the formal Committee moved before constraint validation",
+                )
+                .with_revision(Some(revision)));
+        }
+        let mut slots = Vec::new();
+        for slot in &template.slots {
+            let (seat, profile) = snapshot
+                .iter()
+                .find(|(seat, _)| seat.role_slot_id == slot.id)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the formal Committee snapshot is missing a frozen seat",
+                    )
+                })?;
+            let is_target = target
+                .as_ref()
+                .is_some_and(|(target, _, _)| target.seat_binding_id == seat.seat_binding_id);
+            let same_route_pending_finding = allow_same_route_pending_finding
+                && profile
+                    .as_ref()
+                    .and_then(|(profile, _)| recovery_profile_value_candidate(profile))
+                    .is_some_and(|candidate| candidate.rung == seat.model_rung);
+            if profile
+                .as_ref()
+                .is_some_and(|(_, state)| state != "installed")
+                && !is_target
+                && !same_route_pending_finding
+            {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the formal Committee has an unresolved peer recovery reservation",
+                ));
+            }
+            let (candidates, eligibility) =
+                if let Some((_, candidates, eligibility)) = target.filter(|_| is_target) {
+                    (candidates.to_vec(), eligibility.clone())
+                } else {
+                    (
+                        vec![self.frozen_formal_committee_candidate(
+                            run,
+                            template,
+                            seat,
+                            profile.as_ref().map(|(profile, _)| profile),
+                            fleet,
+                        )?],
+                        kontor_fleet::Eligibility::default(),
+                    )
+                };
+            slots.push(kontor_fleet::AllocationSlot {
+                slot_id: slot.id.as_str().to_owned(),
+                role: if slot.role == CommitteeRole::Reviewer {
+                    kontor_fleet::AllocationRole::Reviewer
+                } else {
+                    kontor_fleet::AllocationRole::Judge
+                },
+                candidates,
+                eligibility,
+            });
+        }
+        let diversity = match template.diversity {
+            kontor_core::consultation::DiversityRule::DistinctProviderPerSlot => {
+                kontor_fleet::AllocationDiversity::DistinctVendorPerReviewer
+            }
+            kontor_core::consultation::DiversityRule::None => {
+                kontor_fleet::AllocationDiversity::None
+            }
+        };
+        let allocation = kontor_fleet::allocate_constrained(diversity, &slots, &constraints);
+        if !allocation.is_complete() {
+            return Err(self.deny(ApiErrorCode::PlacementBlocked, match allocation.blocked {
+                Some(kontor_fleet::AllocationFailure::VendorCapExceeded) => "no currently admissible whole-Committee allocation keeps the formal Independent Review to one Claude seat",
+                _ => "the frozen formal Committee or proposed replacement has no admissible whole-Committee allocation",
+            }));
+        }
+        Ok(allocation)
+    }
+
+    /// Read rank from frozen admission/accepted recovery, never from account
+    /// expansion or a current chain's preference position for an unaffected seat.
+    fn frozen_formal_committee_candidate(
+        &self,
+        run: &StoredConsultationRun,
+        template: &CommitteeTemplateSpec,
+        seat: &StoredConsultationSeat,
+        profile: Option<&CanonicalDocument>,
+        fleet: Option<&crate::fleet::FleetSnapshot>,
+    ) -> Result<kontor_fleet::AllocationCandidate, ApiError> {
+        self.committee_seat_route_provenance(run, seat)?;
+        if let Some(profile) = profile {
+            let value: serde_json::Value = serde_json::from_str(profile.json()).map_err(|_| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the frozen recovery profile is unreadable",
+                )
+            })?;
+            if let Some(candidate) = value.get("constraint_candidate") {
+                let candidate: kontor_fleet::AllocationCandidate =
+                    serde_json::from_value(candidate.clone()).map_err(|_| {
+                        self.deny(
+                            ApiErrorCode::PlacementBlocked,
+                            "the frozen recovery constraint candidate is unreadable",
+                        )
+                    })?;
+                if candidate.rung == seat.model_rung {
+                    return Ok(candidate);
+                }
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the frozen recovery constraint candidate differs from its active route",
+                ));
+            }
+            // Older native-less reroutes already froze the exact accepted
+            // ordered request and its hash. Its source ordinal remains
+            // authoritative; no new constraint receipt is required to read it.
+            if let Some(routes) = value
+                .get("ordered_routes")
+                .and_then(serde_json::Value::as_array)
+            {
+                for (index, route) in routes.iter().enumerate() {
+                    let route: RuntimeModelRouteRequest = serde_json::from_value(route.clone())
+                        .map_err(|_| {
+                            self.deny(
+                                ApiErrorCode::PlacementBlocked,
+                                "the frozen accepted recovery route is unreadable",
+                            )
+                        })?;
+                    let rung = parse_runtime_model_route(&route, fleet)
+                        .map_err(|error| self.refuse_domain(&error))?;
+                    if rung == seat.model_rung {
+                        let vendor = fleet
+                            .and_then(|fleet| fleet.vendor_of(&rung))
+                            .map(ToOwned::to_owned);
+                        return Ok(kontor_fleet::AllocationCandidate {
+                            rung,
+                            step: u16::try_from(index + 1).unwrap_or(0),
+                            sub_step: 1,
+                            independence: vendor.clone(),
+                            vendor,
+                        });
+                    }
+                }
+            }
+        }
+        let admission = run
+            .context
+            .get("admission")
+            .and_then(|a| a.get("routes"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|routes| {
+                routes.iter().find(|route| {
+                    route["role_slot_id"].as_str() == Some(seat.role_slot_id.as_str())
+                })
+            })
+            .filter(|route| {
+                route["model_route"] == serde_json::json!(runtime_model_route_dto(&seat.model_rung))
+            });
+        let provenance = self.committee_seat_fleet_provenance(run, seat)?;
+        let (step, sub_step, vendor) = if let Some(provenance) = provenance {
+            if admission.is_none_or(|route| {
+                route["source"] != "fleet_configuration"
+                    || route["profile_hash"].as_str() != Some(provenance.policy_hash.as_str())
+            }) || provenance.binding_key
+                != crate::fleet::committee_key(&run.profile_id, seat.role_slot_id.as_str())
+            {
+                return Err(self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "the frozen fleet route has inconsistent policy provenance",
+                ));
+            }
+            (
+                provenance.step,
+                provenance.sub_step,
+                Some(provenance.vendor),
+            )
+        } else {
+            let rank = match admission {
+                Some(route)
+                    if matches!(
+                        route["source"].as_str(),
+                        Some("template" | "initial_recovery_profile")
+                    ) =>
+                {
+                    route["rank"]
+                        .as_u64()
+                        .and_then(|rank| u16::try_from(rank).ok())
+                        .unwrap_or(0)
+                }
+                None if profile.is_none() => template
+                    .slots
+                    .iter()
+                    .find(|slot| slot.id == seat.role_slot_id)
+                    .and_then(|slot| {
+                        slot.models
+                            .rungs
+                            .iter()
+                            .position(|rung| rung == &seat.model_rung)
+                    })
+                    .and_then(|index| u16::try_from(index + 1).ok())
+                    .unwrap_or(0),
+                _ => 0,
+            };
+            (
+                rank,
+                1,
+                fleet
+                    .and_then(|fleet| fleet.vendor_of(&seat.model_rung))
+                    .map(ToOwned::to_owned),
+            )
+        };
+        Ok(kontor_fleet::AllocationCandidate {
+            rung: seat.model_rung.clone(),
+            step,
+            sub_step,
+            independence: vendor.clone(),
+            vendor,
+        })
+    }
+
     /// Launch or exact-label recover the Committee seats currently eligible.
     /// Reviewers launch at invoke; the Judge launches only after all independent
     /// findings are durable, so it cannot observe them early or race them.
@@ -13889,6 +14153,12 @@ impl Services {
         include_judge: bool,
     ) -> Result<(), ApiError> {
         let _native_activity = self.native_activity()?;
+        if run.profile_id == kontor_fleet::INDEPENDENT_REVIEW_TEMPLATE_ID {
+            let fleet = self
+                .fleet_policy()
+                .map_err(|error| self.refuse_domain(&error))?;
+            self.formal_committee_placement(run, template, None, fleet.as_deref(), false)?;
+        }
         let state = self.state()?;
         let project = self.project_row(run.project_id)?;
         let node = state
@@ -15290,6 +15560,13 @@ fn ensure_unambiguous_generic_consultation_routes(
 /// a route the fleet does not list — the provider family, exactly as legacy
 /// allocation always read it. `unknown` names no key, so a constrained
 /// reviewer cannot take it. There is no second allocator.
+///
+/// The selected template's protocol decides the constraints
+/// ([`kontor_fleet::committee_constraints`]): the formal Independent Review
+/// holds every slot to one Claude seat and rungs up to two, and its
+/// candidates are built as [`formal_committee_candidates`] says, so this path
+/// and the direct-mode joint reader allocate one snapshot identically. Every
+/// other template is generic and allocated exactly as before.
 fn allocate_committee(
     template: &CommitteeTemplateSpec,
     candidates: &[Vec<FrozenCommitteeRoute>],
@@ -15302,40 +15579,173 @@ fn allocate_committee(
         }
         kontor_core::consultation::DiversityRule::None => kontor_fleet::AllocationDiversity::None,
     };
+    let template_id = template.template_id.to_string();
+    let constraints = kontor_fleet::committee_constraints(
+        &template_id,
+        template
+            .slots
+            .iter()
+            .map(|slot| slot.id.as_str().to_owned()),
+    );
     let slots: Vec<kontor_fleet::AllocationSlot> = template
         .slots
         .iter()
         .zip(candidates)
         .zip(eligibility)
-        .map(|((slot, candidates), eligibility)| {
-            let mut positions: BTreeMap<u32, u16> = BTreeMap::new();
-            kontor_fleet::AllocationSlot {
+        .map(
+            |((slot, candidates), eligibility)| kontor_fleet::AllocationSlot {
                 slot_id: slot.id.as_str().to_owned(),
                 role: match slot.role {
                     CommitteeRole::Reviewer => kontor_fleet::AllocationRole::Reviewer,
                     CommitteeRole::Judge => kontor_fleet::AllocationRole::Judge,
                 },
                 eligibility: eligibility.clone(),
-                candidates: candidates
-                    .iter()
-                    .map(|route| {
-                        let sub_step = positions.entry(route.rank).or_default();
-                        *sub_step = sub_step.saturating_add(1);
-                        kontor_fleet::AllocationCandidate {
-                            rung: route.model_rung.clone(),
-                            step: u16::try_from(route.rank).unwrap_or(u16::MAX),
-                            sub_step: *sub_step,
-                            vendor: fleet
-                                .and_then(|fleet| fleet.vendor_of(&route.model_rung))
-                                .map(ToOwned::to_owned),
-                            independence: crate::fleet::independence_key(&route.model_rung, fleet),
-                        }
-                    })
-                    .collect(),
+                candidates: if constraints.is_empty() {
+                    generic_committee_candidates(candidates, fleet)
+                } else {
+                    formal_committee_candidates(&template_id, slot.id.as_str(), candidates, fleet)
+                },
+            },
+        )
+        .collect();
+    kontor_fleet::allocate_constrained(diversity, &slots, &constraints)
+}
+
+/// A generic Committee slot's candidates: each route's rank is its step, the
+/// fleet vendor when the fleet lists it, and the legacy independence key.
+fn generic_committee_candidates(
+    candidates: &[FrozenCommitteeRoute],
+    fleet: Option<&crate::fleet::FleetSnapshot>,
+) -> Vec<kontor_fleet::AllocationCandidate> {
+    let mut positions: BTreeMap<u32, u16> = BTreeMap::new();
+    candidates
+        .iter()
+        .map(|route| {
+            let sub_step = positions.entry(route.rank).or_default();
+            *sub_step = sub_step.saturating_add(1);
+            kontor_fleet::AllocationCandidate {
+                rung: route.model_rung.clone(),
+                step: u16::try_from(route.rank).unwrap_or(u16::MAX),
+                sub_step: *sub_step,
+                vendor: fleet
+                    .and_then(|fleet| fleet.vendor_of(&route.model_rung))
+                    .map(ToOwned::to_owned),
+                independence: crate::fleet::independence_key(&route.model_rung, fleet),
             }
         })
-        .collect();
-    kontor_fleet::allocate(diversity, &slots)
+        .collect()
+}
+
+/// A formal Independent Review slot's candidates (ASMA-8280).
+///
+/// Each candidate keeps the place admission gave it: the selected fleet's
+/// bound chain or the pinned template first, then any operator-accepted
+/// initial recovery profile. Each states only what an authoritative source
+/// says about it:
+///
+/// - a route the slot's bound chain supplied keeps that chain's step, its
+///   place in the step and the policy's vendor, exactly as the direct-mode
+///   joint reader builds it;
+/// - on a slot the selected fleet does not bind, a template or accepted
+///   recovery route takes its own source ordinal as its rung, and every
+///   account it expands to shares that rung;
+/// - a maker is only what the selected policy, at its hash, names for that
+///   exact account alias and model. No provider family or alias spelling
+///   names one, so an unnamed maker cannot fill a capped slot.
+///
+/// A recovery route cannot add to, or relabel a rung of, a chain the selected
+/// fleet binds. Any route whose source, rank or chain place cannot be
+/// established states no rung (`0`), and under the protocol's rung limit it
+/// cannot fill the slot.
+fn formal_committee_candidates(
+    template_id: &str,
+    slot_id: &str,
+    candidates: &[FrozenCommitteeRoute],
+    fleet: Option<&crate::fleet::FleetSnapshot>,
+) -> Vec<kontor_fleet::AllocationCandidate> {
+    let bound =
+        fleet.and_then(|fleet| fleet.resolve(&crate::fleet::committee_key(template_id, slot_id)));
+    let mut positions: BTreeMap<(&str, u16), u16> = BTreeMap::new();
+    candidates
+        .iter()
+        .map(|route| {
+            let ordinal = u16::try_from(route.rank).ok().filter(|rank| *rank > 0);
+            let chained = bound
+                .as_ref()
+                .filter(|_| route.source == "fleet_configuration")
+                .zip(ordinal)
+                .and_then(|(resolution, rank)| resolution.routes.get(usize::from(rank) - 1))
+                .filter(|chained| chained.rung == route.model_rung);
+            let vendor = match chained {
+                Some(chained) => Some(chained.vendor.clone()),
+                None => fleet
+                    .and_then(|fleet| fleet.vendor_of(&route.model_rung))
+                    .map(ToOwned::to_owned),
+            };
+            let (step, sub_step) = match (chained, ordinal) {
+                (Some(chained), _) => (chained.step, chained.sub_step),
+                (None, Some(rank))
+                    if bound.is_none()
+                        && matches!(route.source, "template" | "initial_recovery_profile") =>
+                {
+                    let position = positions.entry((route.source, rank)).or_default();
+                    *position = position.saturating_add(1);
+                    (rank, *position)
+                }
+                _ => (0, 0),
+            };
+            kontor_fleet::AllocationCandidate {
+                rung: route.model_rung.clone(),
+                step,
+                sub_step,
+                independence: vendor.clone().filter(|vendor| vendor != "unknown"),
+                vendor,
+            }
+        })
+        .collect()
+}
+
+/// Proposals keep their accepted profile order. A bound slot can take only
+/// an exact route of its selected chain, at that chain's authoritative step.
+fn recovery_profile_value_candidate(
+    profile: &CanonicalDocument,
+) -> Option<kontor_fleet::AllocationCandidate> {
+    let value: serde_json::Value = serde_json::from_str(profile.json()).ok()?;
+    serde_json::from_value(value.get("constraint_candidate")?.clone()).ok()
+}
+
+fn formal_committee_replacement_candidates(
+    template_id: &str,
+    slot_id: &str,
+    rungs: &[ModelRung],
+    fleet: Option<&crate::fleet::FleetSnapshot>,
+) -> Vec<kontor_fleet::AllocationCandidate> {
+    let bound =
+        fleet.and_then(|fleet| fleet.resolve(&crate::fleet::committee_key(template_id, slot_id)));
+    rungs
+        .iter()
+        .enumerate()
+        .map(|(index, rung)| {
+            let chained = bound
+                .as_ref()
+                .and_then(|bound| bound.routes.iter().find(|route| &route.rung == rung));
+            let (step, sub_step) = match chained {
+                Some(route) => (route.step, route.sub_step),
+                None if bound.is_none() => (u16::try_from(index + 1).unwrap_or(0), 1),
+                None => (0, 0),
+            };
+            let vendor = fleet
+                .and_then(|fleet| fleet.vendor_of(rung))
+                .map(ToOwned::to_owned);
+            kontor_fleet::AllocationCandidate {
+                rung: rung.clone(),
+                step,
+                sub_step,
+                independence: vendor.clone(),
+                vendor,
+            }
+        })
+        .collect()
 }
 
 /// Whether one route is exposed by the governed Teams model catalog or by the
@@ -28401,6 +28811,8 @@ impl ApplicationOperations for Services {
         // route (ASMA-8280 G-3); recorded with the profile, so a resumed
         // attempt requests exactly what the prepared one did.
         let mut chosen_route: Option<kontor_runtime::FleetLaunchProvenance> = None;
+        let formal = run.profile_id == kontor_fleet::INDEPENDENT_REVIEW_TEMPLATE_ID;
+        let mut constraint_candidate = None;
         let (desired_rung, recovery_profile, pending_attempt) = if let Some(attempt) =
             pending_attempt
         {
@@ -28441,7 +28853,7 @@ impl ApplicationOperations for Services {
                             .map(|route| {
                                 let rung = parse_runtime_model_route(
                                     route,
-                                    self.fleet.current().as_deref(),
+                                    fleet.as_deref(),
                                 )?;
                                 if provider_family(&rung.provider.0) == rung.provider.0.as_str() {
                                     return Err(kontor_core::DomainError::invalid(
@@ -28454,8 +28866,9 @@ impl ApplicationOperations for Services {
                             .collect::<kontor_core::DomainResult<Vec<_>>>()
                             .map_err(|error| self.refuse_domain(&error))?
                     };
-                    if template.diversity
-                        == kontor_core::consultation::DiversityRule::DistinctProviderPerSlot
+                    if !formal
+                        && template.diversity
+                            == kontor_core::consultation::DiversityRule::DistinctProviderPerSlot
                         && predecessor.committee_role == Some(CommitteeRole::Reviewer)
                     {
                         let occupied_families: BTreeSet<String> = state
@@ -28481,9 +28894,92 @@ impl ApplicationOperations for Services {
                     "the explicit recovery profile has no route that preserves Committee policy",
                 ));
             }
-            let desired_rung = if request.reason
-                == ConsultationSeatRecoveryReasonDto::CredentialPropagation
-            {
+            let desired_rung = if formal {
+                let quota_states = self.admission_quota_states(project_id)?;
+                let accounts = self.eligible_accounts(project_id)?;
+                let (eligibility, _) = quota_eligibility(
+                    adapter.as_ref(),
+                    &effective_rungs,
+                    kontor_scheduler::headroom::SeatClass::Delivery,
+                    &QuotaOutlook {
+                        states: &quota_states,
+                        account: None,
+                        accounts: &accounts,
+                        headroom: self.headroom_policy(),
+                        freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+                        now: kontor_api::now(),
+                    },
+                    BTreeSet::new(),
+                );
+                let proposals =
+                    if request.reason == ConsultationSeatRecoveryReasonDto::CredentialPropagation {
+                        let profile = state
+                            .with_store(|store| {
+                                store.get_consultation_generation_profile(project_id, &predecessor)
+                            })
+                            .map_err(|error| self.refuse(&error))?;
+                        vec![self.frozen_formal_committee_candidate(
+                            &run,
+                            &template,
+                            &predecessor,
+                            profile.as_ref().map(|(profile, _)| profile),
+                            fleet.as_deref(),
+                        )?]
+                    } else {
+                        if request.recovery_profile.is_empty() && fleet_routes.is_none() {
+                            let frozen = committee_route_candidates(
+                                &slot.models.rungs,
+                                "template",
+                                &run.definition_hash,
+                                &accounts,
+                            )
+                            .map_err(|error| self.refuse_domain(&error))?;
+                            formal_committee_candidates(
+                                &run.profile_id,
+                                slot.id.as_str(),
+                                &frozen,
+                                fleet.as_deref(),
+                            )
+                        } else {
+                            formal_committee_replacement_candidates(
+                                &run.profile_id,
+                                slot.id.as_str(),
+                                &effective_rungs,
+                                fleet.as_deref(),
+                            )
+                        }
+                    };
+                let allocation = self.formal_committee_placement(
+                    &run,
+                    &template,
+                    Some((&predecessor, &proposals, &eligibility)),
+                    fleet.as_deref(),
+                    false,
+                )?;
+                let selected = allocation
+                    .slots
+                    .iter()
+                    .find(|selected| selected.slot_id == slot.id.as_str())
+                    .and_then(|slot| slot.selected.clone())
+                    .expect("a complete allocation selected the target");
+                chosen_route = fleet_routes.as_ref().and_then(|(_, resolution)| {
+                    resolution
+                        .routes
+                        .iter()
+                        .find(|route| route.rung == selected.rung)
+                        .map(|route| {
+                            fleet_launch_provenance(
+                                &resolution.provenance,
+                                source_bundle_hash.as_ref(),
+                                route,
+                                Some(&eligibility),
+                            )
+                        })
+                });
+                chosen_under = Some(eligibility);
+                constraint_candidate = Some(selected.clone());
+                selected.rung
+            } else if request.reason == ConsultationSeatRecoveryReasonDto::CredentialPropagation {
                 predecessor.model_rung.clone()
             } else {
                 let quota_states = self.admission_quota_states(project_id)?;
@@ -28550,6 +29046,11 @@ impl ApplicationOperations for Services {
                 "schema_version": 1,
                 "ordered_rungs": effective_rungs,
             });
+            if let Some(candidate) = &constraint_candidate {
+                recovery_profile["constraint_candidate"] = serde_json::json!(candidate);
+                recovery_profile["constraint_policy_hash"] =
+                    serde_json::json!(fleet.as_ref().map(|fleet| fleet.hash()));
+            }
             if let Some(eligibility) = &chosen_under {
                 recovery_profile["eligibility"] = serde_json::json!(eligibility);
             }
@@ -28566,6 +29067,27 @@ impl ApplicationOperations for Services {
                 ApiErrorCode::PlacementBlocked,
                 "provider recovery did not resolve to a different governed route",
             ));
+        }
+        if formal && pending_attempt.is_some() {
+            let candidate = recovery_profile_value_candidate(&recovery_profile)
+                .filter(|candidate| candidate.rung == desired_rung)
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::PlacementBlocked,
+                        "the pending formal recovery has no authoritative constraint candidate",
+                    )
+                })?;
+            self.formal_committee_placement(
+                &run,
+                &template,
+                Some((
+                    &predecessor,
+                    &[candidate],
+                    &kontor_fleet::Eligibility::default(),
+                )),
+                fleet.as_deref(),
+                false,
+            )?;
         }
         let successor_fleet_provenance = chosen_route;
         let successor_route_provenance = match fleet_routes.as_ref() {
@@ -28589,6 +29111,12 @@ impl ApplicationOperations for Services {
         adapter
             .validate_consultation_model_rung(&desired_rung, &successor_route_provenance)
             .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
+        let mut provenance_basis = predecessor.clone();
+        if let Some(attempt) = &pending_attempt {
+            provenance_basis.occupancy_generation = attempt.predecessor_occupancy_generation;
+        }
+        let predecessor_route_provenance =
+            self.committee_seat_route_provenance(&run, &provenance_basis)?;
         let attempt = if let Some(attempt) = pending_attempt {
             attempt
         } else {
@@ -28614,8 +29142,6 @@ impl ApplicationOperations for Services {
             ));
         }
         predecessor.occupancy_generation = attempt.predecessor_occupancy_generation;
-        let predecessor_route_provenance =
-            self.committee_seat_route_provenance(&run, &predecessor)?;
         let retired = adapter
             .retire_consultation_seat(&ConsultationSeatRetireRequest {
                 seat_binding_id,
@@ -28718,6 +29244,17 @@ impl ApplicationOperations for Services {
     ) -> Result<UnmaterializedConsultationSeatRerouteDto, ApiError> {
         let target_run_id = ConsultationRunId::Committee(committee_run_id);
         let mut run = self.consultation_run(project_id, target_run_id)?;
+        // Reuse the native lifecycle guard: a formal native-less reroute must
+        // drain materialization/recovery before checking native-less state.
+        // No new reservation schema or generation fence is introduced.
+        let _formal_native_change =
+            if run.profile_id == kontor_fleet::INDEPENDENT_REVIEW_TEMPLATE_ID {
+                let guard = self.native_lifecycle_change().await?;
+                run = self.consultation_run(project_id, target_run_id)?;
+                Some(guard)
+            } else {
+                None
+            };
         let target = AggregateRef::MiniProject {
             mini_project_id: run.mini_project_id,
         };
@@ -28919,7 +29456,7 @@ impl ApplicationOperations for Services {
                 crate::fleet::independence_key(&candidate.model_rung, fleet.as_deref())
             })
             .collect();
-        let recovery_profile_document = self.intent(&serde_json::json!({
+        let mut recovery_profile_document = self.intent(&serde_json::json!({
             "schema_version": 1, "ordered_routes": request.recovery_profile,
         }))?;
         let recovery_provenance = consultation_route_provenance(
@@ -28927,6 +29464,8 @@ impl ApplicationOperations for Services {
             recovery_profile_document.hash().clone(),
         )
         .map_err(|error| self.refuse_domain(&error))?;
+        let formal = run.profile_id == kontor_fleet::INDEPENDENT_REVIEW_TEMPLATE_ID;
+        let mut proposal_rungs = Vec::new();
         let mut candidates = Vec::new();
         for route in &request.recovery_profile {
             let rung = parse_runtime_model_route(route, fleet.as_deref())
@@ -28940,8 +29479,10 @@ impl ApplicationOperations for Services {
             adapter
                 .validate_consultation_model_rung(&rung, &recovery_provenance)
                 .map_err(|error| ApiError::from_runtime(state.realm_id(), &error))?;
-            let violates_diversity = template.diversity
-                == kontor_core::consultation::DiversityRule::DistinctProviderPerSlot
+            proposal_rungs.push(rung.clone());
+            let violates_diversity = !formal
+                && template.diversity
+                    == kontor_core::consultation::DiversityRule::DistinctProviderPerSlot
                 && seat.committee_role == Some(CommitteeRole::Reviewer)
                 && crate::fleet::independence_key(&rung, fleet.as_deref())
                     .is_none_or(|vendor| occupied_families.contains(&vendor));
@@ -29004,25 +29545,67 @@ impl ApplicationOperations for Services {
             .iter()
             .map(|(rung, _)| rung.clone())
             .collect();
-        let selected = resolve_recovery_placement(
-            adapter.as_ref(),
-            &candidates,
-            &QuotaOutlook {
-                states: &quota_states,
-                account: None,
-                accounts: &accounts,
-                headroom: self.headroom_policy(),
-                freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
-                now,
-            },
-        )
-        .map_err(|error| self.refuse_domain(&error))?
-        .ok_or_else(|| {
-            self.deny(
-                ApiErrorCode::PlacementBlocked,
-                "no route in the materialization recovery profile is currently admissible",
+        let selected = if formal {
+            let mut proposals = formal_committee_replacement_candidates(
+                &run.profile_id,
+                seat.role_slot_id.as_str(),
+                &proposal_rungs,
+                fleet.as_deref(),
+            );
+            proposals.retain(|candidate| candidates.contains(&candidate.rung));
+            let (eligibility, _) = quota_eligibility(
+                adapter.as_ref(),
+                &candidates,
+                kontor_scheduler::headroom::SeatClass::Delivery,
+                &QuotaOutlook {
+                    states: &quota_states,
+                    account: None,
+                    accounts: &accounts,
+                    headroom: self.headroom_policy(),
+                    freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+                    now,
+                },
+                BTreeSet::new(),
+            );
+            let allocation = self.formal_committee_placement(
+                &run,
+                &template,
+                Some((&seat, &proposals, &eligibility)),
+                fleet.as_deref(),
+                false,
+            )?;
+            let candidate = allocation
+                .slots
+                .iter()
+                .find(|slot| slot.slot_id == seat.role_slot_id.as_str())
+                .and_then(|slot| slot.selected.clone())
+                .expect("a complete allocation selected the target");
+            recovery_profile_document = self.intent(&serde_json::json!({
+                "schema_version": 1, "ordered_routes": request.recovery_profile,
+                "constraint_candidate": candidate, "constraint_policy_hash": fleet.as_ref().map(|fleet| fleet.hash()),
+            }))?;
+            candidate.rung
+        } else {
+            resolve_recovery_placement(
+                adapter.as_ref(),
+                &candidates,
+                &QuotaOutlook {
+                    states: &quota_states,
+                    account: None,
+                    accounts: &accounts,
+                    headroom: self.headroom_policy(),
+                    freshness: jiff::SignedDuration::from_secs(state.evidence_window_seconds()),
+                    now,
+                },
             )
-        })?;
+            .map_err(|error| self.refuse_domain(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::PlacementBlocked,
+                    "no route in the materialization recovery profile is currently admissible",
+                )
+            })?
+        };
         let headroom_observation = governed_candidates
             .into_iter()
             .find_map(|(rung, observation)| (rung == selected).then_some(observation))
@@ -29221,6 +29804,19 @@ impl ApplicationOperations for Services {
                     "the Judge verdict contradicts the server-recomputed conjunction",
                 ));
             }
+        }
+        if run.profile_id == kontor_fleet::INDEPENDENT_REVIEW_TEMPLATE_ID {
+            let fleet = self
+                .fleet_policy()
+                .map_err(|error| self.refuse_domain(&error))?;
+            self.formal_committee_placement(
+                &run,
+                &template,
+                None,
+                fleet.as_deref(),
+                role == CommitteeRole::Reviewer
+                    && reviewer_findings.len() + 1 < template.reviewer_slots().len(),
+            )?;
         }
         let document = self.intent(&serde_json::json!({
             "schema_version": 1,
@@ -44396,11 +44992,11 @@ mod tests {
     use super::{
         AdmissionScanKey, FrozenCommitteeRoute, IdentityDecision, QuotaOutlook,
         RuntimeModelRouteRequest, Services, account_for_explicit_provider_alias,
-        allocate_committee, consultation_account_rungs, counts_towards_completion, eligible_roots,
-        ensure_unambiguous_generic_consultation_routes, freeze_hosted_seat_autonomy,
-        freeze_seat_autonomy, kickoff_is_ready, parse_runtime_model_route,
-        re_review_remediation_identity, render_legacy_container_name, scan_reached_the_end,
-        scan_resume_point, seat_block, slot_prompt,
+        allocate_committee, committee_route_candidates, consultation_account_rungs,
+        counts_towards_completion, eligible_roots, ensure_unambiguous_generic_consultation_routes,
+        freeze_hosted_seat_autonomy, freeze_seat_autonomy, kickoff_is_ready,
+        parse_runtime_model_route, re_review_remediation_identity, render_legacy_container_name,
+        scan_reached_the_end, scan_resume_point, seat_block, slot_prompt,
     };
     use kontor_api::error::ApiError;
     use kontor_core::id::{
@@ -44512,6 +45108,105 @@ mod tests {
             })
     }
 
+    /// The bundled formal Independent Review template (ASMA-8280).
+    fn formal_committee_template() -> kontor_core::consultation::CommitteeTemplateSpec {
+        kontor_profiles::seeds::bundled_consultation_presets()
+            .expect("the presets load")
+            .committee_templates
+            .remove(0)
+    }
+
+    /// The same slots and routes under another template id: a generic
+    /// Committee that no protocol constraint holds.
+    fn generic_committee_template() -> kontor_core::consultation::CommitteeTemplateSpec {
+        let mut template = formal_committee_template();
+        template.template_id =
+            kontor_core::id::CommitteeTemplateId::parse("01991c00-0000-7000-8000-0000000000ff")
+                .expect("a template id");
+        assert!(
+            kontor_fleet::committee_constraints(&template.template_id.to_string(), ["judge"])
+                .is_empty()
+        );
+        template
+    }
+
+    /// One governed candidate from a named source, at its source ordinal.
+    fn sourced_route(
+        source: &'static str,
+        rank: u32,
+        provider: &str,
+        model: &str,
+        effort: Option<EffortLevel>,
+    ) -> FrozenCommitteeRoute {
+        FrozenCommitteeRoute {
+            model_rung: ModelRung {
+                provider: ProviderRef(provider.to_owned()),
+                model: ModelRef(model.to_owned()),
+                effort,
+            },
+            source,
+            rank,
+            profile_hash: ContentHash::of(source.as_bytes()),
+            headroom_basis_account_id: None,
+            eligibility: None,
+            fleet_provenance: None,
+        }
+    }
+
+    /// The selected policy's own chain for one formal slot, as admission
+    /// freezes it: flattened routes at their positions, `fleet_configuration`.
+    fn bound_routes(fleet: &crate::fleet::FleetSnapshot, slot: &str) -> Vec<FrozenCommitteeRoute> {
+        let rungs: Vec<ModelRung> = fleet
+            .resolve(&crate::fleet::committee_key(
+                kontor_fleet::INDEPENDENT_REVIEW_TEMPLATE_ID,
+                slot,
+            ))
+            .expect("the slot is bound")
+            .routes
+            .into_iter()
+            .map(|route| route.rung)
+            .collect();
+        committee_route_candidates(&rungs, "fleet_configuration", fleet.hash(), &[])
+            .expect("the chain qualifies")
+    }
+
+    fn policy_snapshot(yaml: &str) -> crate::fleet::FleetSnapshot {
+        let schema = if yaml.starts_with("schema_version: 2") {
+            2
+        } else {
+            1
+        };
+        crate::fleet::FleetSnapshot::activated(&ContentHash::of(yaml.as_bytes()), schema, yaml)
+            .expect("the fixture policy admits")
+    }
+
+    /// Each slot's selection as (provider, model, rung).
+    fn seated(allocation: &kontor_fleet::JointAllocation) -> Vec<(String, String, u16)> {
+        allocation
+            .slots
+            .iter()
+            .map(|slot| {
+                let selected = slot.selected.as_ref().expect("a selected route");
+                (
+                    selected.rung.provider.0.clone(),
+                    selected.rung.model.0.clone(),
+                    selected.step,
+                )
+            })
+            .collect()
+    }
+
+    fn exclusions(
+        allocation: &kontor_fleet::JointAllocation,
+        slot: usize,
+    ) -> Vec<Option<kontor_fleet::AllocationExclusion>> {
+        allocation.slots[slot]
+            .considered
+            .iter()
+            .map(|considered| considered.excluded)
+            .collect()
+    }
+
     #[test]
     fn clean_re_review_uses_the_committee_remediation_for_a_bounded_round() {
         let committee = ContentHash::of(b"committee-remediation");
@@ -44544,10 +45239,7 @@ mod tests {
 
     #[test]
     fn whole_committee_allocation_backtracks_to_preserve_reviewer_families() {
-        let template = kontor_profiles::seeds::bundled_consultation_presets()
-            .expect("the presets load")
-            .committee_templates
-            .remove(0);
+        let template = generic_committee_template();
         let candidates = vec![
             vec![
                 committee_route("codex-work", "gpt-5.6-sol"),
@@ -44566,10 +45258,7 @@ mod tests {
 
     #[test]
     fn whole_committee_allocation_is_deterministic_and_fails_without_diversity() {
-        let template = kontor_profiles::seeds::bundled_consultation_presets()
-            .expect("the presets load")
-            .committee_templates
-            .remove(0);
+        let template = generic_committee_template();
         let primary = vec![
             vec![committee_route("claude-work", "claude-opus-5")],
             vec![committee_route("codex-work", "gpt-5.6-sol")],
@@ -44605,10 +45294,7 @@ mod tests {
     /// out of sight — and the blocked answer is whole.
     #[test]
     fn a_governed_committee_obeys_each_slots_explicit_eligibility() {
-        let template = kontor_profiles::seeds::bundled_consultation_presets()
-            .expect("the presets load")
-            .committee_templates
-            .remove(0);
+        let template = generic_committee_template();
         let candidates = vec![
             vec![
                 committee_route("claude-work", "claude-opus-5"),
@@ -44649,10 +45335,7 @@ mod tests {
     /// fleet the same routes keep today's provider-family meaning.
     #[test]
     fn a_committee_reviewer_is_never_seated_on_an_unknown_vendor() {
-        let template = kontor_profiles::seeds::bundled_consultation_presets()
-            .expect("the presets load")
-            .committee_templates
-            .remove(0);
+        let template = generic_committee_template();
         let fleet = crate::fleet::FleetSnapshot::parse(
             "schema_version: 1\n\
              domains:\n  cursor: { provider: cursor, accounts: [cursor] }\n\
@@ -44673,6 +45356,520 @@ mod tests {
         assert!(
             allocated(&template, &candidates, None).is_some(),
             "without a fleet the same routes keep today's family meaning"
+        );
+    }
+
+    #[test]
+    fn formal_replacement_preference_never_promotes_a_bound_rung_or_flattens_accounts() {
+        let fleet = policy_snapshot(&shaped_formal_policy());
+        let bound = bound_routes(&fleet, "reviewer-a");
+        let opus = bound
+            .iter()
+            .find(|route| route.model_rung.provider.0 == "claude-work")
+            .unwrap()
+            .model_rung
+            .clone();
+        let sol = bound
+            .iter()
+            .find(|route| route.model_rung.provider.0 == "codex-work")
+            .unwrap()
+            .model_rung
+            .clone();
+        let personal_sol = bound
+            .iter()
+            .find(|route| route.model_rung.provider.0 == "codex-personal")
+            .unwrap()
+            .model_rung
+            .clone();
+        let proposals = super::formal_committee_replacement_candidates(
+            kontor_fleet::INDEPENDENT_REVIEW_TEMPLATE_ID,
+            "reviewer-a",
+            &[opus, personal_sol, sol],
+            Some(&fleet),
+        );
+        assert_eq!(
+            proposals.iter().map(|route| route.step).collect::<Vec<_>>(),
+            [3, 1, 1]
+        );
+        assert_eq!(
+            proposals
+                .iter()
+                .map(|route| route.sub_step)
+                .collect::<Vec<_>>(),
+            [1, 2, 1]
+        );
+        let unbound = super::formal_committee_replacement_candidates(
+            kontor_fleet::INDEPENDENT_REVIEW_TEMPLATE_ID,
+            "unbound",
+            &proposals
+                .iter()
+                .map(|route| route.rung.clone())
+                .collect::<Vec<_>>(),
+            Some(&fleet),
+        );
+        assert_eq!(
+            unbound.iter().map(|route| route.step).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        let mut off_chain = proposals[1].rung.clone();
+        off_chain.effort = Some(EffortLevel::High);
+        let unknown = super::formal_committee_replacement_candidates(
+            kontor_fleet::INDEPENDENT_REVIEW_TEMPLATE_ID,
+            "reviewer-a",
+            &[off_chain],
+            Some(&fleet),
+        );
+        assert_eq!(
+            unknown[0].step, 0,
+            "an exact off-chain effort cannot claim rung one"
+        );
+    }
+
+    const FORMAL_KEY: &str = "committee/01991c00-0000-7000-8000-000000000001";
+
+    /// The formal Committee's three chains as the 95037ece policy writes them,
+    /// a DEC-010 unavailable domain and an uncalibrated model included.
+    fn shaped_formal_policy() -> String {
+        format!(
+            "schema_version: 2\n\
+             domains:\n  claude: {{ provider: claude, accounts: [claude-work, claude-personal] }}\n  codex: {{ provider: codex, accounts: [codex-work, codex-personal] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n  deepseek: {{ provider: opencode, accounts: [opencode], model_prefix: \"deepseek/\" }}\n\
+             unavailable:\n  domains: [deepseek]\n  accounts: []\n\
+             models:\n  opus-5.5: {{ domain: claude, id: claude-opus-5-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: false }}\n  opus-5: {{ domain: claude, id: claude-opus-5, vendor: anthropic, efforts: [xhigh], vision: true, calibrated: true }}\n  sol: {{ domain: codex, id: gpt-6.1-sol, vendor: openai, efforts: [xhigh], vision: true, calibrated: true }}\n  grok-4.6: {{ domain: cursor, id: grok-4.6, vendor: xai, efforts: [xhigh], vision: true, calibrated: true }}\n  deepseek-flash: {{ domain: deepseek, id: deepseek/deepseek-flash, vendor: deepseek, efforts: [max], vision: false, calibrated: false }}\n\
+             chains:\n  review-a:\n    - [sol@xhigh]\n    - [deepseek-flash@max]\n    - [opus-5.5@xhigh, opus-5@xhigh]\n  review-b:\n    - [opus-5.5@xhigh, opus-5@xhigh]\n    - [sol@xhigh]\n  consult-claude-first:\n    - [opus-5.5@xhigh, opus-5@xhigh]\n    - [sol@xhigh]\n    - [grok-4.6@xhigh]\n\
+             bindings:\n  {FORMAL_KEY}/reviewer-a: review-a\n  {FORMAL_KEY}/reviewer-b: review-b\n  {FORMAL_KEY}/judge: consult-claude-first\n\
+             rules:\n  calibration_required:\n    - {FORMAL_KEY}/reviewer-a\n    - {FORMAL_KEY}/reviewer-b\n    - {FORMAL_KEY}/judge\n"
+        )
+    }
+
+    /// A policy that names the makers of the Claude, Codex and Cursor routes
+    /// below and binds only what `bindings` says.
+    fn listing_policy(claude_accounts: &str, codex_accounts: &str, bindings: &str) -> String {
+        format!(
+            "schema_version: 1\n\
+             domains:\n  claude: {{ provider: claude, accounts: [{claude_accounts}] }}\n  codex: {{ provider: codex, accounts: [{codex_accounts}] }}\n  cursor: {{ provider: cursor, accounts: [cursor] }}\n\
+             models:\n  opus: {{ domain: claude, id: claude-opus-5, vendor: anthropic }}\n  sol: {{ domain: codex, id: gpt-5.6-sol, vendor: openai }}\n  grok: {{ domain: cursor, id: grok-4.7, vendor: xai }}\n\
+             chains:\n  opus-sol-grok:\n    - [opus]\n    - [sol]\n    - [grok]\n  sol-only:\n    - [sol]\n\
+             bindings:\n  team/01936f5a-0000-7000-8000-000000000101/scope: sol-only\n{bindings}"
+        )
+    }
+
+    /// ASMA-8280: both orchestration modes allocate one formal snapshot
+    /// through the one allocator and answer identically — Sol reviewer A at
+    /// rung 1, Opus reviewer B at rung 1, and the judge moved off its Claude
+    /// first rung to Sol at rung 2 — and, when no Sol account can take the
+    /// judge, refuse the whole Committee with the same reasons.
+    #[test]
+    fn both_modes_allocate_one_formal_snapshot_identically() {
+        let yaml = shaped_formal_policy();
+        let fleet = policy_snapshot(&yaml);
+        let direct = kontor_fleet_activation::Activated {
+            record: kontor_fleet_activation::FleetActivation {
+                schema_version: kontor_fleet_activation::ACTIVATION_V1,
+                source_bundle_hash: None,
+                policy_hash: fleet.hash().clone(),
+                policy_schema_version: 2,
+                core_team_revision_hash: None,
+                activated_at: "2026-10-02T00:00:00Z".to_owned(),
+            },
+            policy: policy_snapshot(&yaml),
+            bundle: None,
+        };
+        let template = formal_committee_template();
+        let candidates: Vec<_> = ["reviewer-a", "reviewer-b", "judge"]
+            .into_iter()
+            .map(|slot| bound_routes(&fleet, slot))
+            .collect();
+        for unavailable in [&[][..], &["codex-work", "codex-personal"][..]] {
+            let mut eligibility = vec![kontor_fleet::Eligibility::default(); 3];
+            eligibility[2].unavailable_accounts = unavailable
+                .iter()
+                .map(|alias| (*alias).to_owned())
+                .collect();
+            let governed = allocate_committee(&template, &candidates, &eligibility, Some(&fleet));
+            let request: kontor_fleet_activation::JointAllocationRequest =
+                serde_json::from_value(serde_json::json!({
+                    "diversity": "distinct_vendor_per_reviewer",
+                    "slots": [
+                        {"slot_id": "reviewer-a", "role": "reviewer",
+                         "binding_key": format!("{FORMAL_KEY}/reviewer-a")},
+                        {"slot_id": "reviewer-b", "role": "reviewer",
+                         "binding_key": format!("{FORMAL_KEY}/reviewer-b")},
+                        {"slot_id": "judge", "role": "judge",
+                         "binding_key": format!("{FORMAL_KEY}/judge"),
+                         "unavailable_accounts": unavailable},
+                    ],
+                }))
+                .expect("a joint request");
+            let joint = direct.allocate(&request).expect("allocates");
+            assert_eq!(governed.blocked, joint.blocked);
+            assert_eq!(
+                governed.slots,
+                joint
+                    .slots
+                    .into_iter()
+                    .map(|slot| slot.allocation)
+                    .collect::<Vec<_>>()
+            );
+            if unavailable.is_empty() {
+                let owned = |provider: &str, model: &str, step| {
+                    (provider.to_owned(), model.to_owned(), step)
+                };
+                assert_eq!(
+                    seated(&governed),
+                    [
+                        owned("codex-work", "gpt-6.1-sol", 1),
+                        owned("claude-work", "claude-opus-5", 1),
+                        owned("codex-work", "gpt-6.1-sol", 2),
+                    ]
+                );
+                let judge = &governed.slots[2].considered;
+                assert_eq!(
+                    judge[0].excluded,
+                    Some(kontor_fleet::AllocationExclusion::VendorCapReached)
+                );
+                assert_eq!(judge[0].conflicts_with.as_deref(), Some("reviewer-b"));
+            } else {
+                assert_eq!(
+                    governed.blocked,
+                    Some(kontor_fleet::AllocationFailure::VendorCapExceeded)
+                );
+                assert!(governed.slots.iter().all(|slot| slot.selected.is_none()));
+                assert_eq!(
+                    exclusions(&governed, 2).last().copied().flatten(),
+                    Some(kontor_fleet::AllocationExclusion::RungBeyondVerdict)
+                );
+            }
+        }
+    }
+
+    /// ASMA-8280: an unbound formal Committee — the pinned v1 template's own
+    /// routes — names a maker only where the selected policy does, for that
+    /// exact account alias. With no policy no route names one and every slot
+    /// is refused; with a policy that lists them, the template's two Claude
+    /// seats have no completion under the cap and the whole Committee is
+    /// refused. A generic Committee over the same routes keeps both.
+    #[test]
+    fn an_unbound_formal_committee_names_makers_only_from_the_selected_policy() {
+        use kontor_fleet::{AllocationExclusion, AllocationFailure};
+        let template = formal_committee_template();
+        let declared: Vec<Vec<FrozenCommitteeRoute>> = template
+            .slots
+            .iter()
+            .map(|slot| {
+                committee_route_candidates(
+                    &slot.models.rungs,
+                    "template",
+                    &ContentHash::of(b"independent review v1"),
+                    &[],
+                )
+                .expect("the template routes qualify")
+            })
+            .collect();
+        let eligibility = vec![kontor_fleet::Eligibility::default(); 3];
+
+        let unlisted = allocate_committee(&template, &declared, &eligibility, None);
+        assert_eq!(
+            unlisted.blocked,
+            Some(AllocationFailure::NoEligibleCandidate)
+        );
+        for slot in 0..3 {
+            assert!(unlisted.slots[slot].selected.is_none());
+            assert!(
+                exclusions(&unlisted, slot)
+                    .iter()
+                    .all(|excluded| *excluded == Some(AllocationExclusion::VendorUnknown)),
+                "a provider family names no maker: {:?}",
+                unlisted.slots[slot]
+            );
+        }
+
+        let listing = policy_snapshot(&listing_policy("claude-work, claude-personal", "codex", ""));
+        let capped = allocate_committee(&template, &declared, &eligibility, Some(&listing));
+        assert_eq!(capped.blocked, Some(AllocationFailure::VendorCapExceeded));
+        assert!(capped.slots.iter().all(|slot| slot.selected.is_none()
+            && slot.failure == Some(AllocationFailure::VendorCapExceeded)));
+
+        let generic = allocate_committee(
+            &generic_committee_template(),
+            &declared,
+            &eligibility,
+            Some(&listing),
+        );
+        let providers: Vec<String> = seated(&generic)
+            .into_iter()
+            .map(|(provider, ..)| provider)
+            .collect();
+        assert_eq!(providers, ["claude-work", "codex", "claude-work"]);
+
+        // An alias the policy does not list names no maker, however it is spelled.
+        let work_only = policy_snapshot(&listing_policy("claude-work", "codex", ""));
+        let partial = allocate_committee(&template, &declared, &eligibility, Some(&work_only));
+        assert_eq!(partial.blocked, Some(AllocationFailure::VendorCapExceeded));
+        assert_eq!(
+            exclusions(&partial, 2)[1],
+            Some(AllocationExclusion::VendorUnknown),
+            "claude-personal is not in the policy's Claude domain"
+        );
+    }
+
+    /// ASMA-8280: on a slot the selected fleet does not bind, an accepted
+    /// initial recovery route is searched after the template's routes, yet
+    /// keeps its own ordinal as its rung — preference order is not the source
+    /// ordinal — and below rung 2 it gives no verdict. An account expansion
+    /// shares its route's rung.
+    #[test]
+    fn a_formal_recovery_route_keeps_its_own_ordinal_after_the_template() {
+        use kontor_fleet::AllocationExclusion;
+        let fleet = policy_snapshot(&listing_policy(
+            "claude-work, claude-personal",
+            "codex-work, codex-personal",
+            "",
+        ));
+        let accounts = ["codex-work", "codex-personal"].map(|alias| EligibleAccount {
+            account_profile_id: AccountProfileId::generate(),
+            selectable_providers: BTreeSet::from([alias.to_owned()]),
+        });
+        let template = formal_committee_template();
+        let candidates = vec![
+            vec![sourced_route(
+                "template",
+                1,
+                "claude-work",
+                "claude-opus-5",
+                Some(EffortLevel::Xhigh),
+            )],
+            committee_route_candidates(
+                &template.slots[1].models.rungs,
+                "template",
+                &ContentHash::of(b"independent review v1"),
+                &accounts,
+            )
+            .expect("the generic Codex route expands to both aliases"),
+            vec![
+                sourced_route(
+                    "template",
+                    1,
+                    "claude-work",
+                    "claude-opus-5",
+                    Some(EffortLevel::High),
+                ),
+                sourced_route(
+                    "template",
+                    2,
+                    "claude-personal",
+                    "claude-opus-5",
+                    Some(EffortLevel::High),
+                ),
+                sourced_route(
+                    "initial_recovery_profile",
+                    1,
+                    "codex-work",
+                    "gpt-5.6-sol",
+                    Some(EffortLevel::High),
+                ),
+                sourced_route("initial_recovery_profile", 2, "cursor", "grok-4.7", None),
+                sourced_route(
+                    "initial_recovery_profile",
+                    3,
+                    "codex-personal",
+                    "gpt-5.6-sol",
+                    Some(EffortLevel::High),
+                ),
+            ],
+        ];
+        let mut eligibility = vec![kontor_fleet::Eligibility::default(); 3];
+        let allocation = allocate_committee(&template, &candidates, &eligibility, Some(&fleet));
+        assert_eq!(
+            seated(&allocation)[2],
+            ("codex-work".to_owned(), "gpt-5.6-sol".to_owned(), 1)
+        );
+        assert_eq!(
+            exclusions(&allocation, 2),
+            [
+                Some(AllocationExclusion::VendorCapReached),
+                Some(AllocationExclusion::VendorCapReached),
+                None,
+                None,
+                Some(AllocationExclusion::RungBeyondVerdict),
+            ]
+        );
+        let expanded: Vec<(u16, u16)> = allocation.slots[1]
+            .considered
+            .iter()
+            .map(|considered| (considered.candidate.step, considered.candidate.sub_step))
+            .collect();
+        assert_eq!(expanded, [(1, 1), (1, 2)], "an account is not a rung");
+
+        // The template's rung-2 route is preferred over the recovery's rung 1.
+        eligibility[0].unavailable_accounts = BTreeSet::from(["claude-work".to_owned()]);
+        eligibility[2].unavailable_accounts = BTreeSet::from(["claude-work".to_owned()]);
+        let mut candidates = candidates;
+        candidates[0].push(sourced_route(
+            "initial_recovery_profile",
+            1,
+            "cursor",
+            "grok-4.7",
+            None,
+        ));
+        let preferred = allocate_committee(&template, &candidates, &eligibility, Some(&fleet));
+        assert_eq!(
+            seated(&preferred)[2],
+            ("claude-personal".to_owned(), "claude-opus-5".to_owned(), 2)
+        );
+    }
+
+    /// ASMA-8280 (A-08): a recovery route cannot relabel a chain the selected
+    /// fleet binds — not its rung-3 route as rung 1, nor a new route into it —
+    /// and a route that claims a chain place it does not hold, claims the
+    /// chain's provenance on an unbound slot, comes from another source or
+    /// states no rank states no rung. The chain's own routes keep their step,
+    /// and their accounts share it.
+    #[test]
+    fn a_formal_recovery_route_cannot_relabel_or_broaden_a_bound_chain() {
+        use kontor_fleet::{AllocationExclusion, AllocationFailure};
+        let fleet = policy_snapshot(&listing_policy(
+            "claude-work, claude-personal",
+            "codex-work, codex-personal",
+            &format!("  {FORMAL_KEY}/reviewer-b: opus-sol-grok\n"),
+        ));
+        let template = formal_committee_template();
+        let mut reviewer_b = bound_routes(&fleet, "reviewer-b");
+        reviewer_b.extend([
+            sourced_route("initial_recovery_profile", 1, "cursor", "grok-4.7", None),
+            sourced_route(
+                "initial_recovery_profile",
+                2,
+                "cursor",
+                "grok-4.7",
+                Some(EffortLevel::Xhigh),
+            ),
+            // Claims the chain's first place, which `claude-work` Opus holds.
+            sourced_route(
+                "fleet_configuration",
+                1,
+                "cursor",
+                "grok-4.7",
+                Some(EffortLevel::High),
+            ),
+            // States no chain place at all.
+            sourced_route(
+                "fleet_configuration",
+                0,
+                "cursor",
+                "grok-4.7",
+                Some(EffortLevel::Low),
+            ),
+        ]);
+        let candidates = vec![
+            vec![sourced_route(
+                "template",
+                1,
+                "claude-work",
+                "claude-opus-5",
+                Some(EffortLevel::Xhigh),
+            )],
+            reviewer_b,
+            vec![
+                sourced_route(
+                    "fleet_configuration",
+                    1,
+                    "codex-personal",
+                    "gpt-5.6-sol",
+                    None,
+                ),
+                sourced_route(
+                    "seat_recovery_profile",
+                    1,
+                    "codex-personal",
+                    "gpt-5.6-sol",
+                    Some(EffortLevel::High),
+                ),
+                sourced_route(
+                    "template",
+                    0,
+                    "codex-personal",
+                    "gpt-5.6-sol",
+                    Some(EffortLevel::High),
+                ),
+                sourced_route(
+                    "template",
+                    1,
+                    "codex-work",
+                    "gpt-5.6-sol",
+                    Some(EffortLevel::High),
+                ),
+            ],
+        ];
+        let mut eligibility = vec![kontor_fleet::Eligibility::default(); 3];
+        eligibility[1].unavailable_accounts =
+            BTreeSet::from(["codex-work".to_owned(), "codex-personal".to_owned()]);
+        let blocked = allocate_committee(&template, &candidates, &eligibility, Some(&fleet));
+        assert_eq!(
+            blocked.blocked,
+            Some(AllocationFailure::NoDistinctReviewerVendors)
+        );
+        assert_eq!(
+            exclusions(&blocked, 1),
+            [
+                Some(AllocationExclusion::NoCompleteAllocation),
+                Some(AllocationExclusion::NoCompleteAllocation),
+                Some(AllocationExclusion::AccountUnavailableNow),
+                Some(AllocationExclusion::AccountUnavailableNow),
+                Some(AllocationExclusion::RungBeyondVerdict),
+                Some(AllocationExclusion::RungUnknown),
+                Some(AllocationExclusion::RungUnknown),
+                Some(AllocationExclusion::RungUnknown),
+                Some(AllocationExclusion::RungUnknown),
+            ]
+        );
+        let places: Vec<(u16, u16)> = blocked.slots[1]
+            .considered
+            .iter()
+            .map(|considered| (considered.candidate.step, considered.candidate.sub_step))
+            .collect();
+        assert_eq!(
+            places,
+            [
+                (1, 1),
+                (1, 2),
+                (2, 1),
+                (2, 2),
+                (3, 1),
+                (0, 0),
+                (0, 0),
+                (0, 0),
+                (0, 0)
+            ]
+        );
+        assert!(
+            allocate_committee(
+                &generic_committee_template(),
+                &candidates,
+                &eligibility,
+                Some(&fleet)
+            )
+            .is_complete(),
+            "a generic Committee reads no rung"
+        );
+
+        eligibility[1].unavailable_accounts.clear();
+        let allocation = allocate_committee(&template, &candidates, &eligibility, Some(&fleet));
+        assert_eq!(
+            seated(&allocation),
+            [
+                ("claude-work".to_owned(), "claude-opus-5".to_owned(), 1),
+                ("codex-work".to_owned(), "gpt-5.6-sol".to_owned(), 2),
+                ("codex-work".to_owned(), "gpt-5.6-sol".to_owned(), 1),
+            ]
+        );
+        assert_eq!(
+            exclusions(&allocation, 2),
+            [
+                Some(AllocationExclusion::RungUnknown),
+                Some(AllocationExclusion::RungUnknown),
+                Some(AllocationExclusion::RungUnknown),
+                None,
+            ]
         );
     }
 
