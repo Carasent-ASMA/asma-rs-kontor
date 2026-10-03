@@ -1,0 +1,18 @@
+{
+  "source_commit": "7e3c2a954333817c7be873d4a68cd58fa3593495",
+  "source_tree": "2b481a9ce5af6a19863f36b69075e976b68ec8fd",
+  "source_parent": "ef0b71933d8879f33d963a4ad3b5f1fded4aa52f",
+  "root_contract": "6d58238cdf349fe95acaec7e4d2e921e2fce80de",
+  "worker_manifest_sha256": "d36ceeeac2e59fb59c91b9a4a6ca36715402255088b6e6f6d8b8e3d88b63238d",
+  "unchanged_artifact_copies": 93,
+  "unchanged_manifest_copies": 1,
+  "unchanged_candidate_copies": 13,
+  "source_hashes_verified_against_git_objects": 13,
+  "counts_verified_against_named_log_summaries": {
+    "tests": 664,
+    "suites": 30,
+    "doctests": 7
+  },
+  "provenance": "Worker labels source_base/final_source_parent identify pre-commit ef0b719; hashes pin the prepared source at7e3c2a9. Counts aggregate named phases; prepared19/20/21 are superseded by final22. Ten unique mutants replayed twice, not20. Original failed/cache and temporal evidence preserved verbatim.",
+  "acceptance": "Source publication only; exact independent review pending. No issuer/admission/custody/native possession/fence/finality/live or epic/task closure proof."
+}

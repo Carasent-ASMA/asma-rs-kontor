@@ -1,0 +1,15 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
+   Doc-tests kontor_runtime
+
+running 2 tests
+test crates/kontor-runtime/src/planning_pair/attestation.rs - planning_pair::attestation::VerifiedAttestation (line 187) - compile fail ... ok
+test crates/kontor-runtime/src/planning_pair/attestation.rs - planning_pair::attestation::VerifiedAttestation (line 194) - compile fail ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+   Doc-tests kontor_store
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
