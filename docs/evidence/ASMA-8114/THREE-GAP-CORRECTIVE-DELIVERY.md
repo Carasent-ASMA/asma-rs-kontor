@@ -1,11 +1,13 @@
 # ASMA-8114 three-gap corrective delivery — delivered unit evidence
 
 Status: frozen candidate on `feat/ASMA-8114-three-gap-corrective-delivery`,
-based on module default `f95e206563bca88b6871f48528623441e5e1a231` (PR278).
-Nothing was pushed, merged, deployed, restarted or materialized; no Jira,
-Keychain, credential or runtime effect was exercised. Qualification and review
-are dispatched separately. The rework that answers the independent LSA
-qualification of `083232ca` is recorded in the final section of this document.
+rebased onto module default `4d365dd5de649c68aaabe8c2b67351ae7dd5dbb0`
+(PR283, yoke-derive lock refresh); the initial delivery was based on
+`f95e206563bca88b6871f48528623441e5e1a231` (PR278). Nothing was pushed,
+merged, deployed, restarted or materialized; no Jira, Keychain, credential or
+runtime effect was exercised. Qualification and review are dispatched
+separately. The rework that answers the independent LSA qualification of
+`083232ca` is recorded in the final section of this document.
 
 ## Commits
 
@@ -148,9 +150,11 @@ bytes restored from HEAD, and the regression re-run green.
 | `is_duplicate_semantic_identity` returns `false` | `concurrent_semantic_identity_losers_get_the_typed_duplicate_naming_the_survivor` | FAILED, exit 101: loser received `storage conflict: a uniqueness, check or immutability constraint refused the write`; restored → passed |
 | `ensure_catalog_identity` forced to the epic-or-task binding | Contract `preparation_refuses_a_task_catalog_branch_bound_to_the_epic_key` and unit `a_task_catalog_checkout_binds_both_its_slug_and_branch_to_the_task_key` | FAILED, exit 101 each (refusal absent; unit `matches!` assertion failed); restored → both passed |
 
-These are new current-baseline executions. The historical e29 `MUT-TOPIC` /
-`MUT-UNIQUE` and exact-1b/173d executions are preserved history and were not
-re-run, relabelled or cited as this candidate's evidence.
+These are new current-baseline executions on this candidate. Historical
+attribution is preserved exactly: the e29 `MUT-TOPIC` / `MUT-UNIQUE` kills are
+exact-e29 executions, and the exact-1b qualification transfers to 173d by
+executable, test and API byte equality — it is not a distinct 173d execution.
+Neither receipt was re-run, relabelled or cited as this candidate's evidence.
 
 ## Zero-effect and naming/redaction evidence
 
@@ -283,6 +287,28 @@ Two exact-facts exceptions, no waiver claimed:
 The full `python3 scripts/verify-tree.py --mode archive` entry point was
 therefore not invoked as a single command; every gate it runs was executed on
 the same archive export with the exact results above.
+
+### Rebase onto `4d365dd5` and reruns
+
+The frozen candidate was rebased cleanly (all 8 commits replayed, no conflicts)
+onto module default `4d365dd5de649c68aaabe8c2b67351ae7dd5dbb0` (PR283). On the
+rebased tree:
+
+| Check | Command | Exit |
+| --- | --- | --- |
+| fmt | `cargo fmt --all -- --check` | 0 |
+| clippy | `cargo clippy --workspace --all-targets -- -D warnings` | 0 |
+| deny | `cargo deny --offline --locked check` | 0 (`advisories ok, bans ok, licenses ok, sources ok`) |
+| combined | `cargo test --offline --locked -p kontor-core -p kontor-store -p kontor-api -p kontor-runtime-paseo` | 0 (1382 passed, 0 failed, 6 ignored) |
+| daemon witness 1 | `a_legacy_item_code_is_forbidden_in_a_topic_even_when_the_template_does_not_render_it` | 0 |
+| daemon witness 2 | `a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently` | 0 |
+| daemon witness 3 | `concurrent_daemon_insert_losers_render_the_exact_sequential_envelope` | 0 |
+| mutations | G1 item-code, G2 store duplicate, G3 catalog binding, P2 mapping | 101 under each mutation; bytes restored; all green |
+
+One timing nuance: the first combined run had a single failure in the
+unrelated, time-bounded `client::tests::an_oversized_canonical_socket_answer_
+fails_without_waiting_for_timeout` under load; it passed in isolation and the
+full rerun above is exit 0.
 
 ## Notes and unresolved findings
 
