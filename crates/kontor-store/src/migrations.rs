@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 119;
+pub const SCHEMA_VERSION: i64 = 123;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -415,6 +415,17 @@ const MIGRATIONS: &[&str] = &[
     // the SQLite boundary so recorded publication evidence cannot be rewritten
     // or erased after insertion (ASMA-8102 / PUB-01).
     include_str!("../migrations/0119_publication_attestations_immutable.sql"),
+    // Schema v120. Realm idempotency bindings for fleet policy publication and
+    // activation, and the permanence triggers the v28 rebuild dropped
+    // (ASMA-8280).
+    include_str!("../migrations/0120_fleet_policy_operations.sql"),
+    // Schema v121. Realm idempotency bindings for fleet bundle publication and
+    // activation (ASMA-8280 S-1).
+    include_str!("../migrations/0121_fleet_bundle_operations.sql"),
+    include_str!("../migrations/0122_planning_pair_family.sql"),
+    // The planning pair member's immutable known native session and the
+    // caller's same-native member recovery kind (ASMA-8282 frontier A).
+    include_str!("../migrations/0123_planning_pair_member_natives.sql"),
 ];
 
 const _: () = assert!(

@@ -265,6 +265,11 @@ entity_ids! {
     AdvisorRunId,
     /// Identifies one consultation of a Committee.
     CommitteeRunId,
+    /// Identifies one consultation of a `planning_pair@1` pair.
+    ///
+    /// Its own type, never a Committee run id, so a planning pair can never
+    /// be read or settled as a Committee.
+    PlanningPairRunId,
     /// Identifies one Advisor profile across its revisions.
     ///
     /// The profile is the identity a run pins; a revision is a version within
@@ -273,6 +278,12 @@ entity_ids! {
     AdvisorProfileId,
     /// Identifies one Committee template across its revisions.
     CommitteeTemplateId,
+    /// Identifies one `planning_pair@1` document across its revisions.
+    ///
+    /// Like an Advisor profile, it is the identity a run pins, and a revision
+    /// is a version within it. It is its own type, never a Committee template
+    /// id, so a planning pair cannot be looked up as a Committee.
+    PlanningPairProfileId,
     /// Identifies one durable open question: an ambiguity somebody had to
     /// proceed past, recorded so that later work can be gated on it.
     ///

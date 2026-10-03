@@ -48,10 +48,10 @@ pub use client::{
     CallerTier, Credential, Endpoint, FrameBudget, HttpTransport, LocalError, Method, Reply,
     Request, Transport, TransportFailure,
 };
-pub use dispatch::{Dispatcher, Envelope, Failure};
+pub use dispatch::{Dispatcher, Envelope, Failure, validate};
 pub use registry::{
-    ArgSpec, ArgType, CLI_ONLY, FieldSpec, NON_AGENT_ROUTES, OpKind, Place, REGISTRY,
-    SERVE_PROFILES, ServeProfile, ToolSpec,
+    ArgSpec, ArgType, CLI_ONLY, Execution, FieldSpec, LocalOperation, NON_AGENT_ROUTES, OpKind,
+    Place, REGISTRY, SERVE_PROFILES, ServeProfile, ToolSpec,
 };
 pub use server::{KontorMcp, serve, serve_stdio};
 

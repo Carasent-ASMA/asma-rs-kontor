@@ -2821,6 +2821,10 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
          DROP TABLE runtime_message_delivery_proofs;
          DROP TRIGGER publication_attestation_no_update;
          DROP TRIGGER publication_attestation_no_delete;
+         DROP TABLE planning_pair_member_natives;
+         DROP TABLE planning_pair_contributions;
+         DROP TABLE planning_pair_record_revisions;
+         DROP TABLE planning_pair_placements;
          PRAGMA user_version = 114;",
         )
         .expect("return empty v115 tables to exact prior schema");
