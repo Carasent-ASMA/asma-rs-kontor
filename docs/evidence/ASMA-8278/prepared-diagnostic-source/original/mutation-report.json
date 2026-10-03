@@ -1,0 +1,220 @@
+{
+  "baseline": {
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--jobs",
+      "2",
+      "-p",
+      "kontor-runtime",
+      "--lib",
+      "planning_pair::attestation::prepared_diagnostic",
+      "--",
+      "--nocapture"
+    ],
+    "cwd": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source",
+    "cargo_target": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-target",
+    "started_utc": "2026-10-03T22:32:20.662200+00:00",
+    "elapsed_seconds": 50.123,
+    "exit_code": 0,
+    "log": "mutation-logs/baseline.log",
+    "log_sha256": "007af94c7224a1668880b7d11c0028f70ef74288f8860510769efa88bbd10a96"
+  },
+  "mutants": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "planning_pair::attestation::prepared_diagnostic::tests::key_material_commitments_are_recomputed_from_selected_der",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source",
+      "cargo_target": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-target",
+      "started_utc": "2026-10-03T22:33:10.787034+00:00",
+      "elapsed_seconds": 5.697,
+      "exit_code": 101,
+      "log": "mutation-logs/M01-key-material.log",
+      "log_sha256": "0e8b62cb3677a48fa177c597fdd7e374dd8246a67b032490f818461480bfa33b",
+      "id": "M01-key-material",
+      "defect": "omit both recomputed DER commitment comparisons",
+      "mutated_path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs",
+      "mutant_sha256": "02d98dff3d2d0302101690ba478a088265084f310078ca43199679799d6639ba",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs",
+          "line": 353,
+          "column": 9,
+          "source_excerpt": "350:             1 => x.token_mut().key_material_digest = ContentHash::of(b\"other\"),\n351:             _ => x.key_mut().public_key_der[0] ^= 1,\n352:         }\n353:         assert_eq!(x.diagnose(), Err(PreparedDiagnosticRefusal::KeyCommitment));\n354:     }\n355:     let mut x = f.clone();\n356:     let other = RsaKeyPair::generate(KeySize::Rsa2048).expect(\"test-only other key\");",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "planning_pair::attestation::prepared_diagnostic::tests::exact_original_payload_digest_precedes_revocation_and_verification",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source",
+      "cargo_target": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-target",
+      "started_utc": "2026-10-03T22:33:16.486594+00:00",
+      "elapsed_seconds": 6.487,
+      "exit_code": 101,
+      "log": "mutation-logs/M02-original-payload.log",
+      "log_sha256": "44566b104b0346d583833e949fe2cc7d8ed74903f3c4eb817eb96086ced59ac8",
+      "id": "M02-original-payload",
+      "defect": "omit exact original payload digest guard",
+      "mutated_path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs",
+      "mutant_sha256": "96ff198272dc010e48a5675c467cb8dd73f058c4a216a4c3ea65ecaca4f6c40c",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs",
+          "line": 383,
+          "column": 5,
+          "source_excerpt": "380: fn exact_original_payload_digest_precedes_revocation_and_verification() {\n381:     let mut f = Fixture::new();\n382:     f.payload.push(b' ');\n383:     assert_eq!(\n384:         f.diagnose(),\n385:         Err(PreparedDiagnosticRefusal::TokenCommitment)\n386:     );",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "planning_pair::attestation::prepared_diagnostic::tests::token_revocation_precedes_interval_and_signature_checks",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source",
+      "cargo_target": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-target",
+      "started_utc": "2026-10-03T22:33:22.975382+00:00",
+      "elapsed_seconds": 5.323,
+      "exit_code": 101,
+      "log": "mutation-logs/M03-token-revocation.log",
+      "log_sha256": "4ef5540364db1ee7769ab652039dacb373cda5fe1b98cc7069d4b02fbe0086e3",
+      "id": "M03-token-revocation",
+      "defect": "omit selected token revocation guard",
+      "mutated_path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs",
+      "mutant_sha256": "41a1cccc87c858f406eeab695c486aacef9a07e92ccac4a3f6bd765516ec2ffb",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs",
+          "line": 402,
+          "column": 5,
+          "source_excerpt": "399: fn token_revocation_precedes_interval_and_signature_checks() {\n400:     let mut f = Fixture::new();\n401:     f.token_mut().revoked_revision = Some(4);\n402:     assert_eq!(f.diagnose(), Err(PreparedDiagnosticRefusal::TokenRevoked));\n403:     f.token_mut().expires_at = 0;\n404:     f.signature[0] ^= 1;\n405:     assert_eq!(f.diagnose(), Err(PreparedDiagnosticRefusal::TokenRevoked));",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "planning_pair::attestation::prepared_diagnostic::tests::signed_metadata_matches_every_exact_prepared_field_after_verification",
+        "--",
+        "--nocapture"
+      ],
+      "cwd": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source",
+      "cargo_target": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-target",
+      "started_utc": "2026-10-03T22:33:28.299902+00:00",
+      "elapsed_seconds": 5.599,
+      "exit_code": 101,
+      "log": "mutation-logs/M04-signed-metadata.log",
+      "log_sha256": "cce4e2fd05a4818c823b4266bdcdcf25dc889c9b62b338ea12e4b1aea0a31666",
+      "id": "M04-signed-metadata",
+      "defect": "omit final exact signed/prepared metadata guard",
+      "mutated_path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs",
+      "mutant_sha256": "91513f2fa11fde086a9bee63f4c04c1e1af9659044a681825a566f73888963c6",
+      "successful_compilation": true,
+      "intended_test_failed": true,
+      "panics": [
+        {
+          "path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs",
+          "line": 515,
+          "column": 9,
+          "source_excerpt": "512:             10 => x.token_mut().expires_at = 1_059,\n513:             _ => x.token_mut().occupancy_generation = 0,\n514:         }\n515:         assert_eq!(\n516:             x.diagnose(),\n517:             Err(PreparedDiagnosticRefusal::Metadata),\n518:             \"field {field}\"",
+          "assertion_or_expect_err": true
+        }
+      ],
+      "result": "KILLED",
+      "isolated_restored": true,
+      "original_unchanged": true
+    }
+  ],
+  "limits": "Four isolated compiler fixture defects, no original source mutation, no live effects. Compile failures never count as kills.",
+  "restored_baseline": {
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--jobs",
+      "2",
+      "-p",
+      "kontor-runtime",
+      "--lib",
+      "planning_pair::attestation::prepared_diagnostic",
+      "--",
+      "--nocapture"
+    ],
+    "cwd": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-source",
+    "cargo_target": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/mutation-target",
+    "started_utc": "2026-10-03T22:33:33.900761+00:00",
+    "elapsed_seconds": 5.917,
+    "exit_code": 0,
+    "log": "mutation-logs/restored-baseline.log",
+    "log_sha256": "e2fcf87de890c2179bd221c0bf6c5bb3c509af6ff06af979fb1013a308da1fa7"
+  },
+  "final_original_hashes": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "4902114724206f4581ca055b47a1e7c18444c449b7ae61094df46d8380e57260",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "8d4b5040642c68b58986fb8d3d8614584e48bb70ff5ac3ba7728b9679efd1a2d",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs": "a353b4aeb87f0ff27f3bde04fda45e0c926a2707664304500f13295fcd4e2c1e"
+  },
+  "final_isolated_hashes": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "4902114724206f4581ca055b47a1e7c18444c449b7ae61094df46d8380e57260",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "8d4b5040642c68b58986fb8d3d8614584e48bb70ff5ac3ba7728b9679efd1a2d",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs": "a353b4aeb87f0ff27f3bde04fda45e0c926a2707664304500f13295fcd4e2c1e"
+  },
+  "all_restored": true
+}
