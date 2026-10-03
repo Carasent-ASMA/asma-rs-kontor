@@ -9,6 +9,8 @@ files, checks, mutation results and remaining gates. The original worker
 manifests retain their pre-commit base label and historical local paths;
 [PUBLISHED-CANDIDATE-READBACK.json](PUBLISHED-CANDIDATE-READBACK.json) explains
 the exact published-source mapping. Original reports and logs are copied unchanged.
+The folder's `.gitattributes` permits generated blank lines at the end of raw
+logs so their exact bytes remain intact; all other whitespace checks still apply.
 
 The [full runtime suite](runtime-full-suite.log) passes 122 unit, 20 integration
 and two compile-fail privacy checks. Fifteen unit tests are new signed-fixture

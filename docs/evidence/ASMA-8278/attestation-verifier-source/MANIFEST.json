@@ -61,7 +61,8 @@
   "evidence_notes": [
     "Worker source_head labels pre-commit base; all five bytes match source_candidate. Original worker manifests unchanged.",
     "Original review A-04 correctly records missing full-suite log at review time; root later captured the exact candidate full suite here.",
-    "Original local artifact paths are historical provenance; this manifest maps portable file names."
+    "Original local artifact paths are historical provenance; this manifest maps portable file names.",
+    "Raw cargo-log trailing blank lines are preserved; log-only .gitattributes exemption leaves other whitespace checks intact."
   ],
   "remaining_gates": [
     "Actual issuer principal/exclusive custody and authentic current snapshot distribution",
@@ -84,6 +85,9 @@
     "review-frozen-source.md": "6f1980a0de9fbc834678d1892f778b49a584ab684433316534e6475739ce1e6e",
     "review-r01-first-followup.md": "d72f65b271664248b1ecc36278f012b6814ff48e7d399ce8ceb0510e3bb3a1ae",
     "review-r01-correction.md": "bb570d06d500d956a6d147c20fea209cd2314c9040892940dcf4333f5f232864",
-    "review-attestation-source.md": "fe3d2dccb05d1f29798afa04a4104ec9a75c225a5464be64d59b5e0fdbf15e02"
-  }
+    "review-attestation-source.md": "fe3d2dccb05d1f29798afa04a4104ec9a75c225a5464be64d59b5e0fdbf15e02",
+    ".gitattributes": "c890d66e3b7c8b6304348f5d00efc768cd8bbf881731a292b790c8dc2997c7cf",
+    "README.md": "19fb9896a679840d8d65b5d18dfe9e4b97fb5595148670aa61ec94fba58cb660"
+  },
+  "previous_manifest_sha256": "f61b2f4e7dd03954ae59947047434c6fc7f0f9ca0733698f446f0babf3712cb3"
 }
