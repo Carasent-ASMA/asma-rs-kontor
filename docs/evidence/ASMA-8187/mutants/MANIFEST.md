@@ -119,14 +119,29 @@ with `8acdbd17`.
 
 | Mutant | Outcome at the joined baseline |
 |---|---|
-| `M-P22b1-receipt-not-unique` | killed (exit 101) |
-| `M-P22b2-completion-instant-not-frozen` | killed (exit 101) |
-| `M-P23-upgrade-assumes-coherent-bindings` | killed (exit 101) |
-| `M-P24-readback-unbound-from-transition` | killed (exit 101) |
-| `M-P25-unchanged-answers-before-proof` | killed (exit 101) |
+Each mutant now has **two** logs, one per baseline, at distinct paths. The
+`.patch` files are shared: the mutation text is identical at both baselines, so
+there is one patch per mutant and it applies to either.
 
-The `41f48e69` records remain historical and unmodified, as do the two retained
-first-attempt survivals.
+| Mutant | `41f48e69` run | joined `7646bcd9` run |
+|---|---|---|
+| `M-P22b1-receipt-not-unique` | `….log` — killed (101) | `…-joined-7646bcd9.log` — killed (101) |
+| `M-P22b2-completion-instant-not-frozen` | `….log` — killed (101) | `…-joined-7646bcd9.log` — killed (101) |
+| `M-P23-upgrade-assumes-coherent-bindings` | `….log` — killed (101) | `…-joined-7646bcd9.log` — killed (101) |
+| `M-P24-readback-unbound-from-transition` | `….log` — killed (101) | `…-joined-7646bcd9.log` — killed (101) |
+| `M-P25-unchanged-answers-before-proof` | `….log` — killed (101) | `…-joined-7646bcd9.log` — killed (101) |
+
+### Correction: the originals were briefly displaced
+
+`55cab6a8` wrote the joined runs over the five `41f48e69` logs at their original
+paths, so for one commit this manifest's claim that the earlier records "remain
+historical and unmodified" was not true of the working tree — only of Git
+ancestry. The originals are restored here from `99b23720`, byte-identical, and
+the joined runs now live under `*-joined-7646bcd9.log`. Recorded rather than
+quietly fixed: the claim was wrong while it stood, and an evidence set that
+overwrites its own history is the one thing a manifest exists to prevent.
+
+The two retained first-attempt survivals are unaffected and unmodified.
 
 One harness note, recorded because it is a property of the evidence rather than
 of the code: the cleanliness guard now scopes to `crates/`. It previously

@@ -410,6 +410,23 @@ already covered by the earlier audits, not drift from this join.
 * The stopped-Realm compatibility consequence above is a **decision owed**, not a
   defect closed. This lane proved the refusal is safe; it did not and should not
   decide whether the workflow needs pre-122 Realms.
-* Two `git add` invocations were used to stage before the ASMA commit flow. The
-  authorization permitted the single merge command and ASMA explicit-path commit
-  completion; raw staging was not named. Disclosed in the procedure record.
+* **Procedure record — raw staging, all three commits.** Each of the three
+  commits in this round was staged with a raw `git add` before the ASMA commit
+  flow ran. The authorization permitted the single merge command and ASMA
+  explicit-path commit completion; raw staging was not among them, so each one
+  exceeded it. The LSA accepted them with a permanent record, and no further raw
+  staging is accepted.
+
+  | Commit | Raw staging used |
+  |---|---|
+  | `aa1ae38c` | `git add crates/kontor-store/src/lib.rs` |
+  | `7646bcd9` | `git add crates/kontor-store/tests/realm_preflight.rs` |
+  | `55cab6a8` | `git add docs/evidence/ASMA-8187/` |
+
+  My earlier record listed only the first two and so understated it. Commits
+  from here use `asma git commit --include-unstaged --include-untracked`, which
+  stages through the supported flow.
+
+* **Branch distance.** 0 behind / **16** ahead of published `408e7895`. An
+  earlier report said 15, measured at `7646bcd9` before `55cab6a8` existed and
+  then not restated.

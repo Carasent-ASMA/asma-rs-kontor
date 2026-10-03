@@ -709,4 +709,156 @@ mod tests {
             Some(BarrierState::Failed)
         );
     }
+
+    /// A reader that records whether anybody tried to read the credential.
+    ///
+    /// Not a panicking reader: a panic would prove the read did not *complete*,
+    /// and the contract is that it is never attempted at all.
+    struct WatchfulReader(Arc<AtomicBool>);
+
+    impl std::io::Read for WatchfulReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.0.store(true, Ordering::SeqCst);
+            buffer.fill(0);
+            Ok(0)
+        }
+    }
+
+    /// Everything about one state root that must survive a refused install.
+    fn realm_fingerprint(database: &std::path::Path) -> (Vec<u8>, i64, Vec<String>) {
+        let bytes = std::fs::read(database).expect("the database reads");
+        let connection = rusqlite::Connection::open(database).expect("the database opens");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("the version reads");
+        let mut statement = connection
+            .prepare("SELECT type || ':' || name FROM sqlite_master ORDER BY type, name")
+            .expect("the catalogue prepares");
+        let objects: Vec<String> = statement
+            .query_map([], |row| row.get(0))
+            .expect("the catalogue reads")
+            .collect::<Result<_, _>>()
+            .expect("the catalogue rows read");
+        (bytes, version, objects)
+    }
+
+    /// Stop an initialized Realm at `version` by removing what came after it.
+    ///
+    /// `0120` adds `core_team_route_successions`, `0121` adds
+    /// `imported_record_evidence`, and `0122` adds an index and replaces a
+    /// trigger on the `0120` table. Each fixture drops exactly the tables
+    /// introduced after its target and stamps `user_version`, which is what an
+    /// operator's stopped Realm looks like from the preflight's side.
+    fn realm_stopped_at(root: &std::path::Path, version: i64) -> std::path::PathBuf {
+        let database = root.join("kontor.sqlite3");
+        drop(kontor_store::SqliteStore::open(&database).expect("the realm initializes"));
+        let connection = rusqlite::Connection::open(&database).expect("the database opens");
+        if version < 121 {
+            connection
+                .execute_batch("DROP TABLE imported_record_evidence;")
+                .expect("the 0121 table is removed");
+        }
+        if version < 120 {
+            connection
+                .execute_batch("DROP TABLE core_team_route_successions;")
+                .expect("the 0120 table is removed");
+        }
+        connection
+            .pragma_update(None, "user_version", version)
+            .expect("the version is stamped");
+        drop(connection);
+        database
+    }
+
+    /// Every schema this lane passes through is refused, and refused early.
+    ///
+    /// ASMA-8187 takes the binary from 119 to 122, so an operator can hold a
+    /// Realm stopped at 119, 120 or 121 and meet a 122 binary. The exact-version
+    /// contract refuses all three — that is decided and correct — and what this
+    /// test pins is the *shape* of the refusal: it happens before the credential
+    /// is read and before anything is installed, and it leaves the Realm exactly
+    /// as it found it. A refusal that read the secret first would have handled
+    /// it needlessly; one that migrated would upgrade a Realm its operator had
+    /// deliberately stopped (ASMA-8187 / ASMA-8015).
+    #[test]
+    fn a_realm_stopped_before_the_current_schema_refuses_without_reading_or_installing() {
+        for version in [119_i64, 120, 121] {
+            let root = tempfile::tempdir().expect("a state root");
+            let canonical = root.path().canonicalize().expect("an absolute root");
+            let database = realm_stopped_at(&canonical, version);
+            let before = realm_fingerprint(&database);
+
+            let read_attempted = Arc::new(AtomicBool::new(false));
+            let installed = Arc::new(AtomicBool::new(false));
+            let outcome = install_jira_credential(
+                &canonical,
+                "any-configured-alias",
+                WatchfulReader(Arc::clone(&read_attempted)),
+                |_scope, _secret| {
+                    installed.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            );
+
+            assert!(
+                matches!(outcome, Err(OperatorError::CredentialScope)),
+                "a realm stopped at {version} was not refused as out of scope: {outcome:?}"
+            );
+            assert!(
+                !read_attempted.load(Ordering::SeqCst),
+                "the credential was read before the realm at {version} was refused"
+            );
+            assert!(
+                !installed.load(Ordering::SeqCst),
+                "an installation was attempted against a realm stopped at {version}"
+            );
+
+            let after = realm_fingerprint(&database);
+            assert_eq!(after.0, before.0, "the refusal changed bytes at {version}");
+            assert_eq!(
+                after.1, before.1,
+                "the refusal migrated a realm stopped at {version}"
+            );
+            assert_eq!(
+                after.2, before.2,
+                "the refusal added or removed schema objects at {version}"
+            );
+        }
+    }
+
+    /// The same entry point on a current Realm gets past the schema gate.
+    ///
+    /// Without this the test above would pass just as well if the entry point
+    /// refused everything: it pins that the version check, and not some earlier
+    /// unrelated guard, is what the stopped Realms meet.
+    #[test]
+    fn a_current_realm_passes_the_schema_gate_and_is_refused_later() {
+        let root = tempfile::tempdir().expect("a state root");
+        let canonical = root.path().canonicalize().expect("an absolute root");
+        let database = canonical.join("kontor.sqlite3");
+        drop(kontor_store::SqliteStore::open(&database).expect("the realm initializes"));
+        let before = realm_fingerprint(&database);
+
+        let read_attempted = Arc::new(AtomicBool::new(false));
+        let outcome = install_jira_credential(
+            &canonical,
+            "an-alias-no-connector-declares",
+            WatchfulReader(Arc::clone(&read_attempted)),
+            |_scope, _secret| Ok(()),
+        );
+
+        // Still refused — no connector declares the alias — but the realm was
+        // readable, which is the difference under test.
+        assert!(outcome.is_err());
+        assert!(
+            !read_attempted.load(Ordering::SeqCst),
+            "the credential was read before the alias was resolved"
+        );
+        let after = realm_fingerprint(&database);
+        assert_eq!(
+            after.1, before.1,
+            "a current realm was migrated by a refusal"
+        );
+        assert_eq!(after.2, before.2);
+    }
 }
