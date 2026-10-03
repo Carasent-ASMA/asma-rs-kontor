@@ -14,6 +14,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use super::{SqliteStore, backend, conflict};
 
+mod token_metadata;
+
 const SUBJECT: &str = "attestation key authority";
 type KeyRow = (String, String, Vec<u8>, String, i64, i64, i64, Option<i64>);
 
@@ -294,5 +296,30 @@ impl AttestationAuthorityRepository for SqliteStore {
             return Ok(None);
         }
         projection_in(&self.connection, scope, issuer, key_id)
+    }
+    fn prepare_attestation_token(
+        &self,
+        request: &kontor_core::repository::PrepareAttestationToken,
+    ) -> RepositoryResult<kontor_core::repository::AttestationTokenProjection> {
+        token_metadata::prepare(self, request)
+    }
+
+    fn revoke_prepared_attestation_token(
+        &self,
+        scope: &AttestationAuthorityScope,
+        issuer: &ExternalId,
+        token_id: &ExternalId,
+        expected_token_head_revision: u64,
+    ) -> RepositoryResult<kontor_core::repository::AttestationTokenProjection> {
+        token_metadata::revoke(self, scope, issuer, token_id, expected_token_head_revision)
+    }
+
+    fn read_prepared_attestation_token(
+        &self,
+        scope: &AttestationAuthorityScope,
+        issuer: &ExternalId,
+        token_id: &ExternalId,
+    ) -> RepositoryResult<Option<kontor_core::repository::AttestationTokenProjection>> {
+        token_metadata::read(self, scope, issuer, token_id)
     }
 }

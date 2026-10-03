@@ -75,7 +75,8 @@ use crate::{DomainError, DomainResult};
 pub mod attestation_authority;
 pub use attestation_authority::{
     AttestationAuthorityProjection, AttestationAuthorityRepository, AttestationAuthorityScope,
-    RegisterAttestationKey, StoredAttestationKey,
+    AttestationSeatProvenance, AttestationTokenProjection, PrepareAttestationToken,
+    RegisterAttestationKey, StoredAttestationKey, StoredPreparedAttestationToken,
 };
 
 /// One recorded proof that an exact retired evaluator already rendered its

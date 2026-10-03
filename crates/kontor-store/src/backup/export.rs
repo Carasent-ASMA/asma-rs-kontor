@@ -1204,40 +1204,55 @@ pub fn export_realm(store: &SqliteStore, now: Timestamp) -> Result<KontorExportV
     Ok(export)
 }
 
-/// Ledger continuity is not implemented by modeled export or raw restore.
-/// Historical pre-v124 files legitimately lack both tables; a missing or
-/// partial v124 ledger is corruption and must never become an empty fallback.
+/// Qualified key/token continuity is unsupported by modeled export and restore.
+/// Legitimate pre-124/pre-125 absence is distinct from corrupt missing tables.
+/// Every present key ledger is inspected before any token-absence fallback.
 pub(crate) fn ensure_empty_attestation_ledger(connection: &Connection) -> Result<(), BackupError> {
     let refusal = || BackupError::Verification {
-        detail: "public key authority ledger continuity is unsupported",
+        detail: "public attestation ledger continuity is unsupported",
     };
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|_| refusal())?;
-    let tables: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table'
-           AND name IN ('attestation_authority_heads','attestation_authority_keys')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|_| refusal())?;
-    if tables == 0 && (1..=123).contains(&version) {
-        return Ok(());
-    }
-    if tables != 2 {
+    if version < 1 {
         return Err(refusal());
     }
-    let nonempty: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM attestation_authority_heads)
-             OR EXISTS(SELECT 1 FROM attestation_authority_keys)",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|_| refusal())?;
-    if nonempty {
-        return Err(refusal());
+    for (introduced, head, rows) in [
+        (
+            124,
+            "attestation_authority_heads",
+            "attestation_authority_keys",
+        ),
+        (
+            125,
+            "attestation_token_heads",
+            "prepared_attestation_tokens",
+        ),
+    ] {
+        let tables: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN (?1,?2)",
+                [head, rows],
+                |row| row.get(0),
+            )
+            .map_err(|_| refusal())?;
+        if tables == 0 && version < introduced {
+            continue;
+        }
+        if tables != 2 {
+            return Err(refusal());
+        }
+        // Names above are fixed schema identifiers, never caller input.
+        let nonempty: bool = connection
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {head}) OR EXISTS(SELECT 1 FROM {rows})"),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| refusal())?;
+        if nonempty {
+            return Err(refusal());
+        }
     }
     Ok(())
 }
@@ -2952,5 +2967,41 @@ mod attestation_ledger_tests {
             ensure_empty_attestation_ledger(&connection),
             Err(BackupError::Verification { .. })
         ));
+    }
+    #[test]
+    fn token_tables_are_required_at125_and_legacy124_absence_never_skips_keys() {
+        let connection = Connection::open_in_memory().expect("fixture");
+        connection
+            .execute_batch(
+                "PRAGMA user_version=124;
+            CREATE TABLE attestation_authority_heads (revision INTEGER);
+            CREATE TABLE attestation_authority_keys (revoked_revision INTEGER);",
+            )
+            .expect("empty legacy ledger");
+        assert!(ensure_empty_attestation_ledger(&connection).is_ok());
+        connection
+            .execute_batch("INSERT INTO attestation_authority_keys VALUES (2);")
+            .expect("revoked history");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
+        connection
+            .execute_batch("DELETE FROM attestation_authority_keys; PRAGMA user_version=125;")
+            .expect("corrupt fixture only");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
+        connection
+            .execute_batch("CREATE TABLE attestation_token_heads (revision INTEGER);")
+            .expect("partial schema");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
+        connection
+            .execute_batch("CREATE TABLE prepared_attestation_tokens (revoked_revision INTEGER);")
+            .expect("empty schema");
+        assert!(ensure_empty_attestation_ledger(&connection).is_ok());
+        // Deliberately orphaned metadata isolates each continuity guard; no
+        // production preparation path can create this corruption fixture.
+        connection
+            .execute_batch("INSERT INTO attestation_token_heads VALUES (2);")
+            .expect("orphaned head fixture");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
+        connection.execute_batch("DELETE FROM attestation_token_heads; INSERT INTO prepared_attestation_tokens VALUES (2);").expect("orphaned row fixture");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
     }
 }

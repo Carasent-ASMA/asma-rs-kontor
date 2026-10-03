@@ -119,6 +119,8 @@ fn remove_v98_shape(connection: &Connection) {
 const CENSUS_TABLES: &[&str] = &[
     "attestation_authority_heads",
     "attestation_authority_keys",
+    "attestation_token_heads",
+    "prepared_attestation_tokens",
     "account_profiles",
     "agent_runs",
     "calendar_exceptions",
@@ -2827,6 +2829,8 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
          DROP TABLE planning_pair_contributions;
          DROP TABLE planning_pair_record_revisions;
          DROP TABLE planning_pair_placements;
+         DROP TABLE prepared_attestation_tokens;
+         DROP TABLE attestation_token_heads;
          DROP TABLE attestation_authority_keys;
          DROP TABLE attestation_authority_heads;
          PRAGMA user_version = 114;",

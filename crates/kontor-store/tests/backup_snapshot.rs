@@ -173,7 +173,7 @@ fn historical_pre124_files_retain_schema_refusal_and_additive_open_behavior() {
     let realm = store.realm_id();
     drop(store);
     let connection = rusqlite::Connection::open(&database).expect("fixture connection");
-    connection.execute_batch("DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; PRAGMA user_version=123;").expect("exact pre124 fixture");
+    connection.execute_batch("DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; PRAGMA user_version=123;").expect("exact pre124 fixture");
     drop(connection);
     let manifest = SnapshotManifest::describe(&database, realm, 123, at("2026-10-03T18:00:00Z"))
         .expect("legacy fixture manifest");
@@ -416,6 +416,85 @@ fn corrupted124_missing_ledger_tables_is_not_an_empty_restore_fallback() {
         Err(BackupError::Verification { .. })
     ));
     assert!(!destination.exists());
+}
+
+#[test]
+fn corrupted125_missing_token_tables_refuse_source_and_target_without_mutation() {
+    for missing in ["prepared_attestation_tokens", "attestation_token_heads"] {
+        let home = TempDir::new().expect("home");
+        let database = home.path().join("kontor.db");
+        drop(SqliteStore::open(&database).expect("store"));
+        let clean = create_snapshot(
+            &database,
+            &home.path().join("clean"),
+            at("2026-10-03T20:00:00Z"),
+        )
+        .expect("clean snapshot");
+        let connection = rusqlite::Connection::open(&database).expect("fixture");
+        connection
+            .execute_batch(&format!("DROP TABLE {missing};"))
+            .expect("corrupt target only");
+        drop(connection);
+        let bytes = std::fs::read(&database).expect("bytes");
+        let names = listing(home.path());
+        assert!(matches!(
+            restore_snapshot(&clean.snapshot, &database, at("2026-10-03T20:01:00Z")),
+            Err(BackupError::Verification { .. })
+        ));
+        assert_eq!(std::fs::read(&database).expect("unchanged bytes"), bytes);
+        assert_eq!(listing(home.path()), names);
+        let corrupted = create_snapshot(
+            &database,
+            &home.path().join("corrupted"),
+            at("2026-10-03T20:02:00Z"),
+        )
+        .expect("structural snapshot");
+        let source_bytes = std::fs::read(&corrupted.snapshot).expect("source");
+        let source_names = listing(&home.path().join("corrupted"));
+        let target = home.path().join("absent-target/kontor.db");
+        assert!(matches!(
+            restore_snapshot(&corrupted.snapshot, &target, at("2026-10-03T20:03:00Z")),
+            Err(BackupError::Verification { .. })
+        ));
+        assert!(!target.parent().expect("parent").exists());
+        assert_eq!(
+            std::fs::read(&corrupted.snapshot).expect("unchanged source"),
+            source_bytes
+        );
+        assert_eq!(listing(&home.path().join("corrupted")), source_names);
+    }
+}
+
+#[test]
+fn empty_historical124_token_absence_preserves_schema_refusal_and_additive_open() {
+    let home = TempDir::new().expect("home");
+    let database = home.path().join("kontor.db");
+    let store = SqliteStore::open(&database).expect("store");
+    let realm = store.realm_id();
+    drop(store);
+    let connection = rusqlite::Connection::open(&database).expect("fixture");
+    connection.execute_batch("DROP TABLE prepared_attestation_tokens; DROP TABLE attestation_token_heads; PRAGMA user_version=124;").expect("historical fixture");
+    drop(connection);
+    let manifest = SnapshotManifest::describe(&database, realm, 124, at("2026-10-03T20:00:00Z"))
+        .expect("manifest");
+    std::fs::write(
+        SnapshotManifest::path_for(&database),
+        manifest.to_bytes().expect("bytes"),
+    )
+    .expect("manifest");
+    let destination = home.path().join("target/kontor.db");
+    assert!(matches!(
+        restore_snapshot(&database, &destination, at("2026-10-03T20:01:00Z")),
+        Err(BackupError::Verification { .. })
+    ));
+    assert!(!destination.exists());
+    assert_eq!(
+        SqliteStore::open(&database)
+            .expect("additive open")
+            .schema_version()
+            .expect("version"),
+        125
+    );
 }
 
 fn name(text: &str) -> ExternalName {
