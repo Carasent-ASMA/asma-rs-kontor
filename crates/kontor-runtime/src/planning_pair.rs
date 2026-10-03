@@ -31,6 +31,7 @@ use crate::provenance::FleetLaunchProvenance;
 use crate::workspace::WorkspaceRoot;
 
 pub mod application;
+pub mod attestation;
 pub mod caller;
 pub mod context;
 pub mod intent;

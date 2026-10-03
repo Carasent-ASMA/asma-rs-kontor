@@ -3353,6 +3353,7 @@ name = "kontor-runtime"
 version = "0.2.1"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "kontor-core",
  "serde",
  "serde_json",
