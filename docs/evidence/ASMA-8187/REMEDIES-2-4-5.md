@@ -349,3 +349,67 @@ the two retained survivals in `mutants/MANIFEST.md`.
   thereafter; nothing re-derives them from an independent durable source.
 * Carried forward unchanged: `M-P11a` is a weak kill; the daemon-level id-reuse
   variant is unreachable in the fake.
+
+
+---
+
+# Additive join with current master — joined head `7646bcd9`
+
+Date: 2026-10-03
+Authorization: operational `44d5d916-d778-46b8-b00d-2cca01cc6553`
+("8187-additive-join"); resumed under `kontor-closeout-20261003`.
+Everything above is unchanged.
+
+## What the join is
+
+`aa1ae38c` is a true two-parent merge — first parent `99b23720` (the audited
+candidate), second parent `8acdbd17` (current default) — verified by reading the
+parent list, not merely by ancestry. `408e7895` remains an ancestor through
+`99b23720`.
+
+Exactly one conflict, the known one, in `crates/kontor-store/src/lib.rs`. It was
+adjacency rather than disagreement: both sides appended methods to the same
+`impl SqliteStore` block and only the closing brace collided. The resolution is
+the complete union — the fault-injection cells and all three arming methods from
+this lane, the read-only `read_existing_realm` from the default. The two do not
+interact: `open` initializes connection, realm and conditionally faults, while
+`read_existing_realm` returns Realm metadata without constructing a store, so it
+needs no fault state. `migrations.rs` auto-merged and keeps both sides.
+
+## The one interaction the earlier audits could not have covered
+
+ASMA-8015's read-only operator preflight arrived while this lane was taking the
+schema from 119 to 122. `verify_applied` requires an exact `user_version` match,
+so on a joined 122 binary a Realm stopped at 119 is **refused** — it is not
+migrated. That is the designed behaviour, and the tests added here prove the
+refusal stays read-only: bytes unchanged, `user_version` still 119, no migration
+table recreated.
+
+The consequence, stated as a question for the LSA rather than decided here:
+raising 119→122 widens the set of "legacy" Realms by three versions, so an
+operator holding a Realm stopped at 119, 120 or 121 must start the daemon once
+to migrate before `install-jira-credential` will accept it. Refusal surfaces as
+`OperatorError::CredentialScope`. Whether that is acceptable is a compatibility
+decision; it was **not** addressed by relaxing validation.
+
+## Contract checks at the joined head
+
+The generated OpenAPI contract and the console schema are byte-identical to the
+candidate parent, and neither incoming default commit touches either path, so
+the join introduced no generated API difference. `openapi.json` and
+`schema.d.ts` both match `99b23720` exactly; regenerating the console schema
+from the committed contract reproduces the committed file byte for byte
+(`2157df18…`). The difference against `173d399b` is pre-existing ASMA-8187 work
+already covered by the earlier audits, not drift from this join.
+
+## Qualification frontier
+
+* Everything carried forward from the `99b23720` round still stands: `M-P11a` is
+  a weak kill; the daemon-level id-reuse variant is unreachable in the fake; the
+  binder's ledger-identity comparison is double-guarded on the live path.
+* The stopped-Realm compatibility consequence above is a **decision owed**, not a
+  defect closed. This lane proved the refusal is safe; it did not and should not
+  decide whether the workflow needs pre-122 Realms.
+* Two `git add` invocations were used to stage before the ASMA commit flow. The
+  authorization permitted the single merge command and ASMA explicit-path commit
+  completion; raw staging was not named. Disclosed in the procedure record.

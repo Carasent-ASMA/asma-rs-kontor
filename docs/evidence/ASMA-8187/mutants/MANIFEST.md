@@ -108,3 +108,28 @@ proved:
 
 Both patches and raw logs are kept beside the kills. The original `M-P22b`
 record and its limited claim are unchanged.
+
+## Recorded runs (joined baseline — additive current-master join)
+
+Baseline: **`7646bcd9ad1b2c0113f60b1a383a0a74def996db`** (tree
+`1d7c94d44316c4f4a3c797cf5928249ff3e95514`), source clean at mutation time,
+restored byte-identically after each. The five mutants are the same five; what
+changed is the baseline they stand against, now that the candidate is joined
+with `8acdbd17`.
+
+| Mutant | Outcome at the joined baseline |
+|---|---|
+| `M-P22b1-receipt-not-unique` | killed (exit 101) |
+| `M-P22b2-completion-instant-not-frozen` | killed (exit 101) |
+| `M-P23-upgrade-assumes-coherent-bindings` | killed (exit 101) |
+| `M-P24-readback-unbound-from-transition` | killed (exit 101) |
+| `M-P25-unchanged-answers-before-proof` | killed (exit 101) |
+
+The `41f48e69` records remain historical and unmodified, as do the two retained
+first-attempt survivals.
+
+One harness note, recorded because it is a property of the evidence rather than
+of the code: the cleanliness guard now scopes to `crates/`. It previously
+checked the whole tree and refused the second run of the round, because the
+evidence logs the harness itself writes are tracked files from earlier rounds.
+The mutation baseline is the source; the logs are its output.
