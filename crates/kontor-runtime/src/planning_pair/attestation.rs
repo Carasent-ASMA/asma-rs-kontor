@@ -24,6 +24,8 @@ use kontor_core::id::{
 use kontor_core::state::NativeRuntimeIdentity;
 use serde::{Deserialize, Serialize};
 
+pub mod owner_checks;
+
 /// The sole application audience accepted by this verifier.
 pub const APPLICATION_AUDIENCE: &str = "asma.planning-pair.application.v1";
 /// Maximum serialized attestation payload, checked before parsing.
@@ -361,6 +363,14 @@ fn select_key<'a>(
     keys: &'a PublicKeySnapshot,
     claims: &AttestationClaims,
 ) -> Result<&'a PublicKeyEntry, AttestationRefusal> {
+    validate_snapshot(keys)?;
+    keys.keys
+        .iter()
+        .find(|key| key.issuer == claims.issuer && key.key_id == claims.key_id)
+        .ok_or(AttestationRefusal::UnknownKey)
+}
+
+fn validate_snapshot(keys: &PublicKeySnapshot) -> Result<(), AttestationRefusal> {
     if keys.revision == 0 || keys.keys.is_empty() || keys.keys.len() > MAX_KEYS {
         return Err(AttestationRefusal::Snapshot);
     }
@@ -374,10 +384,7 @@ fn select_key<'a>(
             return Err(AttestationRefusal::Snapshot);
         }
     }
-    keys.keys
-        .iter()
-        .find(|key| key.issuer == claims.issuer && key.key_id == claims.key_id)
-        .ok_or(AttestationRefusal::UnknownKey)
+    Ok(())
 }
 
 #[cfg(test)]
