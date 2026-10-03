@@ -8,9 +8,15 @@ identity note     : the snapshot below is what was mutated. The commit by
 mutated file      : crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
 snapshot sha256   : 37d120e727c4f98ee5477e5fe62ab9f8dc45c060f97970307722bdddb1d11043
 mutated  sha256   : 4d4681bb0d5c3803c88fe9695cc671423d758d3f55ec17d31fb3f9e2aeccd36b
-patch             : M-P22b1-receipt-not-unique.patch (mutation-only, 12 lines)
+patch             : M-P22b1-receipt-not-unique-8910ebc6.patch (mutation-only, 12 lines)
   git apply --check: accepted
   patch --dry-run  : patching file 'crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql'
+  correction       : an earlier revision of this log named
+                     'M-P22b1-receipt-not-unique.patch' -- the
+                     historical carrier, not the artifact this run produced.
+                     The two checks above were re-run against the companion
+                     named here on 2026-10-03T18:32:19Z and their output is
+                     what is shown. The historical carrier is untouched.
 command           : cargo test -p kontor-store --test hosted_seat_autonomy -- one_receipt_cannot_be_bound_to_two_successions   (hard limit 420s)
 toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
 platform          : Darwin 25.6.0 arm64

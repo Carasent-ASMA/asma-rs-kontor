@@ -243,14 +243,18 @@ byte-identical, and the refreshed runs now live at distinct `*-8910ebc6` paths.
 Both generations are enumerated below. Nothing was rewritten to hide the error;
 `8910ebc6` still contains the overwrite, and this section is the correction.
 
-| Mutant | Historical carrier (restored) | Refreshed run (this round) |
-|---|---|---|
-| `M-P22b1-receipt-not-unique` | `….patch` / `….log` | `…-8910ebc6.patch` / `…-8910ebc6.log` |
-| `M-P22b2-completion-instant-not-frozen` | `….patch` / `….log` | `…-8910ebc6.patch` / `…-8910ebc6.log` |
-| `M-P23-upgrade-assumes-coherent-bindings` | `….patch` / `….log` | `…-8910ebc6.patch` / `…-8910ebc6.log` |
-| `M-P24-readback-unbound-from-transition` | `….patch` / `….log` | `…-8910ebc6.patch` / `…-8910ebc6.log` |
-| `M-P25-unchanged-answers-before-proof` | `….patch` / `….log` | `…-8910ebc6.patch` / `…-8910ebc6.log` |
-| `M-CTL-refuse-every-realm` | `….patch` / `….log` — the **invalid** pair, still invalid | `…-8910ebc6.patch` / `…-8910ebc6.log` |
+Every carrier is named in full. An earlier revision of this table used `…`
+for the shared stem, which is exactly the abbreviation that let a log cite the
+wrong companion without anyone noticing.
+
+| Historical carrier (restored) | Refreshed run (this round) |
+|---|---|
+| `M-P22b1-receipt-not-unique.patch` · `M-P22b1-receipt-not-unique.log` | `M-P22b1-receipt-not-unique-8910ebc6.patch` · `M-P22b1-receipt-not-unique-8910ebc6.log` |
+| `M-P22b2-completion-instant-not-frozen.patch` · `M-P22b2-completion-instant-not-frozen.log` | `M-P22b2-completion-instant-not-frozen-8910ebc6.patch` · `M-P22b2-completion-instant-not-frozen-8910ebc6.log` |
+| `M-P23-upgrade-assumes-coherent-bindings.patch` · `M-P23-upgrade-assumes-coherent-bindings.log` | `M-P23-upgrade-assumes-coherent-bindings-8910ebc6.patch` · `M-P23-upgrade-assumes-coherent-bindings-8910ebc6.log` |
+| `M-P24-readback-unbound-from-transition.patch` · `M-P24-readback-unbound-from-transition.log` | `M-P24-readback-unbound-from-transition-8910ebc6.patch` · `M-P24-readback-unbound-from-transition-8910ebc6.log` |
+| `M-P25-unchanged-answers-before-proof.patch` · `M-P25-unchanged-answers-before-proof.log` | `M-P25-unchanged-answers-before-proof-8910ebc6.patch` · `M-P25-unchanged-answers-before-proof-8910ebc6.log` |
+| `M-CTL-refuse-every-realm.patch` · `M-CTL-refuse-every-realm.log` — the **invalid** pair, still invalid | `M-CTL-refuse-every-realm-8910ebc6.patch` · `M-CTL-refuse-every-realm-8910ebc6.log` |
 
 The `M-CTL` originals are the malformed pair described above. They are restored
 to exactly the bytes that were always wrong — patch sha256 `0795f7f5…`, log
@@ -268,9 +272,16 @@ stand.
 The refreshed logs originally said `baseline commit : 5e00a238`. That was the
 commit `git rev-parse HEAD` returned while the harness ran, but it is not the
 state that was mutated: `5e00a238`'s `applications.rs` is `4e04205f…`, and
-these runs mutated the file as `8910ebc6` holds it. Each refreshed log now
-leads with the snapshot hash — the identity that actually pins a mutation — and
-names the commit only as the way to reach it.
+these runs mutated the file as `8910ebc6` holds it.
+
+Each refreshed log now carries an `identity note` directly under its first
+line, stating that the snapshot is what was mutated and the commit is only the
+way to reach that state, with the `snapshot sha256` two lines below.
+
+An earlier revision of this paragraph claimed the logs *lead* with the snapshot
+hash. They do not — they lead with `source state at`, the commit. The sentence
+was aligned to the files rather than the files to the sentence, because the
+files are the evidence.
 
 ### The `M-CTL` control pair, re-established at this baseline
 
@@ -369,3 +380,36 @@ generated `REPORT.md`.
 `M-CTL-control-pair-36ed5607` carries a non-zero exit because one of its two
 halves is *supposed* to fail; see its own log for which, and why a single
 verdict would misrepresent it.
+
+## Correction: six refreshed logs cited the wrong patch
+
+Each of the six `-8910ebc6` logs named the *unsuffixed* historical patch in its
+`patch :` line, not the `-8910ebc6.patch` companion the run actually produced.
+The two checks printed beneath that line — `git apply --check` and
+`patch --dry-run` — were therefore reported against a filename they had not
+been run against.
+
+Worst in the `M-CTL` case, where the cited bare carrier is the **malformed**
+one. `git apply --check` answers *"No valid patches in input"* for it, so a log
+claiming `accepted` beside that name asserted something false. The acceptance
+was true of the run's real artifact; it was printed against the one file in
+this directory for which it is not.
+
+All six now name their suffixed companion, and the two checks were genuinely
+re-run against those files; the output shown is that run's. Each log carries a
+`correction` block naming what it used to say. The historical carriers are
+untouched, and the malformed `M-CTL` pair remains malformed and labelled.
+
+| Log | Now cites | Lines | `git apply --check` |
+|---|---|---|---|
+| `M-P22b1-receipt-not-unique-8910ebc6.log` | `M-P22b1-receipt-not-unique-8910ebc6.patch` | 12 | accepted |
+| `M-P22b2-completion-instant-not-frozen-8910ebc6.log` | `M-P22b2-completion-instant-not-frozen-8910ebc6.patch` | 11 | accepted |
+| `M-P23-upgrade-assumes-coherent-bindings-8910ebc6.log` | `M-P23-upgrade-assumes-coherent-bindings-8910ebc6.patch` | 32 | accepted |
+| `M-P24-readback-unbound-from-transition-8910ebc6.log` | `M-P24-readback-unbound-from-transition-8910ebc6.patch` | 24 | accepted |
+| `M-P25-unchanged-answers-before-proof-8910ebc6.log` | `M-P25-unchanged-answers-before-proof-8910ebc6.patch` | 40 | accepted |
+| `M-CTL-refuse-every-realm-8910ebc6.log` | `M-CTL-refuse-every-realm-8910ebc6.patch` | 13 | accepted |
+
+This is the third naming defect in this evidence set — after the overwrite and
+the bare-name table above — and they share one cause: an abbreviation that let
+two different artifacts answer to the same name. The ellipses are gone from the
+restored-carrier table for the same reason.

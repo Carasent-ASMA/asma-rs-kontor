@@ -8,9 +8,20 @@ identity note     : the snapshot below is what was mutated. The commit by
 mutated file      : crates/kontor-daemon/src/main.rs
 snapshot sha256   : 92015a21f2f8a7e67b70ad1ae7965ba0e3ad2293f293e75fc17db30b03f22881
 mutated  sha256   : 2a2ec0980b5f992a6eaa3008f78389bf4e4152392ec4546266ff79c62a5f9bc1
-patch             : M-CTL-refuse-every-realm.patch (mutation-only, 13 lines)
+patch             : M-CTL-refuse-every-realm-8910ebc6.patch (mutation-only, 13 lines)
   git apply --check: accepted
   patch --dry-run  : patching file 'crates/kontor-daemon/src/main.rs'
+  correction       : an earlier revision of this log named
+                     'M-CTL-refuse-every-realm.patch' -- the
+                     historical carrier, not the artifact this run produced.
+                     That earlier line also reported 'accepted'. The bare
+                     carrier is the malformed one -- `git apply --check`
+                     answers "No valid patches in input" for it -- so the
+                     acceptance was true of this run's artifact but was
+                     printed against a filename for which it is false.
+                     The two checks above were re-run against the companion
+                     named here on 2026-10-03T18:32:19Z and their output is
+                     what is shown. The historical carrier is untouched.
 command           : cargo test -p kontor-daemon --bin kontor-daemon -- a_current_realm_reaches_the_credential_reader   (hard limit 420s)
 toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
 platform          : Darwin 25.6.0 arm64

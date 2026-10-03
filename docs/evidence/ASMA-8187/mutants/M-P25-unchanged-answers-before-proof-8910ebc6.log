@@ -8,9 +8,15 @@ identity note     : the snapshot below is what was mutated. The commit by
 mutated file      : crates/kontor-store/src/repository.rs
 snapshot sha256   : 6af69a55ec0140e3240281d02d296c5afbfd858dcf7871f65fed349b73b71349
 mutated  sha256   : 355726a22d518aed81106ffe2a4c9439ee9e70462aaefa85d4ee51fc81b4c6a8
-patch             : M-P25-unchanged-answers-before-proof.patch (mutation-only, 40 lines)
+patch             : M-P25-unchanged-answers-before-proof-8910ebc6.patch (mutation-only, 40 lines)
   git apply --check: accepted
   patch --dry-run  : patching file 'crates/kontor-store/src/repository.rs'
+  correction       : an earlier revision of this log named
+                     'M-P25-unchanged-answers-before-proof.patch' -- the
+                     historical carrier, not the artifact this run produced.
+                     The two checks above were re-run against the companion
+                     named here on 2026-10-03T18:32:19Z and their output is
+                     what is shown. The historical carrier is untouched.
 command           : cargo test -p kontor-store --test hosted_seat_autonomy -- a_replayed_binding_is_proved_before_it_answers_unchanged   (hard limit 420s)
 toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
 platform          : Darwin 25.6.0 arm64

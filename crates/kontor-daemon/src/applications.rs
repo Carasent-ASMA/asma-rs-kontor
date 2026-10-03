@@ -719,16 +719,34 @@ impl CoreTeamRoutePlan {
 /// entirely otherwise, and placed after the initial durable reads so a test can
 /// hold the projection inside the lock and watch a writer fail to get in.
 #[cfg(test)]
-#[derive(Default)]
 pub(crate) struct ProjectionBarrier {
     entered: std::sync::Condvar,
     released: std::sync::Condvar,
     /// (entered, released, timed-out)
     state: std::sync::Mutex<(bool, bool, bool)>,
+    /// Per-instance so the regressions that prove the bounds *are* bounds can
+    /// run in milliseconds instead of waiting out the production deadline.
+    deadline: std::time::Duration,
+}
+
+#[cfg(test)]
+impl Default for ProjectionBarrier {
+    fn default() -> Self {
+        Self::with_deadline(Self::DEADLINE)
+    }
 }
 
 #[cfg(test)]
 impl ProjectionBarrier {
+    pub(crate) fn with_deadline(deadline: std::time::Duration) -> Self {
+        Self {
+            entered: std::sync::Condvar::new(),
+            released: std::sync::Condvar::new(),
+            state: std::sync::Mutex::new((false, false, false)),
+            deadline,
+        }
+    }
+
     /// Every wait here is bounded.
     ///
     /// An unbounded `Condvar` wait turns a coordination defect into a hang, and
@@ -745,7 +763,7 @@ impl ProjectionBarrier {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.0 = true;
         self.entered.notify_all();
-        let deadline = std::time::Instant::now() + Self::DEADLINE;
+        let deadline = std::time::Instant::now() + self.deadline;
         while !state.1 {
             let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
                 state.2 = true;
@@ -763,28 +781,31 @@ impl ProjectionBarrier {
         }
     }
 
-    /// Block until the projection is inside the lock, or fail the test.
-    pub(crate) fn wait_entered(&self) {
+    /// Wait, bounded, for the projection to reach the barrier.
+    ///
+    /// Returns whether it arrived. It deliberately does **not** assert: this is
+    /// called with worker threads running, and a panic here would unwind past
+    /// them. Unwinding past a running worker is exactly how this harness used
+    /// to hang -- see `settled_within` -- so the verdict is carried back to the
+    /// caller and reached once every thread is accounted for.
+    #[must_use]
+    pub(crate) fn wait_entered(&self) -> bool {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let deadline = std::time::Instant::now() + Self::DEADLINE;
+        let deadline = std::time::Instant::now() + self.deadline;
         while !state.0 {
-            let remaining = deadline
-                .checked_duration_since(std::time::Instant::now())
-                .unwrap_or_default();
-            assert!(
-                !remaining.is_zero(),
-                "the projection never reached the barrier within {:?}",
-                Self::DEADLINE
-            );
+            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                return false;
+            };
             let (next, _) = self
                 .entered
                 .wait_timeout(state, remaining)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state = next;
         }
+        true
     }
 
     /// Whether any wait inside the projection hit its deadline.
@@ -803,6 +824,37 @@ impl ProjectionBarrier {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.1 = true;
         self.released.notify_all();
+    }
+}
+
+/// Wait, under a deadline, for every worker to finish -- without ever blocking
+/// on one that will not.
+///
+/// `JoinHandle::join` has no deadline, and `std::thread::scope` *implicitly*
+/// joins on the way out, including while a panic is unwinding. Both properties
+/// together are what made the first `M-COH` run sit for forty-eight minutes: an
+/// assertion fired because a worker had not finished, and unwinding then joined
+/// that very worker. A hang is not a verdict.
+///
+/// So nothing here joins a worker that has not already finished. The caller
+/// polls with this, and on `false` must report a failure and *drop* the handles
+/// instead: dropping a `JoinHandle` detaches the thread and returns at once, so
+/// the failure path terminates no matter what the worker is doing. The stranded
+/// thread dies with the test process.
+#[cfg(test)]
+pub(crate) fn settled_within(
+    timeout: std::time::Duration,
+    mut all_finished: impl FnMut() -> bool,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if all_finished() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
 
@@ -44620,33 +44672,51 @@ mod coherence {
 
     /// Hold a projection inside its lock, prove a writer cannot commit, then
     /// prove each answer belongs wholly to one side of the succession.
-    fn barrier_case<T>(
-        project: impl Fn(&Composed) -> T + Send + Sync,
-        assert_before: impl Fn(&T),
-        assert_after: impl Fn(&T),
-    ) where
-        T: Send,
+    ///
+    /// There is deliberately no `std::thread::scope` here. A scope joins its
+    /// threads on the way out *including while unwinding*, and those joins have
+    /// no deadline -- so any assertion made while a worker might still be stuck
+    /// turns a failure into a hang. The workers are therefore `'static` and
+    /// owned: every wait is bounded, no verdict is reached until the workers
+    /// are accounted for, and on the unsettled path the handles are dropped
+    /// rather than joined, which detaches them and returns immediately.
+    ///
+    /// The consequence that matters: this fails definitively under a plain
+    /// `cargo test`, with no external limiter. See
+    /// `the_harness_fails_a_stuck_worker_instead_of_waiting_for_it`.
+    fn barrier_case<F, T>(project: F, assert_before: impl Fn(&T), assert_after: impl Fn(&T))
+    where
+        F: Fn(&Composed) -> T + Send + Sync + 'static,
+        T: Send + 'static,
     {
-        let composed = compose();
+        /// Long enough that an ordinarily slow machine never trips it, short
+        /// enough that a genuinely stuck worker is reported rather than waited
+        /// on forever.
+        const SETTLE: std::time::Duration = std::time::Duration::from_secs(60);
+
+        let composed = Arc::new(compose());
         let barrier = Arc::new(ProjectionBarrier::default());
         *PROJECTION_BARRIER
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
 
         let committed = Arc::new(AtomicBool::new(false));
-        // Nothing inside the scope may assert.
-        //
-        // An assertion here unwinds while the reader is still parked at the
-        // barrier, and `thread::scope` then waits forever to join a thread
-        // nobody will ever release — which is a hang, and a hang is not a kill.
-        // The scope only *observes*; the barrier is always released; the
-        // verdicts are reached after every thread has joined.
-        let (before, escaped) = std::thread::scope(|scope| {
-            let reader = scope.spawn(|| project(&composed));
-            // (1)-(2) the projection is inside the lock, initial state read.
-            barrier.wait_entered();
+        let project = Arc::new(project);
 
-            let writing = scope.spawn(|| {
+        let reader = {
+            let composed = Arc::clone(&composed);
+            let project = Arc::clone(&project);
+            std::thread::spawn(move || (*project)(&composed))
+        };
+
+        // (1)-(2) the projection is inside the lock, initial state read.
+        // Recorded, not asserted: workers are running.
+        let entered = barrier.wait_entered();
+
+        let writing = {
+            let composed = Arc::clone(&composed);
+            let committed = Arc::clone(&committed);
+            std::thread::spawn(move || {
                 let second = successor(&composed.first);
                 let outcome = composed.state.with_store(|store| {
                     store.replace_hosted_topology_seat_route(
@@ -44658,43 +44728,52 @@ mod coherence {
                     )
                 });
                 committed.store(outcome.is_ok(), Ordering::SeqCst);
-            });
+            })
+        };
 
-            // (3) bounded observation: did the writer get in while the
-            // projection held the lock? Recorded, never asserted here.
-            let mut escaped = false;
-            for _ in 0..40 {
-                if committed.load(Ordering::SeqCst) {
-                    escaped = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(25));
+        // (3) bounded observation: did the writer get in while the projection
+        // held the lock? Recorded, never asserted here.
+        let mut escaped = false;
+        for _ in 0..40 {
+            if committed.load(Ordering::SeqCst) {
+                escaped = true;
+                break;
             }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
 
-            // (5) always released, on every path, so the joins below terminate.
-            barrier.release();
-            // Bounded joins. `JoinHandle::join` has no deadline, so the threads
-            // are polled for completion instead: a thread that never finishes
-            // must fail the test rather than hold it open forever.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-            while !reader.is_finished() || !writing.is_finished() {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "a barrier thread did not finish within 60s (reader finished: {}, \
-                     writer finished: {})",
-                    reader.is_finished(),
-                    writing.is_finished()
-                );
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            let before = reader.join().expect("the projection completes");
-            writing.join().expect("the writer completes");
-            (before, escaped)
-        });
+        // (5) always released, on every path, so the workers can finish.
+        barrier.release();
+
+        let settled = settled_within(SETTLE, || reader.is_finished() && writing.is_finished());
+        if !settled {
+            // Drop the handles without joining. This is the whole point: a
+            // join here would have no deadline, and the worker is by
+            // definition the thing that is not finishing.
+            let (reader_done, writer_done) = (reader.is_finished(), writing.is_finished());
+            drop(reader);
+            drop(writing);
+            panic!(
+                "a barrier worker did not finish within {SETTLE:?} (reader finished: \
+                 {reader_done}, writer finished: {writer_done}); the handles were dropped \
+                 rather than joined, so this is a failure and not a hang"
+            );
+        }
+
+        // Every worker has finished, so from here a panic cannot strand one and
+        // a join cannot block.
+        assert!(
+            entered,
+            "the projection never reached the barrier within {:?}; the run proves nothing",
+            ProjectionBarrier::DEADLINE
+        );
         assert!(
             !barrier.timed_out(),
             "the projection's barrier wait hit its deadline; the run proves nothing"
         );
+
+        let before = reader.join().expect("the projection completes");
+        writing.join().expect("the writer completes");
 
         assert!(
             !escaped,
@@ -44709,8 +44788,97 @@ mod coherence {
         *PROJECTION_BARRIER
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-        let after = project(&composed);
+        let after = (*project)(&composed);
         assert_after(&after);
+    }
+
+    // ----- the bounds are bounds -------------------------------------------
+    //
+    // These three cost milliseconds and exist so the no-hang property is a
+    // tested claim rather than a comment. Each one would fail -- not hang --
+    // if the corresponding bound were removed, because each drives the
+    // mechanism directly instead of going through a full projection.
+
+    /// A worker that will not finish must be reported and abandoned.
+    #[test]
+    fn the_harness_fails_a_stuck_worker_instead_of_waiting_for_it() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            })
+        };
+
+        let started = std::time::Instant::now();
+        assert!(
+            !settled_within(std::time::Duration::from_millis(100), || worker
+                .is_finished()),
+            "a worker that never finishes must not report as settled"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the bound must bound: waited {:?}",
+            started.elapsed()
+        );
+
+        // The failure path drops rather than joins. Proving that drop does not
+        // block cannot itself be allowed to block, so the drop happens on
+        // another thread and *this* thread only waits for it under a deadline.
+        let dropped = Arc::new(AtomicBool::new(false));
+        {
+            let dropped = Arc::clone(&dropped);
+            std::thread::spawn(move || {
+                drop(worker);
+                dropped.store(true, Ordering::SeqCst);
+            });
+        }
+        assert!(
+            settled_within(std::time::Duration::from_secs(5), || dropped
+                .load(Ordering::SeqCst)),
+            "dropping a running JoinHandle must detach it, not join it"
+        );
+
+        stop.store(true, Ordering::SeqCst);
+    }
+
+    /// A projection that never arrives is a verdict, not a panic mid-flight.
+    #[test]
+    fn an_unreached_barrier_reports_instead_of_asserting() {
+        let barrier = ProjectionBarrier::with_deadline(std::time::Duration::from_millis(50));
+        let started = std::time::Instant::now();
+        assert!(
+            !barrier.wait_entered(),
+            "nothing ever entered, so the wait must report false rather than panic \
+             while workers are still running"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the wait must honour its deadline: waited {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// And the projection's own wait releases itself if nobody else does.
+    #[test]
+    fn a_projection_left_unreleased_stops_waiting_at_its_deadline() {
+        let barrier = Arc::new(ProjectionBarrier::with_deadline(
+            std::time::Duration::from_millis(50),
+        ));
+        let worker = {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || barrier.pause())
+        };
+        assert!(barrier.wait_entered(), "the worker reaches the barrier");
+        // Deliberately never released.
+        assert!(
+            settled_within(std::time::Duration::from_secs(5), || worker.is_finished()),
+            "pause must bound its own wait even when nothing ever releases it"
+        );
+        worker.join().expect("the worker completes");
+        assert!(barrier.timed_out(), "and it must record that it timed out");
     }
 
     #[test]

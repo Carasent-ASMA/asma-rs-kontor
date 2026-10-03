@@ -8,9 +8,15 @@ identity note     : the snapshot below is what was mutated. The commit by
 mutated file      : crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
 snapshot sha256   : 37d120e727c4f98ee5477e5fe62ab9f8dc45c060f97970307722bdddb1d11043
 mutated  sha256   : 3523aa684b8353ffd49884a4bc090b8145f7e2c3df38f5e734996344af36be01
-patch             : M-P23-upgrade-assumes-coherent-bindings.patch (mutation-only, 32 lines)
+patch             : M-P23-upgrade-assumes-coherent-bindings-8910ebc6.patch (mutation-only, 32 lines)
   git apply --check: accepted
   patch --dry-run  : patching file 'crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql'
+  correction       : an earlier revision of this log named
+                     'M-P23-upgrade-assumes-coherent-bindings.patch' -- the
+                     historical carrier, not the artifact this run produced.
+                     The two checks above were re-run against the companion
+                     named here on 2026-10-03T18:32:19Z and their output is
+                     what is shown. The historical carrier is untouched.
 command           : cargo test -p kontor-store --test hosted_seat_autonomy -- a_mismatched_historical_binding_stops_the_upgrade_at_0122   (hard limit 420s)
 toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
 platform          : Darwin 25.6.0 arm64
