@@ -65034,7 +65034,11 @@ async fn a_claim_superseding_a_launched_occupancy_reports_a_null_roster_persona(
         world
             .daemon
             .state()
-            .with_store(|store| store.get_hosted_seat_role_persona(project, lsa, current_generation))
+            .with_store(|store| store.get_hosted_seat_role_persona(
+                project,
+                lsa,
+                current_generation
+            ))
             .expect("the persona reads")
             .is_none(),
         "a claim records no persona, or this test is not exercising the gap"
@@ -65054,7 +65058,8 @@ async fn a_claim_superseding_a_launched_occupancy_reports_a_null_roster_persona(
         .expect("the LSA seat")
         .clone();
     assert_eq!(
-        after_lsa["native_seat"]["native_id"], claimant.as_str(),
+        after_lsa["native_seat"]["native_id"],
+        claimant.as_str(),
         "the roster is reporting the claimant's native"
     );
     assert!(
