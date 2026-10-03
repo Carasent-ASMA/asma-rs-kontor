@@ -236,6 +236,20 @@ impl SqliteStore {
         self.faults.lose_next_succession_receipt_binding.set(true);
     }
 
+    /// Read an initialized, current-schema Realm without creating or migrating it.
+    ///
+    /// # Errors
+    /// Refuses absent databases, unsupported schemas and invalid Realm metadata.
+    pub fn read_existing_realm(path: &Path) -> Result<RealmMetadata, StoreError> {
+        let connection = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.pragma_update(None, "query_only", true)?;
+        connection.pragma_update(None, "foreign_keys", true)?;
+        migrations::load_realm(&connection)
+    }
+
     /// Open (creating if needed) and migrate a database file.
     ///
     /// A `user_version` of 0 applies migration 0001; 1 is an idempotent open;

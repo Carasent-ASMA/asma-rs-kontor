@@ -42908,7 +42908,11 @@ mod tests {
         let services = Services::new(
             RealmId::generate(),
             crate::DEFAULT_CAPACITY,
-            kontor_jira::JiraConnectors::read(directory.path()).expect("no connectors"),
+            kontor_jira::JiraConnectors::read(
+                directory.path(),
+                kontor_core::id::RealmId::generate(),
+            )
+            .expect("no connectors"),
             directory.path().join("runtime-roots"),
             crate::usage::UsagePoller::discover(directory.path()),
             Vec::new(),
@@ -42964,7 +42968,11 @@ mod tests {
         let services = Services::new(
             RealmId::generate(),
             crate::DEFAULT_CAPACITY,
-            kontor_jira::JiraConnectors::read(directory.path()).expect("no connectors"),
+            kontor_jira::JiraConnectors::read(
+                directory.path(),
+                kontor_core::id::RealmId::generate(),
+            )
+            .expect("no connectors"),
             directory.path().join("runtime-roots"),
             crate::usage::UsagePoller::discover(directory.path()),
             Vec::new(),
