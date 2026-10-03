@@ -711,6 +711,112 @@ impl CoreTeamRoutePlan {
     }
 }
 
+/// A test-controlled pause inside a projection's single store acquisition.
+///
+/// The coherence guarantee is about *when* the lock is released, and a claim
+/// about timing cannot be demonstrated without a point where a test can stand.
+/// This is that point: armed only by this crate's own tests, compiled out
+/// entirely otherwise, and placed after the initial durable reads so a test can
+/// hold the projection inside the lock and watch a writer fail to get in.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ProjectionBarrier {
+    entered: std::sync::Condvar,
+    released: std::sync::Condvar,
+    state: std::sync::Mutex<(bool, bool)>,
+}
+
+#[cfg(test)]
+impl ProjectionBarrier {
+    /// Called from inside the projection, holding the store lock.
+    fn pause(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.0 = true;
+        self.entered.notify_all();
+        while !state.1 {
+            state = self
+                .released
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// Block until the projection is inside the lock.
+    pub(crate) fn wait_entered(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !state.0 {
+            state = self
+                .entered
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// Let the projection finish and release the lock.
+    pub(crate) fn release(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.1 = true;
+        self.released.notify_all();
+    }
+}
+
+#[cfg(test)]
+pub(crate) static PROJECTION_BARRIER: std::sync::Mutex<Option<std::sync::Arc<ProjectionBarrier>>> =
+    std::sync::Mutex::new(None);
+
+/// Pause here if a test has armed the barrier. A no-op in every other build.
+#[cfg(test)]
+fn projection_barrier_pause() {
+    let armed = PROJECTION_BARRIER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(barrier) = armed {
+        barrier.pause();
+    }
+}
+
+#[cfg(not(test))]
+const fn projection_barrier_pause() {}
+
+/// Everything one occupancy-chain answer needs, captured under one acquisition.
+///
+/// A projection assembled from several acquisitions can describe a state the
+/// database never held. Capturing first and mapping afterwards is what keeps
+/// the answer attributable to a single instant (ASMA-8187 × ASMA-8196).
+enum CapturedOccupancyChain {
+    /// The epic has no control plane.
+    NoControlPlane,
+    /// The control plane does not hold this seat.
+    NoSuchSeat,
+    /// The seat is held, with its chain as of one instant.
+    Found {
+        binding: SeatBinding,
+        history: Vec<StoredHostedTopologySeat>,
+        current: Option<StoredHostedTopologySeat>,
+        /// One entry per occupancy, in occupancy order.
+        personas: Vec<Option<kontor_core::spec::RolePersonaSnapshot>>,
+        cursor: kontor_core::id::EventCursor,
+    },
+}
+
+/// One roster seat's durable state, captured under the same acquisition.
+struct CapturedCoreTeamSeat {
+    seat_binding_id: Option<SeatBindingId>,
+    native: Option<StoredHostedTopologySeat>,
+    occupancy_generation: Option<u64>,
+    persona: Option<kontor_core::spec::RolePersonaSnapshot>,
+}
+
 struct CoreTeamSeatClaimPlan {
     epic: MiniProject,
     roster: FrozenRoster,
@@ -8204,106 +8310,123 @@ impl Services {
         roster: &FrozenRoster,
     ) -> Result<CoreTeamDto, ApiError> {
         let state = self.state()?;
-        let control = self
-            .state()?
-            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
-            .map_err(|error| self.refuse(&error))?
-            .into_iter()
-            .find(|node| node.kind == self.domain.delivery.control_kind);
-        let held = match &control {
-            Some(node) => state
-                .with_store(|store| store.list_seat_bindings(project_id, node.id))
-                .map_err(|error| self.refuse(&error))?,
-            None => Vec::new(),
-        };
+        // Immutable wire and catalog material, prepared before the lock: it is
+        // frozen roster content and does not participate in the instant the
+        // durable reads below have to share.
         let mut seats = self.core_team_seat_dtos(&roster.revision)?;
-        for seat in &mut seats {
-            // Scoped by the epic in the route, which is what makes reporting a
-            // binding here honest: this projection is one epic's control plane.
-            seat.seat_binding_id = held
-                .iter()
-                .find(|binding| {
-                    binding.role.role_code == seat.role.role_code && binding.is_non_terminal()
-                })
-                .map(|binding| binding.id);
-            seat.native_seat = seat
-                .seat_binding_id
-                .map(|seat_binding_id| {
-                    state
-                        .with_store(|store| {
-                            store.get_hosted_topology_seat(project_id, seat_binding_id)
-                        })
-                        .map_err(|error| self.refuse(&error))
-                })
-                .transpose()?
-                .flatten()
-                .map(|native| CoreTeamNativeSeatDto {
-                    runtime_kind: native.native_identity.runtime_kind,
-                    host: native.native_identity.host.as_str().to_owned(),
-                    generation: native.native_identity.generation,
-                    native_id: native.native_identity.native_id,
-                    provider_session_id: native.provider_session_id,
-                    model_route: RuntimeModelRouteRequest {
-                        provider: native.model_rung.provider.0,
-                        model: native.model_rung.model.0,
-                        effort: native
-                            .model_rung
-                            .effort
-                            .map(|effort| effort.as_str().to_owned()),
-                    },
-                    observed_at: native.observed_at,
-                });
-            // Read for the occupancy actually filling the seat, so a replaced
-            // seat reports the persona *its own* generation was launched under
-            // rather than inheriting the predecessor's.
-            //
-            // The generation comes from the seat, not from the persona table.
-            // `latest_hosted_seat_role_persona` answers a different question --
-            // the highest generation that happens to *have* a persona row -- and
-            // the two diverge exactly where it matters: a seat claim opens the
-            // next occupancy through `replace_hosted_topology_seat_route`
-            // without recording a persona, so after a claim supersedes a
-            // launched occupancy the maximum persona row is the predecessor's.
-            // Reporting it here would attribute a retired native's persona to
-            // the claimant, while the occupancy chain truthfully says null.
-            // A current generation with no row is null, which is the same
-            // answer the chain gives and the only honest one.
-            seat.role_persona = match seat.seat_binding_id {
-                Some(seat_binding_id) => {
-                    // The store's own definition of the current occupancy --
-                    // `1 + count(history)` -- which is what the occupancy chain
-                    // derives positionally. One rule, read twice, never two.
-                    let current_generation = state
-                        .with_store(|store| {
-                            store.hosted_topology_seat_occupancy_generation(
-                                project_id,
-                                seat_binding_id,
-                            )
-                        })
-                        .map_err(|error| self.refuse(&error))?;
-                    match current_generation {
-                        Some(occupancy_generation) => state
-                            .with_store(|store| {
-                                store.get_hosted_seat_role_persona(
+        let control_kind = self.domain.delivery.control_kind.clone();
+        let role_codes: Vec<_> = seats
+            .iter()
+            .map(|seat| seat.role.role_code.clone())
+            .collect();
+
+        // One acquisition for every durable read. Split across acquisitions, a
+        // succession landing mid-projection lets one seat report a native from
+        // before the transition beside a persona from after it — an answer no
+        // database state supported (ASMA-8187 × ASMA-8196).
+        let (captured, cursor) = state
+            .with_store(
+                |store| -> Result<
+                    (Vec<CapturedCoreTeamSeat>, kontor_core::id::EventCursor),
+                    RepositoryError,
+                > {
+                    let control = store
+                        .list_topology_nodes(project_id, Some(epic_id))?
+                        .into_iter()
+                        .find(|node| node.kind == control_kind);
+                    let held = match &control {
+                        Some(node) => store.list_seat_bindings(project_id, node.id)?,
+                        None => Vec::new(),
+                    };
+                    projection_barrier_pause();
+                    let mut captured = Vec::with_capacity(role_codes.len());
+                    for role_code in &role_codes {
+                        // Scoped by the epic in the route, which is what makes
+                        // reporting a binding here honest: this projection is
+                        // one epic's control plane.
+                        let seat_binding_id = held
+                            .iter()
+                            .find(|binding| {
+                                binding.role.role_code == *role_code && binding.is_non_terminal()
+                            })
+                            .map(|binding| binding.id);
+                        let (native, occupancy_generation, persona) = match seat_binding_id {
+                            Some(seat_binding_id) => {
+                                let native =
+                                    store.get_hosted_topology_seat(project_id, seat_binding_id)?;
+                                // The store's own definition of the current
+                                // occupancy -- `1 + count(history)` -- which is
+                                // what the occupancy chain derives positionally.
+                                // One rule, read twice, never two.
+                                let generation = store.hosted_topology_seat_occupancy_generation(
                                     project_id,
                                     seat_binding_id,
-                                    occupancy_generation,
-                                )
-                            })
-                            .map_err(|error| self.refuse(&error))?
-                            .map(|persona| CoreTeamSeatPersonaDto {
-                                role_code: persona.role_code,
-                                prompt_hash: persona.prompt_hash,
-                                delivery: persona.delivery.as_str().to_owned(),
-                                occupancy_generation,
-                                frozen_at: persona.frozen_at,
-                            }),
-                        // No bound occupancy is no current persona, rather than
-                        // the newest one some earlier occupancy happened to have.
-                        None => None,
+                                )?;
+                                // Read for the occupancy actually filling the
+                                // seat, so a replaced seat reports the persona
+                                // *its own* generation was launched under rather
+                                // than inheriting the predecessor's. A seat claim
+                                // opens the next occupancy without recording a
+                                // persona, so the newest persona row can be the
+                                // predecessor's; a current generation with no row
+                                // is null, which is the same answer the chain
+                                // gives and the only honest one.
+                                let persona = match generation {
+                                    Some(generation) => store.get_hosted_seat_role_persona(
+                                        project_id,
+                                        seat_binding_id,
+                                        generation,
+                                    )?,
+                                    None => None,
+                                };
+                                (native, generation, persona)
+                            }
+                            None => (None, None, None),
+                        };
+                        captured.push(CapturedCoreTeamSeat {
+                            seat_binding_id,
+                            native,
+                            occupancy_generation,
+                            persona,
+                        });
                     }
-                }
-                None => None,
+                    let cursor = store.realm_event_page(None, 1)?.newest.cursor;
+                    Ok((captured, cursor))
+                },
+            )
+            .map_err(|error| self.refuse(&error))?;
+
+        // Pure mapping, after the release.
+        for (seat, captured) in seats.iter_mut().zip(captured) {
+            seat.seat_binding_id = captured.seat_binding_id;
+            seat.native_seat = captured.native.map(|native| CoreTeamNativeSeatDto {
+                runtime_kind: native.native_identity.runtime_kind,
+                host: native.native_identity.host.as_str().to_owned(),
+                generation: native.native_identity.generation,
+                native_id: native.native_identity.native_id,
+                provider_session_id: native.provider_session_id,
+                model_route: RuntimeModelRouteRequest {
+                    provider: native.model_rung.provider.0,
+                    model: native.model_rung.model.0,
+                    effort: native
+                        .model_rung
+                        .effort
+                        .map(|effort| effort.as_str().to_owned()),
+                },
+                observed_at: native.observed_at,
+            });
+            seat.role_persona = match (captured.occupancy_generation, captured.persona) {
+                (Some(occupancy_generation), Some(persona)) => Some(CoreTeamSeatPersonaDto {
+                    role_code: persona.role_code,
+                    prompt_hash: persona.prompt_hash,
+                    delivery: persona.delivery.as_str().to_owned(),
+                    occupancy_generation,
+                    frozen_at: persona.frozen_at,
+                }),
+                // No bound occupancy, or no row for this one, is no current
+                // persona -- rather than the newest one some earlier occupancy
+                // happened to have.
+                _ => None,
             };
         }
         Ok(CoreTeamDto {
@@ -8311,7 +8434,7 @@ impl Services {
             project_id,
             seats,
             revision: roster.revision_of_epic,
-            snapshot_cursor: self.cursor()?,
+            snapshot_cursor: cursor,
         })
     }
 
@@ -8350,35 +8473,17 @@ impl Services {
 
     /// One occupancy, with the persona frozen for that exact generation.
     ///
-    /// The persona is looked up by the occupancy generation rather than carried
-    /// from the seat row, so a retired occupancy reports what *it* was opened
-    /// under and never inherits its successor's.
+    /// Pure: the persona is handed in, read under the same acquisition as the
+    /// seat row it describes. Looking it up here would reopen the split the
+    /// single acquisition exists to close, and a retired occupancy must report
+    /// what *it* was opened under rather than inherit its successor's.
     fn hosted_seat_occupancy_dto(
-        &self,
-        project_id: ProjectId,
-        seat_binding_id: SeatBindingId,
         occupancy_generation: u64,
         is_current: bool,
         seat: &StoredHostedTopologySeat,
-    ) -> Result<HostedSeatOccupancyDto, ApiError> {
-        let persona = self
-            .state()?
-            .with_store(|store| {
-                store.get_hosted_seat_role_persona(
-                    project_id,
-                    seat_binding_id,
-                    occupancy_generation,
-                )
-            })
-            .map_err(|error| self.refuse(&error))?
-            .map(|persona| CoreTeamSeatPersonaDto {
-                role_code: persona.role_code,
-                prompt_hash: persona.prompt_hash,
-                delivery: persona.delivery.as_str().to_owned(),
-                occupancy_generation,
-                frozen_at: persona.frozen_at,
-            });
-        Ok(HostedSeatOccupancyDto {
+        persona: Option<kontor_core::spec::RolePersonaSnapshot>,
+    ) -> HostedSeatOccupancyDto {
+        HostedSeatOccupancyDto {
             occupancy_generation,
             lifecycle: if is_current { "current" } else { "retired" }.to_owned(),
             native: CoreTeamNativeSeatDto {
@@ -8397,8 +8502,14 @@ impl Services {
                 },
                 observed_at: seat.observed_at,
             },
-            role_persona: persona,
-        })
+            role_persona: persona.map(|persona| CoreTeamSeatPersonaDto {
+                role_code: persona.role_code,
+                prompt_hash: persona.prompt_hash,
+                delivery: persona.delivery.as_str().to_owned(),
+                occupancy_generation,
+                frozen_at: persona.frozen_at,
+            }),
+        }
     }
 
     /// The one native durable Kontor records name for this seat and generation.
@@ -24571,44 +24682,109 @@ impl ApplicationOperations for Services {
         seat_binding_id: SeatBindingId,
     ) -> Result<HostedSeatOccupancyChainDto, ApiError> {
         let state = self.state()?;
-        // The membership fence comes first and answers NotFound, not Forbidden:
-        // a caller scoped to one epic learns nothing about whether a seat id
-        // exists in another. A seat's native identities are precisely what must
-        // not leak across control planes.
-        let binding = self.epic_control_seat_binding(project_id, epic_id, seat_binding_id)?;
-        let history = state
-            .with_store(|store| {
-                store.list_hosted_topology_seat_history(project_id, seat_binding_id)
+        let control_kind = self.domain.delivery.control_kind.clone();
+
+        // One acquisition for the whole chain.
+        //
+        // These reads are only meaningful together. Taken under separate locks,
+        // a succession committing between the history read and the current read
+        // produces a chain that never existed at any instant: the predecessor
+        // has left `hosted_topology_seats` but has not yet appeared in history,
+        // so it is reported neither as current nor as retired, and because the
+        // generations are positional over that truncated history the successor
+        // is numbered as though the predecessor had never held the seat. A
+        // stale answer is survivable; an answer no database state ever
+        // supported is not (ASMA-8187 × ASMA-8196).
+        //
+        // Nothing lock-taking is called from inside: the membership proof, the
+        // persona lookups and the cursor are issued against the borrowed store
+        // directly. Mapping into DTOs is pure and happens after the release.
+        let captured = state
+            .with_store(|store| -> Result<CapturedOccupancyChain, RepositoryError> {
+                let Some(control) = store
+                    .list_topology_nodes(project_id, Some(epic_id))?
+                    .into_iter()
+                    .find(|node| node.kind == control_kind)
+                else {
+                    return Ok(CapturedOccupancyChain::NoControlPlane);
+                };
+                let Some(binding) = store
+                    .list_seat_bindings(project_id, control.id)?
+                    .into_iter()
+                    .find(|binding| binding.id == seat_binding_id)
+                else {
+                    return Ok(CapturedOccupancyChain::NoSuchSeat);
+                };
+                let history =
+                    store.list_hosted_topology_seat_history(project_id, seat_binding_id)?;
+                let current = store.get_hosted_topology_seat(project_id, seat_binding_id)?;
+                // Still holding the lock. A writer that could commit here would
+                // split this answer across two database states.
+                projection_barrier_pause();
+                // One persona per occupancy, by that occupancy's own exact
+                // generation, read in the same breath as the rows they describe.
+                let occupancies = history.len().saturating_add(usize::from(current.is_some()));
+                let mut personas = Vec::with_capacity(occupancies);
+                for index in 0..occupancies {
+                    let generation = u64::try_from(index.saturating_add(1)).unwrap_or(u64::MAX);
+                    personas.push(store.get_hosted_seat_role_persona(
+                        project_id,
+                        seat_binding_id,
+                        generation,
+                    )?);
+                }
+                let cursor = store.realm_event_page(None, 1)?.newest.cursor;
+                Ok(CapturedOccupancyChain::Found {
+                    binding,
+                    history,
+                    current,
+                    personas,
+                    cursor,
+                })
             })
             .map_err(|error| self.refuse(&error))?;
-        let current = state
-            .with_store(|store| store.get_hosted_topology_seat(project_id, seat_binding_id))
-            .map_err(|error| self.refuse(&error))?;
-        let mut occupancies = Vec::with_capacity(history.len().saturating_add(1));
+
+        // The membership fence still answers NotFound, not Forbidden: a caller
+        // scoped to one epic learns nothing about whether a seat id exists in
+        // another.
+        let (binding, history, current, personas, cursor) = match captured {
+            CapturedOccupancyChain::NoControlPlane => {
+                return Err(self.deny(ApiErrorCode::NotFound, "this epic has no control plane"));
+            }
+            CapturedOccupancyChain::NoSuchSeat => {
+                return Err(self.deny(
+                    ApiErrorCode::NotFound,
+                    "this epic's control plane holds no such seat",
+                ));
+            }
+            CapturedOccupancyChain::Found {
+                binding,
+                history,
+                current,
+                personas,
+                cursor,
+            } => (binding, history, current, personas, cursor),
+        };
+
+        let mut occupancies = Vec::with_capacity(personas.len());
         // Occupancy generation is positional by the store's own definition --
         // `1 + count(history)` -- and the history read is already ordered by
         // retirement. Deriving it the same way here keeps one rule instead of
         // two that can drift apart. It is deliberately *not*
         // `native_identity.generation`, which counts runtime readbacks.
-        for seat in history {
+        for seat in &history {
             let generation = u64::try_from(occupancies.len().saturating_add(1)).unwrap_or(u64::MAX);
-            occupancies.push(self.hosted_seat_occupancy_dto(
-                project_id,
-                seat_binding_id,
-                generation,
-                false,
-                &seat,
-            )?);
+            let persona = personas.get(occupancies.len()).cloned().flatten();
+            occupancies.push(Self::hosted_seat_occupancy_dto(
+                generation, false, seat, persona,
+            ));
         }
-        if let Some(seat) = current {
+        if let Some(seat) = &current {
             let generation = u64::try_from(occupancies.len().saturating_add(1)).unwrap_or(u64::MAX);
-            occupancies.push(self.hosted_seat_occupancy_dto(
-                project_id,
-                seat_binding_id,
-                generation,
-                true,
-                &seat,
-            )?);
+            let persona = personas.get(occupancies.len()).cloned().flatten();
+            occupancies.push(Self::hosted_seat_occupancy_dto(
+                generation, true, seat, persona,
+            ));
         }
         Ok(HostedSeatOccupancyChainDto {
             realm_id: state.realm_id(),
@@ -24617,7 +24793,7 @@ impl ApplicationOperations for Services {
             seat_binding_id,
             role_code: binding.role.role_code.clone(),
             occupancies,
-            snapshot_cursor: self.cursor()?,
+            snapshot_cursor: cursor,
         })
     }
 
@@ -44192,6 +44368,388 @@ mod tests {
             freeze_hosted_seat_autonomy(Some(SeatAutonomy::Bounded)),
             SeatAutonomy::Bounded,
             "and a realm that did declare one finally reaches its leadership seats"
+        );
+    }
+}
+
+/// Both read projections answer from a single instant, under one store lock.
+///
+/// The guarantee is about *when* the lock is released, so these tests stand
+/// inside it: the projection is held at a barrier after its initial durable
+/// reads while a succession writer tries to commit, and the writer must not get
+/// in. Split across acquisitions the same interleaving yields a chain that no
+/// database state ever supported (ASMA-8187 × ASMA-8196).
+#[cfg(test)]
+mod coherence {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Composed {
+        _home: tempfile::TempDir,
+        services: std::sync::Arc<Services>,
+        state: kontor_api::state::ApiState,
+        project_id: ProjectId,
+        epic_id: MiniProjectId,
+        seat: SeatBindingId,
+        first: kontor_core::repository::StoredHostedTopologySeat,
+        roster: FrozenRoster,
+    }
+
+    fn at(text: &str) -> kontor_core::id::Timestamp {
+        kontor_core::id::parse_utc_timestamp(text).expect("a canonical timestamp")
+    }
+
+    fn native(id: &str, generation: u64) -> kontor_core::state::NativeRuntimeIdentity {
+        kontor_core::state::NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse("paseo.agent").expect("a runtime kind"),
+            host: kontor_core::id::ExternalName::parse("paseo-local").expect("a host"),
+            generation,
+            native_id: ExternalId::parse(id).expect("a native id"),
+        }
+    }
+
+    fn rung() -> kontor_core::spec::ModelRung {
+        kontor_core::spec::ModelRung {
+            provider: kontor_core::spec::ProviderRef("codex".to_owned()),
+            model: kontor_core::spec::ModelRef("gpt-5.6".to_owned()),
+            effort: None,
+        }
+    }
+
+    /// One realm with an epic control plane holding one hosted LSA seat.
+    fn compose() -> Composed {
+        let home = tempfile::tempdir().expect("isolated state");
+        let store = kontor_store::SqliteStore::open(&home.path().join("kontor.db"))
+            .expect("the store opens");
+        let project_id = ProjectId::generate();
+        let epic_id = MiniProjectId::generate();
+        let created_at = at("2026-10-03T01:00:00Z");
+        let stamp = kontor_core::spec::Shareability::default_for(
+            kontor_core::spec::ShareabilityTier::ProjectKnowledge,
+        )
+        .expect("tier B classifies");
+        let name = |text: &str| kontor_core::id::ExternalName::parse(text).expect("a name");
+
+        store
+            .create_project(&kontor_core::repository::NewProject {
+                id: project_id,
+                name: name("Coherence project"),
+                root_path: name("/tmp/coherence"),
+                created_at,
+            })
+            .expect("the project is created");
+        store
+            .create_mini_project(&kontor_core::repository::NewMiniProject {
+                id: epic_id,
+                project_id,
+                name: name("Coherence epic"),
+                created_at,
+            })
+            .expect("the epic is created");
+
+        let domain = kontor_profiles::bundled_operational_domain().expect("the bundled domain");
+        let topology = domain.topology_specs.first().expect("a topology").clone();
+        let catalog = domain.role_catalogs.first().expect("a catalog").clone();
+        let canonical_hash = store
+            .publish_topology_spec(project_id, &topology, &stamp, created_at)
+            .expect("the topology is published");
+        store
+            .publish_role_catalog(&catalog, &stamp, created_at)
+            .expect("the catalog is published");
+        let snapshot = kontor_core::spec::TopologySnapshot {
+            spec_id: topology.spec_id,
+            version: topology.version,
+            canonical_hash,
+        };
+        store
+            .set_project_topology_default(&kontor_core::repository::ProjectTopologyDefault {
+                project_id,
+                topology: snapshot.clone(),
+                selected_at: created_at,
+            })
+            .expect("the default is selected");
+        store
+            .pin_mini_project_topology(&kontor_core::repository::MiniProjectTopologySnapshot {
+                project_id,
+                mini_project_id: epic_id,
+                topology: snapshot.clone(),
+                pinned_at: created_at,
+            })
+            .expect("the snapshot is pinned");
+
+        let mut parent = None;
+        let mut control = None;
+        for kind in ["PSW", "ESW", "ECP"] {
+            let id = TopologyNodeId::generate();
+            store
+                .create_topology_node(&kontor_core::repository::NewSessionTopologyNode {
+                    id,
+                    project_id,
+                    mini_project_id: (kind != "PSW").then_some(epic_id),
+                    topology: snapshot.clone(),
+                    kind: TopologyKindKey::parse(kind).expect("a topology kind"),
+                    parent_id: parent,
+                    task_id: None,
+                    created_at,
+                })
+                .expect("the node is created");
+            parent = Some(id);
+            if kind == "ECP" {
+                control = Some(id);
+            }
+        }
+        let control = control.expect("the control plane exists");
+
+        let revision =
+            kontor_teams::operational::CoreTeamRevision::resolve(catalog.version, &catalog, &[])
+                .expect("the mandatory roster resolves");
+        let lead = revision
+            .seats
+            .iter()
+            .find(|seat| seat.role.role_code.as_str() == "LSA")
+            .expect("the roster has a lead")
+            .clone();
+
+        let seat = SeatBindingId::generate();
+        store
+            .create_seat_binding(&kontor_core::repository::NewSeatBinding {
+                id: seat,
+                project_id,
+                topology_node_id: control,
+                role_slot_id: lead.role_slot_id.clone(),
+                role: lead.role.clone(),
+                task_id: None,
+                team_run_id: None,
+                attach_deadline: at("2026-10-03T02:00:00Z"),
+                parent_seat_binding_id: None,
+                created_at,
+            })
+            .expect("the seat binding is created");
+        let first = kontor_core::repository::StoredHostedTopologySeat {
+            project_id,
+            seat_binding_id: seat,
+            model_rung: rung(),
+            native_identity: native("coherence-first", 1),
+            autonomy: kontor_core::spec::SeatAutonomy::Supervised,
+            provider_session_id: None,
+            observed_at: at("2026-10-03T01:01:00Z"),
+        };
+        store
+            .bind_hosted_topology_seat(&first)
+            .expect("the hosted seat is bound");
+
+        let services = Services::new(
+            kontor_core::id::RealmId::generate(),
+            crate::DEFAULT_CAPACITY,
+            kontor_jira::JiraConnectors::read(home.path(), kontor_core::id::RealmId::generate())
+                .expect("no connectors"),
+            home.path().join("runtime-roots"),
+            crate::usage::UsagePoller::discover(home.path()),
+            Vec::new(),
+            None,
+            std::sync::Arc::new(crate::fleet::FleetSource::at(home.path())),
+        )
+        .expect("services compose");
+        let state = kontor_api::state::ApiState::new(kontor_api::state::ApiParts {
+            store,
+            credentials: crate::credentials::open_or_create(home.path())
+                .expect("realm credentials"),
+            ingress: kontor_api::auth::IngressPolicy {
+                allowed_origins: Vec::new(),
+            },
+            runtimes: kontor_api::state::RuntimeRegistry::new(),
+            sessions: kontor_api::state::SessionRegistry::new(),
+            barrier: kontor_api::state::SchedulingBarrier::new(),
+            signals: kontor_api::state::StreamSignals::new(),
+            evidence_window_seconds: 3600,
+            derived_read_deadline: std::time::Duration::from_secs(5),
+            applications: services.clone(),
+        });
+        services.attach(state.clone());
+
+        Composed {
+            _home: home,
+            services,
+            state,
+            project_id,
+            epic_id,
+            seat,
+            first,
+            roster: FrozenRoster {
+                revision,
+                revision_of_epic: AggregateRevision::INITIAL,
+                quick_session_id: None,
+            },
+        }
+    }
+
+    /// The succession a writer attempts while the projection holds the lock.
+    fn successor(
+        first: &kontor_core::repository::StoredHostedTopologySeat,
+    ) -> kontor_core::repository::StoredHostedTopologySeat {
+        kontor_core::repository::StoredHostedTopologySeat {
+            native_identity: native("coherence-second", 2),
+            observed_at: at("2026-10-03T01:05:00Z"),
+            ..first.clone()
+        }
+    }
+
+    /// Hold a projection inside its lock, prove a writer cannot commit, then
+    /// prove each answer belongs wholly to one side of the succession.
+    fn barrier_case<T>(
+        project: impl Fn(&Composed) -> T + Send + Sync,
+        assert_before: impl Fn(&T),
+        assert_after: impl Fn(&T),
+    ) where
+        T: Send,
+    {
+        let composed = compose();
+        let barrier = Arc::new(ProjectionBarrier::default());
+        *PROJECTION_BARRIER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+
+        let committed = Arc::new(AtomicBool::new(false));
+        // Nothing inside the scope may assert.
+        //
+        // An assertion here unwinds while the reader is still parked at the
+        // barrier, and `thread::scope` then waits forever to join a thread
+        // nobody will ever release — which is a hang, and a hang is not a kill.
+        // The scope only *observes*; the barrier is always released; the
+        // verdicts are reached after every thread has joined.
+        let (before, escaped) = std::thread::scope(|scope| {
+            let reader = scope.spawn(|| project(&composed));
+            // (1)-(2) the projection is inside the lock, initial state read.
+            barrier.wait_entered();
+
+            let writing = scope.spawn(|| {
+                let second = successor(&composed.first);
+                let outcome = composed.state.with_store(|store| {
+                    store.replace_hosted_topology_seat_route(
+                        &composed.first,
+                        &second,
+                        at("2026-10-03T01:05:00Z"),
+                        "coherence barrier",
+                        None,
+                    )
+                });
+                committed.store(outcome.is_ok(), Ordering::SeqCst);
+            });
+
+            // (3) bounded observation: did the writer get in while the
+            // projection held the lock? Recorded, never asserted here.
+            let mut escaped = false;
+            for _ in 0..40 {
+                if committed.load(Ordering::SeqCst) {
+                    escaped = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+
+            // (5) always released, on every path, so the join below terminates.
+            barrier.release();
+            let before = reader.join().expect("the projection completes");
+            writing.join().expect("the writer completes");
+            (before, escaped)
+        });
+
+        assert!(
+            !escaped,
+            "a succession committed while the projection held the store lock"
+        );
+        assert!(committed.load(Ordering::SeqCst));
+
+        // (4) the first answer is wholly pre-succession.
+        assert_before(&before);
+
+        // (6) a second answer, with the barrier disarmed, is wholly post.
+        *PROJECTION_BARRIER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        let after = project(&composed);
+        assert_after(&after);
+    }
+
+    #[test]
+    fn the_occupancy_chain_answers_from_one_instant() {
+        barrier_case(
+            |composed| {
+                composed
+                    .services
+                    .epic_hosted_seat_occupancies(
+                        composed.project_id,
+                        composed.epic_id,
+                        composed.seat,
+                    )
+                    .expect("the chain projects")
+            },
+            |chain| {
+                // Wholly pre-succession: one occupancy, the predecessor, current.
+                assert_eq!(chain.occupancies.len(), 1, "{chain:?}");
+                assert_eq!(chain.occupancies[0].occupancy_generation, 1);
+                assert_eq!(chain.occupancies[0].lifecycle, "current");
+                assert_eq!(
+                    chain.occupancies[0].native.native_id.as_str(),
+                    "coherence-first"
+                );
+            },
+            |chain| {
+                // Wholly post-succession: predecessor retired, successor current.
+                assert_eq!(chain.occupancies.len(), 2, "{chain:?}");
+                assert_eq!(chain.occupancies[0].lifecycle, "retired");
+                assert_eq!(chain.occupancies[0].occupancy_generation, 1);
+                assert_eq!(
+                    chain.occupancies[0].native.native_id.as_str(),
+                    "coherence-first"
+                );
+                assert_eq!(chain.occupancies[1].lifecycle, "current");
+                assert_eq!(chain.occupancies[1].occupancy_generation, 2);
+                assert_eq!(
+                    chain.occupancies[1].native.native_id.as_str(),
+                    "coherence-second"
+                );
+                // (7) and never the hybrid: a chain whose current occupant is
+                // the successor while the predecessor appears nowhere.
+                assert!(
+                    chain
+                        .occupancies
+                        .iter()
+                        .any(|occupancy| occupancy.native.native_id.as_str() == "coherence-first"),
+                    "the predecessor vanished from the chain: {chain:?}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn the_core_team_projection_answers_from_one_instant() {
+        barrier_case(
+            |composed| {
+                composed
+                    .services
+                    .epic_core_team_dto(composed.project_id, composed.epic_id, &composed.roster)
+                    .expect("the core team projects")
+            },
+            |team| {
+                let lead = team
+                    .seats
+                    .iter()
+                    .find(|seat| seat.role.role_code.as_str() == "LSA")
+                    .expect("the lead seat");
+                let native = lead.native_seat.as_ref().expect("a bound native");
+                assert_eq!(native.native_id.as_str(), "coherence-first");
+            },
+            |team| {
+                let lead = team
+                    .seats
+                    .iter()
+                    .find(|seat| seat.role.role_code.as_str() == "LSA")
+                    .expect("the lead seat");
+                let native = lead.native_seat.as_ref().expect("a bound native");
+                assert_eq!(native.native_id.as_str(), "coherence-second");
+            },
         );
     }
 }

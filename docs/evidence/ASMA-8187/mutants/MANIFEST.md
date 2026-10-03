@@ -184,3 +184,41 @@ Two defects, both mine, both recorded rather than quietly replaced:
 
 Both are retained so the correction is legible: an evidence set that deletes its
 own bad artifacts is harder to trust than one that keeps them labelled.
+
+## Recorded runs (corrected coherence baseline)
+
+Baseline: the commit these logs name, with the projection coherence correction
+in place. Seven mutants, all killed, each restored byte-identically.
+
+| Mutant | Removes | Outcome |
+|---|---|---|
+| `M-P22b1` | the receipt uniqueness index | killed (101) |
+| `M-P22b2` | the frozen completion instant | killed (101) |
+| `M-P23` | the `0122` upgrade validation | killed (101) |
+| `M-P24` | binding the readback to its transition | killed (101) |
+| `M-P25` | the receipt join ordering | killed (101) |
+| `M-CTL` | the realm read at the schema boundary | killed (101) |
+| `M-COH` | the single store acquisition in the occupancy chain | killed (101) |
+
+### Two harness defects found and fixed, both recorded
+
+Neither was in the production code; both would have corrupted the evidence.
+
+* **`M-COH` first attempt hung for ~48 minutes and produced no verdict.** The
+  harness asserted inside `std::thread::scope` before releasing the barrier, so
+  the scope waited forever to join a reader nobody would wake. A hang is not a
+  kill, and it is recorded as **inconclusive** with full process evidence in
+  `M-COH-first-attempt-INCONCLUSIVE.txt`. The coordination is now bounded end to
+  end and the second attempt killed the mutant in 4.78s.
+* **The mutation runner skipped its own restoration.** `set -e` aborted the
+  script at `wait` whenever a mutant was killed — which is every successful run
+  — so the file was left mutated and the *next* mutant snapshotted an already
+  mutated file. One run (`M-P22b2`) was invalidated that way and was redone.
+  Restoration is now unconditional through an `EXIT` trap. Evidence that
+  corrupts the next measurement is worse than no evidence.
+
+Every patch in this group is mutation-only against its own named snapshot —
+produced by `diff -u` against that snapshot rather than `git diff`, which would
+sweep in uncommitted work — and each log records `git apply --check` and
+`patch --dry-run` accepting it, plus a hard wall-clock limit whose `124` verdict
+is reported as inconclusive rather than as a kill.
