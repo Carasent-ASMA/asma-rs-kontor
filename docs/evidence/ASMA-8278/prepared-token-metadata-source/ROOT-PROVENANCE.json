@@ -14,5 +14,14 @@
     "doctests": 7
   },
   "provenance": "Worker labels source_base/final_source_parent identify pre-commit ef0b719; hashes pin the prepared source at7e3c2a9. Counts aggregate named phases; prepared19/20/21 are superseded by final22. Ten unique mutants replayed twice, not20. Original failed/cache and temporal evidence preserved verbatim.",
-  "acceptance": "Source publication only; exact independent review pending. No issuer/admission/custody/native possession/fence/finality/live or epic/task closure proof."
+  "acceptance": "Source publication and bounded independent source findings only. No formal committee, issuance/admission/custody/native possession/fence/finality/live or epic/task closure proof.",
+  "independent_bounded_source_review": {
+    "path": "DEEPSEEK-SOURCE-FINDINGS.md",
+    "sha256": "bbaa9fd0ebcba47d403a290943376dd43a2253ba8d34894fa8aa7201a15e8637",
+    "source": "7e3c2a954333817c7be873d4a68cd58fa3593495",
+    "evidence": "5e644729ca5a1ae31406676d9c61ce5bea4d6e2f",
+    "native_reviewer": "689005c4-c842-42b6-ae2b-e16e563e7f4f",
+    "method": "Read-only exact git objects and named completed evidence; no tests rerun or writes by reviewer. Receipt body preserved; no thought blocks included.",
+    "disposition": "No substantiated supported source defect; B-01/B-02 hostile-direct-DB boundary notes preserved. Source-only readiness; no formal/live/admission/closure verdict."
+  }
 }
