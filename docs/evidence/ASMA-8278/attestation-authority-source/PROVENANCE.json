@@ -78,5 +78,13 @@
     "Original scripts retain private execution paths; rerunning requires an isolated full candidate checkout and deliberate path configuration.",
     "No isolated Cargo target/build or full repository copy is published. Exact source is pinned by candidate and twelve recorded hashes.",
     "No independent test reproduction or live/native/admission/continuity qualification is claimed."
-  ]
+  ],
+  "independent_review": {
+    "file": "SOURCE-REVIEW.md",
+    "sha256": "231cd1857f374ffedcdf22c6ebc4aa76aba564cf40a5055b76c2ce39e197919f",
+    "candidate": "67dc4a7f7302d8e94101eb3786571af6d930c737",
+    "route": "Paseo native OpenCode direct DeepSeek/deepseek-flash max Plan auto_accept=false",
+    "scope": "Bounded source findings; no test rerun, complete formal committee or live verdict",
+    "disposition": "Ledger A-01 Medium: nonempty destination WAL bypass for missing/zero main file. Two informational observations; no other source blocker established. Fix and affected re-review pending."
+  }
 }

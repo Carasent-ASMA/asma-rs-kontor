@@ -30,7 +30,11 @@ exact existing test lines and raw panics; compiler failures are not kills.
 The scripts retain their original private execution paths. Reproduction needs
 an isolated full candidate checkout and explicit path configuration. Build
 targets and the full isolated repository are excluded. No independent rerun is
-claimed; the bounded independent source review is pending separately.
+claimed. The [bounded independent source findings](SOURCE-REVIEW.md) verify
+the exact candidate and report one Medium contract defect: a nonempty
+destination WAL bypasses refusal when the main database file is missing or
+zero-length. The corrective guard, regression and affected re-review are
+pending. The original review and worker evidence remain unchanged.
 
 This proves bounded source behavior only. Detached reads grant no freshness or
 authority. Issuance, current token/admission integration, custody, native
