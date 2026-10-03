@@ -1,0 +1,12 @@
+{
+  "id": "A01-skip-unconditional-destination-wal",
+  "path": "crates/kontor-store/src/backup/restore.rs",
+  "old": "    refuse_nonempty_wal(destination)?;",
+  "new": "    // Mutant: skip destination WAL refusal when the main file is missing or empty.",
+  "tests": [
+    "missing_main_with_committed_wal_refuses_without_changing_destination_files",
+    "zero_main_with_committed_wal_refuses_without_changing_destination_files"
+  ],
+  "filter": "main_with_committed_wal",
+  "scope": "Isolated source copy and disposable fixtures only"
+}
