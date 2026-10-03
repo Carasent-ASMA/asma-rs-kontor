@@ -105,5 +105,16 @@ verdict or closure action was taken.
 * The first `M-COH` run remains INCONCLUSIVE — a forty-eight minute hang that
   proved nothing, and the reason this round exists.
 * The `M-P22b2` raw receipt remains lost and disclosed, not reconstructed.
-* `M-HANG-PAUSE-UNBOUNDED` is a timeout by construction and is not counted as a
-  kill.
+* `M-HANG-PAUSE-UNBOUNDED` was **killed** — exit 101, in 5.01s — and is one of
+  the twelve kills counted above.
+
+  An earlier revision of this bullet read: *"is a timeout by construction and is
+  not counted as a kill."* That was drafted before the mutant was run and is
+  **superseded**; it contradicted this same report's own table and narrative
+  above. The prediction behind it is kept, because it was wrong in an
+  informative way: removing a bound usually produces the hang the bound
+  prevents, and a hang is scored here as inconclusive rather than as a kill.
+  It did not, because `settled_within` gives up on a never-finishing worker
+  independently of the code under test — which is the property the restructure
+  was for. The prediction stays on the record as a prediction; the verdict is
+  the kill.
