@@ -1,18 +1,17 @@
-=== mutant M-P22b1-receipt-not-unique (corrected baseline) ===
-baseline commit   : 5e00a23843698402fe8804929467709b2fae5ef6
-mutated file      : crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
-snapshot sha256   : 37d120e727c4f98ee5477e5fe62ab9f8dc45c060f97970307722bdddb1d11043
-mutated  sha256   : 4d4681bb0d5c3803c88fe9695cc671423d758d3f55ec17d31fb3f9e2aeccd36b
-patch             : M-P22b1-receipt-not-unique.patch (mutation-only, 12 lines)
-  git apply --check: accepted
-  patch --dry-run  : patching file 'crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql'
-command           : cargo test -p kontor-store --test hosted_seat_autonomy -- one_receipt_cannot_be_bound_to_two_successions   (hard limit 420s)
-toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
-platform          : Darwin 25.6.0 arm64
+=== mutant M-P22b1-receipt-not-unique ===
+baseline commit : 41f48e695bcf40498c807ca0a246b5d0c7ddb8a7
+baseline tree   : 3eea6141c3a668ad2963f472ef3b9ae54428982b
+command         : cargo test -p kontor-store --test hosted_seat_autonomy -- one_receipt_cannot_be_bound_to_two_successions
+toolchain       : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform        : Darwin 25.6.0 arm64
+--- preimage sha256 (files this mutant touches, at baseline) ---
+37d120e727c4f98ee5477e5fe62ab9f8dc45c060f97970307722bdddb1d11043  crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
+--- mutated sha256 ---
+4d4681bb0d5c3803c88fe9695cc671423d758d3f55ec17d31fb3f9e2aeccd36b  crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
 --- raw output ---
    Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.85s
-     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-0318a31a1a362321)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.80s
+     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-37350dd3fcfb6d32)
 
 running 1 test
 test one_receipt_cannot_be_bound_to_two_successions ... FAILED
@@ -21,7 +20,7 @@ failures:
 
 ---- one_receipt_cannot_be_bound_to_two_successions stdout ----
 
-thread 'one_receipt_cannot_be_bound_to_two_successions' (23783826) panicked at crates/kontor-store/tests/hosted_seat_autonomy.rs:2558:5:
+thread 'one_receipt_cannot_be_bound_to_two_successions' (9617615) panicked at crates/kontor-store/tests/hosted_seat_autonomy.rs:2558:5:
 one receipt was bound to two successions
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
@@ -29,10 +28,10 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 failures:
     one_receipt_cannot_be_bound_to_two_successions
 
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 1.82s
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 1.72s
 
 error: test failed, to rerun pass `-p kontor-store --test hosted_seat_autonomy`
---- exit status: 101 (non-zero = killed; 124 = timeout, inconclusive) ---
-restored sha256   : 37d120e727c4f98ee5477e5fe62ab9f8dc45c060f97970307722bdddb1d11043
-restoration       : byte-identical to the named snapshot
-MUTANT markers    : 0
+--- exit status: 101 (non-zero = mutant killed) ---
+--- restored sha256 ---
+37d120e727c4f98ee5477e5fe62ab9f8dc45c060f97970307722bdddb1d11043  crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
+restoration: byte-identical to baseline 41f48e695bcf40498c807ca0a246b5d0c7ddb8a7

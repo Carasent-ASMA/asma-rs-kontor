@@ -723,11 +723,20 @@ impl CoreTeamRoutePlan {
 pub(crate) struct ProjectionBarrier {
     entered: std::sync::Condvar,
     released: std::sync::Condvar,
-    state: std::sync::Mutex<(bool, bool)>,
+    /// (entered, released, timed-out)
+    state: std::sync::Mutex<(bool, bool, bool)>,
 }
 
 #[cfg(test)]
 impl ProjectionBarrier {
+    /// Every wait here is bounded.
+    ///
+    /// An unbounded `Condvar` wait turns a coordination defect into a hang, and
+    /// a hang is not a verdict: the first run of `M-COH` sat for forty-eight
+    /// minutes and proved nothing. A deadline makes the same defect report
+    /// itself.
+    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
     /// Called from inside the projection, holding the store lock.
     fn pause(&self) {
         let mut state = self
@@ -736,26 +745,54 @@ impl ProjectionBarrier {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.0 = true;
         self.entered.notify_all();
+        let deadline = std::time::Instant::now() + Self::DEADLINE;
         while !state.1 {
-            state = self
+            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                state.2 = true;
+                break;
+            };
+            let (next, timeout) = self
                 .released
-                .wait(state)
+                .wait_timeout(state, remaining)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            if timeout.timed_out() && !state.1 {
+                state.2 = true;
+                break;
+            }
         }
     }
 
-    /// Block until the projection is inside the lock.
+    /// Block until the projection is inside the lock, or fail the test.
     pub(crate) fn wait_entered(&self) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let deadline = std::time::Instant::now() + Self::DEADLINE;
         while !state.0 {
-            state = self
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_default();
+            assert!(
+                !remaining.is_zero(),
+                "the projection never reached the barrier within {:?}",
+                Self::DEADLINE
+            );
+            let (next, _) = self
                 .entered
-                .wait(state)
+                .wait_timeout(state, remaining)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
         }
+    }
+
+    /// Whether any wait inside the projection hit its deadline.
+    pub(crate) fn timed_out(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .2
     }
 
     /// Let the projection finish and release the lock.
@@ -8436,39 +8473,6 @@ impl Services {
             revision: roster.revision_of_epic,
             snapshot_cursor: cursor,
         })
-    }
-
-    /// The seat binding one epic's control plane actually holds.
-    ///
-    /// Membership is proven against the epic named in the route rather than
-    /// trusted from the path, and a seat belonging to another epic answers
-    /// NotFound rather than Forbidden: a caller scoped to one control plane
-    /// learns nothing about what exists in another, and a hosted seat's native
-    /// identities are exactly what must not leak across one.
-    fn epic_control_seat_binding(
-        &self,
-        project_id: ProjectId,
-        epic_id: MiniProjectId,
-        seat_binding_id: SeatBindingId,
-    ) -> Result<SeatBinding, ApiError> {
-        let state = self.state()?;
-        let control = state
-            .with_store(|store| store.list_topology_nodes(project_id, Some(epic_id)))
-            .map_err(|error| self.refuse(&error))?
-            .into_iter()
-            .find(|node| node.kind == self.domain.delivery.control_kind)
-            .ok_or_else(|| self.deny(ApiErrorCode::NotFound, "this epic has no control plane"))?;
-        state
-            .with_store(|store| store.list_seat_bindings(project_id, control.id))
-            .map_err(|error| self.refuse(&error))?
-            .into_iter()
-            .find(|binding| binding.id == seat_binding_id)
-            .ok_or_else(|| {
-                self.deny(
-                    ApiErrorCode::NotFound,
-                    "this epic's control plane holds no such seat",
-                )
-            })
     }
 
     /// One occupancy, with the persona frozen for that exact generation.
@@ -44538,6 +44542,25 @@ mod coherence {
         store
             .bind_hosted_topology_seat(&first)
             .expect("the hosted seat is bound");
+        // One persona per occupancy, with different text, so a projection that
+        // attributed the wrong generation's persona would be visible rather
+        // than merely possible.
+        for (generation, text) in [
+            (1_u64, "persona for occupancy one"),
+            (2, "persona for occupancy two"),
+        ] {
+            let persona = kontor_core::spec::RolePersonaSnapshot::freeze(
+                lead.role.role_code.clone(),
+                kontor_core::id::BoundedText::parse(text).expect("bounded persona text"),
+                kontor_core::spec::RolePersonaDelivery::CreateOnlyNoReadback,
+                kontor_core::id::SCHEMA_VERSION,
+                at("2026-10-03T01:00:30Z"),
+            )
+            .expect("the persona freezes");
+            store
+                .record_hosted_seat_role_persona(project_id, seat, generation, &persona)
+                .expect("the persona is recorded");
+        }
 
         let services = Services::new(
             kontor_core::id::RealmId::generate(),
@@ -44648,12 +44671,30 @@ mod coherence {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
 
-            // (5) always released, on every path, so the join below terminates.
+            // (5) always released, on every path, so the joins below terminate.
             barrier.release();
+            // Bounded joins. `JoinHandle::join` has no deadline, so the threads
+            // are polled for completion instead: a thread that never finishes
+            // must fail the test rather than hold it open forever.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while !reader.is_finished() || !writing.is_finished() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "a barrier thread did not finish within 60s (reader finished: {}, \
+                     writer finished: {})",
+                    reader.is_finished(),
+                    writing.is_finished()
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
             let before = reader.join().expect("the projection completes");
             writing.join().expect("the writer completes");
             (before, escaped)
         });
+        assert!(
+            !barrier.timed_out(),
+            "the projection's barrier wait hit its deadline; the run proves nothing"
+        );
 
         assert!(
             !escaped,
@@ -44740,6 +44781,19 @@ mod coherence {
                     .expect("the lead seat");
                 let native = lead.native_seat.as_ref().expect("a bound native");
                 assert_eq!(native.native_id.as_str(), "coherence-first");
+                // The native and the persona must describe the *same*
+                // occupancy. A hybrid -- one from before the succession, the
+                // other from after -- is exactly what the single acquisition
+                // exists to prevent, and only an assertion on both can see it.
+                let persona = lead.role_persona.as_ref().expect("a frozen persona");
+                assert_eq!(persona.occupancy_generation, 1, "{lead:?}");
+                assert_eq!(
+                    persona.prompt_hash,
+                    kontor_core::id::ContentHash::of(b"persona for occupancy one"),
+                    "the lead reported another occupancy's persona beside occupancy one's native"
+                );
+                // And never the prompt bytes themselves.
+                assert!(!format!("{lead:?}").contains("persona for occupancy"));
             },
             |team| {
                 let lead = team
@@ -44749,6 +44803,14 @@ mod coherence {
                     .expect("the lead seat");
                 let native = lead.native_seat.as_ref().expect("a bound native");
                 assert_eq!(native.native_id.as_str(), "coherence-second");
+                let persona = lead.role_persona.as_ref().expect("a frozen persona");
+                assert_eq!(persona.occupancy_generation, 2, "{lead:?}");
+                assert_eq!(
+                    persona.prompt_hash,
+                    kontor_core::id::ContentHash::of(b"persona for occupancy two"),
+                    "the lead reported occupancy one's persona beside occupancy two's native"
+                );
+                assert!(!format!("{lead:?}").contains("persona for occupancy"));
             },
         );
     }

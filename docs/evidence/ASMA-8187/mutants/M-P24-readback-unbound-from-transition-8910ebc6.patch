@@ -1,8 +1,6 @@
-diff --git a/crates/kontor-store/src/repository.rs b/crates/kontor-store/src/repository.rs
-index 2a017574..ca8283be 100644
 --- a/crates/kontor-store/src/repository.rs
 +++ b/crates/kontor-store/src/repository.rs
-@@ -5541,19 +5541,8 @@ impl SqliteStore {
+@@ -5541,19 +5541,8 @@
                      subject: "core team route succession",
                      rule: "a succession outcome cannot commit onto a claim that was never taken",
                  })?;

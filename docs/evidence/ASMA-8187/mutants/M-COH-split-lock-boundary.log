@@ -1,5 +1,12 @@
 === mutant M-COH (projection coherence) ===
-baseline commit   : 5e00a23843698402fe8804929467709b2fae5ef6
+source snapshot   : crates/kontor-daemon/src/applications.rs
+                    sha256 3a9f16873b39ad41a70c4aaefac303d62492b88406b4c97dcdf0befd050217f2
+state reached at  : 8910ebc603b5d013861d0793c6f8384f75eaca9d
+identity note     : the snapshot is the identity; the commit is only how that
+                    state is reached. An earlier revision named 5e00a238,
+                    which was HEAD when the harness read it but whose
+                    applications.rs is 4e04205f... -- a different file. The
+                    patch applies to 8910ebc6 and to nothing earlier.
 mutated file      : crates/kontor-daemon/src/applications.rs
 snapshot sha256   : 3a9f16873b39ad41a70c4aaefac303d62492b88406b4c97dcdf0befd050217f2
 restored sha256   : 3a9f16873b39ad41a70c4aaefac303d62492b88406b4c97dcdf0befd050217f2

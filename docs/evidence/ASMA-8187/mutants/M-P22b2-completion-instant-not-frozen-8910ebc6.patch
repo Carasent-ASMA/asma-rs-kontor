@@ -1,8 +1,6 @@
-diff --git a/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql b/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
-index ecd39abd..4bc1d4bf 100644
 --- a/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
 +++ b/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
-@@ -83,7 +83,7 @@ WHEN OLD.idempotency_key IS NOT NEW.idempotency_key
+@@ -83,7 +83,7 @@
    -- bound at: a completion time that can be rewritten is not evidence of when
    -- anything completed.
    OR (OLD.receipt_id IS NOT NULL AND OLD.receipt_id IS NOT NEW.receipt_id)

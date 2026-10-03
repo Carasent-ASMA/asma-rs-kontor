@@ -1,13 +1,11 @@
 --- a/crates/kontor-daemon/src/main.rs
 +++ b/crates/kontor-daemon/src/main.rs
-@@ -249,6 +249,10 @@
-         .map_err(|_| OperatorError::CredentialLock)?;
-     // Read-only validation refuses missing/legacy/invalid databases without
-     // initializing, migrating, or replacing any realm. Read stdin only last.
+@@
+-    let realm = kontor_store::SqliteStore::read_existing_realm(&recovery::database_in(&root))
+-        .map_err(|_| OperatorError::CredentialScope)?;
 +    // MUTANT M-CTL: refuse every Realm at the schema boundary.
 +    if true {
 +        return Err(OperatorError::CredentialScope);
 +    }
-     let realm = kontor_store::SqliteStore::read_existing_realm(&recovery::database_in(&root))
-         .map_err(|_| OperatorError::CredentialScope)?;
-     let connectors = kontor_jira::JiraConnectors::read(&root, realm.realm_id)?;
++    let realm = kontor_store::SqliteStore::read_existing_realm(&recovery::database_in(&root))
++        .map_err(|_| OperatorError::CredentialScope)?;

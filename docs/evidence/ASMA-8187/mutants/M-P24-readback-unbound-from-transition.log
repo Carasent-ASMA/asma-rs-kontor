@@ -1,18 +1,17 @@
-=== mutant M-P24-readback-unbound-from-transition (corrected baseline) ===
-baseline commit   : 5e00a23843698402fe8804929467709b2fae5ef6
-mutated file      : crates/kontor-store/src/repository.rs
-snapshot sha256   : 6af69a55ec0140e3240281d02d296c5afbfd858dcf7871f65fed349b73b71349
-mutated  sha256   : 620628feb67e4827f9c96824a4072235d6048b28da49a89269b4f86b3723b072
-patch             : M-P24-readback-unbound-from-transition.patch (mutation-only, 24 lines)
-  git apply --check: accepted
-  patch --dry-run  : patching file 'crates/kontor-store/src/repository.rs'
-command           : cargo test -p kontor-store --test hosted_seat_autonomy -- every_readback_field_is_bound_to_the_transition_it_commits   (hard limit 420s)
-toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
-platform          : Darwin 25.6.0 arm64
+=== mutant M-P24-readback-unbound-from-transition ===
+baseline commit : 41f48e695bcf40498c807ca0a246b5d0c7ddb8a7
+baseline tree   : 3eea6141c3a668ad2963f472ef3b9ae54428982b
+command         : cargo test -p kontor-store --test hosted_seat_autonomy -- every_readback_field_is_bound_to_the_transition_it_commits
+toolchain       : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform        : Darwin 25.6.0 arm64
+--- preimage sha256 (files this mutant touches, at baseline) ---
+6af69a55ec0140e3240281d02d296c5afbfd858dcf7871f65fed349b73b71349  crates/kontor-store/src/repository.rs
+--- mutated sha256 ---
+620628feb67e4827f9c96824a4072235d6048b28da49a89269b4f86b3723b072  crates/kontor-store/src/repository.rs
 --- raw output ---
    Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.51s
-     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-0318a31a1a362321)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.74s
+     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-37350dd3fcfb6d32)
 
 running 1 test
 test every_readback_field_is_bound_to_the_transition_it_commits ... FAILED
@@ -21,7 +20,7 @@ failures:
 
 ---- every_readback_field_is_bound_to_the_transition_it_commits stdout ----
 
-thread 'every_readback_field_is_bound_to_the_transition_it_commits' (23789825) panicked at crates/kontor-store/tests/hosted_seat_autonomy.rs:3112:14:
+thread 'every_readback_field_is_bound_to_the_transition_it_commits' (9618944) panicked at crates/kontor-store/tests/hosted_seat_autonomy.rs:3112:14:
 called `Result::unwrap_err()` on an `Ok` value: Updated
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
@@ -29,10 +28,10 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 failures:
     every_readback_field_is_bound_to_the_transition_it_commits
 
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 1.75s
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 1.72s
 
 error: test failed, to rerun pass `-p kontor-store --test hosted_seat_autonomy`
---- exit status: 101 (non-zero = killed; 124 = timeout, inconclusive) ---
-restored sha256   : 6af69a55ec0140e3240281d02d296c5afbfd858dcf7871f65fed349b73b71349
-restoration       : byte-identical to the named snapshot
-MUTANT markers    : 0
+--- exit status: 101 (non-zero = mutant killed) ---
+--- restored sha256 ---
+6af69a55ec0140e3240281d02d296c5afbfd858dcf7871f65fed349b73b71349  crates/kontor-store/src/repository.rs
+restoration: byte-identical to baseline 41f48e695bcf40498c807ca0a246b5d0c7ddb8a7

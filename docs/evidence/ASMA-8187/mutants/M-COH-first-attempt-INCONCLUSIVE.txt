@@ -41,6 +41,11 @@ byte-identical  : YES
 MUTANT markers  : 0
 verdict         : KILLED in 4.78s (exit 101), on
                   'a succession committed while the projection held the store lock'
-first attempt   : INCONCLUSIVE (hang, ~48m, no verdict) — see hang-evidence.txt
+first attempt   : INCONCLUSIVE (hang, ~48m, no verdict) — the hang evidence is
+                  the first section of this same file,
+                  M-COH-first-attempt-INCONCLUSIVE.txt. An earlier revision
+                  pointed at 'hang-evidence.txt', which never existed under
+                  that name.
+second attempt  : M-COH-split-lock-boundary.{patch,log}
 root cause      : the harness asserted inside thread::scope before releasing
                   the barrier, so the scope joined a reader nobody would wake.

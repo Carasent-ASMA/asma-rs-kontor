@@ -222,3 +222,100 @@ produced by `diff -u` against that snapshot rather than `git diff`, which would
 sweep in uncommitted work — and each log records `git apply --check` and
 `patch --dry-run` accepting it, plus a hard wall-clock limit whose `124` verdict
 is reported as inconclusive rather than as a kill.
+
+## Correction: `8910ebc6` overwrote twelve immutable carriers
+
+An independent audit of `8910ebc6` found that the refreshed runs of that round
+were written **over** twelve historical carriers at their original paths rather
+than placed beside them. This is the second time the same mistake has been made
+in this evidence set — the first is recorded above under "the originals were
+briefly displaced" — and it is the mistake this manifest exists to prevent.
+
+The twelve were restored from their pre-`8910ebc6` blobs (`5e00a238`), verified
+byte-identical, and the refreshed runs now live at distinct `*-8910ebc6` paths.
+Both generations are enumerated below. Nothing was rewritten to hide the error;
+`8910ebc6` still contains the overwrite, and this section is the correction.
+
+| Mutant | Historical carrier (restored) | Refreshed run (this round) |
+|---|---|---|
+| `M-P22b1-receipt-not-unique` | `….patch` / `….log` | `…-8910ebc6.patch` / `…-8910ebc6.log` |
+| `M-P22b2-completion-instant-not-frozen` | `….patch` / `….log` | `…-8910ebc6.patch` / `…-8910ebc6.log` |
+| `M-P23-upgrade-assumes-coherent-bindings` | `….patch` / `….log` | `…-8910ebc6.patch` / `…-8910ebc6.log` |
+| `M-P24-readback-unbound-from-transition` | `….patch` / `….log` | `…-8910ebc6.patch` / `…-8910ebc6.log` |
+| `M-P25-unchanged-answers-before-proof` | `….patch` / `….log` | `…-8910ebc6.patch` / `…-8910ebc6.log` |
+| `M-CTL-refuse-every-realm` | `….patch` / `….log` — the **invalid** pair, still invalid | `…-8910ebc6.patch` / `…-8910ebc6.log` |
+
+The `M-CTL` originals are the malformed pair described above. They are restored
+to exactly the bytes that were always wrong — patch sha256 `0795f7f5…`, log
+sha256 `519da4d9…` — because a carrier labelled invalid is only useful if it
+still holds the artifact it labels.
+
+Two independent readings of this are both on the record and are not merged: QA
+judged historical preservation a PASS on the grounds that Git ancestry retains
+every byte, and the audit judged it a finding on the grounds that the working
+tree is what a reader reads. The audit's finding is the one acted on here. Both
+stand.
+
+### The baseline these logs name
+
+The refreshed logs originally said `baseline commit : 5e00a238`. That was the
+commit `git rev-parse HEAD` returned while the harness ran, but it is not the
+state that was mutated: `5e00a238`'s `applications.rs` is `4e04205f…`, and
+these runs mutated the file as `8910ebc6` holds it. Each refreshed log now
+leads with the snapshot hash — the identity that actually pins a mutation — and
+names the commit only as the way to reach it.
+
+### The `M-CTL` control pair, re-established at this baseline
+
+`M-CTL-control-pair-8910ebc6.{patch,log}` runs **both** halves under the same
+mutant, in one process, serially, so neither half can be quoted without the
+other:
+
+| Test | Under `M-CTL` | What it means |
+|---|---|---|
+| `a_realm_stopped_before_the_current_schema_refuses_without_reading_or_installing` | **ok** | blind — a refusal is what it already expects |
+| `a_current_realm_reaches_the_credential_reader_and_fails_after_the_gate` | **FAILED** | the half that distinguishes a correct refusal from a blanket one |
+
+The stopped-schema coverage is therefore not self-certifying, and the control is
+what makes it mean anything.
+
+### One raw receipt is lost, and is not reconstructed
+
+The `M-P22b2` run invalidated by the restoration defect wrote to the same path
+its redo later used, so the redo overwrote it. No copy exists: it is not in
+`/tmp`, and every committed version of that path is either an older round's
+record or the redo itself (`8910ebc6`'s copy differs from the current refreshed
+carrier only in the baseline label corrected above — same snapshot hash, same
+compile, same run).
+
+The run is therefore described but not evidenced. It is not reconstructed from
+memory and no substitute is offered in its place, because a fabricated receipt
+would be worse than an acknowledged gap. What the gap costs is small — the
+invalidated run was superseded by a clean redo at the same mutation, and that
+redo is fully recorded — but it is a gap, and it is named here rather than left
+for an auditor to discover.
+
+## The core-team projection: four mutants to reach one honest assertion
+
+The occupancy chain was proved by `M-COH`. The core-team projection needed its
+own, because its hybrid failure mode is different: it reads a native identity,
+an occupancy generation, and a persona, and a split acquisition can pair a
+generation-1 native with a generation-2 persona — a seat that existed at no
+instant. Reaching a mutation that actually demonstrates this took four attempts,
+and all four are retained.
+
+| Mutant | Result | Why it is kept |
+|---|---|---|
+| `M-COH-TEAM-first-attempt-INEFFECTIVE` | survived | the mutation was wrong, not the test — it moved the persona read but left the barrier before the capture loop, so natives and personas were both read after the succession and agreed |
+| `M-COH-TEAM-persona-after-release` | killed (101) | killed by the **escape guard**, not by the persona assertions — so it proves the barrier works, not that the hybrid is caught |
+| `M-COH-TEAM-hybrid-persona-vs-native` | survived | escape guard silenced, persona read deferred alone — and it still agrees, because the deferred lookup is keyed on the generation captured in the *first* acquisition. A persona-only split is self-consistent. A fact about the split, not a hole in the test |
+| `M-COH-TEAM-hybrid-generation-and-persona` | **killed (101)** | escape guard silenced, **generation and persona** both deferred — the faithful restoration of the pre-correction split. Killed on `role_persona.occupancy_generation` `left: 2, right: 1` against `native_seat.generation: 1` |
+
+The last row is the one that matters: with the escape guard deliberately
+disabled, the persona/native agreement assertion is what fails. That assertion
+is load-bearing on its own.
+
+The third row is the one worth reading anyway. It is a survival, it is kept, and
+it is not relabelled — it says something true that the kill does not: deferring
+only the persona cannot produce a hybrid, so a test that caught *that* would be
+asserting something the code cannot do.
