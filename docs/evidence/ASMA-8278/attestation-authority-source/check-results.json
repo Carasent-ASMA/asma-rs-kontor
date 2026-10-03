@@ -1,0 +1,241 @@
+[
+  {
+    "name": "focused-final",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--test",
+      "attestation_authority",
+      "--offline",
+      "--jobs",
+      "2"
+    ],
+    "exit": 0,
+    "seconds": 19.793,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/focused-final.log",
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    }
+  },
+  {
+    "name": "core-store-regression",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-core",
+      "-p",
+      "kontor-store",
+      "--offline",
+      "--jobs",
+      "2"
+    ],
+    "exit": 101,
+    "seconds": 509.569,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/core-store-regression.log",
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    }
+  },
+  {
+    "name": "remaining-and-repaired-regression",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--offline",
+      "--jobs",
+      "2",
+      "--test",
+      "scheduler_admission",
+      "--test",
+      "schema_v1",
+      "--test",
+      "succession_attempts",
+      "--test",
+      "team_definition_backup_contract",
+      "--test",
+      "team_definition_migration_completeness",
+      "--test",
+      "team_definition_persistence",
+      "--test",
+      "team_run_admission_adoption",
+      "--test",
+      "repository_roundtrip"
+    ],
+    "exit": 101,
+    "seconds": 39.564,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/remaining-and-repaired-regression.log",
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    }
+  },
+  {
+    "name": "v115-final",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--test",
+      "repository_roundtrip",
+      "v115_confirms_exact_local_mutations_with_typed_provenance_and_preserves_history",
+      "--offline",
+      "--jobs",
+      "2",
+      "--",
+      "--exact"
+    ],
+    "exit": 0,
+    "seconds": 5.018,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/v115-final.log",
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    }
+  },
+  {
+    "name": "remaining-final-regression",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--offline",
+      "--jobs",
+      "2",
+      "--test",
+      "scheduler_admission",
+      "--test",
+      "schema_v1",
+      "--test",
+      "succession_attempts",
+      "--test",
+      "team_definition_backup_contract",
+      "--test",
+      "team_definition_migration_completeness",
+      "--test",
+      "team_definition_persistence",
+      "--test",
+      "team_run_admission_adoption",
+      "--test",
+      "repository_roundtrip"
+    ],
+    "exit": 0,
+    "seconds": 330.456,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/remaining-final-regression.log",
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    }
+  },
+  {
+    "name": "backup-final",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--test",
+      "backup_snapshot",
+      "--offline",
+      "--jobs",
+      "2"
+    ],
+    "exit": 0,
+    "seconds": 75.798,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/backup-final.log",
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    }
+  },
+  {
+    "name": "core-store-doctests",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-core",
+      "-p",
+      "kontor-store",
+      "--doc",
+      "--offline",
+      "--jobs",
+      "2"
+    ],
+    "exit": 0,
+    "seconds": 14.936,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/core-store-doctests.log",
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    }
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "kontor-core",
+      "-p",
+      "kontor-store",
+      "--all-targets",
+      "--offline",
+      "--jobs",
+      "2",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit": 0,
+    "seconds": 24.947,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/clippy.log",
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    }
+  },
+  {
+    "name": "fmt-complete",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit": 0,
+    "seconds": 3.27,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/fmt-complete.log",
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    }
+  },
+  {
+    "name": "diff-check",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit": 0,
+    "seconds": 0.04,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/diff-check.log",
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    }
+  },
+  {
+    "name": "isolated-mutations",
+    "command": [
+      "python3",
+      "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/run_mutations.py"
+    ],
+    "exit": 0,
+    "seconds": 253.705,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/isolated-mutations.log",
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    }
+  }
+]
