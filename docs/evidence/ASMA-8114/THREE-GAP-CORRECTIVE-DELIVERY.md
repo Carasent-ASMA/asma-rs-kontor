@@ -1,8 +1,9 @@
 # ASMA-8114 three-gap corrective delivery — delivered unit evidence
 
 Status: frozen candidate on `feat/ASMA-8114-three-gap-corrective-delivery`,
-rebased onto module default `4d365dd5de649c68aaabe8c2b67351ae7dd5dbb0`
-(PR283, yoke-derive lock refresh); the initial delivery was based on
+rebased onto module default `c93b1e43e482a6bd89d5bd3cbc87e1f8eb051845`
+(ASMA-8234 refusal diagnostics #285 on ASMA-8196 roster occupancy #284 on the
+yoke-derive refresh #283); the initial delivery was based on
 `f95e206563bca88b6871f48528623441e5e1a231` (PR278). Nothing was pushed,
 merged, deployed, restarted or materialized; no Jira, Keychain, credential or
 runtime effect was exercised. Qualification and review are dispatched
@@ -310,8 +311,76 @@ unrelated, time-bounded `client::tests::an_oversized_canonical_socket_answer_
 fails_without_waiting_for_timeout` under load; it passed in isolation and the
 full rerun above is exit 0.
 
+### Slot-3 refresh onto `c93b1e43` and reconciliation
+
+The candidate was rebased with `git rebase --onto c93b1e43… 4d365dd5…
+feat/ASMA-8114-three-gap-corrective-delivery` (all 9 commits replayed). **No
+textual conflicts occurred**: the default's changes in
+`crates/kontor-daemon/src/applications.rs` (roster read port),
+`crates/kontor-api/src/error.rs` (refusal diagnostics) and
+`crates/kontor-daemon/tests/loopback_api.rs` sit away from the lane hunks, so
+every lane commit re-applied additively on the merged content.
+
+Reconciliation was semantic, and exactly one test hunk needed it:
+`crates/kontor-api/tests/error_envelope.rs` —
+`the_transactional_duplicate_carries_the_exact_sequential_envelope`'s
+generic-conflict arm now asserts the merged refusal-diagnostics contract
+(`RevisionConflict` naming its own static subject/rule) instead of the former
+withheld text, while still asserting no consultation-run locator. The lane's
+own `DuplicateConsultation` envelope assertions are unchanged.
+
+Content statements after the refresh:
+
+- Files the default did not touch are byte-identical to the previously
+  qualified bytes: `crates/kontor-core/src/repository.rs`,
+  `crates/kontor-store/src/repository.rs`,
+  `crates/kontor-store/tests/team_definition_persistence.rs`,
+  `crates/kontor-runtime-paseo/src/checkout.rs`,
+  `crates/kontor-runtime-paseo/tests/contract.rs` (verified by an empty
+  `git diff ef6a5a2e..HEAD` over those paths).
+- The three shared files are reconciled content, not blob-equal: the merged
+  slot-1/2 changes are preserved intact and the three-gap corrections are
+  re-applied on top. The lane diff `c93b1e43..HEAD` contains only the lane's
+  hunks; the only removed default lines are the lane's own refactor and
+  replacement lines.
+- `Cargo.lock` and `Cargo.toml` are identical to the default
+  (`git diff c93b1e43..HEAD -- Cargo.lock Cargo.toml` empty).
+
+Reruns on the refreshed tree:
+
+| Check | Command | Exit |
+| --- | --- | --- |
+| fmt | `cargo fmt --all -- --check` | 0 |
+| clippy | `cargo clippy --workspace --all-targets -- -D warnings` | 0 |
+| deny | `cargo deny --offline --locked check` | 0 (`advisories ok, bans ok, licenses ok, sources ok`) |
+| combined | `cargo test --offline --locked -p kontor-core -p kontor-store -p kontor-api -p kontor-runtime-paseo` | 0 (1384 passed, 0 failed, 6 ignored) |
+| openapi | `cargo test --offline --locked -p kontor-api --test openapi_contract` | 0 (3 passed) |
+| envelope | `cargo test --offline --locked -p kontor-api --test error_envelope` | 0 (6 passed) |
+| contract crate | `cargo test --offline --locked --no-fail-fast -p kontor-tests-contract` | 101 — pre-existing merged-default gap, below |
+| daemon witness 1 | `a_legacy_item_code_is_forbidden_in_a_topic_even_when_the_template_does_not_render_it` | 0 |
+| daemon witness 2 | `a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently` | 0 |
+| daemon witness 3 | `concurrent_daemon_insert_losers_render_the_exact_sequential_envelope` | 0 |
+| mutations | G1 item-code, G2 store duplicate, G3 catalog binding, P2 mapping | 101 under each mutation; bytes restored; all green |
+
+Merged-default gap found while running the regenerated contract suites, not
+introduced by this lane: `crates/kontor-tests-contract/tests/mcp_parity.rs`
+fails `every_documented_operation_is_mapped_once_or_allowlisted_once` and
+`the_snapshot_canary_holds_at_this_base` (10 passed / 2 failed) because the
+default's two new operations
+`GET /v1/projects/{project_id}/epics/{epic_id}/core-team` and `GET
+/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies`
+have neither an MCP tool nor an allowlist entry (195 documented operations
+against the frozen 193 canary). The identical suite fails the same way on a
+clean `git archive c93b1e43` export (exit 101, 10 passed / 2 failed), so the
+parity decision belongs to the merged lane, not to this reconciliation. All
+other contract-crate binaries pass (guardrails 5, mcp_cardinality 11,
+mcp_mutants 11, profiles_teams 11, runtime_adapter 52, scheduling 2).
+
 ## Notes and unresolved findings
 
+- Merged-default contract gap: `mcp_parity` fails on the two default-added
+  operations (`core-team` and `.../occupancies`) on `c93b1e43` itself, recorded
+  in the slot-3 subsection; its parity decision belongs to the owning lane.
 - The joined endpoint race may resolve through the sequential pre-check on a
   current-thread runtime; the transactional insert-loser is now deterministically
   witnessed through the daemon realm store and its exact transport envelope for

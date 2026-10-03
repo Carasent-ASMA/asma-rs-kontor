@@ -207,7 +207,7 @@ fn asking_for_the_state_an_aggregate_already_holds_is_advised_differently() {
 /// A transactional consultation duplicate is the one store conflict whose
 /// transport answer is not a revision conflict: it carries the surviving run's
 /// locator and the read/resume action, for both families, and every other
-/// conflict keeps the generic persistence mapping.
+/// conflict keeps the merged revision-conflict mapping.
 #[test]
 fn the_transactional_duplicate_carries_the_exact_sequential_envelope() {
     let realm_id = RealmId::generate();
@@ -248,18 +248,19 @@ fn the_transactional_duplicate_carries_the_exact_sequential_envelope() {
         assert!(body["current_revision"].is_null());
     }
 
-    // The generic conflict path is unchanged: one static rule, and neither the
-    // internal subject nor a locator reaches the caller.
+    // Every other conflict keeps the merged refusal-diagnostics mapping: the
+    // same revision-conflict code, now naming its own static subject and rule,
+    // and still carrying no consultation-run locator.
     let conflict = ApiError::from_repository(
         realm_id,
         &RepositoryError::Conflict {
-            subject: "canary subject",
-            rule: "canary rule",
+            subject: "native container binding",
+            rule: "this topology node is bound to another native container",
         },
     );
     assert_eq!(conflict.code, ApiErrorCode::RevisionConflict);
+    assert_eq!(conflict.subject(), Some("native container binding"));
     let rendered = serde_json::to_string(&conflict.body()).expect("the envelope serializes");
-    assert!(!rendered.contains("canary"), "{rendered}");
     assert!(!rendered.contains("consultation-runs"), "{rendered}");
 }
 
