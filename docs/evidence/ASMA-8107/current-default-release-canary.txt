@@ -1,0 +1,6 @@
+ASMA-8107 bounded release lifecycle canary
+producer=2b88ef6a6ed4556ce7967b441ff8bdf9da534a8a
+source_default=bb6b5b026aef8213af0eaa1f764967ac78bcfc80
+version=9.9.9
+purpose=hosted publication identity qualification
+release_artifact=false
