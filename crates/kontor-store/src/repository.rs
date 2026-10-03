@@ -140,6 +140,7 @@ use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 use crate::SqliteStore;
+mod attestation_authority;
 use crate::events::append::stored_payload;
 use crate::events::replay::{EVENT_COLUMNS, read_event};
 use crate::graph::{Applied, IdempotencyBinding};

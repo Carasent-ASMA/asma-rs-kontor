@@ -26,6 +26,9 @@ use kontor_core::id::{
 };
 use kontor_core::receipt::{AggregateRef, CommandKind};
 use kontor_core::repository::{
+    AttestationAuthorityRepository, AttestationAuthorityScope, RegisterAttestationKey,
+};
+use kontor_core::repository::{
     CommandRepository, NewLocalCommand, NewProject, NewTask, NewTaskWorkflow, ProjectRepository,
 };
 use kontor_core::spec::ResolvedWorkProfileSnapshot;
@@ -44,6 +47,265 @@ use tempfile::TempDir;
 
 fn at(text: &str) -> Timestamp {
     parse_utc_timestamp(text).expect("a canonical UTC timestamp")
+}
+
+fn register_public_ledger_key(store: &SqliteStore) -> AttestationAuthorityScope {
+    let project = ProjectId::generate();
+    store
+        .create_project(&NewProject {
+            id: project,
+            name: name(&format!("Ledger {project}")),
+            root_path: name(&format!("/tmp/ledger/{project}")),
+            created_at: at("2026-10-03T18:00:00Z"),
+        })
+        .expect("ledger project");
+    let scope = AttestationAuthorityScope {
+        realm_id: store.realm_id(),
+        project_id: project,
+        application: kontor_core::id::ExternalId::parse("asma.planning-pair.application.v1")
+            .expect("application"),
+    };
+    store
+        .register_attestation_key(&RegisterAttestationKey {
+            scope: scope.clone(),
+            expected_head_revision: None,
+            issuer: kontor_core::id::ExternalId::parse("test-issuer").expect("issuer"),
+            key_id: kontor_core::id::ExternalId::parse("test-key").expect("key"),
+            public_key_der: vec![1, 2, 3],
+            not_before: 10,
+            expires_at: 1000,
+        })
+        .expect("public key metadata only");
+    scope
+}
+
+#[test]
+fn nonempty_public_authority_ledger_is_not_silently_omitted_from_export() {
+    let home = TempDir::new().expect("home");
+    let store = SqliteStore::open(&home.path().join("kontor.db")).expect("store");
+    let scope = register_public_ledger_key(&store);
+    let issuer = kontor_core::id::ExternalId::parse("test-issuer").expect("issuer");
+    let key = kontor_core::id::ExternalId::parse("test-key").expect("key");
+    let before = store
+        .read_attestation_key_authority(&scope, &issuer, &key)
+        .expect("read");
+    assert!(matches!(
+        kontor_store::backup::export_realm(&store, at("2026-10-03T18:01:00Z")),
+        Err(BackupError::Verification { .. })
+    ));
+    assert_eq!(
+        store
+            .read_attestation_key_authority(&scope, &issuer, &key)
+            .expect("read"),
+        before
+    );
+}
+
+#[test]
+fn an_old_empty_snapshot_cannot_rollback_current_public_key_revocation() {
+    let home = TempDir::new().expect("home");
+    let database = home.path().join("kontor #? space.db");
+    let store = SqliteStore::open(&database).expect("store");
+    let old = create_snapshot(
+        &database,
+        &home.path().join("backups"),
+        at("2026-10-03T18:00:00Z"),
+    )
+    .expect("old empty snapshot");
+    let scope = register_public_ledger_key(&store);
+    let issuer = kontor_core::id::ExternalId::parse("test-issuer").expect("issuer");
+    let key = kontor_core::id::ExternalId::parse("test-key").expect("key");
+    let revoked = store
+        .revoke_attestation_key(&scope, &issuer, &key, 1)
+        .expect("revoke");
+    drop(store);
+    let bytes = std::fs::read(&database).expect("bytes");
+    let names = listing(home.path());
+    assert!(matches!(
+        restore_snapshot(&old.snapshot, &database, at("2026-10-03T18:02:00Z")),
+        Err(BackupError::Verification { .. })
+    ));
+    assert_eq!(std::fs::read(&database).expect("bytes"), bytes);
+    assert_eq!(listing(home.path()), names);
+    let reopened = SqliteStore::open(&database).expect("unchanged store");
+    assert_eq!(
+        reopened
+            .read_attestation_key_authority(&scope, &issuer, &key)
+            .expect("read"),
+        Some(revoked)
+    );
+}
+
+#[test]
+fn a_nonempty_public_authority_snapshot_is_refused_before_destination_creation() {
+    let home = TempDir::new().expect("home");
+    let database = home.path().join("kontor.db");
+    let store = SqliteStore::open(&database).expect("store");
+    register_public_ledger_key(&store);
+    let snapshot = create_snapshot(
+        &database,
+        &home.path().join("backups"),
+        at("2026-10-03T18:00:00Z"),
+    )
+    .expect("evidence snapshot");
+    let source_bytes = std::fs::read(&snapshot.snapshot).expect("source snapshot bytes");
+    let source_names = listing(&home.path().join("backups"));
+    let directory = home.path().join("new-target");
+    let destination = directory.join("kontor.db");
+    assert!(matches!(
+        restore_snapshot(&snapshot.snapshot, &destination, at("2026-10-03T18:02:00Z")),
+        Err(BackupError::Verification { .. })
+    ));
+    assert_eq!(
+        std::fs::read(&snapshot.snapshot).expect("unchanged source bytes"),
+        source_bytes
+    );
+    assert_eq!(listing(&home.path().join("backups")), source_names);
+    assert!(!directory.exists());
+    assert!(!destination.exists());
+}
+
+#[test]
+fn historical_pre124_files_retain_schema_refusal_and_additive_open_behavior() {
+    let home = TempDir::new().expect("home");
+    let database = home.path().join("kontor.db");
+    let store = SqliteStore::open(&database).expect("store");
+    let realm = store.realm_id();
+    drop(store);
+    let connection = rusqlite::Connection::open(&database).expect("fixture connection");
+    connection.execute_batch("DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; PRAGMA user_version=123;").expect("exact pre124 fixture");
+    drop(connection);
+    let manifest = SnapshotManifest::describe(&database, realm, 123, at("2026-10-03T18:00:00Z"))
+        .expect("legacy fixture manifest");
+    std::fs::write(
+        SnapshotManifest::path_for(&database),
+        manifest.to_bytes().expect("manifest bytes"),
+    )
+    .expect("fixture manifest");
+    let destination = home.path().join("new-target/kontor.db");
+    // Raw restore already requires the exact build schema; the new ledger
+    // guard must not invent legacy-schema restore support.
+    assert!(matches!(
+        restore_snapshot(&database, &destination, at("2026-10-03T18:02:00Z")),
+        Err(BackupError::Verification { .. })
+    ));
+    assert!(!destination.exists());
+    assert_eq!(
+        SqliteStore::open(&database)
+            .expect("additive open")
+            .schema_version()
+            .expect("version"),
+        SCHEMA_VERSION
+    );
+}
+
+#[test]
+fn corrupted124_destination_ledger_tables_refuse_without_directory_changes() {
+    let home = TempDir::new().expect("home");
+    let database = home.path().join("kontor.db");
+    drop(SqliteStore::open(&database).expect("store"));
+    let snapshot = create_snapshot(
+        &database,
+        &home.path().join("backups"),
+        at("2026-10-03T18:00:00Z"),
+    )
+    .expect("empty snapshot");
+    let connection = rusqlite::Connection::open(&database).expect("fixture connection");
+    connection
+        .execute_batch("DROP TABLE attestation_authority_heads;")
+        .expect("corrupt target only");
+    drop(connection);
+    let bytes = std::fs::read(&database).expect("bytes");
+    let names = listing(home.path());
+    assert!(matches!(
+        restore_snapshot(&snapshot.snapshot, &database, at("2026-10-03T18:02:00Z")),
+        Err(BackupError::Verification { .. })
+    ));
+    assert_eq!(std::fs::read(&database).expect("bytes"), bytes);
+    assert_eq!(listing(home.path()), names);
+}
+
+#[test]
+fn empty_ledger_restore_handles_uri_delimiters_in_the_target_path() {
+    let home = TempDir::new().expect("home");
+    let database = home.path().join("kontor #? space.db");
+    drop(SqliteStore::open(&database).expect("empty store"));
+    let snapshot = create_snapshot(
+        &database,
+        &home.path().join("backups"),
+        at("2026-10-03T18:00:00Z"),
+    )
+    .expect("empty snapshot");
+    let restored = restore_snapshot(&snapshot.snapshot, &database, at("2026-10-03T18:02:00Z"))
+        .expect("supported empty restore with URI path delimiters");
+    assert_eq!(restored.restored, database);
+    assert!(restored.superseded.is_some());
+}
+
+#[test]
+fn an_uncheckpointed_public_ledger_refusal_leaves_all_target_files_unchanged() {
+    let home = TempDir::new().expect("home");
+    let database = home.path().join("kontor.db");
+    let store = SqliteStore::open(&database).expect("store");
+    let old = create_snapshot(
+        &database,
+        &home.path().join("backups"),
+        at("2026-10-03T18:00:00Z"),
+    )
+    .expect("empty snapshot");
+    register_public_ledger_key(&store);
+    let names = listing(home.path());
+    let files: Vec<_> = names
+        .iter()
+        .filter(|name| name.starts_with("kontor.db"))
+        .map(|name| {
+            (
+                name.clone(),
+                std::fs::read(home.path().join(name)).expect("target file bytes"),
+            )
+        })
+        .collect();
+    assert!(
+        std::fs::metadata(home.path().join("kontor.db-wal"))
+            .expect("uncheckpointed WAL")
+            .len()
+            > 0
+    );
+    assert!(matches!(
+        restore_snapshot(&old.snapshot, &database, at("2026-10-03T18:02:00Z")),
+        Err(BackupError::Verification { .. })
+    ));
+    assert_eq!(listing(home.path()), names);
+    for (name, bytes) in files {
+        assert_eq!(
+            std::fs::read(home.path().join(name)).expect("unchanged target bytes"),
+            bytes
+        );
+    }
+}
+
+#[test]
+fn corrupted124_missing_ledger_tables_is_not_an_empty_restore_fallback() {
+    let home = TempDir::new().expect("home");
+    let database = home.path().join("kontor.db");
+    drop(SqliteStore::open(&database).expect("store"));
+    let connection = rusqlite::Connection::open(&database).expect("fixture connection");
+    connection
+        .execute_batch("DROP TABLE attestation_authority_keys;")
+        .expect("corrupt fixture only");
+    drop(connection);
+    let snapshot = create_snapshot(
+        &database,
+        &home.path().join("backups"),
+        at("2026-10-03T18:00:00Z"),
+    )
+    .expect("structural snapshot");
+    let destination = home.path().join("new-target/kontor.db");
+    assert!(matches!(
+        restore_snapshot(&snapshot.snapshot, &destination, at("2026-10-03T18:02:00Z")),
+        Err(BackupError::Verification { .. })
+    ));
+    assert!(!destination.exists());
 }
 
 fn name(text: &str) -> ExternalName {

@@ -117,6 +117,8 @@ fn remove_v98_shape(connection: &Connection) {
 /// that leaked a row into a table the test did not think about would still be
 /// caught.
 const CENSUS_TABLES: &[&str] = &[
+    "attestation_authority_heads",
+    "attestation_authority_keys",
     "account_profiles",
     "agent_runs",
     "calendar_exceptions",
@@ -2825,6 +2827,8 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
          DROP TABLE planning_pair_contributions;
          DROP TABLE planning_pair_record_revisions;
          DROP TABLE planning_pair_placements;
+         DROP TABLE attestation_authority_keys;
+         DROP TABLE attestation_authority_heads;
          PRAGMA user_version = 114;",
         )
         .expect("return empty v115 tables to exact prior schema");
@@ -2941,7 +2945,12 @@ fn v115_confirms_exact_local_mutations_with_typed_provenance_and_preserves_histo
     }
     assert_eq!(
         before["command_outbox"],
-        census(fixture)["command_outbox"],
+        // This fixture is temporarily at v115, before the v124 ledger exists.
+        // Keep the same outbox assertion without querying current-only tables.
+        connection
+            .query_row("SELECT count(*) FROM command_outbox", [], |row| row
+                .get::<_, i64>(0))
+            .expect("historical outbox count"),
         "historical payloads retained"
     );
     assert!(

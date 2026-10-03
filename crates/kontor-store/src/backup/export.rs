@@ -1150,9 +1150,15 @@ fn canonical_bytes(value: &serde_json::Value) -> Result<Vec<u8>, BackupError> {
 /// # Errors
 /// Returns [`BackupError::Redaction`] when the canary scan matches,
 /// [`BackupError::Domain`] when a stored control payload is not control
-/// metadata, and [`BackupError::Store`] when the database cannot be read.
+/// metadata, [`BackupError::Verification`] when public-key ledger continuity
+/// would be omitted or cannot be inspected, and [`BackupError::Store`] when
+/// the database cannot be read.
 pub fn export_realm(store: &SqliteStore, now: Timestamp) -> Result<KontorExportV1, BackupError> {
-    let records = ExportedRecords::read(&store.connection)?;
+    // Hold the existing writer boundary while testing the ledger and reading
+    // modeled rows, so a concurrent registration cannot be silently omitted.
+    let transaction = store.begin()?;
+    ensure_empty_attestation_ledger(&transaction)?;
+    let records = ExportedRecords::read(&transaction)?;
     let continuity_summary = records.continuity();
     let records_hash = ContentHash::of(&canonical_bytes(&canonical_value(&records)?)?);
     let export = KontorExportV1 {
@@ -1194,7 +1200,46 @@ pub fn export_realm(store: &SqliteStore, now: Timestamp) -> Result<KontorExportV
         }
     }
     scan_for_canaries(&canonical_value(&export)?, 0)?;
+    transaction.commit().map_err(crate::StoreError::from)?;
     Ok(export)
+}
+
+/// Ledger continuity is not implemented by modeled export or raw restore.
+/// Historical pre-v124 files legitimately lack both tables; a missing or
+/// partial v124 ledger is corruption and must never become an empty fallback.
+pub(crate) fn ensure_empty_attestation_ledger(connection: &Connection) -> Result<(), BackupError> {
+    let refusal = || BackupError::Verification {
+        detail: "public key authority ledger continuity is unsupported",
+    };
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|_| refusal())?;
+    let tables: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table'
+           AND name IN ('attestation_authority_heads','attestation_authority_keys')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| refusal())?;
+    if tables == 0 && (1..=123).contains(&version) {
+        return Ok(());
+    }
+    if tables != 2 {
+        return Err(refusal());
+    }
+    let nonempty: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM attestation_authority_heads)
+             OR EXISTS(SELECT 1 FROM attestation_authority_keys)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| refusal())?;
+    if nonempty {
+        return Err(refusal());
+    }
+    Ok(())
 }
 
 /// A command event may carry only the exact intent its receipt authorized.
@@ -2879,5 +2924,33 @@ impl ExportedRecords {
                 .max()
                 .unwrap_or_default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod attestation_ledger_tests {
+    use super::*;
+
+    #[test]
+    fn historical_table_absence_is_allowed_only_before_124() {
+        let connection = Connection::open_in_memory().expect("fixture");
+        connection
+            .execute_batch("PRAGMA user_version=123;")
+            .expect("legacy version");
+        assert!(ensure_empty_attestation_ledger(&connection).is_ok());
+        connection
+            .execute_batch("PRAGMA user_version=124;")
+            .expect("corrupt current version");
+        assert!(matches!(
+            ensure_empty_attestation_ledger(&connection),
+            Err(BackupError::Verification { .. })
+        ));
+        connection
+            .execute_batch("PRAGMA user_version=0;")
+            .expect("uninitialized version");
+        assert!(matches!(
+            ensure_empty_attestation_ledger(&connection),
+            Err(BackupError::Verification { .. })
+        ));
     }
 }

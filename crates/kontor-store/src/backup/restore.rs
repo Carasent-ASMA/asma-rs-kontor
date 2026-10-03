@@ -57,8 +57,10 @@ pub struct RestorePlan {
 /// Returns [`BackupError::Manifest`] or [`BackupError::Verification`] when the
 /// snapshot is not a whole, verified database of a single Realm;
 /// [`BackupError::DestinationInitialized`] when the destination already holds a
-/// *different* Realm; and [`BackupError::Io`] for filesystem failures. Every one
-/// of them leaves the destination exactly as it was.
+/// *different* Realm; and [`BackupError::Io`] for filesystem failures. Public-key
+/// ledger continuity is unsupported: a nonempty source or destination ledger,
+/// malformed current ledger, or nonempty WAL is refused before replacement.
+/// Every one of these refusals leaves the destination exactly as it was.
 pub fn restore_snapshot(
     snapshot: &Path,
     destination: &Path,
@@ -80,9 +82,16 @@ pub fn restore_snapshot(
             detail: "the manifest's schema version is not the snapshot's",
         });
     }
+    refuse_nonempty_attestation_ledger(snapshot)?;
 
     // 2. The destination is classified read-only, so the cross-realm refusal
     //    happens before a single byte of it changes.
+    // Inspect ledger continuity before existing SQLite classification can create
+    // WAL sidecars beside a refused destination. Offline restore must not ignore
+    // committed state that still resides in a WAL.
+    if std::fs::metadata(destination).is_ok_and(|found| found.len() > 0) {
+        refuse_nonempty_attestation_ledger(destination)?;
+    }
     let occupant = classify_destination(destination)?;
     if let Some(found) = occupant
         && found != identity.realm_id
@@ -118,6 +127,46 @@ pub fn restore_snapshot(
         manifest,
         reconciliation_required: true,
     })
+}
+
+fn refuse_nonempty_attestation_ledger(database: &Path) -> Result<(), BackupError> {
+    let refusal = || BackupError::Verification {
+        detail: "public key authority ledger could not be inspected without changing files",
+    };
+    let mut wal = database.as_os_str().to_os_string();
+    wal.push("-wal");
+    match std::fs::metadata(PathBuf::from(wal)) {
+        Ok(found) if found.len() > 0 => return Err(refusal()),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(refusal()),
+    }
+    let absolute = if database.is_absolute() {
+        database.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| refusal())?
+            .join(database)
+    };
+    let mut uri = String::from("file:");
+    // Percent-encode native path bytes, including URI delimiters, without a new
+    // dependency. Immutable reads are safe only under restore's offline caller
+    // lock and the nonempty-WAL refusal above; they never create WAL sidecars.
+    for byte in absolute.as_os_str().as_encoded_bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-._~".contains(byte) {
+            uri.push(char::from(*byte));
+        } else {
+            use std::fmt::Write;
+            write!(&mut uri, "%{byte:02X}").map_err(|_| refusal())?;
+        }
+    }
+    uri.push_str("?immutable=1");
+    let connection = Connection::open_with_flags(
+        uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(|_| refusal())?;
+    super::export::ensure_empty_attestation_ledger(&connection)
 }
 
 /// Recreate the disposable search projection from approved native revisions.

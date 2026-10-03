@@ -26,6 +26,8 @@ use tempfile::TempDir;
 /// Every table the current schema owns, across all generations. The list is
 /// spelled out so that adding or removing one is a deliberate, reviewed change.
 const EXPECTED_TABLES: &[&str] = &[
+    "attestation_authority_heads",
+    "attestation_authority_keys",
     "account_profiles",
     "adaptive_admission_state",
     "agent_runs",
@@ -771,7 +773,7 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // contribution payload, and its six command kinds (ASMA-8282).
     // v123 keeps each planning pair member's immutable known native session
     // and adds the caller's same-native member recovery kind (ASMA-8282).
-    assert_eq!(SCHEMA_VERSION, 123);
+    assert_eq!(SCHEMA_VERSION, 124);
 }
 
 #[test]
