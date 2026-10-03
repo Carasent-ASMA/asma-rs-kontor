@@ -25,6 +25,7 @@ use kontor_core::state::NativeRuntimeIdentity;
 use serde::{Deserialize, Serialize};
 
 pub mod owner_checks;
+pub mod snapshot_codec;
 
 /// The sole application audience accepted by this verifier.
 pub const APPLICATION_AUDIENCE: &str = "asma.planning-pair.application.v1";
