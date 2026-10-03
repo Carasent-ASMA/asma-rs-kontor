@@ -30,6 +30,7 @@ use crate::adapter::{
 use crate::provenance::FleetLaunchProvenance;
 use crate::workspace::WorkspaceRoot;
 
+pub mod application;
 pub mod caller;
 pub mod context;
 pub mod intent;

@@ -27,6 +27,8 @@ use kontor_core::spec::RoleCatalogRevision;
 mod eligibility;
 #[path = "planning_pair_intents.rs"]
 mod intents;
+#[path = "planning_pair_invoke_parity.rs"]
+mod invoke_parity;
 #[path = "planning_pair_recovery.rs"]
 mod recovery;
 
