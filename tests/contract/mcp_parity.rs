@@ -537,12 +537,12 @@ fn the_permission_decisions_match_the_runtimes_own_spelling() {
 
 #[test]
 fn the_snapshot_canary_holds_at_this_base() {
-    // Not "192 forever": this is what makes a later contract change fail here, so a
+    // Not "194 forever": this is what makes a later contract change fail here, so a
     // new operation gets a deliberate tool or a recorded deferral instead of
     // slipping past unreviewed.
     assert_eq!(
         REGISTRY.len(),
-        192,
+        194,
         "the mapped-operation count changed; map the new operation or record a deferral"
     );
     // Not every mapped operation is an advertised one. `CLI_ONLY` is subtracted
@@ -550,7 +550,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // context is actually charged for — and it has to move deliberately too.
     assert_eq!(
         REGISTRY.len() - CLI_ONLY.len(),
-        191,
+        193,
         "the advertised tool count changed; a tool held off the listing is a budget decision"
     );
     assert_eq!(
@@ -562,7 +562,7 @@ fn the_snapshot_canary_holds_at_this_base() {
     // route serves the document itself and is not self-documented.
     assert_eq!(
         documented().len(),
-        193,
+        195,
         "the contract's operation count changed; parity must be re-decided"
     );
 }
@@ -795,6 +795,13 @@ fn the_tier_of_every_tool_is_the_one_the_daemon_requires() {
         // Quick work and moving a completion are operator acts. The catalogs
         // themselves are reads.
         ("kontor_core_team_get", CallerTier::Observer),
+        // The epic-scoped roster and occupancy reads carry the same authority
+        // as the project-level roster: both handlers require Observer.
+        ("kontor_epic_core_team_get", CallerTier::Observer),
+        (
+            "kontor_epic_core_team_seat_occupancies_get",
+            CallerTier::Observer,
+        ),
         ("kontor_core_team_preview", CallerTier::Admin),
         ("kontor_core_team_apply", CallerTier::Admin),
         ("kontor_core_team_materialize", CallerTier::Operator),

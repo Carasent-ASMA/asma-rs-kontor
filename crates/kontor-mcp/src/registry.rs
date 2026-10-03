@@ -5744,6 +5744,56 @@ pub static REGISTRY: &[ToolSpec] = &[
         about: "Apply a named Core Team preview.",
     },
     ToolSpec {
+        name: "kontor_epic_core_team_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/core-team",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
+        ],
+        about: "One epic's materialized Core Team, with each seat's native and the persona its current occupancy was opened under.",
+    },
+    ToolSpec {
+        name: "kontor_epic_core_team_seat_occupancies_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/epics/{epic_id}/core-team/seats/{seat_binding_id}/occupancies",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "epic_id",
+                Place::Path,
+                ArgType::EpicSelector,
+                "The epic, by UUID or exact confirmed Jira key.",
+            ),
+            req(
+                "seat_binding_id",
+                Place::Path,
+                ArgType::SeatBindingId,
+                "The persistent Core Team seat.",
+            ),
+        ],
+        about: "Every occupancy one hosted seat has had, oldest first, with the persona frozen for each.",
+    },
+    ToolSpec {
         name: "kontor_core_team_materialize",
         tier: CallerTier::Operator,
         method: Method::Post,
