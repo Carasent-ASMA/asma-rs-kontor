@@ -47851,6 +47851,230 @@ async fn a_promotion_creates_one_epic_and_hands_the_work_to_its_lsa() {
         "the adopted first occupancy was never launched by Kontor, so it must \
          still hold no persona after its successor froze one"
     );
+
+    // ---------------------------------------------------------------------
+    // ASMA-8196: the same facts through *supported reads*. Everything above
+    // reached them either by mutating something or by reaching into the store.
+    // Live qualification can do neither, which is what left the persona
+    // unobservable in a deployed realm.
+    // ---------------------------------------------------------------------
+    let runtime_calls_before_reads = world.fake.calls().len();
+    // Captured through an unrelated supported read *before* the reads under
+    // test. Comparing the two reads against each other is not enough: a read
+    // that recorded a command under a fixed idempotency key would record once
+    // and then replay, leaving both answers carrying the same advanced cursor.
+    let cursor_before_reads = Call::get(format!("/v1/projects/{project}/core-team"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await
+        .json()["snapshot_cursor"]
+        .clone();
+
+    let roster_read = Call::get(format!("/v1/projects/{project}/epics/{epic}/core-team"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(roster_read.status, 200, "{}", roster_read.body);
+    let read_lsa = roster_read.json()["seats"]
+        .as_array()
+        .expect("the read roster's seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "LSA")
+        .expect("the LSA seat in the read roster")
+        .clone();
+    let read_tpm = roster_read.json()["seats"]
+        .as_array()
+        .expect("the read roster's seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "TPM")
+        .expect("the TPM seat in the read roster")
+        .clone();
+    assert_eq!(read_lsa["role_persona"]["role_code"], "LSA");
+    assert_eq!(
+        read_lsa["role_persona"]["prompt_hash"],
+        lsa_persona_digest.as_str()
+    );
+    assert_eq!(
+        read_lsa["role_persona"]["delivery"], "create_only_no_readback",
+        "the read must report frozen launch input, never a native readback"
+    );
+    assert_eq!(
+        read_lsa["role_persona"]["occupancy_generation"], successor_occupancy_generation,
+        "the roster read must report the occupancy filling the seat now"
+    );
+    assert!(
+        read_tpm["role_persona"].is_null(),
+        "a role that seeds no persona reads as null, not as an omitted field: {}",
+        read_tpm["role_persona"]
+    );
+
+    let chain_read = Call::get(format!(
+        "/v1/projects/{project}/epics/{epic}/core-team/seats/{lsa_binding}/occupancies"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(chain_read.status, 200, "{}", chain_read.body);
+    let occupancies = chain_read.json()["occupancies"]
+        .as_array()
+        .expect("the occupancy chain")
+        .clone();
+    assert!(
+        occupancies.len() >= 2,
+        "a replaced seat must retain its predecessor: {}",
+        chain_read.body
+    );
+    let generations: Vec<u64> = occupancies
+        .iter()
+        .map(|entry| {
+            entry["occupancy_generation"]
+                .as_u64()
+                .expect("an occupancy generation")
+        })
+        .collect();
+    let mut ordered = generations.clone();
+    ordered.sort_unstable();
+    assert_eq!(
+        generations, ordered,
+        "occupancies must be ordered deterministically, oldest first"
+    );
+    assert_eq!(
+        generations[0], 1,
+        "the chain must start at the first occupancy"
+    );
+    let first = &occupancies[0];
+    let last = occupancies.last().expect("a current occupancy");
+    assert_eq!(first["lifecycle"], "retired");
+    assert_eq!(last["lifecycle"], "current");
+    assert_eq!(
+        last["occupancy_generation"], successor_occupancy_generation,
+        "the last occupancy is the one filling the seat now"
+    );
+    assert!(
+        first["role_persona"].is_null(),
+        "the adopted first occupancy reads null, not a backfilled persona: {}",
+        first["role_persona"]
+    );
+    assert_eq!(
+        last["role_persona"]["prompt_hash"],
+        lsa_persona_digest.as_str()
+    );
+    assert_eq!(last["role_persona"]["delivery"], "create_only_no_readback");
+    assert_ne!(
+        first["native"]["native_id"], last["native"]["native_id"],
+        "a replacement is a different native, and the chain has to show both"
+    );
+    assert_eq!(chain_read.json()["seat_binding_id"], lsa_binding);
+    assert_eq!(chain_read.json()["role_code"], "LSA");
+    // A slice from the *middle* of the persona. Its opening phrase is the role's
+    // standard_title, which the roster legitimately carries, so asserting on
+    // that would fail on correct behaviour rather than on a disclosure.
+    let persona_body_fragment = &successor_persona.as_str()[200..260];
+    assert!(
+        !chain_read.body.contains(persona_body_fragment),
+        "the chain read must never disclose persona prompt bytes: {}",
+        chain_read.body
+    );
+    assert!(
+        !roster_read.body.contains(persona_body_fragment),
+        "the roster read must never disclose persona prompt bytes"
+    );
+    assert!(
+        chain_read.json()["occupancies"][0]["role_persona"]
+            .get("prompt")
+            .is_none(),
+        "the persona projection carries a digest, never a prompt field"
+    );
+
+    // Purity. A read that recorded a command, moved the cursor or touched the
+    // runtime would be a write wearing a GET's clothes.
+    let repeat_roster = Call::get(format!("/v1/projects/{project}/epics/{epic}/core-team"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(repeat_roster.status, 200);
+    assert_eq!(
+        repeat_roster.json()["snapshot_cursor"],
+        roster_read.json()["snapshot_cursor"],
+        "an idempotent read must not advance the control-plane cursor"
+    );
+    assert_eq!(repeat_roster.body, roster_read.body);
+    assert_eq!(
+        world.fake.calls().len(),
+        runtime_calls_before_reads,
+        "a read must make no runtime call"
+    );
+    let cursor_after_reads = Call::get(format!("/v1/projects/{project}/core-team"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await
+        .json()["snapshot_cursor"]
+        .clone();
+    assert_eq!(
+        cursor_after_reads, cursor_before_reads,
+        "a read must append no durable event: the control-plane cursor moved \
+         across these GETs, which means one of them wrote something"
+    );
+
+    // A role with no seeded persona still has an occupancy chain; its persona
+    // is null rather than absent or invented.
+    let tpm_chain = Call::get(format!(
+        "/v1/projects/{project}/epics/{epic}/core-team/seats/{tpm_binding}/occupancies"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(tpm_chain.status, 200, "{}", tpm_chain.body);
+    for entry in tpm_chain.json()["occupancies"]
+        .as_array()
+        .expect("the TPM occupancy chain")
+    {
+        assert!(
+            entry["role_persona"].is_null(),
+            "TPM seeds no persona, so every occupancy reads null: {entry}"
+        );
+    }
+
+    // Isolation, fail closed. A seat is readable only through the epic whose
+    // control plane is proven to hold it.
+    // Well formed and certainly absent: the fence must refuse on membership,
+    // not on the id failing to parse.
+    let foreign_epic = "01a00000-0000-7000-8000-0000000e9c17";
+    let wrong_epic = Call::get(format!(
+        "/v1/projects/{project}/epics/{foreign_epic}/core-team/seats/{lsa_binding}/occupancies"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(
+        wrong_epic.status, 404,
+        "a seat must not be readable through an epic that does not hold it: {}",
+        wrong_epic.body
+    );
+    let foreign_seat = "01a00000-0000-7000-8000-00000005ea70";
+    let wrong_seat = Call::get(format!(
+        "/v1/projects/{project}/epics/{epic}/core-team/seats/{foreign_seat}/occupancies"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(
+        wrong_seat.status, 404,
+        "a non-member seat must be refused rather than answered with an empty chain: {}",
+        wrong_seat.body
+    );
+    let foreign_project = "01a00000-0000-7000-8000-0000000d0a10";
+    let wrong_project = Call::get(format!(
+        "/v1/projects/{foreign_project}/epics/{epic}/core-team"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(
+        wrong_project.status, 404,
+        "another project's epic must not be readable: {}",
+        wrong_project.body
+    );
 }
 
 /// A later project edit does not touch an epic already staffed.
@@ -64656,5 +64880,228 @@ async fn materializing_a_replaced_seat_reuses_its_current_occupancy() {
         occupancy_of(lsa).native_identity.native_id,
         second_lsa_native,
         "a refusal must leave the recorded occupancy untouched"
+    );
+}
+
+/// ASMA-8196. The roster must report the persona of the occupancy actually
+/// filling the seat, not the newest occupancy that happens to have one.
+///
+/// A seat claim opens the next occupancy through
+/// `replace_hosted_topology_seat_route` and records no persona. Resolving the
+/// roster's persona by `MAX(occupancy_generation)` over the persona table
+/// therefore reported the *predecessor's* persona on the claimant's native
+/// once a claim superseded a launched occupancy -- while the occupancy chain,
+/// which resolves by the seat's current generation, truthfully reported null.
+/// The existing fixture could not catch it: its LSA is adopted from the start,
+/// so generation one never had a persona to inherit.
+#[tokio::test]
+async fn a_claim_superseding_a_launched_occupancy_reports_a_null_roster_persona() {
+    let composed = compose_realm("/tmp/kontor-claim-persona-truth").await;
+    let world = &composed.world;
+    let project = ProjectId::parse(&composed.project).expect("project");
+    let epic = MiniProjectId::parse(&composed.epic).expect("epic");
+    let materialized = Call::post(
+        format!("/v1/projects/{project}/topology:materialize"),
+        &serde_json::json!({"target": {"scope": "epic_control", "epic_id": epic}, "expected_revision": composed.project_revision}),
+    )
+    .signed_as(world, "operator")
+    .with_key("claim-persona-topology")
+    .send(world)
+    .await;
+    assert_eq!(materialized.status, 200, "{}", materialized.body);
+
+    // Generation one is *launched*, so Kontor freezes a persona for it.
+    let launched = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seats:materialize"),
+        &serde_json::json!({
+            "expected_revision": 1,
+            "routes": [{"role_code": "LSA", "model_route": {"provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}}],
+        }),
+    )
+    .signed_as(world, "admin")
+    .with_key("claim-persona-launch")
+    .send(world)
+    .await;
+    assert_eq!(launched.status, 200, "{}", launched.body);
+
+    let control = world.daemon.state().with_store(|store| {
+        store
+            .list_topology_nodes(project, Some(epic))
+            .expect("nodes")
+            .into_iter()
+            .find(|node| node.kind.as_str() == "ECP")
+            .expect("the epic control plane")
+    });
+    let lsa = world.daemon.state().with_store(|store| {
+        store
+            .list_seat_bindings(project, control.id)
+            .expect("seats")
+            .into_iter()
+            .find(|seat| seat.role.role_code.as_str() == "LSA")
+            .expect("the LSA seat")
+            .id
+    });
+    let launched_native = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_hosted_topology_seat(project, lsa))
+        .expect("the occupancy reads")
+        .expect("generation one is bound")
+        .native_identity
+        .native_id
+        .clone();
+    let launched_persona = world
+        .daemon
+        .state()
+        .with_store(|store| store.get_hosted_seat_role_persona(project, lsa, 1))
+        .expect("the persona reads")
+        .expect("a launched occupancy freezes a persona");
+
+    // Precondition: before the claim the roster legitimately reports it.
+    let before = Call::get(format!("/v1/projects/{project}/epics/{epic}/core-team"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(before.status, 200, "{}", before.body);
+    let before_lsa = before.json()["seats"]
+        .as_array()
+        .expect("seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "LSA")
+        .expect("the LSA seat")
+        .clone();
+    assert_eq!(
+        before_lsa["role_persona"]["prompt_hash"],
+        launched_persona.prompt_hash.as_str(),
+        "generation one was launched, so its persona is the honest answer here"
+    );
+    assert_eq!(before_lsa["role_persona"]["occupancy_generation"], 1);
+
+    // A hand-started native claims the seat, superseding the launched
+    // occupancy. The claim records no persona.
+    let claimant = ExternalId::parse("native-claimant-over-launched").expect("a native id");
+    world
+        .fake
+        .seed_hosted_seat_claimant(
+            control.id,
+            claimant.clone(),
+            Some(ExternalId::parse("provider-claimant-over-launched").expect("a provider session")),
+            ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: Some(EffortLevel::Xhigh),
+            },
+            "hand-started LSA over a launched seat",
+        )
+        .expect("the claimant is visible in the ECP");
+    let claim_request = serde_json::json!({
+        "expected_revision": 1,
+        "seat_binding_id": lsa,
+        "claimant_native_id": claimant,
+        "expected_current_native_id": launched_native,
+    });
+    let claim_preview = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seat-claims:preview"),
+        &claim_request,
+    )
+    .signed_as(world, "admin")
+    .send(world)
+    .await;
+    assert_eq!(claim_preview.status, 200, "{}", claim_preview.body);
+    let mut claim_apply = claim_request;
+    claim_apply["preview_hash"] = claim_preview.json()["preview_hash"].clone();
+    let claimed = Call::post(
+        format!("/v1/projects/{project}/epics/{epic}/core-team/seat-claims:apply"),
+        &claim_apply,
+    )
+    .signed_as(world, "admin")
+    .with_key("claim-over-launched")
+    .send(world)
+    .await;
+    assert_eq!(claimed.status, 200, "{}", claimed.body);
+
+    let current_generation = world
+        .daemon
+        .state()
+        .with_store(|store| store.hosted_topology_seat_occupancy_generation(project, lsa))
+        .expect("the generation reads")
+        .expect("a current generation");
+    assert!(
+        current_generation > 1,
+        "the claim must open a new occupancy: {current_generation}"
+    );
+    assert!(
+        world
+            .daemon
+            .state()
+            .with_store(|store| store.get_hosted_seat_role_persona(
+                project,
+                lsa,
+                current_generation
+            ))
+            .expect("the persona reads")
+            .is_none(),
+        "a claim records no persona, or this test is not exercising the gap"
+    );
+
+    // The roster must now say null -- never the retired native's persona.
+    let after = Call::get(format!("/v1/projects/{project}/epics/{epic}/core-team"))
+        .signed_as(world, "observer")
+        .send(world)
+        .await;
+    assert_eq!(after.status, 200, "{}", after.body);
+    let after_lsa = after.json()["seats"]
+        .as_array()
+        .expect("seats")
+        .iter()
+        .find(|entry| entry["role"]["role_code"] == "LSA")
+        .expect("the LSA seat")
+        .clone();
+    assert_eq!(
+        after_lsa["native_seat"]["native_id"],
+        claimant.as_str(),
+        "the roster is reporting the claimant's native"
+    );
+    assert!(
+        after_lsa["role_persona"].is_null(),
+        "the current occupancy froze no persona, so the roster must say null \
+         rather than inherit the predecessor's: {}",
+        after_lsa["role_persona"]
+    );
+    assert_ne!(
+        after_lsa["role_persona"]["prompt_hash"],
+        serde_json::json!(launched_persona.prompt_hash.as_str()),
+        "the roster reported the retired occupancy's persona on the claimant"
+    );
+
+    // And the two reads agree.
+    let chain = Call::get(format!(
+        "/v1/projects/{project}/epics/{epic}/core-team/seats/{lsa}/occupancies"
+    ))
+    .signed_as(world, "observer")
+    .send(world)
+    .await;
+    assert_eq!(chain.status, 200, "{}", chain.body);
+    let occupancies = chain.json()["occupancies"]
+        .as_array()
+        .expect("the occupancy chain")
+        .clone();
+    let current = occupancies.last().expect("a current occupancy");
+    assert_eq!(current["lifecycle"], "current");
+    assert_eq!(current["occupancy_generation"], current_generation);
+    assert!(
+        current["role_persona"].is_null(),
+        "the chain's current occupancy must agree with the roster"
+    );
+    assert_eq!(
+        current["role_persona"], after_lsa["role_persona"],
+        "roster and occupancy chain must report the same persona for the same \
+         current occupancy"
+    );
+    // The predecessor keeps its own record; nothing was rewritten.
+    assert_eq!(
+        occupancies[0]["role_persona"]["prompt_hash"],
+        launched_persona.prompt_hash.as_str(),
+        "the retired launched occupancy must retain its frozen persona"
     );
 }
