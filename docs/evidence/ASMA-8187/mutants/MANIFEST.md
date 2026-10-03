@@ -187,18 +187,25 @@ own bad artifacts is harder to trust than one that keeps them labelled.
 
 ## Recorded runs (corrected coherence baseline)
 
-Baseline: the commit these logs name, with the projection coherence correction
-in place. Seven mutants, all killed, each restored byte-identically.
+Baseline: the source state `8910ebc6` holds, with the projection coherence
+correction in place. Seven mutants, all killed, each restored byte-identically.
 
-| Mutant | Removes | Outcome |
+The carrier names below are the **full** ones. When this table was first
+written the runs sat at the bare `M-P22b1`-style paths, because that round
+overwrote the historical carriers there; after the restoration recorded further
+down, the bare names mean the *historical* runs again and these runs carry the
+`-8910ebc6` suffix. Naming them in full so the table cannot be read against the
+wrong file.
+
+| Mutant carrier | Removes | Outcome |
 |---|---|---|
-| `M-P22b1` | the receipt uniqueness index | killed (101) |
-| `M-P22b2` | the frozen completion instant | killed (101) |
-| `M-P23` | the `0122` upgrade validation | killed (101) |
-| `M-P24` | binding the readback to its transition | killed (101) |
-| `M-P25` | the receipt join ordering | killed (101) |
-| `M-CTL` | the realm read at the schema boundary | killed (101) |
-| `M-COH` | the single store acquisition in the occupancy chain | killed (101) |
+| `M-P22b1-receipt-not-unique-8910ebc6` | the receipt uniqueness index | killed (101) |
+| `M-P22b2-completion-instant-not-frozen-8910ebc6` | the frozen completion instant | killed (101) |
+| `M-P23-upgrade-assumes-coherent-bindings-8910ebc6` | the `0122` upgrade validation | killed (101) |
+| `M-P24-readback-unbound-from-transition-8910ebc6` | binding the readback to its transition | killed (101) |
+| `M-P25-unchanged-answers-before-proof-8910ebc6` | the receipt join ordering | killed (101) |
+| `M-CTL-refuse-every-realm-8910ebc6` | the realm read at the schema boundary | killed (101) |
+| `M-COH-split-lock-boundary` | the single store acquisition in the occupancy chain | killed (101) |
 
 ### Two harness defects found and fixed, both recorded
 
@@ -319,3 +326,46 @@ The third row is the one worth reading anyway. It is a survival, it is kept, and
 it is not relabelled — it says something true that the kill does not: deferring
 only the persona cannot produce a hybrid, so a test that caught *that* would be
 asserting something the code cannot do.
+
+## The harness is committed, and what that does and does not prove
+
+`harness/mutate.sh` plus the `m_*.py` mutation scripts are committed beside the
+logs, so the `reproduce (exact)` line each log carries names a path that exists
+in the repository rather than a temporary directory that does not. The
+committed form derives the repo root from its own location and takes its
+scratch directory from `mktemp`, so it runs from a fresh clone unedited.
+
+What that does not prove: the earlier rounds recorded above ran a functionally
+equivalent copy that hardcoded this worktree's absolute paths and a fixed
+`/tmp` scratch directory. Those runs are reproducible *in substance* through
+the committed harness — same mutation scripts, same commands, same limits — but
+they were not produced by the exact bytes now committed. Runs carrying a
+`-36ed5607` suffix were.
+
+## Recorded runs (exact head `36ed5607`)
+
+Baseline: **`36ed5607753bb749a3a3f12f785fe632c3092650`** (tree
+`d802479a71bdefa6dc2f0bee4332ee9237fc546d`), source tree clean — every
+compiled path exactly as that commit holds it. Produced by the committed
+harness, so the `reproduce (exact)` line in each log is a repo-relative command
+that runs from a fresh clone.
+
+| Mutant carrier | Exit | Restoration |
+|---|---|---|
+| `M-P22b1-receipt-not-unique-36ed5607` | 101 killed | byte-identical |
+| `M-P22b2-completion-instant-not-frozen-36ed5607` | 101 killed | byte-identical |
+| `M-P23-upgrade-assumes-coherent-bindings-36ed5607` | 101 killed | byte-identical |
+| `M-P24-readback-unbound-from-transition-36ed5607` | 101 killed | byte-identical |
+| `M-P25-unchanged-answers-before-proof-36ed5607` | 101 killed | byte-identical |
+| `M-CTL-control-pair-36ed5607` | 101 (the control half) | byte-identical |
+| `M-COH-split-lock-boundary-36ed5607` | 101 killed | byte-identical |
+| `M-COH-TEAM-hybrid-generation-and-persona-36ed5607` | 101 killed | byte-identical |
+
+The broad recheck at the same head — fmt, both compiles, the four suites,
+1417 tests across 54 binaries, all green — is at
+`docs/evidence/ASMA-8187/recheck-36ed5607/`, one raw log per step plus a
+generated `REPORT.md`.
+
+`M-CTL-control-pair-36ed5607` carries a non-zero exit because one of its two
+halves is *supposed* to fail; see its own log for which, and why a single
+verdict would misrepresent it.
