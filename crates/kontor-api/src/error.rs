@@ -14,6 +14,7 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use kontor_core::consultation::ConsultationFamily;
 use kontor_core::id::{AggregateRevision, EventCursor, ExternalId, RealmId};
 use kontor_core::realm::RealmCursor;
 use kontor_core::repository::RepositoryError;
@@ -635,6 +636,27 @@ impl ApiError {
                 );
                 Self::new(realm_id, ApiErrorCode::RevisionConflict, rule).about(subject)
             }
+            // A semantic duplicate is the one uniqueness refusal whose answer is
+            // not "re-read and retry": the exact existing run is known, and the
+            // caller's next step is to read or resume it. The store carries that
+            // identity out of the failed atomic insert, so a concurrent loser
+            // receives the same typed refusal the sequential pre-check produces
+            // instead of a generic persistence conflict.
+            RepositoryError::DuplicateConsultation { family, run_id } => Self::new(
+                realm_id,
+                ApiErrorCode::IdempotencyConflict,
+                match family {
+                    ConsultationFamily::Advisor => {
+                        "consultation_semantic_duplicate: this Advisor scope and topic already has one run"
+                    }
+                    ConsultationFamily::Committee => {
+                        "consultation_semantic_duplicate: this Committee scope and topic already has one run"
+                    }
+                },
+            )
+            .about("consultation semantic identity")
+            .located_at(format!("consultation-runs/{}", run_id.as_text()))
+            .advising("read or resume the existing consultation run"),
             // Which ceiling bound is a fact about this Realm's configuration and
             // its current load, so it is logged for the operator who runs the
             // plane and withheld from the caller who hit it. One static rule for

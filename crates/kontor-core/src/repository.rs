@@ -196,6 +196,25 @@ pub enum RepositoryError {
         /// The rule that refused.
         rule: &'static str,
     },
+    /// A uniqueness rule refused a new consultation because one server-derived
+    /// semantic identity is already owned by an existing run.
+    ///
+    /// Deliberately *not* the generic [`RepositoryError::Conflict`]: a semantic
+    /// duplicate is the one conflict whose correct caller action is to read or
+    /// resume the surviving run, and only the store can prove which run that is
+    /// out of the atomic insert that lost. Carrying the exact identity is what
+    /// lets the transport answer with the sequential pre-check's refusal shape
+    /// instead of a generic persistence conflict.
+    #[error(
+        "consultation semantic identity conflict: this {family} scope and topic already has one run ({})",
+        .run_id.as_text()
+    )]
+    DuplicateConsultation {
+        /// Which consultation family owns the surviving run.
+        family: ConsultationFamily,
+        /// The existing run that already owns the semantic identity.
+        run_id: ConsultationRunId,
+    },
     /// A configured concurrency ceiling is already spent.
     ///
     /// Deliberately *not* a [`RepositoryError::Conflict`]. A conflict says the
