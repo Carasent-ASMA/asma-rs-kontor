@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "source_candidate": "845e36c36efa9bbf3912c61f91fb7fdb2b590ea9",
+  "source_tree": "58b9b27638c8a8a4f0f24c7b35644a0b5a11f1b9",
+  "pre_commit_base": "26b1c8713d14684a6a3483c00fe4b74f4ed3d223",
+  "root_specification": "68626851460916488be6613084ca0d33118fcb4d",
+  "source_sha256": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "bb7edb6717ccc21acb952f9a695936e0c9332563f090abfe34536479a701ab7e",
+    "crates/kontor-runtime/src/planning_pair/attestation/snapshot_codec.rs": "c3b83275d8e346e000810388cbf11376dd9e6d0052f49f6eadf10db76b8b660e",
+    "crates/kontor-runtime/src/planning_pair/attestation/snapshot_codec/tests.rs": "6ddbdc8a89b1971b90d19c37bea19984ac21fae097ad37ae924ee8822bb38010"
+  },
+  "evidence_provenance": "Original worker source_head names the pre-commit base; exact three hashes match the published candidate. Worker files/logs are preserved unchanged.",
+  "checks": {
+    "unit": 141,
+    "integration": 20,
+    "compile_fail_privacy": 2,
+    "codec_tests": 7,
+    "assertion_killed_mutants": 4
+  },
+  "independent_review": "Pending exact published candidate review; no independent verdict claimed.",
+  "source_only": true
+}
