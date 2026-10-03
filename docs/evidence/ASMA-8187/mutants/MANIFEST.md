@@ -117,8 +117,6 @@ restored byte-identically after each. The five mutants are the same five; what
 changed is the baseline they stand against, now that the candidate is joined
 with `8acdbd17`.
 
-| Mutant | Outcome at the joined baseline |
-|---|---|
 Each mutant now has **two** logs, one per baseline, at distinct paths. The
 `.patch` files are shared: the mutation text is identical at both baselines, so
 there is one patch per mutant and it applies to either.
