@@ -1,0 +1,89 @@
+{
+  "epic": "ASMA-8278",
+  "source_candidate": "c708701b6b8f80ef4db57b0b0410976dfd4dc482",
+  "worker_base_candidate": "dfeaa8a533db46a8d5b85cd05d491bb8bb531b4e",
+  "specification_candidate": "b84af82c976faaf02791ad5e04b38de570806441",
+  "owned_source_sha256": {
+    "Cargo.lock": "b62db27540b4a2295401631a57f3819c593b29690c896827286d93722e588e77",
+    "crates/kontor-runtime/Cargo.toml": "56a63ed87cad9de33234515983d55236fe49844bc5095f15f05c070ef349cf4d",
+    "crates/kontor-runtime/src/planning_pair.rs": "cbbda90596367a9ee86cc10364af83c7f67782df876d4b4666ae8b207ba316cf",
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "8c2bdc5071952401f8bae9066984ccd67b52626c6eb798a5e6579df7589bed95",
+    "crates/kontor-runtime/src/planning_pair/attestation/tests.rs": "83b753337be6a11e3e8852b044baa1e6d4da1931e41fd3cd35d9f07c921cd359"
+  },
+  "source_checks": {
+    "runtime_unit": 122,
+    "runtime_integration": 20,
+    "compile_fail_doc": 2,
+    "new_attestation_unit": 15,
+    "full_suite_exit": 0,
+    "format_exit": 0,
+    "clippy_exit": 0
+  },
+  "mutations": [
+    {
+      "name": "skip-signature",
+      "test": "planning_pair::attestation::tests::exact_bytes_signature_and_domain_are_required",
+      "exit": 101,
+      "result": "KILLED",
+      "log": "mutation-skip-signature.log"
+    },
+    {
+      "name": "skip-revocation",
+      "test": "planning_pair::attestation::tests::revoked_and_invalid_key_intervals_are_refused",
+      "exit": 101,
+      "result": "KILLED",
+      "log": "mutation-skip-revocation.log"
+    },
+    {
+      "name": "skip-audience",
+      "test": "planning_pair::attestation::tests::audience_and_ungranted_operation_are_refused",
+      "exit": 101,
+      "result": "KILLED",
+      "log": "mutation-skip-audience.log"
+    },
+    {
+      "name": "skip-token-time",
+      "test": "planning_pair::attestation::tests::token_interval_is_inclusive_at_start_exclusive_at_expiry_and_policy_bounded",
+      "exit": 101,
+      "result": "KILLED",
+      "log": "mutation-skip-token-time.log"
+    }
+  ],
+  "baseline_before_exit": 0,
+  "baseline_after_exit": 0,
+  "original_source_preserved": true,
+  "isolated_source_restored": true,
+  "independent_review": {
+    "route": "OpenCode/direct DeepSeek deepseek-flash; max; Plan; auto_accept=false",
+    "scope": "Bounded read-only immutable source; not full formal completion or live acceptance",
+    "disposition": "No substantiated blocker to non-authorizing verifier source slice; original findings and correction preserved"
+  },
+  "evidence_notes": [
+    "Worker source_head labels pre-commit base; all five bytes match source_candidate. Original worker manifests unchanged.",
+    "Original review A-04 correctly records missing full-suite log at review time; root later captured the exact candidate full suite here.",
+    "Original local artifact paths are historical provenance; this manifest maps portable file names."
+  ],
+  "remaining_gates": [
+    "Actual issuer principal/exclusive custody and authentic current snapshot distribution",
+    "Current-authority active occupancy and token revocation/replay admission",
+    "Native-session possession, conditional effect/generation fencing, positive finality/drain, enforced restrictions",
+    "External succession, actual harness lifecycle/loading/token comparisons, initialized target",
+    "Full paired live acceptance, final independent committee, selected pilot adoption and rollback"
+  ],
+  "files_sha256": {
+    "SOURCE-VALIDATION.worker.json": "2c511fcc5b3e4d29193996f339ef3ac3465a9daca6673e43f8fc9532b777093f",
+    "MUTATION.worker.json": "80bef18ed2ffdd3da704c16abaa6309f9788b3a0a1170c09ffc689e8493ed373",
+    "PUBLISHED-CANDIDATE-READBACK.json": "3a8723a11a564412488cbd72b901eb0e18dbda87b6d7ae3da1ed5787b3a632aa",
+    "runtime-full-suite.log": "04d57807156fc42ae42a63c997c85c0b8bd583e3ae8fbc1bf38429b7d99d8335",
+    "baseline-before.log": "c7acc6d9a69785f889f3c4a59c635d36f4c4f517da286a0d0fef7bc660c09863",
+    "baseline-after.log": "9103ccce43d765bdd1ed7b2a709709da55058d234b9c34f41d8aad69f4cf0e16",
+    "mutation-skip-signature.log": "2592b2c6713ff55583496a243e122585414f179fdd7ef46c742e32dcf7e6dc9f",
+    "mutation-skip-revocation.log": "6b317a7e9675598cbbc5c133159e37416716099501ed8c8afb3b3ab11034a2f3",
+    "mutation-skip-audience.log": "4556b0a05fed446c167e91e501710165c561ce1927ef9a7709166eb54cd241a6",
+    "mutation-skip-token-time.log": "c82277820c9e534de4dda0384d72613f51c8add8a76ca2377e275ddada455a2e",
+    "review-frozen-source.md": "6f1980a0de9fbc834678d1892f778b49a584ab684433316534e6475739ce1e6e",
+    "review-r01-first-followup.md": "d72f65b271664248b1ecc36278f012b6814ff48e7d399ce8ceb0510e3bb3a1ae",
+    "review-r01-correction.md": "bb570d06d500d956a6d147c20fea209cd2314c9040892940dcf4333f5f232864",
+    "review-attestation-source.md": "fe3d2dccb05d1f29798afa04a4104ec9a75c225a5464be64d59b5e0fdbf15e02"
+  }
+}
