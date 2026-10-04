@@ -6343,6 +6343,90 @@
         }
       }
     },
+    "/v1/projects/{project_id}/memory/experiences:classify": {
+      "get": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "classify",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExperienceClassificationResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/experiences:propose": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "propose_experience",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExperienceProposal"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExperienceProposalResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/memory/import:apply": {
       "post": {
         "tags": [
@@ -6412,6 +6496,267 @@
         },
         "responses": {
           "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/projection": {
+      "get": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "projection_readback",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/projection:preview": {
+      "get": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "projection_preview",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionPreviewResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/projection:rebuild": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "projection_rebuild",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectionRebuildRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/recall/{agent_run_id}": {
+      "get": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "recall_readback",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecallResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "410": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/recall:freeze": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "recall_freeze",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecallFreezeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecallResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "410": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/memory/recall:preview": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "operationId": "recall_preview",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecallRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecallResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": ""
+          },
+          "404": {
             "description": ""
           }
         }
@@ -15762,6 +16107,51 @@
         },
         "additionalProperties": false
       },
+      "ContextMemoryBinding": {
+        "type": "object",
+        "required": [
+          "bound_at",
+          "ordered_revisions",
+          "project_id",
+          "result_hash",
+          "run_id",
+          "selection_cursor",
+          "selection_spec"
+        ],
+        "properties": {
+          "bound_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ordered_revisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FrozenRevision"
+            }
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "result_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "selection_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "selection_spec": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": false
+      },
       "ContextPolicyDto": {
         "type": "object",
         "description": "One seat's context-window policy and the latest attempt to compact it.\n\nThe single projection API, CLI and MCP all render, so the three cannot drift\ninto describing the same seat differently. Every field is provider-neutral:\nno configuration key, no daemon payload, no prompt and no credential appears\nhere, and a runtime that measures nothing reports nothing rather than zero.",
@@ -16966,6 +17356,18 @@
         },
         "additionalProperties": false
       },
+      "DegradedReason": {
+        "type": "string",
+        "enum": [
+          "absent",
+          "stale",
+          "timeout",
+          "unavailable",
+          "malformed",
+          "empty",
+          "no_eligible_candidates"
+        ]
+      },
       "DeliberationStepDto": {
         "type": "object",
         "description": "One durable step in the deliberation path already tried.",
@@ -17956,6 +18358,440 @@
           }
         }
       },
+      "EvidenceConfidence": {
+        "type": "string",
+        "enum": [
+          "inferred",
+          "observed"
+        ]
+      },
+      "EvidenceRef": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "content_hash",
+              "receipt_id",
+              "type"
+            ],
+            "properties": {
+              "content_hash": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "receipt_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "receipt"
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "content_hash",
+              "item_id",
+              "project_id",
+              "revision_id",
+              "type"
+            ],
+            "properties": {
+              "content_hash": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "item_id": {
+                "type": "string",
+                "description": "Nonblank; at most 128 UTF-8 bytes; canonical sensitive-material validation applies.",
+                "maxLength": 128,
+                "minLength": 1
+              },
+              "project_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "revision_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "memory_revision"
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "content_hash",
+              "locator",
+              "type"
+            ],
+            "properties": {
+              "content_hash": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "locator": {
+                "type": "string",
+                "description": "Nonblank; at most 1024 UTF-8 bytes; canonical sensitive-material validation applies.",
+                "maxLength": 1024,
+                "minLength": 1
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "artifact"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "ExperienceClassification": {
+        "type": "object",
+        "required": [
+          "identity",
+          "projection_policy",
+          "recall_eligible"
+        ],
+        "properties": {
+          "identity": {
+            "$ref": "#/components/schemas/MemoryIdentity"
+          },
+          "projection_policy": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recall_eligible": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExperienceClassificationResponse": {
+        "type": "object",
+        "required": [
+          "realm_id",
+          "classifications"
+        ],
+        "properties": {
+          "classifications": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExperienceClassification"
+            }
+          },
+          "realm_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ExperienceKind": {
+        "type": "string",
+        "enum": [
+          "experience",
+          "lesson",
+          "mental_model"
+        ]
+      },
+      "ExperienceMemoryV1": {
+        "type": "object",
+        "required": [
+          "actions",
+          "avoid",
+          "confidence",
+          "document_type",
+          "domains",
+          "evidence_refs",
+          "future_cues",
+          "intent",
+          "kind",
+          "lesson",
+          "occurred_at",
+          "outcome",
+          "schema_version",
+          "situation",
+          "went_well",
+          "went_wrong"
+        ],
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "Nonblank; at most 2048 UTF-8 bytes; canonical sensitive-material validation applies.",
+              "maxLength": 2048,
+              "minLength": 1
+            },
+            "maxItems": 16,
+            "minItems": 1
+          },
+          "avoid": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "Nonblank; at most 2048 UTF-8 bytes; canonical sensitive-material validation applies.",
+              "maxLength": 2048,
+              "minLength": 1
+            },
+            "maxItems": 16,
+            "minItems": 0
+          },
+          "confidence": {
+            "$ref": "#/components/schemas/EvidenceConfidence"
+          },
+          "document_type": {
+            "type": "string",
+            "enum": [
+              "experience_memory"
+            ]
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "Nonblank; at most 2048 UTF-8 bytes; canonical sensitive-material validation applies.",
+              "maxLength": 2048,
+              "minLength": 1
+            },
+            "maxItems": 16,
+            "minItems": 1
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EvidenceRef"
+            },
+            "maxItems": 16,
+            "minItems": 1
+          },
+          "future_cues": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "Nonblank; at most 2048 UTF-8 bytes; canonical sensitive-material validation applies.",
+              "maxLength": 2048,
+              "minLength": 1
+            },
+            "maxItems": 16,
+            "minItems": 1
+          },
+          "intent": {
+            "type": "string",
+            "description": "Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies.",
+            "maxLength": 4096,
+            "minLength": 1
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ExperienceKind"
+          },
+          "lesson": {
+            "type": "string",
+            "description": "Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies.",
+            "maxLength": 4096,
+            "minLength": 1
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ExperienceOutcome"
+          },
+          "projection_policy": {
+            "$ref": "#/components/schemas/ProjectionPolicy"
+          },
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1
+            ]
+          },
+          "situation": {
+            "type": "string",
+            "description": "Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies.",
+            "maxLength": 4096,
+            "minLength": 1
+          },
+          "went_well": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "Nonblank; at most 2048 UTF-8 bytes; canonical sensitive-material validation applies.",
+              "maxLength": 2048,
+              "minLength": 1
+            },
+            "maxItems": 16,
+            "minItems": 0
+          },
+          "went_wrong": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "Nonblank; at most 2048 UTF-8 bytes; canonical sensitive-material validation applies.",
+              "maxLength": 2048,
+              "minLength": 1
+            },
+            "maxItems": 16,
+            "minItems": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExperienceOutcome": {
+        "type": "object",
+        "required": [
+          "kind",
+          "summary"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/OutcomeKind"
+          },
+          "summary": {
+            "type": "string",
+            "description": "Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies.",
+            "maxLength": 4096,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExperienceProposal": {
+        "type": "object",
+        "required": [
+          "item_id",
+          "expected_revision",
+          "document",
+          "provenance",
+          "proposed_by"
+        ],
+        "properties": {
+          "document": {
+            "$ref": "#/components/schemas/ExperienceMemoryV1"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "proposed_by": {
+            "type": "string"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/MemoryProvenance"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExperienceProposalResponse": {
+        "type": "object",
+        "required": [
+          "realm_id",
+          "revision",
+          "receipt"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/MemoryReceipt"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/ExperienceRevision"
+          }
+        }
+      },
+      "ExperienceRevision": {
+        "type": "object",
+        "required": [
+          "approved",
+          "current",
+          "document",
+          "item_id",
+          "project_id",
+          "proposed_at",
+          "proposed_by",
+          "provenance",
+          "revision",
+          "revision_id",
+          "supersedes_id",
+          "tombstoned"
+        ],
+        "properties": {
+          "approved": {
+            "type": "boolean"
+          },
+          "current": {
+            "type": "boolean"
+          },
+          "document": {
+            "$ref": "#/components/schemas/ExperienceMemoryV1"
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "proposed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "proposed_by": {
+            "type": "string"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/MemoryProvenance"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "revision_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "supersedes_id": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tombstoned": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
       "FillTeamRunSeatRequest": {
         "type": "object",
         "description": "Fill one frozen, unwaived role slot that is owed a durable follow-up.",
@@ -18055,6 +18891,24 @@
             "description": "The existing team envelope."
           }
         }
+      },
+      "FrozenRevision": {
+        "type": "object",
+        "required": [
+          "content_hash",
+          "revision_id"
+        ],
+        "properties": {
+          "content_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "revision_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
       },
       "GapDto": {
         "type": "object",
@@ -19319,6 +20173,131 @@
           }
         }
       },
+      "MemoryIdentity": {
+        "type": "object",
+        "required": [
+          "content_hash",
+          "item_id",
+          "project_id",
+          "revision_id"
+        ],
+        "properties": {
+          "content_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "revision_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "MemoryProvenance": {
+        "type": "object",
+        "required": [
+          "history_unavailable",
+          "legacy_last_write_wins",
+          "source"
+        ],
+        "properties": {
+          "history_unavailable": {
+            "type": "boolean"
+          },
+          "legacy_last_write_wins": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "source_id": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "MemoryReceipt": {
+        "type": "object",
+        "required": [
+          "aggregate_revision",
+          "item_id",
+          "operation",
+          "project_id",
+          "receipt_id",
+          "recorded_at",
+          "result_hash",
+          "revision_id"
+        ],
+        "properties": {
+          "aggregate_revision": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "item_id": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "receipt_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "recorded_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "result_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "revision_id": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "MemorySelectionDto": {
         "type": "object",
         "description": "How much approved memory the resolved pack could carry.\n\nApproved memory grows without bound while the canonical document may not\nexceed its ceiling, so a large enough project eventually has more approved\nmemory than one pack can hold. When that happens the resolver narrows the set\nrather than refusing, and this says so explicitly: a caller can see that the\npack is not the whole of approved memory, and exactly which revisions are\nmissing from it. Below the ceiling `omitted` is empty and `narrowed` is\nfalse, which is the ordinary case and the one that must stay unchanged.",
@@ -19884,6 +20863,14 @@
             "description": "The immutable approved revision of it."
           }
         }
+      },
+      "OutcomeKind": {
+        "type": "string",
+        "enum": [
+          "success",
+          "failure",
+          "mixed"
+        ]
       },
       "PartialAdmissionSeatDto": {
         "type": "object",
@@ -20888,6 +21875,191 @@
             "description": "The outcome, when the run is closed."
           }
         }
+      },
+      "ProjectionEntry": {
+        "type": "object",
+        "required": [
+          "cues",
+          "identity",
+          "lesson"
+        ],
+        "properties": {
+          "cues": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "Nonblank; at most 2048 UTF-8 bytes; canonical sensitive-material validation applies.",
+              "maxLength": 2048,
+              "minLength": 1
+            },
+            "maxItems": 16,
+            "minItems": 1
+          },
+          "identity": {
+            "$ref": "#/components/schemas/MemoryIdentity"
+          },
+          "lesson": {
+            "type": "string",
+            "description": "Nonblank; at most 4096 UTF-8 bytes; canonical sensitive-material validation applies.",
+            "maxLength": 4096,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectionPolicy": {
+        "type": "string",
+        "default": "local_only",
+        "enum": [
+          "local_only",
+          "provider_eligible"
+        ]
+      },
+      "ProjectionPreview": {
+        "type": "object",
+        "required": [
+          "active_generation",
+          "entries",
+          "snapshot"
+        ],
+        "properties": {
+          "active_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectionEntry"
+            }
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/ProjectionSnapshot"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectionPreviewResponse": {
+        "type": "object",
+        "required": [
+          "realm_id",
+          "preview"
+        ],
+        "properties": {
+          "preview": {
+            "$ref": "#/components/schemas/ProjectionPreview"
+          },
+          "realm_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ProjectionReadback": {
+        "type": "object",
+        "required": [
+          "active",
+          "adapter_available",
+          "generation",
+          "stale"
+        ],
+        "properties": {
+          "active": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "adapter_available": {
+            "type": "boolean"
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "stale": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectionRebuildRequest": {
+        "type": "object",
+        "required": [
+          "expected_generation",
+          "expected_memory_cursor",
+          "preview_digest"
+        ],
+        "properties": {
+          "expected_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "expected_memory_cursor": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "preview_digest": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectionResponse": {
+        "type": "object",
+        "required": [
+          "realm_id",
+          "projection"
+        ],
+        "properties": {
+          "projection": {
+            "$ref": "#/components/schemas/ProjectionReadback"
+          },
+          "realm_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ProjectionSnapshot": {
+        "type": "object",
+        "required": [
+          "dataset",
+          "digest",
+          "identities",
+          "memory_cursor",
+          "project_id"
+        ],
+        "properties": {
+          "dataset": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "identities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemoryIdentity"
+            }
+          },
+          "memory_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
       },
       "PromotedSessionDto": {
         "type": "object",
@@ -22012,6 +23184,194 @@
           }
         }
       },
+      "RecallExclusions": {
+        "type": "object",
+        "required": [
+          "budget",
+          "duplicate",
+          "invalid",
+          "item_limit"
+        ],
+        "properties": {
+          "budget": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "duplicate": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "invalid": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "item_limit": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "RecallFreezeRequest": {
+        "type": "object",
+        "required": [
+          "task_id",
+          "agent_run_id"
+        ],
+        "properties": {
+          "agent_run_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RecallMetadata": {
+        "type": "object",
+        "required": [
+          "block_bytes",
+          "block_hash",
+          "exclusions",
+          "identities",
+          "intent_hash",
+          "memory_cursor",
+          "mode",
+          "projection_cursor",
+          "projection_digest",
+          "reason",
+          "schema_version"
+        ],
+        "properties": {
+          "block_bytes": {
+            "type": "integer",
+            "maximum": 32768,
+            "minimum": 2
+          },
+          "block_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "exclusions": {
+            "$ref": "#/components/schemas/RecallExclusions"
+          },
+          "identities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemoryIdentity"
+            },
+            "maxItems": 8
+          },
+          "intent_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "memory_cursor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "mode": {
+            "$ref": "#/components/schemas/RetrievalMode"
+          },
+          "projection_cursor": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "projection_digest": {
+            "oneOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DegradedReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RecallRequest": {
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RecallResponse": {
+        "type": "object",
+        "required": [
+          "realm_id",
+          "recall"
+        ],
+        "properties": {
+          "realm_id": {
+            "type": "string"
+          },
+          "recall": {
+            "$ref": "#/components/schemas/RecalledMemory"
+          }
+        }
+      },
+      "RecalledMemory": {
+        "type": "object",
+        "required": [
+          "binding",
+          "canonical_block",
+          "metadata",
+          "replayed"
+        ],
+        "properties": {
+          "binding": {
+            "$ref": "#/components/schemas/ContextMemoryBinding"
+          },
+          "canonical_block": {
+            "type": "string"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/RecallMetadata"
+          },
+          "replayed": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
       "ReceiptDto": {
         "type": "object",
         "description": "The durable record of one command.",
@@ -22996,6 +24356,14 @@
             "minimum": 0
           }
         }
+      },
+      "RetrievalMode": {
+        "type": "string",
+        "enum": [
+          "semantic",
+          "lexical_degraded",
+          "none"
+        ]
       },
       "RevisionRefDto": {
         "type": "object",

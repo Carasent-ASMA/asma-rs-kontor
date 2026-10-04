@@ -1,0 +1,11 @@
+{
+  "clean_retry_equal": true,
+  "final_version": 121,
+  "forward_version_refused": true,
+  "history_sha256": "1c653adeda52fb6f8037b5176fe0c45747f6825e935701bd8056319788142a30",
+  "injected_failure": "0120 duplicate trigger after four table creations",
+  "prior_version": 119,
+  "rollback_ledger_equal": true,
+  "rollback_schema_equal": true,
+  "typed_backfill_rows": 1
+}

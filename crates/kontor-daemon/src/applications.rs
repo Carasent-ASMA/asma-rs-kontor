@@ -27,7 +27,9 @@
 
 mod artifact_submission;
 mod committee_evidence;
+mod memory_projection;
 mod open_questions;
+pub use memory_projection::ProjectionQualifier;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -64,7 +66,7 @@ use kontor_api::applications::{
 };
 use kontor_api::applications::{
     AdoptTeamRunAdmissionRequest, FillTeamRunSeatRequest, FilledTeamRunSeatDto, MemorySelectionDto,
-    OmittedMemoryRevisionDto, TeamRunAdmissionAdoptionDto, TeamRunSeatDispatchDto,
+    TeamRunAdmissionAdoptionDto, TeamRunSeatDispatchDto,
 };
 use kontor_api::applications::{
     AdvanceCompletionRequest, AdvisorRunDto, AppliedProfileDto, CloseoutEvidenceDto,
@@ -1005,6 +1007,8 @@ pub struct Services {
     /// next placement with no restart or republish, and an invalid edit keeps
     /// the last valid snapshot inside the source.
     fleet: Arc<crate::fleet::FleetSource>,
+    /// Optional explicitly composed semantic transport. No credential lookup.
+    memory_cognee: OnceLock<kontor_memory_cognee::Client>,
 }
 
 struct CompletionCommit<'a> {
@@ -1069,12 +1073,144 @@ impl Services {
             native_lifecycle_guard: tokio::sync::RwLock::new(()),
             quota_signals,
             fleet,
+            memory_cognee: OnceLock::new(),
         }))
     }
 
     /// Hand the services the process state they run against. Once only.
     pub fn attach(&self, state: ApiState) {
         let _ = self.state.set(state);
+    }
+
+    /// Compose a transport once, before serving requests. Fixture callers supply
+    /// synthetic credentials; normal startup never reaches a credential store.
+    pub fn attach_memory_cognee(&self, client: kontor_memory_cognee::Client) {
+        let _ = self.memory_cognee.set(client);
+    }
+
+    fn memory_recall_intent(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<kontor_core::memory::RecallIntent, ApiError> {
+        let state = self.state()?;
+        let task = self.task_row(project_id, task_id)?;
+        let workflow = state
+            .with_store(|store| store.get_active_task_workflow(project_id, task_id))
+            .map_err(|error| self.refuse(&error))?
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::InvalidRequest,
+                    "experience recall requires a selected work-profile phase",
+                )
+            })?;
+        let mut declared_scope = Vec::new();
+        if let Some(epic_id) = task.mini_project_id
+            && let Some(scope) = state
+                .with_store(|store| store.get_epic_execution_scope(project_id, epic_id))
+                .map_err(|error| self.refuse(&error))?
+        {
+            declared_scope.push(scope.short_title.as_str().to_owned());
+        }
+        Ok(kontor_core::memory::RecallIntent {
+            schema_version: 1,
+            task_id: task_id.to_string(),
+            task_title: task.title.as_str().to_owned(),
+            module: task.module.map(|module| module.as_str().to_owned()),
+            declared_scope,
+            phase: workflow.current_phase.as_str().to_owned(),
+        })
+    }
+
+    /// Replay first; transport runs between read and authoritative freeze, never
+    /// under the store mutex. The store repeats freshness/eligibility in its
+    /// immediate transaction, closing approval and tombstone races.
+    async fn select_experience_memory(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        run: Option<AgentRunId>,
+    ) -> Result<kontor_store::memory::RecalledMemory, ApiError> {
+        use kontor_core::memory::DegradedReason;
+        use kontor_store::memory::SemanticRecall;
+        let state = self.state()?;
+        if let Some(run) = run
+            && let Some(frozen) = state
+                .with_store(|store| store.recalled_memory(project_id, &run.to_string()))
+                .map_err(|error| kontor_api::memory::map(state, error))?
+        {
+            return Ok(frozen);
+        }
+        let intent = self.memory_recall_intent(project_id, task_id)?;
+        let freeze = |semantic: &SemanticRecall| {
+            state
+                .with_store(|store| match run {
+                    Some(run) => {
+                        store.recall_experiences(project_id, &run.to_string(), &intent, semantic)
+                    }
+                    None => store.preview_recall(project_id, &intent, semantic),
+                })
+                .map_err(|error| kontor_api::memory::map(state, error))
+        };
+        let Some(client) = self.memory_cognee.get() else {
+            return freeze(&SemanticRecall::Degraded(DegradedReason::Absent));
+        };
+        let projection = state
+            .with_store(|store| store.projection_readback(project_id))
+            .map_err(|error| kontor_api::memory::map(state, error))?;
+        let Some(snapshot) = projection.active else {
+            return freeze(&SemanticRecall::Degraded(DegradedReason::Absent));
+        };
+        if projection.stale {
+            return freeze(&SemanticRecall::Degraded(DegradedReason::Stale));
+        }
+        client.recall(&snapshot, &intent, freeze).await
+    }
+
+    /// All delivery roles cite the original root run, including later fills.
+    async fn delivery_memory_prompt(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        team_run_id: TeamRunId,
+        slot: &RoleSlotId,
+        roots: &BTreeSet<RoleSlotId>,
+    ) -> Result<BoundedText, ApiError> {
+        let state = self.state()?;
+        let runs = state
+            .with_store(|store| store.list_agent_runs_for_team_run(project_id, team_run_id))
+            .map_err(|error| self.refuse(&error))?;
+        let root_runs: Vec<_> = runs
+            .iter()
+            .filter(|run| roots.iter().any(|slot| slot.as_role_key() == &run.role))
+            .collect();
+        // Prefer the existing receipt, including an original root later replaced
+        // or retired. Choosing a fresh role leaf would silently reselect memory.
+        let mut bindings = Vec::new();
+        for run in &root_runs {
+            if let Some(binding) = state
+                .with_store(|store| store.memory_binding(project_id, &run.agent_run_id.to_string()))
+                .map_err(|error| kontor_api::memory::map(state, error))?
+            {
+                bindings.push((binding.bound_at, run.agent_run_id));
+            }
+        }
+        bindings.sort_by_key(|(at, run)| (*at, run.to_string()));
+        let root = bindings
+            .first()
+            .map(|(_, run)| *run)
+            .or_else(|| root_runs.first().map(|run| run.agent_run_id))
+            .ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::MemoryBindingConflict,
+                    "the delivery team has no root memory binding owner",
+                )
+            })?;
+        let recall = self
+            .select_experience_memory(project_id, task_id, Some(root))
+            .await?;
+        memory_launch_prompt(slot, roots, &recall, roots.contains(slot))
+            .map_err(|error| self.refuse_domain(&error))
     }
 
     /// Release a bounded batch of settled consultation sessions. Every intent
@@ -6212,94 +6348,6 @@ impl Services {
             ));
         }
         Ok(Some(existing))
-    }
-
-    /// Canonicalize one intent document, refusing anything the domain will not
-    /// store.
-    /// Choose the approved memory a Context Pack can actually carry.
-    ///
-    /// The whole approved set is tried first and is the answer whenever it fits,
-    /// so nothing changes for a project below the ceiling — same sources, same
-    /// bytes, same hash. Only when the canonical document would exceed
-    /// [`kontor_core::id::MAX_CANONICAL_BYTES`] is the set narrowed, and then to
-    /// the longest prefix of the store's own deterministic order that does fit.
-    ///
-    /// The prefix is found by canonicalizing candidate packs rather than by
-    /// estimating their size from the documents' own lengths: key names, JSON
-    /// escaping and one provenance entry per resolved leaf all land in the
-    /// canonical bytes, so an estimate would have to carry a safety margin and
-    /// would drop revisions that would have fitted. Each memory item occupies its
-    /// own `/memory/<item_id>` subtree and so can only add bytes, which makes the
-    /// fit monotonic in the prefix length and lets a binary search find the exact
-    /// boundary in a logarithmic number of attempts.
-    ///
-    /// Only the ceiling refusal is treated this way. Sensitive material, a
-    /// non-finite number or a missing `schema_version` are faults in a document
-    /// that no amount of narrowing can fix, and they still refuse.
-    fn select_memory_within_ceiling(
-        &self,
-        realm_id: kontor_core::id::RealmId,
-        task: &kontor_core::repository::Task,
-        workflow: &kontor_core::repository::TaskWorkflow,
-        memory: &[kontor_store::memory::MemoryRevision],
-    ) -> Result<MemorySelection, ApiError> {
-        let fits = |count: usize| -> Result<bool, ApiError> {
-            let sources = context_sources(realm_id, task, workflow, &memory[..count])?;
-            let references = kontor_context::model::ReferenceInputs::new();
-            let resolution = kontor_context::resolve::ResolutionRequest {
-                realm_id,
-                sources: &sources,
-                references: &references,
-            };
-            match kontor_context::resolve::preview(&resolution) {
-                Ok(_) => Ok(true),
-                Err(kontor_core::DomainError::Invalid { subject, rule })
-                    if subject == "CanonicalDocument"
-                        && rule == kontor_core::id::OVER_CANONICAL_CEILING =>
-                {
-                    Ok(false)
-                }
-                Err(error) => Err(self.refuse_domain(&error)),
-            }
-        };
-
-        if fits(memory.len())? {
-            return Ok(MemorySelection::whole(memory.len()));
-        }
-        // The base layers alone are over the ceiling, so no choice of memory
-        // rescues this. Refuse with the resolver's own error rather than return
-        // a pack that silently stands for something else.
-        if !fits(0)? {
-            let sources = context_sources(realm_id, task, workflow, &[])?;
-            let references = kontor_context::model::ReferenceInputs::new();
-            let resolution = kontor_context::resolve::ResolutionRequest {
-                realm_id,
-                sources: &sources,
-                references: &references,
-            };
-            let error = kontor_context::resolve::preview(&resolution)
-                .err()
-                .unwrap_or_else(|| {
-                    kontor_core::DomainError::invalid(
-                        "CanonicalDocument",
-                        kontor_core::id::OVER_CANONICAL_CEILING,
-                    )
-                });
-            return Err(self.refuse_domain(&error));
-        }
-        // Largest `included` in [0, len) that fits; `low` always fits and `high`
-        // never does, so the loop closes on the exact boundary.
-        let mut low = 0usize;
-        let mut high = memory.len();
-        while high - low > 1 {
-            let middle = low + (high - low) / 2;
-            if fits(middle)? {
-                low = middle;
-            } else {
-                high = middle;
-            }
-        }
-        Ok(MemorySelection::narrowed(low))
     }
 
     fn intent(&self, value: &serde_json::Value) -> Result<CanonicalDocument, ApiError> {
@@ -14694,63 +14742,6 @@ fn scan_resume_point(
     }
 }
 
-/// Which approved memory revisions a Context Pack carries.
-///
-/// The store's order is the selection order, so `included` is a prefix length
-/// and the omitted revisions are exactly the tail. Keeping it as a length rather
-/// than a copied list is what makes the choice reproducible: the same store
-/// order and the same ceiling give the same prefix, and therefore the same pack
-/// bytes and the same hash, on every call and on a replay.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MemorySelection {
-    included: usize,
-    narrowed: bool,
-}
-
-impl MemorySelection {
-    /// The rule that chose the revisions. Bump this when the rule changes, so a
-    /// pack whose hash moved for that reason can be told from one whose inputs
-    /// moved.
-    const VERSION: u32 = 1;
-
-    const fn whole(included: usize) -> Self {
-        Self {
-            included,
-            narrowed: false,
-        }
-    }
-
-    const fn narrowed(included: usize) -> Self {
-        Self {
-            included,
-            narrowed: true,
-        }
-    }
-
-    fn included<'a>(
-        &self,
-        memory: &'a [kontor_store::memory::MemoryRevision],
-    ) -> &'a [kontor_store::memory::MemoryRevision] {
-        &memory[..self.included]
-    }
-
-    fn report(&self, memory: &[kontor_store::memory::MemoryRevision]) -> MemorySelectionDto {
-        MemorySelectionDto {
-            selector_version: Self::VERSION,
-            ceiling_bytes: kontor_core::id::MAX_CANONICAL_BYTES as u64,
-            included: u32::try_from(self.included).unwrap_or(u32::MAX),
-            narrowed: self.narrowed,
-            omitted: memory[self.included..]
-                .iter()
-                .map(|revision| OmittedMemoryRevisionDto {
-                    item_id: revision.item_id.clone(),
-                    revision_id: revision.revision_id.clone(),
-                })
-                .collect(),
-        }
-    }
-}
-
 /// The visible state of a durable admission awaiting its first attachment.
 fn unconfirmed_admission_block(admission: &UnconfirmedAdmission) -> BlockedTaskDto {
     BlockedTaskDto {
@@ -14938,6 +14929,31 @@ fn eligible_roots(team: &kontor_teams::spec::TeamTemplateSpec) -> BTreeSet<RoleS
 
 /// What one seat is told to do when its session starts.
 ///
+/// Append the frozen canonical memory slice to the existing root instruction.
+fn memory_launch_prompt(
+    slot: &RoleSlotId,
+    roots: &BTreeSet<RoleSlotId>,
+    recall: &kontor_store::memory::RecalledMemory,
+    include_block: bool,
+) -> kontor_core::DomainResult<BoundedText> {
+    let persona = slot_prompt(slot, roots)?;
+    let reference = format!(
+        "\n\nExperience memory binding: project={} run={} result_hash={} block_hash={} mode={}",
+        recall.binding.project_id,
+        recall.binding.run_id,
+        recall.binding.result_hash.as_str(),
+        recall.metadata.block_hash.as_str(),
+        recall.metadata.mode.as_str(),
+    );
+    let mut prompt = format!("{}{reference}", persona.as_str());
+    if include_block {
+        prompt.push_str("\n<experience_memory>\n");
+        prompt.push_str(&recall.canonical_block);
+        prompt.push_str("\n</experience_memory>");
+    }
+    BoundedText::parse(&prompt)
+}
+
 /// A root is given the work. A downstream seat is given an explicit instruction
 /// to wait, naming the fact it is waiting on — not silence, and not the same
 /// instruction as the root's. An idle seat that was told nothing looks exactly
@@ -15852,7 +15868,7 @@ fn context_sources(
     realm_id: kontor_core::id::RealmId,
     task: &kontor_core::repository::Task,
     workflow: &kontor_core::repository::TaskWorkflow,
-    memory: &[kontor_store::memory::MemoryRevision],
+    memory: &kontor_store::memory::RecalledMemory,
 ) -> Result<Vec<kontor_context::model::ContextSource>, ApiError> {
     use kontor_context::model::{ContextLayer, ContextSource};
     let refuse = |error: &kontor_core::DomainError| ApiError::from_domain(realm_id, error);
@@ -15897,29 +15913,22 @@ fn context_sources(
         },
     ];
 
-    // ponytail: resolve every approved item until the canonical 1 MiB pack
-    // ceiling is reachable; add a versioned selector only when that happens.
-    for revision in memory {
-        let revision_number = u32::try_from(revision.revision).map_err(|_| {
+    let documents: Vec<serde_json::Value> =
+        serde_json::from_str(&memory.canonical_block).map_err(|_| {
             refuse(&kontor_core::DomainError::invalid(
-                "MemoryRevision",
-                "is too large to represent in Context Pack provenance",
+                "RecalledMemory",
+                "invalid frozen block",
             ))
         })?;
-        let revision_number =
-            SpecVersion::parse(revision_number).map_err(|error| refuse(&error))?;
-        let document = revision
-            .document
-            .deserialize::<serde_json::Value>()
-            .map_err(|error| refuse(&error))?;
+    for (identity, document) in memory.metadata.identities.iter().zip(documents) {
         let mut items = serde_json::Map::new();
-        items.insert(revision.item_id.clone(), document);
+        items.insert(identity.item_id.clone(), document);
         sources.push(ContextSource {
             schema_version: SCHEMA_VERSION,
             realm_id,
             layer: ContextLayer::ProjectProfile,
-            source_id: format!("memory.{}", revision.revision_id),
-            revision: revision_number,
+            source_id: format!("memory.{}", identity.revision_id),
+            revision: SpecVersion::FIRST,
             restricted_references: Vec::new(),
             redactions: Vec::new(),
             content: serde_json::json!({ "memory": items }),
@@ -19817,6 +19826,94 @@ impl Services {
 
 #[async_trait]
 impl ApplicationOperations for Services {
+    fn recall_memory(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        run: Option<AgentRunId>,
+        key: Option<&IdempotencyKey>,
+    ) -> Result<kontor_store::memory::RecalledMemory, ApiError> {
+        use kontor_core::memory::DegradedReason;
+        use kontor_store::memory::SemanticRecall;
+        let state = self.state()?;
+        if run.is_some() != key.is_some() {
+            return Err(self.deny(
+                ApiErrorCode::InvalidRequest,
+                "frozen recall requires its idempotency key",
+            ));
+        }
+        if let Some(run) = run {
+            let agent = state
+                .with_store(|store| store.get_agent_run(project_id, run))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "no such agent run exists in this project",
+                    )
+                })?;
+            let team = state
+                .with_store(|store| store.get_team_run(project_id, agent.team_run_id))
+                .map_err(|error| self.refuse(&error))?
+                .ok_or_else(|| {
+                    self.deny(
+                        ApiErrorCode::NotFound,
+                        "no such team run exists in this project",
+                    )
+                })?;
+            if team.task_id != task_id {
+                return Err(self.deny(
+                    ApiErrorCode::MemoryBindingConflict,
+                    "the run serves another task",
+                ));
+            }
+            if let Some(frozen) = state
+                .with_store(|store| {
+                    store.replay_experiences_idempotent(
+                        project_id,
+                        &run.to_string(),
+                        &task_id.to_string(),
+                        key.expect("validated key"),
+                    )
+                })
+                .map_err(|error| kontor_api::memory::map(state, error))?
+            {
+                return Ok(frozen);
+            }
+        }
+        let intent = self.memory_recall_intent(project_id, task_id)?;
+        state
+            .with_store(|store| match run {
+                Some(run) => store.recall_experiences_idempotent(
+                    project_id,
+                    &run.to_string(),
+                    &task_id.to_string(),
+                    key.expect("validated key"),
+                    &intent,
+                    &SemanticRecall::Degraded(DegradedReason::Absent),
+                ),
+                None => store.preview_recall(
+                    project_id,
+                    &intent,
+                    &SemanticRecall::Degraded(DegradedReason::Absent),
+                ),
+            })
+            .map_err(|error| kontor_api::memory::map(state, error))
+    }
+    async fn rebuild_memory_projection(
+        &self,
+        project_id: ProjectId,
+        key: &IdempotencyKey,
+        request: &kontor_api::memory::ProjectionRebuildRequest,
+    ) -> Result<kontor_store::memory::ProjectionReadback, ApiError> {
+        let qualifier = self
+            .memory_cognee
+            .get()
+            .map(|client| client as &dyn ProjectionQualifier);
+        self.rebuild_memory_projection_with_qualifier(project_id, key, request, qualifier)
+            .await
+    }
+
     fn open_questions(
         &self,
         project_id: ProjectId,
@@ -31830,23 +31927,20 @@ impl ApplicationOperations for Services {
                 )
             })?;
 
-        // The layers are built from what the task *is* and from approved memory,
-        // never from caller-supplied content: a route that accepted arbitrary
-        // context would be a route through which anything could reach a run.
-        let memory = state
-            .with_store(|store| store.list_memory(project_id))
-            .map_err(|error| match error {
-                kontor_store::memory::MemoryError::Domain(error) => self.refuse_domain(&error),
-                _ => self.deny(
-                    ApiErrorCode::Unavailable,
-                    "approved project memory could not be read",
-                ),
-            })?;
-        // Approved memory grows without bound; the canonical pack does not. When
-        // the whole approved set no longer fits, resolving must still answer —
-        // with a pack that says exactly which revisions it left out.
-        let selection = self.select_memory_within_ceiling(realm_id, &task, &workflow, &memory)?;
-        let sources = context_sources(realm_id, &task, &workflow, selection.included(&memory))?;
+        let run = if request.snapshot {
+            Some(self.live_seat(project_id, task_id)?.ok_or_else(|| {
+                self.deny(
+                    ApiErrorCode::UnsupportedCapability,
+                    "a context snapshot belongs to a run, and this task has none",
+                )
+            })?)
+        } else {
+            None
+        };
+        let memory = self
+            .select_experience_memory(project_id, task_id, run)
+            .await?;
+        let sources = context_sources(realm_id, &task, &workflow, &memory)?;
         let references = kontor_context::model::ReferenceInputs::new();
         let resolution = kontor_context::resolve::ResolutionRequest {
             realm_id,
@@ -31935,7 +32029,15 @@ impl ApplicationOperations for Services {
                     reason: format!("{:?}", record.reason).to_lowercase(),
                 })
                 .collect(),
-            memory_selection: selection.report(&memory),
+            memory_selection: MemorySelectionDto {
+                selector_version: 2,
+                ceiling_bytes: kontor_core::memory::MAX_RECALL_BYTES as u64,
+                included: memory.metadata.identities.len() as u32,
+                narrowed: true,
+                // Recall bounds candidate work; enumerating all omitted ledger
+                // rows here would restore the old full-corpus read.
+                omitted: Vec::new(),
+            },
         })
     }
 
@@ -38853,7 +38955,15 @@ impl Services {
                 // can only ever answer with that pin, so `.or` is the
                 // no-pin case — the account the walk actually selected.
                 account_profile_id: launch_account,
-                prompt: slot_prompt(&slot, &roots).map_err(|error| self.refuse_domain(&error))?,
+                prompt: self
+                    .delivery_memory_prompt(
+                        project_id,
+                        admitted.task_id,
+                        team_run_id,
+                        &slot,
+                        &roots,
+                    )
+                    .await?,
                 model_rung,
                 context_policy: context_policy.clone(),
                 autonomy,
@@ -42247,7 +42357,9 @@ impl Services {
             placement: Some(LaunchPlacement::Container(container.clone())),
             cwd: cwd.clone(),
             account_profile_id,
-            prompt: slot_prompt(slot, roots).map_err(|error| self.refuse_domain(&error))?,
+            prompt: self
+                .delivery_memory_prompt(project_id, admitted.task_id, team_run_id, slot, roots)
+                .await?,
             model_rung,
             context_policy: context_policy.clone(),
             autonomy,

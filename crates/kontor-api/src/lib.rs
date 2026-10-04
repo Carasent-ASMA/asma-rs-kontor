@@ -44,6 +44,7 @@ pub mod control;
 pub mod dto;
 pub mod error;
 pub mod memory;
+mod memory_schema;
 pub mod open_questions;
 pub mod openapi;
 pub mod sessions;
@@ -299,6 +300,14 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/health", get(control::health))
         .route("/v1/realm", get(control::realm))
         .route("/v1/projects/{project_id}/memory", get(memory::list))
+        .route("/v1/projects/{project_id}/memory/experiences:propose", post(memory::propose_experience))
+        .route("/v1/projects/{project_id}/memory/recall:preview", post(memory::recall_preview))
+        .route("/v1/projects/{project_id}/memory/recall:freeze", post(memory::recall_freeze))
+        .route("/v1/projects/{project_id}/memory/recall/{agent_run_id}", get(memory::recall_readback))
+        .route("/v1/projects/{project_id}/memory/projection:preview", get(memory::projection_preview))
+        .route("/v1/projects/{project_id}/memory/projection", get(memory::projection_readback))
+        .route("/v1/projects/{project_id}/memory/projection:rebuild", post(memory::projection_rebuild))
+        .route("/v1/projects/{project_id}/memory/experiences:classify", get(memory::classify))
         .route(
             "/v1/projects/{project_id}/memory/{item_id}/history",
             get(memory::history),

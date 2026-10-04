@@ -1,0 +1,180 @@
+[
+  {
+    "id": "MUT-001",
+    "file": "crates/kontor-core/src/memory.rs",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-core",
+      "--test",
+      "experience_memory",
+      "strict_experience_roundtrip_and_non_memory_eligibility",
+      "--offline"
+    ],
+    "original_sha256": "d441653116bfeb841fe322ebffb84820a843a1ed47cffff313f2bd06c2d0876f",
+    "needle": "ExperienceMemoryV1::from_document(document).is_ok()",
+    "replacement": "document.json().contains(\"operational_gap\") || ExperienceMemoryV1::from_document(document).is_ok()",
+    "runs": [
+      {
+        "phase": "baseline",
+        "exit_code": 0,
+        "seconds": 0.339,
+        "log": "mut-001-baseline.log",
+        "log_sha256": "ee799db1174c73b9da4cae1de10f16706aef5bfad616f247cb12acf299306a28",
+        "source_sha256": "d441653116bfeb841fe322ebffb84820a843a1ed47cffff313f2bd06c2d0876f",
+        "raw_log": "mut-001-baseline.log.raw.gz",
+        "raw_log_sha256": "ccaeeb0f4d66227d7ff77eb634b63b13202125ae985d0752c61d47a155183549",
+        "raw_archive_sha256": "92be812a945e030ac5d88afe14b44fa4092ab809a4a70a313e41356918c3e055",
+        "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+      },
+      {
+        "phase": "seeded",
+        "exit_code": 101,
+        "seconds": 11.909,
+        "log": "mut-001-seeded.log",
+        "log_sha256": "ce009247623e9fb2cc567ac189c4f96994160b1e3a3bdb153b79c9e8213ce710",
+        "source_sha256": "e0bc1d21a7824ba032caff04a5e9c02d880d0ca516759555591b3283079f439d"
+      },
+      {
+        "phase": "restored",
+        "exit_code": 0,
+        "seconds": 1.993,
+        "log": "mut-001-restored.log",
+        "log_sha256": "a0e617ab3178ba2cbe79d26a0a60b901bbb1d9c4034e93e49cfd8402786b1cc1",
+        "source_sha256": "d441653116bfeb841fe322ebffb84820a843a1ed47cffff313f2bd06c2d0876f",
+        "raw_log": "mut-001-restored.log.raw.gz",
+        "raw_log_sha256": "f8468b9b2bf6444de62e5445b98863b9a06fda6ffefab5e26977b182c9e20f34",
+        "raw_archive_sha256": "1ecdb03a6914dd83fc38103cea76523c6ae6266f9fc68b685a44f29e484f5191",
+        "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+      }
+    ],
+    "mutant_sha256": "e0bc1d21a7824ba032caff04a5e9c02d880d0ca516759555591b3283079f439d",
+    "verdict": "KILLED",
+    "restored_sha256": "d441653116bfeb841fe322ebffb84820a843a1ed47cffff313f2bd06c2d0876f",
+    "final_source_manifest_sha256": "eb7df8ef2f7318e95951fb3d3369c6852b33f69c88efcd0ec1a371372e23e8e5",
+    "test_sources": {
+      "crates/kontor-core/tests/experience_memory.rs": "633cc1c50b1c0443869f55ff5dfb2c21b2e52a771a2d29607b6515809b7812d8",
+      "crates/kontor-core/tests/fixtures/experience-v1.json": "2e61802621515979c0e745d72302caaf6d560d477bd7ae0a470a13501464337e",
+      "crates/kontor-store/src/memory.rs": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88"
+    }
+  },
+  {
+    "id": "MUT-002",
+    "file": "crates/kontor-store/src/memory.rs",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--lib",
+      "memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind",
+      "--offline"
+    ],
+    "original_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+    "needle": "WHERE r.project_id=?1 AND r.project_id=?2 AND r.item_id=?3 AND r.id=?4 AND r.content_hash=?5",
+    "replacement": "WHERE r.item_id=?3 AND r.id=?4 AND r.content_hash=?5",
+    "runs": [
+      {
+        "phase": "baseline",
+        "exit_code": 0,
+        "seconds": 14.425,
+        "log": "mut-002-baseline.log",
+        "log_sha256": "f3492b35e81663f2bbb303f7b846233be9348354bcadd372a616aea35f331aca",
+        "source_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+        "raw_log": "mut-002-baseline.log.raw.gz",
+        "raw_log_sha256": "f179326973013225cc9eca75633d5bf5d3d57dfcc2bb07d88416de0cdb562c20",
+        "raw_archive_sha256": "8705b192954f1b5391c36038cf99f7bb7baca1c4b0430d52f51e76c02308a75d",
+        "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+      },
+      {
+        "phase": "seeded",
+        "exit_code": 101,
+        "seconds": 12.644,
+        "log": "mut-002-seeded.log",
+        "log_sha256": "d3ec2e4a20c7b70740339204bfeac5efd1a906ee827977c1e1931ca792d67564",
+        "source_sha256": "1b2532f95e535f21c848063be5dc6f0ad521641c8faa7fd76d82e03c7d2a154b"
+      },
+      {
+        "phase": "restored",
+        "exit_code": 0,
+        "seconds": 12.183,
+        "log": "mut-002-restored.log",
+        "log_sha256": "a4f42a586b6effa857105eb7c848d80e2a7cbe6643fd25d9dd3d17434e7a9fb9",
+        "source_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+        "raw_log": "mut-002-restored.log.raw.gz",
+        "raw_log_sha256": "031cc52ea7b4db53c9ae5439a1a4cd22be792c8893eed08ae4935cd6ef6396fe",
+        "raw_archive_sha256": "0f3146d77abf3d585e1ccb1f1c4d3996712a15ace3ad5fd32cabbc615378c487",
+        "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+      }
+    ],
+    "mutant_sha256": "1b2532f95e535f21c848063be5dc6f0ad521641c8faa7fd76d82e03c7d2a154b",
+    "verdict": "KILLED",
+    "restored_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+    "final_source_manifest_sha256": "eb7df8ef2f7318e95951fb3d3369c6852b33f69c88efcd0ec1a371372e23e8e5",
+    "test_sources": {
+      "crates/kontor-core/tests/experience_memory.rs": "633cc1c50b1c0443869f55ff5dfb2c21b2e52a771a2d29607b6515809b7812d8",
+      "crates/kontor-core/tests/fixtures/experience-v1.json": "2e61802621515979c0e745d72302caaf6d560d477bd7ae0a470a13501464337e",
+      "crates/kontor-store/src/memory.rs": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88"
+    }
+  },
+  {
+    "id": "MUT-003",
+    "file": "crates/kontor-store/src/memory.rs",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--lib",
+      "memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top",
+      "--offline"
+    ],
+    "original_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+    "needle": "if next_bytes > MAX_RECALL_BYTES {",
+    "replacement": "if next_bytes > MAX_RECALL_BYTES + 1 {",
+    "runs": [
+      {
+        "phase": "baseline",
+        "exit_code": 0,
+        "seconds": 2.176,
+        "log": "mut-003-baseline.log",
+        "log_sha256": "b678c6203a4146d237ad6906dc5c388753ec1b47423cbf76fb5baca4ae8d8e1d",
+        "source_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+        "raw_log": "mut-003-baseline.log.raw.gz",
+        "raw_log_sha256": "40e705ca2d1e20924cddde32e2fc6640d5472677792cb53ca3e8740dfe0ba448",
+        "raw_archive_sha256": "ad4583b0b59515d5c7ad5cf8e669e0909f9b6ec35c29eeb15d185edd3866d8ca",
+        "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+      },
+      {
+        "phase": "seeded",
+        "exit_code": 101,
+        "seconds": 12.48,
+        "log": "mut-003-seeded.log",
+        "log_sha256": "7b66df6afcdf689a21323b303bf339613b1ea0bdb6027db32e88298173d97a9d",
+        "source_sha256": "396fa10f916ec81254162127a863562b43dd01aa557a1f77feab5bde10178f4e"
+      },
+      {
+        "phase": "restored",
+        "exit_code": 0,
+        "seconds": 11.856,
+        "log": "mut-003-restored.log",
+        "log_sha256": "361fcb8495a75c77d89a74561306832a9421282b30ea774f2468feb12151cbac",
+        "source_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+        "raw_log": "mut-003-restored.log.raw.gz",
+        "raw_log_sha256": "398181a01cc8caf7ef1877987154cbfa7b85d1b12385e5a1c4086b1743ea8d32",
+        "raw_archive_sha256": "9e1a96bd665ca94996169f9a12208ab301a4928525f6299e1ad8551f9a83a354",
+        "log_normalization": "Trailing whitespace and extra final blank lines removed; raw bytes preserved in gzip archive."
+      }
+    ],
+    "mutant_sha256": "396fa10f916ec81254162127a863562b43dd01aa557a1f77feab5bde10178f4e",
+    "verdict": "KILLED",
+    "restored_sha256": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88",
+    "final_source_manifest_sha256": "eb7df8ef2f7318e95951fb3d3369c6852b33f69c88efcd0ec1a371372e23e8e5",
+    "test_sources": {
+      "crates/kontor-core/tests/experience_memory.rs": "633cc1c50b1c0443869f55ff5dfb2c21b2e52a771a2d29607b6515809b7812d8",
+      "crates/kontor-core/tests/fixtures/experience-v1.json": "2e61802621515979c0e745d72302caaf6d560d477bd7ae0a470a13501464337e",
+      "crates/kontor-store/src/memory.rs": "6ef3e31eec386f70fbe3099f63555299a6ae6ef4a90a32b45b5b353cad126a88"
+    }
+  }
+]

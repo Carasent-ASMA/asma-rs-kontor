@@ -3213,6 +3213,7 @@ dependencies = [
  "kontor-core",
  "kontor-jira",
  "kontor-mcp",
+ "kontor-memory-cognee",
  "kontor-policy",
  "kontor-profiles",
  "kontor-runtime",
@@ -3301,6 +3302,22 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "kontor-memory-cognee"
+version = "0.2.1"
+dependencies = [
+ "kontor-core",
+ "kontor-store",
+ "reqwest",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
+ "wiremock",
 ]
 
 [[package]]
@@ -4891,6 +4908,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",

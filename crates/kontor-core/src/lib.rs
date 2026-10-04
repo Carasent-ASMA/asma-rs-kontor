@@ -98,6 +98,7 @@ pub mod compaction;
 pub mod consultation;
 pub mod epic_seat;
 pub mod id;
+pub mod memory;
 pub mod naming;
 pub mod open_question;
 pub mod publication;

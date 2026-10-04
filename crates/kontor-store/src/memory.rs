@@ -1,10 +1,14 @@
 //! Native, project-isolated memory ledger and its rebuildable FTS projection.
 #![allow(missing_docs)]
 
+mod projection_rebuild;
+pub use projection_rebuild::{ProjectionRebuildInput, ProjectionRebuildStage};
+
 use kontor_core::authority::AuthoritySubject;
 use kontor_core::id::{
     AggregateRevision, CanonicalDocument, ContentHash, ProjectId, Timestamp, parse_utc_timestamp,
 };
+use kontor_core::memory::*;
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -17,6 +21,8 @@ use crate::authority::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
+    #[error("experience memory refused: {0}")]
+    Refused(MemoryRefusal),
     #[error("revision conflict: expected {expected}, current {current}")]
     RevisionConflict { expected: u64, current: u64 },
     #[error("memory authority is `{current}`; `{required}` is required")]
@@ -176,64 +182,18 @@ impl SqliteStore {
         provenance: &MemoryProvenance,
         proposed_by: &str,
     ) -> Result<(MemoryRevision, MemoryReceipt), MemoryError> {
-        kontor_core::id::reject_sensitive_text("memory.item_id", item_id)?;
-        kontor_core::id::reject_sensitive_text("memory.proposed_by", proposed_by)?;
         let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
-        require_subject_authority(&tx, project_id, AuthoritySubject::Memory)?;
-        let current = aggregate_revision(&tx, project_id, item_id)?.unwrap_or(0);
-        if current != expected_revision {
-            return Err(MemoryError::RevisionConflict {
-                expected: expected_revision,
-                current,
-            });
-        }
-        tx.execute(
-            "INSERT INTO memory_items(project_id,id,aggregate_revision) VALUES (?1,?2,0) ON CONFLICT DO NOTHING",
-            params![project_id.to_string(), item_id],
-        )?;
-        let revision = current + 1;
-        let revision_id = Uuid::now_v7().to_string();
-        let proposed_at = Timestamp::now();
-        let supersedes_id: Option<String> = tx.query_row(
-            "SELECT current_revision_id FROM memory_items WHERE project_id=?1 AND id=?2",
-            params![project_id.to_string(), item_id],
-            |row| row.get(0),
-        )?;
-        tx.execute(
-            "INSERT INTO memory_revisions(project_id,item_id,id,revision,document,content_hash,provenance,proposed_by,proposed_at,supersedes_id,history_unavailable) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-            params![project_id.to_string(), item_id, revision_id, sql_u64(revision)?, document.json(), document.hash().as_str(), serde_json::to_string(provenance)?, proposed_by, proposed_at.to_string(), supersedes_id, provenance.history_unavailable],
-        )?;
-        tx.execute(
-            "UPDATE memory_items SET aggregate_revision=?3 WHERE project_id=?1 AND id=?2 AND aggregate_revision=?4",
-            params![project_id.to_string(), item_id, sql_u64(revision)?, sql_u64(current)?],
-        )?;
-        let receipt = receipt(
+        let result = propose_memory_revision_in(
             &tx,
             project_id,
-            "propose",
-            Some(item_id),
-            Some(&revision_id),
-            Some(revision),
-            document.hash(),
+            item_id,
+            expected_revision,
+            document,
+            provenance,
+            proposed_by,
         )?;
         tx.commit()?;
-        Ok((
-            MemoryRevision {
-                project_id,
-                item_id: item_id.into(),
-                revision_id,
-                revision,
-                document: document.clone(),
-                provenance: provenance.clone(),
-                proposed_by: proposed_by.into(),
-                proposed_at,
-                supersedes_id,
-                approved: false,
-                current: false,
-                tombstoned: false,
-            },
-            receipt,
-        ))
+        Ok(result)
     }
 
     pub fn approve_memory_revision(
@@ -416,6 +376,7 @@ impl SqliteStore {
 
     pub fn rebuild_memory_fts(&self) -> Result<usize, MemoryError> {
         let tx = self.connection.unchecked_transaction()?;
+        rebuild_experience_eligibility_in(&tx)?;
         tx.execute("DELETE FROM memory_fts", [])?;
         let count = tx.execute("INSERT INTO memory_fts(project_id,item_id,revision_id,document) SELECT r.project_id,r.item_id,r.id,r.document FROM memory_revisions r JOIN memory_items i ON i.project_id=r.project_id AND i.id=r.item_id AND i.current_revision_id=r.id JOIN memory_approvals a ON a.project_id=r.project_id AND a.revision_id=r.id LEFT JOIN memory_tombstones t ON t.project_id=r.project_id AND t.item_id=r.item_id WHERE t.item_id IS NULL", [])?;
         tx.commit()?;
@@ -429,39 +390,11 @@ impl SqliteStore {
         selection_spec: &CanonicalDocument,
         revision_ids: &[String],
     ) -> Result<ContextMemoryBinding, MemoryError> {
-        let tx = self.connection.unchecked_transaction()?;
-        if let Some(existing) = read_binding(&tx, project_id, run_id)? {
-            return Ok(existing);
-        }
-        let cursor: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(rowid),0) FROM memory_approvals",
-            [],
-            |row| row.get(0),
-        )?;
-        let mut ordered = Vec::with_capacity(revision_ids.len());
-        for id in revision_ids {
-            let hash: String = tx.query_row("SELECT r.content_hash FROM memory_revisions r JOIN memory_items i ON i.project_id=r.project_id AND i.current_revision_id=r.id JOIN memory_approvals a ON a.project_id=r.project_id AND a.revision_id=r.id LEFT JOIN memory_tombstones t ON t.project_id=r.project_id AND t.item_id=r.item_id WHERE r.project_id=?1 AND r.id=?2 AND t.item_id IS NULL", params![project_id.to_string(), id], |row| row.get(0)).optional()?.ok_or(MemoryError::NotFound)?;
-            ordered.push(FrozenRevision {
-                revision_id: id.clone(),
-                content_hash: ContentHash::parse(&hash)?,
-            });
-        }
-        let ordered_json = serde_json::to_string(&ordered)?;
-        let result_hash = ContentHash::of(
-            serde_json::to_string(&(cursor, selection_spec.hash(), &ordered))?.as_bytes(),
-        );
-        let bound_at = Timestamp::now();
-        tx.execute("INSERT INTO memory_context_bindings(project_id,run_id,selection_cursor,selection_spec,ordered_revisions,result_hash,bound_at) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![project_id.to_string(),run_id,cursor,selection_spec.json(),ordered_json,result_hash.as_str(),bound_at.to_string()])?;
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        let binding =
+            freeze_memory_binding_in(&tx, project_id, run_id, selection_spec, revision_ids)?;
         tx.commit()?;
-        Ok(ContextMemoryBinding {
-            project_id,
-            run_id: run_id.into(),
-            selection_cursor: cursor,
-            selection_spec: selection_spec.clone(),
-            ordered_revisions: ordered,
-            result_hash,
-            bound_at,
-        })
+        Ok(binding)
     }
 
     pub fn memory_binding(
@@ -787,6 +720,46 @@ fn receipt(
         recorded_at: at,
     })
 }
+fn freeze_memory_binding_in(
+    tx: &Transaction<'_>,
+    project_id: ProjectId,
+    run_id: &str,
+    selection_spec: &CanonicalDocument,
+    revision_ids: &[String],
+) -> Result<ContextMemoryBinding, MemoryError> {
+    if let Some(existing) = read_binding(tx, project_id, run_id)? {
+        return Ok(existing);
+    }
+    let cursor: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(rowid),0) FROM memory_approvals",
+        [],
+        |row| row.get(0),
+    )?;
+    let mut ordered = Vec::with_capacity(revision_ids.len());
+    for id in revision_ids {
+        let hash: String = tx.query_row("SELECT r.content_hash FROM memory_revisions r JOIN memory_items i ON i.project_id=r.project_id AND i.current_revision_id=r.id JOIN memory_approvals a ON a.project_id=r.project_id AND a.revision_id=r.id LEFT JOIN memory_tombstones t ON t.project_id=r.project_id AND t.item_id=r.item_id WHERE r.project_id=?1 AND r.id=?2 AND t.item_id IS NULL", params![project_id.to_string(), id], |row| row.get(0)).optional()?.ok_or(MemoryError::NotFound)?;
+        ordered.push(FrozenRevision {
+            revision_id: id.clone(),
+            content_hash: ContentHash::parse(&hash)?,
+        });
+    }
+    let ordered_json = serde_json::to_string(&ordered)?;
+    let result_hash = ContentHash::of(
+        serde_json::to_string(&(cursor, selection_spec.hash(), &ordered))?.as_bytes(),
+    );
+    let bound_at = Timestamp::now();
+    tx.execute("INSERT INTO memory_context_bindings(project_id,run_id,selection_cursor,selection_spec,ordered_revisions,result_hash,bound_at) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![project_id.to_string(),run_id,cursor,selection_spec.json(),ordered_json,result_hash.as_str(),bound_at.to_string()])?;
+    Ok(ContextMemoryBinding {
+        project_id,
+        run_id: run_id.into(),
+        selection_cursor: cursor,
+        selection_spec: selection_spec.clone(),
+        ordered_revisions: ordered,
+        result_hash,
+        bound_at,
+    })
+}
+
 fn read_binding(
     connection: &rusqlite::Connection,
     project_id: ProjectId,
@@ -831,7 +804,7 @@ mod tests {
     }
     /// Two projects whose memory was created in Kontor: writable immediately,
     /// with no cutover to wait for.
-    fn fixture() -> (tempfile::TempDir, SqliteStore, ProjectId, ProjectId) {
+    pub(super) fn fixture() -> (tempfile::TempDir, SqliteStore, ProjectId, ProjectId) {
         project_fixture(SubjectOrigin::KontorNative)
     }
 
@@ -874,7 +847,7 @@ mod tests {
         }
         (dir, store, a, b)
     }
-    fn provenance() -> MemoryProvenance {
+    pub(super) fn provenance() -> MemoryProvenance {
         MemoryProvenance {
             source: "operator".into(),
             source_id: None,
@@ -1634,4 +1607,1576 @@ mod tests {
             "secret scanning happens before a ledger value can exist"
         );
     }
+}
+
+// Typed experience operations share the generic ledger and its binding primitive.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecallMetadata {
+    pub schema_version: u32,
+    pub intent_hash: ContentHash,
+    pub mode: RetrievalMode,
+    pub reason: Option<DegradedReason>,
+    /// Receipt watermark, separate from the existing approval selection cursor.
+    pub memory_cursor: i64,
+    pub projection_cursor: Option<i64>,
+    pub projection_digest: Option<ContentHash>,
+    pub identities: Vec<MemoryIdentity>,
+    pub exclusions: RecallExclusions,
+    pub block_hash: ContentHash,
+    pub block_bytes: usize,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct RecalledMemory {
+    pub binding: ContextMemoryBinding,
+    pub metadata: RecallMetadata,
+    /// Exact canonical JSON array, including container overhead.
+    pub canonical_block: String,
+    pub replayed: bool,
+}
+#[derive(Debug, Clone)]
+pub enum SemanticRecall {
+    Degraded(DegradedReason),
+    Candidates {
+        projection_digest: ContentHash,
+        candidates: Vec<MemoryCandidate>,
+    },
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionSnapshot {
+    pub project_id: ProjectId,
+    pub memory_cursor: i64,
+    pub dataset: String,
+    pub digest: ContentHash,
+    pub identities: Vec<MemoryIdentity>,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectionPreview {
+    pub snapshot: ProjectionSnapshot,
+    pub entries: Vec<ProjectionEntry>,
+    pub active_generation: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectionReadback {
+    pub active: Option<ProjectionSnapshot>,
+    pub generation: u64,
+    pub stale: bool,
+    pub adapter_available: bool,
+}
+/// Produced by the adapter only after all three phases finish for this digest.
+#[derive(Debug, Clone)]
+pub struct ProjectionQualification {
+    pub digest: ContentHash,
+    pub added: bool,
+    pub cognified: bool,
+    pub canary_passed: bool,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct ExperienceClassification {
+    pub identity: MemoryIdentity,
+    pub recall_eligible: bool,
+    pub projection_policy: Option<ProjectionPolicy>,
+}
+
+impl SqliteStore {
+    pub fn propose_experience(
+        &self,
+        project_id: ProjectId,
+        item_id: &str,
+        expected_revision: u64,
+        document: &CanonicalDocument,
+        provenance: &MemoryProvenance,
+        proposed_by: &str,
+    ) -> Result<(MemoryRevision, MemoryReceipt), MemoryError> {
+        let experience = ExperienceMemoryV1::from_document(document)
+            .map_err(|_| MemoryError::Refused(MemoryRefusal::InvalidExperience))?;
+        Self::resolve_experience_evidence(&self.connection, project_id, &experience)?;
+        self.propose_memory_revision(
+            project_id,
+            item_id,
+            expected_revision,
+            document,
+            provenance,
+            proposed_by,
+        )
+    }
+
+    fn resolve_experience_evidence(
+        connection: &rusqlite::Connection,
+        project_id: ProjectId,
+        experience: &ExperienceMemoryV1,
+    ) -> Result<(), MemoryError> {
+        for reference in &experience.evidence_refs {
+            let found = match reference {
+                EvidenceRef::Artifact { .. } => true, // A digest-bearing citation, never filesystem/network access.
+                EvidenceRef::Receipt { receipt_id, content_hash } => connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM memory_receipts WHERE project_id=?1 AND id=?2 AND result_hash=?3 UNION ALL SELECT 1 FROM command_receipts WHERE project_id=?1 AND id=?2 AND intent_hash=?3)",
+                    params![project_id.to_string(), receipt_id, content_hash.as_str()], |row| row.get::<_, bool>(0))?,
+                EvidenceRef::MemoryRevision { project_id: owner, item_id, revision_id, content_hash } => *owner == project_id && connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM memory_revisions WHERE project_id=?1 AND item_id=?2 AND id=?3 AND content_hash=?4)",
+                    params![project_id.to_string(), item_id, revision_id, content_hash.as_str()], |row| row.get::<_, bool>(0))?,
+            };
+            if !found {
+                return Err(MemoryError::Refused(MemoryRefusal::UnresolvedEvidence));
+            }
+        }
+        Ok(())
+    }
+
+    /// Current typed approved heads only, useful for classification/projection.
+    /// This explicit administrative read is never the recall fallback.
+    pub fn classify_experiences(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Vec<ExperienceClassification>, MemoryError> {
+        let rows = current_documents(&self.connection, project_id)?;
+        Ok(rows
+            .into_iter()
+            .map(|(identity, document)| {
+                let typed = ExperienceMemoryV1::from_document(&document).ok();
+                ExperienceClassification {
+                    identity,
+                    recall_eligible: typed.is_some(),
+                    projection_policy: typed.map(|value| value.projection_policy),
+                }
+            })
+            .collect())
+    }
+
+    /// Replays first. Selection, authoritative rehydration, budgeting and binding
+    /// all run under the same BEGIN IMMEDIATE transaction; no validation gap.
+    pub fn recall_experiences(
+        &self,
+        project_id: ProjectId,
+        run_id: &str,
+        intent: &RecallIntent,
+        semantic: &SemanticRecall,
+    ) -> Result<RecalledMemory, MemoryError> {
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        let result = recall_experiences_in(&tx, project_id, run_id, intent, semantic)?;
+        tx.commit()?;
+        Ok(result)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn recall_experiences_idempotent(
+        &self,
+        project_id: ProjectId,
+        run_id: &str,
+        task_id: &str,
+        key: &kontor_core::id::IdempotencyKey,
+        intent: &RecallIntent,
+        semantic: &SemanticRecall,
+    ) -> Result<RecalledMemory, MemoryError> {
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        let existing = tx.query_row("SELECT run_id,task_id FROM memory_recall_keys WHERE project_id=?1 AND idempotency_key=?2",params![project_id.to_string(),key.as_str()],|row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).optional()?;
+        if existing.is_some_and(|(run, task)| run != run_id || task != task_id) {
+            return Err(MemoryError::Refused(MemoryRefusal::BindingConflict));
+        }
+        let result = recall_experiences_in(&tx, project_id, run_id, intent, semantic)?;
+        tx.execute("INSERT INTO memory_recall_keys(project_id,idempotency_key,run_id,task_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![project_id.to_string(),key.as_str(),run_id,task_id])?;
+        tx.commit()?;
+        Ok(result)
+    }
+    pub fn replay_experiences_idempotent(
+        &self,
+        project_id: ProjectId,
+        run_id: &str,
+        task_id: &str,
+        key: &kontor_core::id::IdempotencyKey,
+    ) -> Result<Option<RecalledMemory>, MemoryError> {
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        let existing = tx.query_row("SELECT run_id,task_id FROM memory_recall_keys WHERE project_id=?1 AND idempotency_key=?2",params![project_id.to_string(),key.as_str()],|row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).optional()?;
+        if existing.is_some_and(|(run, task)| run != run_id || task != task_id) {
+            return Err(MemoryError::Refused(MemoryRefusal::BindingConflict));
+        }
+        let result = read_recall_in(&tx, project_id, run_id)?;
+        if result.is_some() {
+            tx.execute("INSERT INTO memory_recall_keys(project_id,idempotency_key,run_id,task_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![project_id.to_string(),key.as_str(),run_id,task_id])?;
+            tx.commit()?;
+        }
+        Ok(result)
+    }
+    pub fn preview_recall(
+        &self,
+        project_id: ProjectId,
+        intent: &RecallIntent,
+        semantic: &SemanticRecall,
+    ) -> Result<RecalledMemory, MemoryError> {
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        // Compute through the same selector; the preview transaction is rolled back.
+        recall_experiences_in(
+            &tx,
+            project_id,
+            &format!("preview-{}", Uuid::now_v7()),
+            intent,
+            semantic,
+        )
+    }
+
+    pub fn recalled_memory(
+        &self,
+        project_id: ProjectId,
+        run_id: &str,
+    ) -> Result<Option<RecalledMemory>, MemoryError> {
+        // One read transaction prevents purge halfway through materialization.
+        let tx = self.connection.unchecked_transaction()?;
+        read_recall_in(&tx, project_id, run_id)
+    }
+
+    pub fn projection_preview(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<ProjectionPreview, MemoryError> {
+        let tx = self.connection.unchecked_transaction()?;
+        projection_preview_in(&tx, project_id)
+    }
+    pub fn projection_readback(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<ProjectionReadback, MemoryError> {
+        let tx = self.connection.unchecked_transaction()?;
+        projection_readback_in(&tx, project_id)
+    }
+    /// Persist identities/digest only; payload is rehydrated while preparing a
+    /// rebuild and never retained as a second canonical copy after purge.
+    pub fn stage_projection(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<ProjectionPreview, MemoryError> {
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        let preview = stage_projection_in(&tx, project_id)?;
+        tx.commit()?;
+        Ok(preview)
+    }
+    /// Network work finishes before this authoritative freshness/CAS transaction.
+    pub fn activate_projection(
+        &self,
+        project_id: ProjectId,
+        cursor: i64,
+        expected_generation: u64,
+        qualification: &ProjectionQualification,
+    ) -> Result<ProjectionReadback, MemoryError> {
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        let result =
+            activate_projection_in(&tx, project_id, cursor, expected_generation, qualification)?;
+        tx.commit()?;
+        Ok(result)
+    }
+}
+
+fn stage_projection_in(
+    tx: &Transaction<'_>,
+    project_id: ProjectId,
+) -> Result<ProjectionPreview, MemoryError> {
+    let preview = projection_preview_in(tx, project_id)?;
+    let snapshot = &preview.snapshot;
+    tx.execute("INSERT INTO memory_projection_snapshots(project_id,memory_cursor,dataset,digest,identities,created_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING", params![project_id.to_string(), snapshot.memory_cursor, snapshot.dataset, snapshot.digest.as_str(), serde_json::to_string(&snapshot.identities)?, Timestamp::now().to_string()])?;
+    let stored =
+        read_snapshot(tx, project_id, snapshot.memory_cursor)?.ok_or(MemoryError::NotFound)?;
+    if stored.digest != snapshot.digest || stored.identities != snapshot.identities {
+        return Err(MemoryError::Refused(MemoryRefusal::ProjectionConflict));
+    }
+    Ok(preview)
+}
+
+fn activate_projection_in(
+    tx: &Transaction<'_>,
+    project_id: ProjectId,
+    cursor: i64,
+    expected_generation: u64,
+    qualification: &ProjectionQualification,
+) -> Result<ProjectionReadback, MemoryError> {
+    if !qualification.added || !qualification.cognified || !qualification.canary_passed {
+        return Err(MemoryError::Refused(MemoryRefusal::ProjectionUnavailable));
+    }
+    let snapshot = read_snapshot(tx, project_id, cursor)?.ok_or(MemoryError::NotFound)?;
+    let preview = projection_preview_in(tx, project_id)?;
+    if preview.active_generation != expected_generation
+        || snapshot.digest != qualification.digest
+        || snapshot.digest != preview.snapshot.digest
+        || cursor != preview.snapshot.memory_cursor
+    {
+        return Err(MemoryError::Refused(MemoryRefusal::ProjectionConflict));
+    }
+    tx.execute("INSERT INTO memory_projection_active(project_id,memory_cursor,generation) VALUES (?1,?2,?3) ON CONFLICT(project_id) DO UPDATE SET memory_cursor=excluded.memory_cursor,generation=excluded.generation", params![project_id.to_string(), cursor, sql_u64(expected_generation + 1)?])?;
+    let result = projection_readback_in(tx, project_id)?;
+    Ok(result)
+}
+
+struct RankedExperience {
+    identity: MemoryIdentity,
+    document: CanonicalDocument,
+    confidence: EvidenceConfidence,
+    score: f64,
+}
+
+/// The exact candidate tuple is resolved in SQL. Upstream text is never input.
+fn hydrate_candidate_in(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+    candidate: &MemoryCandidate,
+    provider_only: bool,
+) -> Result<Option<RankedExperience>, MemoryError> {
+    if candidate.validate().is_err() {
+        return Ok(None);
+    }
+    let row = connection.query_row(
+        "SELECT r.project_id,r.item_id,r.id,r.document,r.content_hash FROM memory_revisions r
+         JOIN memory_items i ON i.project_id=r.project_id AND i.id=r.item_id AND i.current_revision_id=r.id
+         JOIN memory_approvals a ON a.project_id=r.project_id AND a.revision_id=r.id
+         WHERE r.project_id=?1 AND r.project_id=?2 AND r.item_id=?3 AND r.id=?4 AND r.content_hash=?5
+         AND NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.project_id=r.project_id AND t.item_id=r.item_id)",
+        params![project_id.to_string(), candidate.project_id.to_string(), candidate.item_id, candidate.revision_id, candidate.content_hash.as_str()],
+        |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?, row.get::<_,String>(2)?, row.get::<_,String>(3)?, row.get::<_,String>(4)?)),
+    ).optional()?;
+    let Some((owner, item, revision, json, hash)) = row else {
+        return Ok(None);
+    };
+    let hash = ContentHash::parse(&hash)?;
+    let Ok(document) = CanonicalDocument::from_stored(&json, &hash) else {
+        return Ok(None);
+    };
+    if !is_recall_eligible(&document) {
+        return Ok(None);
+    }
+    let Ok(experience) = ExperienceMemoryV1::from_document(&document) else {
+        return Ok(None);
+    };
+    if provider_only && experience.projection_policy != ProjectionPolicy::ProviderEligible {
+        return Ok(None);
+    }
+    Ok(Some(RankedExperience {
+        identity: MemoryIdentity {
+            project_id: ProjectId::parse(&owner)?,
+            item_id: item,
+            revision_id: revision,
+            content_hash: hash,
+        },
+        document,
+        confidence: experience.confidence,
+        score: candidate.score,
+    }))
+}
+
+fn lexical_candidates_in(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+    query: &str,
+) -> Result<Vec<RankedExperience>, MemoryError> {
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Join the indexed revision to the current approved typed head BEFORE LIMIT.
+    let mut statement = connection.prepare(
+        "SELECT r.item_id,r.id,r.content_hash,bm25(memory_fts) FROM memory_fts
+         JOIN memory_revisions r ON r.project_id=memory_fts.project_id AND r.item_id=memory_fts.item_id AND r.id=memory_fts.revision_id
+         JOIN memory_items i ON i.project_id=r.project_id AND i.id=r.item_id AND i.current_revision_id=r.id
+         JOIN memory_approvals a ON a.project_id=r.project_id AND a.revision_id=r.id
+         JOIN memory_experience_eligibility e ON e.project_id=r.project_id AND e.revision_id=r.id
+         WHERE r.project_id=?1 AND memory_fts MATCH ?2
+         AND NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.project_id=r.project_id AND t.item_id=r.item_id)
+         ORDER BY bm25(memory_fts),e.confidence DESC,r.item_id LIMIT ?3")?;
+    let candidates = statement
+        .query_map(
+            params![project_id.to_string(), query, MAX_CANDIDATES as i64],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, f64>(3)?,
+                ))
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    candidates
+        .into_iter()
+        .map(|(item, revision, hash, score)| {
+            hydrate_candidate_in(
+                connection,
+                project_id,
+                &MemoryCandidate {
+                    project_id,
+                    item_id: item,
+                    revision_id: revision,
+                    content_hash: ContentHash::parse(&hash)?,
+                    score: -score,
+                },
+                false,
+            )
+        })
+        .filter_map(|result| result.transpose())
+        .collect()
+}
+
+fn receipt_cursor(connection: &rusqlite::Connection) -> Result<i64, MemoryError> {
+    Ok(connection.query_row(
+        "SELECT COALESCE(MAX(rowid),0) FROM memory_receipts",
+        [],
+        |row| row.get(0),
+    )?)
+}
+fn current_documents(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+) -> Result<Vec<(MemoryIdentity, CanonicalDocument)>, MemoryError> {
+    let mut statement = connection.prepare("SELECT r.item_id,r.id,r.document,r.content_hash FROM memory_revisions r JOIN memory_items i ON i.project_id=r.project_id AND i.id=r.item_id AND i.current_revision_id=r.id JOIN memory_approvals a ON a.project_id=r.project_id AND a.revision_id=r.id WHERE r.project_id=?1 AND NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.project_id=r.project_id AND t.item_id=r.item_id) ORDER BY r.item_id")?;
+    let rows = statement
+        .query_map([project_id.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|(item, revision, json, hash)| {
+            let hash = ContentHash::parse(&hash)?;
+            Ok((
+                MemoryIdentity {
+                    project_id,
+                    item_id: item,
+                    revision_id: revision,
+                    content_hash: hash.clone(),
+                },
+                CanonicalDocument::from_stored(&json, &hash)?,
+            ))
+        })
+        .collect()
+}
+fn projection_preview_in(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+) -> Result<ProjectionPreview, MemoryError> {
+    let cursor = receipt_cursor(connection)?;
+    let entries: Vec<_> = current_documents(connection, project_id)?
+        .into_iter()
+        .filter_map(|(identity, document)| {
+            let experience = ExperienceMemoryV1::from_document(&document).ok()?;
+            (experience.projection_policy == ProjectionPolicy::ProviderEligible).then_some(
+                ProjectionEntry {
+                    identity,
+                    cues: experience.future_cues,
+                    lesson: experience.lesson,
+                },
+            )
+        })
+        .collect();
+    let dataset = format!("kontor_{project_id}_{cursor}");
+    let digest =
+        ContentHash::of(serde_json::to_vec(&(project_id, cursor, &dataset, &entries))?.as_slice());
+    let generation = active_generation(connection, project_id)?;
+    Ok(ProjectionPreview {
+        snapshot: ProjectionSnapshot {
+            project_id,
+            memory_cursor: cursor,
+            dataset,
+            digest,
+            identities: entries.iter().map(|entry| entry.identity.clone()).collect(),
+        },
+        entries,
+        active_generation: generation,
+    })
+}
+fn active_generation(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+) -> Result<u64, MemoryError> {
+    let generation = connection
+        .query_row(
+            "SELECT generation FROM memory_projection_active WHERE project_id=?1",
+            [project_id.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    u64::try_from(generation)
+        .map_err(|_| MemoryError::Rule("stored projection generation is negative"))
+}
+fn read_snapshot(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+    cursor: i64,
+) -> Result<Option<ProjectionSnapshot>, MemoryError> {
+    let row = connection.query_row("SELECT dataset,digest,identities FROM memory_projection_snapshots WHERE project_id=?1 AND memory_cursor=?2", params![project_id.to_string(),cursor], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))).optional()?;
+    row.map(|(dataset, digest, identities)| {
+        Ok(ProjectionSnapshot {
+            project_id,
+            memory_cursor: cursor,
+            dataset,
+            digest: ContentHash::parse(&digest)?,
+            identities: serde_json::from_str(&identities)?,
+        })
+    })
+    .transpose()
+}
+fn projection_readback_in(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+) -> Result<ProjectionReadback, MemoryError> {
+    let cursor = connection
+        .query_row(
+            "SELECT memory_cursor FROM memory_projection_active WHERE project_id=?1",
+            [project_id.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    Ok(ProjectionReadback {
+        active: cursor
+            .map(|value| read_snapshot(connection, project_id, value)?.ok_or(MemoryError::NotFound))
+            .transpose()?,
+        generation: active_generation(connection, project_id)?,
+        stale: cursor.is_none_or(|value| {
+            receipt_cursor(connection).map_or(true, |current| value != current)
+        }),
+        adapter_available: false,
+    })
+}
+fn read_recall_in(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+    run_id: &str,
+) -> Result<Option<RecalledMemory>, MemoryError> {
+    let json = connection
+        .query_row(
+            "SELECT metadata FROM memory_recall_metadata WHERE project_id=?1 AND run_id=?2",
+            params![project_id.to_string(), run_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(json) = json else {
+        return Ok(None);
+    };
+    let metadata: RecallMetadata = serde_json::from_str(&json)?;
+    let mismatch = || MemoryError::Refused(MemoryRefusal::FrozenPayloadMismatch);
+    let binding = read_binding(connection, project_id, run_id)?.ok_or_else(mismatch)?;
+    let frozen: Vec<_> = metadata
+        .identities
+        .iter()
+        .map(|identity| FrozenRevision {
+            revision_id: identity.revision_id.clone(),
+            content_hash: identity.content_hash.clone(),
+        })
+        .collect();
+    let expected_hash = ContentHash::of(
+        serde_json::to_string(&(
+            binding.selection_cursor,
+            binding.selection_spec.hash(),
+            &frozen,
+        ))?
+        .as_bytes(),
+    );
+    let spec: serde_json::Value = serde_json::from_str(binding.selection_spec.json())?;
+    if binding.ordered_revisions != frozen
+        || binding.result_hash != expected_hash
+        || spec["metadata"] != serde_json::to_value(&metadata)?
+    {
+        return Err(mismatch());
+    }
+    let mut block = String::from("[");
+    for (index, identity) in metadata.identities.iter().enumerate() {
+        if identity.project_id != project_id {
+            return Err(mismatch());
+        }
+        // Historical bytes, deliberately without current/approval/tombstone guards.
+        let json = connection.query_row("SELECT document FROM memory_revisions WHERE project_id=?1 AND item_id=?2 AND id=?3 AND content_hash=?4", params![project_id.to_string(),identity.item_id,identity.revision_id,identity.content_hash.as_str()], |row| row.get::<_,String>(0)).optional()?.ok_or(MemoryError::Refused(MemoryRefusal::FrozenPayloadPurged))?;
+        let document = CanonicalDocument::from_stored(&json, &identity.content_hash)
+            .map_err(|_| mismatch())?;
+        if index > 0 {
+            block.push(',');
+        }
+        block.push_str(document.json());
+    }
+    block.push(']');
+    if block.len() != metadata.block_bytes
+        || block.len() > MAX_RECALL_BYTES
+        || metadata.identities.len() > MAX_RECALL_ITEMS
+        || ContentHash::of(block.as_bytes()) != metadata.block_hash
+    {
+        return Err(mismatch());
+    }
+    Ok(Some(RecalledMemory {
+        binding,
+        metadata,
+        canonical_block: block,
+        replayed: true,
+    }))
+}
+
+fn propose_memory_revision_in(
+    tx: &Transaction<'_>,
+    project_id: ProjectId,
+    item_id: &str,
+    expected_revision: u64,
+    document: &CanonicalDocument,
+    provenance: &MemoryProvenance,
+    proposed_by: &str,
+) -> Result<(MemoryRevision, MemoryReceipt), MemoryError> {
+    kontor_core::id::reject_sensitive_text("memory.item_id", item_id)?;
+    kontor_core::id::reject_sensitive_text("memory.proposed_by", proposed_by)?;
+    kontor_core::id::reject_sensitive_material(&serde_json::to_value(provenance)?)?;
+    require_subject_authority(tx, project_id, AuthoritySubject::Memory)?;
+    let current = aggregate_revision(tx, project_id, item_id)?.unwrap_or(0);
+    if current != expected_revision {
+        return Err(MemoryError::RevisionConflict {
+            expected: expected_revision,
+            current,
+        });
+    }
+    tx.execute(
+            "INSERT INTO memory_items(project_id,id,aggregate_revision) VALUES (?1,?2,0) ON CONFLICT DO NOTHING",
+            params![project_id.to_string(), item_id],
+        )?;
+    let revision = current + 1;
+    let revision_id = Uuid::now_v7().to_string();
+    let proposed_at = Timestamp::now();
+    let supersedes_id: Option<String> = tx.query_row(
+        "SELECT current_revision_id FROM memory_items WHERE project_id=?1 AND id=?2",
+        params![project_id.to_string(), item_id],
+        |row| row.get(0),
+    )?;
+    tx.execute(
+            "INSERT INTO memory_revisions(project_id,item_id,id,revision,document,content_hash,provenance,proposed_by,proposed_at,supersedes_id,history_unavailable) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![project_id.to_string(), item_id, revision_id, sql_u64(revision)?, document.json(), document.hash().as_str(), serde_json::to_string(provenance)?, proposed_by, proposed_at.to_string(), supersedes_id, provenance.history_unavailable],
+        )?;
+    if let Ok(experience) = ExperienceMemoryV1::from_document(document) {
+        SqliteStore::resolve_experience_evidence(tx, project_id, &experience)?;
+        tx.execute("INSERT INTO memory_experience_eligibility(project_id,revision_id,confidence,projection_policy) VALUES (?1,?2,?3,?4)", params![project_id.to_string(), revision_id, experience.confidence.as_str(), experience.projection_policy.as_str()])?;
+    }
+    tx.execute(
+            "UPDATE memory_items SET aggregate_revision=?3 WHERE project_id=?1 AND id=?2 AND aggregate_revision=?4",
+            params![project_id.to_string(), item_id, sql_u64(revision)?, sql_u64(current)?],
+        )?;
+    let receipt = receipt(
+        tx,
+        project_id,
+        "propose",
+        Some(item_id),
+        Some(&revision_id),
+        Some(revision),
+        document.hash(),
+    )?;
+    Ok((
+        MemoryRevision {
+            project_id,
+            item_id: item_id.into(),
+            revision_id,
+            revision,
+            document: document.clone(),
+            provenance: provenance.clone(),
+            proposed_by: proposed_by.into(),
+            proposed_at,
+            supersedes_id,
+            approved: false,
+            current: false,
+            tombstoned: false,
+        },
+        receipt,
+    ))
+}
+
+impl SqliteStore {
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_experience_idempotent(
+        &self,
+        project_id: ProjectId,
+        key: &kontor_core::id::IdempotencyKey,
+        item_id: &str,
+        expected_revision: u64,
+        document: &CanonicalDocument,
+        provenance: &MemoryProvenance,
+        proposed_by: &str,
+    ) -> Result<(MemoryRevision, MemoryReceipt), MemoryError> {
+        let tx = Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        let request = CanonicalDocument::from_value(
+            &serde_json::json!({"schema_version":1,"project_id":project_id,"item_id":item_id,"expected_revision":expected_revision,"document":document,"provenance":provenance,"proposed_by":proposed_by}),
+        )?;
+        let existing = tx.query_row("SELECT request_hash,revision_id,receipt FROM memory_experience_proposals WHERE project_id=?1 AND idempotency_key=?2", params![project_id.to_string(),key.as_str()], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))).optional()?;
+        if let Some((hash, revision_id, receipt)) = existing {
+            if hash != request.hash().as_str() {
+                return Err(MemoryError::Refused(MemoryRefusal::BindingConflict));
+            }
+            let revision = self
+                .read_memory_revisions(project_id, item_id, false)?
+                .into_iter()
+                .find(|revision| revision.revision_id == revision_id)
+                .ok_or(MemoryError::Refused(MemoryRefusal::FrozenPayloadPurged))?;
+            return Ok((revision, serde_json::from_str(&receipt)?));
+        }
+        let experience = ExperienceMemoryV1::from_document(document)
+            .map_err(|_| MemoryError::Refused(MemoryRefusal::InvalidExperience))?;
+        Self::resolve_experience_evidence(&tx, project_id, &experience)?;
+        let result = propose_memory_revision_in(
+            &tx,
+            project_id,
+            item_id,
+            expected_revision,
+            document,
+            provenance,
+            proposed_by,
+        )?;
+        tx.execute("INSERT INTO memory_experience_proposals(project_id,idempotency_key,request_hash,revision_id,receipt) VALUES (?1,?2,?3,?4,?5)",params![project_id.to_string(),key.as_str(),request.hash().as_str(),result.0.revision_id,serde_json::to_string(&result.1)?])?;
+        tx.commit()?;
+        Ok(result)
+    }
+}
+
+fn recall_experiences_in(
+    tx: &Transaction<'_>,
+    project_id: ProjectId,
+    run_id: &str,
+    intent: &RecallIntent,
+    semantic: &SemanticRecall,
+) -> Result<RecalledMemory, MemoryError> {
+    if let Some(replayed) = read_recall_in(tx, project_id, run_id)? {
+        return Ok(replayed);
+    }
+    kontor_core::id::reject_sensitive_text("recall.run_id", run_id)?;
+    if run_id.is_empty() || run_id.len() > 128 {
+        return Err(MemoryError::Refused(MemoryRefusal::BindingConflict));
+    }
+    if read_binding(tx, project_id, run_id)?.is_some() {
+        return Err(MemoryError::Refused(MemoryRefusal::BindingConflict));
+    }
+    let intent_doc = intent.canonical()?;
+    let memory_cursor = receipt_cursor(tx)?;
+    let active = projection_readback_in(tx, project_id)?;
+    let mut exclusions = RecallExclusions::default();
+    let mut ranked = Vec::new();
+    let mut reason = None;
+    let mut projection_cursor = None;
+    let mut projection_digest = None;
+    match semantic {
+        SemanticRecall::Degraded(why) => reason = Some(*why),
+        SemanticRecall::Candidates {
+            projection_digest: digest,
+            candidates,
+        } => {
+            if candidates.len() > MAX_CANDIDATES {
+                reason = Some(DegradedReason::Malformed);
+            } else if active.stale
+                || active
+                    .active
+                    .as_ref()
+                    .is_none_or(|snapshot| &snapshot.digest != digest)
+            {
+                reason = Some(DegradedReason::Stale);
+            } else {
+                projection_cursor = active
+                    .active
+                    .as_ref()
+                    .map(|snapshot| snapshot.memory_cursor);
+                projection_digest = Some(digest.clone());
+                for candidate in candidates {
+                    match hydrate_candidate_in(tx, project_id, candidate, true)? {
+                        Some(row) => ranked.push(row),
+                        None => exclusions.invalid += 1,
+                    }
+                }
+                if ranked.is_empty() {
+                    reason = Some(if candidates.is_empty() {
+                        DegradedReason::Empty
+                    } else {
+                        DegradedReason::NoEligibleCandidates
+                    });
+                }
+            }
+        }
+    }
+    let mut mode = RetrievalMode::Semantic;
+    if reason.is_some() {
+        mode = RetrievalMode::LexicalDegraded;
+        ranked = lexical_candidates_in(tx, project_id, &intent.lexical_query()?)?;
+    }
+    ranked.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| b.confidence.cmp(&a.confidence))
+            .then_with(|| a.identity.item_id.cmp(&b.identity.item_id))
+    });
+    let mut seen = std::collections::BTreeSet::new();
+    let mut selected = Vec::new();
+    let mut block = String::from("[");
+    for row in ranked {
+        if !seen.insert(row.identity.item_id.clone()) {
+            exclusions.duplicate += 1;
+            continue;
+        }
+        if selected.len() == MAX_RECALL_ITEMS {
+            exclusions.item_limit += 1;
+            continue;
+        }
+        let next_bytes =
+            block.len() + usize::from(!selected.is_empty()) + row.document.json().len() + 1;
+        if next_bytes > MAX_RECALL_BYTES {
+            exclusions.budget += 1;
+            continue;
+        }
+        if !selected.is_empty() {
+            block.push(',');
+        }
+        block.push_str(row.document.json());
+        selected.push(row.identity);
+    }
+    block.push(']');
+    if selected.is_empty() {
+        mode = RetrievalMode::None;
+    }
+    let metadata = RecallMetadata {
+        schema_version: 1,
+        intent_hash: intent_doc.hash().clone(),
+        mode,
+        reason,
+        memory_cursor,
+        projection_cursor,
+        projection_digest,
+        identities: selected.clone(),
+        exclusions,
+        block_hash: ContentHash::of(block.as_bytes()),
+        block_bytes: block.len(),
+    };
+    let spec = CanonicalDocument::from_value(
+        &serde_json::json!({"schema_version":1,"selection_version":"experience_recall_v1","intent":intent,"metadata":metadata,"max_items":MAX_RECALL_ITEMS,"max_bytes":MAX_RECALL_BYTES}),
+    )?;
+    let binding = freeze_memory_binding_in(
+        tx,
+        project_id,
+        run_id,
+        &spec,
+        &selected
+            .iter()
+            .map(|identity| identity.revision_id.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    tx.execute(
+        "INSERT INTO memory_recall_metadata(project_id,run_id,metadata) VALUES (?1,?2,?3)",
+        params![
+            project_id.to_string(),
+            run_id,
+            serde_json::to_string(&metadata)?
+        ],
+    )?;
+    Ok(RecalledMemory {
+        binding,
+        metadata,
+        canonical_block: block,
+        replayed: false,
+    })
+}
+
+#[cfg(test)]
+mod experience_tests {
+    use super::tests::{fixture, provenance};
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn experience(provider: bool) -> CanonicalDocument {
+        let mut value: Value = serde_json::from_str(include_str!(
+            "../../kontor-core/tests/fixtures/experience-v1.json"
+        ))
+        .unwrap();
+        if provider {
+            value["projection_policy"] = json!("provider_eligible");
+        }
+        CanonicalDocument::from_value(&value).unwrap()
+    }
+    fn intent() -> RecallIntent {
+        RecallIntent {
+            schema_version: 1,
+            task_id: "synthetic-task".into(),
+            task_title: "publication deployment".into(),
+            module: Some("delivery".into()),
+            declared_scope: vec!["artifact readback".into()],
+            phase: "verification".into(),
+        }
+    }
+    fn approve(
+        store: &SqliteStore,
+        project: ProjectId,
+        item: &str,
+        doc: &CanonicalDocument,
+    ) -> MemoryCandidate {
+        let (revision, _) = store
+            .propose_experience(project, item, 0, doc, &provenance(), "author")
+            .unwrap();
+        store
+            .approve_memory_revision(project, item, &revision.revision_id, 1, "reviewer")
+            .unwrap();
+        MemoryCandidate {
+            project_id: project,
+            item_id: item.into(),
+            revision_id: revision.revision_id,
+            content_hash: doc.hash().clone(),
+            score: 1.0,
+        }
+    }
+    fn activate(store: &SqliteStore, project: ProjectId) -> ProjectionSnapshot {
+        let preview = store.stage_projection(project).unwrap();
+        store
+            .activate_projection(
+                project,
+                preview.snapshot.memory_cursor,
+                preview.active_generation,
+                &ProjectionQualification {
+                    digest: preview.snapshot.digest.clone(),
+                    added: true,
+                    cognified: true,
+                    canary_passed: true,
+                },
+            )
+            .unwrap();
+        preview.snapshot
+    }
+    fn semantic(snapshot: &ProjectionSnapshot, candidates: Vec<MemoryCandidate>) -> SemanticRecall {
+        SemanticRecall::Candidates {
+            projection_digest: snapshot.digest.clone(),
+            candidates,
+        }
+    }
+    fn sized(bytes: usize) -> CanonicalDocument {
+        let mut value: Value = serde_json::from_str(experience(true).json()).unwrap();
+        value["actions"] = json!(vec!["x"; 16]);
+        let base = CanonicalDocument::from_value(&value).unwrap().json().len();
+        let mut extra = bytes - base;
+        let mut actions = vec!["x".to_owned(); 16];
+        for action in &mut actions {
+            let add = extra.min(2047);
+            action.push_str(&"x".repeat(add));
+            extra -= add;
+        }
+        assert_eq!(extra, 0);
+        value["actions"] = json!(actions);
+        let document = CanonicalDocument::from_value(&value).unwrap();
+        assert_eq!(document.json().len(), bytes);
+        ExperienceMemoryV1::from_document(&document).unwrap();
+        document
+    }
+
+    #[test]
+    fn exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top() {
+        let (_dir, store, a, _) = fixture();
+        let exact = approve(&store, a, "exact", &sized(32766));
+        let too_big = approve(&store, a, "oversized", &sized(32767));
+        let small = approve(&store, a, "small", &experience(true));
+        let snapshot = activate(&store, a);
+        let output = store
+            .recall_experiences(a, "exact", &intent(), &semantic(&snapshot, vec![exact]))
+            .unwrap();
+        assert_eq!(output.canonical_block.len(), 32768);
+        assert_eq!(output.metadata.identities.len(), 1);
+        let rejected = store
+            .recall_experiences(
+                a,
+                "oversized",
+                &intent(),
+                &semantic(&snapshot, vec![too_big.clone()]),
+            )
+            .unwrap();
+        assert_eq!(rejected.canonical_block, "[]");
+        assert_eq!(rejected.metadata.exclusions.budget, 1);
+        let mut top = too_big;
+        top.score = 2.0;
+        let skipped = store
+            .recall_experiences(a, "skip", &intent(), &semantic(&snapshot, vec![top, small]))
+            .unwrap();
+        assert_eq!(skipped.metadata.identities[0].item_id, "small");
+        assert_eq!(skipped.metadata.exclusions.budget, 1);
+        let mut value: Value = serde_json::from_str(experience(true).json()).unwrap();
+        value["lesson"] = json!("ø\n\"雪\\");
+        let doc = CanonicalDocument::from_value(&value).unwrap();
+        let c = approve(&store, a, "unicode", &doc);
+        let snapshot = activate(&store, a);
+        let unicode = store
+            .recall_experiences(a, "unicode", &intent(), &semantic(&snapshot, vec![c]))
+            .unwrap();
+        assert_eq!(unicode.canonical_block, format!("[{}]", doc.json()));
+        assert_eq!(unicode.metadata.block_bytes, doc.json().len() + 2);
+    }
+
+    #[test]
+    fn deterministic_score_confidence_ties_duplicates_and_ninth_item() {
+        let (_dir, store, a, _) = fixture();
+        let mut candidates = Vec::new();
+        for index in (0..9).rev() {
+            candidates.push(approve(
+                &store,
+                a,
+                &format!("item-{index}"),
+                &experience(true),
+            ));
+        }
+        let mut inferred: Value = serde_json::from_str(experience(true).json()).unwrap();
+        inferred["confidence"] = json!("inferred");
+        let inferred = approve(
+            &store,
+            a,
+            "aaa-inferred",
+            &CanonicalDocument::from_value(&inferred).unwrap(),
+        );
+        candidates.push(inferred);
+        candidates.push(candidates[0].clone());
+        let snapshot = activate(&store, a);
+        let output = store
+            .recall_experiences(a, "ties", &intent(), &semantic(&snapshot, candidates))
+            .unwrap();
+        assert_eq!(
+            output
+                .metadata
+                .identities
+                .iter()
+                .map(|i| i.item_id.as_str())
+                .collect::<Vec<_>>(),
+            (0..8).map(|i| format!("item-{i}")).collect::<Vec<_>>()
+        );
+        assert_eq!(output.metadata.exclusions.duplicate, 1);
+        assert_eq!(output.metadata.exclusions.item_limit, 2);
+    }
+
+    #[test]
+    fn malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind() {
+        let (_dir, store, a, b) = fixture();
+        let valid = approve(&store, a, "valid", &experience(true));
+        let foreign = approve(&store, b, "foreign", &experience(true));
+        let local = approve(&store, a, "local", &experience(false));
+        let stale = approve(&store, a, "stale", &experience(true));
+        let (current, _) = store
+            .propose_experience(a, "stale", 2, &experience(true), &provenance(), "author")
+            .unwrap();
+        store
+            .approve_memory_revision(a, "stale", &current.revision_id, 3, "reviewer")
+            .unwrap();
+        let tomb = approve(&store, a, "tomb", &experience(true));
+        store
+            .tombstone_memory(a, "tomb", 2, "reviewer", "obsolete")
+            .unwrap();
+        let (draft, _) = store
+            .propose_experience(a, "pending", 0, &experience(true), &provenance(), "author")
+            .unwrap();
+        let (generic, _) = store
+            .propose_memory_revision(
+                a,
+                "gap",
+                0,
+                &CanonicalDocument::from_value(
+                    &json!({"schema_version":1,"kind":"operational_gap","text":"publication"}),
+                )
+                .unwrap(),
+                &provenance(),
+                "author",
+            )
+            .unwrap();
+        store
+            .approve_memory_revision(a, "gap", &generic.revision_id, 1, "reviewer")
+            .unwrap();
+        let mut forged = foreign.clone();
+        forged.project_id = a;
+        let mut wrong_item = valid.clone();
+        wrong_item.item_id = "other".into();
+        let mut wrong_hash = valid.clone();
+        wrong_hash.content_hash = ContentHash::of(b"wrong");
+        let mut invalid_score = valid.clone();
+        invalid_score.score = f64::NAN;
+        let snapshot = activate(&store, a);
+        let mut candidates = vec![
+            foreign,
+            forged,
+            local,
+            stale,
+            tomb,
+            wrong_item,
+            wrong_hash,
+            invalid_score,
+            MemoryCandidate {
+                project_id: a,
+                item_id: "pending".into(),
+                revision_id: draft.revision_id,
+                content_hash: draft.document.hash().clone(),
+                score: 99.0,
+            },
+            MemoryCandidate {
+                project_id: a,
+                item_id: "gap".into(),
+                revision_id: generic.revision_id,
+                content_hash: generic.document.hash().clone(),
+                score: 99.0,
+            },
+        ];
+        candidates.push(valid);
+        let output = store
+            .recall_experiences(a, "malicious", &intent(), &semantic(&snapshot, candidates))
+            .unwrap();
+        assert_eq!(output.metadata.identities.len(), 1);
+        assert_eq!(output.metadata.identities[0].item_id, "valid");
+        assert_eq!(output.metadata.exclusions.invalid, 10);
+        assert_eq!(output.metadata.mode, RetrievalMode::Semantic);
+        assert!(!output.canonical_block.contains("operational_gap"));
+    }
+
+    #[test]
+    fn lexical_limit_joins_exact_current_eligible_revision_and_never_lists() {
+        let (_dir, store, a, b) = fixture();
+        let mut old = experience(false);
+        let first = approve(&store, a, "stale", &old);
+        let mut value: Value = serde_json::from_str(old.json()).unwrap();
+        for (key, replacement) in [
+            ("situation", json!("unrelated")),
+            ("intent", json!("unrelated")),
+            ("lesson", json!("unrelated")),
+            ("future_cues", json!(["unrelated"])),
+            ("actions", json!(["unrelated"])),
+            ("outcome", json!({"kind":"success","summary":"unrelated"})),
+            ("went_well", json!([])),
+            ("went_wrong", json!([])),
+            ("avoid", json!([])),
+            ("domains", json!(["unrelated"])),
+        ] {
+            value[key] = replacement;
+        }
+        value["evidence_refs"][0]["locator"] = json!("synthetic/unrelated.json");
+        old = CanonicalDocument::from_value(&value).unwrap();
+        let (new, _) = store
+            .propose_experience(a, "stale", 2, &old, &provenance(), "author")
+            .unwrap();
+        store
+            .approve_memory_revision(a, "stale", &new.revision_id, 3, "reviewer")
+            .unwrap();
+        // A stale derived entry must be eliminated before the bounded LIMIT.
+        store.connection.execute("INSERT INTO memory_fts(project_id,item_id,revision_id,document) VALUES (?1,'stale',?2,?3)",params![a.to_string(),first.revision_id,experience(false).json()]).unwrap();
+        for i in 0..70 {
+            let item = format!("gap-{i}");
+            let (r,_)=store.propose_memory_revision(a,&item,0,&CanonicalDocument::from_value(&json!({"schema_version":1,"kind":"operational_gap","text":"publication deployment publication deployment"})).unwrap(),&provenance(),"author").unwrap();
+            store
+                .approve_memory_revision(a, &item, &r.revision_id, 1, "reviewer")
+                .unwrap();
+        }
+        approve(&store, b, "foreign", &experience(false));
+        let expected = approve(&store, a, "eligible", &experience(false));
+        let mut lexical_intent = intent();
+        lexical_intent.module = None;
+        lexical_intent.declared_scope.clear();
+        lexical_intent.phase = "zzzzphase".into();
+        let output = store
+            .recall_experiences(
+                a,
+                "fts",
+                &lexical_intent,
+                &SemanticRecall::Degraded(DegradedReason::Unavailable),
+            )
+            .unwrap();
+        assert_eq!(output.metadata.identities.len(), 1);
+        assert_eq!(
+            output.metadata.identities[0].revision_id,
+            expected.revision_id
+        );
+        assert_eq!(output.metadata.mode, RetrievalMode::LexicalDegraded);
+        let mut unmatched = intent();
+        unmatched.task_title = "zzzznevermatches".into();
+        unmatched.module = None;
+        unmatched.declared_scope.clear();
+        unmatched.phase = "zzzzphase".into();
+        let empty = store
+            .recall_experiences(
+                a,
+                "none",
+                &unmatched,
+                &SemanticRecall::Degraded(DegradedReason::Absent),
+            )
+            .unwrap();
+        assert_eq!(empty.metadata.mode, RetrievalMode::None);
+        assert_eq!(empty.canonical_block, "[]");
+    }
+
+    #[test]
+    fn replay_after_restart_task_edit_rebuild_tombstone_and_purge_preserves_receipt() {
+        let (dir, store, a, _) = fixture();
+        let selected = approve(&store, a, "selected", &experience(true));
+        let snapshot = activate(&store, a);
+        let first = store
+            .recall_experiences(a, "run", &intent(), &semantic(&snapshot, vec![selected]))
+            .unwrap();
+        store
+            .tombstone_memory(a, "selected", 2, "reviewer", "obsolete")
+            .unwrap();
+        approve(&store, a, "replacement", &experience(true));
+        activate(&store, a);
+        drop(store);
+        let store = SqliteStore::open(&dir.path().join("realm.db")).unwrap();
+        let mut changed = intent();
+        changed.task_title = "edited".into();
+        let replay = store
+            .recall_experiences(
+                a,
+                "run",
+                &changed,
+                &SemanticRecall::Degraded(DegradedReason::Timeout),
+            )
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.binding.result_hash, first.binding.result_hash);
+        assert_eq!(replay.canonical_block, first.canonical_block);
+        assert_eq!(replay.metadata.intent_hash, first.metadata.intent_hash);
+        store.purge_memory(a, "selected", "admin").unwrap();
+        assert!(matches!(
+            store.recall_experiences(
+                a,
+                "run",
+                &changed,
+                &SemanticRecall::Degraded(DegradedReason::Absent)
+            ),
+            Err(MemoryError::Refused(MemoryRefusal::FrozenPayloadPurged))
+        ));
+        assert_eq!(
+            store.memory_binding(a, "run").unwrap().unwrap().result_hash,
+            first.binding.result_hash
+        );
+        let stored: String = store
+            .connection
+            .query_row(
+                "SELECT metadata FROM memory_recall_metadata WHERE run_id='run'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!stored.contains("situation"));
+    }
+
+    #[test]
+    fn projection_minimal_payload_failures_freshness_and_compare_and_swap() {
+        let (_dir, store, a, _) = fixture();
+        approve(&store, a, "provider", &experience(true));
+        approve(&store, a, "local", &experience(false));
+        let snapshot = activate(&store, a);
+        let active = store.projection_readback(a).unwrap();
+        assert_eq!(active.active.unwrap().digest, snapshot.digest);
+        assert!(!active.stale);
+        let preview = store.stage_projection(a).unwrap();
+        assert_eq!(preview.entries.len(), 1);
+        let payload = serde_json::to_string(&preview.entries).unwrap();
+        for forbidden in [
+            "evidence_refs",
+            "situation",
+            "approved",
+            "transcript",
+            "went_wrong",
+        ] {
+            assert!(!payload.contains(forbidden));
+        }
+        for (added, cognified, canary) in [
+            (false, false, false),
+            (true, false, false),
+            (true, true, false),
+        ] {
+            assert!(matches!(
+                store.activate_projection(
+                    a,
+                    snapshot.memory_cursor,
+                    1,
+                    &ProjectionQualification {
+                        digest: snapshot.digest.clone(),
+                        added,
+                        cognified,
+                        canary_passed: canary
+                    }
+                ),
+                Err(MemoryError::Refused(MemoryRefusal::ProjectionUnavailable))
+            ));
+            assert_eq!(store.projection_readback(a).unwrap().generation, 1);
+        }
+        assert!(
+            store
+                .activate_projection(
+                    a,
+                    snapshot.memory_cursor,
+                    0,
+                    &ProjectionQualification {
+                        digest: snapshot.digest.clone(),
+                        added: true,
+                        cognified: true,
+                        canary_passed: true
+                    }
+                )
+                .is_err()
+        );
+        approve(&store, a, "new", &experience(true));
+        assert!(store.projection_readback(a).unwrap().stale);
+        assert!(
+            store
+                .activate_projection(
+                    a,
+                    snapshot.memory_cursor,
+                    1,
+                    &ProjectionQualification {
+                        digest: snapshot.digest.clone(),
+                        added: true,
+                        cognified: true,
+                        canary_passed: true
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(
+            store.projection_readback(a).unwrap().active.unwrap().digest,
+            snapshot.digest
+        );
+    }
+
+    #[test]
+    fn every_degraded_reason_empty_foreign_only_candidate_limit_and_preview_rollback() {
+        let (_dir, store, a, b) = fixture();
+        let local = approve(&store, a, "local", &experience(false));
+        let foreign = approve(&store, b, "foreign", &experience(true));
+        let snapshot = activate(&store, a);
+        for reason in DegradedReason::ALL {
+            let result = store
+                .recall_experiences(
+                    a,
+                    reason.as_str(),
+                    &intent(),
+                    &SemanticRecall::Degraded(*reason),
+                )
+                .unwrap();
+            assert_eq!(result.metadata.reason, Some(*reason));
+            assert_eq!(result.metadata.identities[0].revision_id, local.revision_id);
+        }
+        let empty = store
+            .recall_experiences(a, "empty-upstream", &intent(), &semantic(&snapshot, vec![]))
+            .unwrap();
+        assert_eq!(empty.metadata.reason, Some(DegradedReason::Empty));
+        let foreign_only = store
+            .recall_experiences(
+                a,
+                "foreign-only",
+                &intent(),
+                &semantic(&snapshot, vec![foreign]),
+            )
+            .unwrap();
+        assert_eq!(
+            foreign_only.metadata.reason,
+            Some(DegradedReason::NoEligibleCandidates)
+        );
+        assert_eq!(
+            foreign_only.metadata.identities[0].revision_id,
+            local.revision_id
+        );
+        let over_bound = store
+            .recall_experiences(
+                a,
+                "candidate-limit",
+                &intent(),
+                &semantic(&snapshot, vec![local; 65]),
+            )
+            .unwrap();
+        assert_eq!(over_bound.metadata.reason, Some(DegradedReason::Malformed));
+        assert_eq!(over_bound.metadata.mode, RetrievalMode::LexicalDegraded);
+        let before: i64 = store
+            .connection
+            .query_row("SELECT count(*) FROM memory_context_bindings", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        store
+            .preview_recall(
+                a,
+                &intent(),
+                &SemanticRecall::Degraded(DegradedReason::Absent),
+            )
+            .unwrap();
+        let after: i64 = store
+            .connection
+            .query_row("SELECT count(*) FROM memory_context_bindings", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn validation_and_freeze_transaction_excludes_concurrent_tombstone() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let (dir, store, a, _) = fixture();
+        let candidate = approve(&store, a, "race", &experience(true));
+        let snapshot = activate(&store, a);
+        let competing = SqliteStore::open(&dir.path().join("realm.db")).unwrap();
+        let tx =
+            Transaction::new_unchecked(&store.connection, TransactionBehavior::Immediate).unwrap();
+        assert!(
+            hydrate_candidate_in(&tx, a, &candidate, true)
+                .unwrap()
+                .is_some()
+        );
+        let (begun, ready) = mpsc::channel();
+        let (attempt, attempted) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        let (done, result) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            begun.send(()).unwrap();
+            let first = competing.tombstone_memory(a, "race", 2, "reviewer", "concurrent");
+            attempt.send(first.is_ok()).unwrap();
+            resumed.recv().unwrap();
+            let success = first.is_ok()
+                || competing
+                    .tombstone_memory(a, "race", 2, "reviewer", "retry after freeze")
+                    .is_ok();
+            done.send(success).unwrap();
+        });
+        ready.recv().unwrap();
+        let before_commit = attempted.recv_timeout(Duration::from_millis(100)).ok();
+        assert_ne!(
+            before_commit,
+            Some(true),
+            "writer cannot succeed between validation and freeze"
+        );
+        let bound = recall_experiences_in(
+            &tx,
+            a,
+            "race-run",
+            &intent(),
+            &semantic(&snapshot, vec![candidate]),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        resume.send(()).unwrap();
+        assert!(result.recv_timeout(Duration::from_secs(5)).unwrap());
+        writer.join().unwrap();
+        assert_eq!(bound.metadata.identities.len(), 1);
+        assert_eq!(
+            store
+                .recalled_memory(a, "race-run")
+                .unwrap()
+                .unwrap()
+                .canonical_block,
+            bound.canonical_block
+        );
+        let fresh = store
+            .recall_experiences(
+                a,
+                "after-race",
+                &intent(),
+                &SemanticRecall::Degraded(DegradedReason::Absent),
+            )
+            .unwrap();
+        assert_eq!(fresh.canonical_block, "[]");
+    }
+
+    #[test]
+    fn typed_proposal_evidence_idempotency_secret_refusal_and_generic_history() {
+        let (_dir, store, a, b) = fixture();
+        let key = kontor_core::id::IdempotencyKey::parse("experience-proposal").unwrap();
+        let doc = experience(false);
+        let first = store
+            .propose_experience_idempotent(a, &key, "proposal", 0, &doc, &provenance(), "author")
+            .unwrap();
+        let replay = store
+            .propose_experience_idempotent(a, &key, "proposal", 0, &doc, &provenance(), "author")
+            .unwrap();
+        assert_eq!(first.0.revision_id, replay.0.revision_id);
+        assert!(!replay.0.approved);
+        assert!(
+            store
+                .propose_experience_idempotent(a, &key, "other", 0, &doc, &provenance(), "author")
+                .is_err()
+        );
+        let mut evidence: Value = serde_json::from_str(doc.json()).unwrap();
+        evidence["evidence_refs"] = json!([{"type":"receipt","receipt_id":first.1.receipt_id,"content_hash":first.1.result_hash}]);
+        let doc = CanonicalDocument::from_value(&evidence).unwrap();
+        assert!(
+            store
+                .propose_experience(a, "receipt-backed", 0, &doc, &provenance(), "author")
+                .is_ok()
+        );
+        assert!(matches!(
+            store.propose_experience(b, "foreign-receipt", 0, &doc, &provenance(), "author"),
+            Err(MemoryError::Refused(MemoryRefusal::UnresolvedEvidence))
+        ));
+        let mut revision_evidence: Value = serde_json::from_str(experience(false).json()).unwrap();
+        revision_evidence["evidence_refs"] = json!([{"type":"memory_revision","project_id":a,"item_id":"proposal","revision_id":first.0.revision_id,"content_hash":first.0.document.hash()}]);
+        let revision_doc = CanonicalDocument::from_value(&revision_evidence).unwrap();
+        assert!(
+            store
+                .propose_experience(
+                    a,
+                    "revision-backed",
+                    0,
+                    &revision_doc,
+                    &provenance(),
+                    "author"
+                )
+                .is_ok()
+        );
+        assert!(matches!(
+            store.propose_experience(
+                b,
+                "foreign-revision",
+                0,
+                &revision_doc,
+                &provenance(),
+                "author"
+            ),
+            Err(MemoryError::Refused(MemoryRefusal::UnresolvedEvidence))
+        ));
+        revision_evidence["evidence_refs"][0]["content_hash"] =
+            json!(ContentHash::of(b"wrong evidence digest"));
+        assert!(
+            store
+                .propose_experience(
+                    a,
+                    "wrong-evidence",
+                    0,
+                    &CanonicalDocument::from_value(&revision_evidence).unwrap(),
+                    &provenance(),
+                    "author"
+                )
+                .is_err()
+        );
+        let mut malicious = provenance();
+        malicious.source_id = Some("password=SOURCE_CANARY".into());
+        let error = store
+            .propose_experience(a, "secret", 0, &experience(false), &malicious, "author")
+            .unwrap_err();
+        assert!(!format!("{error:?}").contains("SOURCE_CANARY"));
+        assert_eq!(store.memory_history(a, "proposal").unwrap().len(), 1);
+    }
+}
+
+/// Derived eligibility is rebuilt through the same strict parser during upgrade
+/// and explicit index repair. Generic ledger history is never rejected globally.
+pub(crate) fn rebuild_experience_eligibility_in(
+    connection: &rusqlite::Connection,
+) -> rusqlite::Result<usize> {
+    let mut statement=connection.prepare("SELECT project_id,id,document,content_hash FROM memory_revisions WHERE json_extract(document,'$.document_type')='experience_memory'")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    connection.execute("DELETE FROM memory_experience_eligibility", [])?;
+    let mut count = 0;
+    for (project, revision, json, hash) in rows {
+        let Ok(owner) = ProjectId::parse(&project) else {
+            continue;
+        };
+        let Ok(hash) = ContentHash::parse(&hash) else {
+            continue;
+        };
+        let Ok(document) = CanonicalDocument::from_stored(&json, &hash) else {
+            continue;
+        };
+        let Ok(experience) = ExperienceMemoryV1::from_document(&document) else {
+            continue;
+        };
+        if SqliteStore::resolve_experience_evidence(connection, owner, &experience).is_err() {
+            continue;
+        }
+        count+=connection.execute("INSERT INTO memory_experience_eligibility(project_id,revision_id,confidence,projection_policy) VALUES (?1,?2,?3,?4)",params![project,revision,experience.confidence.as_str(),experience.projection_policy.as_str()])?;
+    }
+    Ok(count)
 }

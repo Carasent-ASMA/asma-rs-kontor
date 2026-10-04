@@ -1,0 +1,351 @@
+{
+  "schema_version": 1,
+  "task": "ASMA-8159",
+  "authorization": "44d5d916-d778-46b8-b00d-2cca01cc6553/8155-production-prep",
+  "result": "STOP_RESERVED_CREDENTIAL_BOUNDARY",
+  "started_utc": "2026-10-03T07:46:08.353672+00:00",
+  "runner": {
+    "path": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and/docs/evidence/ASMA-8159/verify-boundary-stop.py",
+    "sha256": "eca1db5bb660383cbe82b80bf4d30df91fcce9762c7c40b931adb85e847db1c8",
+    "argv": [
+      "docs/evidence/ASMA-8159/verify-boundary-stop.py"
+    ]
+  },
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "status",
+        "--short"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_utc": "2026-10-03T07:46:08.353980+00:00",
+      "finished_utc": "2026-10-03T07:46:08.410824+00:00",
+      "exit": 0,
+      "stdout": " M docs/evidence/ASMA-8159/README.md\n?? .agents/\n?? .asma/\n?? .cursor/\n?? AGENTS.md\n?? CLAUDE.md\n?? docs/evidence/ASMA-8159/2026-10-03-09-41-report-production-prep-boundary-stop.md\n?? docs/evidence/ASMA-8159/verify-boundary-stop.py\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD",
+        "HEAD^{tree}"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_utc": "2026-10-03T07:46:08.410869+00:00",
+      "finished_utc": "2026-10-03T07:46:08.441011+00:00",
+      "exit": 0,
+      "stdout": "fe5373f2d2a2c147a6e2b6398c07b5091eaa1ca0\nc95275e6ecb307a24d0fb0d2accd63fa127099e1\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "branch",
+        "--show-current"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_utc": "2026-10-03T07:46:08.441046+00:00",
+      "finished_utc": "2026-10-03T07:46:08.464830+00:00",
+      "exit": 0,
+      "stdout": "feat/ASMA-8155-kontor-experience-memory-and-analogue-recall\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        "655e07ead8b87bebf3a5d43ddccc15c860114e05",
+        "HEAD"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_utc": "2026-10-03T07:46:08.464889+00:00",
+      "finished_utc": "2026-10-03T07:46:08.491569+00:00",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        "831dd7c1dc95a57258c75f5896bff5b76f3830fa",
+        "HEAD"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_utc": "2026-10-03T07:46:08.491753+00:00",
+      "finished_utc": "2026-10-03T07:46:08.528181+00:00",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        "fe5373f2d2a2c147a6e2b6398c07b5091eaa1ca0",
+        "HEAD"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_utc": "2026-10-03T07:46:08.528246+00:00",
+      "finished_utc": "2026-10-03T07:46:08.568340+00:00",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "remote",
+        "get-url",
+        "origin"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_utc": "2026-10-03T07:46:08.568393+00:00",
+      "finished_utc": "2026-10-03T07:46:08.597640+00:00",
+      "exit": 0,
+      "stdout": "git@github.com:Carasent-ASMA/asma-rs-kontor.git\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "ls-remote",
+        "--symref",
+        "origin",
+        "HEAD"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_utc": "2026-10-03T07:46:08.597704+00:00",
+      "finished_utc": "2026-10-03T07:46:10.631205+00:00",
+      "exit": 0,
+      "stdout": "ref: refs/heads/master\tHEAD\n8acdbd17e83d9d7ec545221c4b957e0325916997\tHEAD\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "remote",
+        "get-url",
+        "origin"
+      ],
+      "cwd": "/Users/igor/carasent/asma-modules",
+      "started_utc": "2026-10-03T07:46:10.631273+00:00",
+      "finished_utc": "2026-10-03T07:46:10.659219+00:00",
+      "exit": 0,
+      "stdout": "git@github.com:Carasent-ASMA/asma-modules.git\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "ls-remote",
+        "--symref",
+        "origin",
+        "HEAD"
+      ],
+      "cwd": "/Users/igor/carasent/asma-modules",
+      "started_utc": "2026-10-03T07:46:10.659319+00:00",
+      "finished_utc": "2026-10-03T07:46:12.919493+00:00",
+      "exit": 0,
+      "stdout": "ref: refs/heads/master\tHEAD\n25de2b541da5d8dd61082e2d150c5c8087b09ac6\tHEAD\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-list",
+        "--left-right",
+        "--count",
+        "8acdbd17e83d9d7ec545221c4b957e0325916997...fe5373f2d2a2c147a6e2b6398c07b5091eaa1ca0"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_utc": "2026-10-03T07:46:12.919545+00:00",
+      "finished_utc": "2026-10-03T07:46:12.957500+00:00",
+      "exit": 0,
+      "stdout": "0\t3\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "merge-base",
+        "8acdbd17e83d9d7ec545221c4b957e0325916997",
+        "fe5373f2d2a2c147a6e2b6398c07b5091eaa1ca0"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_utc": "2026-10-03T07:46:12.957551+00:00",
+      "finished_utc": "2026-10-03T07:46:12.988166+00:00",
+      "exit": 0,
+      "stdout": "8acdbd17e83d9d7ec545221c4b957e0325916997\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-list",
+        "--left-right",
+        "--count",
+        "25de2b541da5d8dd61082e2d150c5c8087b09ac6...7d19280857ae3c60a870e017da3f733f9ff2625b"
+      ],
+      "cwd": "/Users/igor/carasent/asma-modules",
+      "started_utc": "2026-10-03T07:46:12.988273+00:00",
+      "finished_utc": "2026-10-03T07:46:13.019616+00:00",
+      "exit": 0,
+      "stdout": "10\t3\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "merge-base",
+        "25de2b541da5d8dd61082e2d150c5c8087b09ac6",
+        "7d19280857ae3c60a870e017da3f733f9ff2625b"
+      ],
+      "cwd": "/Users/igor/carasent/asma-modules",
+      "started_utc": "2026-10-03T07:46:13.019662+00:00",
+      "finished_utc": "2026-10-03T07:46:13.047426+00:00",
+      "exit": 0,
+      "stdout": "f77c3b31bd73148a93cb3370d0ae34bf807fe2ff\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "asma",
+        "git",
+        "--help"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_utc": "2026-10-03T07:46:13.047476+00:00",
+      "finished_utc": "2026-10-03T07:46:13.359542+00:00",
+      "exit": 0,
+      "stdout": "Usage: asma git [OPTIONS] COMMAND [ARGS]...\n\n  Git/submodule operations.\n\nOptions:\n  --repo TEXT  Target repo/context\n  -h, --help   Show this message and exit.\n\nCommands:\n  \u2022 branch           Branch management commands.\n  \u2022 checkout\n  \u2705 commit\n  \ud83e\ude7a doctor           Run repository health checks and optional normalization.\n  \ud83e\ude9d hook-install\n  \ud83e\udde9 init\n  \u2022 merge-pr         Squash-merge the attested pull request, bound to its\n                     judged...\n  \ud83d\udd17 normalize-urls\n  \u2022 prune-branches\n  \ud83d\udce5 pull\n  \ud83d\udccd status\n  \u2022 sync-check\n  \u2022 verify-pointer\n  \u2022 verify-pointers\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_utc": "2026-10-03T07:46:13.359600+00:00",
+      "finished_utc": "2026-10-03T07:46:13.391084+00:00",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "rg",
+        "-n",
+        "ResolverPolicy::builder|KeychainTarget::new|AccountResolver::new|\\.keychain\\(",
+        "crates",
+        "--glob",
+        "*.rs",
+        "--glob",
+        "!**/tests/**",
+        "--glob",
+        "!**/target/**"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "started_utc": "2026-10-03T07:46:13.561225+00:00",
+      "finished_utc": "2026-10-03T07:46:13.592766+00:00",
+      "exit": 0,
+      "stdout": "crates/kontor-jira/src/credentials.rs:39:        KeychainTarget::new(self.service.clone(), alias.to_owned())\ncrates/kontor-accounts/src/resolver.rs:385:        let target = KeychainTarget::new(\"kontor-jira\", \"work\\\"\\\\alias\");\ncrates/kontor-accounts/src/resolver.rs:405:                    &KeychainTarget::new(\"kontor-jira\", account),\ncrates/kontor-accounts/src/resolver.rs:413:                &KeychainTarget::new(\"kontor-jira\", \"work\"),\n",
+      "stderr": ""
+    }
+  ],
+  "source_excerpts": [
+    {
+      "path": "crates/kontor-daemon/src/runtimes.rs",
+      "sha256": "b54dea474061feed1a7a1236d6c0d025bcb0ebfe654a721ba34f24849c34f13f",
+      "start": 422,
+      "end": 435,
+      "text": "422: ///\n423: /// [`kontor_runtime_codex`] is not composed here, and the reason is structural\n424: /// rather than an omission. Its production account authority\n425: /// (`CodexPinnedAccounts`) borrows a store, an `AccountResolver` \u2014 itself bound to\n426: /// a resolver policy of approved config homes and keychain targets \u2014 and the\n427: /// fleet's availability boundary. This daemon has no configuration surface for\n428: /// any of those, and the borrows cannot outlive the single private store\n429: /// connection [`kontor_api::state::ApiState`] owns. Wiring it means giving the\n430: /// credential policy a configuration surface, which belongs with the account and\n431: /// CLI work rather than here. Until then a Codex plane is composed by its own\n432: /// caller and handed in through [`RuntimeRegistry`], which is exactly the seam\n433: /// this function uses.\n434: ///\n435: /// # Errors"
+    },
+    {
+      "path": "crates/kontor-accounts/src/resolver.rs",
+      "sha256": "eda5b52aa8c86e369e16c7ecbc622c28cd80f7aa18a4f5397363b4480b77161f",
+      "start": 1,
+      "end": 34,
+      "text": "1: //! Approved credential references, and the short-lived environment they resolve\n2: //! into.\n3: //!\n4: //! # Why a profile cannot name a path\n5: //!\n6: //! The obvious design is to let a profile store the directory or keychain entry\n7: //! its credentials live in. That makes the profile table a place where writing a\n8: //! row is equivalent to reading an arbitrary file, and it makes `..`, symlink\n9: //! traversal and prefix confusion into live attack surface reachable from\n10: //! whatever creates profiles.\n11: //!\n12: //! So a profile stores an *alias*, and a [`ResolverPolicy`] \u2014 built in memory at\n13: //! composition time from trusted local operator configuration \u2014 is the only\n14: //! thing that maps an alias to something real. Profile input never participates\n15: //! in path joining: the policy canonicalizes each approved directory once, at\n16: //! build time, and resolution is an exact lookup of an already-canonical path.\n17: //! There is no join, so there is nothing for `..` to escape.\n18: //!\n19: //! # Why the resolved value has no serialized form\n20: //!\n21: //! [`ResolvedAccountEnvironment`] has private fields, no `Serialize`, and\n22: //! `Debug`/`Display` that print variable *names* and a redaction marker. The\n23: //! single exit is [`ResolvedAccountEnvironment::apply`], which writes into a\n24: //! [`std::process::Command`]'s environment block. That is a deliberate choice of\n25: //! mechanism, not a convenience: `std::env::set_var` would make the value\n26: //! process-global and visible to every other resolution, a command flag or a\n27: //! prompt would put it in argv where any local process can read it, and a shell\n28: //! fragment would make quoting a security property.\n29: //!\n30: //! # Why errors carry codes\n31: //!\n32: //! A keychain error's `Display` can name the service and account it failed on; a\n33: //! filesystem error's can contain the path. Both identify a user. Every failure\n34: //! below is therefore mapped to a [`ResolutionReason`] *at the boundary*, and no"
+    },
+    {
+      "path": "crates/kontor-accounts/src/resolver.rs",
+      "sha256": "eda5b52aa8c86e369e16c7ecbc622c28cd80f7aa18a4f5397363b4480b77161f",
+      "start": 896,
+      "end": 913,
+      "text": "896:     /// Whether it fills nothing.\n897:     #[must_use]\n898:     pub fn is_empty(&self) -> bool {\n899:         self.entries.is_empty()\n900:     }\n901: \n902:     /// Write the material into a child process's environment block.\n903:     ///\n904:     /// This is the whole exposed surface of a resolved credential, and it is\n905:     /// [`Command::env`] rather than `std::env::set_var` on purpose: the value\n906:     /// reaches exactly one child and never becomes visible to this process, to\n907:     /// another concurrent resolution, or to anything reading `/proc`'s command\n908:     /// line.\n909:     pub fn apply(&self, command: &mut Command) {\n910:         for (name, value) in &self.entries {\n911:             command.env(name.as_str(), value.expose_secret());\n912:         }\n913:     }"
+    },
+    {
+      "path": "crates/kontor-jira/src/credentials.rs",
+      "sha256": "86be3dec6e31783e1aa04d68a96359962665687817b31bf075d61e334dc5a7f0",
+      "start": 14,
+      "end": 41,
+      "text": "14: /// Credential effects are isolated by immutable Realm and canonical state root.\n15: /// A copied Realm database under another root cannot update the original root.\n16: #[derive(Clone)]\n17: pub struct JiraCredentialScope {\n18:     service: String,\n19: }\n20: \n21: impl JiraCredentialScope {\n22:     pub fn at(root: &Path, realm: RealmId) -> Result<Self, JiraError> {\n23:         if !root.is_absolute() {\n24:             return Err(refused(\"the credential root must be absolute\"));\n25:         }\n26:         let root = root\n27:             .canonicalize()\n28:             .map_err(|_| refused(\"the credential root could not be canonicalized\"))?;\n29:         if !root.is_dir() {\n30:             return Err(refused(\"the credential root must be a directory\"));\n31:         }\n32:         let root_hash = ContentHash::of(root.as_os_str().as_encoded_bytes());\n33:         Ok(Self {\n34:             service: format!(\"kontor-jira:{realm}:{root_hash}\"),\n35:         })\n36:     }\n37: \n38:     pub(crate) fn target(&self, alias: &str) -> KeychainTarget {\n39:         KeychainTarget::new(self.service.clone(), alias.to_owned())\n40:     }\n41: }"
+    },
+    {
+      "path": "crates/kontor-daemon/src/github_publication.rs",
+      "sha256": "a454b14682d9d3da0db6d97325447a195e9053b0c10bcd8e7d039e91cf383b00",
+      "start": 10,
+      "end": 17,
+      "text": "10: //! request and posts `asma/publication-identity` for it.\n11: //!\n12: //! Everything here is inert until an operator installs the App and writes\n13: //! `<state root>/config/github-app.json`. Absent configuration is valid; a\n14: //! present document that will not parse refuses the start, as the quota-signal\n15: //! document does. The private key is read from a path the document names and\n16: //! never from the document itself.\n17: "
+    },
+    {
+      "path": "crates/kontor-memory-cognee/src/lib.rs",
+      "sha256": "f461effcda17a460a0939ef2bb077f74de1bd0b26ee5b6c44b997fcd3ec84c40",
+      "start": 140,
+      "end": 158,
+      "text": "140: impl Client {\n141:     /// Compose an explicitly supplied credential; never reads Keychain or env.\n142:     pub fn new(config: Config, credential: Option<SecretString>) -> Result<Self, Error> {\n143:         config.validate()?;\n144:         if config.enabled && config.credential_alias.is_some() != credential.is_some() {\n145:             return Err(Error(DegradedReason::Unavailable));\n146:         }\n147:         let http = reqwest::Client::builder()\n148:             .redirect(reqwest::redirect::Policy::none())\n149:             .retry(reqwest::retry::never())\n150:             .no_proxy()\n151:             .timeout(Duration::from_millis(config.timeout_ms))\n152:             .build()\n153:             .map_err(|_| Error(DegradedReason::Unavailable))?;\n154:         Ok(Self {\n155:             config,\n156:             http,\n157:             credential,\n158:         })"
+    },
+    {
+      "path": "crates/kontor-daemon/src/lib.rs",
+      "sha256": "01590a08e3f90f468a9f34bc2233f8c1877cf9ef51e3407f935411ab6151a9cd",
+      "start": 344,
+      "end": 349,
+      "text": "344:     /// Supply an already configured transport without reading provider secrets.\n345:     #[must_use]\n346:     pub fn with_memory_cognee(mut self, client: kontor_memory_cognee::Client) -> Self {\n347:         self.memory_cognee = Some(client);\n348:         self\n349:     }"
+    },
+    {
+      "path": "crates/kontor-daemon/src/lib.rs",
+      "sha256": "01590a08e3f90f468a9f34bc2233f8c1877cf9ef51e3407f935411ab6151a9cd",
+      "start": 572,
+      "end": 586,
+      "text": "572:         let memory_config =\n573:             kontor_memory_cognee::Config::read(&config.state_root.join(\"memory-cognee.json\"))\n574:                 .map_err(|source| StartupError::MemoryCognee { source })?;\n575:         if memory_config.is_some_and(|document| document.enabled) && config.memory_cognee.is_none()\n576:         {\n577:             return Err(StartupError::MemoryCognee {\n578:                 source: kontor_memory_cognee::Error(\n579:                     kontor_core::memory::DegradedReason::Unavailable,\n580:                 ),\n581:             });\n582:         }\n583:         if let Some(client) = config.memory_cognee.clone() {\n584:             applications.attach_memory_cognee(client);\n585:         }\n586: "
+    },
+    {
+      "path": "crates/kontor-daemon/src/main.rs",
+      "sha256": "8f0fb6e63b3429554e9b7f92cbdec38377bcc03b7bcfec95002f415941bf5ee2",
+      "start": 294,
+      "end": 310,
+      "text": "294: \n295: /// Serve one Realm until the process is asked to stop.\n296: async fn serve(state_root: PathBuf, port: u16, origins: Vec<String>) -> std::process::ExitCode {\n297:     let mut config = DaemonConfig::at(state_root).with_port(port);\n298:     if !origins.is_empty() {\n299:         config.allowed_origins = origins;\n300:     }\n301:     // The fleet comes from the state root, so the shipped daemon's session routes\n302:     // are backed by the adapters this Realm is configured with. A Realm with no\n303:     // `runtimes.json` composes an empty fleet and says so below rather than\n304:     // pretending to have one.\n305:     let daemon = match Daemon::start_configured(config) {\n306:         Ok(daemon) => daemon,\n307:         Err(error) => {\n308:             error!(detail = %error, \"kontor could not start\");\n309:             return std::process::ExitCode::FAILURE;\n310:         }"
+    },
+    {
+      "path": "crates/kontor-daemon/src/applications.rs",
+      "sha256": "0a15e9f04c77edfd34b56ef6a0be1f70b5c142b4cdc1d795bc0e5d2a7292617a",
+      "start": 19263,
+      "end": 19286,
+      "text": "19263:     fn rebuild_memory_projection(\n19264:         &self,\n19265:         project_id: ProjectId,\n19266:         _key: &IdempotencyKey,\n19267:         request: &kontor_api::memory::ProjectionRebuildRequest,\n19268:     ) -> Result<kontor_store::memory::ProjectionReadback, ApiError> {\n19269:         let state = self.state()?;\n19270:         let preview = state\n19271:             .with_store(|store| store.projection_preview(project_id))\n19272:             .map_err(|error| kontor_api::memory::map(state, error))?;\n19273:         if request.expected_generation != preview.active_generation\n19274:             || request.expected_memory_cursor != preview.snapshot.memory_cursor\n19275:             || request.preview_digest != preview.snapshot.digest\n19276:         {\n19277:             return Err(self.deny(\n19278:                 ApiErrorCode::ProjectionConflict,\n19279:                 \"the projection preview is stale\",\n19280:             ));\n19281:         }\n19282:         Err(self.deny(\n19283:             ApiErrorCode::ProjectionUnavailable,\n19284:             \"the semantic projection adapter is unavailable\",\n19285:         ))\n19286:     }"
+    }
+  ],
+  "accepted_source_integrity": {
+    "manifest_path": "docs/evidence/ASMA-8159/receipts/source-manifest.json",
+    "manifest_file_sha256": "48abff8a8c8d1ba0dd286dd30a77ba8c8f32d85ad81b2fa26f0a9c5825c95c8e",
+    "file_count": 1142,
+    "changed": [],
+    "files_map_sha256": "81c6d5ac5e55c809deb367d47e2b064c2cac6878daf314d63858099d3ca9a239"
+  },
+  "migrations": {
+    "count": 120,
+    "maximum": 120,
+    "missing": [],
+    "duplicates": [],
+    "memory_0120_sha256": "bbad30ea8f311c79a5c044b863e2998ddafa7be9ccc7322aed39a639ed532031"
+  },
+  "verification": "PASS_READ_ONLY_INTEGRITY_AND_FINDING_CAPTURE",
+  "finished_utc": "2026-10-03T07:46:13.592820+00:00"
+}

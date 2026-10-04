@@ -34,7 +34,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::StoreError;
 
 /// The schema generation this binary implements.
-pub const SCHEMA_VERSION: i64 = 122;
+pub const SCHEMA_VERSION: i64 = 124;
 
 /// The bounded busy timeout applied to every connection.
 ///
@@ -425,6 +425,10 @@ const MIGRATIONS: &[&str] = &[
     // Schema v122. A succession's receipt is proved to be its own, binds at most
     // one succession, and the instant it bound at is as frozen as the binding.
     include_str!("../migrations/0122_core_team_route_succession_receipt_identity.sql"),
+    // Schema v123. Typed experience eligibility, immutable projections and recall metadata.
+    include_str!("../migrations/0123_experience_memory_projection.sql"),
+    // Schema v124. Immutable projection rebuild requests and original result receipts.
+    include_str!("../migrations/0124_memory_projection_rebuild_receipts.sql"),
 ];
 
 const _: () = assert!(
@@ -630,6 +634,12 @@ fn apply_pending(
     // transaction or none of them may move at all.
     if version < 47 {
         canonicalize_operational_topology_v47(&transaction)?;
+    }
+
+    // Schema v123's derived cache uses the canonical Rust validator, never a
+    // permissive SQL shape test. Its writes share the ordered migration transaction.
+    if version < 123 {
+        crate::memory::rebuild_experience_eligibility_in(&transaction)?;
     }
 
     // The Realm is created exactly once, by the open that created the schema. An

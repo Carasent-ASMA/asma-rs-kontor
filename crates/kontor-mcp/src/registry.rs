@@ -774,6 +774,9 @@ pub static SERVE_PROFILES: &[ServeProfile] = &[
             "kontor_memory_search",
             "kontor_memory_history",
             "kontor_memory_propose",
+            "kontor_experience_propose",
+            "kontor_memory_recall_preview",
+            "kontor_memory_recall_get",
             "kontor_context_resolve",
             "kontor_open_questions_list",
             "kontor_open_question_record",
@@ -3699,6 +3702,203 @@ pub static REGISTRY: &[ToolSpec] = &[
         ],
         about: "Waive one declared role slot that has never held a native binding, under the \
                 frozen template's authority and evidence policy.",
+    },
+    ToolSpec {
+        name: "kontor_experience_propose",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/memory/experiences:propose",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "item_id",
+                Place::Body,
+                ArgType::OpenKey,
+                "Memory aggregate.",
+            ),
+            req(
+                "expected_revision",
+                Place::Body,
+                ArgType::U64,
+                "Aggregate revision read by the caller.",
+            ),
+            req(
+                "document",
+                Place::Body,
+                ArgType::Json,
+                "Strict versioned ExperienceMemoryV1; proposal never approves it.",
+            ),
+            req(
+                "provenance",
+                Place::Body,
+                ArgType::Json,
+                "Evidence provenance.",
+            ),
+            req(
+                "proposed_by",
+                Place::Body,
+                ArgType::ExternalName,
+                "Proposer.",
+            ),
+        ],
+        about: "Propose a strict typed experience through the canonical approval ledger.",
+    },
+    ToolSpec {
+        name: "kontor_memory_recall_preview",
+        tier: CallerTier::Observer,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/memory/recall:preview",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "task_id",
+                Place::Body,
+                ArgType::TaskId,
+                "Task whose durable title, module, scope and selected phase derive the query.",
+            ),
+        ],
+        about: "Preview bounded typed recall derived from task state; no binding is persisted.",
+    },
+    ToolSpec {
+        name: "kontor_memory_recall_freeze",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/memory/recall:freeze",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "task_id",
+                Place::Body,
+                ArgType::TaskId,
+                "The task served by this run.",
+            ),
+            req(
+                "agent_run_id",
+                Place::Body,
+                ArgType::AgentRunId,
+                "Existing agent run to bind; replay uses its exact historical bytes.",
+            ),
+        ],
+        about: "Freeze authoritative typed recall for an existing run; no caller prompt or upstream text is accepted.",
+    },
+    ToolSpec {
+        name: "kontor_memory_recall_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/memory/recall/{agent_run_id}",
+        kind: OpKind::Read,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            req(
+                "agent_run_id",
+                Place::Path,
+                ArgType::AgentRunId,
+                "Frozen run identity.",
+            ),
+        ],
+        about: "Read exact frozen recall; explicit purge refuses reselection.",
+    },
+    ToolSpec {
+        name: "kontor_memory_projection_preview",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/memory/projection:preview",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "Preview the complete immutable provider-eligible minimal projection and digest.",
+    },
+    ToolSpec {
+        name: "kontor_memory_projection_get",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/memory/projection",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "Read active projection identity, generation and freshness.",
+    },
+    ToolSpec {
+        name: "kontor_memory_projection_rebuild",
+        tier: CallerTier::Operator,
+        method: Method::Post,
+        path: "/v1/projects/{project_id}/memory/projection:rebuild",
+        kind: OpKind::Write,
+        args: &[
+            req(
+                "project_id",
+                Place::Path,
+                ArgType::ProjectId,
+                "The owning project.",
+            ),
+            IDEMPOTENCY,
+            req(
+                "expected_generation",
+                Place::Body,
+                ArgType::U64,
+                "Active pointer generation from preview.",
+            ),
+            req(
+                "expected_memory_cursor",
+                Place::Body,
+                ArgType::I64,
+                "Receipt watermark from preview.",
+            ),
+            req(
+                "preview_digest",
+                Place::Body,
+                ArgType::Text,
+                "Exact immutable projection digest.",
+            ),
+        ],
+        about: "Rebuild through the qualified semantic adapter; unavailable adapters return projection_unavailable.",
+    },
+    ToolSpec {
+        name: "kontor_experience_classify",
+        tier: CallerTier::Observer,
+        method: Method::Get,
+        path: "/v1/projects/{project_id}/memory/experiences:classify",
+        kind: OpKind::Read,
+        args: &[req(
+            "project_id",
+            Place::Path,
+            ArgType::ProjectId,
+            "The owning project.",
+        )],
+        about: "Classify current approved canonical identities without altering the ledger.",
     },
     ToolSpec {
         name: "kontor_memory_search",
@@ -7658,12 +7858,15 @@ mod tests {
         // a tool to a seat's surface stays a decision rather than a side effect.
         assert_eq!(
             worker.tools.len(),
-            22,
+            25,
             "worker includes artifact recovery, question reporting and readback"
         );
         assert!(worker.allows("kontor_turn_observe"));
         assert!(worker.allows("kontor_memory_search"));
         assert!(worker.allows("kontor_memory_history"));
+        assert!(worker.allows("kontor_experience_propose"));
+        assert!(worker.allows("kontor_memory_recall_preview"));
+        assert!(worker.allows("kontor_memory_recall_get"));
     }
 
     #[test]

@@ -250,6 +250,14 @@ pub enum StartupError {
     /// The configured seat-supervision policy could not be loaded.
     #[error(transparent)]
     Supervision(#[from] SupervisionError),
+    /// The optional memory transport configuration was invalid or needs the
+    /// later authorized credential/activation composition.
+    #[error("the memory transport could not be composed: {source}")]
+    MemoryCognee {
+        /// Static redacted refusal.
+        #[source]
+        source: kontor_memory_cognee::Error,
+    },
 }
 
 /// Everything a daemon is configured with.
@@ -294,6 +302,9 @@ pub struct DaemonConfig {
     /// An explicitly composed connector set for embeddings and tests. Ordinary
     /// daemon startup reads strict `jira.json` from the state root instead.
     jira_connectors: Option<kontor_jira::JiraConnectors>,
+    /// Explicitly composed synthetic/embedding transport. No secret resolver is
+    /// installed by ordinary startup in this source-only qualification phase.
+    memory_cognee: Option<kontor_memory_cognee::Client>,
 }
 
 impl DaemonConfig {
@@ -308,6 +319,7 @@ impl DaemonConfig {
             derived_read_deadline_seconds: DEFAULT_DERIVED_READ_DEADLINE_SECONDS,
             capacity: DEFAULT_CAPACITY,
             jira_connectors: None,
+            memory_cognee: None,
         }
     }
 
@@ -326,6 +338,13 @@ impl DaemonConfig {
     #[must_use]
     pub fn with_jira_connectors(mut self, connectors: kontor_jira::JiraConnectors) -> Self {
         self.jira_connectors = Some(connectors);
+        self
+    }
+
+    /// Supply an already configured transport without reading provider secrets.
+    #[must_use]
+    pub fn with_memory_cognee(mut self, client: kontor_memory_cognee::Client) -> Self {
+        self.memory_cognee = Some(client);
         self
     }
 
@@ -549,6 +568,21 @@ impl Daemon {
             Arc::new(crate::fleet::FleetSource::at(&config.state_root)),
         )
         .map_err(|source| StartupError::Applications { source })?;
+
+        let memory_config =
+            kontor_memory_cognee::Config::read(&config.state_root.join("memory-cognee.json"))
+                .map_err(|source| StartupError::MemoryCognee { source })?;
+        if memory_config.is_some_and(|document| document.enabled) && config.memory_cognee.is_none()
+        {
+            return Err(StartupError::MemoryCognee {
+                source: kontor_memory_cognee::Error(
+                    kontor_core::memory::DegradedReason::Unavailable,
+                ),
+            });
+        }
+        if let Some(client) = config.memory_cognee.clone() {
+            applications.attach_memory_cognee(client);
+        }
 
         let state = ApiState::new(ApiParts {
             store,

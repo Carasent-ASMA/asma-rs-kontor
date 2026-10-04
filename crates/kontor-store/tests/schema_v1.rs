@@ -132,6 +132,14 @@ const EXPECTED_TABLES: &[&str] = &[
     "memory_approvals",
     "memory_authority",
     "memory_context_bindings",
+    "memory_experience_eligibility",
+    "memory_experience_proposals",
+    "memory_projection_active",
+    "memory_projection_snapshots",
+    "memory_projection_rebuild_keys",
+    "memory_projection_rebuild_results",
+    "memory_recall_metadata",
+    "memory_recall_keys",
     "memory_fts",
     "memory_fts_config",
     "memory_fts_content",
@@ -762,7 +770,11 @@ fn an_empty_database_migrates_to_the_current_schema_version() {
     // claimed before its first duplicable effect, and a durable readback plus
     // pending-effect record so a replay converges instead of re-planning
     // against a seat that has moved (ASMA-8187).
-    assert_eq!(SCHEMA_VERSION, 122);
+    // v121 retains imported records as inspectable evidence without authority.
+    // v122 freezes and verifies each succession receipt binding.
+    // v123 adds typed experience eligibility, projections and recall metadata.
+    // v124 records immutable projection rebuild requests and original results.
+    assert_eq!(SCHEMA_VERSION, 124);
 }
 
 #[test]
@@ -6110,4 +6122,131 @@ fn issuance_boundary_is_frozen_across_replay_and_reopen() {
             "a retry must neither move an original boundary nor invent one for a legacy issuance"
         );
     }
+}
+
+#[test]
+fn v123_upgrade_preserves_generic_ledger_and_enforces_immutable_memory_receipts() {
+    use kontor_core::id::{ExternalName, IdempotencyKey, Timestamp};
+    use kontor_core::memory::{DegradedReason, RecallIntent};
+    use kontor_core::repository::NewProject;
+    use kontor_store::memory::{MemoryProvenance, SemanticRecall};
+    let directory = temp();
+    let store = open(&directory);
+    let project = ProjectId::generate();
+    store
+        .create_project(&NewProject {
+            id: project,
+            name: ExternalName::parse("Memory upgrade").unwrap(),
+            root_path: ExternalName::parse("/tmp/memory-upgrade").unwrap(),
+            created_at: Timestamp::now(),
+        })
+        .unwrap();
+    let document = CanonicalDocument::from_value(
+        &serde_json::json!({"schema_version":1,"text":"generic legacy document"}),
+    )
+    .unwrap();
+    let provenance = MemoryProvenance {
+        source: "synthetic".into(),
+        source_id: None,
+        legacy_last_write_wins: false,
+        history_unavailable: false,
+    };
+    let (revision, _) = store
+        .propose_memory_revision(project, "legacy", 0, &document, &provenance, "author")
+        .unwrap();
+    store
+        .approve_memory_revision(project, "legacy", &revision.revision_id, 1, "reviewer")
+        .unwrap();
+    let original = store
+        .freeze_memory_binding(
+            project,
+            "legacy-run",
+            &document,
+            std::slice::from_ref(&revision.revision_id),
+        )
+        .unwrap();
+    let typed = CanonicalDocument::from_value(
+        &serde_json::from_str::<serde_json::Value>(include_str!(
+            "../../kontor-core/tests/fixtures/experience-v1.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let (typed_revision, _) = store
+        .propose_memory_revision(project, "typed-existing", 0, &typed, &provenance, "author")
+        .unwrap();
+    store
+        .approve_memory_revision(
+            project,
+            "typed-existing",
+            &typed_revision.revision_id,
+            1,
+            "reviewer",
+        )
+        .unwrap();
+    drop(store);
+    // Remove all post-119 additive tables and the derived cache. The fixture
+    // now has the exact v119 table set and ledger, and opens through the real chain.
+    let database = directory.path().join("kontor.db");
+    let connection = Connection::open(&database).unwrap();
+    connection.execute_batch("DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; DROP TABLE imported_record_evidence; DROP TABLE core_team_route_successions; PRAGMA user_version=119;").unwrap();
+    drop(connection);
+    let store = SqliteStore::open(&database).unwrap();
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    assert_eq!(store.list_memory(project).unwrap()[0].document, document);
+    assert_eq!(
+        store
+            .memory_binding(project, "legacy-run")
+            .unwrap()
+            .unwrap()
+            .result_hash,
+        original.result_hash
+    );
+    let snapshot = store.stage_projection(project).unwrap();
+    assert!(snapshot.entries.is_empty());
+    let intent = RecallIntent {
+        schema_version: 1,
+        task_id: "synthetic".into(),
+        task_title: "publication".into(),
+        module: None,
+        declared_scope: vec![],
+        phase: "verification".into(),
+    };
+    let key = IdempotencyKey::parse("upgrade-recall").unwrap();
+    let recall = store
+        .recall_experiences_idempotent(
+            project,
+            "typed-run",
+            "synthetic",
+            &key,
+            &intent,
+            &SemanticRecall::Degraded(DegradedReason::Absent),
+        )
+        .unwrap();
+    assert_eq!(recall.metadata.identities.len(), 1);
+    assert_eq!(
+        recall.metadata.identities[0].revision_id,
+        typed_revision.revision_id
+    );
+    drop(store);
+    let connection = Connection::open(&database).unwrap();
+    for sql in [
+        "UPDATE memory_projection_snapshots SET dataset='changed'",
+        "DELETE FROM memory_projection_snapshots",
+        "UPDATE memory_recall_metadata SET metadata='{}'",
+        "DELETE FROM memory_recall_metadata",
+        "UPDATE memory_recall_keys SET task_id='changed'",
+        "DELETE FROM memory_recall_keys",
+    ] {
+        assert!(
+            connection.execute(sql, []).is_err(),
+            "immutable evidence must reject {sql}"
+        );
+    }
+    let violations: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(violations, 0);
 }

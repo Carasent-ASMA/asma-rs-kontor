@@ -6,6 +6,7 @@
 //! field could only appear here by first appearing in a DTO, which is what the
 //! disclosure tests scan for.
 
+use crate::memory_schema::MemorySchemas;
 use utoipa::OpenApi;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, openapi::OpenApi as Document};
@@ -39,11 +40,20 @@ impl Modify for RealmBearer {
         description = "The loopback HTTP and SSE contract of one Kontor realm.",
         version = "1.0.0"
     ),
-    modifiers(&RealmBearer),
+    modifiers(&RealmBearer, &MemorySchemas),
     paths(
         crate::open_questions::list_open_questions,
         crate::open_questions::record_open_question,
         crate::memory::list,
+        crate::memory::propose_experience,
+        crate::memory::recall_preview,
+        crate::memory::recall_freeze,
+        crate::memory::recall_readback,
+        crate::memory::projection_preview,
+        crate::memory::projection_readback,
+        crate::memory::projection_rebuild,
+        crate::memory::classify,
+
         crate::memory::history,
         crate::memory::propose,
         crate::memory::approve,

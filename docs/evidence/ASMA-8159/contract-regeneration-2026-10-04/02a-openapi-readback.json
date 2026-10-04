@@ -1,0 +1,83 @@
+{
+  "argv": [
+    "python3",
+    "docs/evidence/ASMA-8159/contract-regeneration-2026-10-04/verify-generated-readback.py",
+    "api"
+  ],
+  "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+  "completed_at_utc": "2026-10-04T01:30:38.129667+00:00",
+  "exit_code": 0,
+  "status": "PASS",
+  "base_sha": "8a368041d5c692c301371513c9a51947d659c57e",
+  "counts": {
+    "mapped_operations": 202,
+    "advertised_tools": 201,
+    "openapi_operations": 203
+  },
+  "expected_counts": {
+    "mapped_operations": 202,
+    "advertised_tools": 201,
+    "openapi_operations": 203
+  },
+  "contracts": [
+    {
+      "path": "crates/kontor-api/contract/openapi.json",
+      "bytes": 877755,
+      "sha256": "30e66d56acadd5d6e7c97ce406e2dc3bc46597ae7ffb9973302dcd9ada898ff0",
+      "static_sha256": "30e66d56acadd5d6e7c97ce406e2dc3bc46597ae7ffb9973302dcd9ada898ff0",
+      "byte_identical_to_static_readback": true
+    },
+    {
+      "path": "apps/console/src/api/schema.d.ts",
+      "bytes": 760653,
+      "sha256": "440a199e2da1cca30606fa8105d149f709887d5e0ea2b977b20c784d6fe55e9a",
+      "static_sha256": "440a199e2da1cca30606fa8105d149f709887d5e0ea2b977b20c784d6fe55e9a",
+      "byte_identical_to_static_readback": true
+    }
+  ],
+  "cli_only": [
+    "kontor_account_profile_amend"
+  ],
+  "tracked_changed_paths": [],
+  "staged_paths": [],
+  "commands_and_outputs": [
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "started_at_utc": "2026-10-04T01:30:38.029877+00:00",
+      "completed_at_utc": "2026-10-04T01:30:38.050386+00:00",
+      "exit_code": 0,
+      "stdout": "8a368041d5c692c301371513c9a51947d659c57e\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--name-only"
+      ],
+      "started_at_utc": "2026-10-04T01:30:38.050426+00:00",
+      "completed_at_utc": "2026-10-04T01:30:38.091209+00:00",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--name-only"
+      ],
+      "started_at_utc": "2026-10-04T01:30:38.091256+00:00",
+      "completed_at_utc": "2026-10-04T01:30:38.118243+00:00",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "scope": "Required generation readback only; QA qualification and self-review not run."
+}

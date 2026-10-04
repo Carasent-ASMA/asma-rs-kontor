@@ -2805,9 +2805,12 @@ fn atomic_local_gate_and_done_survive_restart_and_replay_after_reopen() {
 /// has to be undone here: the reopen at the end of the v115 test replays them,
 /// and a table or column left behind turns that replay into a collision instead
 /// of a migration. 0116 adds one table, 0117 two columns and 0118 the two
-/// delivery-proof tables, and 0119 the publication-attestation guards;
-/// a future migration that adds anything must undo it
-/// here too, and the replay is what notices when it does not.
+/// delivery-proof tables, and 0119 the publication-attestation guards. 0120
+/// adds Core Team route successions, 0121 imported-record evidence and 0122
+/// succession receipt guards. 0123 adds the six memory projection/eligibility/
+/// receipt tables, and 0124 the two projection rebuild receipt tables. A future
+/// migration that adds anything must undo it here too, and the replay is what
+/// notices when it does not.
 fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
     let connection = Connection::open(&fixture.path).expect("migration connection");
     connection
@@ -2817,7 +2820,15 @@ fn apply_v115_to_legacy_fixture(fixture: &Fixture) {
             // table is one `DROP TABLE`: SQLite takes its indexes and triggers
             // with it, and a `DROP TABLE` does not fire the row triggers that
             // make the rows themselves undeletable.
-            "DROP TABLE imported_record_evidence;
+            "DROP TABLE memory_projection_rebuild_results;
+         DROP TABLE memory_projection_rebuild_keys;
+         DROP TABLE memory_recall_keys;
+         DROP TABLE memory_recall_metadata;
+         DROP TABLE memory_experience_proposals;
+         DROP TABLE memory_projection_active;
+         DROP TABLE memory_projection_snapshots;
+         DROP TABLE memory_experience_eligibility;
+         DROP TABLE imported_record_evidence;
          DROP TABLE core_team_route_successions;
          DROP TABLE local_command_results;
          DROP TABLE legacy_dispatch_local_confirmation_provenance;
