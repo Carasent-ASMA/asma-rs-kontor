@@ -755,6 +755,19 @@ impl AdmissionLedger {
         }
     }
 
+    /// Drop only this run's unspent reservation after durable abandonment.
+    /// A launching, unresolved or occupied seat may have native effects and is
+    /// never released through this bookkeeping-only operation.
+    pub fn release_unclaimed(&mut self, slot: &RoleSlotKey, run: AgentRunId) -> bool {
+        if matches!(self.slots.get(slot), Some(SlotAdmission::Reserved { agent_run_id, .. }) if *agent_run_id == run)
+        {
+            self.slots.remove(slot);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Release the exact occupied seat whose native session was retired.
     ///
     /// Retirement is stronger than a stopped process: the runtime has read back
@@ -984,6 +997,28 @@ mod tests {
 
     fn native(text: &str) -> ExternalId {
         ExternalId::parse(text).expect("a valid native id")
+    }
+
+    #[test]
+    fn releasing_an_unclaimed_reservation_is_exact_and_never_releases_native_work() {
+        let here = seat();
+        let request = launch_request(&here);
+        let mut ledger = AdmissionLedger::new();
+        reserve(&mut ledger, &request);
+        assert!(!ledger.release_unclaimed(&here, AgentRunId::generate()));
+        assert!(!ledger.release_unclaimed(&seat(), request.agent_run_id()));
+        assert!(ledger.is_reserved(&here));
+        assert!(ledger.release_unclaimed(&here, request.agent_run_id()));
+        assert!(!ledger.release_unclaimed(&here, request.agent_run_id()));
+        assert!(!ledger.is_reserved(&here));
+        for committed in committed_states(request.agent_run_id()) {
+            ledger.slots.insert(here.clone(), committed.clone());
+            assert!(!ledger.release_unclaimed(&here, request.agent_run_id()));
+            assert_eq!(
+                format!("{:?}", ledger.slots.get(&here).unwrap()),
+                format!("{committed:?}")
+            );
+        }
     }
 
     /// The three ways another seat can already be committed to a run: a launch in

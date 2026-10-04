@@ -89,8 +89,21 @@ fn no_tool_names_a_store_a_database_or_a_migration() {
             "kontor_publication_preview.repository",
             "kontor_publication_attest.repository",
             "kontor_publication_merge.repository",
+            // Artifact evidence selects one of two governed Git roots; it
+            // cannot name a persistence repository or caller-supplied path.
+            "kontor_artifact_record.repository",
         ],
     );
+    let artifact_repository = REGISTRY
+        .iter()
+        .find(|tool| tool.name == "kontor_artifact_record")
+        .expect("artifact record tool")
+        .args
+        .iter()
+        .find(|arg| arg.name == "repository")
+        .expect("governed Git root selector");
+    assert_eq!(artifact_repository.ty, ArgType::Enum(&["project", "task"]));
+    assert_eq!(artifact_repository.place, Place::Body);
     // `sql` and `store` are checked separately because they are substrings of
     // ordinary words; the rule is a whole-segment match rather than a blind
     // `contains`, so a future `restore_point` is not a false positive while a
@@ -606,5 +619,62 @@ fn kontor_mcp_has_no_dependency_path_to_a_forbidden_crate() {
     assert!(
         tree.contains("kontor-mcp"),
         "the audit named the wrong crate"
+    );
+}
+
+/// ASMA-8280 B-1: the local fleet resolution is daemon-free. The shared
+/// verified reader links only the resolver and the core types, and the CLI
+/// that runs it reaches no daemon, store or runtime — so "no daemon" is a
+/// property of the graph, not of how the command happens to be invoked.
+#[test]
+fn the_local_fleet_read_has_no_dependency_path_to_a_daemon() {
+    let tree = |package: &str| {
+        let output = std::process::Command::new(env!("CARGO"))
+            .args(["tree", "-p", package, "-e", "normal"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("cargo tree runs");
+        assert!(
+            output.status.success(),
+            "cargo tree failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let daemon = [
+        "kontor-daemon",
+        "kontor-store",
+        "kontor-api",
+        "kontor-runtime",
+        "kontor-scheduler",
+        "kontor-workflows",
+        "rusqlite",
+    ];
+
+    let reader = tree("kontor-fleet-activation");
+    for forbidden in daemon
+        .iter()
+        .chain(&["kontor-mcp", "kontor-teams", "kontor-profiles"])
+    {
+        assert!(
+            !reader.contains(forbidden),
+            "kontor-fleet-activation reaches {forbidden}:\n{reader}"
+        );
+    }
+    assert!(
+        reader.contains("kontor-fleet "),
+        "the audit resolved nothing:\n{reader}"
+    );
+
+    let cli = tree("kontor-cli");
+    for forbidden in daemon {
+        assert!(
+            !cli.contains(forbidden),
+            "kontor-cli reaches {forbidden}:\n{cli}"
+        );
+    }
+    assert!(
+        cli.contains("kontor-fleet-activation"),
+        "the CLI's local operation reads through the shared reader:\n{cli}"
     );
 }

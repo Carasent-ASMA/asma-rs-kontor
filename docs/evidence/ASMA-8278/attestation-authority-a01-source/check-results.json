@@ -1,0 +1,105 @@
+[
+  {
+    "name": "green-new-cases",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--test",
+      "backup_snapshot",
+      "main_",
+      "--offline",
+      "--jobs",
+      "2"
+    ],
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    },
+    "started_at_utc": "2026-10-03T19:12:54.840932+00:00",
+    "finished_at_utc": "2026-10-03T19:13:22.487799+00:00",
+    "seconds": 27.647,
+    "exit": 0,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/green-new-cases.log"
+  },
+  {
+    "name": "backup-full",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "kontor-store",
+      "--test",
+      "backup_snapshot",
+      "--offline",
+      "--jobs",
+      "2"
+    ],
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    },
+    "started_at_utc": "2026-10-03T19:13:22.488295+00:00",
+    "finished_at_utc": "2026-10-03T19:14:46.858334+00:00",
+    "seconds": 84.37,
+    "exit": 0,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/backup-full.log"
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "kontor-store",
+      "--all-targets",
+      "--offline",
+      "--jobs",
+      "2",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    },
+    "started_at_utc": "2026-10-03T19:14:46.859048+00:00",
+    "finished_at_utc": "2026-10-03T19:15:10.779894+00:00",
+    "seconds": 23.921,
+    "exit": 0,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/clippy.log"
+  },
+  {
+    "name": "fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    },
+    "started_at_utc": "2026-10-03T19:15:10.780588+00:00",
+    "finished_at_utc": "2026-10-03T19:15:14.304669+00:00",
+    "seconds": 3.524,
+    "exit": 0,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/fmt.log"
+  },
+  {
+    "name": "diff",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "environment": {
+      "RUST_TEST_THREADS": "2"
+    },
+    "started_at_utc": "2026-10-03T19:15:14.305297+00:00",
+    "finished_at_utc": "2026-10-03T19:15:14.480447+00:00",
+    "seconds": 0.175,
+    "exit": 0,
+    "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/diff.log"
+  }
+]

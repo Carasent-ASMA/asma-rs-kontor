@@ -1,0 +1,8 @@
+
+ RUN  v4.1.10 /Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/apps/console
+
+
+ Test Files  17 passed (17)
+      Tests  305 passed (305)
+   Start at  23:06:14
+   Duration  7.89s (transform 2.30s, setup 4.97s, import 3.53s, tests 11.50s, environment 21.58s)

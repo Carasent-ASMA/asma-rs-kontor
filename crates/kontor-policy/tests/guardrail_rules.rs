@@ -1032,6 +1032,14 @@ fn a_run_acts_as_the_account_it_was_pinned_to_or_not_at_all() {
     );
 
     case.request.run.pinned_account = None;
+    case.request.artifacts.push(ArtifactEvidence {
+        id: ArtifactEvidenceId::generate(),
+        key: case.artifact("output"),
+        locator: document("native_proved_unknown"),
+        producer_role: case.role("maker"),
+        producer_account: None,
+        recorded_at: now(),
+    });
     assert_eq!(
         case.verdict(),
         (PolicyVerdict::Block, ReasonCode::AccountPinMissing),
@@ -1060,7 +1068,7 @@ fn a_phase_cannot_complete_while_an_artifact_it_declares_is_missing() {
         key,
         locator: document("locator"),
         producer_role: maker.clone(),
-        producer_account: AccountProfileId::generate(),
+        producer_account: Some(AccountProfileId::generate()),
         recorded_at: now(),
     };
 

@@ -167,11 +167,15 @@ impl Dispatcher {
     /// design: a tool kept out of `tools/list` is still dispatchable by name, so
     /// the CLI — which resolves against the registry directly — keeps working
     /// while the listing every seat pays for on every turn stays shorter.
+    ///
+    /// A local operation is not a hidden tool: it has no route, so it is never
+    /// part of this vocabulary at all, listed or called.
     pub fn tools(&self) -> impl Iterator<Item = &'static ToolSpec> {
         let configured = self.gate.configured();
         let profile = self.profile;
         REGISTRY.iter().filter(move |tool| {
-            configured.at_least(tool.tier)
+            tool.route().is_some()
+                && configured.at_least(tool.tier)
                 && !CLI_ONLY.contains(&tool.name)
                 && profile.is_none_or(|profile| profile.allows(tool.name))
         })
@@ -195,6 +199,14 @@ impl Dispatcher {
             tool: tool.to_owned(),
             configured: self.gate.configured(),
         })?;
+        // 1a. Only an operation with a route is dispatched. A local operation
+        //     is the CLI's in-process handler; there is no request to make.
+        let Some((method, template)) = spec.route() else {
+            return Err(Denied::LocalOperation {
+                tool: tool.to_owned(),
+            }
+            .into());
+        };
 
         // 1b. The active serve profile, enforced at admission and not only at
         //     listing: a narrowed list whose calls stayed open would be a list
@@ -220,7 +232,7 @@ impl Dispatcher {
         let admitted = self.gate.admit(tool, spec.required_tier(arguments))?;
 
         // 3. Validate against the declared schema.
-        let request = build(spec, arguments)?;
+        let request = build(spec, method, template, arguments)?;
         debug_assert_eq!(admitted.tier(), self.gate.configured());
 
         // 4. Exactly one request. The two call sites below are the only ones in
@@ -256,16 +268,32 @@ fn budget_from(arguments: &serde_json::Value) -> FrameBudget {
     }
 }
 
-/// Turn validated arguments into the one request they describe.
+/// Refuse arguments the declared schema does not admit, before anything runs.
+///
+/// Not an object, a property the schema does not declare, a missing required
+/// one, or a value its type or the domain refuses: the one validation every
+/// registered operation takes, whether it becomes a request here or runs as
+/// a local operation in the `kontor` CLI.
+///
+/// # Errors
+/// The first refusal, as [`Denied`].
+pub fn validate(spec: &ToolSpec, arguments: &serde_json::Value) -> Result<(), Denied> {
+    validated(spec, arguments).map(|_| ())
+}
+
+/// The declared arguments present in `arguments`, each checked, in schema order.
 ///
 /// Every property is accounted for: an argument the schema does not declare is
 /// refused rather than dropped, which is what stops a caller smuggling a field
 /// past a tool and into a body the daemon might one day read.
-fn build(spec: &ToolSpec, arguments: &serde_json::Value) -> Result<Request, Denied> {
+fn validated<'a>(
+    spec: &ToolSpec,
+    arguments: &'a serde_json::Value,
+) -> Result<Vec<(&'static ArgSpec, &'a serde_json::Value)>, Denied> {
     let object = match arguments {
-        serde_json::Value::Object(object) => object,
+        serde_json::Value::Object(object) => Some(object),
         // A tool with no arguments may be called with nothing at all.
-        serde_json::Value::Null => &serde_json::Map::new().clone(),
+        serde_json::Value::Null => None,
         _ => {
             return Err(Denied::NotAnObject {
                 tool: spec.name.to_owned(),
@@ -273,7 +301,7 @@ fn build(spec: &ToolSpec, arguments: &serde_json::Value) -> Result<Request, Deni
         }
     };
 
-    for name in object.keys() {
+    for name in object.into_iter().flat_map(serde_json::Map::keys) {
         if !spec.args.iter().any(|arg| arg.name == name) {
             return Err(Denied::ForbiddenProperty {
                 tool: spec.name.to_owned(),
@@ -282,17 +310,9 @@ fn build(spec: &ToolSpec, arguments: &serde_json::Value) -> Result<Request, Deni
         }
     }
 
-    let mut path = spec.path.to_owned();
-    let mut query = Vec::new();
-    let mut idempotency_key = None;
-    let mut body = serde_json::Map::new();
-    let mut has_body_arg = false;
-
+    let mut present = Vec::new();
     for arg in spec.args {
-        if matches!(arg.place, Place::Body) {
-            has_body_arg = true;
-        }
-        let Some(value) = object.get(arg.name) else {
+        let Some(value) = object.and_then(|object| object.get(arg.name)) else {
             if arg.required {
                 return Err(Denied::MissingProperty {
                     tool: spec.name.to_owned(),
@@ -302,6 +322,26 @@ fn build(spec: &ToolSpec, arguments: &serde_json::Value) -> Result<Request, Deni
             continue;
         };
         check(spec.name, arg, value)?;
+        present.push((arg, value));
+    }
+    Ok(present)
+}
+
+/// Turn validated arguments into the one request they describe.
+fn build(
+    spec: &ToolSpec,
+    method: Method,
+    template: &'static str,
+    arguments: &serde_json::Value,
+) -> Result<Request, Denied> {
+    let present = validated(spec, arguments)?;
+    let has_body_arg = spec.args.iter().any(|arg| matches!(arg.place, Place::Body));
+    let mut path = template.to_owned();
+    let mut query = Vec::new();
+    let mut idempotency_key = None;
+    let mut body = serde_json::Map::new();
+
+    for (arg, value) in present {
         match arg.place {
             Place::Path => {
                 let encoded = encode_segment(&scalar_text(value));
@@ -328,7 +368,7 @@ fn build(spec: &ToolSpec, arguments: &serde_json::Value) -> Result<Request, Deni
     }
 
     Ok(Request {
-        method: spec.method,
+        method,
         path,
         query,
         idempotency_key,
@@ -336,8 +376,7 @@ fn build(spec: &ToolSpec, arguments: &serde_json::Value) -> Result<Request, Deni
         // the one that matters, because a body there would be a client naming an
         // outcome. A route that has properties always sends an object, even an
         // empty one, because its handler expects a document.
-        body: (spec.method == Method::Post && has_body_arg)
-            .then_some(serde_json::Value::Object(body)),
+        body: (method == Method::Post && has_body_arg).then_some(serde_json::Value::Object(body)),
     })
 }
 
@@ -424,6 +463,7 @@ fn check_value(
         | ArgType::QuickSessionId
         | ArgType::AdvisorRunId
         | ArgType::CommitteeRunId
+        | ArgType::PlanningPairRunId
         | ArgType::OpenKey
         | ArgType::ExternalName
         | ArgType::ExternalId
@@ -584,6 +624,7 @@ fn parse_domain(ty: ArgType, text: &str) -> Result<(), kontor_core::DomainError>
         ArgType::QuickSessionId => id::QuickSessionId::parse(text).map(drop),
         ArgType::AdvisorRunId => id::AdvisorRunId::parse(text).map(drop),
         ArgType::CommitteeRunId => id::CommitteeRunId::parse(text).map(drop),
+        ArgType::PlanningPairRunId => id::PlanningPairRunId::parse(text).map(drop),
         ArgType::OpenKey => id::validate_open_key("OpenKey", text),
         ArgType::ExternalName => id::ExternalName::parse(text).map(drop),
         ArgType::ExternalId => id::ExternalId::parse(text).map(drop),
@@ -625,6 +666,12 @@ mod tests {
 
     fn spec(name: &str) -> &'static ToolSpec {
         ToolSpec::find(name).expect("a declared tool")
+    }
+
+    /// The request one HTTP tool's arguments describe.
+    fn build(spec: &ToolSpec, arguments: &serde_json::Value) -> Result<Request, Denied> {
+        let (method, template) = spec.route().expect("an HTTP tool");
+        super::build(spec, method, template, arguments)
     }
 
     #[test]
@@ -719,6 +766,85 @@ mod tests {
         assert_eq!(request.path, format!("/v1/projects/{UUID}/tasks/{UUID}"));
         assert!(request.body.is_none(), "a read carries no body");
         assert!(request.idempotency_key.is_none());
+    }
+
+    /// The governed supersession is reachable, and reachable exactly once.
+    ///
+    /// A route that no tool maps is a route no Lead can reach through the only
+    /// surface they have, and the parity gate exists to catch that. This proves
+    /// the other half: that the mapping actually builds the request the daemon
+    /// serves — path substituted, idempotency key carried out of the body, and
+    /// every fence the operation refuses without present where the contract
+    /// puts it.
+    #[test]
+    fn a_launch_intent_supersession_is_reachable_through_the_mcp_route() {
+        let request = build(
+            spec("kontor_core_team_launch_intent_supersede"),
+            &serde_json::json!({
+                "project_id": UUID,
+                "epic_id": UUID,
+                "idempotency_key": "asma-7869-supersede-1",
+                "expected_revision": 1,
+                "seat_binding_id": UUID,
+                "expected_seat_binding_revision": 2,
+                "occupancy_generation": 1,
+                "expected_model_route": {
+                    "provider": "opencode", "model": "deepseek/deepseek-flash", "effort": "max"
+                },
+                "expected_prepared_at": "2026-09-18T20:50:33.373705Z",
+                "desired_model_route": {
+                    "provider": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"
+                }
+            }),
+        )
+        .expect("the supported MCP route accepts a governed supersession");
+        assert_eq!(
+            request.path,
+            format!("/v1/projects/{UUID}/epics/{UUID}/core-team/launch-intents:supersede")
+        );
+        // The key is an authority fence, not a body field: an exactly-once
+        // operation whose key travelled in the body would be re-executed by a
+        // retry that the daemon never recognized as one.
+        assert_eq!(
+            request.idempotency_key.as_deref(),
+            Some("asma-7869-supersede-1")
+        );
+        let body = request.body.as_ref().expect("a write carries its body");
+        assert!(body.get("idempotency_key").is_none());
+        for fence in [
+            "expected_revision",
+            "seat_binding_id",
+            "expected_seat_binding_revision",
+            "occupancy_generation",
+            "expected_model_route",
+            "expected_prepared_at",
+            "desired_model_route",
+        ] {
+            assert!(body.get(fence).is_some(), "{fence} did not reach the body");
+        }
+    }
+
+    /// Exactly one tool maps this operation.
+    ///
+    /// Two would make a Lead's reachable authority depend on which name they
+    /// happened to call, and the tier assertion would only hold for whichever
+    /// one the reviewer looked at.
+    #[test]
+    fn exactly_one_tool_maps_the_launch_intent_supersession() {
+        let mapped: Vec<&ToolSpec> = REGISTRY
+            .iter()
+            .filter(|tool| {
+                tool.route().map(|(_, path)| path)
+                    == Some("/v1/projects/{project_id}/epics/{epic_id}/core-team/launch-intents:supersede")
+            })
+            .collect();
+        assert_eq!(mapped.len(), 1, "the supersession must map exactly once");
+        assert_eq!(mapped[0].name, "kontor_core_team_launch_intent_supersede");
+        assert_eq!(mapped[0].tier, crate::CallerTier::Admin);
+        assert!(
+            !CLI_ONLY.contains(&mapped[0].name),
+            "a governed recovery operation must stay advertised, not CLI-only"
+        );
     }
 
     #[test]

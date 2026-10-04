@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--offline",
+    "--jobs",
+    "2",
+    "-p",
+    "kontor-runtime",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-restart-20261004",
+  "cargo_target": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target",
+  "started_utc": "2026-10-03T22:31:00.551822+00:00",
+  "elapsed_seconds": 36.46,
+  "exit_code": 0,
+  "log": "logs/03-clippy.log",
+  "sha256": "839618ef8df52c08c0f88a4757409d5732a36d8e10a85425fe6576a0dc3a99eb"
+}

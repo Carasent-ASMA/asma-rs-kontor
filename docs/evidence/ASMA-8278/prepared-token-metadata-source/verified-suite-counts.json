@@ -1,0 +1,192 @@
+{
+  "suites": [
+    {
+      "crate": "kontor-core",
+      "suite": "lib",
+      "count": 43,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "backlog_identity",
+      "count": 8,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "branch_identity",
+      "count": 10,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "consultation_identity_golden",
+      "count": 2,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "consultation_specs",
+      "count": 26,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "domain_state",
+      "count": 37,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "native_naming",
+      "count": 18,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "open_question",
+      "count": 27,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "planning_pair",
+      "count": 25,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "publication_identity",
+      "count": 13,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "quota_headroom",
+      "count": 9,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "spec_validation",
+      "count": 61,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "succession",
+      "count": 4,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "team_definition_naming",
+      "count": 9,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "team_definition_render_contract",
+      "count": 11,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "team_definition_successors",
+      "count": 5,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "ticket_content",
+      "count": 14,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-core",
+      "suite": "ticket_policy",
+      "count": 37,
+      "log": "logs/11-core-regression.log"
+    },
+    {
+      "crate": "kontor-store",
+      "suite": "attestation_authority",
+      "count": 10,
+      "log": "logs/08-affected-regression.log"
+    },
+    {
+      "crate": "kontor-store",
+      "suite": "attestation_token_metadata",
+      "count": 22,
+      "log": "logs/23-post-partition-final-baseline.log"
+    },
+    {
+      "crate": "kontor-store",
+      "suite": "consultation_subject",
+      "count": 13,
+      "log": "logs/08-affected-regression.log"
+    },
+    {
+      "crate": "kontor-store",
+      "suite": "hosted_seat_autonomy",
+      "count": 16,
+      "log": "logs/08-affected-regression.log"
+    },
+    {
+      "crate": "kontor-store",
+      "suite": "planning_pair_store",
+      "count": 8,
+      "log": "logs/08-affected-regression.log"
+    },
+    {
+      "crate": "kontor-store",
+      "suite": "repository_roundtrip",
+      "count": 89,
+      "log": "logs/08-affected-regression.log"
+    },
+    {
+      "crate": "kontor-store",
+      "suite": "schema_v1",
+      "count": 68,
+      "log": "logs/08-affected-regression.log"
+    },
+    {
+      "crate": "kontor-store",
+      "suite": "lib",
+      "count": 18,
+      "log": "logs/10-backup-regression.log"
+    },
+    {
+      "crate": "kontor-store",
+      "suite": "backup_snapshot",
+      "count": 25,
+      "log": "logs/10-backup-regression.log"
+    },
+    {
+      "crate": "kontor-store",
+      "suite": "backup_export",
+      "count": 25,
+      "log": "logs/14-backup-port-regression.log"
+    },
+    {
+      "crate": "kontor-store",
+      "suite": "consultation_profiles",
+      "count": 9,
+      "log": "logs/14-backup-port-regression.log"
+    },
+    {
+      "crate": "kontor-store",
+      "suite": "team_definition_backup_contract",
+      "count": 2,
+      "log": "logs/14-backup-port-regression.log"
+    }
+  ],
+  "unique_tests": 664,
+  "suite_count": 30,
+  "doctests": {
+    "kontor-core": 5,
+    "kontor-runtime": 2,
+    "kontor-store": 0
+  },
+  "deduplication": "Repeated focused/mutation executions are not added. Pre-partition prepared19/20/21/22 are superseded by final post-partition22, including guards:: names."
+}

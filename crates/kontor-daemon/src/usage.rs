@@ -58,6 +58,8 @@ use kontor_core::spec::ProviderQuotaSource;
 use secrecy::{ExposeSecret, SecretString};
 use tracing::{debug, info, warn};
 
+mod backoff;
+
 /// The directory inside a state root that holds one subdirectory per account.
 pub const PROVIDER_HOMES_DIR: &str = "provider-homes";
 
@@ -154,18 +156,37 @@ impl ProviderApi {
 /// How long a single poll may take before it is abandoned.
 const POLL_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// How often every configured account is asked.
-///
-/// Five minutes is chosen against what the answer is *for*: a route that comes
-/// back is worth acting on within one seat's turn, and a plan window that closes
-/// is worth noticing before the next batch is placed. It is also cheap — one
-/// request per account, and two accounts is the realistic fleet.
-///
-/// ponytail: one interval for every provider. A per-provider cadence needs a
-/// provider taxonomy Kontor does not have; the same note is on
-/// [`kontor_accounts::COOLDOWN_SECONDS`], and both become lookups in the
-/// account's routing document when one exists.
-const POLL_INTERVAL: Duration = Duration::from_secs(300);
+/// Conservative retry delay when a throttled endpoint sends no usable header.
+const DEFAULT_THROTTLE_SECONDS: u64 = 300;
+
+/// Refresh within the configured admission window without weakening that window.
+fn poll_interval(evidence_window_seconds: i64) -> Duration {
+    Duration::from_millis(
+        u64::try_from(evidence_window_seconds)
+            .unwrap_or(1)
+            .saturating_mul(500)
+            .clamp(100, 30_000),
+    )
+}
+
+/// Both Retry-After delta-seconds and its HTTP-date form are provider retry instructions.
+fn retry_after_seconds(headers: &reqwest::header::HeaderMap, now: std::time::SystemTime) -> u64 {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value.trim().parse::<u64>().ok().or_else(|| {
+                httpdate::parse_http_date(value).ok().map(|date| {
+                    date.duration_since(now)
+                        .unwrap_or_default()
+                        .as_secs()
+                        .saturating_add(1)
+                })
+            })
+        })
+        .unwrap_or(DEFAULT_THROTTLE_SECONDS)
+        .max(1)
+}
 
 /// Every approved credential alias, and the directory it actually names.
 ///
@@ -326,6 +347,7 @@ pub struct UsagePoller {
     homes: ProviderHomes,
     client: reqwest::Client,
     exact_reporter: Option<Arc<dyn ExactProviderUsageReporter>>,
+    backoffs: Arc<backoff::ProbeBackoffs>,
 }
 
 /// A redacted, closed failure from one explicit provider usage probe.
@@ -340,6 +362,12 @@ pub enum ProviderUsageProbeFailure {
     /// The fixed vendor endpoint could not be reached successfully.
     #[error("the provider usage endpoint could not be reached")]
     Unreachable,
+    /// Observation requests were throttled. This never asserts model quota exhaustion.
+    #[error("the usage endpoint throttled reads; retry after {retry_after_seconds} seconds")]
+    Throttled {
+        /// Safe retry delay, derived from Retry-After or the conservative missing-header fallback.
+        retry_after_seconds: u64,
+    },
 }
 
 /// Non-secret reporter seam for one exact configured account/provider route.
@@ -371,6 +399,7 @@ impl UsagePoller {
                 .build()
                 .unwrap_or_default(),
             exact_reporter: None,
+            backoffs: Arc::new(backoff::ProbeBackoffs::load(state_root)),
         }
     }
 
@@ -417,6 +446,11 @@ impl UsagePoller {
             Err(ProviderUsageProbeFailure::Unsupported) => Ok(None),
             Err(ProviderUsageProbeFailure::Unauthorized) => Err(UsageFailure::Unauthorized),
             Err(ProviderUsageProbeFailure::Unreachable) => Err(UsageFailure::Unreachable),
+            Err(ProviderUsageProbeFailure::Throttled {
+                retry_after_seconds,
+            }) => Err(UsageFailure::Throttled {
+                retry_after_seconds,
+            }),
         }
     }
 
@@ -438,7 +472,8 @@ impl UsagePoller {
         let Some((api, token)) = detect(home) else {
             return Err(ProviderUsageProbeFailure::Unauthorized);
         };
-        self.request(api, token, false).await
+        self.guarded_probe(profile, api.provider(), self.request(api, token, false))
+            .await
     }
 
     /// Probe the vendor fixed by an exact configured provider route.
@@ -447,6 +482,47 @@ impl UsagePoller {
     /// Route identity therefore selects the vendor first; token-shape discovery
     /// cannot silently turn a `claude-work` preflight into a Codex observation.
     pub async fn probe_provider(
+        &self,
+        profile: &AccountProfile,
+        provider: &str,
+    ) -> Result<UsageReading, ProviderUsageProbeFailure> {
+        self.guarded_probe(
+            profile,
+            provider,
+            self.probe_provider_unthrottled(profile, provider),
+        )
+        .await
+    }
+
+    async fn guarded_probe<F>(
+        &self,
+        profile: &AccountProfile,
+        provider: &str,
+        request: F,
+    ) -> Result<UsageReading, ProviderUsageProbeFailure>
+    where
+        F: std::future::Future<Output = Result<UsageReading, ProviderUsageProbeFailure>>,
+    {
+        let key = backoff::ProbeKey::new(profile, provider);
+        let latch = self.backoffs.latch(&key);
+        let _guard = latch.lock().await;
+        if let Some(retry_after_seconds) = self.backoffs.remaining(&key) {
+            return Err(ProviderUsageProbeFailure::Throttled {
+                retry_after_seconds,
+            });
+        }
+        let result = request.await;
+        if let Err(ProviderUsageProbeFailure::Throttled {
+            retry_after_seconds,
+        }) = &result
+            && let Err(error) = self.backoffs.record(key, *retry_after_seconds)
+        {
+            warn!(kind = ?error.kind(), "usage endpoint backoff retained in memory but could not be persisted");
+        }
+        result
+    }
+
+    async fn probe_provider_unthrottled(
         &self,
         profile: &AccountProfile,
         provider: &str,
@@ -484,25 +560,41 @@ impl UsagePoller {
             .send()
             .await
             .map_err(|_| ProviderUsageProbeFailure::Unreachable)?;
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED
-            || response.status() == reqwest::StatusCode::FORBIDDEN
-        {
-            return Err(ProviderUsageProbeFailure::Unauthorized);
-        }
-        if !response.status().is_success() {
-            return Err(ProviderUsageProbeFailure::Unreachable);
-        }
-        let body = response
-            .bytes()
-            .await
-            .map_err(|_| ProviderUsageProbeFailure::Unreachable)?;
-        if strict {
-            api.read_strict(&body)
-        } else {
-            api.read(&body)
-        }
-        .map_err(|_| ProviderUsageProbeFailure::Unsupported)
+        decode_usage_response(api, response, strict).await
     }
+}
+
+async fn decode_usage_response(
+    api: ProviderApi,
+    response: reqwest::Response,
+    strict: bool,
+) -> Result<UsageReading, ProviderUsageProbeFailure> {
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED
+        || response.status() == reqwest::StatusCode::FORBIDDEN
+    {
+        return Err(ProviderUsageProbeFailure::Unauthorized);
+    }
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(ProviderUsageProbeFailure::Throttled {
+            retry_after_seconds: retry_after_seconds(
+                response.headers(),
+                std::time::SystemTime::now(),
+            ),
+        });
+    }
+    if !response.status().is_success() {
+        return Err(ProviderUsageProbeFailure::Unreachable);
+    }
+    let body = response
+        .bytes()
+        .await
+        .map_err(|_| ProviderUsageProbeFailure::Unreachable)?;
+    if strict {
+        api.read_strict(&body)
+    } else {
+        api.read(&body)
+    }
+    .map_err(|_| ProviderUsageProbeFailure::Unsupported)
 }
 
 /// Poll every enabled account in every project once, and write what came back.
@@ -512,7 +604,7 @@ impl UsagePoller {
 /// compare-and-swap are each logged and stepped over, because the alternative is
 /// one unreachable account stopping the Realm from observing the others.
 pub async fn poll_once(poller: &UsagePoller, state: &ApiState) -> usize {
-    if poller.homes().is_empty() {
+    if poller.homes().is_empty() && poller.exact_reporter.is_none() {
         return 0;
     }
     let projects = match state.with_store(kontor_store::SqliteStore::list_projects) {
@@ -523,7 +615,7 @@ pub async fn poll_once(poller: &UsagePoller, state: &ApiState) -> usize {
         }
     };
 
-    let mut written = 0;
+    let mut jobs = Vec::new();
     for project in projects {
         let profiles = match state
             .with_store(|store| store.list_account_profiles(project.project_id))
@@ -534,8 +626,8 @@ pub async fn poll_once(poller: &UsagePoller, state: &ApiState) -> usize {
                 continue;
             }
         };
-        for profile in profiles.iter().filter(|profile| profile.enabled) {
-            let aliases = match kontor_accounts::selectable_providers(profile) {
+        for profile in profiles.into_iter().filter(|profile| profile.enabled) {
+            let aliases = match kontor_accounts::selectable_providers(&profile) {
                 Ok(aliases) => aliases,
                 Err(error) => {
                     warn!(account = %profile.id, detail = %error, "the account routing document is invalid; its usage poll is skipped");
@@ -543,26 +635,45 @@ pub async fn poll_once(poller: &UsagePoller, state: &ApiState) -> usize {
                 }
             };
             if aliases.is_empty() {
-                match poller.poll(profile).await {
-                    Ok(None) => {}
-                    Ok(Some(reading)) => written += record_for_profile(state, profile, &reading),
-                    Err(failure) => log_poll_failure(profile, &failure),
-                }
-                continue;
-            }
-            for provider in aliases {
-                match poller.probe_provider(profile, &provider).await {
-                    Ok(reading) => {
-                        if record_exact(state, profile, &provider, &reading, None, None).is_ok() {
-                            written += 1;
-                        }
-                    }
-                    Err(failure) => log_poll_failure(profile, &failure),
-                }
+                jobs.push((profile, None));
+            } else {
+                jobs.extend(
+                    aliases
+                        .into_iter()
+                        .map(|provider| (profile.clone(), Some(provider))),
+                );
             }
         }
     }
-    written
+    // One slow endpoint must not age every other account's evidence. Four
+    // concurrent bounded reads cover the deployed fleet without an unbounded fan-out.
+    use futures::StreamExt;
+    futures::stream::iter(jobs)
+        .map(|(profile, provider)| async move {
+            if let Some(provider) = provider {
+                match poller.probe_provider(&profile, &provider).await {
+                    Ok(reading) => usize::from(
+                        record_exact(state, &profile, &provider, &reading, None, None).is_ok(),
+                    ),
+                    Err(failure) => {
+                        log_poll_failure(&profile, &failure);
+                        0
+                    }
+                }
+            } else {
+                match poller.poll(&profile).await {
+                    Ok(Some(reading)) => record_for_profile(state, &profile, &reading),
+                    Ok(None) => 0,
+                    Err(failure) => {
+                        log_poll_failure(&profile, &failure);
+                        0
+                    }
+                }
+            }
+        })
+        .buffer_unordered(4)
+        .fold(0, |written, next| async move { written + next })
+        .await
 }
 
 fn log_poll_failure(profile: &AccountProfile, failure: &impl fmt::Display) {
@@ -733,27 +844,29 @@ pub async fn poll_until_stopped(poller: UsagePoller, state: ApiState) {
         debug!("no credential homes are registered; the usage poller will not run");
         return;
     }
+    let interval = poll_interval(state.evidence_window_seconds());
     info!(
         accounts = poller.homes().len(),
-        interval_seconds = POLL_INTERVAL.as_secs(),
+        interval_seconds = interval.as_secs(),
         "polling provider usage"
     );
     let mut stops = state.signals().stops();
+    let mut ticks = tokio::time::interval(interval);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        let written = poll_once(&poller, &state).await;
-        if written > 0 {
-            debug!(written, "provider usage observations appended from a poll");
-        }
         tokio::select! {
-            () = tokio::time::sleep(POLL_INTERVAL) => {}
-            // `Err` means the sender is gone, which is the daemon being torn
-            // down. Treating it as "not stopping" would spin this loop as fast
-            // as the channel can report the same closure.
+            _ = ticks.tick() => {}
+            // Channel closure also means teardown, never a reason to spin.
             changed = stops.changed() => {
                 if changed.is_err() || *stops.borrow() {
                     break;
                 }
+                continue;
             }
+        }
+        let written = poll_once(&poller, &state).await;
+        if written > 0 {
+            debug!(written, "provider usage observations appended from a poll");
         }
     }
     debug!("the usage poller stopped");
@@ -774,6 +887,277 @@ mod tests {
         ProjectRepository,
     };
     use kontor_core::spec::ProviderQuotaKind;
+
+    fn probe_profile(state: &ApiState, provider: &str) -> AccountProfile {
+        let project_id = ProjectId::generate();
+        let now = kontor_api::now();
+        let empty =
+            CanonicalDocument::from_value(&serde_json::json!({"schema_version":1})).unwrap();
+        state.with_store(|store| {
+            store
+                .create_project(&NewProject {
+                    id: project_id,
+                    name: ExternalName::parse(provider).unwrap(),
+                    root_path: ExternalName::parse(&format!(
+                        "/tmp/usage-probe-fixture-{project_id}"
+                    ))
+                    .unwrap(),
+                    created_at: now,
+                })
+                .unwrap();
+            store
+                .create_account_profile(&NewAccountProfile {
+                    id: AccountProfileId::generate(),
+                    project_id,
+                    label: ExternalName::parse(provider).unwrap(),
+                    external_account_id: None,
+                    harness: RuntimeKindKey::parse("paseo").unwrap(),
+                    credential_ref: CredentialReference {
+                        kind: CredentialReferenceKind::ConfigHome,
+                        alias: CredentialAlias::parse(provider).unwrap(),
+                    },
+                    environment: empty.clone(),
+                    routing: CanonicalDocument::from_value(
+                        &serde_json::json!({"schema_version":1,"selectable_providers":[provider]}),
+                    )
+                    .unwrap(),
+                    capability: empty,
+                    provider_identity: None,
+                    enabled: true,
+                    created_at: now,
+                })
+                .unwrap()
+        })
+    }
+
+    #[derive(Debug, Default)]
+    struct ProbeReporter {
+        calls: std::sync::atomic::AtomicUsize,
+        throttle_claude: bool,
+    }
+
+    #[async_trait]
+    impl ExactProviderUsageReporter for ProbeReporter {
+        async fn probe(
+            &self,
+            _: &AccountProfile,
+            provider: &str,
+        ) -> Result<UsageReading, ProviderUsageProbeFailure> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.throttle_claude && provider.starts_with("claude") {
+                return Err(ProviderUsageProbeFailure::Throttled {
+                    retry_after_seconds: 600,
+                });
+            }
+            Ok(UsageReading {
+                provider: crate::applications::provider_family(provider).to_owned(),
+                limit_reached: false,
+                windows: Vec::new(),
+                credits_exhausted: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_http_429_is_a_retry_instruction_not_quota_exhaustion_or_network_failure() {
+        for (header, minimum) in [
+            (Some("2312"), 2312),
+            (None, DEFAULT_THROTTLE_SECONDS),
+            (Some("invalid"), DEFAULT_THROTTLE_SECONDS),
+        ] {
+            let mut response = axum::http::Response::builder().status(429);
+            if let Some(value) = header {
+                response = response.header("retry-after", value);
+            }
+            let response = reqwest::Response::from(
+                response
+                    .body("{\"error\":{\"type\":\"rate_limit_error\"}}")
+                    .unwrap(),
+            );
+            assert_eq!(
+                decode_usage_response(ProviderApi::Claude, response, true).await,
+                Err(ProviderUsageProbeFailure::Throttled {
+                    retry_after_seconds: minimum
+                })
+            );
+        }
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            httpdate::fmt_http_date(now + Duration::from_secs(45))
+                .parse()
+                .unwrap(),
+        );
+        assert!((45..=46).contains(&retry_after_seconds(&headers, now)));
+        for seconds in [2, 10, 60, 120] {
+            assert!(
+                poll_interval(seconds) < Duration::from_secs(u64::try_from(seconds).unwrap()),
+                "the collector must refresh before configured positive evidence expires"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_throttle_survives_restart_and_does_not_starve_other_accounts() {
+        let directory = tempfile::tempdir().unwrap();
+        let daemon = Daemon::start(
+            DaemonConfig::at(directory.path()).with_port(0),
+            RuntimeRegistry::new(),
+        )
+        .unwrap();
+        let state = daemon.state();
+        let claude = probe_profile(&state, "claude-work");
+        let codex = probe_profile(&state, "codex-personal");
+        let reporter = Arc::new(ProbeReporter {
+            throttle_claude: true,
+            ..ProbeReporter::default()
+        });
+        let poller =
+            UsagePoller::with_exact_reporter(directory.path(), Arc::clone(&reporter) as Arc<_>);
+        assert_eq!(poll_once(&poller, &state).await, 1);
+        assert_eq!(reporter.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(poll_once(&poller, &state).await, 1);
+        assert_eq!(
+            reporter.calls.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "the throttled endpoint is not called again while the other refreshes"
+        );
+        assert!(
+            state
+                .with_store(|store| store.list_provider_quota_states(claude.project_id))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            state
+                .with_store(|store| store.latest_provider_usage_observation(
+                    claude.project_id,
+                    claude.id,
+                    "claude-work"
+                ))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .with_store(|store| store.latest_provider_usage_observation(
+                    codex.project_id,
+                    codex.id,
+                    "codex-personal"
+                ))
+                .unwrap()
+                .is_some()
+        );
+        drop(poller);
+        let restarted =
+            UsagePoller::with_exact_reporter(directory.path(), Arc::clone(&reporter) as Arc<_>);
+        assert!(matches!(
+            restarted.probe_provider(&claude, "claude-work").await,
+            Err(ProviderUsageProbeFailure::Throttled {
+                retry_after_seconds: 1..=600
+            })
+        ));
+        assert_eq!(
+            reporter.calls.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "restart must honor the existing provider retry deadline"
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_throttle_expires_then_requires_a_new_actual_report() {
+        #[derive(Debug, Default)]
+        struct Once(std::sync::atomic::AtomicUsize);
+        #[async_trait]
+        impl ExactProviderUsageReporter for Once {
+            async fn probe(
+                &self,
+                _: &AccountProfile,
+                _: &str,
+            ) -> Result<UsageReading, ProviderUsageProbeFailure> {
+                if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    Err(ProviderUsageProbeFailure::Throttled {
+                        retry_after_seconds: 1,
+                    })
+                } else {
+                    Ok(UsageReading {
+                        provider: "claude".to_owned(),
+                        limit_reached: false,
+                        windows: Vec::new(),
+                        credits_exhausted: false,
+                    })
+                }
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let daemon = Daemon::start(
+            DaemonConfig::at(directory.path()).with_port(0),
+            RuntimeRegistry::new(),
+        )
+        .unwrap();
+        let profile = probe_profile(&daemon.state(), "claude-work");
+        let reporter = Arc::new(Once::default());
+        let poller =
+            UsagePoller::with_exact_reporter(directory.path(), Arc::clone(&reporter) as Arc<_>);
+        assert!(matches!(
+            poller.probe_provider(&profile, "claude-work").await,
+            Err(ProviderUsageProbeFailure::Throttled { .. })
+        ));
+        assert!(matches!(
+            poller.probe_provider(&profile, "claude-work").await,
+            Err(ProviderUsageProbeFailure::Throttled { .. })
+        ));
+        assert_eq!(reporter.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(poller.probe_provider(&profile, "claude-work").await.is_ok());
+        assert_eq!(
+            reporter.0.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "elapsed retry time permits a new provider read; it never supplies an invented report"
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_collector_refreshes_unchanged_evidence_automatically_inside_the_window() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(
+            directory
+                .path()
+                .join(PROVIDER_HOMES_DIR)
+                .join("codex-personal"),
+        )
+        .unwrap();
+        let mut config = DaemonConfig::at(directory.path()).with_port(0);
+        config.evidence_window_seconds = 2;
+        let daemon = Daemon::start(config, RuntimeRegistry::new()).unwrap();
+        let state = daemon.state();
+        let profile = probe_profile(&state, "codex-personal");
+        let reporter = Arc::new(ProbeReporter::default());
+        let poller = UsagePoller::with_exact_reporter(directory.path(), reporter as Arc<_>);
+        let mut appends = state.signals().appends();
+        let worker = tokio::spawn(poll_until_stopped(poller, state.clone()));
+        let mut first = None;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                appends.changed().await.unwrap();
+                let observed = state.with_store(|store| store.latest_provider_usage_observation(profile.project_id,profile.id,"codex-personal")).unwrap().unwrap();
+                if let Some((id, at)) = first {
+                    if observed.id != id { assert!(observed.observed_at > at); break; }
+                } else { first = Some((observed.id,observed.observed_at)); }
+            }
+        }).await.expect("the automatic collector must refresh within the short configured window, not after five minutes");
+        let rows = state
+            .with_store(|store| store.list_provider_quota_states(profile.project_id))
+            .unwrap();
+        assert_eq!(
+            rows[0].revision,
+            kontor_core::id::AggregateRevision::INITIAL,
+            "an unchanged success appends evidence without churning quota state"
+        );
+        state.signals().stop();
+        worker.await.unwrap();
+    }
 
     #[test]
     fn an_absent_provider_homes_directory_approves_nothing() {

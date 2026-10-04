@@ -37,10 +37,11 @@ use kontor_scheduler::{
     AdaptiveWindowConfig, AuthorizationEvidence, BLOCKER_ORDER, Blocker, CalendarAdmission,
     CalendarPolicyEvidence, Candidate, CandidateDecision, CapacityConfig, CapacityLimitKind,
     CapacityObservation, CapacityUsage, ExternalOwnership, ExternalWorkEvidence, FleetPreflight,
-    IntakeLineage, MAX_PRIORITY, Plan, PreflightOutcome, ReconciliationEvidence,
-    ReconciliationScope, RejectionCode, RejectionEvidence, RosterGovernance,
-    RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin, WorktreeClaim,
-    WorktreeVerification, covering_authority, explain, minimum_launch_capabilities, plan,
+    IntakeLineage, MAX_PRIORITY, PlacementAdmission, Plan, PreflightOutcome,
+    ReconciliationEvidence, ReconciliationScope, RejectionCode, RejectionEvidence,
+    RosterGovernance, RuntimeAdmissionEvidence, RuntimeHealth, SchedulingSnapshot, TaskOrigin,
+    WorktreeClaim, WorktreeVerification, covering_authority, explain, minimum_launch_capabilities,
+    plan,
 };
 
 // ---------------------------------------------------------------------------
@@ -128,6 +129,9 @@ fn candidate(project: ProjectId, task: TaskId) -> Candidate {
         mini_project_id: None,
         workflow_id: TaskWorkflowId::generate(),
         delivery_slots_registered: true,
+        placement: PlacementAdmission::Confirmed {
+            attestation_digest: digest(),
+        },
         state: TaskState::Ready,
         revision: AggregateRevision::INITIAL,
         created_at: at("2026-08-12T08:00:00Z"),
@@ -1766,6 +1770,7 @@ fn an_admission_records_the_inputs_it_was_ordered_and_sized_on() {
     assert_eq!(record.module, Some(module("directory.app")));
     assert_eq!(record.worktree, Some(name("/trees/one")));
     assert_eq!(record.runtime_generation, 7);
+    assert_eq!(record.placement_attestation_digest, Some(digest()));
     assert!(record.capacity.effective > 0);
 
     // The batch is a projection of the decisions, not a second list: every
@@ -1936,6 +1941,36 @@ fn a_candidate_whose_slots_are_unregistered_is_refused_before_the_runtime_is_jud
             );
         }
         CandidateDecision::Admit(_) => panic!("an unnameable candidate is not admissible"),
+    }
+}
+
+#[test]
+fn every_unconfirmed_placement_fact_refuses_with_its_exact_reason() {
+    let project = ProjectId::generate();
+    for (placement, expected) in [
+        (
+            PlacementAdmission::JiraBindingUnconfirmed,
+            RejectionCode::JiraBindingUnconfirmed,
+        ),
+        (
+            PlacementAdmission::TeamDefinitionUnpinned,
+            RejectionCode::TeamDefinitionUnpinned,
+        ),
+        (
+            PlacementAdmission::WorktreeMissing,
+            RejectionCode::WorktreeMissing,
+        ),
+        (
+            PlacementAdmission::NativeTopologyUnconfirmed,
+            RejectionCode::NativeTopologyUnconfirmed,
+        ),
+    ] {
+        let mut refused = candidate(project, TaskId::generate());
+        refused.placement = placement;
+        let task = refused.task_id;
+        let decided = plan(&snapshot(vec![refused])).expect("the pass decides");
+        assert_refused(&decided, task, expected);
+        assert_eq!(expected.public_code(), "placement_blocked");
     }
 }
 

@@ -1,0 +1,2102 @@
+{
+  "recordedAt": "2026-09-26T10:52:35.591342+00:00",
+  "requested": [
+    "0104f3c1-05e0-46a1-a849-1240c699c7e9",
+    "053407fa-ef2a-49b0-9f3b-1534e2864685",
+    "0836cd42-5ea6-47b3-8577-becf085ce0b8",
+    "161c9290-5e98-4733-9e58-d8d2028b4d2e",
+    "19b7107d-ce1c-46e5-89e4-0d2413a1c50d",
+    "1d0179b5-4f66-4d39-b033-c909ea5e2f02",
+    "1f8388f4-f793-401b-b208-b197dc434586",
+    "1ff4009d-03b7-4328-8948-a5958934524c",
+    "2484cd30-516d-4a36-91b2-b5993d6c3760",
+    "26041ede-9f19-4c54-95fa-056272778efc",
+    "2b5a5045-cf30-4ace-aed7-fc171480bf95",
+    "2b7fcd71-7e02-4bdd-8a7b-6a65273cf7a0",
+    "2cc692d5-6ffd-4d97-b254-a28db34be529",
+    "4247e5db-25d2-435c-b851-f32e21ee99a3",
+    "48abda4d-583a-4ed2-ade7-bb34c049bd98",
+    "4a123f4b-739f-43ae-a495-f8e66771f38d",
+    "4cf1dc50-085f-43c7-88fb-882fd7bfe61b",
+    "5479dbf2-cd7d-4a97-809c-348b288c15c4",
+    "55d91dfc-a02e-4d59-a913-7b6cc72b1395",
+    "5750a5be-8399-4360-a9af-4f9594eac006",
+    "5ac8f36e-5075-4999-b270-c595b6a8322b",
+    "5e8f5f98-1a90-48cc-82e5-e6576c522102",
+    "6301c2d4-7fbd-4f08-b61c-9f12183ada82",
+    "6426ec59-57d0-4001-922c-86fc0f2de258",
+    "650b7bba-dd17-43ed-a242-0b26997d6cc3",
+    "6aabb528-8cbf-4941-9718-1f933c053fed",
+    "6b25bd35-2566-4d12-affc-e9be11452969",
+    "6ec0a96b-f01f-401d-b0c8-5e834be0c5d7",
+    "728c1c58-0bdf-4bf6-b5b3-6b9987eac765",
+    "83996a85-53b6-4bd7-95df-806da19558f3",
+    "8a00958e-34ec-46b0-b7d3-500fe33e2bdb",
+    "8c927869-425c-4160-b8db-aba54ea3e161",
+    "8f09b502-a406-4b1a-87ca-4236f6eb6cc0",
+    "9156c0ce-5851-4371-b419-fdcd6569f4d1",
+    "96e93f41-1546-452d-8e08-efc8f7b6c5d8",
+    "9f98a668-f547-4f6e-9c8d-12789624a923",
+    "a3be3c4c-e29e-461c-8118-17ed4a7aed55",
+    "a526c5cc-e399-43c9-8a5e-830e5834a27b",
+    "a805e24f-d2fe-4ded-a497-b4b59633d195",
+    "ab493493-2bf0-4fe5-8bd8-20863c2bacb3",
+    "af611832-27be-45f3-ab4a-e73853fa76be",
+    "b6f244d7-c68f-4a5d-8328-6bf780528108",
+    "b8600680-5681-48df-817b-6a54934abbcb",
+    "ba4ded2e-4943-45d3-b267-7eca5ee5440f",
+    "bb890453-0975-4086-8a4e-41c369050e68",
+    "bf8b7ea4-3f20-4754-a7c9-a2f03a5bdbce",
+    "bfd37287-60c0-4b98-9fc6-180dbaaf0754",
+    "c409d2a2-8134-467e-b098-c6b1b80112dd",
+    "ccac3b1e-37d7-4c94-a846-d2729a767411",
+    "cd234e2c-4c26-403e-a031-fb39dbce35bb",
+    "cfc11421-932a-4563-9d17-f88a0c6cc33f",
+    "d123d325-6a34-495e-bfc6-2a53f622dda0",
+    "d786b06d-ef6a-4ec8-9dbd-e23f45aebbdd",
+    "dd06ac41-7931-438a-b381-65f2e87be5c0",
+    "e213330b-5cca-48eb-949f-9e72b370da6c",
+    "e5b2e5d7-fa35-4e14-99cc-49770a0faf08",
+    "eed100a9-9cc3-491c-923b-1e16a7dd8b8f",
+    "f7395c1f-fd40-4b80-a11c-517b201f6ba9"
+  ],
+  "results": [
+    {
+      "requestedId": "0104f3c1-05e0-46a1-a849-1240c699c7e9",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "0104f3c1-05e0-46a1-a849-1240c699c7e9",
+        "Name": "AUD",
+        "Provider": "cursor",
+        "Model": "grok-4.6",
+        "Thinking": "high",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "agent",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8115-pub-07-fail-closed-scheduler-placement-admission-and-native-readback",
+        "CreatedAt": "2026-09-25T08:08:35.114Z",
+        "UpdatedAt": "2026-09-25T08:19:23.072Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": true,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "agent",
+            "label": "Agent"
+          },
+          {
+            "id": "plan",
+            "label": "Plan"
+          },
+          {
+            "id": "ask",
+            "label": "Ask"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "053407fa-ef2a-49b0-9f3b-1534e2864685",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "053407fa-ef2a-49b0-9f3b-1534e2864685",
+        "Name": "SA",
+        "Provider": "codex",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8104-pub-03-asma-cli-and-hook-enforcement",
+        "CreatedAt": "2026-09-18T19:55:49.464Z",
+        "UpdatedAt": "2026-09-20T17:48:17.532Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "0836cd42-5ea6-47b3-8577-becf085ce0b8",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "0836cd42-5ea6-47b3-8577-becf085ce0b8",
+        "Name": "TPM",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T10:15:34.976Z",
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0074f-6719-7570-adf7-95ee3ec69875",
+        "CreatedAt": "2026-09-20T19:44:01.055Z",
+        "UpdatedAt": "2026-09-21T10:15:34.976Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "161c9290-5e98-4733-9e58-d8d2028b4d2e",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "161c9290-5e98-4733-9e58-d8d2028b4d2e",
+        "Name": "LSA",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T20:16:32.683Z",
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a06e13-878a-7aa3-8a08-bfad07cc8c4c",
+        "CreatedAt": "2026-09-20T18:12:56.493Z",
+        "UpdatedAt": "2026-09-21T20:16:32.683Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "19b7107d-ce1c-46e5-89e4-0d2413a1c50d",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "19b7107d-ce1c-46e5-89e4-0d2413a1c50d",
+        "Name": "SWE",
+        "Provider": "claude",
+        "Model": "claude-opus-5",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "auto",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession",
+        "CreatedAt": "2026-09-16T10:48:33.905Z",
+        "UpdatedAt": "2026-09-21T21:09:14.514Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "1d0179b5-4f66-4d39-b033-c909ea5e2f02",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "1d0179b5-4f66-4d39-b033-c909ea5e2f02",
+        "Name": "SEAT A",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "auto-review",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-7869-consultation-01a0d818-ed77-7852-8246-2d0c599416d2",
+        "CreatedAt": "2026-09-25T10:25:26.019Z",
+        "UpdatedAt": "2026-09-25T10:29:09.988Z",
+        "LastUsage": {
+          "InputTokens": 108766,
+          "OutputTokens": 310,
+          "CachedTokens": 108032,
+          "CostUsd": 0
+        },
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "auto",
+            "label": "Default Permissions"
+          },
+          {
+            "id": "auto-review",
+            "label": "Auto-review"
+          },
+          {
+            "id": "full-access",
+            "label": "Full Access"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "1f8388f4-f793-401b-b208-b197dc434586",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "1f8388f4-f793-401b-b208-b197dc434586",
+        "Name": "QA",
+        "Provider": "cursor",
+        "Model": "auto-smart",
+        "Thinking": "high",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "agent",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8115-pub-07-fail-closed-scheduler-placement-admission-and-native-readback",
+        "CreatedAt": "2026-09-23T18:17:28.627Z",
+        "UpdatedAt": "2026-09-23T19:28:13.489Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": true,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "agent",
+            "label": "Agent"
+          },
+          {
+            "id": "plan",
+            "label": "Plan"
+          },
+          {
+            "id": "ask",
+            "label": "Ask"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "1ff4009d-03b7-4328-8948-a5958934524c",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "1ff4009d-03b7-4328-8948-a5958934524c",
+        "Name": "SEAT A",
+        "Provider": "opencode",
+        "Model": "deepseek/deepseek-flash",
+        "Thinking": "max",
+        "Status": "idle",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T22:48:05.434Z",
+        "Mode": "plan",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8098-consultation-01a0c623-f855-7702-9a85-758c0e285ed8",
+        "CreatedAt": "2026-09-21T22:44:34.554Z",
+        "UpdatedAt": "2026-09-21T22:48:05.434Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": true,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "build",
+            "label": "Build"
+          },
+          {
+            "id": "plan",
+            "label": "Plan"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "2484cd30-516d-4a36-91b2-b5993d6c3760",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "2484cd30-516d-4a36-91b2-b5993d6c3760",
+        "Name": "TPM",
+        "Provider": "claude-work",
+        "Model": "claude-opus-5",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-26T04:58:27.063Z",
+        "Mode": "bypassPermissions",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a06e13-878a-7aa3-8a08-bfad07cc8c4c",
+        "CreatedAt": "2026-09-21T21:38:37.622Z",
+        "UpdatedAt": "2026-09-21T22:49:09.132Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "26041ede-9f19-4c54-95fa-056272778efc",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "26041ede-9f19-4c54-95fa-056272778efc",
+        "Name": "SA",
+        "Provider": "codex",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8234-generalize-turn-correlation-challenge-evidence-beyond-asma-8118-settle-reachable-but-history-less-pa",
+        "CreatedAt": "2026-09-18T20:07:23.737Z",
+        "UpdatedAt": "2026-09-21T09:29:05.860Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "2b5a5045-cf30-4ace-aed7-fc171480bf95",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "2b5a5045-cf30-4ace-aed7-fc171480bf95",
+        "Name": "LSA",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a07495-e5e0-7ef2-b285-878ee7fb2bd9",
+        "CreatedAt": "2026-09-21T10:10:28.043Z",
+        "UpdatedAt": "2026-09-21T10:11:19.435Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "2b7fcd71-7e02-4bdd-8a7b-6a65273cf7a0",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "2b7fcd71-7e02-4bdd-8a7b-6a65273cf7a0",
+        "Name": "SEAT B",
+        "Provider": "codex-work",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-23T20:33:40.419Z",
+        "Mode": "auto-review",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c647-7ce2-7540-b8c2-4df12eeee137",
+        "CreatedAt": "2026-09-21T23:27:19.295Z",
+        "UpdatedAt": "2026-09-23T20:33:40.419Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "2cc692d5-6ffd-4d97-b254-a28db34be529",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "2cc692d5-6ffd-4d97-b254-a28db34be529",
+        "Name": "SEAT B",
+        "Provider": "codex-work",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "error",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T09:07:15.586Z",
+        "Mode": "auto-review",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c02a-ca46-7cf3-8b0d-0eca663dab79",
+        "CreatedAt": "2026-09-20T18:54:20.591Z",
+        "UpdatedAt": "2026-09-20T18:55:39.099Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "4247e5db-25d2-435c-b851-f32e21ee99a3",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "4247e5db-25d2-435c-b851-f32e21ee99a3",
+        "Name": "SWE",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "idle",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T20:16:32.000Z",
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8115-pub-07-fail-closed-scheduler-placement-admission-and-native-readback",
+        "CreatedAt": "2026-09-21T09:25:35.055Z",
+        "UpdatedAt": "2026-09-21T22:43:14.661Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "auto",
+            "label": "Default Permissions"
+          },
+          {
+            "id": "auto-review",
+            "label": "Auto-review"
+          },
+          {
+            "id": "full-access",
+            "label": "Full Access"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "48abda4d-583a-4ed2-ade7-bb34c049bd98",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "48abda4d-583a-4ed2-ade7-bb34c049bd98",
+        "Name": "LSA",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0aaa3-64a2-7de1-ab2d-8f40bad733ad",
+        "CreatedAt": "2026-09-21T10:14:14.863Z",
+        "UpdatedAt": "2026-09-21T12:27:51.942Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "4a123f4b-739f-43ae-a495-f8e66771f38d",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "4a123f4b-739f-43ae-a495-f8e66771f38d",
+        "Name": "SWE",
+        "Provider": "claude",
+        "Model": "claude-opus-5",
+        "Thinking": "xhigh",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "bypassPermissions",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8239/asma-rs-kontor",
+        "CreatedAt": "2026-09-19T22:22:03.944Z",
+        "UpdatedAt": "2026-09-21T08:08:36.208Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": true,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "plan",
+            "label": "Plan Mode"
+          },
+          {
+            "id": "default",
+            "label": "Always Ask"
+          },
+          {
+            "id": "acceptEdits",
+            "label": "Accept File Edits"
+          },
+          {
+            "id": "auto",
+            "label": "Auto mode"
+          },
+          {
+            "id": "bypassPermissions",
+            "label": "Bypass"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "4cf1dc50-085f-43c7-88fb-882fd7bfe61b",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "4cf1dc50-085f-43c7-88fb-882fd7bfe61b",
+        "Name": "JUDGE",
+        "Provider": "claude-personal",
+        "Model": "claude-opus-5",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-23T20:33:43.526Z",
+        "Mode": "default",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c647-7ce2-7540-b8c2-4df12eeee137",
+        "CreatedAt": "2026-09-23T20:27:07.805Z",
+        "UpdatedAt": "2026-09-23T20:33:43.526Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "5479dbf2-cd7d-4a97-809c-348b288c15c4",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "5479dbf2-cd7d-4a97-809c-348b288c15c4",
+        "Name": "TPM",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T10:15:32.112Z",
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0aaa3-64a2-7de1-ab2d-8f40bad733ad",
+        "CreatedAt": "2026-09-20T19:44:25.479Z",
+        "UpdatedAt": "2026-09-21T10:15:32.112Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "55d91dfc-a02e-4d59-a913-7b6cc72b1395",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "55d91dfc-a02e-4d59-a913-7b6cc72b1395",
+        "Name": "SA",
+        "Provider": "codex",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "auto-review",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession",
+        "CreatedAt": "2026-09-16T11:02:15.356Z",
+        "UpdatedAt": "2026-09-16T11:11:30.110Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "5750a5be-8399-4360-a9af-4f9594eac006",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "5750a5be-8399-4360-a9af-4f9594eac006",
+        "Name": "QA",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T20:16:32.587Z",
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-lsa-persona-launch",
+        "CreatedAt": "2026-09-20T17:50:35.792Z",
+        "UpdatedAt": "2026-09-21T20:16:32.587Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "5ac8f36e-5075-4999-b270-c595b6a8322b",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "5ac8f36e-5075-4999-b270-c595b6a8322b",
+        "Name": "AUD",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8104-pub-03-asma-cli-and-hook-enforcement",
+        "CreatedAt": "2026-09-21T09:16:09.270Z",
+        "UpdatedAt": "2026-09-21T22:47:28.797Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "5e8f5f98-1a90-48cc-82e5-e6576c522102",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "5e8f5f98-1a90-48cc-82e5-e6576c522102",
+        "Name": "LSA",
+        "Provider": "claude-work",
+        "Model": "claude-opus-5",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-26T03:21:16.257Z",
+        "Mode": "bypassPermissions",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a06e13-878a-7aa3-8a08-bfad07cc8c4c",
+        "CreatedAt": "2026-09-21T21:28:31.657Z",
+        "UpdatedAt": "2026-09-21T21:37:01.874Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "6301c2d4-7fbd-4f08-b61c-9f12183ada82",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "6301c2d4-7fbd-4f08-b61c-9f12183ada82",
+        "Name": "LSA",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "auto-review",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0539a-51c9-7301-9bd7-26c09167b23e",
+        "CreatedAt": "2026-09-15T05:47:30.472Z",
+        "UpdatedAt": "2026-09-26T10:38:53.859Z",
+        "LastUsage": {
+          "InputTokens": 129674,
+          "OutputTokens": 949,
+          "CachedTokens": 129152,
+          "CostUsd": 0
+        },
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "auto",
+            "label": "Default Permissions"
+          },
+          {
+            "id": "auto-review",
+            "label": "Auto-review"
+          },
+          {
+            "id": "full-access",
+            "label": "Full Access"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "6426ec59-57d0-4001-922c-86fc0f2de258",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "6426ec59-57d0-4001-922c-86fc0f2de258",
+        "Name": "SWE",
+        "Provider": "claude",
+        "Model": "claude-opus-5",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "bypassPermissions",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8120/asma-rs-kontor",
+        "CreatedAt": "2026-09-19T21:01:50.410Z",
+        "UpdatedAt": "2026-09-21T13:37:33.700Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "650b7bba-dd17-43ed-a242-0b26997d6cc3",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "650b7bba-dd17-43ed-a242-0b26997d6cc3",
+        "Name": "LSA",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "auto-review",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a07391-328d-7352-a321-4e88cbbd14eb",
+        "CreatedAt": "2026-09-13T02:12:45.884Z",
+        "UpdatedAt": "2026-09-18T05:50:51.473Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "6aabb528-8cbf-4941-9718-1f933c053fed",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "6aabb528-8cbf-4941-9718-1f933c053fed",
+        "Name": "SA",
+        "Provider": "codex",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8120/asma-rs-kontor",
+        "CreatedAt": "2026-09-19T20:56:35.802Z",
+        "UpdatedAt": "2026-09-21T11:55:19.855Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "6b25bd35-2566-4d12-affc-e9be11452969",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "6b25bd35-2566-4d12-affc-e9be11452969",
+        "Name": "SWE",
+        "Provider": "claude",
+        "Model": "claude-opus-5",
+        "Thinking": "xhigh",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "bypassPermissions",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8234-generalize-turn-correlation-challenge-evidence-beyond-asma-8118-settle-reachable-but-history-less-pa",
+        "CreatedAt": "2026-09-18T20:08:06.236Z",
+        "UpdatedAt": "2026-09-21T20:52:31.904Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": true,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "plan",
+            "label": "Plan Mode"
+          },
+          {
+            "id": "default",
+            "label": "Always Ask"
+          },
+          {
+            "id": "acceptEdits",
+            "label": "Accept File Edits"
+          },
+          {
+            "id": "auto",
+            "label": "Auto mode"
+          },
+          {
+            "id": "bypassPermissions",
+            "label": "Bypass"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "6ec0a96b-f01f-401d-b0c8-5e834be0c5d7",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "6ec0a96b-f01f-401d-b0c8-5e834be0c5d7",
+        "Name": "SWE",
+        "Provider": "claude",
+        "Model": "claude-opus-5",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "bypassPermissions",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8104-pub-03-asma-cli-and-hook-enforcement",
+        "CreatedAt": "2026-09-20T17:55:45.833Z",
+        "UpdatedAt": "2026-09-21T10:41:28.171Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "728c1c58-0bdf-4bf6-b5b3-6b9987eac765",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "728c1c58-0bdf-4bf6-b5b3-6b9987eac765",
+        "Name": "TPM",
+        "Provider": "opencode",
+        "Model": "deepseek/deepseek-flash",
+        "Thinking": "high",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "build",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a072f5-f35c-7cc2-8367-43cba653a951",
+        "CreatedAt": "2026-09-05T19:14:52.044Z",
+        "UpdatedAt": "2026-09-16T15:24:22.252Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": true,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "build",
+            "label": "Build"
+          },
+          {
+            "id": "plan",
+            "label": "Plan"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "83996a85-53b6-4bd7-95df-806da19558f3",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "83996a85-53b6-4bd7-95df-806da19558f3",
+        "Name": "QA",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8104-pub-03-asma-cli-and-hook-enforcement",
+        "CreatedAt": "2026-09-20T18:35:55.692Z",
+        "UpdatedAt": "2026-09-21T08:45:02.517Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "8a00958e-34ec-46b0-b7d3-500fe33e2bdb",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "8a00958e-34ec-46b0-b7d3-500fe33e2bdb",
+        "Name": "QA",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "auto-review",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession",
+        "CreatedAt": "2026-09-16T11:24:48.664Z",
+        "UpdatedAt": "2026-09-21T08:08:17.160Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "auto",
+            "label": "Default Permissions"
+          },
+          {
+            "id": "auto-review",
+            "label": "Auto-review"
+          },
+          {
+            "id": "full-access",
+            "label": "Full Access"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "8c927869-425c-4160-b8db-aba54ea3e161",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "8c927869-425c-4160-b8db-aba54ea3e161",
+        "Name": "SEAT B",
+        "Provider": "codex-work",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "auto-review",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8098-consultation-01a0c623-f855-7702-9a85-758c0e285ed8",
+        "CreatedAt": "2026-09-21T22:47:43.398Z",
+        "UpdatedAt": "2026-09-21T22:59:08.229Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "auto",
+            "label": "Default Permissions"
+          },
+          {
+            "id": "auto-review",
+            "label": "Auto-review"
+          },
+          {
+            "id": "full-access",
+            "label": "Full Access"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "8f09b502-a406-4b1a-87ca-4236f6eb6cc0",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "8f09b502-a406-4b1a-87ca-4236f6eb6cc0",
+        "Name": "TPM",
+        "Provider": "opencode",
+        "Model": "deepseek/deepseek-flash",
+        "Thinking": "high",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "build",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a07391-328d-7352-a321-4e88cbbd14eb",
+        "CreatedAt": "2026-09-13T02:46:32.602Z",
+        "UpdatedAt": "2026-09-20T18:36:36.289Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "9156c0ce-5851-4371-b419-fdcd6569f4d1",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "9156c0ce-5851-4371-b419-fdcd6569f4d1",
+        "Name": "SEAT B",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T09:34:46.931Z",
+        "Mode": "auto-review",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c02a-ca46-7cf3-8b0d-0eca663dab79",
+        "CreatedAt": "2026-09-21T09:08:18.920Z",
+        "UpdatedAt": "2026-09-21T09:34:46.931Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "96e93f41-1546-452d-8e08-efc8f7b6c5d8",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "96e93f41-1546-452d-8e08-efc8f7b6c5d8",
+        "Name": "TPM",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0074f-6719-7570-adf7-95ee3ec69875",
+        "CreatedAt": "2026-09-21T10:15:38.056Z",
+        "UpdatedAt": "2026-09-21T22:46:05.462Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "9f98a668-f547-4f6e-9c8d-12789624a923",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "9f98a668-f547-4f6e-9c8d-12789624a923",
+        "Name": "TPM",
+        "Provider": "opencode",
+        "Model": "deepseek/deepseek-flash",
+        "Thinking": "high",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "build",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0539a-51c9-7301-9bd7-26c09167b23e",
+        "CreatedAt": "2026-09-16T07:55:06.241Z",
+        "UpdatedAt": "2026-09-19T21:01:49.961Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "a3be3c4c-e29e-461c-8118-17ed4a7aed55",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "a3be3c4c-e29e-461c-8118-17ed4a7aed55",
+        "Name": "QA",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T13:30:14.037Z",
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8239/asma-rs-kontor",
+        "CreatedAt": "2026-09-20T19:40:27.432Z",
+        "UpdatedAt": "2026-09-21T13:30:14.037Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "a526c5cc-e399-43c9-8a5e-830e5834a27b",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "a526c5cc-e399-43c9-8a5e-830e5834a27b",
+        "Name": "QA",
+        "Provider": "cursor",
+        "Model": "auto-smart",
+        "Thinking": "high",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "plan",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-lsa-persona-launch",
+        "CreatedAt": "2026-09-23T18:23:44.606Z",
+        "UpdatedAt": "2026-09-26T02:54:31.655Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": true,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "agent",
+            "label": "Agent"
+          },
+          {
+            "id": "plan",
+            "label": "Plan"
+          },
+          {
+            "id": "ask",
+            "label": "Ask"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "a805e24f-d2fe-4ded-a497-b4b59633d195",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "a805e24f-d2fe-4ded-a497-b4b59633d195",
+        "Name": "JUDGE",
+        "Provider": "claude-work",
+        "Model": "claude-opus-5",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T09:34:51.233Z",
+        "Mode": "default",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c02a-ca46-7cf3-8b0d-0eca663dab79",
+        "CreatedAt": "2026-09-21T09:11:08.123Z",
+        "UpdatedAt": "2026-09-21T09:34:51.233Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "ab493493-2bf0-4fe5-8bd8-20863c2bacb3",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "ab493493-2bf0-4fe5-8bd8-20863c2bacb3",
+        "Name": "AUD",
+        "Provider": "codex-work",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8101-publication-identity-enforcement",
+        "CreatedAt": "2026-09-21T09:17:36.897Z",
+        "UpdatedAt": "2026-09-21T09:44:45.242Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "auto",
+            "label": "Default Permissions"
+          },
+          {
+            "id": "auto-review",
+            "label": "Auto-review"
+          },
+          {
+            "id": "full-access",
+            "label": "Full Access"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "af611832-27be-45f3-ab4a-e73853fa76be",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "af611832-27be-45f3-ab4a-e73853fa76be",
+        "Name": "SEAT A",
+        "Provider": "opencode",
+        "Model": "deepseek/deepseek-flash",
+        "Thinking": "max",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T13:06:40.204Z",
+        "Mode": "plan",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8098-consultation-01a0c355-34dd-7ca3-bd89-8eb16a346564",
+        "CreatedAt": "2026-09-21T09:40:46.180Z",
+        "UpdatedAt": "2026-09-21T13:06:40.204Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "b6f244d7-c68f-4a5d-8328-6bf780528108",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "b6f244d7-c68f-4a5d-8328-6bf780528108",
+        "Name": "SWE",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8101-publication-identity-enforcement",
+        "CreatedAt": "2026-09-20T19:24:07.253Z",
+        "UpdatedAt": "2026-09-21T22:47:26.865Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "b8600680-5681-48df-817b-6a54934abbcb",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "b8600680-5681-48df-817b-6a54934abbcb",
+        "Name": "LSA",
+        "Provider": "opencode",
+        "Model": "deepseek/deepseek-flash",
+        "Thinking": "max",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "build",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0074f-6719-7570-adf7-95ee3ec69875",
+        "CreatedAt": "2026-09-16T19:33:43.910Z",
+        "UpdatedAt": "2026-09-21T13:33:39.483Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "ba4ded2e-4943-45d3-b267-7eca5ee5440f",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "ba4ded2e-4943-45d3-b267-7eca5ee5440f",
+        "Name": "SWE",
+        "Provider": "claude",
+        "Model": "claude-opus-5",
+        "Thinking": "xhigh",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "bypassPermissions",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-lsa-persona-launch",
+        "CreatedAt": "2026-09-17T16:29:17.858Z",
+        "UpdatedAt": "2026-09-21T13:37:33.205Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": true,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "plan",
+            "label": "Plan Mode"
+          },
+          {
+            "id": "default",
+            "label": "Always Ask"
+          },
+          {
+            "id": "acceptEdits",
+            "label": "Accept File Edits"
+          },
+          {
+            "id": "auto",
+            "label": "Auto mode"
+          },
+          {
+            "id": "bypassPermissions",
+            "label": "Bypass"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "bb890453-0975-4086-8a4e-41c369050e68",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "bb890453-0975-4086-8a4e-41c369050e68",
+        "Name": "QA",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8101-publication-identity-enforcement",
+        "CreatedAt": "2026-09-20T20:12:14.384Z",
+        "UpdatedAt": "2026-09-21T08:29:59.929Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "auto",
+            "label": "Default Permissions"
+          },
+          {
+            "id": "auto-review",
+            "label": "Auto-review"
+          },
+          {
+            "id": "full-access",
+            "label": "Full Access"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "bf8b7ea4-3f20-4754-a7c9-a2f03a5bdbce",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "bf8b7ea4-3f20-4754-a7c9-a2f03a5bdbce",
+        "Name": "SA",
+        "Provider": "codex",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8190-lsa-persona-launch",
+        "CreatedAt": "2026-09-17T16:29:02.058Z",
+        "UpdatedAt": "2026-09-18T19:21:39.121Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "bfd37287-60c0-4b98-9fc6-180dbaaf0754",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "bfd37287-60c0-4b98-9fc6-180dbaaf0754",
+        "Name": "TPM",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T21:38:36.229Z",
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a06e13-878a-7aa3-8a08-bfad07cc8c4c",
+        "CreatedAt": "2026-09-20T18:27:04.232Z",
+        "UpdatedAt": "2026-09-21T21:38:36.229Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "c409d2a2-8134-467e-b098-c6b1b80112dd",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "c409d2a2-8134-467e-b098-c6b1b80112dd",
+        "Name": "SEAT A",
+        "Provider": "claude-personal",
+        "Model": "claude-opus-5",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-23T20:33:38.119Z",
+        "Mode": "default",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c647-7ce2-7540-b8c2-4df12eeee137",
+        "CreatedAt": "2026-09-23T20:22:33.290Z",
+        "UpdatedAt": "2026-09-23T20:33:38.119Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "ccac3b1e-37d7-4c94-a846-d2729a767411",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "ccac3b1e-37d7-4c94-a846-d2729a767411",
+        "Name": "LSA",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T10:15:33.667Z",
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0721b-ea30-7fe3-88a5-4d33ca613414",
+        "CreatedAt": "2026-09-19T20:02:27.008Z",
+        "UpdatedAt": "2026-09-21T10:15:33.667Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "cd234e2c-4c26-403e-a031-fb39dbce35bb",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "cd234e2c-4c26-403e-a031-fb39dbce35bb",
+        "Name": "LSA",
+        "Provider": "cursor",
+        "Model": "grok-4.6",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "agent",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0721b-ea30-7fe3-88a5-4d33ca613414",
+        "CreatedAt": "2026-09-21T20:38:16.562Z",
+        "UpdatedAt": "2026-09-21T21:08:18.190Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "cfc11421-932a-4563-9d17-f88a0c6cc33f",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "cfc11421-932a-4563-9d17-f88a0c6cc33f",
+        "Name": "TPM",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0721b-ea30-7fe3-88a5-4d33ca613414",
+        "CreatedAt": "2026-09-21T10:27:44.904Z",
+        "UpdatedAt": "2026-09-21T10:29:56.479Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "d123d325-6a34-495e-bfc6-2a53f622dda0",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "d123d325-6a34-495e-bfc6-2a53f622dda0",
+        "Name": "JUDGE",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T13:06:48.975Z",
+        "Mode": "auto-review",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8098-consultation-01a0c355-34dd-7ca3-bd89-8eb16a346564",
+        "CreatedAt": "2026-09-21T09:52:00.368Z",
+        "UpdatedAt": "2026-09-21T13:06:48.975Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "d786b06d-ef6a-4ec8-9dbd-e23f45aebbdd",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "d786b06d-ef6a-4ec8-9dbd-e23f45aebbdd",
+        "Name": "SEAT B",
+        "Provider": "codex-work",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T13:06:44.827Z",
+        "Mode": "auto-review",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8098-consultation-01a0c355-34dd-7ca3-bd89-8eb16a346564",
+        "CreatedAt": "2026-09-21T09:40:55.000Z",
+        "UpdatedAt": "2026-09-21T13:06:44.827Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "dd06ac41-7931-438a-b381-65f2e87be5c0",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "dd06ac41-7931-438a-b381-65f2e87be5c0",
+        "Name": "LSA",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T12:49:04.202Z",
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0abdd-b84e-7be2-a1f6-b9f34aae8c23",
+        "CreatedAt": "2026-09-21T09:08:53.329Z",
+        "UpdatedAt": "2026-09-21T12:49:04.202Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "e213330b-5cca-48eb-949f-9e72b370da6c",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "e213330b-5cca-48eb-949f-9e72b370da6c",
+        "Name": "TPM",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "high",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0aaa3-64a2-7de1-ab2d-8f40bad733ad",
+        "CreatedAt": "2026-09-21T10:15:32.854Z",
+        "UpdatedAt": "2026-09-26T10:52:32.210Z",
+        "LastUsage": {
+          "InputTokens": 202070,
+          "OutputTokens": 3293,
+          "CachedTokens": 200832,
+          "CostUsd": 0
+        },
+        "Capabilities": {
+          "Streaming": true,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": true
+        },
+        "AvailableModes": [
+          {
+            "id": "auto",
+            "label": "Default Permissions"
+          },
+          {
+            "id": "auto-review",
+            "label": "Auto-review"
+          },
+          {
+            "id": "full-access",
+            "label": "Full Access"
+          }
+        ],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "e5b2e5d7-fa35-4e14-99cc-49770a0faf08",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "e5b2e5d7-fa35-4e14-99cc-49770a0faf08",
+        "Name": "SEAT A",
+        "Provider": "claude-work",
+        "Model": "claude-opus-5",
+        "Thinking": "xhigh",
+        "Status": "idle",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T09:34:43.113Z",
+        "Mode": "default",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/chore/ASMA-8188-consultation-01a0c02a-ca46-7cf3-8b0d-0eca663dab79",
+        "CreatedAt": "2026-09-20T18:54:17.922Z",
+        "UpdatedAt": "2026-09-20T18:58:02.269Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "eed100a9-9cc3-491c-923b-1e16a7dd8b8f",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "eed100a9-9cc3-491c-923b-1e16a7dd8b8f",
+        "Name": "SA",
+        "Provider": "codex",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "idle",
+        "Archived": false,
+        "ArchivedAt": null,
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8239/asma-rs-kontor",
+        "CreatedAt": "2026-09-19T22:21:57.027Z",
+        "UpdatedAt": "2026-09-19T22:43:46.387Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    },
+    {
+      "requestedId": "f7395c1f-fd40-4b80-a11c-517b201f6ba9",
+      "found": true,
+      "exitCode": 0,
+      "native": {
+        "Id": "f7395c1f-fd40-4b80-a11c-517b201f6ba9",
+        "Name": "LSA",
+        "Provider": "codex-personal",
+        "Model": "gpt-5.6-sol",
+        "Thinking": "xhigh",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-09-21T10:13:50.324Z",
+        "Mode": "full-access",
+        "Cwd": "/Users/igor/.local/state/kontor/asma/runtime-roots/01a0064a-e056-7603-9968-ef64fdaacb75/01a0aaa3-64a2-7de1-ab2d-8f40bad733ad",
+        "CreatedAt": "2026-09-20T18:35:25.280Z",
+        "UpdatedAt": "2026-09-21T10:13:50.324Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      },
+      "stderr": ""
+    }
+  ]
+}

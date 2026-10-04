@@ -22,8 +22,8 @@
 
 use crate::id::{
     AdvisorProfileId, AdvisorRunId, ArtifactKey, BoundedText, CanonicalDocument, CommitteeRunId,
-    CommitteeTemplateId, ContentHash, ExternalName, MiniProjectId, ProjectId, RoleKey, RoleSlotId,
-    SchemaVersion, SpecVersion, TaskId,
+    CommitteeTemplateId, ContentHash, ExternalName, MiniProjectId, PlanningPairRunId, ProjectId,
+    RoleKey, RoleSlotId, SchemaVersion, SpecVersion, TaskId,
 };
 use crate::spec::{BudgetBounds, ModelChainPolicy, ProviderRef, SkillRef};
 use crate::{DomainError, DomainResult};
@@ -261,6 +261,8 @@ pub enum ConsultationRunId {
     Advisor(AdvisorRunId),
     /// One Committee consultation.
     Committee(CommitteeRunId),
+    /// One `planning_pair@1` consultation.
+    PlanningPair(PlanningPairRunId),
 }
 
 impl ConsultationRunId {
@@ -270,6 +272,7 @@ impl ConsultationRunId {
         match self {
             Self::Advisor(_) => ConsultationFamily::Advisor,
             Self::Committee(_) => ConsultationFamily::Committee,
+            Self::PlanningPair(_) => ConsultationFamily::PlanningPair,
         }
     }
 
@@ -279,6 +282,7 @@ impl ConsultationRunId {
         match self {
             Self::Advisor(id) => id.to_string(),
             Self::Committee(id) => id.to_string(),
+            Self::PlanningPair(id) => id.to_string(),
         }
     }
 }
@@ -296,6 +300,9 @@ crate::closed_enum! {
         Advisor => "advisor",
         /// Committee templates.
         Committee => "committee",
+        /// `planning_pair@1` documents (ASMA-8282). A distinct family, never
+        /// a Committee: it has no Judge, no verdict and no settlement.
+        PlanningPair => "planning_pair",
     }
 }
 
@@ -316,6 +323,10 @@ crate::closed_enum! {
         Settled => "settled",
         /// The bounded protocol could not produce a typed result.
         NeedsHuman => "needs_human",
+        /// A planning pair's caller recorded its disposition. Terminal, and
+        /// never a settlement: only the `planning_pair` family reaches it, and
+        /// a planning pair never reaches `awaiting_judge` or `settled`.
+        Disposed => "disposed",
     }
 }
 
@@ -891,7 +902,7 @@ pub struct RecordedFinding {
 ///
 /// A linear scan: these lists are bounded in the tens, so a hash set would cost
 /// more in `Hash` bounds on every key type than it saves in comparisons.
-fn has_duplicate<T: PartialEq>(values: &[T]) -> bool {
+pub(crate) fn has_duplicate<T: PartialEq>(values: &[T]) -> bool {
     values
         .iter()
         .enumerate()

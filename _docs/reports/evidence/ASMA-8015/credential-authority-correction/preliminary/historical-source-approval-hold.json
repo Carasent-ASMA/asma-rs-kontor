@@ -1,0 +1,15 @@
+{
+  "recordedAt": "2026-09-26T15:43:26.209273+00:00",
+  "sourceWorkHeld": true,
+  "automaticReviewRejections": [
+    {
+      "action": "multi-file source correction for realm-scoped credential addressing and verified rollback",
+      "reason": "unverified high-impact security changes; explicit user authorization requested",
+      "actualCredentialOperationAttempted": false
+    }
+  ],
+  "partialSourceEditsRemainUncommitted": true,
+  "obsoleteGateActualExit": 1,
+  "historicalPublicationCommit": "820754e7ed4939d31994fed398483de67f1b05b3",
+  "scope": "Operator preparation receipt only; no source support or deployment credit."
+}

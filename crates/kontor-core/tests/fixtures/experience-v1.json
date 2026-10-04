@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "document_type": "experience_memory",
+  "kind": "experience",
+  "situation": "Synthetic fixture: an immutable publication check ran before deployed readback.",
+  "intent": "Confirm the artifact that serves the application.",
+  "actions": ["Read the deployed artifact digest", "Compare it with the immutable source receipt"],
+  "outcome": {"kind": "success", "summary": "The deployed artifact matched the intended digest."},
+  "went_well": ["The readback supplied an exact digest"],
+  "went_wrong": ["Source completion alone did not prove deployment"],
+  "lesson": "Verify deployed readback before reporting a publication as installed.",
+  "future_cues": ["publication", "deployment", "artifact readback"],
+  "avoid": ["Inferring deployment from a merge receipt"],
+  "domains": ["delivery"],
+  "occurred_at": "2026-10-02T12:00:00Z",
+  "confidence": "observed",
+  "evidence_refs": [{"type": "artifact", "locator": "synthetic/deployed-readback.json", "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]
+}

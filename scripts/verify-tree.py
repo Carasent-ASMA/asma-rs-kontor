@@ -5,9 +5,10 @@ Modes (KON-MVP-02 verification requirement):
   --mode staged   export the current git STAGED tree via `git checkout-index`
                   into a temp dir (no .git inside) and run every gate there.
                   Use before any authorized commit exists.
-  --mode archive  export `git archive HEAD` into a temp dir, byte-compare the
-                  regenerated Cargo.lock against the committed one, and run
-                  every gate there. Use after an authorized commit.
+  --mode archive  export `git archive HEAD` into a temp dir, verify the
+                  committed Cargo.lock satisfies every manifest under
+                  `--locked`, and run every gate there. Use after an authorized
+                  commit.
   --mode inplace  no git export at all: run gates against the current tree
                   (the tree was already extracted from git archive / checkout).
 
@@ -56,20 +57,48 @@ def export_archive(dest: Path) -> None:
     print(f"archive HEAD extracted to {dest}")
 
 
-def verify_lockfile_reproducible(tree: Path) -> None:
-    """Regenerate Cargo.lock in the exported tree and byte-compare it with the
-    committed one (which is inside the exported tree for archive mode)."""
+def verify_lockfile_satisfies_manifests(tree: Path) -> None:
+    """Prove the committed Cargo.lock is complete for this tree.
+
+    The lock is *verified, not regenerated*. A fresh `cargo generate-lockfile`
+    resolves whatever the registry published last, so byte-comparing its output
+    with a committed lock fails on any upstream patch release and says nothing
+    about this tree. The invariant that matters is the one the build gates
+    already run under: the committed lock must satisfy every committed manifest
+    exactly, so a `--locked` build is reproducible. Available upstream updates
+    are reported as notes, never failures; refreshing the lock is a deliberate
+    change of its own, not a side effect of verifying a tree.
+    """
     committed = tree / "Cargo.lock"
     if not committed.exists():
         raise SystemExit("Cargo.lock missing from the exported tree")
-    original = committed.read_bytes()
-    run(["cargo", "generate-lockfile"], tree)
-    regenerated = committed.read_bytes()
-    if regenerated != original:
+    locked = subprocess.run(
+        ["cargo", "metadata", "--locked", "--format-version", "1"],
+        cwd=tree,
+        capture_output=True,
+    )
+    if locked.returncode != 0:
         raise SystemExit(
-            "Cargo.lock regeneration differs byte-for-byte from the committed lockfile"
+            "Cargo.lock does not satisfy the committed manifests under "
+            "--locked:\n" + locked.stderr.decode(errors="replace")
         )
-    print("Cargo.lock byte-compare: identical")
+    print("Cargo.lock satisfies every manifest under --locked")
+    available = subprocess.run(
+        ["cargo", "update", "--dry-run"],
+        cwd=tree,
+        capture_output=True,
+    )
+    if available.returncode == 0:
+        updates = [
+            line.strip()
+            for line in (available.stdout + available.stderr)
+            .decode(errors="replace")
+            .splitlines()
+            if line.strip().startswith(("Updating ", "Adding ", "Removing "))
+            and "crates.io index" not in line
+        ]
+        for line in updates:
+            print(f"note: {line} (refresh the lock in its own change)")
 
 
 def run_gates(tree: Path) -> None:
@@ -117,7 +146,7 @@ def main() -> int:
             export_staged(tree)
         else:
             export_archive(tree)
-        verify_lockfile_reproducible(tree)
+        verify_lockfile_satisfies_manifests(tree)
         run_gates(tree)
     return 0
 

@@ -8,8 +8,11 @@ members = [
     "crates/kontor-runtime-ao",
     "crates/kontor-runtime-codex",
     "crates/kontor-context",
+    "crates/kontor-memory-cognee",
     "crates/kontor-accounts",
     "crates/kontor-teams",
+    "crates/kontor-fleet",
+    "crates/kontor-fleet-activation",
     "crates/kontor-scheduler",
     "crates/kontor-calendar",
     "crates/kontor-policy",
@@ -58,10 +61,13 @@ uuid = { version = "=1.24.0", features = ["v7", "serde"] }
 # explicitly: jiff's default tzdb-bundle-platform only bundles on Windows/wasm.
 jiff = { version = "=0.2.35", features = ["serde", "tzdb-bundle-always"] }
 thiserror = "=2.0.20"
+# Safe bounded macOS credential pipe I/O; existing transitive lockfile version.
+rustix = { version = "=1.1.5", features = ["fs", "process"] }
 
 tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net", "signal", "process"] }
 async-trait = "=0.1.92"
 futures = "=0.3.33"
+httpdate = "=1.0.3"
 tokio-stream = "=0.1.19"
 # The Paseo session socket, and nothing more. `connect` is stream +
 # tokio/net + handshake; every TLS feature stays off because the qualified

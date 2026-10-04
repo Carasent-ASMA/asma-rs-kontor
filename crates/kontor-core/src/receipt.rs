@@ -48,6 +48,11 @@ closed_enum! {
         /// it — and, worse, would make a recovery indistinguishable from a
         /// second verdict in the very history the recovery exists to preserve.
         RecoverGateRejection => "recover_gate_rejection",
+        /// Attest that an exact retired evaluator seat already rendered its
+        /// verdict. Deliberately distinct from [`CommandKind::RecordGateVerdict`]
+        /// and from [`CommandKind::RecoverGateRejection`]: this records evidence
+        /// that a verdict existed, never a verdict, and advances no workflow.
+        AttestRetiredEvaluatorEvidence => "attest_retired_evaluator_evidence",
         /// Approve an intake proposal.
         ApproveIntake => "approve_intake",
         /// Write a projection to an external ticket.
@@ -111,6 +116,12 @@ closed_enum! {
         SelectTaskTeam => "select_task_team",
         /// Correct the provider account a task will run under.
         SelectTaskAccount => "select_task_account",
+        /// Correct one task's pre-run worktree claim under exact compare-and-swap.
+        ///
+        /// Distinct from [`CommandKind::ApplyEpicGraph`]: graph application may
+        /// create many subjects, while this repair is allowed to change exactly
+        /// one already-declared placement and nothing else on the task.
+        CorrectTaskWorktree => "correct_task_worktree",
         /// Converge a task's external tickets towards its own milestone.
         ReconcileTicket => "reconcile_ticket",
         /// Materialize or verify one epic's complete Jira binding set.
@@ -229,6 +240,26 @@ closed_enum! {
         /// Change the frozen route of a native-less materializing Committee
         /// seat under an exact Admin compare-and-swap.
         RerouteUnmaterializedConsultationSeat => "reroute_unmaterialized_consultation_seat",
+        /// Publish the next immutable `planning_pair@1` document revision.
+        ///
+        /// The project is the aggregate, as for an Advisor profile: a document
+        /// seats nobody until a pair is invoked under it.
+        ApplyPlanningPairProfile => "apply_planning_pair_profile",
+        /// Invoke one planning pair under a pinned document and one frozen
+        /// shared-allocator placement.
+        InvokePlanningPairRun => "invoke_planning_pair_run",
+        /// Record one member's sealed finding.
+        RecordPlanningPairFinding => "record_planning_pair_finding",
+        /// Record the caller's one clarification question.
+        RequestPlanningPairClarification => "request_planning_pair_clarification",
+        /// Record one addressed member's sealed clarification answer.
+        RecordPlanningPairAnswer => "record_planning_pair_answer",
+        /// Record the caller's disposition. Terminal; never a settlement.
+        RecordPlanningPairDisposition => "record_planning_pair_disposition",
+        /// Requalify one planning pair member on its exact known native
+        /// session, as the frozen caller: the same SeatBinding, generation,
+        /// frozen context and session, read back again. Never a replacement.
+        RecoverPlanningPairSeat => "recover_planning_pair_seat",
         /// Open one ad-hoc Quick session under the project's session base.
         ///
         /// The project is the aggregate. A Quick session creates no MiniProject
@@ -477,9 +508,12 @@ impl CommandKind {
             // Recovering a rejection witnesses the task for the same reason
             // recording the verdict does: the workflow it routes is not an
             // aggregate a command may name, and the task is the one it has.
-            Self::ResumeTask | Self::RecordGateVerdict | Self::RecoverGateRejection => {
-                witness(matches!(target, A::Task))
-            }
+            // Attesting a retired evaluator witnesses the task for the same
+            // reason: it names that task's gate, and changes no run state.
+            Self::ResumeTask
+            | Self::RecordGateVerdict
+            | Self::RecoverGateRejection
+            | Self::AttestRetiredEvaluatorEvidence => witness(matches!(target, A::Task)),
             // A project is a legal target because an intake proposal is decided
             // *before* the work it proposes exists: at that moment there is no
             // goal and no task to name, and a receipt cannot target a row that
@@ -533,6 +567,7 @@ impl CommandKind {
             | Self::SelectTaskProfile
             | Self::SelectTaskTeam
             | Self::SelectTaskAccount
+            | Self::CorrectTaskWorktree
             | Self::ReconcileTicket
             | Self::PublishTicketDescription
             // Pulling comments and claiming ownership both cover *every* link a
@@ -589,9 +624,9 @@ impl CommandKind {
             // template is project configuration; an epic here would let a
             // receipt claim that publishing one changed a running consultation,
             // which is exactly what pinning a revision prevents.
-            Self::ApplyAdvisorProfile | Self::ApplyCommitteeTemplate => {
-                witness(matches!(target, A::Project))
-            }
+            Self::ApplyAdvisorProfile
+            | Self::ApplyCommitteeTemplate
+            | Self::ApplyPlanningPairProfile => witness(matches!(target, A::Project)),
             // The epic each of these is about. Promotion names the epic it
             // creates rather than the project it creates it in: the receipt has
             // to be findable from the thing that now exists.
@@ -615,9 +650,13 @@ impl CommandKind {
             | Self::RecordCommitteeFindings
             | Self::SettleCommitteeRun
             | Self::RecoverConsultationSeat
-            | Self::RerouteUnmaterializedConsultationSeat => {
-                witness(matches!(target, A::MiniProject))
-            }
+            | Self::RerouteUnmaterializedConsultationSeat
+            | Self::InvokePlanningPairRun
+            | Self::RecordPlanningPairFinding
+            | Self::RequestPlanningPairClarification
+            | Self::RecordPlanningPairAnswer
+            | Self::RecordPlanningPairDisposition
+            | Self::RecoverPlanningPairSeat => witness(matches!(target, A::MiniProject)),
         }
     }
 

@@ -1,0 +1,85 @@
+{
+  "epic": "ASMA-8278",
+  "kind": "released-124-upgrade-correction-precommit-binding",
+  "note": "Raw logs were produced from the pre-commit working tree; the source is bound by blob and sha256, and the published commit pin supplement follows the correction commit.",
+  "precommit_head": "d0d27332e9581cef368a4e0e2c8ea1a48f552716",
+  "precommit_tree": "9b1430e1494ea8b30df6f682a4001215cbd39b41",
+  "working_tree_source": {
+    "crates/kontor-store/src/migrations.rs": {
+      "sha256": "989e4a98db2257b4c5dabc401fb2758594a6792a2bdffea9f3f13fa38397b390",
+      "blob": "1c7c3d017112134ef7bacb8a3ec7a5bce9c27c4a"
+    }
+  },
+  "commands": {
+    "released_124_focused": "cargo test -p kontor-store --lib released_124_upgrade_preserves_realm_bindings_and_memory_content --locked",
+    "store_full": "cargo test -p kontor-store --locked --no-fail-fast",
+    "fmt_check": "cargo fmt --all --check",
+    "clippy": "cargo clippy --workspace --all-targets --locked -- -D warnings"
+  },
+  "environment": {
+    "cargo_target_dir": "/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target",
+    "cargo_build_jobs": 2,
+    "locked": true
+  },
+  "logs": {
+    "clippy.log": {
+      "sha256": "5e816f280e8ae45b4850c74e7729828f34ad685ac04862700c4e20b13acdf993",
+      "bytes": 1262
+    },
+    "clippy.meta": {
+      "sha256": "37f42845667faf9d557ba4c1be33ac56077e86c33bf5282ef8bff3362ec0d59e",
+      "bytes": 193
+    },
+    "corrected-files-old-and-new.txt": {
+      "sha256": "eed19d137f0e286feef82194ebe9383958af62291839151fd989f414e68f72a8",
+      "bytes": 737
+    },
+    "fmt-check.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "fmt-check.meta": {
+      "sha256": "300b39ee9fd7a78c5f4e06cc61ae51e5b23ff0a02c7ff4ec20019c47d2bf710c",
+      "bytes": 154
+    },
+    "new-released-124-test.rs": {
+      "sha256": "a2359911d8d9a0b6bb3aac32b50c0e647817a971dcca33b044b698691b5d4d71",
+      "bytes": 16417
+    },
+    "prior-artifact-preservation.txt": {
+      "sha256": "0d5105350c4679ad1a3266f7296325b74e343b1f6b22f65e36328875beb966d5",
+      "bytes": 5071
+    },
+    "released-124-focused.log": {
+      "sha256": "b0dbed36f9ac8e935d49a46dfbef8ff84b66cb54885b832bcf6a47a5ea9f3e0b",
+      "bytes": 603
+    },
+    "released-124-focused.meta": {
+      "sha256": "a42806988914587932406216cbdca384005f2422463a8b3a529c3736a8189a5c",
+      "bytes": 239
+    },
+    "released-migrations-byteequal.txt": {
+      "sha256": "76a4af910a6e84cb77739c21fd39d12299769e5b8a0ecee2b60e631f98d4106c",
+      "bytes": 2397
+    },
+    "source-equivalence.txt": {
+      "sha256": "f95ddf3d8b54c78635def199af97c2ff125c289c9a9dfc41f9b69aad74e4d73c",
+      "bytes": 642
+    },
+    "store-full.log": {
+      "sha256": "7e4ce0f0da914dbfd61ab06a19c326ce1045c55f58f174de2591bb90c552537c",
+      "bytes": 71054
+    },
+    "store-full.meta": {
+      "sha256": "1b19c69eb647e53280003b5442ec330ac340732cfbd30e9d7e27384a3c2d5d83",
+      "bytes": 163
+    }
+  },
+  "receipts": {
+    "source_equivalence": "receipts/source-equivalence.txt",
+    "released_migrations_byteequal": "receipts/released-migrations-byteequal.txt",
+    "prior_artifact_preservation": "receipts/prior-artifact-preservation.txt",
+    "corrected_files_old_and_new": "receipts/corrected-files-old-and-new.txt",
+    "new_test_source": "receipts/new-released-124-test.rs"
+  }
+}

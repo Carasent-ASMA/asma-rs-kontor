@@ -1,0 +1,202 @@
+{
+  "files": [
+    {
+      "path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs",
+      "lines": 207,
+      "sha256": "8d4b5040642c68b58986fb8d3d8614584e48bb70ff5ac3ba7728b9679efd1a2d",
+      "functions": [
+        {
+          "name": "diagnose_prepared_attestation",
+          "start_line": 57,
+          "body_lines": 69,
+          "total_lines": 90
+        },
+        {
+          "name": "validate_projection",
+          "start_line": 147,
+          "body_lines": 28,
+          "total_lines": 34
+        },
+        {
+          "name": "valid_registration",
+          "start_line": 181,
+          "body_lines": 3,
+          "total_lines": 4
+        },
+        {
+          "name": "valid_revocation",
+          "start_line": 185,
+          "body_lines": 3,
+          "total_lines": 4
+        },
+        {
+          "name": "matches_metadata",
+          "start_line": 189,
+          "body_lines": 15,
+          "total_lines": 16
+        }
+      ],
+      "pass": true
+    },
+    {
+      "path": "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs",
+      "lines": 534,
+      "sha256": "a353b4aeb87f0ff27f3bde04fda45e0c926a2707664304500f13295fcd4e2c1e",
+      "functions": [
+        {
+          "name": "signing_key",
+          "start_line": 20,
+          "body_lines": 4,
+          "total_lines": 5
+        },
+        {
+          "name": "sign",
+          "start_line": 25,
+          "body_lines": 14,
+          "total_lines": 15
+        },
+        {
+          "name": "new",
+          "start_line": 51,
+          "body_lines": 87,
+          "total_lines": 87
+        },
+        {
+          "name": "request",
+          "start_line": 138,
+          "body_lines": 14,
+          "total_lines": 15
+        },
+        {
+          "name": "diagnose",
+          "start_line": 153,
+          "body_lines": 9,
+          "total_lines": 10
+        },
+        {
+          "name": "key_mut",
+          "start_line": 163,
+          "body_lines": 3,
+          "total_lines": 4
+        },
+        {
+          "name": "token_mut",
+          "start_line": 167,
+          "body_lines": 3,
+          "total_lines": 3
+        },
+        {
+          "name": "replace_payload",
+          "start_line": 170,
+          "body_lines": 5,
+          "total_lines": 6
+        },
+        {
+          "name": "id",
+          "start_line": 177,
+          "body_lines": 3,
+          "total_lines": 4
+        },
+        {
+          "name": "consistency_returns_unit_with_historical_heads_and_no_current_provenance_claim",
+          "start_line": 183,
+          "body_lines": 16,
+          "total_lines": 16
+        },
+        {
+          "name": "size_precedes_scope_absence_and_parsing",
+          "start_line": 201,
+          "body_lines": 18,
+          "total_lines": 18
+        },
+        {
+          "name": "scopes_and_fixed_application_precede_absent_rows",
+          "start_line": 221,
+          "body_lines": 30,
+          "total_lines": 30
+        },
+        {
+          "name": "selected_key_then_token_presence_precedes_bad_heads",
+          "start_line": 253,
+          "body_lines": 10,
+          "total_lines": 10
+        },
+        {
+          "name": "projection_revisions_and_revocation_order_are_validated_before_commitments",
+          "start_line": 265,
+          "body_lines": 29,
+          "total_lines": 29
+        },
+        {
+          "name": "selected_der_and_utf8_identifier_bounds_precede_hashing",
+          "start_line": 296,
+          "body_lines": 46,
+          "total_lines": 46
+        },
+        {
+          "name": "key_material_commitments_are_recomputed_from_selected_der",
+          "start_line": 344,
+          "body_lines": 20,
+          "total_lines": 20
+        },
+        {
+          "name": "selected_key_identity_and_immutable_registration_must_match_preparation",
+          "start_line": 366,
+          "body_lines": 12,
+          "total_lines": 12
+        },
+        {
+          "name": "exact_original_payload_digest_precedes_revocation_and_verification",
+          "start_line": 380,
+          "body_lines": 17,
+          "total_lines": 17
+        },
+        {
+          "name": "token_revocation_precedes_interval_and_signature_checks",
+          "start_line": 399,
+          "body_lines": 8,
+          "total_lines": 8
+        },
+        {
+          "name": "key_revocation_is_refused_by_existing_verifier",
+          "start_line": 409,
+          "body_lines": 5,
+          "total_lines": 5
+        },
+        {
+          "name": "invalid_or_uncontained_prepared_intervals_precede_verification",
+          "start_line": 416,
+          "body_lines": 15,
+          "total_lines": 15
+        },
+        {
+          "name": "signature_and_strict_payload_checks_are_delegated",
+          "start_line": 433,
+          "body_lines": 24,
+          "total_lines": 24
+        },
+        {
+          "name": "supplied_time_operation_policy_and_request_identity_use_existing_verifier",
+          "start_line": 459,
+          "body_lines": 30,
+          "total_lines": 30
+        },
+        {
+          "name": "signed_metadata_matches_every_exact_prepared_field_after_verification",
+          "start_line": 491,
+          "body_lines": 31,
+          "total_lines": 31
+        },
+        {
+          "name": "key_commitment_precedes_token_commitment_and_signature_precedes_final_metadata",
+          "start_line": 524,
+          "body_lines": 11,
+          "total_lines": 11
+        }
+      ],
+      "pass": true
+    }
+  ],
+  "pass": true,
+  "limits": "hard600 file/100 function lines; Rust strings/comments masked before brace counting"
+}

@@ -1,0 +1,56 @@
+{
+  "sourceCommit": "51cfef9caaa1e2b12674ad932d0adfb0658d4777",
+  "sourceTree": "c63a37e6d0b0db8e6cfb495d044e02d33f62a698",
+  "archiveSha256": "a4a661119a5f5e5c6fa211a75397cd72c5b5f5a7e45bc4d84816b0fc96f7cebe",
+  "carriers": [
+    {
+      "path": "baseline.txt.json",
+      "sha256": "53794ececa584b96578658bf4678355ccb05f05308f37e2a055e9dd31fc09633",
+      "decodedSha256": "1d6effdbeacd1890b9bbd29aeff44cc64a857eb0585534880fd826847945b2d0",
+      "decodedByteCount": 4187
+    },
+    {
+      "path": "MUT-LEGACY-READ.diff.json",
+      "sha256": "b4792a69033142549d6abb5e3700c72adcfe25cb6234f85bdcbc9616d88e1c25",
+      "decodedSha256": "bce7c6ff6fc10af349b5ff616f1c070fd6193abc18b399754548c244d950ff75",
+      "decodedByteCount": 455
+    },
+    {
+      "path": "MUT-LEGACY-READ.txt.json",
+      "sha256": "95a415fd9d183f3dd849740a08908580549a000944dfd210445ea4b7456de29f",
+      "decodedSha256": "59d7cc56df1aaa22765c85b34f4cbd584c53b2928215e49b0b93f3872b1901d2",
+      "decodedByteCount": 2413
+    },
+    {
+      "path": "MUT-CANONICAL-NAME.diff.json",
+      "sha256": "77fc38f6f9a4ffbac54dd152027b884e232d73f7efdf7f29e7ed6c699dedca3f",
+      "decodedSha256": "f1fd228a95b281c6ee2669b2803ca30108942b3d3eca39251d86ddbe50bd101d",
+      "decodedByteCount": 480
+    },
+    {
+      "path": "MUT-CANONICAL-NAME.txt.json",
+      "sha256": "84f5bd3704ad8ba224b7a37600163b321850ddc115b4fd3cb08416fd1487f0af",
+      "decodedSha256": "0f91a773b15cb224cb9d0e8925c1f6fe6cc77c7a6f49ace6b3ce1ed20b5a3e1a",
+      "decodedByteCount": 1164
+    },
+    {
+      "path": "MUT-NATIVE-SUBJECT.diff.json",
+      "sha256": "541c5b50cbb23a85db81cb923f5b3284f04bbc92c4562d8e00435f53d855aa04",
+      "decodedSha256": "9281c15f31a77a4611f13f27d633c11ac26f4e57c6d89f7f1164221103e086e2",
+      "decodedByteCount": 512
+    },
+    {
+      "path": "MUT-NATIVE-SUBJECT.txt.json",
+      "sha256": "51957c026c5d789bce8724fee47cb9d5174610acfacfea2c0fb3a31d5c52f552",
+      "decodedSha256": "ac7961466a4fa58cba6b799a32da225bea19f5ac1878687ba9ed711ff115206e",
+      "decodedByteCount": 5774
+    },
+    {
+      "path": "restored.txt.json",
+      "sha256": "4f07416f893bed6aa8105fc78cc5efb1a7aeb2e9d8fa0373fc4a85e0f289f63e",
+      "decodedSha256": "38e166364d510bdea60c1a9d1383ec703432681637815647e0ac4a42cc606010",
+      "decodedByteCount": 2663
+    }
+  ],
+  "boundary": "Exact-51 behavioral qualification only. No future source, API-contract correction, deployment or task/epic acceptance is credited."
+}

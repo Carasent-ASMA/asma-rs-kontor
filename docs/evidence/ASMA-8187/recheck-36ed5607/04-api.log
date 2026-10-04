@@ -1,0 +1,76 @@
+=== 04-api ===
+head        : 36ed5607753bb749a3a3f12f785fe632c3092650
+tree        : d802479a71bdefa6dc2f0bee4332ee9237fc546d
+dirty       : 1 path(s)
+command     : cargo test -p kontor-api -- --test-threads=1
+toolchain   : rustc 1.97.1 (8bab26f4f 2026-07-14)
+started     : 2026-10-03T16:24:31Z
+disk free   : 15Gi
+--- raw output ---
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.14s
+     Running unittests src/lib.rs (target/debug/deps/kontor_api-66cdc5bd24d2c58e)
+
+running 29 tests
+test auth::tests::a_consultation_credential_authenticates_only_its_own_seat ... ok
+test auth::tests::a_hostile_authority_is_refused_however_it_is_spelled ... ok
+test auth::tests::a_malformed_authority_is_refused_however_loopback_it_looks ... ok
+test auth::tests::a_malformed_host_is_refused_by_the_ingress_itself ... ok
+test auth::tests::a_presented_origin_must_be_allowed_and_a_missing_one_is_fine ... ok
+test auth::tests::a_secret_grants_exactly_its_own_tier ... ok
+test auth::tests::only_loopback_spellings_are_admitted ... ok
+test auth::tests::tiers_are_ordered_by_policy_and_not_by_declaration ... ok
+test dto::compact_surface_tests::a_preview_refuses_values_outside_the_closed_sets ... ok
+test dto::compact_surface_tests::a_receipt_projection_leaks_nothing_a_runtime_holds ... ok
+test dto::compact_surface_tests::the_command_surface_accepts_only_the_three_deterministic_triggers ... ok
+test dto::context_policy_tests::a_pending_confirmation_is_projected_as_blocking_reuse ... ok
+test dto::context_policy_tests::an_unenforced_seat_is_projected_honestly ... ok
+test dto::context_policy_tests::the_projection_exposes_only_provider_neutral_fields ... ok
+test error::tests::a_backend_failure_never_carries_the_backends_own_text ... ok
+test error::tests::a_missing_native_caller_is_an_actionable_exact_placement_refusal ... ok
+test error::tests::a_persistence_conflict_names_its_subject_and_rule ... ok
+test error::tests::a_realm_mismatch_is_reported_as_such_and_echoes_no_payload ... ok
+test error::tests::a_revision_conflict_carries_the_revision_the_caller_needs ... ok
+test error::tests::a_runtime_session_ceiling_is_capacity_not_a_malformed_request ... ok
+test error::tests::a_spent_ceiling_is_its_own_refusal_and_names_no_scope ... ok
+test error::tests::a_workspace_refusal_names_the_rule_that_fired ... ok
+test error::tests::an_already_admitted_slot_is_a_conflict_not_an_unclassified_outage ... ok
+test error::tests::an_unadmitted_launch_is_an_unsupported_capability_not_an_outage ... ok
+test error::tests::an_unknown_message_confirmation_never_claims_nothing_changed ... ok
+test error::tests::an_unplaced_seat_refuses_with_placement_not_a_settle_instruction ... ok
+test error::tests::checkout_preparation_is_a_typed_placement_block_not_a_runtime_outage ... ok
+test error::tests::only_the_pre_effect_code_may_promise_that_nothing_changed ... ok
+test error::tests::usage_throttle_returns_the_actual_retry_instruction_in_body_and_header ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/error_envelope.rs (target/debug/deps/error_envelope-c80f3f6e49ce6202)
+
+running 5 tests
+test asking_for_the_state_an_aggregate_already_holds_is_advised_differently ... ok
+test every_code_tells_an_operator_something_to_try ... ok
+test every_current_domain_variant_is_classified_rather_than_collapsed ... ok
+test the_envelope_names_the_subject_and_the_path_but_never_the_value ... ok
+test the_stable_codes_are_unchanged_by_the_richer_envelope ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/openapi_contract.rs (target/debug/deps/openapi_contract-790f46958cf311e8)
+
+running 3 tests
+test the_committed_contract_document_is_the_one_this_crate_serves ... ok
+test the_committed_session_vocabulary_is_the_one_this_crate_subscribes_to ... ok
+test the_contract_document_names_every_route_the_router_exposes ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+   Doc-tests kontor_api
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+--- exit status: 0 (10s) ---
+finished    : 2026-10-03T16:24:42Z
+disk free   : 15Gi

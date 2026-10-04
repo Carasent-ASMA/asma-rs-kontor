@@ -1,0 +1,49 @@
+{
+  "recordedAt": "2026-09-26T09:51:55.754763+00:00",
+  "priorCheckpoint": "3b9eb3a577cdb4c3beb92ba958b775f2e91307f9",
+  "sourceSha256": {
+    "crates/kontor-teams/src/run.rs": "4ef7b451d77b6155c1afac7674c086e3731b9622fdb730880b53f8edb46664c5",
+    "crates/kontor-teams/tests/team_contract.rs": "58527211d5dec5fb6cf8474210e82a4582c70ce68900241f2503ff223f6af3a1",
+    "crates/kontor-daemon/src/applications.rs": "e51070ad0958cfaba751cfdde9283e5bfc7dd39e6fd2e4ddeb8220c7f12a0049",
+    "crates/kontor-daemon/tests/loopback/replacement_bridges.rs": "3f09f6696415dbf2e8e3c437026c55f30e4f4a7fb6a6d49deff19ad13c88ca21",
+    "crates/kontor-store/src/repository.rs": "9b7a69c8de5f3fb76b7ecdc6bad081693f832c997953a89ea9d959b349371efd",
+    "crates/kontor-store/tests/team_definition_migration_completeness.rs": "ee388872764cecbed473cfcb98d945bb50ee7e90a48aaa66aebab113b8fbaa4f"
+  },
+  "outcomes": {
+    "redCore": {
+      "passed": 1,
+      "failed": 1,
+      "exitCode": 101,
+      "rule": "a successor names a parent outside its own role slot"
+    },
+    "redDaemon": {
+      "passed": 2,
+      "failed": 2,
+      "exitCode": 101,
+      "failures": [
+        "canonical hydration rejects replacement",
+        "default action recommends runtime settlement"
+      ]
+    },
+    "greenCoreFocused": {
+      "passed": 2,
+      "failed": 0,
+      "exitCode": 0
+    },
+    "greenCoreFullPackage": {
+      "rawTallies": [
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ],
+      "exitCode": 0
+    },
+    "greenDaemonFocused": {
+      "passed": 4,
+      "failed": 0,
+      "exitCode": 0
+    }
+  },
+  "boundary": "Focused uncommitted-source checks only; exact immutable-head mutations, full gate, independent re-review, merge and deployment pending"
+}

@@ -25,7 +25,7 @@ use std::fmt;
 
 use kontor_core::id::{ExternalId, ExternalName, TaskId, TeamRunId, Timestamp, TopologyNodeId};
 use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
-use kontor_core::state::NativeRuntimeIdentity;
+use kontor_core::state::{NativeRuntimeIdentity, ObservedContainerKind};
 use kontor_core::{DomainError, DomainResult};
 use uuid::Uuid;
 
@@ -260,6 +260,69 @@ impl fmt::Display for ContainerProjection {
     }
 }
 
+/// The native workspace shape a runtime reported for a bound container.
+///
+/// Runtime-neutral on purpose. Each adapter maps its own wire vocabulary onto
+/// this set so the *contract* about which shapes a container may legitimately
+/// have is written once and proved identically by every plane. An adapter that
+/// kept the rule in its own vocabulary would be free to disagree with the fake
+/// that is supposed to stand in for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ContainerWorkspaceKind {
+    /// A registered Git worktree.
+    Worktree,
+    /// A checkout the runtime tracks as a branch of the project.
+    Checkout,
+    /// A plain local checkout, typically the project root.
+    LocalCheckout,
+    /// A plain directory.
+    Directory,
+    /// Anything the adapter has not audited.
+    Other,
+}
+
+impl ContainerWorkspaceKind {
+    /// Whether this shape is one the addressed container may legitimately have.
+    ///
+    /// Ticket scope requires isolation. Epic scope can serve several operations:
+    ///
+    /// * A **ticket** container is where a ticket's work happens, so it must be
+    ///   a real Git worktree. A ticket role editing in a plain directory is
+    ///   editing outside version control, and a ticket role editing in the
+    ///   project's own local checkout is editing the shared tree every other
+    ///   ticket depends on.
+    /// * A **taskless** container may be an ECP rooted at a stable directory or
+    ///   local checkout, or an Advisor/Committee consultation in its own Git
+    ///   worktree. Scope alone cannot distinguish those uses. Their launch
+    ///   operations enforce the narrower shape: leadership requires a local
+    ///   ECP; consultations require an isolated worktree.
+    ///
+    /// Everything else is outside the applicable set. `Checkout` is excluded
+    /// from both: it is a branch checkout the runtime manages, which is neither
+    /// a ticket's isolated worktree nor an epic's stable directory, and
+    /// accepting it for either would let a container drift onto a tree whose
+    /// branch some other actor moves.
+    #[must_use]
+    pub const fn is_applicable_to(self, task_container: bool) -> bool {
+        match (task_container, self) {
+            (_, Self::Worktree) => true,
+            (false, Self::Directory | Self::LocalCheckout) => true,
+            (true, Self::Checkout | Self::LocalCheckout | Self::Directory | Self::Other)
+            | (false, Self::Checkout | Self::Other) => false,
+        }
+    }
+
+    /// The stable refusal text for a shape outside the applicable set.
+    #[must_use]
+    pub const fn refusal(task_container: bool) -> &'static str {
+        if task_container {
+            "the bound container of a ticket is not a Git worktree"
+        } else {
+            "the bound container of an epic node is not a directory, local checkout or consultation worktree"
+        }
+    }
+}
+
 /// Ask a runtime to make one topology node's native container exist and be
 /// usable.
 ///
@@ -324,6 +387,23 @@ impl ContainerRequest {
     #[must_use]
     pub const fn correlation(&self) -> ContainerLabel {
         ContainerLabel::for_node(self.topology_node_id)
+    }
+
+    /// Whether this container is a ticket's place rather than an epic node's.
+    ///
+    /// Read from the durable execution scope, which is the caller's *only*
+    /// authoritative statement about what this container is for:
+    /// [`ExecutionScope::for_epic`] is documented as the scope of "a node or a
+    /// consultation that serves no ticket", and a ticket scope carries the
+    /// canonical worktree the ticket's work happens in.
+    ///
+    /// Deliberately not derived from `task_id`, which this type documents as
+    /// tracker metadata a runtime may use for display and must never read back
+    /// as identity, and deliberately not a new caller-supplied flag: the
+    /// distinction is already durable in the scope every caller passes.
+    #[must_use]
+    pub const fn task_container(&self) -> bool {
+        self.scope.task.is_some()
     }
 
     /// The shape this request's capabilities require.
@@ -406,6 +486,80 @@ pub struct ContainerBinding {
     pub bound_at: Timestamp,
 }
 
+/// Read one already-bound native container by its exact persisted identity.
+///
+/// No display title or working directory is accepted as an address. A native
+/// child additionally names its exact persisted native parent, which prevents
+/// an adapter rebuilt after restart from searching every project for a matching
+/// title or path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerInspectRequest {
+    /// Complete durable binding to inspect.
+    pub binding: ContainerBinding,
+    /// Complete exact native parent; required only for a native child.
+    pub native_parent: Option<NativeRuntimeIdentity>,
+    /// Durable execution scope, used only to rehydrate an exact ESW binding.
+    pub scope: ExecutionScope,
+    /// Whether this root is the epic's ESW project.
+    pub epic_container: bool,
+    /// Observation instant supplied by the control plane.
+    pub requested_at: Timestamp,
+}
+
+impl ContainerInspectRequest {
+    /// Prove the exact-address request is internally coherent.
+    ///
+    /// # Errors
+    /// Refuses logical nodes, a child without one exact native parent, a root
+    /// with a parent, or an epic container that is not a native root.
+    pub fn validate(&self) -> RuntimeResult<()> {
+        match self.binding.projection {
+            ContainerProjection::LogicalOnly => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "a logical_only node has no native container to inspect",
+                });
+            }
+            ContainerProjection::NativeRoot if self.native_parent.is_some() => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "a native_root inspection cannot carry a native parent",
+                });
+            }
+            ContainerProjection::NativeRoot => {}
+            ContainerProjection::NativeChild if self.native_parent.is_none() => {
+                return Err(RuntimeError::WorkspaceMismatch {
+                    rule: "a native_child inspection requires its exact native parent",
+                });
+            }
+            ContainerProjection::NativeChild => {}
+        }
+        if self.epic_container && self.binding.projection != ContainerProjection::NativeRoot {
+            return Err(RuntimeError::WorkspaceMismatch {
+                rule: "an epic container inspection must address a native_root",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Complete read-only native container readback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerInspection {
+    /// The exact durable identity and projection that were addressed.
+    pub binding: ContainerBinding,
+    /// What the runtime reported this native object as.
+    pub observed_kind: ObservedContainerKind,
+    /// Exact title visible in the runtime.
+    pub visible_title: String,
+    /// Canonical runtime-reported working directory.
+    pub canonical_cwd: Option<WorkspaceRoot>,
+    /// Complete exact native parent reported for a child.
+    pub native_parent: Option<NativeRuntimeIdentity>,
+    /// Topology-node correlation established from this exact readback.
+    pub correlation: ContainerCorrelationEvidence,
+    /// When the runtime observation was made.
+    pub observed_at: Timestamp,
+}
+
 /// Change one already-bound container's visible title.
 ///
 /// Every field is an identity Kontor already holds. There is deliberately no
@@ -484,23 +638,61 @@ pub struct RetitleContainerOutcome {
     pub changed: bool,
 }
 
-/// Archive one retired native child, addressed exclusively by durable binding.
+/// Archive one retired native container, addressed exclusively by durable binding.
+///
+/// Both materialized shapes travel through one request. A
+/// [`ContainerProjection::NativeChild`] is addressed *under* an exact parent
+/// project, because a workspace id is only unique beneath the project that
+/// holds it. A [`ContainerProjection::NativeRoot`] is the project, so it has no
+/// parent to name — and carrying one anyway would be a claim about ancestry the
+/// binding never recorded. [`Self::parent_project`] is the only place that
+/// distinction is read, so no adapter can quietly accept the other pairing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveContainerRequest {
-    /// Logical node whose completed native child is being removed.
+    /// Logical node whose completed native container is being removed.
     pub topology_node_id: TopologyNodeId,
     /// Stable binding identity retained after cleanup.
     pub container_binding_id: ContainerBindingId,
-    /// Persisted native shape; only a native child may be archived.
+    /// Persisted native shape; only a materialized container may be archived.
     pub projection: ContainerProjection,
     /// Complete native identity, including host and generation.
     pub identity: NativeRuntimeIdentity,
     /// Exact native project from the persisted ancestor binding.
-    pub bound_project_native_id: ExternalId,
-    /// Canonical child directory recorded when it was bound.
+    ///
+    /// Present for a child, absent for a root. See [`Self::parent_project`].
+    pub bound_project_native_id: Option<ExternalId>,
+    /// Canonical directory recorded when the container was bound.
     pub canonical_cwd: WorkspaceRoot,
     /// Requested observation instant.
     pub requested_at: Timestamp,
+}
+
+impl ArchiveContainerRequest {
+    /// The exact parent project this request is addressed under, if it has one.
+    ///
+    /// A child without a parent cannot be addressed at all, and a root *with*
+    /// one is a contradiction rather than a harmless extra field: it would let a
+    /// caller name an ancestry the root binding does not have, and the only
+    /// honest answer is to refuse before any native effect.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::WorkspaceMismatch`] when the projection and the
+    /// parent disagree, or when the projection materializes no container.
+    pub fn parent_project(&self) -> RuntimeResult<Option<&ExternalId>> {
+        match (self.projection, self.bound_project_native_id.as_ref()) {
+            (ContainerProjection::NativeChild, Some(parent)) => Ok(Some(parent)),
+            (ContainerProjection::NativeChild, None) => Err(RuntimeError::WorkspaceMismatch {
+                rule: "a native child archive names no parent project",
+            }),
+            (ContainerProjection::NativeRoot, None) => Ok(None),
+            (ContainerProjection::NativeRoot, Some(_)) => Err(RuntimeError::WorkspaceMismatch {
+                rule: "a native root archive names a parent project it cannot have",
+            }),
+            (ContainerProjection::LogicalOnly, _) => Err(RuntimeError::WorkspaceMismatch {
+                rule: "a logical-only node has no native container to archive",
+            }),
+        }
+    }
 }
 
 /// Verified native absence, retaining all of the original identities.
@@ -532,6 +724,8 @@ pub struct ContainerRecoveryRequest {
     pub bound_project_native_id: ExternalId,
     /// The canonical working directory stored with the stale binding.
     pub canonical_cwd: WorkspaceRoot,
+    /// Whether the owning topology node is task-scoped and requires a Git worktree.
+    pub task_container: bool,
     /// The current title rendered from the epic's existing naming authority.
     pub expected_title: ExternalName,
     /// When the recovery census was requested.
@@ -545,6 +739,89 @@ pub struct ContainerRecoveryOutcome {
     pub snapshot: ContainerBindingSnapshot,
     /// The candidate's runtime-reported title.
     pub observed_title: String,
+}
+
+/// Make the one native container a topology node lost exist again.
+///
+/// Not a separate operation. This is the `recreate_absent` *disposition* of the
+/// existing Admin container-recovery preview/apply flow, and it is reachable
+/// from nowhere else: the same operation that adopts a single exact candidate
+/// reaches this shape instead when its census proves that *nothing* stands at
+/// the node's canonical place — the persisted native absent from its exact
+/// parent, and no live container on its canonical path.
+///
+/// Keeping it a disposition rather than a capability is deliberate. A reusable
+/// "recreate a container" entry point would be callable by any recovery surface
+/// that happens to hold a stale child, and the set of those surfaces grows. The
+/// authority to build a native belongs to one operation, and this type is only
+/// the shape that operation takes on its second branch.
+///
+/// Every identity that survives is carried in, not derived: the topology node,
+/// the logical [`ContainerBindingId`], the canonical working directory, the
+/// exact native parent and the daemon-rendered title. An adapter that minted
+/// any of them would be creating a *new* place rather than restoring the one
+/// the node already owns, and the binding Kontor persists would stop naming
+/// what the operator asked about.
+///
+/// # The replay this request has to survive
+///
+/// The dangerous failure is not a refused creation, it is a *successful* one
+/// whose response never arrives. Kontor then holds no native id, so its
+/// durable receipt cannot answer the retry, and a naive adapter would run the
+/// same census, find zero candidates it recognises, and build a second native
+/// beside the live one.
+///
+/// So the census result is read as three distinct facts, not two. Zero
+/// candidates means create. Exactly one candidate carrying this exact title, at
+/// this exact path, below this exact parent, means *the previous attempt
+/// already created it* — adopt that one and report
+/// [`ContainerRecreationOutcome::created`] as `false`. More than one, or one
+/// whose title has drifted, is refused rather than guessed at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerRecreationRequest {
+    /// The logical topology node whose native child is gone.
+    pub topology_node_id: TopologyNodeId,
+    /// The stable logical container-binding identity to preserve.
+    pub container_binding_id: ContainerBindingId,
+    /// The complete persisted identity the census must prove absent.
+    pub absent_identity: NativeRuntimeIdentity,
+    /// The exact persisted native project ancestor to build below.
+    pub bound_project_native_id: ExternalId,
+    /// The canonical working directory the replacement must occupy.
+    pub canonical_cwd: WorkspaceRoot,
+    /// Whether the owning topology node is task-scoped and requires a Git worktree.
+    pub task_container: bool,
+    /// The title rendered from the epic's existing naming authority.
+    ///
+    /// Applied as exact bytes. The adapter owns no naming template here for the
+    /// same reason it owns none in [`RetitleContainerRequest`].
+    pub expected_title: ExternalName,
+    /// When the recreation census was requested.
+    pub requested_at: Timestamp,
+}
+
+impl ContainerRecreationRequest {
+    /// The label the runtime must plant on, and report back for, the container.
+    #[must_use]
+    pub const fn correlation(&self) -> ContainerLabel {
+        ContainerLabel::for_node(self.topology_node_id)
+    }
+}
+
+/// What one recreation census proved, and whether it built anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerRecreationOutcome {
+    /// A binding snapshot preserving the logical binding and the node.
+    pub snapshot: ContainerBindingSnapshot,
+    /// The runtime-reported title read back from the container.
+    pub observed_title: String,
+    /// Whether this call created the native, or adopted one a lost attempt did.
+    ///
+    /// `false` is not a failure and not a no-op: it is the answer that proves a
+    /// second native was *not* built. A caller that treated the two as
+    /// interchangeable would lose the only evidence distinguishing a clean
+    /// recreation from a recovered one.
+    pub created: bool,
 }
 
 /// A container binding together with the evidence quality it was created under.

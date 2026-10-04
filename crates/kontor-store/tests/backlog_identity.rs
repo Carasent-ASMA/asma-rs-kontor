@@ -1,5 +1,7 @@
 //! Durable epic namespaces and derived Jira item-code store behavior.
 
+mod support;
+
 use kontor_core::backlog_identity::EpicBacklogCode;
 use kontor_core::id::{ExternalName, MiniProjectId, ProjectId, Timestamp};
 use kontor_core::repository::{NewMiniProject, NewProject, ProjectRepository};
@@ -35,7 +37,7 @@ fn seed_project(store: &SqliteStore, name: &str) -> ProjectId {
 
 #[test]
 fn a_manual_epic_code_is_durable_immutable_and_project_scoped() {
-    let directory = tempfile::tempdir().expect("state root");
+    let directory = support::state_root();
     let store = SqliteStore::open(&directory.path().join("kontor.db")).expect("store");
     let first_project = seed_project(&store, "First project");
     let first_epic = seed_epic(&store, first_project, "Kontor Operational MVP");
@@ -83,7 +85,7 @@ fn a_manual_epic_code_is_durable_immutable_and_project_scoped() {
 
 #[test]
 fn automatic_codes_expand_deterministically_inside_one_project() {
-    let directory = tempfile::tempdir().expect("state root");
+    let directory = support::state_root();
     let store = SqliteStore::open(&directory.path().join("kontor.db")).expect("store");
     let project = seed_project(&store, "Project");
     let first = seed_epic(&store, project, "Kontor Backlog Identities");
@@ -107,7 +109,7 @@ fn automatic_codes_expand_deterministically_inside_one_project() {
 
 #[test]
 fn database_triggers_forbid_updating_or_deleting_an_assignment() {
-    let directory = tempfile::tempdir().expect("state root");
+    let directory = support::state_root();
     let path = directory.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store");
     let project = seed_project(&store, "Project");
@@ -140,7 +142,7 @@ fn database_triggers_forbid_updating_or_deleting_an_assignment() {
 
 #[test]
 fn derived_item_codes_are_not_persisted_as_a_second_jira_identity() {
-    let directory = tempfile::tempdir().expect("state root");
+    let directory = support::state_root();
     let store = SqliteStore::open(&directory.path().join("kontor.db")).expect("store");
     drop(store);
     let connection =
@@ -164,7 +166,7 @@ fn derived_item_codes_are_not_persisted_as_a_second_jira_identity() {
 
 #[test]
 fn racing_automatic_allocators_commit_distinct_deterministic_codes() {
-    let directory = tempfile::tempdir().expect("state root");
+    let directory = support::state_root();
     let path = directory.path().join("kontor.db");
     let first_store = SqliteStore::open(&path).expect("first store");
     let project = seed_project(&first_store, "Project");
@@ -297,7 +299,7 @@ fn migration_preserves_valid_legacy_codes_and_quarantines_duplicates_and_invalid
 
 #[test]
 fn a_quarantined_legacy_value_does_not_block_a_new_active_assignment() {
-    let directory = tempfile::tempdir().expect("state root");
+    let directory = support::state_root();
     let path = directory.path().join("kontor.db");
     let store = SqliteStore::open(&path).expect("store");
     let project = seed_project(&store, "Project");

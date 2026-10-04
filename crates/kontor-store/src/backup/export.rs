@@ -21,7 +21,10 @@
 //! Runtime transcripts, message frames, tool calls and token deltas — none of
 //! which are in the database to begin with, because
 //! [`crate::events::types::ensure_control_metadata`] refuses them at the append
-//! boundary and this module re-runs that check on every exported payload.
+//! boundary and this module re-runs that check on every exported observation.
+//! Command intents share the event cursor, but retain their own canonical
+//! document contract and receive the same embedded-document canary scan as
+//! their corresponding command receipts.
 //! Runtime endpoints and provider tokens, which this process never persists.
 //! The credential file, connector credentials and keychain or config-home
 //! paths. The credential-*reference* resolution data on an account profile —
@@ -46,7 +49,60 @@ use crate::backup::BackupError;
 use crate::events::types::ensure_control_metadata;
 
 /// The export generation this build writes.
-pub const EXPORT_SCHEMA_VERSION: u32 = 9;
+pub const EXPORT_SCHEMA_VERSION: u32 = 13;
+
+/// The database generation that introduced the launch-intent supersession ledger.
+const LAUNCH_INTENT_SUPERSESSION_SCHEMA_VERSION: i64 = 109;
+
+/// The export generation that first carried it.
+const LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION: u32 = 11;
+
+/// The database generation that introduced the Core Team route succession ledger.
+const CORE_TEAM_ROUTE_SUCCESSION_SCHEMA_VERSION: i64 = 120;
+
+/// The export generation that first carried it.
+///
+/// Named for the same reason as its neighbours: adding a generation must not
+/// silently reclassify an older document as unable to prove what it does carry,
+/// and must not let a newer database export through a generation that cannot
+/// represent its succession ledger. Without this the receipt and readback a
+/// succession is reconstructed from would be dropped by a round trip, and the
+/// idempotency they provide would be silently lost (ASMA-8187).
+const CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION: u32 = 13;
+
+/// The record array introduced in generation 13.
+const CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS: [&str; 1] = ["core_team_route_successions"];
+
+/// The record array introduced in generation 11.
+const LAUNCH_INTENT_SUPERSESSION_RECORD_FIELDS: [&str; 1] =
+    ["hosted_seat_launch_intent_supersessions"];
+
+/// The database generation that introduced the retired-evaluator proof ledger.
+const RETIRED_EVALUATOR_ATTESTATION_SCHEMA_VERSION: i64 = 107;
+
+/// The export generation that first carried it.
+///
+/// Named for the same reason as the constants below: adding this generation
+/// must not silently reclassify an older document as unable to prove what it
+/// does in fact carry.
+const RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION: u32 = 10;
+
+/// The record array introduced in generation 10.
+const RETIRED_EVALUATOR_ATTESTATION_RECORD_FIELDS: [&str; 1] = ["retired_evaluator_attestations"];
+
+/// The database generation that introduced the TeamRun admission-adoption
+/// ledger.
+const TEAM_RUN_ADMISSION_ADOPTION_SCHEMA_VERSION: i64 = 110;
+
+/// The export generation that first carried it.
+///
+/// Named for the same reason as the constants around it: adding this generation
+/// must not silently reclassify an older document as unable to prove what it
+/// does in fact carry.
+const TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION: u32 = 12;
+
+/// The record array introduced in generation 12.
+const TEAM_RUN_ADMISSION_ADOPTION_RECORD_FIELDS: [&str; 1] = ["team_run_admission_adoptions"];
 
 /// The oldest export generation this build can read without inventing state.
 const MIN_SUPPORTED_EXPORT_SCHEMA_VERSION: u32 = 2;
@@ -279,6 +335,12 @@ impl KontorExportV1 {
             remove_succession_record_fields(records)?;
             remove_quota_runtime_cursor_fields(records)?;
         }
+        if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_core_team_route_succession_record_fields(records)?;
+        }
         canonical_bytes(&value)
     }
 
@@ -307,6 +369,9 @@ impl KontorExportV1 {
         if self.schema_version < SUCCESSION_EXPORT_VERSION {
             remove_succession_record_fields(&mut value)?;
             remove_quota_runtime_cursor_fields(&mut value)?;
+        }
+        if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
+            remove_core_team_route_succession_record_fields(&mut value)?;
         }
         canonical_bytes(&value)
     }
@@ -434,6 +499,72 @@ impl KontorExportV1 {
                 detail: "the legacy export generation cannot prove succession completeness",
             });
         }
+        // The same rule again: a document written before generation 10 has no
+        // field for a retired-evaluator proof, so against a database old enough
+        // to hold one it cannot tell "there were none" from "this generation
+        // could not see them".
+        // The same rule once more: a document written before generation 11 has
+        // no field for a supersession, so against a database old enough to hold
+        // one it cannot tell absence from blindness.
+        if self.schema_version < LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION
+            && self.database_schema_version >= LAUNCH_INTENT_SUPERSESSION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove launch-intent supersession completeness",
+            });
+        }
+        if self.schema_version < LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION
+            && !self
+                .records
+                .hosted_seat_launch_intent_supersessions
+                .is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries launch-intent supersessions it did not define",
+            });
+        }
+        if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION
+            && !self.records.core_team_route_successions.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries Core Team route successions it did not define",
+            });
+        }
+        if self.schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION
+            && self.database_schema_version >= CORE_TEAM_ROUTE_SUCCESSION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove Core Team route succession completeness",
+            });
+        }
+        if self.schema_version < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION
+            && self.database_schema_version >= RETIRED_EVALUATOR_ATTESTATION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove retired-evaluator attestation completeness",
+            });
+        }
+        if self.schema_version < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION
+            && !self.records.retired_evaluator_attestations.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries retired-evaluator attestations it did not define",
+            });
+        }
+        if self.schema_version < TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION
+            && self.database_schema_version >= TEAM_RUN_ADMISSION_ADOPTION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove admission-adoption completeness",
+            });
+        }
+        if self.schema_version < TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION
+            && !self.records.team_run_admission_adoptions.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries admission adoptions it did not define",
+            });
+        }
         if self.schema_version < SUCCESSION_EXPORT_VERSION
             && (!self.records.succession_attempts.is_empty()
                 || !self.records.succession_receipts.is_empty()
@@ -505,6 +636,13 @@ impl KontorExportV1 {
                 detail: "the export's continuity summary does not match its records",
             });
         }
+        // Last, and over the whole document including every embedded JSON
+        // string. Construction scans what *this* Realm publishes; this scans
+        // what another Realm hands us, which is the only copy nobody here
+        // vouched for. It runs before an import opens a transaction, so a
+        // document carrying credential material is refused having written
+        // nothing (ASMA-8187 P1).
+        scan_for_canaries(&canonical_value(self)?, 0)?;
         Ok(())
     }
 
@@ -889,6 +1027,64 @@ impl KontorExportV1 {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
             }
         }
+        if found < LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in LAUNCH_INTENT_SUPERSESSION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in RETIRED_EVALUATOR_ATTESTATION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in TEAM_RUN_ADMISSION_ADOPTION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        // A document written before generation 13 carries no succession array,
+        // and its absence is not a malformed document — it is a document from
+        // before the ledger existed. Back-filling it empty is what lets that
+        // older generation still parse; the completeness guards above are what
+        // stop an older generation claiming to represent a database that could
+        // store one.
+        if found < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
         let export: Self =
             serde_json::from_value(value).map_err(|_| BackupError::Verification {
                 detail: "the export is not a document of this generation",
@@ -972,6 +1168,26 @@ fn remove_succession_record_fields(records: &mut serde_json::Value) -> Result<()
     Ok(())
 }
 
+/// Remove the generation-13 Core Team succession field.
+///
+/// A genuine schema-12 document never had this key, so its digest was taken
+/// over bytes without it. Parsing back-fills an empty array so older documents
+/// present the current record type, and every path that reproduces the original
+/// bytes has to take that back-fill out again — otherwise the document is
+/// rehashed as something its source never wrote, and an authentic v12 export
+/// fails verification for having been read (ASMA-8187 P1).
+fn remove_core_team_route_succession_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
 /// Remove the generation-9 field added to the existing provenance row shape.
 fn remove_quota_runtime_cursor_fields(records: &mut serde_json::Value) -> Result<(), BackupError> {
     let records = records.as_object_mut().ok_or(BackupError::Verification {
@@ -1019,9 +1235,15 @@ fn canonical_bytes(value: &serde_json::Value) -> Result<Vec<u8>, BackupError> {
 /// # Errors
 /// Returns [`BackupError::Redaction`] when the canary scan matches,
 /// [`BackupError::Domain`] when a stored control payload is not control
-/// metadata, and [`BackupError::Store`] when the database cannot be read.
+/// metadata, [`BackupError::Verification`] when public-key ledger continuity
+/// would be omitted or cannot be inspected, and [`BackupError::Store`] when
+/// the database cannot be read.
 pub fn export_realm(store: &SqliteStore, now: Timestamp) -> Result<KontorExportV1, BackupError> {
-    let records = ExportedRecords::read(&store.connection)?;
+    // Hold the existing writer boundary while testing the ledger and reading
+    // modeled rows, so a concurrent registration cannot be silently omitted.
+    let transaction = store.begin()?;
+    ensure_empty_attestation_ledger(&transaction)?;
+    let records = ExportedRecords::read(&transaction)?;
     let continuity_summary = records.continuity();
     let records_hash = ContentHash::of(&canonical_bytes(&canonical_value(&records)?)?);
     let export = KontorExportV1 {
@@ -1035,18 +1257,117 @@ pub fn export_realm(store: &SqliteStore, now: Timestamp) -> Result<KontorExportV
         records,
     };
 
-    // Every stored control payload is held to the same rule the append boundary
-    // holds it to. A transcript that somehow reached a row does not leave the
-    // machine in an export.
+    // Runtime and census observations use the positive control-field vocabulary
+    // enforced by their append boundaries. Command intents occupy the same log
+    // but carry application-owned canonical documents (names, paths, graph
+    // arrays and other command fields). Re-prove their exact immutable receipt
+    // authority before the structural canary scan; the kind label alone is not
+    // authority to export arbitrary prose.
+    let receipts: BTreeMap<&str, &CommandReceiptsRow> = export
+        .records
+        .command_receipts
+        .iter()
+        .map(|receipt| (receipt.id.as_str(), receipt))
+        .collect();
     for event in &export.records.runtime_events {
         let payload: serde_json::Value =
             serde_json::from_str(&event.payload).map_err(|_| BackupError::Verification {
                 detail: "a stored control payload is not JSON",
             })?;
-        ensure_control_metadata(&payload)?;
+        match event.event_kind.as_str() {
+            "runtime_observation" | "census_observation" => ensure_control_metadata(&payload)?,
+            "command_intent" => ensure_command_event_authority(event, &receipts)?,
+            _ => {
+                return Err(BackupError::Verification {
+                    detail: "a stored event has an unknown kind",
+                });
+            }
+        }
     }
     scan_for_canaries(&canonical_value(&export)?, 0)?;
+    transaction.commit().map_err(crate::StoreError::from)?;
     Ok(export)
+}
+
+/// Qualified key/token continuity is unsupported by modeled export and restore.
+/// Legitimate pre-129/pre-130 absence is distinct from corrupt missing tables.
+/// Every present key ledger is inspected before any token-absence fallback.
+pub(crate) fn ensure_empty_attestation_ledger(connection: &Connection) -> Result<(), BackupError> {
+    let refusal = || BackupError::Verification {
+        detail: "public attestation ledger continuity is unsupported",
+    };
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|_| refusal())?;
+    if version < 1 {
+        return Err(refusal());
+    }
+    for (introduced, head, rows) in [
+        (
+            129,
+            "attestation_authority_heads",
+            "attestation_authority_keys",
+        ),
+        (
+            130,
+            "attestation_token_heads",
+            "prepared_attestation_tokens",
+        ),
+    ] {
+        let tables: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN (?1,?2)",
+                [head, rows],
+                |row| row.get(0),
+            )
+            .map_err(|_| refusal())?;
+        if tables == 0 && version < introduced {
+            continue;
+        }
+        if tables != 2 {
+            return Err(refusal());
+        }
+        // Names above are fixed schema identifiers, never caller input.
+        let nonempty: bool = connection
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {head}) OR EXISTS(SELECT 1 FROM {rows})"),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| refusal())?;
+        if nonempty {
+            return Err(refusal());
+        }
+    }
+    Ok(())
+}
+
+/// A command event may carry only the exact intent its receipt authorized.
+fn ensure_command_event_authority(
+    event: &RuntimeEventsRow,
+    receipts: &BTreeMap<&str, &CommandReceiptsRow>,
+) -> Result<(), BackupError> {
+    let receipt = event
+        .command_receipt_id
+        .as_deref()
+        .and_then(|id| receipts.get(id))
+        .ok_or(BackupError::Verification {
+            detail: "a command event has no exported command receipt",
+        })?;
+    if event.project_id != receipt.project_id
+        || event.payload != receipt.intent
+        || event.payload_hash != receipt.intent_hash
+    {
+        return Err(BackupError::Verification {
+            detail: "a command event does not match its immutable receipt",
+        });
+    }
+    if ContentHash::of(event.payload.as_bytes()).as_str() != event.payload_hash {
+        return Err(BackupError::Verification {
+            detail: "a command event payload does not hash to its declared digest",
+        });
+    }
+    Ok(())
 }
 
 /// Refuse a document that carries credential, token or Zone C material.
@@ -1107,7 +1428,7 @@ fn redaction_summary() -> RedactionSummary {
         ),
         (
             "hosted_topology_seats",
-            "native leadership-session identity is runtime-local placement authority; a verified same-Realm snapshot preserves it byte-for-byte",
+            "native leadership-session identity and the autonomy its occupancy generation runs under are runtime-local placement authority; a verified same-Realm snapshot preserves them byte-for-byte",
         ),
         (
             "turn_correlation_challenges",
@@ -1124,6 +1445,10 @@ fn redaction_summary() -> RedactionSummary {
         (
             "imported_profile_selection_outcomes",
             "destination-local exact selection lineage is preserved by snapshot and readback, but is not forwarded as live source authority",
+        ),
+        (
+            "imported_record_evidence",
+            "imported testimony about another Realm's records is inspectable here and is never forwarded onward as though this Realm were its source",
         ),
     ];
     let excluded_columns = [
@@ -1165,11 +1490,19 @@ fn redaction_summary() -> RedactionSummary {
     }
 }
 
-/// One exported record's source identity and digest.
+/// One exported record's source identity, digest and canonical content.
 ///
 /// This is what an import records as lineage: enough to say *which* source
 /// record a destination row came from, and to prove the bytes have not changed
-/// since, without carrying the record itself into the destination's authority.
+/// since.
+///
+/// `content` is the record itself, and carrying it is deliberate rather than
+/// incidental. It is what an import keeps for the kinds whose *account* of an
+/// event has to remain readable in another Realm — a Core Team route
+/// succession, above all. Keeping the bytes is not the same as granting them
+/// authority: the import writes them into `imported_record_evidence`, which no
+/// destination effect resolves against, and only ever beside a lineage row
+/// recorded as non-live.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordLineage {
     /// The record kind, which is the source table's name.
@@ -1178,6 +1511,12 @@ pub struct RecordLineage {
     pub identity: String,
     /// SHA-256 over the record's canonical JSON.
     pub hash: ContentHash,
+    /// The exact canonical JSON [`RecordLineage::hash`] was taken over.
+    ///
+    /// Retained rather than re-encoded on demand: a second encoding agrees with
+    /// the digest only by convention, and the digest is the reason this is
+    /// evidence rather than a copy.
+    pub content: serde_json::Value,
 }
 
 /// One exported table's contract.
@@ -1196,10 +1535,12 @@ trait ExportRow: Sized + Serialize {
 
     /// This record's lineage entry.
     fn lineage(&self) -> Result<RecordLineage, BackupError> {
+        let content = canonical_value(self)?;
         Ok(RecordLineage {
             kind: Self::KIND,
             identity: self.identity(),
-            hash: ContentHash::of(&canonical_bytes(&canonical_value(self)?)?),
+            hash: ContentHash::of(&canonical_bytes(&content)?),
+            content,
         })
     }
 }
@@ -1519,6 +1860,13 @@ exported_tables! {
         bound_at: String,
         last_readback_at: String,
         revision: i64,
+        observed_projection: Option<String>,
+        visible_title: Option<String>,
+        parent_runtime_kind: Option<String>,
+        parent_host: Option<String>,
+        parent_generation: Option<i64>,
+        parent_native_id: Option<String>,
+        topology_correlation: Option<String>,
     }
     topology_container_recoveries: TopologyContainerRecoveriesRow from "topology_container_recoveries" key(receipt_id) {
         receipt_id: String,
@@ -1654,6 +2002,74 @@ exported_tables! {
         reviewer_principal: Option<String>,
         policy_evaluation_id: Option<String>,
     }
+    core_team_route_successions: CoreTeamRouteSuccessionsRow from "core_team_route_successions" key(idempotency_key) {
+        idempotency_key: String,
+        intent_hash: String,
+        project_id: String,
+        mini_project_id: String,
+        seat_binding_id: String,
+        predecessor_native_id: String,
+        predecessor_generation: i64,
+        predecessor_occupancy_generation: i64,
+        successor_occupancy_generation: i64,
+        successor_credential_generation: i64,
+        claimed_at: String,
+        successor_native_id: Option<String>,
+        successor_generation: Option<i64>,
+        readback: Option<String>,
+        readback_hash: Option<String>,
+        route_committed_at: Option<String>,
+        launch_intent_installed: i64,
+        seat_binding_observed: i64,
+        receipt_id: Option<String>,
+        receipted_at: Option<String>,
+    }
+    hosted_seat_launch_intent_supersessions: HostedSeatLaunchIntentSupersessionsRow from "hosted_seat_launch_intent_supersessions" key(idempotency_key) {
+        idempotency_key: String,
+        intent_hash: String,
+        project_id: String,
+        seat_binding_id: String,
+        occupancy_generation: i64,
+        seat_binding_revision: i64,
+        superseded_model_rung: String,
+        superseded_prepared_at: String,
+        replacement_model_rung: String,
+        receipt_id: Option<String>,
+        recorded_at: String,
+    }
+    retired_evaluator_attestations: RetiredEvaluatorAttestationsRow from "retired_evaluator_attestations" key(id) {
+        id: String,
+        project_id: String,
+        receipt_id: String,
+        task_id: String,
+        workflow_revision: i64,
+        gate_key: String,
+        team_run_id: String,
+        evaluator_role: String,
+        role_slot_id: String,
+        agent_run_id: String,
+        seat_binding_id: String,
+        seat_revision: i64,
+        runtime_binding_id: String,
+        runtime_generation: i64,
+        native_id: String,
+        artifact_key: String,
+        artifact_checksum: String,
+        evidence_digest: String,
+        proof_digest: String,
+        attested_at: String,
+    }
+    team_run_admission_adoptions: TeamRunAdmissionAdoptionsRow from "team_run_admission_adoptions" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        team_run_id: String,
+        role_slot_id: String,
+        agent_run_id: String,
+        adopted_agent_run_revision: i64,
+        receipt_id: String,
+        adopted_at: String,
+    }
     artifact_evidence: ArtifactEvidenceRow from "artifact_evidence" key(id) {
         id: String,
         project_id: String,
@@ -1664,7 +2080,7 @@ exported_tables! {
         locator: String,
         locator_hash: String,
         producer_role: String,
-        producer_account: String,
+        producer_account: Option<String>,
         recorded_at: String,
     }
     gate_waivers: GateWaiversRow from "gate_waivers" key(id) {
@@ -2610,6 +3026,11 @@ impl ExportedRecords {
                 continuity.record_counts.remove(field);
             }
         }
+        if schema_version < CORE_TEAM_ROUTE_SUCCESSION_EXPORT_VERSION {
+            for field in CORE_TEAM_ROUTE_SUCCESSION_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
         continuity
     }
 
@@ -2650,5 +3071,69 @@ impl ExportedRecords {
                 .max()
                 .unwrap_or_default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod attestation_ledger_tests {
+    use super::*;
+
+    #[test]
+    fn historical_table_absence_is_allowed_only_before_129() {
+        let connection = Connection::open_in_memory().expect("fixture");
+        connection
+            .execute_batch("PRAGMA user_version=128;")
+            .expect("legacy version");
+        assert!(ensure_empty_attestation_ledger(&connection).is_ok());
+        connection
+            .execute_batch("PRAGMA user_version=129;")
+            .expect("corrupt current version");
+        assert!(matches!(
+            ensure_empty_attestation_ledger(&connection),
+            Err(BackupError::Verification { .. })
+        ));
+        connection
+            .execute_batch("PRAGMA user_version=0;")
+            .expect("uninitialized version");
+        assert!(matches!(
+            ensure_empty_attestation_ledger(&connection),
+            Err(BackupError::Verification { .. })
+        ));
+    }
+    #[test]
+    fn token_tables_are_required_at130_and_legacy129_absence_never_skips_keys() {
+        let connection = Connection::open_in_memory().expect("fixture");
+        connection
+            .execute_batch(
+                "PRAGMA user_version=129;
+            CREATE TABLE attestation_authority_heads (revision INTEGER);
+            CREATE TABLE attestation_authority_keys (revoked_revision INTEGER);",
+            )
+            .expect("empty legacy ledger");
+        assert!(ensure_empty_attestation_ledger(&connection).is_ok());
+        connection
+            .execute_batch("INSERT INTO attestation_authority_keys VALUES (2);")
+            .expect("revoked history");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
+        connection
+            .execute_batch("DELETE FROM attestation_authority_keys; PRAGMA user_version=130;")
+            .expect("corrupt fixture only");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
+        connection
+            .execute_batch("CREATE TABLE attestation_token_heads (revision INTEGER);")
+            .expect("partial schema");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
+        connection
+            .execute_batch("CREATE TABLE prepared_attestation_tokens (revoked_revision INTEGER);")
+            .expect("empty schema");
+        assert!(ensure_empty_attestation_ledger(&connection).is_ok());
+        // Deliberately orphaned metadata isolates each continuity guard; no
+        // production preparation path can create this corruption fixture.
+        connection
+            .execute_batch("INSERT INTO attestation_token_heads VALUES (2);")
+            .expect("orphaned head fixture");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
+        connection.execute_batch("DELETE FROM attestation_token_heads; INSERT INTO prepared_attestation_tokens VALUES (2);").expect("orphaned row fixture");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
     }
 }

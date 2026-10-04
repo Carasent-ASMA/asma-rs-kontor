@@ -1,0 +1,19 @@
+QUALIFIED_SOURCE=6b3654bca823ac85ed7cc0bb1d6965bc730c4743
+   Compiling kontor-teams v0.2.1 (/private/tmp/ASMA-8196-hydration-mutations-6b3654bc/source/crates/kontor-teams)
+   Compiling kontor-store v0.2.1 (/private/tmp/ASMA-8196-hydration-mutations-6b3654bc/source/crates/kontor-store)
+   Compiling kontor-profiles v0.2.1 (/private/tmp/ASMA-8196-hydration-mutations-6b3654bc/source/crates/kontor-profiles)
+   Compiling kontor-api v0.2.1 (/private/tmp/ASMA-8196-hydration-mutations-6b3654bc/source/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/private/tmp/ASMA-8196-hydration-mutations-6b3654bc/source/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.11s
+     Running tests/loopback_api.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/loopback_api-b347fa1894c0337e)
+
+running 4 tests
+test replacement_bridges::replacing_another_slot_hydrates_two_abandoned_bridges_without_rewriting_them ... ok
+test replacement_bridges::trailing_abandoned_bridge_attempts_keep_the_bound_predecessor_named ... ok
+test replacement_bridges::genuine_bound_fork_after_an_abandoned_bridge_still_refuses_preview ... ok
+test replacement_bridges::cancelled_bound_run_through_abandoned_bridges_names_only_the_current_native ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 478 filtered out; finished in 3.10s
+
+
+PROCESS_EXIT_CODE=0

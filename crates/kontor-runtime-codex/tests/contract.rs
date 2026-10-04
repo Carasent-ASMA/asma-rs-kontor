@@ -1402,6 +1402,42 @@ async fn the_capability_snapshot_is_frozen_and_states_what_it_can_prove() {
     ));
 }
 
+/// ASMA-8280 G-3: `codex exec --json` has no native surface that carries
+/// fleet provenance, so a launch that requests some is answered unsupported,
+/// naming the native id and the surface. The request is never its own
+/// observation.
+#[tokio::test]
+async fn a_codex_launch_reports_requested_fleet_provenance_as_unsupported() {
+    let plane = plane_a(one_run_script());
+    let seat = open_seat(&plane.adapter, "implement").await;
+    let requested = kontor_runtime::FleetLaunchProvenance {
+        policy_hash: kontor_core::id::ContentHash::of(b"activated policy"),
+        source_bundle_hash: None,
+        binding_key: "team/t/implement".to_owned(),
+        chain: "delivery".to_owned(),
+        step: 1,
+        sub_step: 1,
+        vendor: "openai".to_owned(),
+        eligibility: Some(kontor_runtime::LaunchEligibility::default()),
+    };
+    let request = admitted(&plane.adapter, &seat, &parts(&seat, PROFILE_A))
+        .await
+        .with_fleet_provenance(Some(requested.clone()));
+    let outcome = plane
+        .adapter
+        .launch(&request)
+        .await
+        .expect("a pinned run launches");
+    assert_eq!(
+        outcome.fleet_provenance,
+        kontor_runtime::FleetProvenanceObservation::Unsupported {
+            surface: "codex.exec".to_owned(),
+            native_id: outcome.snapshot.identity().native_id.clone(),
+        }
+    );
+    assert!(!outcome.fleet_provenance.proves(Some(&requested)));
+}
+
 #[tokio::test]
 async fn a_cross_engine_handoff_prompt_launches_a_fresh_pinned_codex_run() {
     // The fallback this adapter is for: work that started on another engine is
@@ -1424,6 +1460,10 @@ async fn a_cross_engine_handoff_prompt_launches_a_fresh_pinned_codex_run() {
         .expect("a handoff prompt launches a fresh pinned run");
 
     assert_eq!(outcome.snapshot.agent_run_id(), handoff.agent_run_id);
+    assert_eq!(
+        outcome.fleet_provenance,
+        kontor_runtime::FleetProvenanceObservation::NotRequested
+    );
     assert_eq!(
         outcome.observation.source,
         ObservationSource::CommandAck,
@@ -1889,4 +1929,22 @@ async fn a_drifted_thread_is_failed_and_never_adopted_as_a_successor() {
         receipt.evidence.is_none(),
         "a failed attempt cites no confirmation evidence"
     );
+}
+
+/// ASMA-8282 frontier A: Codex composes no same-native planning pair member
+/// reconcile. It refuses it as an unsupported capability with no Codex call.
+#[tokio::test]
+async fn codex_reconciles_no_planning_pair_member_and_makes_no_call() {
+    let plane = plane_a(one_run_script());
+    let refused = plane
+        .adapter
+        .reconcile_planning_pair_member(&kontor_tests_contract::planning_pair_reconcile_request())
+        .await;
+    assert_eq!(
+        refused.expect_err("Codex never reconciles a planning pair member"),
+        RuntimeError::UnsupportedCapability {
+            capability: kontor_runtime::capability::RuntimeCapability::Resume,
+        }
+    );
+    assert!(plane.codex.calls().is_empty(), "no Codex call");
 }

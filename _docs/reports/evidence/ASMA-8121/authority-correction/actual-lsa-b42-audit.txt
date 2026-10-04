@@ -1,0 +1,52 @@
+---
+
+Audit result: the repair is directionally correct and its mutation evidence is genuine, but PR #274 is not yet acceptance-ready because of one P1 authority/redaction gap.
+
+### Findings
+
+- **P0: none.**
+
+- **P1 — command-event authority is not re-proven during export.**  
+  [export.rs](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store/src/backup/export.rs:1174) trusts `event_kind == "command_intent"` and skips the observation allowlist, but does not verify that:
+  - `command_receipt_id` resolves to the exported immutable receipt;
+  - event `project_id`, payload and payload hash exactly match that receipt;
+  - the payload hash recomputes correctly.
+
+  SQLite enforces the event shape and receipt foreign key, but not payload equality. Therefore a corrupted/misclassified command event can export arbitrary non-secret session prose that the canary scanner intentionally does not recognize. The existing test asserts equality for a normally written command, but does not plant and refuse a mismatched event/receipt pair.
+
+  Smallest repair: exact receipt lookup plus payload/hash equality and hash recomputation before accepting a `command_intent`; add corrupted mismatch, missing receipt and bad-hash regressions.
+
+- **P2 — candidate-specific foreign-realm round trip is incomplete.**  
+  [backup_export.rs](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store/tests/backup_export.rs:537) calls `KontorExportV1::parse`, which proves serialization/parse continuity. The broader 21-test suite exercises foreign-realm import/re-export, but does not seed this new legitimate command-intent shape into that round trip and assert its source identity, payload/hash and non-executable lineage. Add one focused destination-import lineage check.
+
+- **P2 — publication check currently fails.**  
+  [PR #274](https://github.com/Carasent-ASMA/asma-rs-kontor/pull/274) correctly targets base `4c1c52cb` and head `b42b5197`, and is mergeable, but `asma/publication-branch-title` fails with `pr_title_key_missing`. The title is `ASMA-8121: Preserve…`; the check requires `ASMA-8121 Preserve…` without the colon.
+
+### Evidence assessment
+
+Verified:
+
+- Worktree is clean and exactly at `b42b51970a254a98db2c0997f676e413b5cd7377`.
+- All [SHA256SUMS.json](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/SHA256SUMS.json) entries match.
+- Post-restoration source/test hashes match [export-mutation-results.json](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/export-mutation-results.json).
+- The three patches are actual, distinct behavioral mutants:
+  - valid command rejected;
+  - runtime/census allowlist bypassed;
+  - recursive canary scan removed.
+- All three compiled and were killed by their intended assertions with exit `101`.
+- Restored backup/export suite: 21 passed, 0 failed, exit `0`.
+- The initial fixture collision is preserved and earns no credit.
+- Same-Realm snapshot/offline restore counts and hashes match in the [identity receipt](/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/_docs/reports/evidence/ASMA-8121/snapshot-restore-identity-receipt.json).
+- Prior MUT-003 kill/restore and `7ffd650d` ↔ `4c1c52cb` source-equality findings remain intact.
+
+### Remaining frontier
+
+1. Close the P1 receipt/event authority check and P2 round-trip coverage on a new immutable head.
+2. Correct the PR publication metadata.
+3. Require actual exit `0` from the still-running full exact-candidate archive gate; it currently receives no credit.
+4. Independently review, merge, build and deploy only after the ASMA-8098 qualification hold clears.
+5. Run the repaired actual export against the unchanged snapshot, import into an isolated destination, and compare identities/digests.
+6. Perform the outstanding controlled restart and fresh all-13 census; reconcile `89` versus `88` and the legacy workspace lifecycle discrepancy.
+7. Complete genuine ASMA-8120 then ASMA-8121 verification/audit gates and settlements.
+
+No deployment, post-restart census, actual repaired export, task settlement, or epic PASS is established. No files, tests, Cargo processes, databases, runtimes or orchestration state were changed.
