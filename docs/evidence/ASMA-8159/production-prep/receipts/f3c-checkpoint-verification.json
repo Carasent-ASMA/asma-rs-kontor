@@ -1,0 +1,100 @@
+{
+  "recorded_utc": "2026-10-03T09:33:10.152240+00:00",
+  "checks": [
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "command": "git diff --check",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit": 0,
+      "stdout": "",
+      "stderr": "",
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "result": "PASS; successful checker emits no output"
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "command": "cargo fmt --all -- --check",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit": 0,
+      "stdout": "",
+      "stderr": "",
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "result": "PASS; successful checker emits no output"
+    }
+  ],
+  "protected_source_hashes": {
+    "crates/kontor-store/src/migrations.rs": "d78c80397f187f6c868f6d736d6560a0f49c073cb2387650a1c4b5b3c40a38e3",
+    "crates/kontor-store/src/memory.rs": "171cefc4b0523cacc68148da4be4900ccb71c44e09f9e17f76669f081e2563ff",
+    "crates/kontor-store/src/memory/projection_rebuild.rs": "ab9cdcb379d79cb46d42594190d2c10a04db58b77dc5193c689fd07f00ee63f2",
+    "crates/kontor-store/migrations/0120_experience_memory_projection.sql": "bbad30ea8f311c79a5c044b863e2998ddafa7be9ccc7322aed39a639ed532031",
+    "crates/kontor-store/migrations/0121_memory_projection_rebuild_receipts.sql": "561ec7e5cb2123983c561f61c39d6755e016328dda29891c701fa296aa54ddb1",
+    "crates/kontor-store/tests/memory_migration_rollback.rs": "ed1871fd005f32fa9dd3b6f268a4b38a7f6d55cc652f92a8b090ad905a2feddd",
+    "crates/kontor-daemon/src/applications/memory_projection.rs": "e0a594eb0b54834cdce84f7bae3c83f0836e42af3ac71a634d1e5eb41bada87f",
+    "crates/kontor-daemon/tests/projection_rebuild.rs": "2b7f9420446d8e04452f0b70835911144717a4e894efdf1e252db8fa0a6dd634",
+    "crates/kontor-daemon/tests/synthetic_census_rehearsal.rs": "55ac8de500524a8ffaf61cd9528dfff8f189070007cc4d33e32defd02b5aad7d",
+    "Cargo.lock": "df30ba74da6a3ffd42cf5c0c3fc9ba4712e2f8cf96a6a09b4154573b819c5683",
+    "crates/kontor-accounts/src/resolver.rs": "eda5b52aa8c86e369e16c7ecbc622c28cd80f7aa18a4f5397363b4480b77161f"
+  },
+  "predecessor_edits_retained_exactly": true,
+  "source_manifest_sha256": "2c2442857cb61a0528ee04cd730d6beb8f343dc07c9c316630e898544e200229",
+  "mutants_all_restored": true,
+  "unexpected_test_failures": 0,
+  "commit_preflight": [
+    {
+      "argv": [
+        "asma",
+        "git",
+        "commit",
+        "--auto",
+        "--auto-provider",
+        "heuristic",
+        "--repo",
+        "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+        "--dry-run"
+      ],
+      "exit": 1,
+      "observed_diagnostic": "Submodule not found (or ambiguous): /Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "disposition": "External worktree absolute path is not a supported --repo selector; no commit or branch operation occurred"
+    },
+    {
+      "argv": [
+        "asma",
+        "git",
+        "commit",
+        "--auto",
+        "--auto-provider",
+        "heuristic",
+        "--dry-run"
+      ],
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit": 0,
+      "observed_target": "asma-rs-kontor (external repo)",
+      "observed_commit_cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "observed_subject": "fix: Fix asma-rs-kontor behavior",
+      "disposition": "Supported native cwd route; only this external checkout is in the command plan"
+    }
+  ],
+  "staged_path_count": 80,
+  "staged_whitespace_check": {
+    "argv": [
+      "git",
+      "diff",
+      "--cached",
+      "--check"
+    ],
+    "exit": 0,
+    "result": "PASS; no whitespace errors"
+  }
+}

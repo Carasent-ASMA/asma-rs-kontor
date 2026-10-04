@@ -1,0 +1,87 @@
+diff --git a/crates/kontor-store/migrations/0120_core_team_route_successions.sql b/crates/kontor-store/migrations/0120_core_team_route_successions.sql
+index 82f46251..bf0fa8c4 100644
+--- a/crates/kontor-store/migrations/0120_core_team_route_successions.sql
++++ b/crates/kontor-store/migrations/0120_core_team_route_successions.sql
+@@ -113,7 +113,7 @@ CREATE TABLE core_team_route_successions (
+ -- the retire or the launch. It is a uniqueness constraint rather than an
+ -- application check because two concurrent transactions both pass a check and
+ -- only one passes an index.
+-CREATE UNIQUE INDEX ux_core_team_route_succession_owner
++CREATE INDEX ux_core_team_route_succession_owner
+ ON core_team_route_successions (project_id, seat_binding_id, predecessor_occupancy_generation);
+ 
+ -- A succession advances exactly one occupancy generation, and its credential
+diff --git a/crates/kontor-store/src/repository.rs b/crates/kontor-store/src/repository.rs
+index a5f446ec..6b083475 100644
+--- a/crates/kontor-store/src/repository.rs
++++ b/crates/kontor-store/src/repository.rs
+@@ -5525,6 +5525,17 @@ impl SqliteStore {
+             }
+         }
+         transaction.commit().map_err(backend)?;
++        // The transition and its ledger row are durable and the caller is about
++        // to learn nothing about them. This is the *earliest* incomplete shape a
++        // replay can find — route committed, neither trailing effect attempted —
++        // and it is distinct from losing the latch after both have landed.
++        // Production builds never compile this.
++        #[cfg(feature = "fault-injection")]
++        if self.faults.lose_next_succession_route_ack.replace(false) {
++            return Err(RepositoryError::Backend {
++                detail: "injected fault after the succession route commit".to_owned(),
++            });
++        }
+         Ok(Applied::Updated)
+     }
+ 
+@@ -5559,14 +5570,11 @@ impl SqliteStore {
+             )
+             .optional()
+             .map_err(backend)?;
+-        if let Some((key, intent_hash, _)) = existing {
++        // MUTANT M-R4c2: exclusivity removed. A second key no longer finds the
++        // live claim at all, so it takes its own and proceeds.
++        let existing = existing.filter(|(key, _, _)| key == claim.idempotency_key.as_str());
++        if let Some((_key, intent_hash, _)) = existing {
+             transaction.rollback().map_err(backend)?;
+-            if key != claim.idempotency_key.as_str() {
+-                return Err(RepositoryError::Conflict {
+-                    subject: "core team route succession",
+-                    rule: "another idempotency key already owns this seat's succession",
+-                });
+-            }
+             if intent_hash != claim.intent_hash.as_str() {
+                 return Err(RepositoryError::Conflict {
+                     subject: "core team route succession",
+@@ -5602,11 +5610,6 @@ impl SqliteStore {
+         Ok(Applied::Created)
+     }
+ 
+-    /// Latch one committed succession's trailing effects.
+-    ///
+-    /// Forward-only and idempotent: marking an effect that has already landed
+-    /// changes nothing, and nothing here can unmark one. A succession is
+-    /// complete only once both have latched.
+     /// Commit a succession's trailing effects by *proving* them.
+     ///
+     /// The previous shape took two booleans and trusted them, which meant the
+@@ -5715,6 +5718,20 @@ impl SqliteStore {
+         receipt_id: CommandReceiptId,
+         receipted_at: Timestamp,
+     ) -> RepositoryResult<Applied> {
++        // The command receipt is already recorded by the time this runs, so a
++        // loss here leaves a realm holding a receipt no ledger row points at.
++        // A replay must rebind that same receipt rather than mint a second.
++        // Production builds never compile this.
++        #[cfg(feature = "fault-injection")]
++        if self
++            .faults
++            .lose_next_succession_receipt_binding
++            .replace(false)
++        {
++            return Err(RepositoryError::Backend {
++                detail: "injected fault before the succession receipt binding".to_owned(),
++            });
++        }
+         let transaction = self.begin()?;
+         let row: Option<(String, Option<String>, Option<String>, i64, i64)> = transaction
+             .query_row(

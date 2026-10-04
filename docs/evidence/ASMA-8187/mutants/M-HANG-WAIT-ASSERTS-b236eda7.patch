@@ -1,0 +1,13 @@
+--- a/crates/kontor-daemon/src/applications.rs
++++ b/crates/kontor-daemon/src/applications.rs
+@@ -796,8 +796,9 @@
+             .unwrap_or_else(std::sync::PoisonError::into_inner);
+         let deadline = std::time::Instant::now() + self.deadline;
+         while !state.0 {
++            // MUTANT M-HANG-WAIT-ASSERTS: panic instead of reporting.
+             let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+-                return false;
++                panic!("the projection never reached the barrier");
+             };
+             let (next, _) = self
+                 .entered

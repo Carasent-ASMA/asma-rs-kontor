@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "nativeAgentId": "6301c2d4-7fbd-4f08-b61c-9f12183ada82",
+  "providerSessionId": "01a0a39b-2b2c-7c02-923b-89a13f6c622c",
+  "route": "codex-personal/gpt-5.6-sol@xhigh",
+  "mode": "auto-review",
+  "sourceActivityUpdateCount": 3066,
+  "sourceActivityLimit": 1,
+  "onlyRemovedWrapper": "Showing 1 of 3066 activities (limited to 1)\n\n",
+  "sourceCommit": "51cfef9caaa1e2b12674ad932d0adfb0658d4777",
+  "sourceTree": "c63a37e6d0b0db8e6cfb495d044e02d33f62a698",
+  "actualTerminatorPresent": false,
+  "actualFinalLfPresent": false,
+  "decodedByteCount": 4032,
+  "decodedSha256": "6b8fc87770b4bc33ec5521b81e4260be3ca4571503be3bbed1e00323fc545d43",
+  "carrierPath": "actual-lsa-source-audit-51cfef9c.txt.json",
+  "carrierSha256": "d5467fc79b128827be79784849951362e61f1ffc7054747f61e14ea7b76e110f",
+  "scope": "Actual independent source audit: no P0/P1, adjacent P2 OpenAPI omission; conditional support, no qualification/job credit or delivery/acceptance credit."
+}

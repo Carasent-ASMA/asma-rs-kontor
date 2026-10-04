@@ -1,0 +1,11 @@
+--- a/crates/kontor-daemon/src/main.rs
++++ b/crates/kontor-daemon/src/main.rs
+@@
+-    let realm = kontor_store::SqliteStore::read_existing_realm(&recovery::database_in(&root))
+-        .map_err(|_| OperatorError::CredentialScope)?;
++    // MUTANT M-CTL: refuse every Realm at the schema boundary.
++    if true {
++        return Err(OperatorError::CredentialScope);
++    }
++    let realm = kontor_store::SqliteStore::read_existing_realm(&recovery::database_in(&root))
++        .map_err(|_| OperatorError::CredentialScope)?;

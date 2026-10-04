@@ -1,0 +1,53 @@
+{
+  "task": "ASMA-8159",
+  "epic": "ASMA-8155",
+  "surface": "Paseo-direct",
+  "workspace": "wks_b22a010864eaa006",
+  "checkout": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+  "branch": "feat/ASMA-8155-kontor-experience-memory-and-analogue-recall",
+  "pins": {
+    "base": {
+      "commit": "8acdbd17e83d9d7ec545221c4b957e0325916997",
+      "tree": "b4481a1e0a8bd2295f35d2a2a27ef8d865f84a47"
+    },
+    "ASMA-8156": {
+      "commit": "655e07ead8b87bebf3a5d43ddccc15c860114e05",
+      "tree": "af6ec2b5a0f0aaed1054618c75688e35b28745d0"
+    },
+    "ASMA-8158": {
+      "commit": "831dd7c1dc95a57258c75f5896bff5b76f3830fa",
+      "tree": "ae9bcea100575e5bfa295cf57865139b08b9ab70"
+    }
+  },
+  "review_status_provenance": "User-supplied frozen input pins; no Jira/reviewer API read or independent writer review",
+  "reviews": {
+    "ASMA-8156": {
+      "QA": "PASS",
+      "Audit": "PASS",
+      "commit": "655e07ead8b87bebf3a5d43ddccc15c860114e05"
+    },
+    "ASMA-8158": {
+      "QA": "PASS",
+      "Audit": "PASS",
+      "auditPassed": true,
+      "commit": "831dd7c1dc95a57258c75f5896bff5b76f3830fa"
+    },
+    "ASMA-8157": {
+      "independent_docs_review": "PASS",
+      "commit": "9b5b538c269deca55058f3fdd9efc66ee8046ab9"
+    }
+  },
+  "contract": {
+    "path": "/private/tmp/ASMA-8155-full-lsa-readiness-original-20261002.txt",
+    "sha256": "7ee35150e2e90cdc4fab83bac999ecd2cef6286d236df128b0ad5b8c211d828b"
+  },
+  "plan": {
+    "path": "/Users/igor/carasent/asma-modules/_docs/ai-orchestration/plans/2026-09-12-10-10-plan-kontor-experience-memory.md",
+    "sha256": "8a296e3747e68c49e39666d2c2b10e1d4c8fbdf549df4f37e4faf0f1fb78e9e8"
+  },
+  "toolchain": {
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)"
+  },
+  "working_role": "ENGINEER (defaulted; process and adapter-workspace .env role absent)"
+}

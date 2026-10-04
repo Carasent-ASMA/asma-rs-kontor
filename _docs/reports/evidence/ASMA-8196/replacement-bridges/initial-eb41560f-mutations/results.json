@@ -1,0 +1,95 @@
+{
+  "recordedAt": "2026-09-26T09:24:31.579485+00:00",
+  "qualifiedSource": "eb41560fe3506eb06b43e5f2ab8f47ece61facaf",
+  "tree": "c76412934c56e1b870defae559fd9a0f3cb97639",
+  "archiveSha256": "95fde2c045815f112949086c5fc929cd8def46932e3ee4cbb0c885df73286177",
+  "baseline": [
+    {
+      "log": "baseline-daemon.txt",
+      "logSha256": "306adc6a361ce287cece0f1352b39302f37671d5f019b1e2c46f50c575f1e125",
+      "exitCode": 0,
+      "reusedExistingActualLog": true
+    },
+    {
+      "log": "baseline-store.txt",
+      "logSha256": "8420d341e91d504dbd221e8cef3aad6069c652c24bfec8734fed6be47e9f2370",
+      "exitCode": 0,
+      "reusedExistingActualLog": true
+    }
+  ],
+  "mutants": [
+    {
+      "log": "daemon-skip-bridge-ancestry.txt",
+      "logSha256": "0415ecfba4d928472a1a928c7b31298538a83db2f9a303a0376387293766b1ee",
+      "exitCode": 101,
+      "reusedExistingActualLog": true,
+      "name": "daemon-skip-bridge-ancestry",
+      "compiled": true,
+      "behavioralFailure": true,
+      "patch": "daemon-skip-bridge-ancestry.diff.json",
+      "patchSha256": "0ccfc1c602e63fac6294904fd6a7fe90680f0cb6a6436ff1315e9140bda3f377",
+      "mutatedSourceSha256": "a13657b7b9ed98cf5e9ab62be02f0cd27d64dd4e8654fa561c41d7029a5e4104",
+      "decodedPatchSha256": "01c10c45f90e8985014f8bf650183fada6f2850a5c022f736ccbe3f76b0c2a9d",
+      "patchEncoding": "base64 JSON; decode rawBase64 before applying"
+    },
+    {
+      "log": "daemon-count-trailing-abandoned.txt",
+      "logSha256": "b09b2d981afdff0eb2f590e8a36acbf7db0463a931bf7ea9bd8ab6e8a14e48f5",
+      "exitCode": 101,
+      "reusedExistingActualLog": false,
+      "name": "daemon-count-trailing-abandoned",
+      "compiled": true,
+      "behavioralFailure": true,
+      "patch": "daemon-count-trailing-abandoned.diff",
+      "patchSha256": "34095e270f3a670c2faf75c1ab182a1258805a7ccdaecbad4120d76e0401a836",
+      "mutatedSourceSha256": "adf3cc785682ab795ab6856be14be74355263b7f765744b59db5e0fac79ea650"
+    },
+    {
+      "log": "store-skip-bridge-descendants.txt",
+      "logSha256": "134cc8c922ba0528a485a17b9094df52d2c961709e8ac2dfc06bdd6518cf870c",
+      "exitCode": 101,
+      "reusedExistingActualLog": false,
+      "name": "store-skip-bridge-descendants",
+      "compiled": true,
+      "behavioralFailure": true,
+      "patch": "store-skip-bridge-descendants.diff",
+      "patchSha256": "56e495fdcb2b9a8ba813cb0762532333849442e869bbe5144e5c9fbf063767bf",
+      "mutatedSourceSha256": "e15e18920a2253b81c0dfc2d02ffd62f90d4bb78209c39b0b005d7c0a624ba15"
+    },
+    {
+      "log": "store-skip-fork-fence.txt",
+      "logSha256": "9d7f2b453dff09e4c21d0eb49b8baf3b731c4c21f3d0ebe861c2aaa24b9ccb6e",
+      "exitCode": 101,
+      "reusedExistingActualLog": false,
+      "name": "store-skip-fork-fence",
+      "compiled": true,
+      "behavioralFailure": true,
+      "patch": "store-skip-fork-fence.diff",
+      "patchSha256": "f5ddbba477cfe679bb0f93a4caf7c7c818c1890f81db47e31053525048cf3e90",
+      "mutatedSourceSha256": "652a568b89207156b5de51c411e91e5e8abc44eaf836f5b2f25978eb2fb567e1"
+    }
+  ],
+  "restored": [
+    {
+      "log": "restored-daemon.txt",
+      "logSha256": "595d6d520552be6a67c976baf1a5c2e6e124acc0b6dafe65f35355930c96ed1c",
+      "exitCode": 0,
+      "reusedExistingActualLog": false
+    },
+    {
+      "log": "restored-store.txt",
+      "logSha256": "1d435a316a9774038c760b833d1a7d80bd4362c345423d1a99ce02a4b679b1fc",
+      "exitCode": 0,
+      "reusedExistingActualLog": false
+    }
+  ],
+  "sourceSha256": {
+    "crates/kontor-daemon/src/applications.rs": "220483319fe4650a4dc2a17420d32ee78be2492e1b3dffeabac3e105e149d5da",
+    "crates/kontor-store/src/repository.rs": "4738fb0be278dc73428a115a26f21069e1c174eb2e0de13a06eb2cf50f3bd830"
+  },
+  "sourceSha256CaptureTime": "post-restoration",
+  "buildCache": "Shared _tools/asma-rs-kontor/target; isolated disposable source archive; all source restored and both green suites re-established after mutations",
+  "boundary": "Source behavioral mutation qualification only; production source, installed binaries, SQLite and native placement unchanged",
+  "driverRecovery": "Initial driver stopped after baseline greens and first compiled kill because its text locator did not accept rustfmt line breaks. Exact source restoration was verified; those actual logs and identical mutant patch were reused, with the initial driver failure preserved separately. No infrastructure failure earns behavioral credit.",
+  "publicationNormalization": "Only one patch locator/encoding changed. Original receipt bytes remain historical-results.json. No mutant, outcome, source hash or qualification subject changed."
+}

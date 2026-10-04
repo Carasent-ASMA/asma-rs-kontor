@@ -24,6 +24,12 @@ serde_json = { workspace = true }
 # loopback client and the one dispatch path, so a shell call and a tool call are
 # the same code below the argument parser.
 kontor-mcp = { path = "../kontor-mcp", version = "=0.2.1" }
+# ASMA-8280 B-1: the registry's local operation reads the activated fleet policy
+# bundle under --state-root through the same daemon-free verified reader the
+# daemon's placement path uses, and resolves through the one fleet resolver.
+# Neither crate reaches the daemon, the store, a runtime or the network.
+kontor-fleet = { path = "../kontor-fleet", version = "=0.2.1" }
+kontor-fleet-activation = { path = "../kontor-fleet-activation", version = "=0.2.1" }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
@@ -33,6 +39,7 @@ axum = { workspace = true }
 kontor-api = { path = "../kontor-api", version = "=0.2.1" }
 kontor-core = { path = "../kontor-core", version = "=0.2.1" }
 kontor-daemon = { path = "../kontor-daemon", version = "=0.2.1" }
+kontor-profiles = { path = "../kontor-profiles", version = "=0.2.1" }
 kontor-store = { path = "../kontor-store", version = "=0.2.1" }
 reqwest = { workspace = true }
 tempfile = { workspace = true }

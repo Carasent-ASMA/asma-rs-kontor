@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-26T19:01:49.088310+00:00",
+  "scope": "Preliminary working-tree synthetic/fake-backend checks only; no immutable-source, OS credential, deployment, gate or closure qualification",
+  "parentCommit": "820754e7ed4939d31994fed398483de67f1b05b3",
+  "sourceHashesAtPublication": {
+    "Cargo.lock": "16afee25fe03d980b6b159f9f3129b0190a2310bce36d26c917b365b528f8245",
+    "Cargo.toml": "2c57ab3968c11b668247fd85031e474b6cc38c1adc44579898a87ae41fb85249",
+    "crates/kontor-accounts/Cargo.toml": "f0e62f3dfcdbbc1d0cc4e54bc09f0b0ed519cf93b4033db521ba57c9ce7207d5",
+    "crates/kontor-accounts/src/resolver.rs": "eda5b52aa8c86e369e16c7ecbc622c28cd80f7aa18a4f5397363b4480b77161f",
+    "crates/kontor-daemon/src/applications.rs": "001e0a8f3cacc6fba219c69f6938d524c0a05bdebc644fb70c76f2b3393364a3",
+    "crates/kontor-daemon/src/lib.rs": "f5d244120b4f125de6b598ce2e0228dfb0a2e4fa561ed44a855756eb92edfe16",
+    "crates/kontor-daemon/src/main.rs": "8f0fb6e63b3429554e9b7f92cbdec38377bcc03b7bcfec95002f415941bf5ee2",
+    "crates/kontor-daemon/tests/loopback_api.rs": "43e6982a51f2c55a3c0b9d9170c9fcdf4b8a46f37aa8a9620226ad6e24ebfa4a",
+    "crates/kontor-jira/src/connector.rs": "cd087c50d42c8387465f847fb33db4f7b2478ad7411c754311b07151f9579d24",
+    "crates/kontor-jira/src/credentials.rs": "86be3dec6e31783e1aa04d68a96359962665687817b31bf075d61e334dc5a7f0",
+    "crates/kontor-jira/src/lib.rs": "485a99b5f15fe6b0625d47bbf21f473b943a67a116ac2df8e97b39e825a61569",
+    "crates/kontor-jira/tests/native_connector.rs": "b0c0877e9551cae93073f44dd65e3f973a9fcdb22a81fc3b00c7cdcb18298485",
+    "crates/kontor-store/src/lib.rs": "cd511c7473923d6ac97b672ee3425a9c0120699f467d7d6b6dff0a2af3357d8e",
+    "crates/kontor-store/src/migrations.rs": "34ee7a6091f4f1f00e84353105d2f3a7fe30040cfdfed99bcc0f95422fd1b01f",
+    "crates/kontor-jira/tests/credential_scope.rs": "22c477e0747073af8832ae650aa38d8797a5b916ae123c40eba6c658e39b2eae",
+    "crates/kontor-store/tests/realm_preflight.rs": "8ed91fffb69c21f2bf12f32bd6984a8e445f84cb3120b61cebcfe529fa32dab8"
+  },
+  "logs": {
+    "check.txt": {
+      "originalPath": "/private/tmp/ASMA-8015-security-correction/check.txt",
+      "carrier": "check.txt.json",
+      "decodedSha256": "5e550d38f9911529eda162149416d24c28d229c96b6cb3fba9c8a26aba0997d5",
+      "decodedBytes": 2724,
+      "observedExitCode": 101
+    },
+    "check-after-test-fix.txt": {
+      "originalPath": "/private/tmp/ASMA-8015-security-correction/check-after-test-fix.txt",
+      "carrier": "check-after-test-fix.txt.json",
+      "decodedSha256": "4870c3b6a92c7d69e42671807e67bf4f354f446a03185149d9cc624a4abea7ba",
+      "decodedBytes": 454,
+      "observedExitCode": 0
+    },
+    "account-unit.txt": {
+      "originalPath": "/private/tmp/ASMA-8015-security-correction/account-unit.txt",
+      "carrier": "account-unit.txt.json",
+      "decodedSha256": "bb274aa5c6b387f136b69e7821a89473e53d3c853518eeda82a506e36b2ec7d8",
+      "decodedBytes": 11966,
+      "observedExitCode": 0
+    },
+    "jira-contracts.txt": {
+      "originalPath": "/private/tmp/ASMA-8015-security-correction/jira-contracts.txt",
+      "carrier": "jira-contracts.txt.json",
+      "decodedSha256": "3ff02a765b6d4479b7604c1eed06b47af30f495ce44cface2dfbf077e4a39ad5",
+      "decodedBytes": 5850,
+      "observedExitCode": 0
+    },
+    "daemon-operator.txt": {
+      "originalPath": "/private/tmp/ASMA-8015-security-correction/daemon-operator.txt",
+      "carrier": "daemon-operator.txt.json",
+      "decodedSha256": "c40ffbc06c34edd9612bcd1943b288570cbba899d21d694a49255e64b769e549",
+      "decodedBytes": 6096,
+      "observedExitCode": 0
+    },
+    "realm-preflight.txt": {
+      "originalPath": "/private/tmp/ASMA-8015-security-correction/realm-preflight.txt",
+      "carrier": "realm-preflight.txt.json",
+      "decodedSha256": "d905998c750563709bb470b8908fdf7802ddd23d4e484c8ed35ae290a7d3a133",
+      "decodedBytes": 827,
+      "observedExitCode": 0
+    },
+    "strict-clippy.txt": {
+      "originalPath": "/private/tmp/ASMA-8015-security-correction/strict-clippy.txt",
+      "carrier": "strict-clippy.txt.json",
+      "decodedSha256": "49cca0051783abb7192805cdbd59a55f71d817bbdf538d48c776ffe166ab1320",
+      "decodedBytes": 2471,
+      "observedExitCode": 101
+    },
+    "strict-clippy-corrected.txt": {
+      "originalPath": "/private/tmp/ASMA-8015-security-correction/strict-clippy-corrected.txt",
+      "carrier": "strict-clippy-corrected.txt.json",
+      "decodedSha256": "16d430e86dfdf517ed5676fd6d1f7de6fba894a18c1535bff6c0b7d4152b6d7d",
+      "decodedBytes": 716,
+      "observedExitCode": 0
+    },
+    "jira-canonical-root-contracts.txt": {
+      "originalPath": "/private/tmp/ASMA-8015-security-correction/jira-canonical-root-contracts.txt",
+      "carrier": "jira-canonical-root-contracts.txt.json",
+      "decodedSha256": "da36439f02aebc16e40595ca46e6d3e53c49cda5aba59985f5d6f8093c41d818",
+      "decodedBytes": 4290,
+      "observedExitCode": 0
+    }
+  },
+  "focusedTestTotals": {
+    "accountUnit": 78,
+    "jiraUnit": 19,
+    "jiraScopeIntegration": 2,
+    "jiraNativeContracts": 20,
+    "daemonOperator": 7,
+    "realmPreflight": 2,
+    "passed": 128,
+    "failed": 0,
+    "ignored": 0
+  },
+  "strictScopedClippyCorrectedExitCode": 0,
+  "laterCanonicalRootJiraChecks": {
+    "passed": 41,
+    "failed": 0,
+    "ignored": 0,
+    "exitCode": 0
+  },
+  "initialClippyFailurePreserved": true,
+  "syntheticBackendOnly": true,
+  "liveKeychainChanges": false,
+  "credentialExtraction": false,
+  "installation": false,
+  "deployment": false,
+  "exactSuccessorArchiveQualificationPending": true,
+  "sourceBoundary": "Final path canonicalization and assertion-style adjustment are visible in source hashes. These logs are working-tree checks, not an immutable integrated candidate claim."
+}

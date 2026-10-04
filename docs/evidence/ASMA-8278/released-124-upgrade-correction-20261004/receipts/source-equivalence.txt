@@ -1,0 +1,11 @@
+source equivalence vs d0d27332 (pre-commit working tree)
+tracked delta:
+crates/kontor-store/src/migrations.rs
+docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/README.md
+docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/conflict-inventory.json
+hunks in crates/kontor-store/src/migrations.rs:
+@@ -1085,4 +1085,385 @@ mod release_integration_tests {
+generated API inputs delta:
+(empty above means generated contracts unchanged)
+production test-module boundary: new code starts at the #[cfg(test)] mod release_integration_tests (line 1014+); diff vs d0:
+@@ -1085,4 +1085,385 @@ mod release_integration_tests {

@@ -1,0 +1,190 @@
+{
+  "sourceCommit": "e53f19b744b80862b166b613dcb8992bcf371215",
+  "sourceTree": "24a8970facd62418aa77e6def93c7ef65f31e2c5",
+  "sourceArchiveSha256": "0b0d9701d7471390439b8475017e255222686312bdac83c4034a274c4f6673b0",
+  "scope": "Exact-source synthetic behavioral mutations only; no live OS credential, deployment or closure claim",
+  "originalExecutionReceiptSha256": "43f6c7b69263d3cb718150adf080ad7b60bb3dc6d24439d658ea60414c23d70c",
+  "executionReceiptUnchanged": true,
+  "baselinePassed": 108,
+  "restoredPassed": 108,
+  "failed": 0,
+  "ignored": 0,
+  "compiledBehavioralKills": 9,
+  "sourceInventoryEntries": 2849,
+  "sourceInventorySha256": "5fd6c7d209321ac259cad4c3732f17c74b7b061cecc04a132c2000663b6ce236",
+  "sourceRestored": true,
+  "artifacts": {
+    "baseline-account.txt": {
+      "carrier": "mutations-e53f19b7/baseline-account.txt.json",
+      "carrierSha256": "b3b6557abd9b81f903600af16d4ac27d859ca991e1dd23fe3285c617b154646f",
+      "decodedSha256": "00861802fc10a8bef35f99ca8041e8f9ea2d8e8a657d6bb2e6c590b1b554eb37",
+      "decodedBytes": 7931
+    },
+    "baseline-jira-unit.txt": {
+      "carrier": "mutations-e53f19b7/baseline-jira-unit.txt.json",
+      "carrierSha256": "2256638cbaa955628387b0f72d7f4f1eea49a0564a6dc579d241b812ca8b3f0e",
+      "decodedSha256": "b18a5080dbd20aebdd60e51fe578e2517a3260e5d478bde30920fd5f489838ae",
+      "decodedBytes": 2600
+    },
+    "baseline-jira-scope.txt": {
+      "carrier": "mutations-e53f19b7/baseline-jira-scope.txt.json",
+      "carrierSha256": "a8343756543265e6908637a31a1be7240c017733942f40a13503c873fc53e0c8",
+      "decodedSha256": "ffe341444a0c19382db20ea4637dc8eb6521116612ae264e54c8807f17bc297d",
+      "decodedBytes": 635
+    },
+    "baseline-daemon.txt": {
+      "carrier": "mutations-e53f19b7/baseline-daemon.txt.json",
+      "carrierSha256": "b7a16e5e826437c49664ea55f2d5493f8d643ae7654615d4fb532396e6346416",
+      "decodedSha256": "573bf94e96c7e8051f19797a631b436ec16dc42f134df15d66a992ba803a68c6",
+      "decodedBytes": 2516
+    },
+    "baseline-realm.txt": {
+      "carrier": "mutations-e53f19b7/baseline-realm.txt.json",
+      "carrierSha256": "0262857b832e0304c23c5dbbad7342e6fcbf5c60b613ed9af57ed9cc11d3f198",
+      "decodedSha256": "b243fc040c1441150aea9a6f8682e983c6c922300763ca940ddb9e6879f877d0",
+      "decodedBytes": 727
+    },
+    "MUT-SCOPE.diff": {
+      "carrier": "mutations-e53f19b7/MUT-SCOPE.diff.json",
+      "carrierSha256": "e9e181baf89fcef0f5741b674acb2e3bbc34d2dc32f119a67aa71de9cb930b1c",
+      "decodedSha256": "0031467b8d2247353ce714548eb9bfed40620295d9343f05b7b8596473098601",
+      "decodedBytes": 356
+    },
+    "MUT-SCOPE.txt": {
+      "carrier": "mutations-e53f19b7/MUT-SCOPE.txt.json",
+      "carrierSha256": "802ee1d09bfab39518dd2649ff12973afc34fb2f428e82f5773c775481bae71c",
+      "decodedSha256": "f61c4e3c4a2bc6d3f1ea21ad4b44fe6495401a3d365727ca7d66ae95493a49eb",
+      "decodedBytes": 1759
+    },
+    "MUT-ROLLBACK.diff": {
+      "carrier": "mutations-e53f19b7/MUT-ROLLBACK.diff.json",
+      "carrierSha256": "7f5783cc90911b6c5bc15c4fd622a8603f8a5be1dd5490619087b27df3977839",
+      "decodedSha256": "2c70c8cdf7856c76e1b3d5f869043ead1f7ec2c21cd66475c0645952da179859",
+      "decodedBytes": 748
+    },
+    "MUT-ROLLBACK.txt": {
+      "carrier": "mutations-e53f19b7/MUT-ROLLBACK.txt.json",
+      "carrierSha256": "74447a0b7e7ffd936443c677b433f10576bc545a9e0ec5a6f84a2e1e3e503e15",
+      "decodedSha256": "e7cf8af015c57d9777f965602e75c4054379417498dde3039ecf55225f4d860a",
+      "decodedBytes": 1708
+    },
+    "MUT-PREVIOUS.diff": {
+      "carrier": "mutations-e53f19b7/MUT-PREVIOUS.diff.json",
+      "carrierSha256": "44e16d576a17249337949a411b6b7c05f4b4e05729158455b9fcc08c5020ea31",
+      "decodedSha256": "212bb8ccad610571d20703f51c4de654511fc99ef519a1e4522a13bf511768e3",
+      "decodedBytes": 738
+    },
+    "MUT-PREVIOUS.txt": {
+      "carrier": "mutations-e53f19b7/MUT-PREVIOUS.txt.json",
+      "carrierSha256": "b965cd4fc9adc7693451bb2ec0af2fb6f69426e18e3934d33a56eaa3c1038ea4",
+      "decodedSha256": "45ae35210850b5889b57ff8eef0abfaedc991f52e6d3c5a8ce80d5352c38c3aa",
+      "decodedBytes": 1150
+    },
+    "MUT-ALIAS.diff": {
+      "carrier": "mutations-e53f19b7/MUT-ALIAS.diff.json",
+      "carrierSha256": "4ef9592a3dbd5e6628b0ffc8969bffbb0617eeb620537e7d891c8b5373b75fb6",
+      "decodedSha256": "56050f7b9d2002d3833da3dfa6ba2d297226e246edf7e23bede176386ca363a3",
+      "decodedBytes": 570
+    },
+    "MUT-ALIAS.txt": {
+      "carrier": "mutations-e53f19b7/MUT-ALIAS.txt.json",
+      "carrierSha256": "de886c7f80f12a9bd8912207b89aa9d498cbe6295977f2a90fa583c419ffe38f",
+      "decodedSha256": "63524ea2ad670ec1d12bc456662c4749f0f8f02cb5c8efe9af0ab6ee973db124",
+      "decodedBytes": 1180
+    },
+    "MUT-ABSOLUTE.diff": {
+      "carrier": "mutations-e53f19b7/MUT-ABSOLUTE.diff.json",
+      "carrierSha256": "2e70dbecb871a75632dcb91a27feed541babf60170319624ffa414c5cc527b12",
+      "decodedSha256": "d3b814ac14f5d37a1c03b1355a2630a370ececaa046325b9eae0a0938439fde4",
+      "decodedBytes": 391
+    },
+    "MUT-ABSOLUTE.txt": {
+      "carrier": "mutations-e53f19b7/MUT-ABSOLUTE.txt.json",
+      "carrierSha256": "91f3094408a22447582d874c276fcf664c3f9266d5e9a5fd98779cef535531be",
+      "decodedSha256": "520ad4f9ed4435925aeb64018dbc29637a3230352e766926ad94e44c78b9b528",
+      "decodedBytes": 1077
+    },
+    "MUT-DEADLINE.diff": {
+      "carrier": "mutations-e53f19b7/MUT-DEADLINE.diff.json",
+      "carrierSha256": "09061d62c16606293e46906dc23b77d76e43316bc67501805c2d7c50bfa32836",
+      "decodedSha256": "5471eaa0bac5d6d04cce6f33583446eab4117a65eb41b68c7110d25182b0a462",
+      "decodedBytes": 433
+    },
+    "MUT-DEADLINE.txt": {
+      "carrier": "mutations-e53f19b7/MUT-DEADLINE.txt.json",
+      "carrierSha256": "5973ec2091de9348cc67279f70e6fd23259b31d54f62b4695de5797a191f9bf1",
+      "decodedSha256": "3f1431768981e45df90ac664647c37e188fb69cde9bd7c4cffa51e5ef51d5c07",
+      "decodedBytes": 1211
+    },
+    "MUT-PIPE.diff": {
+      "carrier": "mutations-e53f19b7/MUT-PIPE.diff.json",
+      "carrierSha256": "63d5469eb383fabf482ae798e0ffe272faccb5494ad0a10e590bb2bd8bdb250f",
+      "decodedSha256": "ff49d590f6fd4f0b0c9ebaf58f7e5cc5da9f37a7f680e7b34f35b9eec4f8eb33",
+      "decodedBytes": 489
+    },
+    "MUT-PIPE.txt": {
+      "carrier": "mutations-e53f19b7/MUT-PIPE.txt.json",
+      "carrierSha256": "d5a7232d067a18d6fab861da4ce99fa0283ff8694fcaeab072ebba94dd2b6be9",
+      "decodedSha256": "2e18e81fc0f2c22f477cb3a94982cc364729ae4507d8682e2bb3f51dd9689466",
+      "decodedBytes": 1166
+    },
+    "MUT-REAP.diff": {
+      "carrier": "mutations-e53f19b7/MUT-REAP.diff.json",
+      "carrierSha256": "c1fcf93f76dbe2307c4838bced57a38e8fdf58793b9ce0468488e282c8d73385",
+      "decodedSha256": "77ec2e3cb3969dbc255f677ec4f43ab85e4453cd1e542b289b4ed48a34703a0c",
+      "decodedBytes": 319
+    },
+    "MUT-REAP.txt": {
+      "carrier": "mutations-e53f19b7/MUT-REAP.txt.json",
+      "carrierSha256": "029a2a2c8076bde01035126e090d58d6d65eb4ca0f32b3f1bac11f45a5dfb624",
+      "decodedSha256": "80957554dbf2143ee7a59a5412ad199cd6b499f1cdccc91675aa3d43a701f05a",
+      "decodedBytes": 1235
+    },
+    "MUT-INITIALIZE.diff": {
+      "carrier": "mutations-e53f19b7/MUT-INITIALIZE.diff.json",
+      "carrierSha256": "8556cdbeb9fc21cc5efc7784c4a6afe309f2291be5830c365b183438c15948c4",
+      "decodedSha256": "5a6e71b0cf4439868c06802476b0413c4d42b89f9a3206aacebd23931fa205a6",
+      "decodedBytes": 636
+    },
+    "MUT-INITIALIZE.txt": {
+      "carrier": "mutations-e53f19b7/MUT-INITIALIZE.txt.json",
+      "carrierSha256": "8312ecf00f100bf84fa74c4067c2d261dff83882dc7fb916467058540c710d84",
+      "decodedSha256": "13632ffc4bbd2705b5a7f38c3d4afd63551404dd591fbdb30af0b572f343e489",
+      "decodedBytes": 1091
+    },
+    "restored-account.txt": {
+      "carrier": "mutations-e53f19b7/restored-account.txt.json",
+      "carrierSha256": "dd4207853f3dd2d5ee22ab1c991b4daadff91dae150ca02d337e8fa9db64e8c5",
+      "decodedSha256": "58ac84c992011810ce0596170aff6d2fb5a152c15fb951c8646ddecc456fb3c4",
+      "decodedBytes": 7181
+    },
+    "restored-jira-unit.txt": {
+      "carrier": "mutations-e53f19b7/restored-jira-unit.txt.json",
+      "carrierSha256": "40b0bdfcc88e66e14e64b5625096dadda84696d4bd1f81ea14b4f97095a5e56f",
+      "decodedSha256": "3a3450e04afd93c39809849eab99cc1c29cfd4ef31aa30df76d45ec387490e13",
+      "decodedBytes": 2171
+    },
+    "restored-jira-scope.txt": {
+      "carrier": "mutations-e53f19b7/restored-jira-scope.txt.json",
+      "carrierSha256": "68f94f7afbecb3832e091769ff08a7a5773d0b46d95c921badf870c7a0a021c8",
+      "decodedSha256": "1d77ae75a8c6f3d8d3d64e503b69c6cbcb5e7385c7095295b8572d394c6af0d2",
+      "decodedBytes": 635
+    },
+    "restored-daemon.txt": {
+      "carrier": "mutations-e53f19b7/restored-daemon.txt.json",
+      "carrierSha256": "45924be1eb07698c3e7baf54a5b1abbe9d1de06d4e9b7f2138945aed951228cd",
+      "decodedSha256": "322c34e125dfdb15d2a32f493c3665fd672cb545b99c4738d1a2ed45c9659568",
+      "decodedBytes": 1437
+    },
+    "restored-realm.txt": {
+      "carrier": "mutations-e53f19b7/restored-realm.txt.json",
+      "carrierSha256": "0aab05f422371b956b34083fb27f03c21cdb0d7be97380193930130cc7224660",
+      "decodedSha256": "1538693acf31e371a2bde34f89280e016d52e5d31c6e15691b2e269d3eff76ad",
+      "decodedBytes": 617
+    }
+  },
+  "noLiveKeychainChanges": true,
+  "noCredentialExtraction": true,
+  "noInstallationOrDeployment": true,
+  "fullGateQualificationPending": true
+}

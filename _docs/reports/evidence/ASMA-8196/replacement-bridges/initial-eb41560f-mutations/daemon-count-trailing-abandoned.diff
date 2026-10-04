@@ -1,0 +1,14 @@
+--- crates/kontor-daemon/src/applications.rs
++++ crates/kontor-daemon/src/applications.rs
+@@ -2639,10 +2639,7 @@
+             .map(|run| (run.id, run.parent_agent_run_id))
+             .collect();
+         let mut named_parents = BTreeSet::new();
+-        for run in runs
+-            .iter()
+-            .filter(|run| !run.is_operator_abandoned_unbound())
+-        {
++        for run in &runs {
+             let mut parent = run.parent_agent_run_id;
+             let mut visited = BTreeSet::new();
+             while let Some(id) = parent {

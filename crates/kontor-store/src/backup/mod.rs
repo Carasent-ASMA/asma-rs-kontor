@@ -44,7 +44,7 @@ pub use export::{
 };
 pub use import::{
     ImportPlan, ImportReceiptRow, ImportReport, ImportedProfileSelectionOutcomeRow,
-    ImportedRecordRow, import_export,
+    ImportedRecordEvidenceRow, ImportedRecordRow, import_export,
 };
 pub use manifest::{MANIFEST_FORMAT_VERSION, SnapshotManifest};
 pub use restore::{RestorePlan, restore_snapshot};

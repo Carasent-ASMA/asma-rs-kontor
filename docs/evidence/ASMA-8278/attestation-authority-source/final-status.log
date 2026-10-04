@@ -1,0 +1,18 @@
+ M crates/kontor-core/src/repository.rs
+ M crates/kontor-store/src/backup/export.rs
+ M crates/kontor-store/src/backup/restore.rs
+ M crates/kontor-store/src/migrations.rs
+ M crates/kontor-store/src/repository.rs
+ M crates/kontor-store/tests/backup_snapshot.rs
+ M crates/kontor-store/tests/repository_roundtrip.rs
+ M crates/kontor-store/tests/schema_v1.rs
+?? .agents/
+?? .asma/
+?? .claude/
+?? .cursor/
+?? AGENTS.md
+?? CLAUDE.md
+?? crates/kontor-core/src/repository/
+?? crates/kontor-store/migrations/0124_attestation_authority_keys.sql
+?? crates/kontor-store/src/repository/
+?? crates/kontor-store/tests/attestation_authority.rs

@@ -1,0 +1,8 @@
+M-P22b1-receipt-not-unique-36ed5607	101	restoration       : byte-identical to the named snapshot
+M-P22b2-completion-instant-not-frozen-36ed5607	101	restoration       : byte-identical to the named snapshot
+M-P23-upgrade-assumes-coherent-bindings-36ed5607	101	restoration       : byte-identical to the named snapshot
+M-P24-readback-unbound-from-transition-36ed5607	101	restoration       : byte-identical to the named snapshot
+M-P25-unchanged-answers-before-proof-36ed5607	101	restoration       : byte-identical to the named snapshot
+M-CTL-control-pair-36ed5607	101	restoration       : byte-identical to the named snapshot
+M-COH-split-lock-boundary-36ed5607	101	restoration       : byte-identical to the named snapshot
+M-COH-TEAM-hybrid-generation-and-persona-36ed5607	101	restoration       : byte-identical to the named snapshot

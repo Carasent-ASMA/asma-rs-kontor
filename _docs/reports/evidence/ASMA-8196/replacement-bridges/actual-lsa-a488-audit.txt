@@ -1,0 +1,21 @@
+---
+
+Source qualification is complete: both conditions from my 6b audit are satisfied. I support merging source `6b3654bca823ac85ed7cc0bb1d6965bc730c4743`.
+
+Verified independently:
+
+- Publication head `a488180c848b462bc3a44e7195e3f285867025a9` is a clean, docs-only descendant of 6b; no implementation, test, lockfile, or application file changed.
+- All 77 [manifest entries](</Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/_docs/reports/evidence/ASMA-8196/replacement-bridges/SHA256SUMS.json>) match.
+- Preserved audit hashes to `b216b3912c8e75d7e8ffb4257263f5d6182e9a5ccfc096191f8d8cd48e1029e5`; its receipt correctly records session `01a0a39b-2b2c-7c02-923b-89a13f6c622c` and no invented terminator.
+- All seven hashes in the [qualification receipt](</Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/_docs/reports/evidence/ASMA-8196/replacement-bridges/qualified-6b3654bc-source-qualification.json>) equal the immutable 6b Git objects. The archive hash independently reproduces as `5d31d86d…`.
+- All six patches decode to their recorded hashes. Each mutation compiled and then failed its specific behavioral assertion with exit 101—none are compilation or harness failures.
+- Baseline and restoration pass 49 lifecycle + 3 context, 4 daemon, and 24 store contracts.
+- The full-gate log hashes to `56ca45ff…`; its raw results independently total 149 Rust binaries, 2,915 passed, 0 failed, 9 ignored, plus 305 console tests. Terminal exit is 0 at `2026-09-26T10:19:47.371779Z`.
+- The encoded publication receipt is semantically identical to the preserved original execution receipt after accounting only for patch encoding metadata.
+
+One publication-only P2 remains before merging `a488180c` as-is:
+
+- The [owning report](</Users/igor/carasent/asma-modules/.worktrees/asma-8190/asma-rs-kontor/_docs/reports/2026-09-26-11-08-report-asma-8196-abandoned-bridge-lineage-kontor-operational-gap.md:195>) contains literal leading `+` characters and incorrectly says the exact-candidate full gate remains pending.
+- Contrary to the supplied claim, `git diff --check dddb7287..a488180c` exits 2: 204 trailing-whitespace findings across the two raw full-gate logs. The source-only diff remains clean. Preserve those raw logs through encoded carriers or an equivalent byte-preserving representation, then rerun the check; do not silently alter their evidence bytes.
+
+No test rerun is required for those docs-only corrections. Merge/build/deployment, live ASMA-8190 restoration, all-thirteen census, task/workflow settlement, and epic/global acceptance remain uncredited.

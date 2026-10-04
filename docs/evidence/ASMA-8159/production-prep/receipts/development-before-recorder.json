@@ -1,0 +1,37 @@
+{
+  "commands": [
+    {
+      "argv": [
+        "cargo",
+        "check",
+        "-p",
+        "kontor-daemon",
+        "-p",
+        "kontor-api",
+        "-p",
+        "kontor-store",
+        "--locked",
+        "--offline"
+      ],
+      "exit": 0,
+      "evidence": "terminal result, 40.90 seconds; initial missing-doc warning fixed; superseded by workspace clippy/build"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "projection_rebuild",
+        "--locked",
+        "--offline"
+      ],
+      "exit": 101,
+      "evidence": "development-first-compile.log.gz",
+      "raw_sha256": "c3454a6c0f8d1a92f6b998fd175a7c1af8c039440d5e29469989f1561a37750b",
+      "reason": "own fixture used private ApiErrorCode path; corrected before any mutation"
+    }
+  ],
+  "claim": "pre-recorder development only; not final qualification or mutant evidence"
+}

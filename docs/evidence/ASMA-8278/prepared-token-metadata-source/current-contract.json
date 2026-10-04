@@ -1,0 +1,7 @@
+{
+  "initial_root": "562fcc967eec2add2786f20c3652f7ee78607bf3",
+  "current_root": "6d58238cdf349fe95acaec7e4d2e921e2fce80de",
+  "tree": "b60b5f6a38d35b5fed3f6c25755e318b032562d6",
+  "spec": "1.4 section9.7",
+  "disposition": "No observed-current-time input; interval containment only. Eligible consultation phases Materializing/Running/AwaitingJudge; reject NeedsHuman/Settled/Disposed. Root explicitly owns publication and approved13 source paths."
+}
