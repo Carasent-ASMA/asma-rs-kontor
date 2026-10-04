@@ -1,0 +1,3007 @@
+//! The versioned, redacted, byte-deterministic document a Realm may hand out.
+//!
+//! # Typed rows, never a table dump
+//!
+//! Every exported table is declared below as a concrete struct with named,
+//! typed columns. There is no `SELECT *`, no dynamic column discovery and no
+//! "serialize whatever the schema happens to have" path, and that is a
+//! *redaction* property rather than a style preference: a column added by a
+//! later migration cannot appear in an export until somebody adds it here and
+//! decides what it is. A dynamic dump would have exported it the day it landed.
+//!
+//! The same declaration is what keeps the document deterministic. Struct fields
+//! serialize in declaration order, every array is read back under an explicit
+//! `ORDER BY` over its primary key, and the whole document is rendered through
+//! `serde_json::Value` — whose object keys are a `BTreeMap` and therefore
+//! sorted. Two exports of one unchanged Realm produce identical record bytes and
+//! an identical digest.
+//!
+//! # What is deliberately not here
+//!
+//! Runtime transcripts, message frames, tool calls and token deltas — none of
+//! which are in the database to begin with, because
+//! [`crate::events::types::ensure_control_metadata`] refuses them at the append
+//! boundary and this module re-runs that check on every exported observation.
+//! Command intents share the event cursor, but retain their own canonical
+//! document contract and receive the same embedded-document canary scan as
+//! their corresponding command receipts.
+//! Runtime endpoints and provider tokens, which this process never persists.
+//! The credential file, connector credentials and keychain or config-home
+//! paths. The credential-*reference* resolution data on an account profile —
+//! its kind, its alias and its environment mapping — of which only the opaque
+//! provider identity survives, and only as provenance. Inbound external comment
+//! *bodies*, which are the one place Zone C prose could reach a Kontor row: the
+//! comment's identity, author, instants, digest and cursor are exported, so the
+//! continuity evidence is intact and the prose is not.
+//!
+//! Every one of those omissions is named in the document's own
+//! [`RedactionSummary`], so a reader is told what was withheld rather than
+//! having to infer it from an absence.
+
+use std::collections::BTreeMap;
+
+use kontor_core::id::{ContentHash, RealmId, Timestamp, reject_sensitive_material};
+use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+
+use crate::SqliteStore;
+use crate::backup::BackupError;
+use crate::events::types::ensure_control_metadata;
+
+/// The export generation this build writes.
+pub const EXPORT_SCHEMA_VERSION: u32 = 12;
+
+/// The database generation that introduced the launch-intent supersession ledger.
+const LAUNCH_INTENT_SUPERSESSION_SCHEMA_VERSION: i64 = 109;
+
+/// The export generation that first carried it.
+const LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION: u32 = 11;
+
+/// The record array introduced in generation 11.
+const LAUNCH_INTENT_SUPERSESSION_RECORD_FIELDS: [&str; 1] =
+    ["hosted_seat_launch_intent_supersessions"];
+
+/// The database generation that introduced the retired-evaluator proof ledger.
+const RETIRED_EVALUATOR_ATTESTATION_SCHEMA_VERSION: i64 = 107;
+
+/// The export generation that first carried it.
+///
+/// Named for the same reason as the constants below: adding this generation
+/// must not silently reclassify an older document as unable to prove what it
+/// does in fact carry.
+const RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION: u32 = 10;
+
+/// The record array introduced in generation 10.
+const RETIRED_EVALUATOR_ATTESTATION_RECORD_FIELDS: [&str; 1] = ["retired_evaluator_attestations"];
+
+/// The database generation that introduced the TeamRun admission-adoption
+/// ledger.
+const TEAM_RUN_ADMISSION_ADOPTION_SCHEMA_VERSION: i64 = 110;
+
+/// The export generation that first carried it.
+///
+/// Named for the same reason as the constants around it: adding this generation
+/// must not silently reclassify an older document as unable to prove what it
+/// does in fact carry.
+const TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION: u32 = 12;
+
+/// The record array introduced in generation 12.
+const TEAM_RUN_ADMISSION_ADOPTION_RECORD_FIELDS: [&str; 1] = ["team_run_admission_adoptions"];
+
+/// The oldest export generation this build can read without inventing state.
+const MIN_SUPPORTED_EXPORT_SCHEMA_VERSION: u32 = 2;
+
+/// Database generation that first persisted exact profile-selection outcomes.
+const PROFILE_SELECTION_OUTCOMES_SCHEMA_VERSION: i64 = 62;
+
+/// The export generation that first carried profile-selection outcomes and the
+/// continuity summary.
+///
+/// Named rather than spelled `EXPORT_SCHEMA_VERSION` so that adding a later
+/// generation cannot silently reclassify generation 3 as unable to prove what
+/// it does in fact carry.
+const PROFILE_SELECTION_OUTCOMES_EXPORT_VERSION: u32 = 3;
+
+/// The database generation that introduced the Team Definition surfaces.
+const TEAM_DEFINITION_SCHEMA_VERSION: i64 = 77;
+
+/// The export generation that first carried the Team Definition surfaces.
+const TEAM_DEFINITION_EXPORT_VERSION: u32 = 4;
+
+/// Record arrays introduced together in generation 4.
+const TEAM_DEFINITION_RECORD_FIELDS: [&str; 7] = [
+    "team_definitions",
+    "project_team_definition_defaults",
+    "mini_project_team_definition_snapshots",
+    "team_definition_migration_intents",
+    "team_definition_migration_targets",
+    "team_definition_migration_command_intents",
+    "team_definition_migration_receipts",
+];
+
+/// Database generation that introduced the canonical Jira task-link ledger.
+const CANONICAL_JIRA_LINK_SCHEMA_VERSION: i64 = 81;
+
+/// The export generation that first carried the canonical Jira task-link ledger.
+const CANONICAL_JIRA_LINK_EXPORT_VERSION: u32 = 5;
+
+/// Record arrays introduced together in generation 5.
+const CANONICAL_JIRA_LINK_RECORD_FIELDS: [&str; 1] = ["canonical_jira_task_links"];
+
+/// Database generation that introduced first-class epic Jira reconciliation.
+const EPIC_JIRA_RECONCILIATION_SCHEMA_VERSION: i64 = 82;
+
+/// The export generation that first carried epic Jira reconciliation evidence.
+const EPIC_JIRA_RECONCILIATION_EXPORT_VERSION: u32 = 6;
+
+/// Record arrays introduced together in generation 6.
+const EPIC_JIRA_RECONCILIATION_RECORD_FIELDS: [&str; 2] =
+    ["epic_status_conflicts", "epic_jira_transition_intents"];
+
+/// Database generation that introduced immutable legacy naming/container recovery.
+const LEGACY_NAMING_RECOVERY_SCHEMA_VERSION: i64 = 84;
+
+/// The export generation that first carried legacy naming/container recovery evidence.
+const LEGACY_NAMING_RECOVERY_EXPORT_VERSION: u32 = 7;
+
+/// Record arrays introduced together in generation 7.
+const LEGACY_NAMING_RECOVERY_RECORD_FIELDS: [&str; 2] = [
+    "epic_backlog_code_corrections",
+    "topology_container_recoveries",
+];
+
+/// Database generation that first persisted *any* of the quota chain.
+///
+/// `provider_quota_states` arrives at 0048 and windows at 0051; provenance is
+/// the newest limb, not the oldest. The legacy-export fence keys to this, not to
+/// the provenance generation: a generation-3 document had no field for a quota
+/// row either, so against any database from 0048 onward it is already
+/// incomplete, and keying the fence to 0074 would let it claim completeness for
+/// the whole 48..73 range it silently dropped.
+const QUOTA_CHAIN_SCHEMA_VERSION: i64 = 48;
+
+/// Database generation that first persisted per-window headroom and the credit
+/// balance columns.
+const QUOTA_WINDOWS_SCHEMA_VERSION: i64 = 51;
+
+/// Database generation that first persisted typed quota observation provenance.
+///
+/// This invariant moves with the migration that introduced the provenance
+/// tables; it is intentionally distinct from the older quota-state generation.
+const QUOTA_OBSERVATION_PROVENANCE_SCHEMA_VERSION: i64 = 85;
+
+/// Export generation that first defined the quota chain.
+const QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION: u32 = 8;
+
+/// Record arrays introduced together in generation 8.
+const QUOTA_CHAIN_RECORD_FIELDS: [&str; 4] = [
+    "provider_quota_observation_provenance",
+    "provider_quota_observation_source_ranges",
+    "provider_quota_states",
+    "provider_quota_windows",
+];
+
+/// Database generation that introduced resumable seat succession and bound
+/// runtime quota provenance to its exact control-event cursor.
+const SUCCESSION_SCHEMA_VERSION: i64 = 86;
+
+/// Export generation that first carries succession and provenance cursors.
+const SUCCESSION_EXPORT_VERSION: u32 = 9;
+
+/// Record arrays introduced together in generation 9.
+const SUCCESSION_RECORD_FIELDS: [&str; 2] = ["succession_attempts", "succession_receipts"];
+
+/// How deep an embedded document is followed by the canary scan.
+///
+/// Persisted documents are already depth-bounded by
+/// [`kontor_core::id::CanonicalDocument`]; this only stops a pathological chain
+/// of JSON-inside-JSON-inside-JSON from recursing without end.
+const MAX_EMBEDDED_DEPTH: u8 = 8;
+
+/// How many records of each kind the document carries.
+pub type RecordCounts = BTreeMap<String, u64>;
+
+/// What this export withheld, and why.
+///
+/// It is part of the document rather than part of the documentation: an
+/// importer, an auditor and a reviewer all need to know that "no comment
+/// bodies" means "deliberately withheld" and not "there were none".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedactionSummary {
+    /// Tables no record of which is exported, by reason.
+    pub excluded_tables: BTreeMap<String, String>,
+    /// Columns withheld from an otherwise exported table, by reason.
+    pub excluded_columns: BTreeMap<String, String>,
+    /// Whether the canary scan ran over this document before it was published.
+    /// It is always `true` in a published export — a `false` here means the
+    /// document was assembled and never released.
+    pub canary_scanned: bool,
+}
+
+/// What the export says about its own completeness.
+///
+/// Every value is derived from the exported records themselves, so the summary
+/// cannot claim a continuity the records do not support, and two exports of one
+/// unchanged Realm produce the same summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuitySummary {
+    /// How many records of each kind the document carries.
+    pub record_counts: RecordCounts,
+    /// Recorded gaps in a runtime's own control sequence.
+    pub control_gaps: u64,
+    /// Recorded gaps in a runtime's session-content sequence. The content
+    /// itself is runtime-owned and is not exported; the *gap* is Kontor's own
+    /// evidence and is.
+    pub content_gaps: u64,
+    /// Command receipts that had not reached a settled state.
+    pub unsettled_command_receipts: u64,
+    /// Reconciliation epochs that had not completed, and whose members
+    /// therefore prove nothing about what they did not reach.
+    pub incomplete_reconciliation_epochs: u64,
+    /// Runs whose newest confirmation was not fresh when the export was taken.
+    pub unconfirmed_agent_runs: u64,
+    /// The highest control-plane cursor in the document, or 0 when it carries
+    /// no observations.
+    pub highest_control_cursor: i64,
+}
+
+/// One Realm's exportable state, as a versioned document.
+///
+/// The field order is the serialization order, and `records` is last so a
+/// reader can see what the document claims about itself before it reads the
+/// state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KontorExportV1 {
+    /// The export generation. A later one is refused rather than misread.
+    pub schema_version: u32,
+    /// The Realm these records came from. In the destination of an import this
+    /// is a *reference*, never an authority.
+    pub source_realm_id: RealmId,
+    /// When the export was taken. Deliberately outside [`Self::records_hash`]:
+    /// it is the one value that changes when nothing else did.
+    pub exported_at: Timestamp,
+    /// The database schema generation the records were read from.
+    pub database_schema_version: i64,
+    /// What was withheld.
+    pub redaction_summary: RedactionSummary,
+    /// What the document says about its own completeness.
+    pub continuity_summary: ContinuitySummary,
+    /// SHA-256 over the canonical bytes of `records` alone.
+    pub records_hash: ContentHash,
+    /// The records.
+    pub records: ExportedRecords,
+}
+
+impl KontorExportV1 {
+    /// The canonical bytes of the whole document: compact UTF-8 JSON with
+    /// sorted keys and exactly one trailing newline.
+    ///
+    /// # Errors
+    /// Returns [`BackupError::Redaction`] only through [`Self::canonical_value`]'s
+    /// serialization failure path, which cannot happen for this type.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, BackupError> {
+        let mut value = canonical_value(self)?;
+        if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_team_definition_record_fields(records)?;
+        }
+        if self.schema_version < CANONICAL_JIRA_LINK_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_canonical_jira_link_record_fields(records)?;
+        }
+        if self.schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_epic_jira_reconciliation_record_fields(records)?;
+        }
+        if self.schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_legacy_naming_recovery_record_fields(records)?;
+        }
+        if self.schema_version < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_quota_chain_record_fields(records)?;
+        }
+        if self.schema_version < SUCCESSION_EXPORT_VERSION {
+            let records = value.get_mut("records").ok_or(BackupError::Verification {
+                detail: "the export has no records object",
+            })?;
+            remove_succession_record_fields(records)?;
+            remove_quota_runtime_cursor_fields(records)?;
+        }
+        canonical_bytes(&value)
+    }
+
+    /// The canonical bytes of `records` alone — the bytes
+    /// [`Self::records_hash`] is taken over.
+    ///
+    /// # Errors
+    /// As [`Self::canonical_bytes`].
+    pub fn canonical_records_bytes(&self) -> Result<Vec<u8>, BackupError> {
+        let mut value = canonical_value(&self.records)?;
+        if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION {
+            remove_team_definition_record_fields(&mut value)?;
+        }
+        if self.schema_version < CANONICAL_JIRA_LINK_EXPORT_VERSION {
+            remove_canonical_jira_link_record_fields(&mut value)?;
+        }
+        if self.schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION {
+            remove_epic_jira_reconciliation_record_fields(&mut value)?;
+        }
+        if self.schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION {
+            remove_legacy_naming_recovery_record_fields(&mut value)?;
+        }
+        if self.schema_version < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION {
+            remove_quota_chain_record_fields(&mut value)?;
+        }
+        if self.schema_version < SUCCESSION_EXPORT_VERSION {
+            remove_succession_record_fields(&mut value)?;
+            remove_quota_runtime_cursor_fields(&mut value)?;
+        }
+        canonical_bytes(&value)
+    }
+
+    /// Recompute the digest and compare it with the one the document carries.
+    ///
+    /// # Errors
+    /// Returns [`BackupError::Verification`] when the records do not hash to the
+    /// declared digest, and [`BackupError::UnsupportedExportVersion`] when the
+    /// document is not this generation.
+    pub fn verify(&self) -> Result<(), BackupError> {
+        if !(MIN_SUPPORTED_EXPORT_SCHEMA_VERSION..=EXPORT_SCHEMA_VERSION)
+            .contains(&self.schema_version)
+        {
+            return Err(BackupError::UnsupportedExportVersion {
+                found: self.schema_version,
+                expected: EXPORT_SCHEMA_VERSION,
+            });
+        }
+        if self.schema_version < PROFILE_SELECTION_OUTCOMES_EXPORT_VERSION
+            && self.database_schema_version >= PROFILE_SELECTION_OUTCOMES_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove profile-selection outcome completeness",
+            });
+        }
+        if self.schema_version < PROFILE_SELECTION_OUTCOMES_EXPORT_VERSION
+            && !self.records.profile_selection_outcomes.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries profile-selection outcomes it did not define",
+            });
+        }
+        // An export taken from a database that has the Team Definition tables,
+        // by a generation that did not know about them, cannot claim to be a
+        // complete export: it would look whole while having dropped the current
+        // naming authority and every resumable migration.
+        if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION
+            && self.database_schema_version >= TEAM_DEFINITION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove Team Definition completeness",
+            });
+        }
+        if self.schema_version < CANONICAL_JIRA_LINK_EXPORT_VERSION
+            && self.database_schema_version >= CANONICAL_JIRA_LINK_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove canonical Jira task-link completeness",
+            });
+        }
+        if self.schema_version < CANONICAL_JIRA_LINK_EXPORT_VERSION
+            && !self.records.canonical_jira_task_links.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries canonical Jira task links it did not define",
+            });
+        }
+        if self.schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION
+            && self.database_schema_version >= EPIC_JIRA_RECONCILIATION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove epic Jira reconciliation completeness",
+            });
+        }
+        if self.schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION
+            && !(self.records.epic_status_conflicts.is_empty()
+                && self.records.epic_jira_transition_intents.is_empty())
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries epic Jira reconciliation records it did not define",
+            });
+        }
+        if self.schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION
+            && self.database_schema_version >= LEGACY_NAMING_RECOVERY_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove legacy naming recovery completeness",
+            });
+        }
+        if self.schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION
+            && !(self.records.epic_backlog_code_corrections.is_empty()
+                && self.records.topology_container_recoveries.is_empty())
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries legacy naming recovery records it did not define",
+            });
+        }
+        if self.schema_version < TEAM_DEFINITION_EXPORT_VERSION
+            && !(self.records.team_definitions.is_empty()
+                && self.records.project_team_definition_defaults.is_empty()
+                && self
+                    .records
+                    .mini_project_team_definition_snapshots
+                    .is_empty()
+                && self.records.team_definition_migration_intents.is_empty()
+                && self.records.team_definition_migration_targets.is_empty()
+                && self
+                    .records
+                    .team_definition_migration_command_intents
+                    .is_empty()
+                && self.records.team_definition_migration_receipts.is_empty())
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries Team Definition records it did not define",
+            });
+        }
+
+        // The same rule as profile-selection outcomes, for the same reason. A
+        // generation-3 document has no field for any quota row, so against a
+        // database old enough to hold one it cannot distinguish "there were
+        // none" from "this generation could not see them". It must not be read
+        // as complete.
+        if self.schema_version < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION
+            && self.database_schema_version >= QUOTA_CHAIN_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove quota chain completeness",
+            });
+        }
+        if self.schema_version < SUCCESSION_EXPORT_VERSION
+            && self.database_schema_version >= SUCCESSION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove succession completeness",
+            });
+        }
+        // The same rule again: a document written before generation 10 has no
+        // field for a retired-evaluator proof, so against a database old enough
+        // to hold one it cannot tell "there were none" from "this generation
+        // could not see them".
+        // The same rule once more: a document written before generation 11 has
+        // no field for a supersession, so against a database old enough to hold
+        // one it cannot tell absence from blindness.
+        if self.schema_version < LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION
+            && self.database_schema_version >= LAUNCH_INTENT_SUPERSESSION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove launch-intent supersession completeness",
+            });
+        }
+        if self.schema_version < LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION
+            && !self
+                .records
+                .hosted_seat_launch_intent_supersessions
+                .is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries launch-intent supersessions it did not define",
+            });
+        }
+        if self.schema_version < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION
+            && self.database_schema_version >= RETIRED_EVALUATOR_ATTESTATION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove retired-evaluator attestation completeness",
+            });
+        }
+        if self.schema_version < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION
+            && !self.records.retired_evaluator_attestations.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries retired-evaluator attestations it did not define",
+            });
+        }
+        if self.schema_version < TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION
+            && self.database_schema_version >= TEAM_RUN_ADMISSION_ADOPTION_SCHEMA_VERSION
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation cannot prove admission-adoption completeness",
+            });
+        }
+        if self.schema_version < TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION
+            && !self.records.team_run_admission_adoptions.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries admission adoptions it did not define",
+            });
+        }
+        if self.schema_version < SUCCESSION_EXPORT_VERSION
+            && (!self.records.succession_attempts.is_empty()
+                || !self.records.succession_receipts.is_empty()
+                || self
+                    .records
+                    .provider_quota_observation_provenance
+                    .iter()
+                    .any(|record| record.runtime_observation_cursor.is_some()))
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries succession evidence it did not define",
+            });
+        }
+        if self.database_schema_version < SUCCESSION_SCHEMA_VERSION
+            && (!self.records.succession_attempts.is_empty()
+                || !self.records.succession_receipts.is_empty()
+                || self
+                    .records
+                    .provider_quota_observation_provenance
+                    .iter()
+                    .any(|record| record.runtime_observation_cursor.is_some()))
+        {
+            return Err(BackupError::Verification {
+                detail: "the export carries succession evidence its database generation could not hold",
+            });
+        }
+        // And the converses, which are claims rather than omissions. Each limb of
+        // the chain arrived in a different generation, so a document asserting a
+        // row its stated database could not have held is describing a lineage
+        // that never existed. This verifies a claimed source lineage; it is not
+        // import authority.
+        // The converse for profile selections, which had only the omission rule:
+        // a document cannot carry outcomes read from a database generation whose
+        // schema had nowhere to read them from.
+        if self.database_schema_version < PROFILE_SELECTION_OUTCOMES_SCHEMA_VERSION
+            && !self.records.profile_selection_outcomes.is_empty()
+        {
+            return Err(BackupError::Verification {
+                detail: "the export carries profile-selection outcomes its database generation could not hold",
+            });
+        }
+        self.verify_quota_chain_fits_its_database()?;
+        self.verify_quota_chain_links()?;
+        if self.schema_version < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION
+            && !(self
+                .records
+                .provider_quota_observation_provenance
+                .is_empty()
+                && self
+                    .records
+                    .provider_quota_observation_source_ranges
+                    .is_empty()
+                && self.records.provider_quota_states.is_empty()
+                && self.records.provider_quota_windows.is_empty())
+        {
+            return Err(BackupError::Verification {
+                detail: "the legacy export generation carries quota records it did not define",
+            });
+        }
+        if ContentHash::of(&self.canonical_records_bytes()?) != self.records_hash {
+            return Err(BackupError::Verification {
+                detail: "the export's records do not hash to its declared digest",
+            });
+        }
+        if self.schema_version >= PROFILE_SELECTION_OUTCOMES_EXPORT_VERSION
+            && self.continuity_summary != self.records.continuity_for_export(self.schema_version)
+        {
+            return Err(BackupError::Verification {
+                detail: "the export's continuity summary does not match its records",
+            });
+        }
+        Ok(())
+    }
+
+    /// Refuse a quota chain that could not have come from the stated database.
+    ///
+    /// # Errors
+    /// Returns [`BackupError::Verification`] naming the table or field whose
+    /// generation postdates the database the document claims to come from.
+    fn verify_quota_chain_fits_its_database(&self) -> Result<(), BackupError> {
+        let database = self.database_schema_version;
+        if database < QUOTA_CHAIN_SCHEMA_VERSION && !self.records.provider_quota_states.is_empty() {
+            return Err(BackupError::Verification {
+                detail: "the export carries provider_quota_states rows its database generation could not hold",
+            });
+        }
+        if database < QUOTA_WINDOWS_SCHEMA_VERSION {
+            if !self.records.provider_quota_windows.is_empty() {
+                return Err(BackupError::Verification {
+                    detail: "the export carries provider_quota_windows rows its database generation could not hold",
+                });
+            }
+            if self.records.provider_quota_states.iter().any(|row| {
+                row.credit_minor_units.is_some()
+                    || row.credit_reserve_minor_units.is_some()
+                    || row.credit_currency.is_some()
+            }) {
+                return Err(BackupError::Verification {
+                    detail: "the export carries provider_quota_states credit balances its database generation could not hold",
+                });
+            }
+        }
+        if database < QUOTA_OBSERVATION_PROVENANCE_SCHEMA_VERSION
+            && !(self
+                .records
+                .provider_quota_observation_provenance
+                .is_empty()
+                && self
+                    .records
+                    .provider_quota_observation_source_ranges
+                    .is_empty())
+        {
+            return Err(BackupError::Verification {
+                detail: "the export carries quota provenance its database generation could not hold",
+            });
+        }
+        Ok(())
+    }
+
+    /// Refuse a quota chain whose links do not hold.
+    ///
+    /// Typed fields are not enough on their own. The document carries its own
+    /// digest, so anything that edits records and rehashes produces a document
+    /// that verifies -- unless the links between the records are checked too. A
+    /// pointer into a dropped record, a pointer moved to a neighbouring one, a
+    /// digest that no longer matches the row that cites it, or a range set that
+    /// does not cover what its parent claims to have read: each is a graph the
+    /// source database could not have produced, and each is refused here.
+    ///
+    /// Uncited provenance is *not* refused. The table is append-only history:
+    /// every accepted observation appends a record and moves the quota row's
+    /// pointer, so yesterday's records legitimately survive with nothing citing
+    /// them. Requiring a citation would refuse every realm that has ever
+    /// observed a refusal twice.
+    ///
+    /// # Errors
+    /// Returns [`BackupError::Verification`] naming the broken link.
+    fn verify_quota_chain_links(&self) -> Result<(), BackupError> {
+        use std::collections::BTreeMap;
+
+        // Indexed by `id` alone, because that is the source table's primary key.
+        // Keying by `(project, id)` here would accept a document that reuses one
+        // provenance id across two projects -- a graph the database refuses.
+        let provenance: BTreeMap<&str, &ProviderQuotaObservationProvenanceRow> = self
+            .records
+            .provider_quota_observation_provenance
+            .iter()
+            .map(|row| (row.id.as_str(), row))
+            .collect();
+        if provenance.len() != self.records.provider_quota_observation_provenance.len() {
+            return Err(BackupError::Verification {
+                detail: "the export carries two quota provenance records with one identity",
+            });
+        }
+
+        // `(project, account, provider)` is the states table's primary key, and
+        // windows hang off exactly that triple by foreign key. Both are checked
+        // here for the same reason the provenance id is: a rehashed document can
+        // otherwise present duplicates and orphans the source cannot hold.
+        let mut states: BTreeMap<(&str, &str, &str), &ProviderQuotaStatesRow> = BTreeMap::new();
+        for state in &self.records.provider_quota_states {
+            let key = (
+                state.project_id.as_str(),
+                state.account_profile_id.as_str(),
+                state.provider.as_str(),
+            );
+            if states.insert(key, state).is_some() {
+                return Err(BackupError::Verification {
+                    detail: "the export carries two provider_quota_states rows with one identity",
+                });
+            }
+        }
+
+        let mut windows: std::collections::BTreeSet<(&str, &str, &str, &str)> =
+            std::collections::BTreeSet::new();
+        for window in &self.records.provider_quota_windows {
+            let parent = (
+                window.project_id.as_str(),
+                window.account_profile_id.as_str(),
+                window.provider.as_str(),
+            );
+            if !windows.insert((parent.0, parent.1, parent.2, window.kind.as_str())) {
+                return Err(BackupError::Verification {
+                    detail: "the export carries two provider_quota_windows rows with one identity",
+                });
+            }
+            if !states.contains_key(&parent) {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_windows row names no exported quota state in its project",
+                });
+            }
+        }
+
+        for state in &self.records.provider_quota_states {
+            // The reverse of "uncited history is fine". History is uncited
+            // because something newer replaced it; a record that still matches
+            // its row in every distinguishing field has not been replaced, so a
+            // row that does not cite it has had its pointer dropped rather than
+            // moved. Zero matches is ordinary -- a poller's row, or one written
+            // before provenance existed -- and two is a graph the digest binding
+            // makes impossible.
+            // Only a runtime observation may cite a runtime refusal. An
+            // operator override or a provider report that happens to agree on
+            // every modelled value did not use that authority and must not be
+            // made to claim it -- and must not carry a pointer either.
+            let runtime_authority = state.source == "runtime_observation";
+            if state.provenance_id.is_some() && !runtime_authority {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row that is not a runtime observation cites quota provenance",
+                });
+            }
+            let mut matching = self
+                .records
+                .provider_quota_observation_provenance
+                .iter()
+                .filter(|record| {
+                    runtime_authority
+                        && record.project_id == state.project_id
+                        && record.account_profile_id == state.account_profile_id
+                        && record.provider == state.provider
+                        && record.evidence_digest == state.evidence_hash
+                        && record.decided_state == state.state
+                        && record.parsed_resets_at == state.resets_at
+                });
+            if let Some(sole) = matching.next() {
+                if matching.next().is_some() {
+                    return Err(BackupError::Verification {
+                        detail: "two quota provenance records claim one row's exact conclusion",
+                    });
+                }
+                if state.provenance_id.as_deref() != Some(sole.id.as_str()) {
+                    return Err(BackupError::Verification {
+                        detail: "a provider_quota_states row does not cite the provenance that decided it",
+                    });
+                }
+            }
+
+            let Some(pointer) = state.provenance_id.as_deref() else {
+                continue;
+            };
+            let Some(cited) = provenance.get(pointer) else {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row cites provenance the export does not carry",
+                });
+            };
+            if cited.project_id != state.project_id {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row cites provenance belonging to another project",
+                });
+            }
+            if cited.account_profile_id != state.account_profile_id
+                || cited.provider != state.provider
+            {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row cites provenance for a different account or provider",
+                });
+            }
+            if cited.evidence_digest != state.evidence_hash {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row cites provenance whose evidence digest is not the row's",
+                });
+            }
+            if cited.decided_state != state.state || cited.parsed_resets_at != state.resets_at {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row cites provenance that decided something else",
+                });
+            }
+            if cited.decision_basis != "runtime_refusal" {
+                return Err(BackupError::Verification {
+                    detail: "a provider_quota_states row cites provenance that was not a runtime refusal",
+                });
+            }
+        }
+
+        let mut ranges: BTreeMap<&str, Vec<&ProviderQuotaObservationSourceRangeRow>> =
+            BTreeMap::new();
+        for range in &self.records.provider_quota_observation_source_ranges {
+            let Some(parent) = provenance.get(range.provenance_id.as_str()) else {
+                return Err(BackupError::Verification {
+                    detail: "a quota source range names a parent the export does not carry",
+                });
+            };
+            if parent.project_id != range.project_id {
+                return Err(BackupError::Verification {
+                    detail: "a quota source range belongs to a different project than its parent",
+                });
+            }
+            let owned = ranges.entry(range.provenance_id.as_str()).or_default();
+            if owned.iter().any(|held| held.ordinal == range.ordinal) {
+                return Err(BackupError::Verification {
+                    detail: "the export carries two quota source ranges with one identity",
+                });
+            }
+            owned.push(range);
+        }
+
+        for (id, parent) in &provenance {
+            let mut owned = ranges.remove(*id).unwrap_or_default();
+            if owned.is_empty() {
+                return Err(BackupError::Verification {
+                    detail: "a quota provenance record carries no source range",
+                });
+            }
+            owned.sort_by_key(|range| range.ordinal);
+            for (position, range) in owned.iter().enumerate() {
+                if range.ordinal != i64::try_from(position).unwrap_or(i64::MAX) {
+                    return Err(BackupError::Verification {
+                        detail: "a quota provenance record's source ranges are not a contiguous ordinal list from zero",
+                    });
+                }
+                if range.seq_start > range.seq_end {
+                    return Err(BackupError::Verification {
+                        detail: "a quota source range ends before it starts",
+                    });
+                }
+                if range.seq_start < parent.item_seq_start || range.seq_end > parent.item_seq_end {
+                    return Err(BackupError::Verification {
+                        detail: "a quota source range falls outside its parent's envelope",
+                    });
+                }
+            }
+            if owned
+                .windows(2)
+                .any(|pair| pair[0].seq_end >= pair[1].seq_start)
+            {
+                return Err(BackupError::Verification {
+                    detail: "a quota provenance record's source ranges overlap or are misordered",
+                });
+            }
+            if i64::try_from(owned.len()).unwrap_or(i64::MAX) != parent.source_range_count {
+                return Err(BackupError::Verification {
+                    detail: "a quota provenance record carries a different number of source ranges than it sealed",
+                });
+            }
+            let first = owned.first().expect("a nonempty range set");
+            let last = owned.last().expect("a nonempty range set");
+            if first.seq_start != parent.item_seq_start || last.seq_end != parent.item_seq_end {
+                return Err(BackupError::Verification {
+                    detail: "a quota provenance record's source ranges do not span its envelope",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Parse a document, refusing an unknown generation before anything else.
+    ///
+    /// The version is read from the raw JSON first, so a future export is
+    /// refused with a typed error instead of failing as a shape mismatch on
+    /// whichever field happened to change.
+    ///
+    /// # Errors
+    /// Returns [`BackupError::UnsupportedExportVersion`] for another generation
+    /// and [`BackupError::Verification`] when the bytes are not a document of
+    /// this one.
+    pub fn parse(bytes: &[u8]) -> Result<Self, BackupError> {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|_| BackupError::Verification {
+                detail: "the export is not a JSON document",
+            })?;
+        let found = value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or(BackupError::Verification {
+                detail: "the export does not declare a schema version",
+            })?;
+        let found = u32::try_from(found).unwrap_or(u32::MAX);
+        if !(MIN_SUPPORTED_EXPORT_SCHEMA_VERSION..=EXPORT_SCHEMA_VERSION).contains(&found) {
+            return Err(BackupError::UnsupportedExportVersion {
+                found,
+                expected: EXPORT_SCHEMA_VERSION,
+            });
+        }
+        // Normalize a supported older generation into the current in-memory
+        // record type only after its version is known. The injected arrays are
+        // representation defaults, not invented history: verification and
+        // canonical hashing continue to use the generation's original shape.
+        if found < TEAM_DEFINITION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in TEAM_DEFINITION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < CANONICAL_JIRA_LINK_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in CANONICAL_JIRA_LINK_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in EPIC_JIRA_RECONCILIATION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < LEGACY_NAMING_RECOVERY_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in LEGACY_NAMING_RECOVERY_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in QUOTA_CHAIN_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < SUCCESSION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in SUCCESSION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < LAUNCH_INTENT_SUPERSESSION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in LAUNCH_INTENT_SUPERSESSION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < RETIRED_EVALUATOR_ATTESTATION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in RETIRED_EVALUATOR_ATTESTATION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        if found < TEAM_RUN_ADMISSION_ADOPTION_EXPORT_VERSION {
+            let records = value
+                .get_mut("records")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or(BackupError::Verification {
+                    detail: "the export has no records object",
+                })?;
+            for field in TEAM_RUN_ADMISSION_ADOPTION_RECORD_FIELDS {
+                records
+                    .entry(field.to_owned())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+        }
+        let export: Self =
+            serde_json::from_value(value).map_err(|_| BackupError::Verification {
+                detail: "the export is not a document of this generation",
+            })?;
+        export.verify()?;
+        Ok(export)
+    }
+}
+
+/// Remove generation-4 arrays from a supported legacy record object.
+fn remove_team_definition_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in TEAM_DEFINITION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove generation-5 arrays from a supported legacy record object.
+fn remove_canonical_jira_link_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in CANONICAL_JIRA_LINK_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove generation-6 arrays from a supported legacy record object.
+fn remove_epic_jira_reconciliation_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in EPIC_JIRA_RECONCILIATION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove generation-7 arrays from a supported legacy record object.
+fn remove_legacy_naming_recovery_record_fields(
+    records: &mut serde_json::Value,
+) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in LEGACY_NAMING_RECOVERY_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove generation-8 arrays from a supported legacy record object.
+fn remove_quota_chain_record_fields(records: &mut serde_json::Value) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in QUOTA_CHAIN_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove generation-9 succession arrays from a supported legacy record object.
+fn remove_succession_record_fields(records: &mut serde_json::Value) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    for field in SUCCESSION_RECORD_FIELDS {
+        records.remove(field);
+    }
+    Ok(())
+}
+
+/// Remove the generation-9 field added to the existing provenance row shape.
+fn remove_quota_runtime_cursor_fields(records: &mut serde_json::Value) -> Result<(), BackupError> {
+    let records = records.as_object_mut().ok_or(BackupError::Verification {
+        detail: "the export records are not an object",
+    })?;
+    let Some(provenance) = records.get_mut("provider_quota_observation_provenance") else {
+        return Ok(());
+    };
+    let provenance = provenance.as_array_mut().ok_or(BackupError::Verification {
+        detail: "the export quota provenance records are not an array",
+    })?;
+    for record in provenance {
+        let record = record.as_object_mut().ok_or(BackupError::Verification {
+            detail: "an export quota provenance record is not an object",
+        })?;
+        record.remove("runtime_observation_cursor");
+    }
+    Ok(())
+}
+
+/// Render any serializable value through `serde_json::Value`, whose objects are
+/// `BTreeMap`s and therefore key-sorted.
+fn canonical_value<T: Serialize>(value: &T) -> Result<serde_json::Value, BackupError> {
+    serde_json::to_value(value).map_err(|_| BackupError::Verification {
+        detail: "the export could not be rendered as JSON",
+    })
+}
+
+/// Compact bytes plus exactly one trailing newline.
+fn canonical_bytes(value: &serde_json::Value) -> Result<Vec<u8>, BackupError> {
+    let mut bytes = serde_json::to_vec(value).map_err(|_| BackupError::Verification {
+        detail: "the export could not be rendered as JSON",
+    })?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+/// Export one Realm.
+///
+/// The document is assembled, scanned and only then returned: a canary match
+/// aborts the export, and the caller never receives a document that failed the
+/// scan — there is no "return it with a warning" path, because a warning is
+/// something an automation ignores.
+///
+/// # Errors
+/// Returns [`BackupError::Redaction`] when the canary scan matches,
+/// [`BackupError::Domain`] when a stored control payload is not control
+/// metadata, [`BackupError::Verification`] when public-key ledger continuity
+/// would be omitted or cannot be inspected, and [`BackupError::Store`] when
+/// the database cannot be read.
+pub fn export_realm(store: &SqliteStore, now: Timestamp) -> Result<KontorExportV1, BackupError> {
+    // Hold the existing writer boundary while testing the ledger and reading
+    // modeled rows, so a concurrent registration cannot be silently omitted.
+    let transaction = store.begin()?;
+    ensure_empty_attestation_ledger(&transaction)?;
+    let records = ExportedRecords::read(&transaction)?;
+    let continuity_summary = records.continuity();
+    let records_hash = ContentHash::of(&canonical_bytes(&canonical_value(&records)?)?);
+    let export = KontorExportV1 {
+        schema_version: EXPORT_SCHEMA_VERSION,
+        source_realm_id: store.realm_id(),
+        exported_at: now,
+        database_schema_version: store.schema_version()?,
+        redaction_summary: redaction_summary(),
+        continuity_summary,
+        records_hash,
+        records,
+    };
+
+    // Runtime and census observations use the positive control-field vocabulary
+    // enforced by their append boundaries. Command intents occupy the same log
+    // but carry application-owned canonical documents (names, paths, graph
+    // arrays and other command fields). Re-prove their exact immutable receipt
+    // authority before the structural canary scan; the kind label alone is not
+    // authority to export arbitrary prose.
+    let receipts: BTreeMap<&str, &CommandReceiptsRow> = export
+        .records
+        .command_receipts
+        .iter()
+        .map(|receipt| (receipt.id.as_str(), receipt))
+        .collect();
+    for event in &export.records.runtime_events {
+        let payload: serde_json::Value =
+            serde_json::from_str(&event.payload).map_err(|_| BackupError::Verification {
+                detail: "a stored control payload is not JSON",
+            })?;
+        match event.event_kind.as_str() {
+            "runtime_observation" | "census_observation" => ensure_control_metadata(&payload)?,
+            "command_intent" => ensure_command_event_authority(event, &receipts)?,
+            _ => {
+                return Err(BackupError::Verification {
+                    detail: "a stored event has an unknown kind",
+                });
+            }
+        }
+    }
+    scan_for_canaries(&canonical_value(&export)?, 0)?;
+    transaction.commit().map_err(crate::StoreError::from)?;
+    Ok(export)
+}
+
+/// Qualified key/token continuity is unsupported by modeled export and restore.
+/// Legitimate pre-124/pre-125 absence is distinct from corrupt missing tables.
+/// Every present key ledger is inspected before any token-absence fallback.
+pub(crate) fn ensure_empty_attestation_ledger(connection: &Connection) -> Result<(), BackupError> {
+    let refusal = || BackupError::Verification {
+        detail: "public attestation ledger continuity is unsupported",
+    };
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|_| refusal())?;
+    if version < 1 {
+        return Err(refusal());
+    }
+    for (introduced, head, rows) in [
+        (
+            124,
+            "attestation_authority_heads",
+            "attestation_authority_keys",
+        ),
+        (
+            125,
+            "attestation_token_heads",
+            "prepared_attestation_tokens",
+        ),
+    ] {
+        let tables: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN (?1,?2)",
+                [head, rows],
+                |row| row.get(0),
+            )
+            .map_err(|_| refusal())?;
+        if tables == 0 && version < introduced {
+            continue;
+        }
+        if tables != 2 {
+            return Err(refusal());
+        }
+        // Names above are fixed schema identifiers, never caller input.
+        let nonempty: bool = connection
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {head}) OR EXISTS(SELECT 1 FROM {rows})"),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| refusal())?;
+        if nonempty {
+            return Err(refusal());
+        }
+    }
+    Ok(())
+}
+
+/// A command event may carry only the exact intent its receipt authorized.
+fn ensure_command_event_authority(
+    event: &RuntimeEventsRow,
+    receipts: &BTreeMap<&str, &CommandReceiptsRow>,
+) -> Result<(), BackupError> {
+    let receipt = event
+        .command_receipt_id
+        .as_deref()
+        .and_then(|id| receipts.get(id))
+        .ok_or(BackupError::Verification {
+            detail: "a command event has no exported command receipt",
+        })?;
+    if event.project_id != receipt.project_id
+        || event.payload != receipt.intent
+        || event.payload_hash != receipt.intent_hash
+    {
+        return Err(BackupError::Verification {
+            detail: "a command event does not match its immutable receipt",
+        });
+    }
+    if ContentHash::of(event.payload.as_bytes()).as_str() != event.payload_hash {
+        return Err(BackupError::Verification {
+            detail: "a command event payload does not hash to its declared digest",
+        });
+    }
+    Ok(())
+}
+
+/// Refuse a document that carries credential, token or Zone C material.
+///
+/// Two passes, because persisted documents are stored as *text*: the domain's
+/// own scanner sees the structure of this document, and every string that is
+/// itself JSON is parsed and scanned as structure too. Without the second pass
+/// a `definition` column could carry an `api_key` member and be seen only as an
+/// opaque string.
+fn scan_for_canaries(value: &serde_json::Value, depth: u8) -> Result<(), BackupError> {
+    reject_sensitive_material(value).map_err(|error| match error {
+        kontor_core::DomainError::SensitiveMaterial { path } => BackupError::Redaction { path },
+        // The scanner raises nothing else, but a future variant must not become
+        // a silent success.
+        other => BackupError::Domain(other),
+    })?;
+    if depth >= MAX_EMBEDDED_DEPTH {
+        return Ok(());
+    }
+    match value {
+        serde_json::Value::Object(members) => {
+            for member in members.values() {
+                scan_for_canaries(member, depth)?;
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                scan_for_canaries(item, depth)?;
+            }
+        }
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim_start();
+            if (trimmed.starts_with('{') || trimmed.starts_with('['))
+                && let Ok(embedded) = serde_json::from_str::<serde_json::Value>(text)
+            {
+                scan_for_canaries(&embedded, depth + 1)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// What every export of this generation withholds.
+fn redaction_summary() -> RedactionSummary {
+    let excluded_tables = [
+        (
+            "resource_leases",
+            "a lease is authority to act now, not durable state; it is never carried to another process or Realm",
+        ),
+        (
+            "lease_events",
+            "the history of a lease has no meaning without the lease it fenced",
+        ),
+        (
+            "epic_execution_scopes",
+            "runtime placement identity is authority local to one Realm; a verified same-Realm snapshot preserves it byte-for-byte",
+        ),
+        (
+            "hosted_topology_seats",
+            "native leadership-session identity and the autonomy its occupancy generation runs under are runtime-local placement authority; a verified same-Realm snapshot preserves them byte-for-byte",
+        ),
+        (
+            "turn_correlation_challenges",
+            "a challenge addresses one live native binding and is same-Realm dispatch authority; snapshots preserve it, redacted cross-Realm exports do not",
+        ),
+        (
+            "import_receipts",
+            "destination-local import authority is not forwarded; a later import mints its own receipt",
+        ),
+        (
+            "imported_records",
+            "destination-local import lineage is not forwarded as source authority",
+        ),
+        (
+            "imported_profile_selection_outcomes",
+            "destination-local exact selection lineage is preserved by snapshot and readback, but is not forwarded as live source authority",
+        ),
+    ];
+    let excluded_columns = [
+        (
+            "account_profiles.credential_ref_kind",
+            "credential-reference resolution data; only the opaque provider identity is exported, as provenance",
+        ),
+        (
+            "account_profiles.credential_ref_alias",
+            "credential-reference resolution data; the alias resolves only against a policy that is never persisted",
+        ),
+        (
+            "account_profiles.environment_refs",
+            "the environment-variable mapping a credential reference fills",
+        ),
+        (
+            "account_profiles.environment_refs_hash",
+            "the digest of the withheld environment mapping",
+        ),
+        (
+            "command_outbox.claim_token",
+            "a live dispatch claim; an imported claim would authorize a second delivery of an effect that already happened",
+        ),
+        (
+            "external_comments.body",
+            "inbound external comment prose, the one column that can carry Zone C material; identity, author, instants, digest and cursor are exported",
+        ),
+    ];
+    RedactionSummary {
+        excluded_tables: excluded_tables
+            .into_iter()
+            .map(|(table, reason)| (table.to_owned(), reason.to_owned()))
+            .collect(),
+        excluded_columns: excluded_columns
+            .into_iter()
+            .map(|(column, reason)| (column.to_owned(), reason.to_owned()))
+            .collect(),
+        canary_scanned: true,
+    }
+}
+
+/// One exported record's source identity and digest.
+///
+/// This is what an import records as lineage: enough to say *which* source
+/// record a destination row came from, and to prove the bytes have not changed
+/// since, without carrying the record itself into the destination's authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordLineage {
+    /// The record kind, which is the source table's name.
+    pub kind: &'static str,
+    /// The record's primary key, rendered as text.
+    pub identity: String,
+    /// SHA-256 over the record's canonical JSON.
+    pub hash: ContentHash,
+}
+
+/// One exported table's contract.
+trait ExportRow: Sized + Serialize {
+    /// The source table, which is also the record kind.
+    const KIND: &'static str;
+
+    /// The `SELECT` this table is read with: explicit columns, explicit order.
+    fn query() -> String;
+
+    /// Read one row, by column position in [`ExportRow::query`].
+    fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self>;
+
+    /// The record's primary key, rendered as text.
+    fn identity(&self) -> String;
+
+    /// This record's lineage entry.
+    fn lineage(&self) -> Result<RecordLineage, BackupError> {
+        Ok(RecordLineage {
+            kind: Self::KIND,
+            identity: self.identity(),
+            hash: ContentHash::of(&canonical_bytes(&canonical_value(self)?)?),
+        })
+    }
+}
+
+/// Read one whole table in its declared order.
+fn read_table<T: ExportRow>(connection: &Connection) -> Result<Vec<T>, BackupError> {
+    let query = T::query();
+    let mut statement = connection
+        .prepare(&query)
+        .map_err(|source| BackupError::Store(source.into()))?;
+    let mut rows = statement
+        .query([])
+        .map_err(|source| BackupError::Store(source.into()))?;
+    let mut records = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .map_err(|source| BackupError::Store(source.into()))?
+    {
+        records.push(T::read(row).map_err(|source| BackupError::Store(source.into()))?);
+    }
+    Ok(records)
+}
+
+/// Declare every exported table: its struct, its columns, its order and its key.
+///
+/// The macro exists to make one thing impossible: a table exported with columns
+/// that were never written down. Every column below is named three times — as a
+/// struct field, as a `SELECT` column and as a read position — from one
+/// declaration, so they cannot drift apart, and adding a column is a deliberate
+/// edit here rather than a consequence of a migration elsewhere.
+macro_rules! exported_tables {
+    ($(
+        $(#[$field_attribute:meta])*
+        $field:ident : $row:ident from $table:literal key($($key:ident),+ ) {
+            $($(#[$column_attribute:meta])* $column:ident : $type:ty,)+
+        }
+    )+) => {
+        $(
+            #[doc = concat!("One exported row of `", $table, "`.")]
+            #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+            #[serde(deny_unknown_fields)]
+            pub struct $row {
+                $(
+                    $(#[$column_attribute])*
+                    #[doc = concat!("The `", stringify!($column), "` column.")]
+                    pub $column: $type,
+                )+
+            }
+
+            impl ExportRow for $row {
+                const KIND: &'static str = $table;
+
+                fn query() -> String {
+                    format!(
+                        "SELECT {} FROM {} ORDER BY {}",
+                        [$(stringify!($column)),+].join(", "),
+                        $table,
+                        [$(stringify!($key)),+].join(", "),
+                    )
+                }
+
+                fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+                    let mut index = 0;
+                    $(
+                        let $column: $type = row.get(index)?;
+                        index += 1;
+                    )+
+                    let _ = index;
+                    Ok(Self { $($column,)+ })
+                }
+
+                fn identity(&self) -> String {
+                    [$(self.$key.to_string()),+].join("/")
+                }
+            }
+        )+
+
+        /// Every exported record, by kind.
+        ///
+        /// The field order here is the document's array order, and it follows
+        /// the dependency order of the schema — identity, then work, then the
+        /// evidence about that work — so a reader meets a record's owner before
+        /// it meets the record.
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct ExportedRecords {
+            $(
+                $(#[$field_attribute])*
+                #[doc = concat!("Every exported row of `", $table, "`.")]
+                pub $field: Vec<$row>,
+            )+
+        }
+
+        impl ExportedRecords {
+            /// Read every exported table from one connection.
+            fn read(connection: &Connection) -> Result<Self, BackupError> {
+                Ok(Self {
+                    $( $field: read_table(connection)?, )+
+                })
+            }
+
+            /// How many records of each kind this document carries.
+            #[must_use]
+            pub fn record_counts(&self) -> RecordCounts {
+                let mut counts = RecordCounts::new();
+                $(
+                    counts.insert($table.to_owned(), self.$field.len() as u64);
+                )+
+                counts
+            }
+
+            /// Every record's source identity and digest, in document order.
+            ///
+            /// # Errors
+            /// Returns [`BackupError::Verification`] when a record cannot be
+            /// rendered as JSON, which cannot happen for these types.
+            pub fn lineage(&self) -> Result<Vec<RecordLineage>, BackupError> {
+                let mut lineage = Vec::new();
+                $(
+                    for record in &self.$field {
+                        lineage.push(ExportRow::lineage(record)?);
+                    }
+                )+
+                Ok(lineage)
+            }
+        }
+    };
+}
+
+exported_tables! {
+    realm_metadata: RealmMetadataRow from "realm_metadata" key(realm_id) {
+        realm_id: String,
+        schema_version: i64,
+        created_at: String,
+        display_label: Option<String>,
+    }
+    projects: ProjectsRow from "projects" key(id) {
+        id: String,
+        name: String,
+        root_path: String,
+        revision: i64,
+        created_at: String,
+    }
+    mini_projects: MiniProjectsRow from "mini_projects" key(id) {
+        id: String,
+        project_id: String,
+        name: String,
+        revision: i64,
+        created_at: String,
+    }
+    topology_specs: TopologySpecsRow from "topology_specs" key(project_id, spec_id, version) {
+        project_id: String,
+        spec_id: String,
+        version: i64,
+        name: String,
+        root_kind: String,
+        definition: String,
+        definition_hash: String,
+        published_at: String,
+        shareability_class: String,
+        shareability_classifier: Option<String>,
+        shareability_provenance: String,
+    }
+    project_topology_defaults: ProjectTopologyDefaultsRow from "project_topology_defaults" key(project_id) {
+        project_id: String,
+        spec_id: String,
+        version: i64,
+        canonical_hash: String,
+        selected_at: String,
+    }
+    mini_project_topology_snapshots: MiniProjectTopologySnapshotsRow from "mini_project_topology_snapshots" key(mini_project_id) {
+        mini_project_id: String,
+        project_id: String,
+        spec_id: String,
+        version: i64,
+        canonical_hash: String,
+        pinned_at: String,
+    }
+    team_definitions: TeamDefinitionsRow from "team_definitions" key(project_id, definition_id, version) {
+        project_id: String,
+        definition_id: String,
+        version: i64,
+        name: String,
+        topology_spec_id: String,
+        topology_version: i64,
+        definition: String,
+        definition_hash: String,
+        published_at: String,
+    }
+    project_team_definition_defaults: ProjectTeamDefinitionDefaultsRow from "project_team_definition_defaults" key(project_id) {
+        project_id: String,
+        definition_id: String,
+        version: i64,
+        canonical_hash: String,
+        selected_at: String,
+    }
+    mini_project_team_definition_snapshots: MiniProjectTeamDefinitionSnapshotsRow from "mini_project_team_definition_snapshots" key(mini_project_id) {
+        mini_project_id: String,
+        project_id: String,
+        definition_id: String,
+        version: i64,
+        canonical_hash: String,
+        pinned_at: String,
+    }
+    team_definition_migration_intents: TeamDefinitionMigrationIntentsRow from "team_definition_migration_intents" key(id) {
+        id: String,
+        project_id: String,
+        mini_project_id: String,
+        idempotency_key: String,
+        fingerprint: String,
+        from_definition_id: Option<String>,
+        from_version: Option<i64>,
+        from_canonical_hash: Option<String>,
+        to_definition_id: String,
+        to_version: i64,
+        to_canonical_hash: String,
+        state: String,
+        recorded_at: String,
+        updated_at: String,
+    }
+    team_definition_migration_targets: TeamDefinitionMigrationTargetsRow from "team_definition_migration_targets" key(intent_id, target_key) {
+        intent_id: String,
+        project_id: String,
+        target_key: String,
+        subject_kind: String,
+        topology_node_id: String,
+        seat_binding_id: Option<String>,
+        runtime_kind: String,
+        native_host: String,
+        native_generation: i64,
+        native_id: String,
+        desired_title: String,
+        desired_parent_native_id: Option<String>,
+        desired_kind: String,
+        desired_cwd: Option<String>,
+        observed_title: Option<String>,
+        observed_parent_native_id: Option<String>,
+        observed_kind: Option<String>,
+        observed_cwd: Option<String>,
+        state: String,
+        updated_at: String,
+    }
+    team_definition_migration_command_intents: TeamDefinitionMigrationCommandIntentsRow from "team_definition_migration_command_intents" key(intent_id) {
+        intent_id: String,
+        project_id: String,
+        intent_hash: Option<String>,
+        source: String,
+        recorded_at: String,
+    }
+    team_definition_migration_receipts: TeamDefinitionMigrationReceiptsRow from "team_definition_migration_receipts" key(intent_id) {
+        intent_id: String,
+        project_id: String,
+        receipt_id: String,
+        bound_at: String,
+    }
+    role_catalog_revisions: RoleCatalogRevisionsRow from "role_catalog_revisions" key(catalog_id, version) {
+        catalog_id: String,
+        version: i64,
+        name: String,
+        definition: String,
+        definition_hash: String,
+        published_at: String,
+        shareability_class: String,
+        shareability_classifier: Option<String>,
+        shareability_provenance: String,
+    }
+    topology_nodes: TopologyNodesRow from "topology_nodes" key(id) {
+        id: String,
+        project_id: String,
+        mini_project_id: Option<String>,
+        spec_id: String,
+        spec_version: i64,
+        spec_hash: String,
+        kind: String,
+        parent_id: Option<String>,
+        lifecycle: String,
+        placement: String,
+        revision: i64,
+        created_at: String,
+        updated_at: String,
+        task_id: Option<String>,
+    }
+    seat_bindings: SeatBindingsRow from "seat_bindings" key(id) {
+        id: String,
+        project_id: String,
+        topology_node_id: String,
+        role_slot_id: String,
+        role_catalog_id: String,
+        role_catalog_version: i64,
+        role_code: String,
+        standard_title: String,
+        custom_display_name: Option<String>,
+        task_id: Option<String>,
+        team_run_id: Option<String>,
+        lifecycle: String,
+        attach_deadline: String,
+        last_attached_at: Option<String>,
+        last_activity_at: Option<String>,
+        parent_seat_binding_id: Option<String>,
+        released_at: Option<String>,
+        replaced_by_seat_binding_id: Option<String>,
+        runtime_reported: Option<String>,
+        revision: i64,
+        created_at: String,
+        updated_at: String,
+    }
+    topology_node_containers: TopologyNodeContainersRow from "topology_node_containers" key(topology_node_id) {
+        topology_node_id: String,
+        project_id: String,
+        container_binding_id: String,
+        runtime_kind: String,
+        host: String,
+        generation: i64,
+        native_id: String,
+        observed_kind: String,
+        canonical_cwd: Option<String>,
+        bound_at: String,
+        last_readback_at: String,
+        revision: i64,
+        observed_projection: Option<String>,
+        visible_title: Option<String>,
+        parent_runtime_kind: Option<String>,
+        parent_host: Option<String>,
+        parent_generation: Option<i64>,
+        parent_native_id: Option<String>,
+        topology_correlation: Option<String>,
+    }
+    topology_container_recoveries: TopologyContainerRecoveriesRow from "topology_container_recoveries" key(receipt_id) {
+        receipt_id: String,
+        project_id: String,
+        topology_node_id: String,
+        container_binding_id: String,
+        prior_runtime_kind: String,
+        prior_host: String,
+        prior_generation: i64,
+        prior_native_id: String,
+        next_runtime_kind: String,
+        next_host: String,
+        next_generation: i64,
+        next_native_id: String,
+        parent_native_id: String,
+        observed_kind: String,
+        canonical_cwd: Option<String>,
+        observed_title: String,
+        recovered_at: String,
+    }
+    adaptive_admission_state: AdaptiveAdmissionStateRow from "adaptive_admission_state" key(mini_project_id) {
+        project_id: String,
+        mini_project_id: String,
+        current_window: i64,
+        clean_observation_streak: i64,
+        last_observation_id: Option<String>,
+        revision: i64,
+        updated_at: String,
+    }
+    tasks: TasksRow from "tasks" key(id) {
+        id: String,
+        project_id: String,
+        mini_project_id: Option<String>,
+        title: String,
+        module_key: Option<String>,
+        state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        imported_state: Option<String>,
+        revision: i64,
+        created_at: String,
+        updated_at: String,
+    }
+    task_short_codes: TaskShortCodesRow from "task_short_codes" key(project_id, task_id) {
+        project_id: String,
+        task_id: String,
+        short_code: String,
+        source: String,
+        declared_at: String,
+    }
+    epic_native_name_tokens: EpicNativeNameTokensRow from "epic_native_name_tokens" key(project_id, mini_project_id) {
+        project_id: String,
+        mini_project_id: String,
+        kontor_backlog_code: String,
+        ai_short_name: Option<String>,
+        declared_at: String,
+    }
+    epic_backlog_codes: EpicBacklogCodesRow from "epic_backlog_codes" key(project_id, mini_project_id, status) {
+        project_id: String,
+        mini_project_id: String,
+        code: String,
+        provenance: String,
+        status: String,
+        assigned_at: String,
+    }
+    epic_backlog_code_corrections: EpicBacklogCodeCorrectionsRow from "epic_backlog_code_corrections" key(project_id, mini_project_id) {
+        project_id: String,
+        mini_project_id: String,
+        prior_code: String,
+        corrected_code: String,
+        reason: String,
+        receipt_id: String,
+        corrected_at: String,
+    }
+    task_ai_short_names: TaskAiShortNamesRow from "task_ai_short_names" key(project_id, task_id) {
+        project_id: String,
+        task_id: String,
+        ai_short_name: String,
+        declared_at: String,
+    }
+    topology_spec_canonicalization_receipts: TopologySpecCanonicalizationReceiptsRow from "topology_spec_canonicalization_receipts" key(project_id, spec_id, version) {
+        project_id: String,
+        spec_id: String,
+        version: i64,
+        prior_hash: String,
+        canonical_hash: String,
+        migrated_at: String,
+        reason: String,
+    }
+    task_dependencies: TaskDependenciesRow from "task_dependencies" key(project_id, task_id, depends_on_task_id) {
+        project_id: String,
+        task_id: String,
+        depends_on_task_id: String,
+        created_at: String,
+    }
+    task_modules: TaskModulesRow from "task_modules" key(project_id, task_id, module_key) {
+        project_id: String,
+        task_id: String,
+        module_key: String,
+        declared_at: String,
+    }
+    work_profiles: WorkProfilesRow from "work_profiles" key(project_id, profile_key, version) {
+        project_id: String,
+        profile_key: String,
+        version: i64,
+        definition: String,
+        definition_hash: String,
+        created_at: String,
+    }
+    task_workflows: TaskWorkflowsRow from "task_workflows" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        profile_key: String,
+        profile_version: i64,
+        snapshot: String,
+        snapshot_hash: String,
+        current_phase: String,
+        active: i64,
+        revision: i64,
+        created_at: String,
+    }
+    task_gate_evaluations: TaskGateEvaluationsRow from "task_gate_evaluations" key(project_id, workflow_id, gate_key, sequence) {
+        project_id: String,
+        workflow_id: String,
+        gate_key: String,
+        sequence: i64,
+        verdict: String,
+        evaluator_role: String,
+        evaluator_account: String,
+        evidence: String,
+        recorded_at: String,
+        agent_run_id: Option<String>,
+        reviewer_principal: Option<String>,
+        policy_evaluation_id: Option<String>,
+    }
+    hosted_seat_launch_intent_supersessions: HostedSeatLaunchIntentSupersessionsRow from "hosted_seat_launch_intent_supersessions" key(idempotency_key) {
+        idempotency_key: String,
+        intent_hash: String,
+        project_id: String,
+        seat_binding_id: String,
+        occupancy_generation: i64,
+        seat_binding_revision: i64,
+        superseded_model_rung: String,
+        superseded_prepared_at: String,
+        replacement_model_rung: String,
+        receipt_id: Option<String>,
+        recorded_at: String,
+    }
+    retired_evaluator_attestations: RetiredEvaluatorAttestationsRow from "retired_evaluator_attestations" key(id) {
+        id: String,
+        project_id: String,
+        receipt_id: String,
+        task_id: String,
+        workflow_revision: i64,
+        gate_key: String,
+        team_run_id: String,
+        evaluator_role: String,
+        role_slot_id: String,
+        agent_run_id: String,
+        seat_binding_id: String,
+        seat_revision: i64,
+        runtime_binding_id: String,
+        runtime_generation: i64,
+        native_id: String,
+        artifact_key: String,
+        artifact_checksum: String,
+        evidence_digest: String,
+        proof_digest: String,
+        attested_at: String,
+    }
+    team_run_admission_adoptions: TeamRunAdmissionAdoptionsRow from "team_run_admission_adoptions" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        team_run_id: String,
+        role_slot_id: String,
+        agent_run_id: String,
+        adopted_agent_run_revision: i64,
+        receipt_id: String,
+        adopted_at: String,
+    }
+    artifact_evidence: ArtifactEvidenceRow from "artifact_evidence" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        workflow_id: String,
+        agent_run_id: Option<String>,
+        artifact_key: String,
+        locator: String,
+        locator_hash: String,
+        producer_role: String,
+        producer_account: Option<String>,
+        recorded_at: String,
+    }
+    gate_waivers: GateWaiversRow from "gate_waivers" key(id) {
+        id: String,
+        project_id: String,
+        workflow_id: String,
+        gate_key: String,
+        sequence: i64,
+        authorizing_role: String,
+        authorizing_account: String,
+        reason: String,
+        evidence: String,
+        evidence_hash: String,
+        recorded_at: String,
+    }
+    team_templates: TeamTemplatesRow from "team_templates" key(project_id, template_id, version) {
+        project_id: String,
+        template_id: String,
+        version: i64,
+        name: String,
+        definition: String,
+        definition_hash: String,
+        role_authority: String,
+        created_at: String,
+    }
+    team_runs: TeamRunsRow from "team_runs" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        template_id: String,
+        template_version: i64,
+        snapshot: String,
+        snapshot_hash: String,
+        lifecycle: String,
+        terminal_outcome: Option<String>,
+        terminal_source_kind: Option<String>,
+        terminal_receipt_id: Option<String>,
+        terminal_evidence_hash: Option<String>,
+        closed_at: Option<String>,
+        revision: i64,
+        created_at: String,
+    }
+    agent_runs: AgentRunsRow from "agent_runs" key(id) {
+        id: String,
+        project_id: String,
+        team_run_id: String,
+        parent_agent_run_id: Option<String>,
+        role_key: String,
+        account_profile_id: Option<String>,
+        lifecycle: String,
+        desired_state: String,
+        observed_state: String,
+        derived_state: String,
+        last_confirmed_at: Option<String>,
+        last_cursor: Option<i64>,
+        last_native_sequence: Option<i64>,
+        terminal_outcome: Option<String>,
+        terminal_source_kind: Option<String>,
+        terminal_event_cursor: Option<i64>,
+        terminal_receipt_id: Option<String>,
+        terminal_evidence_hash: Option<String>,
+        closed_at: Option<String>,
+        revision: i64,
+        created_at: String,
+    }
+    persona_scenarios: PersonaScenariosRow from "persona_scenarios" key(project_id, scenario_id, version) {
+        project_id: String,
+        scenario_id: String,
+        version: i64,
+        persona_key: String,
+        gate_key: String,
+        definition: String,
+        definition_hash: String,
+        created_at: String,
+    }
+    task_persona_snapshots: TaskPersonaSnapshotsRow from "task_persona_snapshots" key(project_id, task_id, scenario_id, version) {
+        project_id: String,
+        task_id: String,
+        scenario_id: String,
+        version: i64,
+        workflow_id: String,
+        gate_key: String,
+        snapshot: String,
+        snapshot_hash: String,
+        created_at: String,
+    }
+    trigger_specs: TriggerSpecsRow from "trigger_specs" key(project_id, trigger_key, version) {
+        project_id: String,
+        trigger_key: String,
+        version: i64,
+        source_kind: String,
+        source_connection: String,
+        work_profile_key: String,
+        work_profile_version: i64,
+        team_template_id: String,
+        team_template_version: i64,
+        context_template: String,
+        context_version: i64,
+        calendar_profile_id: Option<String>,
+        calendar_version: Option<i64>,
+        definition: String,
+        definition_hash: String,
+        created_at: String,
+    }
+    source_events: SourceEventsRow from "source_events" key(id) {
+        id: String,
+        project_id: String,
+        source_kind: String,
+        source_connection: String,
+        external_event_id: String,
+        envelope: String,
+        envelope_hash: String,
+        external_observed_at: String,
+        ingested_at: String,
+        processing_state: String,
+    }
+    intake_receipts: IntakeReceiptsRow from "intake_receipts" key(id) {
+        id: String,
+        project_id: String,
+        source_event_id: String,
+        source_event_hash: String,
+        trigger_key: String,
+        trigger_version: i64,
+        result: String,
+        receipt: String,
+        idempotency_key: String,
+        dedup_key: String,
+        duplicate_of: Option<String>,
+        predecessor_receipt_id: Option<String>,
+        decided_at: String,
+    }
+    intake_decisions: IntakeDecisionsRow from "intake_decisions" key(id) {
+        id: String,
+        project_id: String,
+        intake_receipt_id: String,
+        outcome: String,
+        actor: String,
+        command_receipt_id: String,
+        reason: Option<String>,
+        capability_granted_to: Option<String>,
+        capability_execution_auth_id: Option<String>,
+        decided_at: String,
+    }
+    intake_created_work: IntakeCreatedWorkRow from "intake_created_work" key(project_id, task_id) {
+        project_id: String,
+        task_id: String,
+        intake_receipt_id: String,
+        intake_decision_id: String,
+        mini_project_id: Option<String>,
+        source_event_id: String,
+        source_event_hash: String,
+        trigger_key: String,
+        trigger_version: i64,
+        authority: String,
+        execution_auth_id: Option<String>,
+        created_at: String,
+    }
+    jira_links: JiraLinksRow from "jira_links" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        connector: String,
+        external_issue_key: String,
+        revision: i64,
+        created_at: String,
+    }
+    canonical_jira_task_links: CanonicalJiraTaskLinksRow from "canonical_jira_task_links" key(project_id, task_id) {
+        project_id: String,
+        task_id: String,
+        external_issue_key: String,
+        link_id: String,
+    }
+    ticket_field_specs: TicketFieldSpecsRow from "ticket_field_specs" key(project_id, connector, external_project, issue_type, version) {
+        project_id: String,
+        connector: String,
+        external_project: String,
+        issue_type: String,
+        version: i64,
+        definition: String,
+        definition_hash: String,
+        created_at: String,
+    }
+    external_workflow_specs: ExternalWorkflowSpecsRow from "external_workflow_specs" key(project_id, connector, external_project, issue_type, version) {
+        project_id: String,
+        connector: String,
+        external_project: String,
+        issue_type: String,
+        version: i64,
+        work_profile_key: Option<String>,
+        work_profile_version: Option<i64>,
+        definition: String,
+        definition_hash: String,
+        created_at: String,
+    }
+    ticket_sync_projections: TicketSyncProjectionsRow from "ticket_sync_projections" key(id) {
+        id: String,
+        project_id: String,
+        link_id: String,
+        link_revision: i64,
+        connector: String,
+        field_spec_project: String,
+        field_spec_issue_type: String,
+        field_spec_version: i64,
+        external_issue_key: String,
+        fields: String,
+        comment_policy: String,
+        external_comment_cursor: Option<String>,
+        projection_hash: String,
+        computed_at: String,
+    }
+    external_ticket_observations: ExternalTicketObservationsRow from "external_ticket_observations" key(id) {
+        id: String,
+        project_id: String,
+        link_id: String,
+        status_id: String,
+        status_name: String,
+        status_category: String,
+        issue_type: String,
+        assignee_account_id: Option<String>,
+        assignee_display: Option<String>,
+        external_version: Option<String>,
+        observed_at: String,
+        payload_hash: String,
+    }
+    status_conflicts: StatusConflictsRow from "status_conflicts" key(id) {
+        id: String,
+        project_id: String,
+        link_id: String,
+        kind: String,
+        observation_id: String,
+        task_revision: i64,
+        spec_version: i64,
+        milestone: Option<String>,
+        detected_at: String,
+        resolved_at: Option<String>,
+        resolution_receipt_id: Option<String>,
+    }
+    epic_status_conflicts: EpicStatusConflictsRow from "epic_status_conflicts" key(id) {
+        id: String,
+        project_id: String,
+        epic_id: String,
+        kind: String,
+        external_issue_key: String,
+        observed_status_id: String,
+        observed_status_name: String,
+        observed_at: String,
+        payload_hash: String,
+        epic_revision: i64,
+        spec_version: i64,
+        milestone: Option<String>,
+        detected_at: String,
+        resolved_at: Option<String>,
+        resolution_receipt_id: Option<String>,
+    }
+    epic_jira_transition_intents: EpicJiraTransitionIntentsRow from "epic_jira_transition_intents" key(id) {
+        id: String,
+        project_id: String,
+        epic_id: String,
+        external_issue_key: String,
+        idempotency_key: String,
+        intent_hash: String,
+        epic_revision: i64,
+        spec_version: i64,
+        milestone: String,
+        target_status_id: String,
+        target_status_name: String,
+        destination_status_id: String,
+        destination_status_name: String,
+        prior_payload_hash: String,
+        planned_at: String,
+        confirmed_at: Option<String>,
+        confirmation_payload_hash: Option<String>,
+    }
+    status_transition_receipts: StatusTransitionReceiptsRow from "status_transition_receipts" key(id) {
+        id: String,
+        project_id: String,
+        link_id: String,
+        task_id: String,
+        task_revision: i64,
+        workflow_revision: i64,
+        projection_revision: i64,
+        spec_version: i64,
+        prior_observation_id: String,
+        milestone: String,
+        target_status_id: String,
+        transition_id: Option<String>,
+        principal_account_id: String,
+        assignment_prerequisite: i64,
+        assignment_result: Option<String>,
+        plan: String,
+        idempotency_key: String,
+        dispatched_at: String,
+        acknowledged_at: Option<String>,
+        confirmed_at: Option<String>,
+        refetched_observation_id: Option<String>,
+    }
+    external_comments: ExternalCommentsRow from "external_comments" key(project_id, link_id, external_comment_id, body_hash) {
+        project_id: String,
+        link_id: String,
+        external_comment_id: String,
+        body_hash: String,
+        author_account_id: String,
+        author_display: Option<String>,
+        external_created_at: String,
+        external_updated_at: String,
+        observed_at: String,
+        supersedes_hash: Option<String>,
+    }
+    account_profiles: AccountProfilesRow from "account_profiles" key(id) {
+        id: String,
+        project_id: String,
+        label: String,
+        external_account_id: Option<String>,
+        created_at: String,
+        harness: Option<String>,
+        routing: Option<String>,
+        routing_hash: Option<String>,
+        capability: Option<String>,
+        capability_hash: Option<String>,
+        provider_identity: Option<String>,
+        enabled: Option<i64>,
+        revision: Option<i64>,
+        updated_at: Option<String>,
+    }
+    runtime_bindings: RuntimeBindingsRow from "runtime_bindings" key(id) {
+        id: String,
+        project_id: String,
+        agent_run_id: String,
+        runtime_kind: String,
+        host: String,
+        generation: i64,
+        native_id: String,
+        bound_at: String,
+    }
+    command_receipts: CommandReceiptsRow from "command_receipts" key(id) {
+        id: String,
+        project_id: String,
+        idempotency_key: String,
+        kind: String,
+        target: String,
+        target_revision: i64,
+        intent: String,
+        intent_hash: String,
+        state: String,
+        correlation: Option<String>,
+        native_identity: Option<String>,
+        result_ref: Option<String>,
+        attempts: i64,
+        created_at: String,
+        updated_at: String,
+        execution_mode: String,
+    }
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    profile_selection_outcomes: ProfileSelectionOutcomesRow from "profile_selection_outcomes" key(project_id, receipt_id) {
+        project_id: String,
+        receipt_id: String,
+        task_id: String,
+        workflow_id: String,
+        profile_key: String,
+        profile_version: i64,
+        profile_hash: String,
+        team_template_id: Option<String>,
+        team_template_version: Option<i64>,
+        team_template_hash: Option<String>,
+        applied: String,
+        recorded_at: String,
+    }
+    command_receipt_transitions: CommandReceiptTransitionsRow from "command_receipt_transitions" key(project_id, receipt_id, sequence) {
+        project_id: String,
+        receipt_id: String,
+        sequence: i64,
+        state: String,
+        correlation: Option<String>,
+        native_identity: Option<String>,
+        evidence_ref: Option<String>,
+        recorded_at: String,
+    }
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    legacy_local_command_confirmation_provenance: LegacyLocalCommandConfirmationProvenanceRow from "legacy_local_command_confirmation_provenance" key(project_id, receipt_id) {
+        project_id: String,
+        receipt_id: String,
+        receipt_kind: String,
+        source: String,
+        disposition: String,
+        mutation_identity: String,
+        mutation_recorded_at: Option<String>,
+        certificate_ref: Option<String>,
+        certified_at: String,
+    }
+    command_targets: CommandTargetsRow from "command_targets" key(project_id, receipt_id) {
+        project_id: String,
+        receipt_id: String,
+        target_kind: String,
+        target_project_id: Option<String>,
+        target_mini_project_id: Option<String>,
+        target_task_id: Option<String>,
+        target_team_run_id: Option<String>,
+        target_agent_run_id: Option<String>,
+        target_ticket_link_id: Option<String>,
+        target_work_calendar_id: Option<String>,
+    }
+    command_outbox: CommandOutboxRow from "command_outbox" key(receipt_id) {
+        receipt_id: String,
+        project_id: String,
+        payload: String,
+        payload_hash: String,
+        not_before: String,
+        claimed_at: Option<String>,
+        dispatched_at: Option<String>,
+        attempts: i64,
+    }
+    runtime_events: RuntimeEventsRow from "runtime_events" key(cursor) {
+        cursor: i64,
+        project_id: String,
+        event_kind: String,
+        agent_run_id: Option<String>,
+        runtime_kind: Option<String>,
+        host: Option<String>,
+        generation: Option<i64>,
+        native_id: Option<String>,
+        native_event_id: Option<String>,
+        native_sequence: Option<i64>,
+        observed_state: Option<String>,
+        contact: Option<String>,
+        freshness: Option<String>,
+        audit_ref: Option<String>,
+        command_receipt_id: Option<String>,
+        payload: String,
+        payload_hash: String,
+        observed_at: String,
+        recorded_at: String,
+    }
+    runtime_replay_consumers: RuntimeReplayConsumersRow from "runtime_replay_consumers" key(project_id, consumer_key) {
+        project_id: String,
+        consumer_key: String,
+        last_cursor: i64,
+        updated_at: String,
+    }
+    runtime_control_gaps: RuntimeControlGapsRow from "runtime_control_gaps" key(id) {
+        id: String,
+        project_id: String,
+        agent_run_id: String,
+        runtime_kind: String,
+        host: String,
+        generation: i64,
+        native_id: String,
+        expected_sequence: i64,
+        received_sequence: i64,
+        detected_cursor: i64,
+        audit_ref: String,
+        detected_at: String,
+    }
+    runtime_content_gaps: RuntimeContentGapsRow from "runtime_content_gaps" key(id) {
+        id: String,
+        project_id: String,
+        agent_run_id: String,
+        content_epoch: i64,
+        expected_content_sequence: i64,
+        received_content_sequence: i64,
+        detected_cursor: i64,
+        audit_ref: String,
+        detected_at: String,
+    }
+    recovery_episodes: RecoveryEpisodesRow from "recovery_episodes" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        workflow_id: String,
+        parked_agent_run_id: String,
+        status: String,
+        cause_evaluation_id: String,
+        advisor_used: i64,
+        committee_used: i64,
+        effective_followups: i64,
+        successor_agent_run_id: Option<String>,
+        escalation_cause: Option<String>,
+        revision: i64,
+        created_at: String,
+        closed_at: Option<String>,
+    }
+    recovery_steps: RecoveryStepsRow from "recovery_steps" key(project_id, episode_id, sequence) {
+        project_id: String,
+        episode_id: String,
+        sequence: i64,
+        kind: String,
+        input_hash: String,
+        output_hash: Option<String>,
+        agent_run_id: Option<String>,
+        policy_evaluation_id: Option<String>,
+        artifact_evidence_id: Option<String>,
+        recorded_at: String,
+    }
+    approval_receipts: ApprovalReceiptsRow from "approval_receipts" key(id) {
+        id: String,
+        project_id: String,
+        scope_kind: String,
+        task_id: Option<String>,
+        action_domain: String,
+        action_intent: String,
+        action_effect: String,
+        action_digest: String,
+        approver_principal: String,
+        approver_role: String,
+        approver_account: String,
+        authority_source: String,
+        evidence: String,
+        evidence_hash: String,
+        issued_at: String,
+        expires_at: String,
+        consumed_at: Option<String>,
+    }
+    guardrail_evaluations: GuardrailEvaluationsRow from "guardrail_evaluations" key(id) {
+        id: String,
+        project_id: String,
+        agent_run_id: String,
+        rung: i64,
+        verdict: String,
+        evidence: String,
+        evidence_hash: String,
+        recorded_at: String,
+    }
+    policy_evaluations: PolicyEvaluationsRow from "policy_evaluations" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        workflow_id: String,
+        team_run_id: Option<String>,
+        agent_run_id: Option<String>,
+        rule_key: String,
+        rule_version: i64,
+        subject_kind: String,
+        subject_id: String,
+        inputs: String,
+        inputs_hash: String,
+        verdict: String,
+        reason_code: String,
+        evidence_refs: String,
+        recorded_at: String,
+    }
+    run_park_closures: RunParkClosuresRow from "run_park_closures" key(project_id, agent_run_id) {
+        project_id: String,
+        agent_run_id: String,
+        team_run_id: Option<String>,
+        policy_evaluation_id: String,
+        recovery_episode_id: String,
+        closure_receipt_id: String,
+        reason_code: String,
+        evidence_hash: String,
+        recorded_at: String,
+    }
+    calendar_profiles: CalendarProfilesRow from "calendar_profiles" key(profile_id, version) {
+        profile_id: String,
+        version: i64,
+        name: String,
+        definition: String,
+        definition_hash: String,
+        created_at: String,
+    }
+    work_calendars: WorkCalendarsRow from "work_calendars" key(id) {
+        id: String,
+        project_id: String,
+        profile_id: String,
+        profile_version: i64,
+        timezone: String,
+        window_override: Option<String>,
+        active: i64,
+        created_at: String,
+        retired_at: Option<String>,
+    }
+    holiday_sources: HolidaySourcesRow from "holiday_sources" key(id) {
+        id: String,
+        profile_id: String,
+        profile_version: i64,
+        provider: String,
+        country: String,
+        subdivision: Option<String>,
+        reference: String,
+        range_start: String,
+        range_end: String,
+        retrieved_at: String,
+        raw_hash: String,
+        normalized_hash: String,
+    }
+    calendar_exceptions: CalendarExceptionsRow from "calendar_exceptions" key(id) {
+        id: String,
+        project_id: String,
+        work_calendar_id: String,
+        start_date: String,
+        end_date: String,
+        kind: String,
+        label: String,
+        provenance: String,
+        supersedes: Option<String>,
+        created_at: String,
+    }
+    execution_authorizations: ExecutionAuthorizationsRow from "execution_authorizations" key(id) {
+        id: String,
+        project_id: String,
+        scope_kind: String,
+        scope_mini_project_id: Option<String>,
+        scope_task_id: Option<String>,
+        selected_tasks: String,
+        allowed_start: String,
+        allowed_end: String,
+        max_concurrency: i64,
+        max_tokens: i64,
+        max_commands: i64,
+        max_duration_seconds: i64,
+        max_cost_minor_units: i64,
+        cost_currency: String,
+        created_by: String,
+        capability_receipt_id: String,
+        created_at: String,
+    }
+    execution_authorization_tasks: ExecutionAuthorizationTasksRow from "execution_authorization_tasks" key(project_id, authorization_id, task_id) {
+        project_id: String,
+        authorization_id: String,
+        task_id: String,
+    }
+    schedule_overrides: ScheduleOverridesRow from "schedule_overrides" key(id) {
+        id: String,
+        project_id: String,
+        scope_kind: String,
+        scope_mini_project_id: Option<String>,
+        scope_task_id: Option<String>,
+        reason: String,
+        start_at: String,
+        expiry_kind: String,
+        expiry_at: Option<String>,
+        expiry_mini_project_id: Option<String>,
+        hard_ceiling: String,
+        max_concurrency: i64,
+        max_tokens: i64,
+        max_commands: i64,
+        max_duration_seconds: i64,
+        max_cost_minor_units: i64,
+        cost_currency: String,
+        approved_by: String,
+        approval_receipt_id: String,
+        created_at: String,
+        revoked_at: Option<String>,
+        revoked_by: Option<String>,
+        revocation_receipt_id: Option<String>,
+    }
+    scheduler_admission_events: SchedulerAdmissionEventsRow from "scheduler_admission_events" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        decision: String,
+        rejection_code: Option<String>,
+        team_run_id: Option<String>,
+        agent_run_id: Option<String>,
+        launch_receipt_id: Option<String>,
+        authorization_id: Option<String>,
+        evidence: String,
+        evidence_hash: String,
+        decided_at: String,
+    }
+    runtime_reconciliation_epochs: RuntimeReconciliationEpochsRow from "runtime_reconciliation_epochs" key(epoch_id) {
+        epoch_id: String,
+        project_id: String,
+        runtime_kind: String,
+        host: String,
+        generation: i64,
+        reconciliation_key: String,
+        census_start_cursor: i64,
+        completion_cursor: Option<i64>,
+        started_at: String,
+        completed_at: Option<String>,
+        status: String,
+    }
+    runtime_reconciliation_members: RuntimeReconciliationMembersRow from "runtime_reconciliation_members" key(project_id, epoch_id, native_id) {
+        project_id: String,
+        epoch_id: String,
+        native_id: String,
+        agent_run_id: Option<String>,
+        observation_cursor: i64,
+        observed_state: String,
+        recorded_at: String,
+    }
+    runtime_reconciliation_results: RuntimeReconciliationResultsRow from "runtime_reconciliation_results" key(project_id, epoch_id, agent_run_id) {
+        project_id: String,
+        epoch_id: String,
+        agent_run_id: String,
+        outcome: String,
+        source_revision: i64,
+        resulting_revision: i64,
+        source_cursor: Option<i64>,
+        recorded_at: String,
+    }
+    context_packs: ContextPacksRow from "context_packs" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        content: String,
+        content_hash: String,
+        created_at: String,
+    }
+    handoffs: HandoffsRow from "handoffs" key(id) {
+        id: String,
+        project_id: String,
+        workflow_id: String,
+        from_phase: String,
+        to_phase: String,
+        context_pack_id: Option<String>,
+        payload: String,
+        created_at: String,
+    }
+    open_questions: OpenQuestionsRow from "open_questions" key(question_id) {
+        question_id: String,
+        project_id: String,
+        mini_project_id: String,
+        subject: String,
+        scope: String,
+        attachment: String,
+        author_seat_id: String,
+        shareability_class: String,
+        shareability_classifier: Option<String>,
+        shareability_provenance: String,
+        created_at: String,
+        revision: i64,
+    }
+    open_question_rounds: OpenQuestionRoundsRow from "open_question_rounds"
+        key(project_id, question_id, ordinal) {
+        project_id: String,
+        question_id: String,
+        ordinal: i64,
+        author_seat_id: String,
+        why_ambiguous: String,
+        options: String,
+        supersedes: Option<i64>,
+        recorded_at: String,
+    }
+    open_question_dispositions: OpenQuestionDispositionsRow from "open_question_dispositions"
+        key(project_id, question_id, ordinal) {
+        project_id: String,
+        question_id: String,
+        ordinal: i64,
+        author_seat_id: String,
+        kind: String,
+        trigger_key: Option<String>,
+        payload: String,
+        supersedes: Option<i64>,
+        recorded_at: String,
+    }
+    open_question_trigger_firings: OpenQuestionTriggerFiringsRow
+        from "open_question_trigger_firings" key(project_id, question_id, ordinal) {
+        project_id: String,
+        question_id: String,
+        ordinal: i64,
+        disposition_ordinal: i64,
+        trigger_key: String,
+        observed_by_seat_id: String,
+        recorded_at: String,
+    }
+
+    /// Why a provider quota row says what it says.
+    ///
+    /// Carried in full because it was designed to be carriable: modelled
+    /// scalars, a signal identity and two digests. The vendor's sentence is
+    /// never in it, so there is nothing here that redaction would have to
+    /// remove, and a destination realm can re-judge an inherited quota row
+    /// against the fingerprint that produced it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    provider_quota_observation_provenance: ProviderQuotaObservationProvenanceRow
+        from "provider_quota_observation_provenance" key(id) {
+        id: String,
+        project_id: String,
+        account_profile_id: String,
+        provider: String,
+        signal_id: String,
+        signal_version: i64,
+        signal_definition_hash: String,
+        agent_run_id: String,
+        runtime_binding_id: String,
+        native_id: String,
+        binding_generation: i64,
+        /// Exact control-plane observation cursor; absent only on legacy v85 rows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime_observation_cursor: Option<i64>,
+        item_epoch: i64,
+        item_seq_start: i64,
+        item_seq_end: i64,
+        item_kind: String,
+        item_observed_at: String,
+        decision_basis: String,
+        decided_state: String,
+        parsed_resets_at: Option<String>,
+        reset_zone: Option<String>,
+        /// How many source ranges the record sealed itself to.
+        source_range_count: i64,
+        evidence_digest: String,
+        recorded_at: String,
+    }
+
+    /// The exact timeline ranges one provenance record was read from.
+    ///
+    /// Exported as its own rows rather than folded into the parent: the set is
+    /// ordered and disjoint, and an envelope alone cannot say which sequences
+    /// were actually read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    provider_quota_observation_source_ranges: ProviderQuotaObservationSourceRangeRow
+        from "provider_quota_observation_source_ranges" key(provenance_id, ordinal) {
+        provenance_id: String,
+        project_id: String,
+        ordinal: i64,
+        seq_start: i64,
+        seq_end: i64,
+    }
+
+    /// The quota conclusion itself, including the provenance it cites.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    provider_quota_states: ProviderQuotaStatesRow
+        from "provider_quota_states" key(project_id, account_profile_id, provider) {
+        project_id: String,
+        account_profile_id: String,
+        provider: String,
+        state: String,
+        resets_at: Option<String>,
+        /// The balance a credit vendor reported, in minor units.
+        ///
+        /// Carried because it decides launch eligibility: a row exported
+        /// without its balance and reserve reads as an account with no money
+        /// constraint at all, which is the opposite of what a drained row means.
+
+        credit_minor_units: Option<i64>,
+        credit_reserve_minor_units: Option<i64>,
+        credit_currency: Option<String>,
+        evidence_hash: String,
+        source: String,
+        observed_at: String,
+        provenance_id: Option<String>,
+        revision: i64,
+        updated_at: String,
+    }
+
+    /// Per-window headroom belonging to a quota row.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    provider_quota_windows: ProviderQuotaWindowsRow
+        from "provider_quota_windows" key(project_id, account_profile_id, provider, kind) {
+        project_id: String,
+        account_profile_id: String,
+        provider: String,
+        kind: String,
+        resets_at: Option<String>,
+        used_percent: i64,
+    }
+
+    /// Forward-only quota-blocked seat succession attempts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    succession_attempts: SuccessionAttemptsRow from "succession_attempts" key(id) {
+        id: String,
+        project_id: String,
+        task_id: String,
+        team_run_id: String,
+        role_key: String,
+        predecessor_agent_run_id: String,
+        predecessor_runtime_binding_id: String,
+        predecessor_runtime_kind: String,
+        predecessor_host: String,
+        predecessor_native_id: String,
+        predecessor_generation: i64,
+        expected_task_revision: i64,
+        expected_team_revision: i64,
+        expected_predecessor_revision: i64,
+        runtime_observation_cursor: i64,
+        quota_provenance_id: String,
+        quota_state_revision: i64,
+        quota_evidence_hash: String,
+        quota_provider: String,
+        successor_model_rung: Option<String>,
+        successor_model_rung_hash: Option<String>,
+        successor_account_profile_id: Option<String>,
+        idempotency_key: String,
+        intent_hash: String,
+        state: String,
+        deferred_until: Option<String>,
+        handoff: Option<String>,
+        handoff_hash: Option<String>,
+        successor_agent_run_id: Option<String>,
+        successor_runtime_binding_id: Option<String>,
+        successor_runtime_kind: Option<String>,
+        successor_host: Option<String>,
+        successor_native_id: Option<String>,
+        successor_generation: Option<i64>,
+        successor_observation_cursor: Option<i64>,
+        successor_observed_at: Option<String>,
+        refusal_reason: Option<String>,
+        revision: i64,
+        created_at: String,
+        updated_at: String,
+        predecessor_retired_at: Option<String>,
+        confirmed_at: Option<String>,
+        refused_at: Option<String>,
+        successor_planned_at: Option<String>,
+    }
+
+    /// Immutable receipts for confirmed succession attempts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    succession_receipts: SuccessionReceiptsRow from "succession_receipts" key(id) {
+        id: String,
+        project_id: String,
+        attempt_id: String,
+        receipt: String,
+        receipt_hash: String,
+        confirmed_at: String,
+    }
+}
+
+impl ExportedRecords {
+    /// Continuity represented in the exact record vocabulary of one supported
+    /// export generation.
+    #[must_use]
+    fn continuity_for_export(&self, schema_version: u32) -> ContinuitySummary {
+        let mut continuity = self.continuity();
+        if schema_version < TEAM_DEFINITION_EXPORT_VERSION {
+            for field in TEAM_DEFINITION_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < CANONICAL_JIRA_LINK_EXPORT_VERSION {
+            for field in CANONICAL_JIRA_LINK_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < EPIC_JIRA_RECONCILIATION_EXPORT_VERSION {
+            for field in EPIC_JIRA_RECONCILIATION_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < LEGACY_NAMING_RECOVERY_EXPORT_VERSION {
+            for field in LEGACY_NAMING_RECOVERY_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < QUOTA_OBSERVATION_PROVENANCE_EXPORT_VERSION {
+            for field in QUOTA_CHAIN_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        if schema_version < SUCCESSION_EXPORT_VERSION {
+            for field in SUCCESSION_RECORD_FIELDS {
+                continuity.record_counts.remove(field);
+            }
+        }
+        continuity
+    }
+
+    /// What this document says about its own completeness.
+    ///
+    /// Everything is counted from the records themselves. A summary computed by
+    /// a second query could disagree with the records it describes; one
+    /// computed from them cannot.
+    #[must_use]
+    pub fn continuity(&self) -> ContinuitySummary {
+        let settled = ["succeeded", "failed", "cancelled", "superseded"];
+        ContinuitySummary {
+            record_counts: self.record_counts(),
+            control_gaps: self.runtime_control_gaps.len() as u64,
+            content_gaps: self.runtime_content_gaps.len() as u64,
+            unsettled_command_receipts: self
+                .command_receipts
+                .iter()
+                .filter(|receipt| {
+                    receipt.execution_mode == "dispatch"
+                        && !settled.contains(&receipt.state.as_str())
+                })
+                .count() as u64,
+            incomplete_reconciliation_epochs: self
+                .runtime_reconciliation_epochs
+                .iter()
+                .filter(|epoch| epoch.completed_at.is_none())
+                .count() as u64,
+            unconfirmed_agent_runs: self
+                .agent_runs
+                .iter()
+                .filter(|run| run.last_confirmed_at.is_none() && run.closed_at.is_none())
+                .count() as u64,
+            highest_control_cursor: self
+                .runtime_events
+                .iter()
+                .map(|event| event.cursor)
+                .max()
+                .unwrap_or_default(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod attestation_ledger_tests {
+    use super::*;
+
+    #[test]
+    fn historical_table_absence_is_allowed_only_before_124() {
+        let connection = Connection::open_in_memory().expect("fixture");
+        connection
+            .execute_batch("PRAGMA user_version=123;")
+            .expect("legacy version");
+        assert!(ensure_empty_attestation_ledger(&connection).is_ok());
+        connection
+            .execute_batch("PRAGMA user_version=124;")
+            .expect("corrupt current version");
+        assert!(matches!(
+            ensure_empty_attestation_ledger(&connection),
+            Err(BackupError::Verification { .. })
+        ));
+        connection
+            .execute_batch("PRAGMA user_version=0;")
+            .expect("uninitialized version");
+        assert!(matches!(
+            ensure_empty_attestation_ledger(&connection),
+            Err(BackupError::Verification { .. })
+        ));
+    }
+    #[test]
+    fn token_tables_are_required_at125_and_legacy124_absence_never_skips_keys() {
+        let connection = Connection::open_in_memory().expect("fixture");
+        connection
+            .execute_batch(
+                "PRAGMA user_version=124;
+            CREATE TABLE attestation_authority_heads (revision INTEGER);
+            CREATE TABLE attestation_authority_keys (revoked_revision INTEGER);",
+            )
+            .expect("empty legacy ledger");
+        assert!(ensure_empty_attestation_ledger(&connection).is_ok());
+        connection
+            .execute_batch("INSERT INTO attestation_authority_keys VALUES (2);")
+            .expect("revoked history");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
+        connection
+            .execute_batch("DELETE FROM attestation_authority_keys; PRAGMA user_version=125;")
+            .expect("corrupt fixture only");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
+        connection
+            .execute_batch("CREATE TABLE attestation_token_heads (revision INTEGER);")
+            .expect("partial schema");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
+        connection
+            .execute_batch("CREATE TABLE prepared_attestation_tokens (revoked_revision INTEGER);")
+            .expect("empty schema");
+        assert!(ensure_empty_attestation_ledger(&connection).is_ok());
+        // Deliberately orphaned metadata isolates each continuity guard; no
+        // production preparation path can create this corruption fixture.
+        connection
+            .execute_batch("INSERT INTO attestation_token_heads VALUES (2);")
+            .expect("orphaned head fixture");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
+        connection.execute_batch("DELETE FROM attestation_token_heads; INSERT INTO prepared_attestation_tokens VALUES (2);").expect("orphaned row fixture");
+        assert!(ensure_empty_attestation_ledger(&connection).is_err());
+    }
+}

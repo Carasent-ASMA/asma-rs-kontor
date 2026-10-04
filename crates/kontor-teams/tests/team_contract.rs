@@ -252,6 +252,7 @@ impl Runtime {
             context_policy: standard_context_policy(),
             autonomy: kontor_core::spec::SeatAutonomy::standard(),
             requested_at: now(),
+            fleet_provenance: None,
         }
     }
 

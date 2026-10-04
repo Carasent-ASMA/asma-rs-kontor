@@ -1,0 +1,66 @@
+1e02fd72a18c95121658683a8f81dfce057d5364
+100644 7a2a4c2262597cb61553baad4715dc3e12e065e3 1	apps/console/src/api/schema.d.ts
+100644 1248c142f6062ef686e1c3688096b314c4cd701d 2	apps/console/src/api/schema.d.ts
+100644 00eba442d955aa03745970697d1c80e9e23f6f41 3	apps/console/src/api/schema.d.ts
+100644 f168ab55cb7c7ade101803c37f61955a029c3b3c 1	crates/kontor-api/contract/openapi.json
+100644 ba239119d372841cbcafba212f6d392c685dd79b 2	crates/kontor-api/contract/openapi.json
+100644 ef36f5934b79bb37459a95cad8c954fcad182b84 3	crates/kontor-api/contract/openapi.json
+100644 b26a72f33508ca99bdd093653e3691f9ec7308b5 1	crates/kontor-daemon/src/applications.rs
+100644 4de0af5e74fe3d93c943ee81817b754627e1408e 2	crates/kontor-daemon/src/applications.rs
+100644 b2d5abae85362ff2522708b6dd46b5112eba1152 3	crates/kontor-daemon/src/applications.rs
+100644 43861ba3917737ef3bf88b9b79785f345edb8afa 1	crates/kontor-daemon/tests/loopback_api.rs
+100644 b6ebd6840c1e0159bfd9f415f31155a9fe38a1a0 2	crates/kontor-daemon/tests/loopback_api.rs
+100644 8277512bf9b3007c62fec630cce2b3d002a7fb6e 3	crates/kontor-daemon/tests/loopback_api.rs
+100644 c28ac30bbf55a101545f1917ec1711a20eaf948a 1	crates/kontor-store/src/migrations.rs
+100644 6e2e31e470bd24d2d60500b763a8f9084b55ce81 2	crates/kontor-store/src/migrations.rs
+100644 f020d69ea4449c9d6afcc8372c27affda8b3e31c 3	crates/kontor-store/src/migrations.rs
+100644 38e86c04eb9ef697e17fa61d1fcff841a022d324 1	crates/kontor-store/tests/publication_attestations_immutable.rs
+100644 0501aa7cda63d02ee6f3c84b0b92ad3da4af032c 2	crates/kontor-store/tests/publication_attestations_immutable.rs
+100644 a630ac4a94638feddd8bfd97dd24088862616111 3	crates/kontor-store/tests/publication_attestations_immutable.rs
+100644 eba63828566047bda7eb4681da5085beb3cafd1f 1	crates/kontor-store/tests/realm_preflight.rs
+100644 ca6be2d41c0f280b2d3887c1536f1133bc06ec00 2	crates/kontor-store/tests/realm_preflight.rs
+100644 a30fe0f4b0321b69b683fc0559637ee3a507e8b8 3	crates/kontor-store/tests/realm_preflight.rs
+100644 ceb6f2884e4d153e937d6ae8a093b670153bb44c 1	crates/kontor-store/tests/schema_v1.rs
+100644 90f51a6f1e8ae79ca01c587ebc20ba80124f65e5 2	crates/kontor-store/tests/schema_v1.rs
+100644 55609869947ebd25c8f6853090a5a2b30e4e808a 3	crates/kontor-store/tests/schema_v1.rs
+100644 7ce647862260964f3caa8067095c6a5934aea499 1	docs/CONFIGURATION.md
+100644 97f1f9c79db85330fe1e61fca5c914015cff20a9 2	docs/CONFIGURATION.md
+100644 975e48943691db8ddf728990169a5a07a4f15f97 3	docs/CONFIGURATION.md
+100644 e76a4fa8ccab2e7d34002c9ba04b06d2fecf9029 1	tests/contract/mcp_parity.rs
+100644 95cddd2916a91e3f49b8709bee5f3f3290508226 2	tests/contract/mcp_parity.rs
+100644 00cb8765e7f16d202fe97396b2423c804412da5b 3	tests/contract/mcp_parity.rs
+
+Auto-merging Cargo.lock
+Auto-merging Cargo.toml
+Auto-merging apps/console/src/api/schema.d.ts
+CONFLICT (content): Merge conflict in apps/console/src/api/schema.d.ts
+Auto-merging crates/kontor-api/contract/openapi.json
+CONFLICT (content): Merge conflict in crates/kontor-api/contract/openapi.json
+Auto-merging crates/kontor-api/src/applications.rs
+Auto-merging crates/kontor-api/src/error.rs
+Auto-merging crates/kontor-api/src/lib.rs
+Auto-merging crates/kontor-api/src/openapi.rs
+Auto-merging crates/kontor-core/src/id.rs
+Auto-merging crates/kontor-core/src/lib.rs
+Auto-merging crates/kontor-daemon/Cargo.toml
+Auto-merging crates/kontor-daemon/src/applications.rs
+CONFLICT (content): Merge conflict in crates/kontor-daemon/src/applications.rs
+Auto-merging crates/kontor-daemon/src/lib.rs
+Auto-merging crates/kontor-daemon/tests/loopback_api.rs
+CONFLICT (content): Merge conflict in crates/kontor-daemon/tests/loopback_api.rs
+Auto-merging crates/kontor-mcp/src/registry.rs
+Auto-merging crates/kontor-mcp/src/server.rs
+Auto-merging crates/kontor-store/src/migrations.rs
+CONFLICT (content): Merge conflict in crates/kontor-store/src/migrations.rs
+Auto-merging crates/kontor-store/tests/hosted_seat_autonomy.rs
+Auto-merging crates/kontor-store/tests/publication_attestations_immutable.rs
+CONFLICT (content): Merge conflict in crates/kontor-store/tests/publication_attestations_immutable.rs
+Auto-merging crates/kontor-store/tests/realm_preflight.rs
+CONFLICT (content): Merge conflict in crates/kontor-store/tests/realm_preflight.rs
+Auto-merging crates/kontor-store/tests/repository_roundtrip.rs
+Auto-merging crates/kontor-store/tests/schema_v1.rs
+CONFLICT (content): Merge conflict in crates/kontor-store/tests/schema_v1.rs
+Auto-merging docs/CONFIGURATION.md
+CONFLICT (content): Merge conflict in docs/CONFIGURATION.md
+Auto-merging tests/contract/mcp_parity.rs
+CONFLICT (content): Merge conflict in tests/contract/mcp_parity.rs

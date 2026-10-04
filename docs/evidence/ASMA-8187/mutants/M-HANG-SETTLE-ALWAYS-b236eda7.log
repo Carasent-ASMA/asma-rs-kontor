@@ -1,0 +1,41 @@
+=== mutant M-HANG-SETTLE-ALWAYS-b236eda7 (corrected baseline) ===
+baseline commit   : b236eda75b6d95f96442ad37224030d7de753195
+mutated file      : crates/kontor-daemon/src/applications.rs
+snapshot sha256   : 729d5346cc51c19d82afbd0953c3d2be4990d6bb48d73a8104028f35fce20092
+mutated  sha256   : 5c6c9aab007dca0f2c5942540b4a69925c6b00614ddba31d207e06fb86235b5a
+patch             : M-HANG-SETTLE-ALWAYS-b236eda7.patch (mutation-only, 18 lines)
+  git apply --check: accepted
+  patch --dry-run  : patching file 'crates/kontor-daemon/src/applications.rs'
+test command      : cargo test -p kontor-daemon --lib -- coherence::the_harness_fails_a_stuck_worker --test-threads=1
+reproduce (exact) : LIMIT=600 docs/evidence/ASMA-8187/mutants/harness/mutate.sh M-HANG-SETTLE-ALWAYS-b236eda7 docs/evidence/ASMA-8187/mutants/harness/m_hang_settle_always.py crates/kontor-daemon/src/applications.rs test -p kontor-daemon --lib -- coherence::the_harness_fails_a_stuck_worker --test-threads=1
+limiter           : this harness bounds the run at 600s wall clock and
+                    reports 124 = timeout, inconclusive, never a kill.
+toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform          : Darwin 25.6.0 arm64
+--- raw output ---
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.83s
+     Running unittests src/lib.rs (target/debug/deps/kontor_daemon-efbe81bf64c053fc)
+
+running 1 test
+test applications::coherence::the_harness_fails_a_stuck_worker_instead_of_waiting_for_it ... FAILED
+
+failures:
+
+---- applications::coherence::the_harness_fails_a_stuck_worker_instead_of_waiting_for_it stdout ----
+
+thread 'applications::coherence::the_harness_fails_a_stuck_worker_instead_of_waiting_for_it' (27019528) panicked at crates/kontor-daemon/src/applications.rs:44817:9:
+a worker that never finishes must not report as settled
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    applications::coherence::the_harness_fails_a_stuck_worker_instead_of_waiting_for_it
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 127 filtered out; finished in 0.12s
+
+error: test failed, to rerun pass `-p kontor-daemon --lib`
+--- exit status: 101 (non-zero = killed; 124 = timeout, inconclusive) ---
+restored sha256   : 729d5346cc51c19d82afbd0953c3d2be4990d6bb48d73a8104028f35fce20092
+restoration       : byte-identical to the named snapshot
+MUTANT markers    : 0

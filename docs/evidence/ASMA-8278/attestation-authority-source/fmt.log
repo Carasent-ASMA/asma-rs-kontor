@@ -1,0 +1,73 @@
+Diff in /private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store/src/backup/restore.rs:142:
+     let absolute = if database.is_absolute() {
+         database.to_path_buf()
+     } else {
+-        std::env::current_dir().map_err(|_| refusal())?.join(database)
++        std::env::current_dir()
++            .map_err(|_| refusal())?
++            .join(database)
+     };
+     let mut uri = String::from("file:");
+     // Percent-encode native path bytes, including URI delimiters, without a new
+Diff in /private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store/tests/backup_snapshot.rs:168:
+     let connection = rusqlite::Connection::open(&database).expect("fixture connection");
+     connection.execute_batch("DROP TABLE attestation_authority_keys; DROP TABLE attestation_authority_heads; PRAGMA user_version=123;").expect("exact pre124 fixture");
+     drop(connection);
+-    let manifest = SnapshotManifest::describe(&database, realm, 123, at("2026-10-03T18:00:00Z")).expect("legacy fixture manifest");
+-    std::fs::write(SnapshotManifest::path_for(&database), manifest.to_bytes().expect("manifest bytes")).expect("fixture manifest");
++    let manifest = SnapshotManifest::describe(&database, realm, 123, at("2026-10-03T18:00:00Z"))
++        .expect("legacy fixture manifest");
++    std::fs::write(
++        SnapshotManifest::path_for(&database),
++        manifest.to_bytes().expect("manifest bytes"),
++    )
++    .expect("fixture manifest");
+     let destination = home.path().join("new-target/kontor.db");
+     // Raw restore already requires the exact build schema; the new ledger
+     // guard must not invent legacy-schema restore support.
+Diff in /private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store/tests/backup_snapshot.rs:176:
+-    assert!(matches!(restore_snapshot(&database, &destination, at("2026-10-03T18:02:00Z")), Err(BackupError::Verification { .. })));
++    assert!(matches!(
++        restore_snapshot(&database, &destination, at("2026-10-03T18:02:00Z")),
++        Err(BackupError::Verification { .. })
++    ));
+     assert!(!destination.exists());
+-    assert_eq!(SqliteStore::open(&database).expect("additive open").schema_version().expect("version"), SCHEMA_VERSION);
++    assert_eq!(
++        SqliteStore::open(&database)
++            .expect("additive open")
++            .schema_version()
++            .expect("version"),
++        SCHEMA_VERSION
++    );
+ }
+ 
+ #[test]
+Diff in /private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store/tests/backup_snapshot.rs:183:
+     let home = TempDir::new().expect("home");
+     let database = home.path().join("kontor.db");
+     drop(SqliteStore::open(&database).expect("store"));
+-    let snapshot = create_snapshot(&database, &home.path().join("backups"), at("2026-10-03T18:00:00Z")).expect("empty snapshot");
++    let snapshot = create_snapshot(
++        &database,
++        &home.path().join("backups"),
++        at("2026-10-03T18:00:00Z"),
++    )
++    .expect("empty snapshot");
+     let connection = rusqlite::Connection::open(&database).expect("fixture connection");
+-    connection.execute_batch("DROP TABLE attestation_authority_heads;").expect("corrupt target only");
++    connection
++        .execute_batch("DROP TABLE attestation_authority_heads;")
++        .expect("corrupt target only");
+     drop(connection);
+     let bytes = std::fs::read(&database).expect("bytes");
+     let names = listing(home.path());
+Diff in /private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store/tests/backup_snapshot.rs:192:
+-    assert!(matches!(restore_snapshot(&snapshot.snapshot, &database, at("2026-10-03T18:02:00Z")), Err(BackupError::Verification { .. })));
++    assert!(matches!(
++        restore_snapshot(&snapshot.snapshot, &database, at("2026-10-03T18:02:00Z")),
++        Err(BackupError::Verification { .. })
++    ));
+     assert_eq!(std::fs::read(&database).expect("bytes"), bytes);
+     assert_eq!(listing(home.path()), names);
+ }

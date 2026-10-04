@@ -1,0 +1,65 @@
+{
+  "epic": "ASMA-8278",
+  "author": "Root d70d8a8f, OpenAI; evidence-only correction, not implementation or verdict",
+  "base_commit": "00a0e94c6af9800b1890d5b8f89ad339a1b661a8",
+  "supersedes": [
+    "Focused exit0/immediate-pass labels in prior README, committed-source-pin, worker handoff, root dispatch premise and any narrative derived from them.",
+    "M2-c attribution of 69/69 to the historical red focused schema_v1 run."
+  ],
+  "C1a": {
+    "observed_meta_exit": 101,
+    "finish_line": false,
+    "observed_log_summary": "1 passed",
+    "disposition": "INCONSISTENT_LOG_META_NOT_QUALIFYING",
+    "failure_cause": "UNKNOWN",
+    "intermediate_test_edits": "UNKNOWN",
+    "missing_failed_attempt_output": "UNKNOWN/not available in preserved pair; not reconstructed",
+    "qualifying_evidence": "Unchanged store-full.log and exit0 meta,40 summaries697/0/0 including new test."
+  },
+  "C1b": {
+    "focused_schema_v1": "Historical red68/1; not qualification",
+    "qualifying_69_of_69": "Pinned full-combined.log at ced6db99 only"
+  },
+  "changes": {
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/README.md": {
+      "before_sha256": "4cab4ea6693c452cdcec8d75750473fafe6b1a0597b3b28e1e65a8d39b3f1212",
+      "after_sha256": "0d962dc925c05b3c4f4da107b37003e4a9d5428964b02f12e05e7faa97b2f83d"
+    },
+    "docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/README.md": {
+      "before_sha256": "6cff75ac36e02511222b6ecdf0dc9930ce6966ea64a756d510836ac5e151885c",
+      "after_sha256": "40e9ad7e9b67be7bfe8d4f7d842bfa226ae03733846e880264bc70421a193e31"
+    },
+    "docs/evidence/ASMA-8278/module-master-conflict-repair-20261004/receipts/conflict-inventory.json": {
+      "before_sha256": "2b6712d16be5935548dd4b883b6bec79fc23d87470bb39b01cce894f055e2631",
+      "after_sha256": "72bec51d24e4a1c247d0b62a687b2e9e4182e8309cfb3b9d94ed638e2a79fc19"
+    },
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/committed-source-pin.json": {
+      "before_sha256": "690568777a1e092574580f594a4b39cf5dd7d242e52fc418a8bda029b3342665",
+      "after_sha256": "28eaa0c19595b8652e6ff9a88227574cc2d9ad02954e4bbea1783398698e1a82"
+    }
+  },
+  "prior_manifest_sha256": "5234e972635977aabe7018050bc9da44e7f662bea85488fdb93f59922ebbc885",
+  "unchanged_packet_artifacts": {
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/released-124-focused.meta": "a42806988914587932406216cbdca384005f2422463a8b3a529c3736a8189a5c",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/precommit-binding.json": "4721670c6c94531691eb3649ac43ee048c880bc3846fe936df71624614a0bdc3",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/new-released-124-test.rs": "a2359911d8d9a0b6bb3aac32b50c0e647817a971dcca33b044b698691b5d4d71",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/fmt-check.meta": "300b39ee9fd7a78c5f4e06cc61ae51e5b23ff0a02c7ff4ec20019c47d2bf710c",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/corrected-files-old-and-new.txt": "eed19d137f0e286feef82194ebe9383958af62291839151fd989f414e68f72a8",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/clippy.log": "5e816f280e8ae45b4850c74e7729828f34ad685ac04862700c4e20b13acdf993",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/released-migrations-byteequal.txt": "76a4af910a6e84cb77739c21fd39d12299769e5b8a0ecee2b60e631f98d4106c",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/store-full.log": "7e4ce0f0da914dbfd61ab06a19c326ce1045c55f58f174de2591bb90c552537c",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/manifest-verification.txt": "f830cbe945ecb3f57d7fdebc42612599bf7f270d983e33cdbb1ecad733f707cf",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/fmt-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/source-equivalence.txt": "f95ddf3d8b54c78635def199af97c2ff125c289c9a9dfc41f9b69aad74e4d73c",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/prior-artifact-preservation.txt": "0d5105350c4679ad1a3266f7296325b74e343b1f6b22f65e36328875beb966d5",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/clippy.meta": "37f42845667faf9d557ba4c1be33ac56077e86c33bf5282ef8bff3362ec0d59e",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/released-124-focused.log": "b0dbed36f9ac8e935d49a46dfbef8ff84b66cb54885b832bcf6a47a5ea9f3e0b",
+    "docs/evidence/ASMA-8278/released-124-upgrade-correction-20261004/receipts/store-full.meta": "1b19c69eb647e53280003b5442ec330ac340732cfbd30e9d7e27384a3c2d5d83"
+  },
+  "limits": [
+    "No source/generated API/raw log/meta/precommit binding edits; no reruns.",
+    "Original claims/findings/counters remain immutable at their pins; new manifest refresh binds only current evidence bytes.",
+    "Old manifest-verification receipt is historical at00a0e94c, not a current inventory audit.",
+    "No aggregate/merge/adoption/Jira Done/live/deferred PASS."
+  ]
+}

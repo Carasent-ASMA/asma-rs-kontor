@@ -23,6 +23,9 @@ system behaviour instead of instructions somebody has to remember.
 | `<state-root>/supervision.yml` | Optional seat supervision policy. Schema v1 is validation/classification only; schema v2 can explicitly enable resident bounded succession (see below) |
 | `<state-root>/quota-signals.yml` | Vendor exhaustion wording, applied to a seat's own refusal text (optional; see below) |
 | `<state-root>/fleet.yml` | Live model routing — domains, accounts, models, chains and seat bindings, read at every placement (optional; see below) |
+| `<state-root>/fleet-activation.json` | Generated: which published fleet policy placement reads, by content hash — and, for an aligned (schema_version 2) activation, which orchestration bundle and Core Team roster. Written only by activation; while it exists, `fleet.yml` is not read (see below) |
+| `<state-root>/core-team-history/`, `<state-root>/orchestration-history/` | Generated, immutable: canonical Core Team revisions and orchestration bundle manifests, each named by its content hash (see below) |
+| `<state-root>/memory-cognee.json` | Optional bounded experience-retrieval configuration; disabled by default (see below) |
 | `<state-root>/credentials.json` | The realm's three tier secrets, `0600` |
 | `<state-root>/endpoint.json` | Where the realm listens, when not on the default loopback port |
 | `<state-root>/provider-homes/` | One credential home per provider account — `CODEX_HOME` for Codex, `CLAUDE_CONFIG_DIR` for Claude |
@@ -31,6 +34,67 @@ system behaviour instead of instructions somebody has to remember.
 Everything in the database is published through a preview/apply pair with a
 content hash: the apply is compared against the hash the preview returned, so a
 specification cannot change between the two.
+
+## Experience memory transport (ASMA-8158 source candidate)
+
+`memory-cognee.json` is optional, strict JSON, at most 8 KiB. Absence keeps
+typed, bounded lexical recall enabled and performs no Cognee network work.
+Only explicitly `provider_eligible` approved revisions enter the store's minimal
+projection preview. The default document policy remains `local_only`.
+
+```json
+{
+  "enabled": false,
+  "endpoint": "http://127.0.0.1:8000",
+  "credential_alias": "experience-fixture",
+  "dataset_prefix": "kontor",
+  "timeout_ms": 1500
+}
+```
+
+| Key | Default and contract |
+| --- | --- |
+| `enabled` | `false`; explicit transport opt-in, separate from a document's projection policy |
+| `endpoint` | `null`; self-hosted HTTP loopback or HTTPS, without userinfo, query or fragment |
+| `credential_alias` | `null`; non-secret alias, never a credential value or a Jira credential |
+| `dataset_prefix` | `kontor`; v1 requires this value to preserve the accepted immutable `kontor_<project_uuid>_<memory_cursor>` dataset identity |
+| `timeout_ms` | `1500`; 1–1500 ms for the entire semantic operation, reserving at least 500 ms of the 2-second target for authoritative lexical selection |
+
+This source candidate qualifies **synthetic transport only**. Embeddings and
+fixture tests can compose `Client::new(config, synthetic_secret)` with
+`DaemonConfig::with_memory_cognee`. Ordinary startup validates the document and
+refuses `enabled: true` with static `cognee_unavailable` until an authorized
+credential/transport composition is supplied. It never reads Keychain, provider
+credentials or environment secrets. ASMA-8159 owns live credential resolution,
+release qualification and projection activation; configuration here does not
+claim those capabilities are deployed.
+
+The transport sends multipart `datasetName` and repeated `data` text files to
+`/api/v1/add`, then blocking `/api/v1/cognify`, then `/api/v1/search` with
+`search_type: CHUNKS`, a dataset-name filter and `top_k: 64`. CHUNKS text is
+parsed only for the embedded canonical identity; backend distance is negated
+into descending rank. The returned lesson/cues never supply prompt content.
+Every candidate is rehydrated and frozen by the canonical store transaction.
+The adapter's `qualify` method produces add/cognify/canary evidence and **does
+not activate a dataset**. Live ingestion/chunk identity and release-specific
+completion/dataset behavior require ASMA-8159 qualification.
+
+Search/response work is bounded to 64 candidates and 256 KiB before decoding;
+redirects, automatic retries and inherited proxies are disabled. Errors expose
+static reasons without upstream bodies. An absent/stale/failed/malformed/empty
+projection degrades to eligible FTS with no `list_memory` fallback. Recall
+selects at most 8 whole experiences within 32768 exact canonical UTF-8 bytes,
+including JSON array overhead. The general Context Pack ceiling remains 1 MiB.
+Context `memory_selection.selector_version` is now 2, with `ceiling_bytes: 32768`
+and `narrowed: true`. `omitted` stays empty because it cannot enumerate an
+unbounded corpus; frozen recall metadata supplies exclusion counts instead.
+
+Normal delivery root prompts append the exact frozen canonical array inside
+`<experience_memory>` and identify its project, original run, result hash and
+block hash. Downstream roles cite that same binding. Replays load historical
+canonical bytes with hash verification before retrieving again; approval,
+tombstone, task edits and projection changes do not replace the selection.
+An explicit purge returns the accepted typed refusal and preserves the binding.
 
 ## Jira-derived backlog and topology names
 
@@ -539,6 +603,212 @@ explicit-route commands (bridge moves, `replace_seat` with a named route, and
 consultation seat recovery naming the frozen route) re-check that exact route
 against the catalog when they run. Automatic quota takeover walks the declared
 chain and is not affected.
+
+### Activated fleet policy (ASMA-8280)
+
+The policy both orchestration modes share is authored in the project checkout
+and handed to Kontor through four admin operations, which the CLI and MCP
+registry serve from the same route table:
+
+| Operation | Effect |
+| --- | --- |
+| `kontor_fleet_policy_get` | Which source decides routing (`activation` or `fleet_yml`), the activation record, the hash placement reads now, and why an activation cannot be served. |
+| `kontor_fleet_policy_preview` | Validates one document (schema_version 1 or 2) and returns its content hash. Writes nothing. |
+| `kontor_fleet_policy_publish` | Writes the previewed bytes, unchanged, to `fleet-history/<hash>.yml`. **Selects nothing.** |
+| `kontor_fleet_policy_activate` | Atomically replaces the owner-only `fleet-activation.json` with the named published hash, fenced on `expected_active_policy_hash`. |
+
+Once a record exists, placement reads exactly the artifact it names, and the
+record and artifact are both re-verified on every read: file rules, content
+hash and schema. Editing `fleet.yml`, a checkout, or publishing without
+activating has no effect. A record or artifact that fails verification refuses
+every placement that resolves a fleet binding, naming the failed check; it
+never falls back to `fleet.yml` or to template routing. Deleting the record
+returns the Realm to the unmigrated `fleet.yml` behaviour above. Rollback is
+activating a recorded hash.
+
+A published policy names accounts, models and seats; it never locates or
+authenticates them. Preview and publish refuse any value that carries
+credential material, a filesystem path (such as a provider home) or an email
+address (V-33); the unmigrated `fleet.yml` reader keeps its v1 checks.
+
+Every reader takes the same activation decision from `kontor-fleet`: only the
+bytes at the record's content address, validating under the record's schema,
+are the policy. A reader outside the daemon that follows the record's two files
+therefore resolves exactly what placement resolves, and its choice for a seat —
+the first route in chain order that the stated eligibility admits, with the
+reason every other route was passed over — is the same record for the same
+policy bytes, key and eligibility.
+
+Schema version 2 keeps every v1 section and rule and adds one binding family,
+`leadership/<core-team-revision-hash>/<role-slot-id>`, for epic leadership
+seats. The hash is the canonical content hash of the epic's pinned Core Team
+revision, so a roster change is a new key. `leadership/lsa`,
+`leadership/<slot>` and `core/<role_code>` are rejected. For a bound LSA or TPM
+seat, Core Team materialization, route correction and launch-intent
+supersession refuse any caller route the bound chain does not offer, and each
+admitted leadership effect appends its policy hash, binding, chain position and
+occupancy generation to `fleet-decisions/leadership/<seat_binding_id>.jsonl`.
+A leadership seat no policy binds keeps its caller-supplied route.
+
+A materialization route may name `eligibility`
+(`{unavailable_accounts, excluded_vendors}`) instead of `model_route`. The
+activated policy then chooses: the first route in chain order the stated
+eligibility admits, the same choice a direct-mode reader makes, and the
+decision records that eligibility. A named `model_route` is admitted or refused,
+never replaced. A route naming both or neither is invalid; a seat no policy
+binds, or whose bound routes are all ineligible, is refused before any seat
+exists.
+
+Governed delivery and consultation seats a fleet policy binds are chosen the
+same way. The exact quota observation is first stated as an explicit
+eligibility — an account alias with no account whose headroom admits a new seat
+now is unavailable, and a seat under `rules.independent_of` excludes the vendor
+its partner ran on — and the shared resolver (or, for a Committee, the shared
+allocator) chooses under it. The scheduler's rules still decide whether that
+choice launches now, waits for a near reset on a route it would rather have, or
+escalates. The eligibility is recorded with the decision: on each
+`fleet-decisions/<team_run_id>.jsonl` line, on a fleet-routed Committee or
+Advisor admission, and on a fleet-routed Committee seat recovery profile. A
+seat with no fleet binding, and an explicitly named caller route, walk the
+unchanged headroom chain and record no eligibility.
+
+#### Aligned activation: the orchestration bundle
+
+A schema_version 2 activation record names one orchestration bundle as well as
+its policy. The bundle is authored in `config/orchestration/`:
+`orchestration.yml` (`schema_version: 1`, `fleet: fleet.yml`,
+`core_team: teams/core-team.yml`) selects the policy and the explicit Core Team
+source. `teams/core-team.yml` pins one role catalog by `catalog_id`, `version`
+and `content_hash`, and declares every seat in order — the mandatory LSA and
+TPM included — with its `role_slot_id`, `role_code`, `presence` and
+`ad_hoc_allowed`. The publisher resolves it through the Core Team resolver, and
+the canonical revision bytes it produces define the `core_team_revision_hash`
+every `leadership/<hash>/<slot>` binding names.
+
+Five admin operations, served by the route table, the MCP registry and the CLI
+alike, carry a bundle from proposal to activation:
+
+| Operation | Effect |
+| --- | --- |
+| `kontor_fleet_bundle_propose` | An initial `orchestration.yml` and `teams/core-team.yml` holding only the mandatory roles, with the exact catalog revision (id, version, content hash) they pin. Writes and activates nothing; nothing reads the proposal until it is published and activated. |
+| `kontor_fleet_bundle_preview` | Resolves the exact `orchestration`, `fleet` and `core_team` bytes against the realm catalog revision the Core Team source pins, and returns the manifest publication would write and the preview hash, which binds those bytes and that catalog revision. Writes nothing. |
+| `kontor_fleet_bundle_publish` | Resolves the same bytes again, requires that preview hash, and writes and verifies the immutable policy, roster and manifest. **Selects nothing.** |
+| `kontor_fleet_bundle_activate` | Names `source_bundle_hash` and `expected_active` — the standing record's `policy_hash`, plus its `source_bundle_hash` when it is a v2 record, omitted entirely only when no record stands — verifies every artifact, and replaces the one pointer atomically. |
+| `kontor_fleet_bundle_get` | The record as a bundle: `activation_schema_version` 1 or 2, the record, and the manifest a v2 record names. |
+
+Publish and activate keys are bound realm-wide, each to its complete logical
+request. The single-policy operations above still work unchanged and write a
+v1 record over the same pointer.
+
+Publication writes three immutable artifacts: the policy under
+`fleet-history/`, the canonical roster under
+`core-team-history/<core-team-revision-hash>.json`, and a canonical manifest
+under `orchestration-history/<source-bundle-hash>.json` recording the resolver,
+the hash of each source file, the policy hash and schema, the role-catalog pin
+and the roster hash. Activation verifies every artifact first and then replaces
+the one pointer:
+
+```json
+{
+  "schema_version": 2,
+  "source_bundle_hash": "<manifest hash>",
+  "policy_hash": "<policy hash>",
+  "policy_schema_version": 2,
+  "core_team_revision_hash": "<roster hash>",
+  "activated_at": "<timestamp>"
+}
+```
+
+Readers verify the pointer, then the manifest (which must agree with it), then
+exactly the policy and roster it names, and that the roster was resolved against
+the catalog the manifest pins. Under an aligned activation a governed leadership
+launch consumes only the selected roster: an epic whose pinned revision is not
+those exact bytes keeps its pin, is never retargeted, and its leadership launch
+is refused. A schema_version 1 record keeps its exact shape and behaviour and
+selects no roster.
+
+A project's Core Team can be published from a published bundle through the
+existing `kontor_core_team_preview` and `kontor_core_team_apply`: name
+`source_bundle_hash` instead of `seats` (exactly one of the two). Both steps
+re-verify the bundle's immutable artifacts, derive the seats from its roster
+through the same resolver, and require the result to be the bundle's roster
+byte for byte — the bundle must be authored at the project's next Core Team
+version against the catalog the realm holds, or the preview refuses. The apply
+names the bundle in its intent, receipt and outcome. Nothing else changes: no
+epic pin or running seat is retargeted, and an explicit-seat request is
+unchanged.
+
+#### Direct-mode resolution without a daemon
+
+`kontor --state-root <root> --tier operator fleet-policy-resolve --binding-key <key>`
+(optionally `--unavailable-accounts '[...]'` and `--excluded-vendors '[...]'`) is
+the registry's one local operation. It is operator work, which admin inherits;
+an observer is refused. It runs in the CLI before any connection — no daemon,
+credential file, base URL or network — through the same verified reader the
+daemon uses, and prints `{tool, status: 200, body: FleetSelection}`. Nothing
+eligible prints the selection under `status: 409`, `placement_blocked`.
+Anything missing, unsafe, mismatched or malformed is a local refusal naming its
+rule; there is no `fleet.yml` and no last-valid fallback, and a schema_version 1
+activation resolves no leadership key. MCP neither lists nor dispatches it: it
+has no `/v1` route.
+
+The same operation allocates a whole Committee jointly when it is given
+`--allocation` instead of `--binding-key` — exactly one of the two:
+
+```json
+{
+  "diversity": "distinct_vendor_per_reviewer",
+  "slots": [
+    {"slot_id": "reviewer-a", "role": "reviewer", "binding_key": "committee/<template>/reviewer-a"},
+    {"slot_id": "reviewer-b", "role": "reviewer", "binding_key": "committee/<template>/reviewer-b",
+     "unavailable_accounts": ["codex-work"]},
+    {"slot_id": "judge", "role": "judge", "binding_key": "committee/<template>/judge"}
+  ]
+}
+```
+
+Each slot states its own eligibility; the top-level `--unavailable-accounts`
+and `--excluded-vendors` belong to single mode. Slot ids are unique. The
+activation is loaded and verified once, every slot is resolved against that
+snapshot, and the allocation is the shared allocator's: slots in the order
+given, then each chain in policy order; no two reviewers share a policy vendor,
+and a reviewer route whose vendor is `unknown` is not eligible; the judge is
+held only to its own eligibility. The answer is one complete ordered allocation
+under one shared provenance (policy, and for an aligned activation bundle and
+roster) with each slot's binding, chain, eligibility, every candidate
+considered and why it was passed over, and the chosen step, sub-step and vendor
+— or, under `status: 409` `placement_blocked`, the same receipt with no slot
+selected and the reason. There is no partial allocation. Governed Committee
+admission calls the same allocator.
+
+The same operation places one `planning_pair@1` pair when it is given
+`--planning-pair` instead. Name exactly one of `--binding-key`, `--allocation`
+and `--planning-pair`:
+
+```json
+{
+  "members": [
+    {"slot": "seat-a", "binding_key": "advisor/<profile-a>"},
+    {"slot": "seat-b", "binding_key": "advisor/<profile-b>",
+     "unavailable_accounts": ["codex-work"]}
+  ]
+}
+```
+
+The members are exactly `seat-a` then `seat-b` (PP-01). Each names an existing
+binding and states its own eligibility. The top-level `--unavailable-accounts`
+and `--excluded-vendors` belong to single mode (PP-04). Combining
+`--planning-pair` with another mode is refused (PP-03); `--binding-key` with
+`--allocation`, or no mode at all, is J-01 as before. The pair has no role,
+Judge or diversity to set. It is one joint allocation of both members through
+the same allocator under `distinct_vendor_per_reviewer`: the members never
+share a policy vendor, and a route whose vendor is `unknown` is not placed. The
+answer is `{protocol: "planning_pair@1", selection, placement_hash, members}`:
+`selection` is the joint allocation receipt, `placement_hash` its canonical
+hash, and `members` the two frozen members. When no such placement exists, the
+answer is the same document without `members` under `status: 409`
+`placement_blocked`. It is placement evidence only: it carries no verdict, and
+it never satisfies a review gate.
 
 ## Provider quota signals
 

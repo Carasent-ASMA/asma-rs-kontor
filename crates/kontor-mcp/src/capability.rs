@@ -73,6 +73,16 @@ pub enum Denied {
         /// This server's authority.
         configured: CallerTier,
     },
+    /// The operation is local: an in-process handler of the `kontor` CLI with no
+    /// `/v1` route, so an MCP server has nothing to dispatch.
+    ///
+    /// Distinct from [`Denied::NoSuchTool`] because the name is real and has a
+    /// remedy: run it with the CLI against the realm's state root.
+    #[error("`{tool}` is a local operation of the kontor CLI and has no /v1 route to call")]
+    LocalOperation {
+        /// The operation that was called.
+        tool: String,
+    },
     /// The active serve profile excludes this tool.
     ///
     /// Distinct from [`Denied::Authority`] on purpose: the credential reaches
@@ -151,7 +161,7 @@ impl Denied {
             // A profile exclusion is a policy refusal, not a malformed call and
             // not a missing tool: the tool exists, this server will not serve it.
             Self::Authority { .. } | Self::ProfileExcluded { .. } => "forbidden",
-            Self::NoSuchTool { .. } => "not_found",
+            Self::NoSuchTool { .. } | Self::LocalOperation { .. } => "not_found",
             _ => "invalid_request",
         }
     }
@@ -162,6 +172,9 @@ impl Denied {
         match self {
             Self::Authority { .. } => "present a credential carrying the tier this tool requires",
             Self::NoSuchTool { .. } => "call a tool this server lists; names are exact",
+            Self::LocalOperation { .. } => {
+                "run it as a kontor CLI command with --state-root; it needs no daemon"
+            }
             Self::ProfileExcluded { .. } => {
                 "switch serve profile, or add the tool to the current one"
             }

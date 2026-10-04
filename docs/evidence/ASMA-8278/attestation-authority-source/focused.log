@@ -1,0 +1,67 @@
+   Compiling tokio v1.53.1
+   Compiling serde v1.0.229
+   Compiling uuid v1.24.0
+   Compiling kontor-core v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-core)
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling futures-util v0.3.34
+   Compiling tracing-core v0.1.36
+   Compiling futures-channel v0.3.34
+   Compiling hyper v1.11.1
+   Compiling tracing v0.1.44
+   Compiling form_urlencoded v1.2.2
+   Compiling nom v8.0.0
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling url v2.5.8
+   Compiling num-traits v0.2.19
+   Compiling tokio-rustls v0.26.5
+   Compiling log v0.4.34
+   Compiling tokio-util v0.7.19
+   Compiling rustls-platform-verifier v0.7.0
+   Compiling chrono v0.4.45
+   Compiling hyper-rustls v0.27.9
+   Compiling tower-http v0.6.11
+   Compiling nom-language v0.1.0
+   Compiling iso8601 v0.6.6
+   Compiling reqwest v0.13.4
+   Compiling icalendar v0.17.13
+   Compiling tempfile v3.27.0
+   Compiling kontor-runtime v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-runtime)
+   Compiling kontor-context v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-context)
+   Compiling kontor-policy v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-policy)
+   Compiling kontor-scheduler v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-scheduler)
+   Compiling kontor-teams v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-teams)
+   Compiling kontor-profiles v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-profiles)
+   Compiling kontor-calendar v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-calendar)
+   Compiling kontor-store v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.55s
+     Running tests/attestation_authority.rs (target/debug/deps/attestation_authority-56fe9fa166913f8c)
+
+running 10 tests
+test realm_project_and_application_scopes_never_leak_or_create_unknown_rows ... FAILED
+test exact_expected_head_is_required_and_failed_writes_leave_no_partial_mutation ... ok
+test key_identity_is_never_reused_and_revocation_is_irreversible_under_replay ... ok
+test invalid_bounds_intervals_and_sqlite_integer_overflow_do_not_create_a_head ... ok
+test direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head ... ok
+test first_registration_advances_once_and_read_projection_survives_reopen ... ok
+test two_store_writers_cannot_both_satisfy_the_same_absent_head_expectation ... ok
+test checked_revision_overflow_refuses_registration_and_revocation_atomically ... ok
+test historical_ledger_is_not_limited_to_the_transport_key_count ... ok
+test failed_migration_124_rolls_back_its_new_head_and_version ... ok
+
+failures:
+
+---- realm_project_and_application_scopes_never_leak_or_create_unknown_rows stdout ----
+
+thread 'realm_project_and_application_scopes_never_leak_or_create_unknown_rows' (26161531) panicked at crates/kontor-store/tests/attestation_authority.rs:30:10:
+project: Conflict { subject: "storage", rule: "a uniqueness, check or immutability constraint refused the write" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    realm_project_and_application_scopes_never_leak_or_create_unknown_rows
+
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.54s
+
+error: test failed, to rerun pass `-p kontor-store --test attestation_authority`

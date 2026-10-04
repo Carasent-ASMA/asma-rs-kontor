@@ -1,0 +1,57 @@
+from pathlib import Path
+import json,hashlib,subprocess,datetime,shutil
+p=Path(__file__).resolve().parent;a=json.loads((p/'assignment.json').read_text());src=Path(a['source_root'])
+def sha(q):return hashlib.sha256(q.read_bytes()).hexdigest()
+def write(name,value):(p/name).write_text(json.dumps(value,indent=2)+'\n')
+r=json.loads((p/'mutation-report.json').read_text());pins=json.loads((p/'mutation-baseline-hashes.json').read_text())
+assert r['all_restored'] and len(r['mutants'])==4
+assert pins==r['final_original_hashes']==r['final_isolated_hashes']
+for z in [r['baseline'],*r['mutants'],r['restored_baseline']]:assert sha(p/z['log'])==z['log_sha256']
+assert all(z['result']=='KILLED' and z['successful_compilation'] and z['intended_test_failed'] and z['isolated_restored'] and z['original_unchanged'] and any(y['assertion_or_expect_err'] for y in z['panics']) for z in r['mutants'])
+assert r['baseline']['exit_code']==r['restored_baseline']['exit_code']==0
+for q,h in pins.items():
+ assert sha(src/q)==h==sha(p/'mutation-source'/q)
+ target=p/'candidate-files'/q;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src/q,target);assert sha(target)==h
+head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=src,text=True).strip()
+branch=subprocess.check_output(['git','branch','--show-current'],cwd=src,text=True).strip()
+status=subprocess.check_output(['git','status','--short'],cwd=src,text=True)
+(p/'final-git-status.txt').write_text(status)
+changed=subprocess.check_output(['git','diff','--name-only'],cwd=src,text=True).splitlines();assert set(changed)<=set(a['owned'])
+old=subprocess.check_output(['git','show',head+':'+a['owned'][0]],cwd=src,text=True)
+assert (src/a['owned'][0]).read_text()==old.replace('pub mod owner_checks;\n','pub mod owner_checks;\npub mod prepared_diagnostic;\n')
+(p/'source-delta.patch').write_text(subprocess.check_output(['git','diff','--',a['owned'][0]],cwd=src,text=True))
+write('final-owned-hashes.json',pins);(p/'final-owned-hashes.tsv').write_text(''.join(h+'\t'+q+'\n' for q,h in pins.items()))
+initial=json.loads((p/'01-source-hashes.json').read_text());write('temporal-provenance.json',{'initial_focused_source':initial,'final_regression_and_mutation_source':pins,'only_changed_after_initial_focus':[q for q,h in initial.items() if pins[q]!=h],'initial_focused_count':16,'final_focused_count':16,'changes':'Strengthened existing test assertions for exact absent-task direction, request-scope equality, 256 UTF8 byte acceptance, DER lower bound, and another real RSA key. All production/export bytes identical since first focus. Final full runtime regression and Clippy cover strengthened test bytes; mutant/restored baselines bind exact final3 hashes.','repeated_counts':'New16 diagnostic cases are included in157 runtime unit tests; focused/mutation reruns are not added to177 unique runtime tests.'})
+counts=json.loads((p/'runtime-suite-counts.json').read_text());assert sum(z['passed'] for z in counts[:-1])==177 and counts[-1]['passed']==2 and all(z['failed']==0 for z in counts)
+checks=[]
+for name in ['01-focused.log','02-runtime-regression.log','03-clippy.log','04-fmt.log','07-diff-check.log']:
+ z=json.loads((p/(name+'.json')).read_text());assert z['exit_code']==0 and sha(p/z['log'])==z['sha256'];checks.append(z)
+size=json.loads((p/'logs/08-size-check.log').read_text());assert size['pass']
+write('completion-readback.json',{'observed_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'base':a['base'],'actual_final_parent':head,'branch':branch,'tracked_delta_owned_only':True,'attestation_rs_change_export_only':True,'current_candidate_isolated_hashes_match':True,'all_mutant_sources_restored':True,'checks_passed':True,'owned_writes':'finished and released to root','no_pending_worker_processes':'all observed check/mutation process sessions completed successfully; no further source work scheduled','limits':'no stage/commit/push/store dependency/caller/endpoint/DB/schema/custody/native/provider/live effects'})
+(p/'README.md').write_text('''# ASMA-8278 prepared signed-payload diagnostic source receipt
+
+SOURCE_READY under published root dc6d360a2616c683921526ea7e6f0114f0e4664f, spec1.5 §9.8. This private evidence is durable outside/tmp. The three owned source paths and exact candidate bytes are pinned in final-owned-hashes.json/tsv and candidate-files/. Exclusive writes are finished and released to root, the sole publisher. Base975b05f91a69ac4c8623c5655dc1855091f81b69; actual final parent is recorded in manifest.json. No stage, commit or push was performed.
+
+The runtime helper borrows actual core key/token projections plus existing VerificationRequest and accepts original bounded payload/signature bytes. It returns Result<(), fieldless refusal), never a verified object or authority. Refusal order is size; exact projection/request scope and fixed application; selected key then token presence; positive/order-bounded registration, preparation and revocation metadata and selected-ID/DER bounds; exact selected-DER digest and issuer/key/immutable registration commitment; original payload digest; token revocation; interval validity/containment; existing verify; exact signed/prepared metadata. DER is cloned only after bounds/commitments, and original bytes are parsed only by verify. Native comparisons borrow every existing field. Owner comparison and all unsupported production guards are unchanged.
+
+Prepared key registration need not be current key head, and token registration need not be token head. Positive preparation head lies between selected key registration and current key head. Unrelated newer heads preserve consistency. Historical node/binding/run revisions and Hosted/Consultation provenance are never treated as current observations.
+
+Verification passed:177 unique runtime tests across4 suites (157 unit including16 new diagnostic tests,5 binding timeline,7 bound container contract,8 retitle container), plus2 existing privacy compile-fail doctests. Full runtime regression, scoped runtime all-targets Clippy with-Dwarnings, cargo fmt--all--check and git diff--check passed offline jobs2. Production207 lines; tests534 lines. Conservative masked-source function count is90/87, within100, and files stay within600. Earlier focused16 passed before extra boundary assertions; final runtime and mutation16 baselines cover strengthened final bytes. temporal-provenance.json distinguishes these phases; repeated focused/mutation runs are not additional unique tests. No failed baseline or compilation was hidden.
+
+Actual RSA fixtures generate ephemeral test-only2048-bit keys and sign the fixed domain plus exact bytes. Tests cover success, UTF8/DER/payload/signature bounds, exact scope/task/native/generation/token/interval equality, selected presence, invalid revision/revocation metadata, every commitment class, another real RSA key with unchanged identities and newly matched digests still failing signature, malformed/unknown payload, supplied time/operation/lifetime/request mismatches, key/token revocation and multi-fault first-refusal order. No fixture grants issuer/native authority.
+
+Four real isolated defects compiled and assertion-killed: M01 omits recomputed selected-DER commitments; M02 omits original payload digest; M03 omits token revocation; M04 omits final signed metadata equality. Persisted runner/definitions/report include exact argv, test names, raw-log hashes, panic source paths/lines/excerpts, mutated hashes and restoration. Each original/isolated3-path hash matches its baseline; final restored16 cases pass. Mutation compiler copies have no.git or adapters; a fresh separate mutation target prevents prior-cache reuse. Full copied source and compiler caches are excluded from the small artifact inventory, with all owned bytes independently pinned.
+
+The graph was newly indexed for the restored module only. Graph search found actual core projection structs and verifier; qualified trace yielded best-effort macro/name edges. Those graph edges establish neither callers nor authority; actual scoped source reads determined implementation. A scoped read initially used the docs checkout and returned absent source paths, then was corrected before source changes; no source/test effect followed that read error.
+
+Success means supplied public metadata and signed bytes are consistent. All projections and request/time are caller-supplied and untrusted. No current provenance, authentic acquisition, transaction-held freshness, signing/custody, native possession/fencing/finality, permission, receipt, intent or admission is established. No new dependency, store caller/writer, migration, endpoint or live effect was added. Future authentic transaction-held owner composition remains unresolved. This bounded source/test proof does not claim epic acceptance or closure; root dispatches independent review and publication.
+''')
+inventory=[]
+for d in [p,p/'logs',p/'mutation-logs']:
+ for q in sorted(d.iterdir()):
+  if q.is_file() and q.name not in ['manifest.json','manifest.sha256']:
+   inventory.append({'path':str(q.relative_to(p)),'bytes':q.stat().st_size,'sha256':sha(q)})
+manifest={'schema_version':1,'epic':'ASMA-8278','worker':'/root/attestation_verifier','status':'SOURCE_READY; exclusive writes finished and released to root','evidence_root':str(p),'source_root':str(src),'base':a['base'],'actual_final_parent':head,'branch':branch,'bound_root_contract':a['contract'],'spec':a['spec'],'owned_final_sha256':pins,'candidate_files':'candidate-files/<owned path>; verified byte-equal to original and final isolated source','checks':{'runtime_tests':177,'runtime_suites':4,'diagnostic_tests_included':16,'privacy_doctests':2,'suite_counts':counts,'commands':checks,'fmt':'PASS','diff':'PASS','clippy':'PASS','size':size,'offline_jobs':2},'mutation':{'report':'mutation-report.json','definitions':'mutation-definitions.json','runner':'run_mutations.py','unique_seeded':4,'compiled_intended_assertion_kills':4,'all_sources_restored':True,'restored_diagnostic_baseline':16,'original_and_isolated_hashes':pins},'temporal_provenance':'temporal-provenance.json; initial focused and final strengthened test bytes separately pinned','completion':'completion-readback.json','limitations':['Result<(), fieldless refusal) reports supplied metadata/signed-byte consistency only.','No verified object, actor/grant/permission/receipt/intent/admission or current provenance is returned.','Caller-supplied projections and time establish no authenticity, transaction-held freshness, possession/custody/fencing/finality.','No store dependency/caller/writer/migration/endpoint, installed DB, keychain, provider or native effects.','Existing owner comparison and Unsupported guards unchanged; future authentic owner-transaction composition remains unresolved.','No epic acceptance or closure claim; root sole publisher and independent-review dispatcher.'],'artifact_inventory':inventory,'inventory_exclusions':['compiler targets','full source fixture copy, whose owned3 bytes are independently pinned','manifest self-hash emitted separately']}
+write('manifest.json',manifest)
+for z in inventory:assert sha(p/z['path'])==z['sha256']
+h=sha(p/'manifest.json');(p/'manifest.sha256').write_text(h+'  manifest.json\n');print(json.dumps({'manifest':str(p/'manifest.json'),'manifest_sha256':h,'owned_hashes':pins,'artifact_count':len(inventory),'release':'exclusive source writes finished and released to root'}))
