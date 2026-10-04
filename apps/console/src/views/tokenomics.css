@@ -1,0 +1,25 @@
+.tokenomics-entry {
+  margin: 1rem;
+  padding: 0.6rem 1rem;
+}
+
+.console[data-view="tokenomics"] .view-host {
+  padding: 0;
+  overflow: hidden;
+}
+
+.tokenomics-frame {
+  display: block;
+  width: 100%;
+  height: calc(100dvh - 110px);
+  min-height: 640px;
+  border: 0;
+  background: var(--paper);
+}
+
+@media (max-width: 720px) {
+  .tokenomics-frame {
+    height: calc(100dvh - 160px);
+    min-height: 480px;
+  }
+}

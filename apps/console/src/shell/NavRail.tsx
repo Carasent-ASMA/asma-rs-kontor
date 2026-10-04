@@ -19,6 +19,7 @@ export const VIEWS = [
   { id: 'schedule', label: 'Schedule' },
   { id: 'project', label: 'Project Operations' },
   { id: 'teams', label: 'Delivery Teams' },
+  { id: 'tokenomics', label: 'Tokenomics' },
 ] as const
 
 /** Which view is on screen. */

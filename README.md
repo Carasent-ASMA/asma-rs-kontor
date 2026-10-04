@@ -266,6 +266,20 @@ pnpm install --frozen-lockfile
 pnpm --filter kontor-console dev
 ```
 
+For the native Kontor desktop app:
+
+```sh
+pnpm --filter kontor-desktop tauri dev
+```
+
+Tokenomics is available from the connection screen and the navigation rail.
+The initial UI uses the existing report renderer and fetches its generated data
+separately. Start `asma report dashboard --port 8791` from the ASMA workspace
+in another terminal before opening Tokenomics. The console's development proxy
+uses that loopback data service; set `TOKENOMICS_DATA_ORIGIN` when using another
+port. No personal report data is included in the app assets. Directory API and
+five-minute authentication integration are subsequent Tokenomics work.
+
 The daemon binds loopback only. There is intentionally no “listen on every
 interface” development shortcut.
 

@@ -8,6 +8,13 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    proxy: {
+      // The renderer lives in Kontor; the current daily pipeline continues to own live report data.
+      '^/tokenomics/data\\.(json|js)$': {
+        target: process.env.TOKENOMICS_DATA_ORIGIN ?? 'http://127.0.0.1:8791',
+        rewrite: (path) => path.replace(/^\/tokenomics/, ''),
+      },
+    },
   },
   test: {
     environment: 'jsdom',
