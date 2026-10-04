@@ -63190,6 +63190,8 @@ async fn a_legacy_item_code_is_forbidden_in_a_topic_even_when_the_template_does_
             })
             .expect("the Committee preset publishes");
     });
+    // Match the supported formal-review admission used by the subject fixture.
+    write_fleet(world, &formal_review_fleet_yaml());
     prepare_fake_provider_headroom(world, project).await;
 
     let read_epic_revision = || async {
@@ -63347,6 +63349,8 @@ async fn a_fresh_key_cannot_freeze_the_same_semantic_consultation_concurrently()
             })
             .expect("the Committee preset publishes");
     });
+    // Match the supported formal-review admission used by the subject fixture.
+    write_fleet(world, &formal_review_fleet_yaml());
 
     for family in [ConsultationFamily::Advisor, ConsultationFamily::Committee] {
         let family_label = match family {
