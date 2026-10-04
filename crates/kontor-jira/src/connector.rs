@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use kontor_accounts::{KeychainBackend, KeychainTarget, SystemKeychain};
+use kontor_accounts::{KeychainBackend, SystemKeychain};
 use kontor_core::id::{
     BoundedText, CanonicalDocument, ContentHash, ExternalId, ExternalName, ProjectId, Timestamp,
 };
@@ -15,6 +15,7 @@ use secrecy::ExposeSecret;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::credentials::{JiraCredentialScope, JiraCredentials, parse_credentials, validate_alias};
 use crate::jira::{
     FieldWrite, JiraExchange, JiraIssueIdentity, JiraOperation, JiraOutcome, JiraRequest,
     JiraResponse, WireAssignment, WireConfirmation, WireEffects, WireFieldValue, WireObservation,
@@ -24,7 +25,6 @@ use crate::{JiraError, MaterializationConflict, UnavailableReason, WireTimestamp
 
 const CONFIG_SCHEMA: u32 = 1;
 const CONFIG_FILE: &str = "jira.json";
-const KEYCHAIN_SERVICE: &str = "kontor-jira";
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -90,14 +90,26 @@ impl std::fmt::Debug for JiraConnectors {
 impl JiraConnectors {
     /// Read strict operator configuration. A missing file means Jira is not
     /// configured; a malformed file refuses daemon startup.
-    pub fn read(state_root: &Path) -> Result<Self, JiraError> {
-        Self::read_with_keychain(state_root, Arc::new(SystemKeychain))
+    pub fn read(state_root: &Path, realm: kontor_core::id::RealmId) -> Result<Self, JiraError> {
+        Self::read_with_keychain(state_root, realm, Arc::new(SystemKeychain))
     }
 
     pub fn read_with_keychain(
         state_root: &Path,
+        realm: kontor_core::id::RealmId,
         keychain: Arc<dyn KeychainBackend>,
     ) -> Result<Self, JiraError> {
+        // Serving preserves relative-root compatibility, but pins both the
+        // configuration read and credential address to one canonical root.
+        // The stopped-realm installer separately requires an absolute input.
+        let state_root = state_root.canonicalize().map_err(|_| {
+            JiraError::unavailable(
+                "configuration",
+                UnavailableReason::Configuration,
+                "the Jira state root could not be canonicalized",
+            )
+        })?;
+        let scope = JiraCredentialScope::at(&state_root, realm)?;
         let path = state_root.join(CONFIG_FILE);
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
@@ -129,7 +141,7 @@ impl JiraConnectors {
         let mut projects = BTreeMap::new();
         for project in config.projects {
             let id = project.project_id;
-            let connector = JiraConnector::new(project, Arc::clone(&keychain))?;
+            let connector = JiraConnector::new(project, scope.clone(), Arc::clone(&keychain))?;
             if projects.insert(id, connector).is_some() {
                 return Err(JiraError::unavailable(
                     "configuration",
@@ -139,6 +151,12 @@ impl JiraConnectors {
             }
         }
         Ok(Self { projects })
+    }
+
+    pub fn references_alias(&self, alias: &str) -> bool {
+        self.projects
+            .values()
+            .any(|connector| connector.credential_alias == alias)
     }
 
     #[must_use]
@@ -152,6 +170,7 @@ pub struct JiraConnector {
     endpoint: Url,
     project_key: ExternalId,
     credential_alias: String,
+    credential_scope: JiraCredentialScope,
     create_fields: JiraCreateFields,
     keychain: Arc<dyn KeychainBackend>,
     client: Client,
@@ -172,6 +191,8 @@ pub struct JiraIssuePlan {
     /// exact Kontor-authored content. Ordinary operator links do not claim
     /// authority over summary or description; in-place recovery does.
     pub require_marker: bool,
+    /// An explicit linked-issue description update, preserving every other field.
+    pub update_description: bool,
     pub summary: String,
     pub description: String,
     pub parent_key: Option<ExternalId>,
@@ -189,6 +210,7 @@ pub struct JiraIssueReadback {
     /// cannot do because the key is itself part of the hashed document.
     pub issue_id: ExternalId,
     pub readback_hash: ContentHash,
+    pub description: String,
 }
 
 impl std::fmt::Debug for JiraConnector {
@@ -205,11 +227,11 @@ impl std::fmt::Debug for JiraConnector {
 impl JiraConnector {
     fn new(
         config: JiraProjectConfig,
+        credential_scope: JiraCredentialScope,
         keychain: Arc<dyn KeychainBackend>,
     ) -> Result<Self, JiraError> {
-        if config.credential_alias.trim().is_empty() || config.credential_alias.len() > 128 {
-            return Err(configuration("credential_alias is empty or oversized"));
-        }
+        validate_alias(&config.credential_alias)
+            .map_err(|_| configuration("credential_alias is empty, oversized or unsupported"))?;
         let mut endpoint = Url::parse(&config.endpoint)
             .map_err(|_| configuration("endpoint is not an absolute URL"))?;
         let loopback = endpoint
@@ -241,6 +263,7 @@ impl JiraConnector {
             endpoint,
             project_key: config.project_key,
             credential_alias: config.credential_alias,
+            credential_scope,
             create_fields: config.create_fields,
             keychain,
             client,
@@ -249,13 +272,10 @@ impl JiraConnector {
 
     async fn credentials(&self) -> Result<JiraCredentials, JiraError> {
         let keychain = Arc::clone(&self.keychain);
-        let alias = self.credential_alias.clone();
+        let target = self.credential_scope.target(&self.credential_alias);
         let secret = tokio::time::timeout(
             CREDENTIAL_TIMEOUT,
-            tokio::task::spawn_blocking(move || {
-                let target = KeychainTarget::new(KEYCHAIN_SERVICE, alias);
-                keychain.secret(&target)
-            }),
+            tokio::task::spawn_blocking(move || keychain.secret(&target)),
         )
         .await
         .map_err(|_| {
@@ -279,13 +299,7 @@ impl JiraConnector {
                 "the configured keychain credential could not be resolved",
             )
         })?;
-        serde_json::from_str(secret.expose_secret()).map_err(|_| {
-            JiraError::unavailable(
-                "credential",
-                UnavailableReason::Credential,
-                "the keychain credential is not the supported document",
-            )
-        })
+        parse_credentials(&secret)
     }
 
     fn url(&self, path: &str) -> Result<Url, JiraError> {
@@ -315,7 +329,10 @@ impl JiraConnector {
         let mut request = self
             .client
             .request(method, self.url(path)?)
-            .basic_auth(credentials.email, Some(credentials.api_token))
+            .basic_auth(
+                credentials.email.expose_secret(),
+                Some(credentials.api_token.expose_secret()),
+            )
             .header(reqwest::header::ACCEPT, "application/json");
         if let Some(body) = body {
             request = request.json(body);
@@ -648,6 +665,12 @@ impl JiraConnector {
 
     /// Link or create one issue, then accept it only after exact readback.
     pub async fn materialize(&self, plan: &JiraIssuePlan) -> Result<JiraIssueReadback, JiraError> {
+        if plan.update_description && plan.requested_key.is_none() {
+            return Err(JiraError::refused(
+                "materialize",
+                "a description-only update requires one exact linked Jira key",
+            ));
+        }
         let key = if let Some(key) = plan.requested_key.clone() {
             key
         } else {
@@ -662,6 +685,21 @@ impl JiraConnector {
                 }
             }
         };
+        if plan.update_description {
+            let mut structural = plan.clone();
+            structural.update_description = false;
+            let before = self.readback_issue(&key, &structural).await?;
+            if before.description != plan.description {
+                let encoded = url::form_urlencoded::byte_serialize(key.as_str().as_bytes())
+                    .collect::<String>();
+                self.request(
+                    Method::PUT,
+                    &format!("rest/api/3/issue/{encoded}"),
+                    Some(&json!({"fields": {"description": adf(&plan.description)}})),
+                )
+                .await?;
+            }
+        }
         self.readback_issue(&key, plan).await
     }
 
@@ -796,19 +834,30 @@ impl JiraConnector {
         // A richer body is the one the reader wants and is preserved. An absent
         // or empty one is refused, because it is neither an authored repair nor
         // the marker Kontor wrote, and losing a body is not a recovery.
+        //
+        // An explicit *description update* is the one explicit-link case that is
+        // not a recovery. Kontor has just published that body itself, so the
+        // weaker "is there a body at all" question would accept a write that
+        // silently did not land — which is the whole thing the readback exists
+        // to catch. That mode is held to the exact text it published.
         let body_refused = if explicit_link {
-            // Recovering an issue that already existed: there must be a body,
-            // and whatever it now says is the reader's to own.
-            plan.require_marker
-                && !observed_body(Some(&observed_description))?.is_some_and(|body| !body.is_empty())
+            if plan.update_description {
+                observed_description != adf(&plan.description)
+            } else {
+                // Recovering an issue that already existed: there must be a
+                // body, and whatever it now says is the reader's to own.
+                plan.require_marker
+                    && !observed_body(Some(&observed_description))?
+                        .is_some_and(|body| !body.is_empty())
+            }
         } else {
             // Confirming an issue Kontor just created or just found by marker:
             // the body must be exactly the one it wrote.
             observed_description != adf(&plan.description)
         };
-        let mismatch = if text_at(&value, &["fields", "project", "key"])?
-            != self.project_key.as_str()
-        {
+        let mismatch = if external_at(&value, &["key"])? != *key {
+            Some(MaterializationConflict::IssueKeyMismatch)
+        } else if text_at(&value, &["fields", "project", "key"])? != self.project_key.as_str() {
             Some(MaterializationConflict::ProjectMismatch)
         } else if optional_external_at(&value, &["fields", "parent", "key"])? != plan.parent_key {
             Some(MaterializationConflict::ParentMismatch)
@@ -876,6 +925,17 @@ impl JiraConnector {
                 "description": observed_description,
                 "marker": plan.marker.as_str(),
             })
+        } else if explicit_link && plan.update_description {
+            json!({
+                "schema_version": 1,
+                "mode": "update_description",
+                "key": key.as_str(),
+                "project": self.project_key.as_str(),
+                "kind": match plan.kind { JiraIssueKind::Epic => "epic", JiraIssueKind::Task => "task" },
+                "parent": plan.parent_key.as_ref().map(ExternalId::as_str),
+                "summary": observed_summary,
+                "description": plan.description,
+            })
         } else if explicit_link {
             json!({
                 "schema_version": 1,
@@ -912,6 +972,7 @@ impl JiraConnector {
             issue_key: key.clone(),
             issue_id,
             readback_hash,
+            description: adf_text(&observed_description),
         })
     }
 }
@@ -992,13 +1053,6 @@ impl JiraExchange for JiraConnector {
             notes: Vec::new(),
         })
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct JiraCredentials {
-    email: String,
-    api_token: String,
 }
 
 struct LiveIssue {

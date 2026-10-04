@@ -1,0 +1,599 @@
+{
+  "schemaVersion": 1,
+  "check": "asma/publication-branch-title",
+  "defaultHeadSha": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4",
+  "cases": [
+    {
+      "name": "ordinary_valid_feat",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1 Add widget",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-1"}
+    },
+    {
+      "name": "ordinary_valid_fix",
+      "baseRef": "master",
+      "headRef": "fix/ASMA-1-fix-widget",
+      "title": "ASMA-1 Fix widget",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-1"}
+    },
+    {
+      "name": "ordinary_valid_docs",
+      "baseRef": "master",
+      "headRef": "docs/ASMA-1-document-widget",
+      "title": "ASMA-1 Document widget",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-1"}
+    },
+    {
+      "name": "ordinary_valid_chore",
+      "baseRef": "master",
+      "headRef": "chore/ASMA-1-update-deps",
+      "title": "ASMA-1 Update deps",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-1"}
+    },
+    {
+      "name": "ordinary_valid_refactor",
+      "baseRef": "master",
+      "headRef": "refactor/ASMA-1-split-widget",
+      "title": "ASMA-1 Split widget",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-1"}
+    },
+    {
+      "name": "ordinary_valid_test",
+      "baseRef": "master",
+      "headRef": "test/ASMA-1-cover-widget",
+      "title": "ASMA-1 Cover widget",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-1"}
+    },
+    {
+      "name": "ordinary_valid_perf",
+      "baseRef": "master",
+      "headRef": "perf/ASMA-1-speed-widget",
+      "title": "ASMA-1 Speed widget",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-1"}
+    },
+    {
+      "name": "ordinary_valid_build",
+      "baseRef": "master",
+      "headRef": "build/ASMA-1-pin-toolchain",
+      "title": "ASMA-1 Pin toolchain",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-1"}
+    },
+    {
+      "name": "ordinary_valid_ci",
+      "baseRef": "master",
+      "headRef": "ci/ASMA-1-add-lane",
+      "title": "ASMA-1 Add lane",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-1"}
+    },
+    {
+      "name": "ordinary_valid_releases_type_keyed",
+      "baseRef": "master",
+      "headRef": "releases/ASMA-1-cut-hotfix",
+      "title": "ASMA-1 Cut hotfix",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-1"}
+    },
+    {
+      "name": "ordinary_valid_large_number",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-99999-do-thing",
+      "title": "ASMA-99999 Do thing",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-99999"}
+    },
+    {
+      "name": "ordinary_valid_single_char_summary",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-x",
+      "title": "ASMA-1 X",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-1"}
+    },
+    {
+      "name": "ordinary_valid_long_slug",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-8101-publication-branch-title-check",
+      "title": "ASMA-8101 Publication branch title check",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-8101"}
+    },
+    {
+      "name": "ordinary_valid_keyed_release_hotfix",
+      "baseRef": "master",
+      "headRef": "releases/ASMA-8101-hotfix",
+      "title": "ASMA-8101 Hotfix",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-8101"}
+    },
+    {
+      "name": "ordinary_valid_multiword_summary",
+      "baseRef": "master",
+      "headRef": "fix/ASMA-42-repair-empty-rows",
+      "title": "ASMA-42 Repair export for empty rows",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-42"}
+    },
+    {
+      "name": "ordinary_valid_title_is_data_not_shell",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1 $(touch pwned) && echo injected",
+      "expect": {"accepted": true, "code": "ok", "identity": "ASMA-1"}
+    },
+    {
+      "name": "release_valid_canonical",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3",
+      "title": "Release v1.2.3",
+      "expect": {"accepted": true, "code": "ok", "identity": "1.2.3"}
+    },
+    {
+      "name": "release_valid_zeroes",
+      "baseRef": "master",
+      "headRef": "releases/v0.0.1",
+      "title": "Release v0.0.1",
+      "expect": {"accepted": true, "code": "ok", "identity": "0.0.1"}
+    },
+    {
+      "name": "release_valid_large_components",
+      "baseRef": "master",
+      "headRef": "releases/v10.20.30",
+      "title": "Release v10.20.30",
+      "expect": {"accepted": true, "code": "ok", "identity": "10.20.30"}
+    },
+    {
+      "name": "release_valid_leading_zero_major",
+      "baseRef": "master",
+      "headRef": "releases/v01.2.3",
+      "title": "Release v01.2.3",
+      "expect": {"accepted": true, "code": "ok", "identity": "01.2.3"}
+    },
+    {
+      "name": "release_valid_zero_padded_patch",
+      "baseRef": "master",
+      "headRef": "releases/v1.02.003",
+      "title": "Release v1.02.003",
+      "expect": {"accepted": true, "code": "ok", "identity": "1.02.003"}
+    },
+    {
+      "name": "base_not_master_develop",
+      "baseRef": "develop",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "base_branch_not_default"}
+    },
+    {
+      "name": "base_not_master_main",
+      "baseRef": "main",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "base_branch_not_default"}
+    },
+    {
+      "name": "base_not_master_empty",
+      "baseRef": "",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "base_branch_not_default"}
+    },
+    {
+      "name": "release_base_not_master",
+      "baseRef": "develop",
+      "headRef": "releases/v1.2.3",
+      "title": "Release v1.2.3",
+      "expect": {"accepted": false, "code": "base_branch_not_default"}
+    },
+    {
+      "name": "head_sha_missing",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1 Add widget",
+      "headSha": "",
+      "expect": {"accepted": false, "code": "head_sha_invalid"}
+    },
+    {
+      "name": "head_sha_short",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1 Add widget",
+      "headSha": "abc123",
+      "expect": {"accepted": false, "code": "head_sha_invalid"}
+    },
+    {
+      "name": "head_sha_uppercase",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1 Add widget",
+      "headSha": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4",
+      "expect": {"accepted": false, "code": "head_sha_invalid"}
+    },
+    {
+      "name": "head_sha_non_hex",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1 Add widget",
+      "headSha": "g3b0c44298fc1c149afbf4c8996fb92427ae41e4",
+      "expect": {"accepted": false, "code": "head_sha_invalid"}
+    },
+    {
+      "name": "ordinary_keyless_branch",
+      "baseRef": "master",
+      "headRef": "feat/add-widget",
+      "title": "ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "branch_key_missing"}
+    },
+    {
+      "name": "ordinary_keyless_word_after_type",
+      "baseRef": "master",
+      "headRef": "fix/foo",
+      "title": "ASMA-1 Fix foo",
+      "expect": {"accepted": false, "code": "branch_key_missing"}
+    },
+    {
+      "name": "ordinary_historical_unrelated_branch",
+      "baseRef": "master",
+      "headRef": "cat-11",
+      "title": "ASMA-1 Cat 11",
+      "expect": {"accepted": false, "code": "branch_shape_invalid"}
+    },
+    {
+      "name": "ordinary_bot_branch",
+      "baseRef": "master",
+      "headRef": "dependabot/npm-and-yarn/foo-1.2.3",
+      "title": "ASMA-1 Bump dependency",
+      "expect": {"accepted": false, "code": "branch_type_unknown"}
+    },
+    {
+      "name": "ordinary_unknown_type",
+      "baseRef": "master",
+      "headRef": "feature/ASMA-1-add-widget",
+      "title": "ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "branch_type_unknown"}
+    },
+    {
+      "name": "ordinary_singular_release_type",
+      "baseRef": "master",
+      "headRef": "release/v1.2.3",
+      "title": "Release v1.2.3",
+      "expect": {"accepted": false, "code": "branch_type_unknown"}
+    },
+    {
+      "name": "ordinary_empty_after_type",
+      "baseRef": "master",
+      "headRef": "feat/",
+      "title": "ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "branch_key_missing"}
+    },
+    {
+      "name": "ordinary_wrong_project_branch",
+      "baseRef": "master",
+      "headRef": "feat/KOP-1-add-widget",
+      "title": "KOP-1 Add widget",
+      "expect": {"accepted": false, "code": "branch_project_mismatch"}
+    },
+    {
+      "name": "ordinary_wrong_project_branch_other",
+      "baseRef": "master",
+      "headRef": "feat/OTHER-12-work",
+      "title": "OTHER-12 Work",
+      "expect": {"accepted": false, "code": "branch_project_mismatch"}
+    },
+    {
+      "name": "ordinary_lowercase_project",
+      "baseRef": "master",
+      "headRef": "feat/asma-1-add-widget",
+      "title": "ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "branch_key_not_canonical"}
+    },
+    {
+      "name": "ordinary_zero_number",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-0-add-widget",
+      "title": "ASMA-0 Add widget",
+      "expect": {"accepted": false, "code": "branch_key_not_canonical"}
+    },
+    {
+      "name": "ordinary_leading_zero_number",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-01-add-widget",
+      "title": "ASMA-01 Add widget",
+      "expect": {"accepted": false, "code": "branch_key_not_canonical"}
+    },
+    {
+      "name": "ordinary_no_number",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-add-widget",
+      "title": "ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "branch_key_not_canonical"}
+    },
+    {
+      "name": "ordinary_double_hyphen_number",
+      "baseRef": "master",
+      "headRef": "feat/ASMA--1-add-widget",
+      "title": "ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "branch_key_not_canonical"}
+    },
+    {
+      "name": "ordinary_embedded_number",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1x-add-widget",
+      "title": "ASMA-1x Add widget",
+      "expect": {"accepted": false, "code": "branch_key_not_canonical"}
+    },
+    {
+      "name": "ordinary_numeric_only_after_type",
+      "baseRef": "master",
+      "headRef": "feat/1234-add-widget",
+      "title": "ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "branch_key_missing"}
+    },
+    {
+      "name": "ordinary_slug_uppercase",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-Add-Widget",
+      "title": "ASMA-1 Add Widget",
+      "expect": {"accepted": false, "code": "branch_slug_invalid"}
+    },
+    {
+      "name": "ordinary_slug_missing",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1",
+      "title": "ASMA-1",
+      "expect": {"accepted": false, "code": "branch_slug_invalid"}
+    },
+    {
+      "name": "ordinary_slug_empty_after_hyphen",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-",
+      "title": "ASMA-1 X",
+      "expect": {"accepted": false, "code": "branch_slug_invalid"}
+    },
+    {
+      "name": "ordinary_slug_double_hyphen",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add--widget",
+      "title": "ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "branch_slug_invalid"}
+    },
+    {
+      "name": "ordinary_slug_trailing_hyphen",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-",
+      "title": "ASMA-1 Add",
+      "expect": {"accepted": false, "code": "branch_slug_invalid"}
+    },
+    {
+      "name": "ordinary_slug_underscore",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add_widget",
+      "title": "ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "branch_slug_invalid"}
+    },
+    {
+      "name": "ordinary_branch_shell_chars",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-$(id)",
+      "title": "ASMA-1 X",
+      "expect": {"accepted": false, "code": "branch_slug_invalid"}
+    },
+    {
+      "name": "title_key_missing_plain",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "Add widget",
+      "expect": {"accepted": false, "code": "pr_title_key_missing"}
+    },
+    {
+      "name": "title_key_missing_no_summary",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1",
+      "expect": {"accepted": false, "code": "pr_title_key_missing"}
+    },
+    {
+      "name": "title_key_missing_trailing_space",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1 ",
+      "expect": {"accepted": false, "code": "pr_title_key_missing"}
+    },
+    {
+      "name": "title_key_missing_double_space",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1  Add widget",
+      "expect": {"accepted": false, "code": "pr_title_key_missing"}
+    },
+    {
+      "name": "title_key_missing_lowercase",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "asma-1 Add widget",
+      "expect": {"accepted": false, "code": "pr_title_key_missing"}
+    },
+    {
+      "name": "title_key_missing_embedded",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1x Add widget",
+      "expect": {"accepted": false, "code": "pr_title_key_missing"}
+    },
+    {
+      "name": "title_key_missing_prefixed",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "Fix ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "pr_title_key_missing"}
+    },
+    {
+      "name": "title_key_missing_newline",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-1 Add\nwidget",
+      "expect": {"accepted": false, "code": "pr_title_key_missing"}
+    },
+    {
+      "name": "title_key_mismatch_next_number",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-2 Add widget",
+      "expect": {"accepted": false, "code": "pr_title_key_mismatch"}
+    },
+    {
+      "name": "title_key_mismatch_two_valid_keys",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "ASMA-2 ASMA-1 Add widget",
+      "expect": {"accepted": false, "code": "pr_title_key_mismatch"}
+    },
+    {
+      "name": "title_key_mismatch_foreign_project",
+      "baseRef": "master",
+      "headRef": "feat/ASMA-1-add-widget",
+      "title": "KOP-1 Add widget",
+      "expect": {"accepted": false, "code": "pr_title_key_mismatch"}
+    },
+    {
+      "name": "title_key_mismatch_keyed_release_hotfix",
+      "baseRef": "master",
+      "headRef": "releases/ASMA-8101-hotfix",
+      "title": "ASMA-8102 Hotfix",
+      "expect": {"accepted": false, "code": "pr_title_key_mismatch"}
+    },
+    {
+      "name": "release_broad_latest",
+      "baseRef": "master",
+      "headRef": "releases/latest",
+      "title": "Release v1.2.3",
+      "expect": {"accepted": false, "code": "release_branch_invalid"}
+    },
+    {
+      "name": "release_near_missing_patch",
+      "baseRef": "master",
+      "headRef": "releases/v1.2",
+      "title": "Release v1.2",
+      "expect": {"accepted": false, "code": "release_branch_invalid"}
+    },
+    {
+      "name": "release_four_components",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3.4",
+      "title": "Release v1.2.3.4",
+      "expect": {"accepted": false, "code": "release_branch_invalid"}
+    },
+    {
+      "name": "release_prerelease",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3-rc.1",
+      "title": "Release v1.2.3-rc.1",
+      "expect": {"accepted": false, "code": "release_branch_invalid"}
+    },
+    {
+      "name": "release_build_metadata",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3+build.5",
+      "title": "Release v1.2.3+build.5",
+      "expect": {"accepted": false, "code": "release_branch_invalid"}
+    },
+    {
+      "name": "release_plain_word",
+      "baseRef": "master",
+      "headRef": "releases/foo",
+      "title": "Release foo",
+      "expect": {"accepted": false, "code": "release_branch_invalid"}
+    },
+    {
+      "name": "release_empty_version",
+      "baseRef": "master",
+      "headRef": "releases/v",
+      "title": "Release v",
+      "expect": {"accepted": false, "code": "release_branch_invalid"}
+    },
+    {
+      "name": "release_major_only",
+      "baseRef": "master",
+      "headRef": "releases/v1",
+      "title": "Release v1",
+      "expect": {"accepted": false, "code": "release_branch_invalid"}
+    },
+    {
+      "name": "release_trailing_slash",
+      "baseRef": "master",
+      "headRef": "releases/",
+      "title": "Release v1.2.3",
+      "expect": {"accepted": false, "code": "release_branch_invalid"}
+    },
+    {
+      "name": "release_title_wrong_version",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3",
+      "title": "Release v1.2.4",
+      "expect": {"accepted": false, "code": "release_title_mismatch"}
+    },
+    {
+      "name": "release_title_missing_patch",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3",
+      "title": "Release v1.2",
+      "expect": {"accepted": false, "code": "release_title_mismatch"}
+    },
+    {
+      "name": "release_title_extra_suffix",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3",
+      "title": "Release v1.2.3 extra",
+      "expect": {"accepted": false, "code": "release_title_mismatch"}
+    },
+    {
+      "name": "release_title_prefix_collision",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3",
+      "title": "Release v1.2.30",
+      "expect": {"accepted": false, "code": "release_title_mismatch"}
+    },
+    {
+      "name": "release_title_jira_prefixed",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3",
+      "title": "ASMA-8101 Release v1.2.3",
+      "expect": {"accepted": false, "code": "release_title_mismatch"}
+    },
+    {
+      "name": "release_title_lowercase_release",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3",
+      "title": "release v1.2.3",
+      "expect": {"accepted": false, "code": "release_title_mismatch"}
+    },
+    {
+      "name": "release_title_uppercase_v",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3",
+      "title": "Release V1.2.3",
+      "expect": {"accepted": false, "code": "release_title_mismatch"}
+    },
+    {
+      "name": "release_title_trailing_space",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3",
+      "title": "Release v1.2.3 ",
+      "expect": {"accepted": false, "code": "release_title_mismatch"}
+    },
+    {
+      "name": "release_title_missing_version",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3",
+      "title": "Release",
+      "expect": {"accepted": false, "code": "release_title_mismatch"}
+    },
+    {
+      "name": "release_title_spelling_not_normalized",
+      "baseRef": "master",
+      "headRef": "releases/v01.2.3",
+      "title": "Release v1.2.3",
+      "expect": {"accepted": false, "code": "release_title_mismatch"}
+    },
+    {
+      "name": "release_title_zero_padded_mismatch",
+      "baseRef": "master",
+      "headRef": "releases/v1.2.3",
+      "title": "Release v01.2.3",
+      "expect": {"accepted": false, "code": "release_title_mismatch"}
+    }
+  ]
+}

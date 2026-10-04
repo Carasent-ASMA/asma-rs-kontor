@@ -1,0 +1,7 @@
+{
+  "path": "docs/evidence/ASMA-8159/production-prep/receipts/f3c-mut-005-restored.raw",
+  "sha256": "6fd348e8bc005e0c9d64e9f4608fd6fd21f148e7ebb493f453706a75cb6b2eb4",
+  "bytes": 139,
+  "status": "INCOMPLETE; compilation line only; no exit or test result",
+  "superseded_by": "f3c-mut-005-restored-resumed.json"
+}

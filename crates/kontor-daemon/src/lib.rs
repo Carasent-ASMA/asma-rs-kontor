@@ -19,11 +19,12 @@
 //! validate config (loopback only)
 //!   → claim the state root (exclusive, no waiting)
 //!     → open + migrate the database  → the Realm's identity
-//!       → read or generate credentials
-//!         → build the adapter registry
-//!           → recover unfinished receipts, reconcile open bindings
-//!             → open the scheduling barrier
-//!               → serve
+//!       → select and validate stored capacity, or the seed when absent
+//!         → read or generate credentials
+//!           → build the adapter registry
+//!             → recover unfinished receipts, reconcile open bindings
+//!               → open the scheduling barrier
+//!                 → serve
 //! ```
 //!
 //! The barrier is last because everything above it answers a question a scheduler
@@ -44,10 +45,12 @@
 pub mod applications;
 pub mod credentials;
 pub mod endpoint;
+pub mod fleet;
 pub mod github_publication;
 pub mod jira_sync;
 pub mod lock;
 pub mod logging;
+pub mod orchestration;
 pub mod provider_config;
 pub mod quota_observation;
 pub mod recovery;
@@ -154,15 +157,28 @@ pub enum StartupError {
         /// The address that was refused.
         address: SocketAddr,
     },
-    /// The configured admission ceilings are not a set the domain accepts.
+    /// The seed admission ceilings are invalid and no durable policy exists.
     ///
-    /// Judged before the state root is touched, for the same reason the bind
-    /// address is: a zero ceiling reads as "no work allowed" in one place and "no
-    /// limit" in another, and a Realm that starts on one would either admit
-    /// nothing or admit everything. Neither is a configuration an operator can
-    /// tell apart from a working one by watching it.
+    /// The store must be opened before this decision: a present durable policy
+    /// is authoritative even when the unused seed is invalid. With no stored
+    /// policy, the seed is validated before credentials or services are created.
     #[error("the configured admission capacity is not one a realm may admit work under: {source}")]
     Capacity {
+        /// The domain's own refusal.
+        #[source]
+        source: kontor_core::DomainError,
+    },
+    /// A durable capacity configuration exists but cannot be honoured.
+    ///
+    /// Absence is valid and leaves the composed seed in force. A present row
+    /// that will not read back as ceilings this build understands, or that
+    /// carries a set the domain refuses, refuses the start for the same reason a
+    /// broken quota-signal document does: an operator who applied it believes
+    /// those ceilings are what the realm admits under, and starting under the
+    /// seed instead would enforce a policy nobody chose while reporting that no
+    /// restart is required.
+    #[error("the realm's stored capacity configuration could not be used: {source}")]
+    StoredCapacity {
         /// The domain's own refusal.
         #[source]
         source: kontor_core::DomainError,
@@ -235,6 +251,14 @@ pub enum StartupError {
     /// The configured seat-supervision policy could not be loaded.
     #[error(transparent)]
     Supervision(#[from] SupervisionError),
+    /// The optional memory transport configuration was invalid or needs the
+    /// later authorized credential/activation composition.
+    #[error("the memory transport could not be composed: {source}")]
+    MemoryCognee {
+        /// Static redacted refusal.
+        #[source]
+        source: kontor_memory_cognee::Error,
+    },
 }
 
 /// Everything a daemon is configured with.
@@ -270,10 +294,18 @@ pub struct DaemonConfig {
     /// to hold as a compile-time constant. Validated at startup rather than here,
     /// so setting the field is infallible and a refused set of ceilings refuses
     /// the *start* — the one moment an operator is watching.
+    ///
+    /// This is the *seed*. A realm holding a durable capacity configuration
+    /// composes that instead, and startup replaces this field with the ceilings
+    /// actually in force, so [`Daemon::config`] has exactly one answer to what
+    /// the process admits under.
     pub capacity: CapacityConfig,
     /// An explicitly composed connector set for embeddings and tests. Ordinary
     /// daemon startup reads strict `jira.json` from the state root instead.
     jira_connectors: Option<kontor_jira::JiraConnectors>,
+    /// Explicitly composed synthetic/embedding transport. No secret resolver is
+    /// installed by ordinary startup in this source-only qualification phase.
+    memory_cognee: Option<kontor_memory_cognee::Client>,
 }
 
 impl DaemonConfig {
@@ -288,6 +320,7 @@ impl DaemonConfig {
             derived_read_deadline_seconds: DEFAULT_DERIVED_READ_DEADLINE_SECONDS,
             capacity: DEFAULT_CAPACITY,
             jira_connectors: None,
+            memory_cognee: None,
         }
     }
 
@@ -306,6 +339,13 @@ impl DaemonConfig {
     #[must_use]
     pub fn with_jira_connectors(mut self, connectors: kontor_jira::JiraConnectors) -> Self {
         self.jira_connectors = Some(connectors);
+        self
+    }
+
+    /// Supply an already configured transport without reading provider secrets.
+    #[must_use]
+    pub fn with_memory_cognee(mut self, client: kontor_memory_cognee::Client) -> Self {
+        self.memory_cognee = Some(client);
         self
     }
 
@@ -356,6 +396,48 @@ impl DaemonConfig {
     }
 }
 
+/// The ceilings this start admits under.
+///
+/// A durable configuration is the realm's policy; the composed one is only the
+/// seed it starts from. An operator who applies ceilings expects the next daemon
+/// to enforce them, and before this existed a restart went back to whatever the
+/// composition root held — so a realm could sit against a compiled ceiling with
+/// an applied configuration that enforced nothing.
+///
+/// Read exactly once, at composition, and never again while the process runs.
+/// The composed ceilings and every admission plan built from them are
+/// process-lifetime state, so re-reading later would let one process admit under
+/// two policies. That is why the read contract reports `restart_required` rather
+/// than promising a live reload.
+///
+/// # Errors
+/// Returns [`StartupError::Capacity`] when no configuration exists and the seed
+/// is invalid, [`StartupError::StoredCapacity`] when a *present* configuration
+/// cannot be read back or is not a set the domain accepts, and
+/// [`StartupError::Store`] when the row cannot be read at all. Refusing is the
+/// point: starting under the seed instead would enforce a policy nobody chose
+/// while reporting that no restart is required.
+fn capacity_in_force(
+    store: &SqliteStore,
+    seed: CapacityConfig,
+) -> Result<CapacityConfig, StartupError> {
+    let Some(stored) =
+        store
+            .get_capacity_configuration()
+            .map_err(|source| StartupError::Store {
+                source: source.into(),
+            })?
+    else {
+        // Only an absent durable policy makes the seed authoritative. Validating
+        // it before reading the row would let an unused seed veto stored policy.
+        seed.validate()
+            .map_err(|source| StartupError::Capacity { source })?;
+        return Ok(seed);
+    };
+    applications::stored_capacity(&stored.ceilings)
+        .map_err(|source| StartupError::StoredCapacity { source })
+}
+
 /// A started, locked, reconciled daemon.
 ///
 /// Holding one means this process owns its state root: the lock lives here, so
@@ -391,10 +473,12 @@ impl Daemon {
     /// that scheduling is blocked until it does.
     ///
     /// # Errors
-    /// Returns [`StartupError`] when the address is not loopback, the configured
-    /// capacity is not a set the domain accepts, the state root cannot be prepared
-    /// or claimed, the database cannot be opened, or the credentials cannot be
-    /// established. Every one of them leaves the state root exactly as it was.
+    /// Returns [`StartupError`] when the address is not loopback, the selected
+    /// capacity is not a set the domain accepts, the state root cannot
+    /// be prepared or claimed, the database cannot be opened, or credentials
+    /// cannot be established. The loopback check precedes filesystem changes;
+    /// selecting capacity requires opening the store but precedes credentials
+    /// and service composition. A failed start releases its state-root lock.
     pub fn start(config: DaemonConfig, runtimes: RuntimeRegistry) -> Result<Self, StartupError> {
         Self::start_with_supervision(config, runtimes, None, None)
     }
@@ -414,18 +498,14 @@ impl Daemon {
     }
 
     fn start_with_supervision(
-        config: DaemonConfig,
+        mut config: DaemonConfig,
         runtimes: RuntimeRegistry,
         supervision: Option<SupervisionPolicy>,
         usage_poller: Option<usage::UsagePoller>,
     ) -> Result<Self, StartupError> {
-        // The address and the ceilings are judged before anything is created, so a
-        // misconfigured daemon does not leave a lock file and a database behind.
+        // The address can be judged before touching the state root. Capacity
+        // selection must wait for the store: a durable policy supersedes the seed.
         config.ensure_loopback()?;
-        config
-            .capacity
-            .validate()
-            .map_err(|source| StartupError::Capacity { source })?;
         std::fs::create_dir_all(&config.state_root)
             .map_err(|source| StartupError::StateRoot { source })?;
         let lock = StateRootLock::acquire(&config.state_root)?;
@@ -438,6 +518,11 @@ impl Daemon {
         }
         let store = SqliteStore::open(&config.state_root.join(DATABASE_FILE))
             .map_err(|source| StartupError::Store { source })?;
+        // The store has opened and migrated and nothing has been composed yet,
+        // which is the only moment a realm can adopt its durable policy without
+        // splitting one process between two of them. A present configuration
+        // overrides the seed from here on, including in `config` itself.
+        config.capacity = capacity_in_force(&store, config.capacity)?;
         let credentials = credentials::open_or_create(&config.state_root)?;
         let realm_id = store.realm_id();
         // The services and the state are mutually dependent — the state serves
@@ -448,7 +533,10 @@ impl Daemon {
         let jira = config
             .jira_connectors
             .clone()
-            .map_or_else(|| kontor_jira::JiraConnectors::read(&config.state_root), Ok)
+            .map_or_else(
+                || kontor_jira::JiraConnectors::read(&config.state_root, realm_id),
+                Ok,
+            )
             .map_err(|source| StartupError::Connector { source })?;
         let usage_poller =
             usage_poller.unwrap_or_else(|| usage::UsagePoller::discover(&config.state_root));
@@ -478,8 +566,24 @@ impl Daemon {
             usage_poller.clone(),
             quota_signals,
             github_publication.clone(),
+            Arc::new(crate::fleet::FleetSource::at(&config.state_root)),
         )
         .map_err(|source| StartupError::Applications { source })?;
+
+        let memory_config =
+            kontor_memory_cognee::Config::read(&config.state_root.join("memory-cognee.json"))
+                .map_err(|source| StartupError::MemoryCognee { source })?;
+        if memory_config.is_some_and(|document| document.enabled) && config.memory_cognee.is_none()
+        {
+            return Err(StartupError::MemoryCognee {
+                source: kontor_memory_cognee::Error(
+                    kontor_core::memory::DegradedReason::Unavailable,
+                ),
+            });
+        }
+        if let Some(client) = config.memory_cognee.clone() {
+            applications.attach_memory_cognee(client);
+        }
 
         let state = ApiState::new(ApiParts {
             store,
@@ -565,6 +669,24 @@ impl Daemon {
     /// resident process also invokes the same seam from its wake/backstop loop.
     pub async fn reconcile_jira_once(&self) -> applications::JiraReconcileReport {
         self.applications.reconcile_jira_once().await
+    }
+
+    /// Hold every planning pair invocation at its receipt write until the
+    /// returned hold is released. A black-box contract seam only: nothing this
+    /// daemon composes installs one.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn hold_planning_pair_invocation_receipts(&self) -> applications::PlanningPairReceiptHold {
+        self.applications.hold_planning_pair_invocation_receipts()
+    }
+
+    /// Hold every planning pair member recovery at its compare-and-swap, for a
+    /// black-box test that lines requests up after their readback. No
+    /// composed daemon installs one.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn hold_planning_pair_recovery_writes(&self) -> applications::PlanningPairReceiptHold {
+        self.applications.hold_planning_pair_recovery_writes()
     }
 
     /// The concrete Jira reconciliation services owned by this daemon.
@@ -670,6 +792,10 @@ impl Daemon {
             }
             let mut ticker = tokio::time::interval(period);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // The rotation position, carried across ticks so each bounded scan
+            // resumes where the last one stopped instead of re-reading the
+            // oldest page forever.
+            let mut cursor = None;
             loop {
                 tokio::select! {
                     _ = stopping.changed() => return,
@@ -677,7 +803,7 @@ impl Daemon {
                 }
                 tokio::select! {
                     _ = stopping.changed() => return,
-                    result = applications.recover_unconfirmed_admissions(UNCONFIRMED_ADMISSION_SCAN_LIMIT) => match result {
+                    result = applications.recover_unconfirmed_admissions(UNCONFIRMED_ADMISSION_SCAN_LIMIT, &mut cursor) => match result {
                         Ok((recovered, blocked)) if recovered > 0 || blocked > 0 => info!(
                             recovered,
                             blocked,
@@ -853,6 +979,35 @@ impl Daemon {
         // follow-up exists only because a turn was settled — so a restart cannot
         // invent work, and the dispatch table's key makes a retry idempotent.
         if outcome == BarrierState::Open {
+            // First, and deliberately before anything that waits on a runtime.
+            //
+            // A corrected fence predicate only ever runs when something asks it
+            // to, and the realms this correction exists for have nothing left to
+            // ask: their qualifying turn and passing gate verdict are already
+            // durable. This asks once, on the same seam that already owns "what
+            // did this realm leave unfinished?".
+            //
+            // It reads and writes only this realm's own database, so it owes
+            // nothing to a native session and must not queue behind one. The
+            // follow-up retry below does await delivery, and a realm carrying
+            // undelivered handoffs whose targets are long gone can leave it
+            // waiting indefinitely -- which, when the catch-up ran after it,
+            // meant a workflow stayed fenced for a reason that had nothing to do
+            // with its own evidence. Ordering is the whole fix; the retry that
+            // follows is unchanged and still runs.
+            match self.applications.catch_up_fenced_workflows() {
+                Ok(0) => {}
+                Ok(advanced) => info!(
+                    realm_id = %realm_id,
+                    advanced,
+                    "fenced workflows converged on evidence that was already durable"
+                ),
+                Err(error) => warn!(
+                    realm_id = %realm_id,
+                    detail = %error.code.as_str(),
+                    "fenced workflows could not be reconsidered"
+                ),
+            }
             match self
                 .state
                 .applications()
@@ -975,6 +1130,21 @@ impl Daemon {
                 .iter()
                 .filter_map(|binding| persisted.get(&binding.binding.id).cloned())
                 .collect();
+            // Restore the newest durable seats first. A runtime family can hold
+            // a long tail of historical open claims, and re-attestation asks
+            // the native plane about each exact identity. If that plane becomes
+            // unavailable part-way through the bounded startup sweep, oldest-
+            // first ordering strands the active delivery seats behind stale
+            // history even though their native sessions are healthy. This only
+            // changes read order: every claim is still presented, attested and
+            // reconciled under the same immutable snapshot rules.
+            claimed.sort_by(|left, right| {
+                right
+                    .binding
+                    .bound_at
+                    .cmp(&left.binding.bound_at)
+                    .then_with(|| right.binding.id.cmp(&left.binding.id))
+            });
             let unfrozen: Vec<_> = family_bindings
                 .iter()
                 .filter(|binding| !persisted.contains_key(&binding.binding.id))
@@ -1395,12 +1565,11 @@ mod tests {
         );
     }
 
-    /// A start under ceilings the domain refuses stops before the state root is
-    /// touched. The whole point of the check being in `start` and not in the
-    /// builder: the operator finds out at the moment they are watching, and the
-    /// directory is not left holding a lock and a database.
+    /// Without a stored policy the seed must be valid. Opening the store is
+    /// necessary to decide precedence, but refusal still precedes credentials
+    /// and service composition and must release the root for a corrected start.
     #[test]
-    fn a_capacity_the_domain_refuses_refuses_the_start_and_creates_nothing() {
+    fn an_invalid_seed_without_stored_capacity_refuses_start_and_releases_the_root() {
         let directory = tempfile::TempDir::new().expect("a temporary directory");
         let state_root = directory.path().join("realm");
         let refused = DEFAULT_CAPACITY;
@@ -1420,9 +1589,162 @@ mod tests {
             "the refusal names the capacity and not the pack: {error}"
         );
         assert!(
-            !state_root.exists(),
-            "a refused start leaves no state root behind"
+            !credentials::path_in(&state_root).exists(),
+            "capacity refusal must precede credential generation"
         );
+        let corrected = Daemon::start(
+            DaemonConfig::at(&state_root).with_port(0),
+            RuntimeRegistry::new(),
+        )
+        .expect("a corrected seed can claim the root after refusal");
+        assert_eq!(corrected.config().capacity, DEFAULT_CAPACITY);
+        corrected.shutdown();
+    }
+
+    #[test]
+    fn a_present_stored_capacity_is_authoritative_over_an_invalid_seed() {
+        let directory = tempfile::TempDir::new().expect("a temporary realm");
+        let stored = CapacityConfig {
+            global_max_in_flight: 9,
+            project_max_in_flight: 7,
+            mission_max_in_flight: 5,
+            account_max_in_flight: 3,
+            provider_max_in_flight: 2,
+            runtime_max_in_flight: 6,
+            adaptive: AdaptiveWindowConfig {
+                initial: 2,
+                floor: 1,
+                ceiling: 5,
+                growth_step: 1,
+            },
+            headroom: None,
+        };
+        let document = kontor_core::id::CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "ceilings": {
+                "global_max_in_flight": 9,
+                "project_max_in_flight": 7,
+                "mission_max_in_flight": 5,
+                "account_max_in_flight": 3,
+                "provider_max_in_flight": 2,
+                "runtime_max_in_flight": 6,
+                "adaptive": {"initial": 2, "floor": 1, "ceiling": 5, "growth_step": 1},
+            },
+        }))
+        .expect("the stored policy is canonical");
+        let realm_id = {
+            let store = SqliteStore::open(&directory.path().join(DATABASE_FILE))
+                .expect("the realm migrates");
+            store
+                .set_capacity_configuration(
+                    &document,
+                    &kontor_store::IdempotencyBinding {
+                        key: "authoritative-capacity-fixture".to_owned(),
+                        operation: "apply_capacity_configuration",
+                        fingerprint: document.hash().clone(),
+                        bound_at: kontor_api::now(),
+                    },
+                    kontor_core::id::AggregateRevision::INITIAL,
+                )
+                .expect("the valid durable policy is recorded");
+            store.realm_id()
+        };
+        let daemon = Daemon::start(
+            DaemonConfig::at(directory.path())
+                .with_port(0)
+                .with_capacity(CapacityConfig {
+                    global_max_in_flight: 0,
+                    ..DEFAULT_CAPACITY
+                }),
+            RuntimeRegistry::new(),
+        )
+        .expect("a valid stored policy is authoritative over an unused invalid seed");
+        assert_eq!(daemon.realm_id(), realm_id);
+        assert_eq!(daemon.config().capacity, stored);
+        daemon.shutdown();
+    }
+
+    /// A durable capacity configuration the composition root cannot honour
+    /// refuses the start rather than quietly falling back to the seed.
+    ///
+    /// Reachable only by writing the row directly, and that is the point: the
+    /// apply route validates before it writes, so nothing crossing the public
+    /// boundary can leave one of these in the table. What can is a hand-edited
+    /// row, a snapshot restored from a build with other rules, or a downgraded
+    /// binary — and in every one of those an operator believes the stored
+    /// ceilings are what the realm admits under. Starting under the seed instead
+    /// would enforce a policy nobody chose while reporting no restart is owed.
+    #[test]
+    fn a_stored_capacity_the_composition_root_cannot_honour_refuses_the_start() {
+        fn refuse(ceilings: serde_json::Value, seed: CapacityConfig) -> StartupError {
+            let directory = tempfile::TempDir::new().expect("a temporary directory");
+            let state_root = directory.path();
+            let document = kontor_core::id::CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "ceilings": ceilings,
+            }))
+            .expect("the fixture is a canonical document");
+            {
+                let store =
+                    SqliteStore::open(&state_root.join(DATABASE_FILE)).expect("the realm migrates");
+                store
+                    .set_capacity_configuration(
+                        &document,
+                        &kontor_store::IdempotencyBinding {
+                            key: "stored-capacity-fixture".to_owned(),
+                            operation: "apply_capacity_configuration",
+                            fingerprint: document.hash().clone(),
+                            bound_at: kontor_api::now(),
+                        },
+                        kontor_core::id::AggregateRevision::INITIAL,
+                    )
+                    .expect("the store records what it is given");
+            }
+            Daemon::start(
+                DaemonConfig::at(state_root)
+                    .with_port(0)
+                    .with_capacity(seed),
+                RuntimeRegistry::new(),
+            )
+            .expect_err("a stored configuration this build cannot honour refuses the start")
+        }
+
+        let complete = serde_json::json!({
+            "global_max_in_flight": 9,
+            "project_max_in_flight": 7,
+            "mission_max_in_flight": 5,
+            "account_max_in_flight": 3,
+            "provider_max_in_flight": 2,
+            "runtime_max_in_flight": 6,
+            "adaptive": {"initial": 2, "floor": 1, "ceiling": 5, "growth_step": 1},
+        });
+
+        // Present and unreadable: canonical JSON, and not a ceilings document
+        // this build understands.
+        let mut truncated = complete.clone();
+        truncated
+            .as_object_mut()
+            .expect("the fixture is an object")
+            .remove("runtime_max_in_flight");
+        // Present, readable, and a set the domain refuses: a zero ceiling reads
+        // as "no work allowed" in one place and "no limit" in another.
+        let mut zeroed = complete;
+        zeroed["account_max_in_flight"] = serde_json::json!(0);
+        for seed in [
+            DEFAULT_CAPACITY,
+            CapacityConfig {
+                global_max_in_flight: 0,
+                ..DEFAULT_CAPACITY
+            },
+        ] {
+            for unusable in [truncated.clone(), zeroed.clone()] {
+                let error = refuse(unusable, seed);
+                assert!(
+                    matches!(error, StartupError::StoredCapacity { .. }),
+                    "a present unusable policy is refused regardless of the seed: {error}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

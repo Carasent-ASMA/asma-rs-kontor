@@ -30,9 +30,11 @@ use crate::capability::{
     IssuedBinding, RuntimeBindingSnapshot, RuntimeCapabilities, RuntimeCapability, TrustGrade,
 };
 use crate::container::{
-    ContainerBindingSnapshot, ContainerRecoveryOutcome, ContainerRecoveryRequest,
+    ContainerBindingSnapshot, ContainerInspectRequest, ContainerInspection,
+    ContainerRecoveryOutcome, ContainerRecoveryRequest,
 };
 use crate::observation::{ControlPlaneObservation, NativeSession, ReconciliationReport};
+use crate::provenance::{FleetLaunchProvenance, FleetProvenanceObservation};
 use crate::request::{
     AdoptRequest, CancelRequest, CompactRequest, CorrelationChallengeCompletionRequest,
     CorrelationChallengeRequest, HistoryRequest, InspectRequest, LaunchRequest,
@@ -121,6 +123,15 @@ pub enum RuntimeError {
     CallerAgentNotFound {
         /// The exact native caller Paseo refused.
         caller_agent_id: ExternalId,
+    },
+    /// A planning pair member route whose closed member surface this runtime
+    /// cannot establish (ASMA-8282 D-3), named with its provider and gap.
+    #[error("runtime cannot establish the planning pair member surface for {provider}: {gap:?}")]
+    PlanningPairMemberSurfaceUnsupported {
+        /// The route's provider.
+        provider: String,
+        /// Why the surface cannot be established for it.
+        gap: crate::planning_pair::MemberSurfaceGap,
     },
     /// The selected provider has no permission mode Kontor knows how to pin.
     #[error("provider {provider} has no pinned runtime permission mode")]
@@ -261,6 +272,49 @@ pub enum RuntimeError {
     Domain(#[from] DomainError),
 }
 
+/// The exact stale-binding rules that prove a hosted seat's native
+/// predecessor is *gone* rather than merely unavailable.
+///
+/// A stale binding is not one fact. Some of its rules say the addressed session
+/// no longer exists or has already reached a terminal state — that is an answer
+/// to "is this predecessor still holding the seat", and the answer is no. The
+/// rest say the caller addressed the wrong runtime, the wrong generation or a
+/// container this plane cannot resolve, and those are refusals to answer.
+/// Reading the second kind as absence would archive a seat on the strength of a
+/// lookup that never found it (observed on the live ASMA-8098 TPM recovery).
+///
+/// The list is closed and matched exactly. A rule this build has not audited is
+/// not absence, so a new refusal added upstream fails closed here rather than
+/// silently widening what may be retired.
+const TERMINAL_HOSTED_PREDECESSOR_RULES: &[&str] = &[
+    "the exact native agent no longer exists",
+    "the exact native agent is archived",
+    "this session has been retired and cannot be resumed",
+    "a retired session cannot be adopted",
+    "this runtime holds no session with that native identity in this generation",
+];
+
+impl RuntimeError {
+    /// Whether this refusal proves the exact hosted predecessor is absent.
+    ///
+    /// [`RuntimeError::CorrelationFailed`] is included and predates this: the
+    /// runtime holds a native for the seat that is not the predecessor, which a
+    /// lost launch acknowledgement produces exactly, and refusing it would wedge
+    /// the seat on the retry that recovers it.
+    ///
+    /// Everything else — a session that is working, waiting on a permission
+    /// request, addressed on the wrong runtime or generation, or in a
+    /// disposition this build has not audited — is not absence.
+    #[must_use]
+    pub fn proves_hosted_predecessor_absent(&self) -> bool {
+        match self {
+            Self::CorrelationFailed => true,
+            Self::StaleBinding { rule } => TERMINAL_HOSTED_PREDECESSOR_RULES.contains(rule),
+            _ => false,
+        }
+    }
+}
+
 /// Convenience alias for adapter operations.
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
 
@@ -273,6 +327,9 @@ pub struct LaunchOutcome {
     /// The first normalized fact about the session. A launch acknowledgement is
     /// an acknowledgement, not a completion.
     pub observation: ControlPlaneObservation,
+    /// The fleet provenance read back from the native surface, or why none
+    /// could be (ASMA-8280 G-3). Never the request's own value.
+    pub fleet_provenance: FleetProvenanceObservation,
 }
 
 /// Source of one consultation route, frozen before native construction.
@@ -286,6 +343,8 @@ pub enum ConsultationRouteSource {
     MaterializationRecoveryProfile,
     /// Route selected while replacing an already-materialized native filler.
     SeatRecoveryProfile,
+    /// Route listed by the live `fleet.yml` read at placement time.
+    FleetConfiguration,
 }
 
 impl ConsultationRouteSource {
@@ -297,6 +356,7 @@ impl ConsultationRouteSource {
             Self::InitialRecoveryProfile => "initial_recovery_profile",
             Self::MaterializationRecoveryProfile => "materialization_recovery_profile",
             Self::SeatRecoveryProfile => "seat_recovery_profile",
+            Self::FleetConfiguration => "fleet_configuration",
         }
     }
 }
@@ -342,10 +402,37 @@ impl ConsultationRouteProvenance {
         }
     }
 
+    /// Provenance for one route the live fleet configuration selected.
+    #[must_use]
+    pub fn fleet_configuration(evidence_hash: ContentHash) -> Self {
+        Self {
+            source: ConsultationRouteSource::FleetConfiguration,
+            evidence_hash,
+            fallback_disposition: Some(ConsultationFallbackDisposition::OperatorAccepted),
+        }
+    }
+
+    /// Whether the live fleet configuration supplied this route.
+    #[must_use]
+    pub const fn is_fleet_configuration(&self) -> bool {
+        matches!(self.source, ConsultationRouteSource::FleetConfiguration)
+    }
+
     /// Whether this is the one risk-accepted initial fallback class.
     #[must_use]
     pub const fn is_operator_accepted_initial_recovery_profile(&self) -> bool {
         matches!(self.source, ConsultationRouteSource::InitialRecoveryProfile)
+            && matches!(
+                self.fallback_disposition,
+                Some(ConsultationFallbackDisposition::OperatorAccepted)
+            )
+    }
+
+    /// Whether an operator accepted this route through any recovery profile,
+    /// as opposed to template data or an unaccepted fallback.
+    #[must_use]
+    pub const fn is_operator_accepted_recovery(&self) -> bool {
+        !matches!(self.source, ConsultationRouteSource::Template)
             && matches!(
                 self.fallback_disposition,
                 Some(ConsultationFallbackDisposition::OperatorAccepted)
@@ -383,10 +470,17 @@ pub struct ConsultationLaunchRequest {
     pub model_rung: ModelRung,
     /// Immutable policy and disposition that selected the route.
     pub route_provenance: ConsultationRouteProvenance,
+    /// The fleet policy's authority for this route, when the activated policy
+    /// chose it (ASMA-8280 G-3).
+    pub fleet_provenance: Option<FleetLaunchProvenance>,
     /// Immutable context-window policy.
     pub context_policy: ContextPolicySnapshot,
     /// Invocation instant.
     pub requested_at: Timestamp,
+    /// The frozen member context a planning pair launch is held to, and
+    /// `None` for every Advisor and Committee launch (ASMA-8282 D-3). See
+    /// [`ConsultationLaunchRequest::planning_pair_context`].
+    pub planning_pair: Option<crate::planning_pair::PlanningPairLaunchContext>,
 }
 
 /// A persistent seat credential whose debug form never exposes its value.
@@ -428,6 +522,12 @@ pub struct ConsultationLaunchOutcome {
     /// Whether this call created the session or recovered the existing exact
     /// labelled one after a lost acknowledgement/restart.
     pub created: bool,
+    /// The fleet provenance read back from the native surface, or why none
+    /// could be (ASMA-8280 G-3). Never the request's own value.
+    pub fleet_provenance: FleetProvenanceObservation,
+    /// What a planning pair member launch read back of its member surface,
+    /// and `None` for every Advisor and Committee launch.
+    pub planning_pair: Option<crate::planning_pair::PlanningPairMemberObservation>,
 }
 
 /// Retire the exact native filler of one consultation SeatBinding before a
@@ -486,6 +586,8 @@ pub struct HostedSeatLaunchRequest {
     pub scope: ExecutionScope,
     /// Initial leadership handoff.
     pub prompt: BoundedText,
+    /// Durable role persona, separate from the one-turn handoff in `prompt`.
+    pub role_prompt: Option<BoundedText>,
     /// Generation-fenced credential for seat-authored authority routes.
     pub credential: ScopedSeatCredential,
     /// Older native occupants already frozen in Kontor's append-only route
@@ -495,6 +597,9 @@ pub struct HostedSeatLaunchRequest {
     pub fenced_predecessor_native_ids: Vec<ExternalId>,
     /// Exact provider/model/effort route authorized for this seat.
     pub model_rung: ModelRung,
+    /// The activated fleet policy's authority for `model_rung`, when a policy
+    /// binds this leadership seat (ASMA-8280 G-3).
+    pub fleet_provenance: Option<FleetLaunchProvenance>,
     /// How much this leadership seat may do before it has to ask a human,
     /// frozen at launch exactly as a delivery seat's is.
     ///
@@ -900,6 +1005,28 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// Prove, without a native effect, that this runtime composes the closed
+    /// planning pair member surface (ASMA-8282 D-3) for each of the pair's two
+    /// actual frozen routes: the member serve profile, its guard and closed
+    /// tool restriction, the provider's contained permission mode, and the
+    /// observed provenance readback.
+    ///
+    /// Asked before the pair is frozen and again before its container is
+    /// prepared. The answer is per route: a route whose provider has no
+    /// supported closed surface is refused with that provider named, never
+    /// launched under another surface or substituted. The default refuses
+    /// every route, so a runtime that has not composed the surface never
+    /// launches a member under the Advisor and Committee surface.
+    fn validate_planning_pair_member_surface(
+        &self,
+        routes: &[crate::planning_pair::PlanningPairMemberRoute],
+    ) -> RuntimeResult<()> {
+        let _ = routes;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Launch,
+        })
+    }
+
     /// The posture seats on this runtime get when their role slot declares none.
     ///
     /// A plane-wide operator default, subordinate to the role slot: a template
@@ -1009,6 +1136,27 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// Reconcile one planning pair member's exact known native session in
+    /// place (ASMA-8282 frontier A), reading its member surface and
+    /// provenance back as a launch does.
+    ///
+    /// The answer is that same session with `created` false. A runtime never
+    /// creates, replaces, archives or reroutes a member here. An absent
+    /// session is [`RuntimeError::StaleBinding`]; another session, or one
+    /// whose correlation labels name anything but the request's frozen
+    /// context, is [`RuntimeError::CorrelationFailed`]; a field it cannot read
+    /// back is reported `Unsupported`, never matched. The default refuses as
+    /// an unsupported capability before any native effect, so a runtime that
+    /// has not composed this never answers it.
+    async fn reconcile_planning_pair_member(
+        &self,
+        _request: &crate::planning_pair::PlanningPairMemberReconcileRequest,
+    ) -> RuntimeResult<ConsultationLaunchOutcome> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Resume,
+        })
+    }
+
     /// Retire one idle consultation predecessor after exact identity, route and
     /// SeatBinding correlation. This is not a generic consultation reaper.
     async fn retire_consultation_seat(
@@ -1050,6 +1198,19 @@ pub trait RuntimeAdapter: Send + Sync {
         &self,
         _request: &HostedSeatInspectRequest,
     ) -> RuntimeResult<HostedSeatInspection> {
+        Err(RuntimeError::UnsupportedCapability {
+            capability: crate::capability::RuntimeCapability::Inspect,
+        })
+    }
+
+    /// Prove an exact archived predecessor and the absence of a live successor.
+    /// This is read-only: require placement, archive timestamp, matching conversation,
+    /// and no pending permission. A missing native is not archive evidence.
+    async fn prove_archived_hosted_seat(
+        &self,
+        _request: &HostedSeatRetireRequest,
+        _known_retired_native_ids: &[ExternalId],
+    ) -> RuntimeResult<HostedSeatRetireOutcome> {
         Err(RuntimeError::UnsupportedCapability {
             capability: crate::capability::RuntimeCapability::Inspect,
         })
@@ -1263,6 +1424,73 @@ pub trait RuntimeAdapter: Send + Sync {
         Ok(())
     }
 
+    /// Register the canonical tail this message was issued after.
+    ///
+    /// Distinct from [`RuntimeAdapter::note_unconfirmed_delivery`] on purpose,
+    /// and the difference matters: this says only *where the transcript ended
+    /// when the id was minted*. It makes no claim that anything was delivered,
+    /// records no ledger entry, and never causes a send to be skipped. It exists
+    /// so a first attempt can bound its own reconciliation, which is the case a
+    /// replay-only hook cannot reach — and the case that made long sessions
+    /// unable to acknowledge anything at all.
+    ///
+    /// The value is always the one the durable issuance recorded, so a floor is
+    /// never raised after the fact.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when the adapter cannot accept the boundary.
+    fn note_issuance_boundary(
+        &self,
+        message_id: MessageId,
+        issued_after: TimelinePosition,
+    ) -> RuntimeResult<()> {
+        let _ = (message_id, issued_after);
+        Ok(())
+    }
+
+    /// Declare that this message may already have been delivered, so a send of
+    /// it must reconcile canonical history before reaching the wire.
+    ///
+    /// An adapter keeps a delivery ledger so a retry answers from recorded
+    /// evidence instead of becoming a second instruction. That ledger lives in
+    /// the adapter, and production builds adapters fresh — so the one case the
+    /// ledger exists for, a retry of a delivery whose outcome was never
+    /// confirmed, is exactly the case a restart erases. The effect landed, the
+    /// durability failed, the caller was told to replay the original id, and the
+    /// replay met an adapter with no memory of it.
+    ///
+    /// The control plane does remember, durably and independently of any
+    /// adapter process: it records every client message id it issues *before*
+    /// asking a runtime to accept it, and leaves that record unpinned until a
+    /// delivery position is acknowledged. An unpinned record is precisely "this
+    /// may already be out there". Replaying it through here restores the
+    /// adapter's ledger entry for this one message from that durable fact, so
+    /// the send that follows takes the confirmation-unknown path: read the
+    /// session's canonical content first, adopt the delivery if it is already
+    /// there, and only send if it is not.
+    ///
+    /// This is a statement about *uncertainty*, not about delivery. It never
+    /// claims the message landed, never invents a position, and never lets a
+    /// send be skipped on the strength of a record alone — canonical history
+    /// decides, and if it cannot be read the send fails closed rather than
+    /// guessing either way.
+    ///
+    /// `body_hash` is the digest the ledger compares retries against, so a
+    /// replay that changes the body under a reused id is still refused.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when this id is already recorded with a
+    /// different body.
+    fn note_unconfirmed_delivery(
+        &self,
+        message_id: MessageId,
+        body_hash: &ContentHash,
+        issued_after: Option<TimelinePosition>,
+    ) -> RuntimeResult<()> {
+        let _ = (message_id, body_hash, issued_after);
+        Ok(())
+    }
+
     /// Seed the epoch registry from durable state before any read happens.
     ///
     /// Restores the exact numbers previously allocated, so a raw epoch resolves
@@ -1396,6 +1624,24 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
+    /// Inspect one already-bound native container without changing it.
+    ///
+    /// Implementations address only the complete persisted identity in
+    /// `request.binding`. A child is looked up inside `request.native_parent`;
+    /// neither a visible title nor a working directory is an address. The
+    /// operation must never create, rename, move or adopt a container. The sole
+    /// permitted in-process effect is rehydrating the exact ESW project binding
+    /// after a successful exact-id readback.
+    async fn inspect_container(
+        &self,
+        request: &ContainerInspectRequest,
+    ) -> RuntimeResult<ContainerInspection> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::Inspect,
+        })
+    }
+
     /// Read the one exact-parent/exact-path native child that may replace a
     /// stale persisted container binding.
     ///
@@ -1405,6 +1651,63 @@ pub trait RuntimeAdapter: Send + Sync {
         &self,
         request: &ContainerRecoveryRequest,
     ) -> RuntimeResult<ContainerRecoveryOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::PrepareWorkspace,
+        })
+    }
+
+    /// Read what [`RuntimeAdapter::recreate_container`] would do, changing
+    /// nothing.
+    ///
+    /// Same census, same exact-parent and exact-path evidence, no native
+    /// effect. It reports whether the apply would create a native or adopt one
+    /// a lost attempt already created, which is the distinction an operator
+    /// previewing a recreation is actually asking about.
+    ///
+    /// The default refuses, so "this runtime will not build containers" stays
+    /// distinguishable from "this runtime found nothing to build".
+    async fn preview_container_recreation(
+        &self,
+        request: &crate::container::ContainerRecreationRequest,
+    ) -> RuntimeResult<crate::container::ContainerRecreationOutcome> {
+        let _ = request;
+        Err(RuntimeError::UnsupportedCapability {
+            capability: RuntimeCapability::PrepareWorkspace,
+        })
+    }
+
+    /// Make the one native container a topology node lost exist again.
+    ///
+    /// The only container operation permitted to create a native, and it is
+    /// reached only when the census proves nothing exists to adopt: the
+    /// persisted identity is absent from its exact parent and no live container
+    /// occupies its canonical path.
+    ///
+    /// Implementations must preserve every identity carried in — node, logical
+    /// binding, canonical working directory, exact native parent and rendered
+    /// title — and must apply the title as exact bytes. Nothing here authorises
+    /// a move, a rename, or a second native.
+    ///
+    /// # The rule that makes a lost acknowledgement safe
+    ///
+    /// A creation whose response is lost leaves a live native that Kontor has
+    /// no id for. The retry must therefore treat *exactly one* candidate at the
+    /// exact parent, exact canonical path and exact expected title as its own
+    /// prior creation and adopt it, reporting `created: false`. An
+    /// implementation that created unconditionally would leave two natives at
+    /// one path, and no later readback could say which one the node owns.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::UnsupportedCapability`] by default, and in an
+    /// implementation: [`RuntimeError::StaleBinding`] when the persisted native
+    /// is still present, and [`RuntimeError::WorkspaceMismatch`] for several
+    /// candidates at the canonical path, a candidate whose title has drifted,
+    /// an operation that may not create, or a foreign runtime host.
+    async fn recreate_container(
+        &self,
+        request: &crate::container::ContainerRecreationRequest,
+    ) -> RuntimeResult<crate::container::ContainerRecreationOutcome> {
         let _ = request;
         Err(RuntimeError::UnsupportedCapability {
             capability: RuntimeCapability::PrepareWorkspace,
@@ -1454,11 +1757,15 @@ pub trait RuntimeAdapter: Send + Sync {
         })
     }
 
-    /// Archive an exact retired native child and prove its absence.
+    /// Archive an exact retired native container and prove its absence.
     ///
-    /// Implementations must refuse native roots, foreign/moved identities and
-    /// live occupants. A missing child on retry is confirmed through a complete
-    /// readback, never inferred from an acknowledgement or cached binding.
+    /// Both materialized shapes pass here, and the request's own
+    /// [`crate::container::ArchiveContainerRequest::parent_project`] decides
+    /// which ancestry is admissible. Implementations must refuse foreign or
+    /// moved identities, live occupants, and — for a root — any container still
+    /// held beneath it and any root the operator adopted rather than Kontor
+    /// created. Absence on retry is confirmed through a complete readback, never
+    /// inferred from an acknowledgement or a cached binding.
     async fn archive_container(
         &self,
         request: &crate::container::ArchiveContainerRequest,
@@ -1532,6 +1839,17 @@ pub trait RuntimeAdapter: Send + Sync {
         &self,
         request: &AdmissionRequest,
     ) -> RuntimeResult<crate::admission::AdmissionOutcome>;
+
+    /// Release an exact abandoned run's reservation only before launch claimed it.
+    /// No native effect or in-flight/unknown launch may be released. Adapters
+    /// without this bookkeeping surface conservatively leave it untouched.
+    async fn release_unclaimed_admission(
+        &self,
+        _slot: &crate::admission::RoleSlotKey,
+        _agent_run_id: kontor_core::id::AgentRunId,
+    ) -> RuntimeResult<bool> {
+        Ok(false)
+    }
 
     /// Start a new native session for an agent run.
     ///

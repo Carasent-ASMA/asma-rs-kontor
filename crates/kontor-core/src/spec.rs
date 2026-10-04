@@ -2479,6 +2479,115 @@ impl ContextPolicySnapshot {
     }
 }
 
+/// What a runtime's acceptance of a launched occupancy's role persona proves.
+///
+/// Paseo's `config.systemPrompt` is *creation-only*: it is written when the
+/// native is created and the runtime exposes no route to read it back. Recording
+/// that limit explicitly is the whole point of this enum. A reader has to be
+/// able to tell "Kontor froze this persona and delivered it" apart from "the
+/// native confirmed it is running under this persona", because only the first is
+/// true here, and a snapshot that blurred the two would be desired input wearing
+/// the costume of observed evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RolePersonaDelivery {
+    /// Written into the create request. The runtime offers no readback, so this
+    /// evidences delivery, never what the native currently holds.
+    CreateOnlyNoReadback,
+}
+
+impl RolePersonaDelivery {
+    /// The stored spelling.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::CreateOnlyNoReadback => "create_only_no_readback",
+        }
+    }
+
+    /// Parse the stored spelling.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the text names no known delivery.
+    pub fn parse(text: &str) -> DomainResult<Self> {
+        match text {
+            "create_only_no_readback" => Ok(Self::CreateOnlyNoReadback),
+            _ => Err(DomainError::invalid(
+                "RolePersonaDelivery",
+                "unknown role persona delivery",
+            )),
+        }
+    }
+}
+
+/// The role persona one launched occupancy was opened under, frozen with its
+/// digest.
+///
+/// Frozen per *occupancy* rather than per seat: a replacement is a new
+/// generation and gets its own record, so "which persona did this seat receive"
+/// stays answerable across a replacement instead of being overwritten by the
+/// successor. The text is kept beside its digest because re-deriving it from
+/// today's operational-domain pack would answer a different question than the
+/// one asked -- an edit to that pack after launch must not be able to reach
+/// backwards and change what this seat is recorded as having received.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RolePersonaSnapshot {
+    /// Schema generation of this snapshot.
+    pub schema_version: SchemaVersion,
+    /// The standard catalog role whose persona this is.
+    pub role_code: RoleCode,
+    /// The exact persona text delivered at launch.
+    pub prompt: crate::id::BoundedText,
+    /// Digest of the canonical delivered text.
+    pub prompt_hash: ContentHash,
+    /// What the runtime's acceptance of this persona actually proves.
+    pub delivery: RolePersonaDelivery,
+    /// When the persona was frozen. This happens before the native exists, so a
+    /// launch whose acknowledgement is lost still leaves the record behind.
+    pub frozen_at: Timestamp,
+}
+
+impl RolePersonaSnapshot {
+    /// Canonicalize and hash the delivered persona.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the text cannot be canonicalized.
+    pub fn freeze(
+        role_code: RoleCode,
+        prompt: crate::id::BoundedText,
+        delivery: RolePersonaDelivery,
+        schema_version: SchemaVersion,
+        frozen_at: Timestamp,
+    ) -> DomainResult<Self> {
+        // Digest of the exact delivered bytes. Not a canonical document:
+        // the persona is free text, and what has to be provable is that
+        // these exact bytes were the ones handed to the runtime.
+        let prompt_hash = ContentHash::of(prompt.as_str().as_bytes());
+        Ok(Self {
+            schema_version,
+            role_code,
+            prompt,
+            prompt_hash,
+            delivery,
+            frozen_at,
+        })
+    }
+
+    /// Verify the recorded persona still hashes to its recorded digest.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the text or the digest was altered.
+    pub fn verify(&self) -> DomainResult<()> {
+        if ContentHash::of(self.prompt.as_str().as_bytes()) != self.prompt_hash {
+            return Err(DomainError::invalid(
+                "RolePersonaSnapshot",
+                "the persona no longer matches its pinned hash",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// One logical role's seeded context-window policy, as deployment data.
 ///
 /// The seed table is the *only* place an ASMA role name meets a context class,

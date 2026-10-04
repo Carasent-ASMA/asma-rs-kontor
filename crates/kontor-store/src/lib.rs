@@ -27,6 +27,9 @@
 //! The rule they share is the one uncertainty always breaks: an absence, a
 //! timeout, a closed stream or a missing session is never a completion.
 
+mod artifact_submissions;
+pub use artifact_submissions::NewArtifactSubmission;
+
 pub mod authority;
 pub mod backup;
 mod commands;
@@ -37,7 +40,11 @@ mod graph;
 mod intake;
 mod jira;
 pub mod memory;
+mod message_delivery_proofs;
 mod migrations;
+pub use message_delivery_proofs::{
+    MessageDeliveryProof, MessageProofAnchor, message_issuance_digest,
+};
 mod policy;
 pub mod publication;
 pub mod query;
@@ -75,8 +82,8 @@ pub use graph::{
     EpicTicketLink, IdempotencyBinding, MessageIssuance, MessageIssuanceOutcome, NewRoleSlotWaiver,
     NewRoleTurn, ProfileSelection, ProjectEnsure, RegisteredPack, RoleTurnReplay,
     RoleTurnRuntimeProof, SeatRow, SettledTurn, StoredAuthorization, StoredBindingSnapshot,
-    StoredComment, StoredConflict, StoredProfileSelectionOutcome, StoredWaiver, TeamTemplateSource,
-    TurnDispatch,
+    StoredComment, StoredConflict, StoredProfileSelectionOutcome, StoredTaskWorktreeCorrection,
+    StoredWaiver, TaskWorktreeCorrection, TeamTemplateSource, TurnDispatch,
 };
 pub use jira::{
     ConfirmedJiraBinding, ConflictClose, JiraBindingState, JiraBindingSubject, JiraIntentKind,
@@ -93,8 +100,8 @@ pub use reconciliation::{
     ReconciliationEpoch, ReconciliationEpochId,
 };
 pub use scheduler::{
-    AdmissionCommit, AdmissionOutcome, LeaseEventKind, LeaseKind, LeaseRelease, LeaseRenewal,
-    RecordedRejection, RecoverableAdmission, ResourceLease, UnconfirmedAdmission,
+    AdmissionCommit, AdmissionOutcome, AdmissionScanKey, LeaseEventKind, LeaseKind, LeaseRelease,
+    LeaseRenewal, RecordedRejection, RecoverableAdmission, ResourceLease, UnconfirmedAdmission,
 };
 pub use teams::{StoredTeamDraft, StoredTeamRevision, StoredTeamsProjection};
 pub use turn_correlation::{
@@ -167,12 +174,82 @@ impl From<StoreError> for RepositoryError {
 #[derive(Debug)]
 pub struct SqliteStore {
     connection: Connection,
+    /// Armed crash points, under the `fault-injection` feature only.
+    #[cfg(feature = "fault-injection")]
+    faults: StoreFaults,
     /// Loaded once at open and never mutated, so every ingress check compares
     /// against the same value for the lifetime of the store.
     realm: RealmMetadata,
 }
 
+/// Deterministic crash points a recovery test can stand in.
+///
+/// Some durable intervals are only reachable by losing the process inside them.
+/// Arming a crash point is how a test stands there deliberately instead of
+/// hoping to. The whole type is behind `fault-injection`, which nothing but a
+/// dev-dependency edge turns on.
+#[cfg(feature = "fault-injection")]
+#[derive(Debug, Default)]
+pub(crate) struct StoreFaults {
+    /// Fail after a succession's trailing effects have landed but before the
+    /// latch that records them.
+    pub(crate) lose_next_succession_effects: std::cell::Cell<bool>,
+    /// Fail immediately after a succession's route transition and ledger row
+    /// commit, before either trailing effect is even attempted.
+    pub(crate) lose_next_succession_route_ack: std::cell::Cell<bool>,
+    /// Fail before a complete succession binds the receipt already recorded
+    /// for it.
+    pub(crate) lose_next_succession_receipt_binding: std::cell::Cell<bool>,
+}
+
 impl SqliteStore {
+    /// Arm a single deterministic loss of the next succession's trailing effects.
+    ///
+    /// The route transition still commits and both effects still land; only the
+    /// latch that records them is lost, which is exactly what a process death in
+    /// that interval looks like from the daemon.
+    #[cfg(feature = "fault-injection")]
+    pub fn lose_next_succession_effects(&self) {
+        self.faults.lose_next_succession_effects.set(true);
+    }
+
+    /// Arm a single deterministic loss of the next succession's route
+    /// acknowledgement.
+    ///
+    /// The transition and the ledger row are durable; the caller never learns
+    /// it. This is the earliest incomplete shape a replay can find — neither
+    /// trailing effect has been attempted — and it is a different interval from
+    /// [`Self::lose_next_succession_effects`], which loses only the latch after
+    /// both have already landed.
+    #[cfg(feature = "fault-injection")]
+    pub fn lose_next_succession_route_ack(&self) {
+        self.faults.lose_next_succession_route_ack.set(true);
+    }
+
+    /// Arm a single deterministic loss of the next succession receipt binding.
+    ///
+    /// The command receipt is recorded before this point, so the loss leaves a
+    /// realm holding a receipt that no ledger row points at. A replay must find
+    /// and rebind that same receipt rather than record a second one.
+    #[cfg(feature = "fault-injection")]
+    pub fn lose_next_succession_receipt_binding(&self) {
+        self.faults.lose_next_succession_receipt_binding.set(true);
+    }
+
+    /// Read an initialized, current-schema Realm without creating or migrating it.
+    ///
+    /// # Errors
+    /// Refuses absent databases, unsupported schemas and invalid Realm metadata.
+    pub fn read_existing_realm(path: &Path) -> Result<RealmMetadata, StoreError> {
+        let connection = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.pragma_update(None, "query_only", true)?;
+        connection.pragma_update(None, "foreign_keys", true)?;
+        migrations::load_realm(&connection)
+    }
+
     /// Open (creating if needed) and migrate a database file.
     ///
     /// A `user_version` of 0 applies migration 0001; 1 is an idempotent open;
@@ -187,7 +264,12 @@ impl SqliteStore {
         let mut connection = Connection::open(path)?;
         migrations::configure_connection(&connection)?;
         let realm = migrations::migrate(&mut connection)?;
-        Ok(Self { connection, realm })
+        Ok(Self {
+            connection,
+            realm,
+            #[cfg(feature = "fault-injection")]
+            faults: StoreFaults::default(),
+        })
     }
 
     /// This database's immutable Realm identity.

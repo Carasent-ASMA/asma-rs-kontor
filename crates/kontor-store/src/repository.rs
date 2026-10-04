@@ -29,7 +29,7 @@ use kontor_core::id::{
     CommandReceiptId, CommitteeRunId, ContentHash, CredentialAlias, CurrencyCode,
     DescriptionPublicationId, EventCursor, ExternalId, ExternalName, GateKey,
     GuardrailEvaluationId, HolidaySourceId, IdempotencyKey, IntakeReceiptId, MiniProjectId,
-    ModuleKey, Money, OpenQuestionId, PersonaScenarioId, PhaseKey, ProjectId,
+    ModuleKey, Money, OpenQuestionId, PersonaScenarioId, PhaseKey, PlanningPairRunId, ProjectId,
     ProviderUsageObservationId, QuickSessionId, QuotaObservationProvenanceId, RealmId,
     RoleCatalogId, RoleCode, RoleKey, RoleSlotId, RuntimeBindingId, RuntimeKindKey,
     ScheduleOverrideId, SeatBindingId, SignedDuration, SpecVersion, StatusConflictId,
@@ -42,6 +42,7 @@ use kontor_core::open_question::{
     AmbiguityRound, Disposition, DispositionKind, DispositionOutcome, OpenQuestion,
     OpenQuestionAttachment, OpenQuestionSummary, QuestionScope, TriggerFiring,
 };
+use kontor_core::planning_pair::{PlanningPairRound, PlanningPairSlot, PlanningPairState};
 use kontor_core::quota::{CreditBalance, QuotaWindow, QuotaWindowKind};
 use kontor_core::realm::{EventEnvelope, RealmCursor, ReceiptEnvelope, SnapshotEnvelope};
 use kontor_core::receipt::{
@@ -49,30 +50,36 @@ use kontor_core::receipt::{
 };
 use kontor_core::repository::OpenQuestionRepository;
 use kontor_core::repository::{
-    AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AgentRun, AvailabilityOverride,
-    CalendarRepository, CapacityObservation, CapacityRepository, CommandRepository,
-    CompletionWrite, ConnectorSpecSelector, CredentialReference, CredentialReferenceKind,
-    GateEvaluation, GateRejectionRecovery, GateRejectionRoute, GateRouteOrigin, HistoryGapKind,
-    HistoryGapMarker, HostedSeatLaunchIntentState, IntakeCreatedWork, IntakeDecisionRecord,
-    IntakeOutcome, IntakeRepository, MiniProject, MiniProjectTopologySnapshot, NewAbandonReceipt,
-    NewAccountProfile, NewAdaptiveAdmissionState, NewAgentRun, NewAvailabilityOverride,
-    NewCapacityObservation, NewCommandIntent, NewConsultationMaterializationReroute,
-    NewConsultationRecoveryAttempt, NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord,
+    AccountProfile, AccountProfileUpdate, AdaptiveAdmissionAdvance, AdoptionWrite, AgentRun,
+    AttestationWrite, AvailabilityOverride, CalendarRepository, CapacityObservation,
+    CapacityRepository, CommandRepository, CompletionWrite, ConnectorSpecSelector,
+    CoreTeamRouteSuccessionCommit, CoreTeamRouteSuccessionEffects, CoreTeamRouteSuccessionReadback,
+    CredentialReference, CredentialReferenceKind, GateEvaluation, GateRejectionRecovery,
+    GateRejectionRoute, GateRouteOrigin, HistoryGapKind, HistoryGapMarker,
+    HostedSeatLaunchIntentState, HostedSeatLaunchIntentSupersession, IntakeCreatedWork,
+    IntakeDecisionRecord, IntakeOutcome, IntakeRepository, MiniProject,
+    MiniProjectTopologySnapshot, NewAbandonReceipt, NewAccountProfile, NewAdaptiveAdmissionState,
+    NewAgentRun, NewAvailabilityOverride, NewCapacityObservation, NewCommandIntent,
+    NewConsultationMaterializationReroute, NewConsultationRecoveryAttempt,
+    NewCoreTeamRouteSuccessionClaim, NewGateEvaluation, NewIntakeDecision, NewIntakeDecisionRecord,
     NewIntakeReevaluation, NewLocalCommand, NewMiniProject, NewNativeContainerBinding,
     NewObservation, NewProject, NewProviderQuotaState, NewProviderUsageObservation,
     NewRuntimeEvent, NewSeatBinding, NewSessionTopologyNode, NewSourceEvent, NewTask,
-    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance, Project,
-    ProjectRepository, ProjectTopologyDefault, ProviderQuotaState, ProviderUsageObservation,
-    QuotaObservationProvenance, RealmEventPage, RealmRepository, ReceiptAdvance,
-    ReevaluationOutcome, RepositoryError, RepositoryResult, RunClosure, RunInspection,
-    RunRepository, RuntimeBinding, RuntimeEvent, SeatLivenessObservation, SessionVerdictEvidence,
-    SourceDisposition, SourceEventIngest, SpecRepository, StoredAdvisorAdvice,
-    StoredCapacityConfiguration, StoredCommitteeFinding, StoredCompletionProfile,
-    StoredCompletionWake, StoredCompletionWakeDelivery, StoredConsultationMaterializationReroute,
-    StoredConsultationProfileRevision, StoredConsultationRecoveryAttempt, StoredConsultationRun,
-    StoredConsultationSeat, StoredCoreTeamRevision, StoredEpicCompletion, StoredEpicRoster,
+    NewTaskPersonaSnapshot, NewTaskWorkflow, NewTeamRun, NewTicketLink, PhaseAdvance,
+    PlanningPairMemberReadback, Project, ProjectRepository, ProjectTopologyDefault,
+    ProviderQuotaState, ProviderUsageObservation, QuotaObservationProvenance, RealmEventPage,
+    RealmRepository, ReceiptAdvance, ReevaluationOutcome, RepositoryError, RepositoryResult,
+    RunClosure, RunInspection, RunRepository, RuntimeBinding, RuntimeEvent,
+    SeatLivenessObservation, SessionVerdictEvidence, SourceDisposition, SourceEventIngest,
+    SpecRepository, StoredAdvisorAdvice, StoredCapacityConfiguration, StoredCommitteeFinding,
+    StoredCompletionProfile, StoredCompletionWake, StoredCompletionWakeDelivery,
+    StoredConsultationMaterializationReroute, StoredConsultationProfileRevision,
+    StoredConsultationRecoveryAttempt, StoredConsultationRun, StoredConsultationSeat,
+    StoredCoreTeamRevision, StoredCoreTeamRouteSuccession, StoredEpicCompletion, StoredEpicRoster,
     StoredHostedSeatLaunchIntent, StoredHostedTopologySeat, StoredLegacyEpicBacklogCodeCorrection,
-    StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    StoredPlanningPairContribution, StoredPlanningPairKnownNative, StoredPlanningPairPlacement,
+    StoredPlanningPairRecord, StoredPromotion, StoredQuickSession, StoredRemediationProposal,
+    StoredRetiredEvaluatorAttestation, StoredTeamRunAdmissionAdoption,
     StoredTopologyContainerRecovery, SuccessionRepository, Task, TaskInspection,
     TaskTransitionRequest, TaskWorkflow, TeamRun, TeamRunAdvance, TeamRunClosure, TicketLink,
     TicketRepository, TopologyRepository, WorkflowRepository, validate_dependency_graph,
@@ -84,6 +91,7 @@ use kontor_core::repository::{
     TeamDefinitionMigrationObservation, TeamDefinitionMigrationState,
     TeamDefinitionMigrationSubject, TeamDefinitionMigrationTarget,
     TeamDefinitionMigrationTargetState, TeamDefinitionRepository, TopologyContainerRecovery,
+    TopologyContainerRecoveryDisposition,
 };
 use kontor_core::spec::{
     CanonicalSourceEvent, CatalogRoleRef, IntakeReceipt, ModelRung, NodeProjectionCapability,
@@ -95,13 +103,13 @@ use kontor_core::spec::{
 };
 use kontor_core::state::{
     AbandonReceiptFacts, AdaptiveAdmissionState, DerivedRunState, DesiredRunState, GateState,
-    GateVerdict, ImportedTaskState, NativeContainerBinding, NativeRuntimeIdentity,
-    ObservedContainerKind, ObservedRunState, PlacementState, RunLifecycle, RunProjection,
-    SeatAttachment, SeatAttachmentObservation, SeatBinding, SessionTopologyNode,
-    TaskProgressEvidence, TaskReopenAuthority, TaskState, TaskTeamClosure, TaskTransition,
-    TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence, TerminalEvidence,
-    TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle, certify_task_progress,
-    evaluate_seat_attachment, plan_team_advance, plan_team_closure,
+    GateVerdict, ImportedTaskState, NativeContainerBinding, NativeContainerReadback,
+    NativeRuntimeIdentity, ObservedContainerKind, ObservedContainerProjection, ObservedRunState,
+    PlacementState, RunLifecycle, RunProjection, SeatAttachment, SeatAttachmentObservation,
+    SeatBinding, SessionTopologyNode, TaskProgressEvidence, TaskReopenAuthority, TaskState,
+    TaskTeamClosure, TaskTransition, TeamChildEvidence, TeamEvidenceSource, TeamTerminalEvidence,
+    TerminalEvidence, TerminalEvidenceSource, TerminalOutcome, TopologyLifecycle,
+    certify_task_progress, evaluate_seat_attachment, plan_team_advance, plan_team_closure,
 };
 use kontor_core::succession::{
     NewSuccessionAttempt, SuccessionAttempt, SuccessionAttemptAdvance, SuccessionAttemptState,
@@ -134,6 +142,7 @@ use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 use crate::SqliteStore;
+mod attestation_authority;
 use crate::events::append::stored_payload;
 use crate::events::replay::{EVENT_COLUMNS, read_event};
 use crate::graph::{Applied, IdempotencyBinding};
@@ -165,6 +174,24 @@ pub(crate) fn backend(error: rusqlite::Error) -> RepositoryError {
 
 pub(crate) fn conflict(subject: &'static str, rule: &'static str) -> RepositoryError {
     RepositoryError::Conflict { subject, rule }
+}
+
+/// Whether a failed write was refused by the unique index that binds one
+/// server-derived consultation semantic identity.
+///
+/// Matched on the exact index identity the schema declares, so no other
+/// uniqueness, check or immutability violation is reclassified.
+fn is_duplicate_semantic_identity(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, detail)
+            if failure.code == rusqlite::ErrorCode::ConstraintViolation
+                && detail.as_deref().is_some_and(|detail| {
+                    detail.contains(
+                        "consultation_runs.project_id, consultation_runs.semantic_identity_hash"
+                    ) || detail.contains("consultation_runs_by_semantic_identity")
+                })
+    )
 }
 
 pub(crate) fn text(timestamp: Timestamp) -> String {
@@ -225,8 +252,303 @@ fn consultation_run_id(
         ConsultationFamily::Committee => {
             CommitteeRunId::parse(value).map(ConsultationRunId::Committee)
         }
+        ConsultationFamily::PlanningPair => {
+            PlanningPairRunId::parse(value).map(ConsultationRunId::PlanningPair)
+        }
     }
     .map_err(RepositoryError::from)
+}
+
+/// The checks every frozen consultation passes before its transaction opens.
+fn validate_frozen_consultation_run(
+    run: &StoredConsultationRun,
+    node: &NewSessionTopologyNode,
+) -> RepositoryResult<()> {
+    if run.project_id != node.project_id
+        || run.topology_node_id != node.id
+        || node.mini_project_id != Some(run.mini_project_id)
+    {
+        return Err(RepositoryError::Conflict {
+            subject: "consultation run",
+            rule: "the frozen run and topology node do not describe one scope",
+        });
+    }
+    let verified_context = CanonicalDocument::from_serializable(&run.context)?;
+    if ContentHash::of(run.question.as_str().as_bytes()) != run.question_hash
+        || verified_context.hash() != &run.context_hash
+    {
+        return Err(RepositoryError::Conflict {
+            subject: "consultation run",
+            rule: "frozen input does not match its digest",
+        });
+    }
+    Ok(())
+}
+
+/// Insert one planning pair record revision inside the caller's transaction.
+fn insert_planning_pair_record_in(
+    transaction: &Transaction<'_>,
+    record: &StoredPlanningPairRecord,
+) -> RepositoryResult<()> {
+    transaction
+        .execute(
+            "INSERT INTO planning_pair_record_revisions
+                 (run_id, project_id, revision, phase, record, record_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                record.run_id.as_text(),
+                record.project_id.to_string(),
+                i64::try_from(record.revision.get()).unwrap_or(i64::MAX),
+                record.phase.as_str(),
+                record.record.json(),
+                record.record.hash().as_str(),
+                format_utc_timestamp(record.created_at),
+            ],
+        )
+        .map_err(backend)?;
+    Ok(())
+}
+
+/// Insert one frozen consultation — its topology node, run row, re-review
+/// claim, seat bindings and seats — inside the caller's transaction.
+///
+/// Shared by every family, so a planning pair is created through exactly the
+/// statements an Advisor or Committee is.
+fn insert_consultation_run_in(
+    transaction: &Transaction<'_>,
+    run: &StoredConsultationRun,
+    node: &NewSessionTopologyNode,
+    seats: &[(&StoredConsultationSeat, &NewSeatBinding)],
+) -> RepositoryResult<()> {
+    // The subject has to be inside the consultation naming it. The
+    // column's foreign key only proves the ticket exists somewhere:
+    // `tasks` is unique on (project_id, id) and SQLite cannot add a
+    // composite foreign key through ALTER TABLE ADD COLUMN, so a ticket
+    // from another project — or from a sibling epic in this one — would
+    // satisfy it while naming a subject this epic has no authority over.
+    // Storage refuses it too; this refusal is the legible one.
+    if let Some(subject_task_id) = run.subject.and_then(ConsultationSubject::task_id) {
+        let contained: bool = transaction
+            .query_row(
+                "SELECT EXISTS (
+                     SELECT 1
+                       FROM tasks
+                      WHERE id = ?1
+                        AND project_id = ?2
+                        AND mini_project_id IS ?3
+                 )",
+                params![
+                    subject_task_id.to_string(),
+                    run.project_id.to_string(),
+                    run.mini_project_id.to_string(),
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if !contained {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation subject",
+                rule: "the advised task belongs to another project or epic",
+            });
+        }
+    }
+    transaction
+        .execute(
+            "INSERT INTO topology_nodes
+                 (id, project_id, mini_project_id, spec_id, spec_version, spec_hash,
+                  kind, parent_id, lifecycle, placement, task_id, revision,
+                  created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                     'active', 'unbound', NULL, 1, ?9, ?9)",
+            params![
+                node.id.to_string(),
+                node.project_id.to_string(),
+                node.mini_project_id.map(|id| id.to_string()),
+                node.topology.spec_id.to_string(),
+                version_column(node.topology.version),
+                node.topology.canonical_hash.as_str(),
+                node.kind.as_str(),
+                node.parent_id.map(|id| id.to_string()),
+                text(node.created_at),
+            ],
+        )
+        .map_err(backend)?;
+
+    let context = canonical_json(&run.context, "consultation context")?;
+    let result = run
+        .result
+        .as_ref()
+        .map(|value| canonical_json(value, "consultation result"))
+        .transpose()?;
+    transaction
+        .execute(
+            "INSERT INTO consultation_runs
+                 (run_id, project_id, mini_project_id, family, profile_id,
+                  profile_version, definition_hash, semantic_identity_hash, question, question_hash,
+                  context, context_hash, caller_seat_binding_id, topology_node_id,
+                  invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
+                  updated_at, settled_at, topic, subject_kind, subject_task_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                     ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+                     ?26, ?27)",
+            params![
+                run.id.as_text(),
+                run.project_id.to_string(),
+                run.mini_project_id.to_string(),
+                run.id.family().as_str(),
+                run.profile_id,
+                version_column(run.profile_version),
+                run.definition_hash.as_str(),
+                run.semantic_identity_hash.as_ref().map(ContentHash::as_str),
+                run.question.as_str(),
+                run.question_hash.as_str(),
+                context,
+                run.context_hash.as_str(),
+                run.caller_seat_binding_id.to_string(),
+                run.topology_node_id.to_string(),
+                run.invoke_key.as_str(),
+                run.invoke_intent_hash.as_str(),
+                run.state.as_str(),
+                i64::from(run.round),
+                result,
+                run.result_hash.as_ref().map(ContentHash::as_str),
+                i64::try_from(run.revision.get()).unwrap_or(i64::MAX),
+                text(run.created_at),
+                text(run.updated_at),
+                run.settled_at.map(text),
+                run.topic.as_ref().map(ExternalName::as_str),
+                run.subject.map(ConsultationSubject::as_str),
+                run.subject
+                    .and_then(ConsultationSubject::task_id)
+                    .map(|task_id| task_id.to_string()),
+            ],
+        )
+        .map_err(|error| match error {
+            error if is_duplicate_semantic_identity(&error) =>
+            {
+                conflict(
+                    "consultation semantic identity",
+                    "a consultation run already owns this family, scope, profile and topic",
+                )
+            }
+            other => backend(other),
+        })?;
+
+    if let Some(provenance) = run
+        .context
+        .get("re_review")
+        .filter(|value| !value.is_null())
+    {
+        if run.id.family() != ConsultationFamily::Committee {
+            return Err(conflict(
+                "consultation re-review provenance",
+                "only a Committee run may claim completion re-review lineage",
+            ));
+        }
+        let provenance = CanonicalDocument::from_serializable(&serde_json::json!({
+            "schema_version": 1,
+            "re_review": provenance,
+        }))?;
+        transaction
+            .execute(
+                "INSERT INTO committee_re_review_claims
+                     (project_id, mini_project_id, provenance, provenance_hash,
+                      committee_run_id, claimed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    run.project_id.to_string(),
+                    run.mini_project_id.to_string(),
+                    provenance.json(),
+                    provenance.hash().as_str(),
+                    run.id.as_text(),
+                    text(run.created_at),
+                ],
+            )
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    conflict(
+                        "Committee re-review provenance",
+                        "this completion freeze already has one clean Committee re-review",
+                    )
+                }
+                other => backend(other),
+            })?;
+    }
+
+    for (seat, binding) in seats {
+        if seat.run_id != run.id
+            || binding.id != seat.seat_binding_id
+            || binding.project_id != run.project_id
+            || binding.topology_node_id != node.id
+            || binding.role_slot_id != seat.role_slot_id
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation seat",
+                rule: "the frozen seat and SeatBinding do not describe one slot",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO seat_bindings
+                     (id, project_id, topology_node_id, role_slot_id,
+                      role_catalog_id, role_catalog_version, role_code,
+                      standard_title, custom_display_name, task_id, team_run_id,
+                      lifecycle, attach_deadline, last_attached_at, last_activity_at,
+                      parent_seat_binding_id, released_at,
+                      replaced_by_seat_binding_id, runtime_reported,
+                      revision, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                         NULL, NULL, 'active', ?10, NULL, NULL, ?11,
+                         NULL, NULL, NULL, 1, ?12, ?12)",
+                params![
+                    binding.id.to_string(),
+                    binding.project_id.to_string(),
+                    binding.topology_node_id.to_string(),
+                    binding.role_slot_id.as_str(),
+                    binding.role.catalog_id.to_string(),
+                    version_column(binding.role.catalog_revision),
+                    binding.role.role_code.as_str(),
+                    binding.role.standard_title.as_str(),
+                    binding
+                        .role
+                        .custom_display_name
+                        .as_ref()
+                        .map(ExternalName::as_str),
+                    text(binding.attach_deadline),
+                    binding.parent_seat_binding_id.map(|id| id.to_string()),
+                    text(binding.created_at),
+                ],
+            )
+            .map_err(backend)?;
+        let model =
+            serde_json::to_string(&seat.model_rung).map_err(|error| RepositoryError::Backend {
+                detail: format!("a consultation model rung could not be encoded: {error}"),
+            })?;
+        transaction
+            .execute(
+                "INSERT INTO consultation_seats
+                     (run_id, project_id, role_slot_id, committee_role,
+                      logical_role, seat_binding_id, model_rung, occupancy_generation,
+                      runtime_kind, host, generation, native_id,
+                      provider_session_id, observed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                         NULL, NULL, NULL, NULL, NULL, NULL)",
+                params![
+                    run.id.as_text(),
+                    run.project_id.to_string(),
+                    seat.role_slot_id.as_str(),
+                    seat.committee_role.map(CommitteeRole::as_str),
+                    seat.logical_role.as_str(),
+                    seat.seat_binding_id.to_string(),
+                    model,
+                    i64::try_from(seat.occupancy_generation).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(backend)?;
+    }
+    Ok(())
 }
 
 fn read_consultation_run(
@@ -766,6 +1088,366 @@ type ConsultationSeatColumns = (
     Option<String>,
     Option<String>,
 );
+
+/// The known native claim of one planning pair member, read on `connection`
+/// (a transaction or the store's own connection).
+fn planning_pair_known_native_in(
+    connection: &rusqlite::Connection,
+    project_id: ProjectId,
+    run_id: ConsultationRunId,
+    seat_binding_id: SeatBindingId,
+    occupancy_generation: u64,
+) -> RepositoryResult<Option<StoredPlanningPairKnownNative>> {
+    let row = connection
+        .query_row(
+            "SELECT runtime_kind, host, runtime_generation, native_id, provider_session_id,
+                    context_hash, placement_hash, readback_refusal, observed_at
+               FROM planning_pair_member_natives
+              WHERE project_id = ?1 AND run_id = ?2 AND seat_binding_id = ?3
+                AND occupancy_generation = ?4",
+            params![
+                project_id.to_string(),
+                run_id.as_text(),
+                seat_binding_id.to_string(),
+                i64::try_from(occupancy_generation).unwrap_or(i64::MAX),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)?;
+    row.map(
+        |(runtime_kind, host, generation, native_id, provider, context, placement, refusal, at)| {
+            Ok(StoredPlanningPairKnownNative {
+                run_id,
+                project_id,
+                seat_binding_id,
+                occupancy_generation,
+                identity: NativeRuntimeIdentity {
+                    runtime_kind: RuntimeKindKey::parse(&runtime_kind)?,
+                    host: ExternalName::parse(&host)?,
+                    generation: u64::try_from(generation).map_err(|_| {
+                        conflict(
+                            "planning pair member native",
+                            "the runtime generation is negative",
+                        )
+                    })?,
+                    native_id: ExternalId::parse(&native_id)?,
+                },
+                provider_session_id: provider.as_deref().map(ExternalId::parse).transpose()?,
+                context_hash: ContentHash::parse(&context)?,
+                placement_hash: ContentHash::parse(&placement)?,
+                readback_refusal: refusal
+                    .as_deref()
+                    .map(kontor_core::planning_pair::PlanningPairReadbackRefusal::parse)
+                    .transpose()?,
+                observed_at: read_timestamp(&at)?,
+            })
+        },
+    )
+    .transpose()
+}
+
+/// Keep `claim` as the member's known native: written when none is kept for
+/// its generation, and otherwise only ever the same session, never replaced.
+fn keep_planning_pair_known_native_in(
+    transaction: &rusqlite::Transaction<'_>,
+    claim: &StoredPlanningPairKnownNative,
+) -> RepositoryResult<StoredPlanningPairKnownNative> {
+    if claim.run_id.family() != ConsultationFamily::PlanningPair {
+        return Err(conflict(
+            "planning pair member native",
+            "a known member native belongs only to a planning pair",
+        ));
+    }
+    if let Some(kept) = planning_pair_known_native_in(
+        transaction,
+        claim.project_id,
+        claim.run_id,
+        claim.seat_binding_id,
+        claim.occupancy_generation,
+    )? {
+        if kept.identity != claim.identity
+            || kept
+                .provider_session_id
+                .as_ref()
+                .is_some_and(|session| claim.provider_session_id.as_ref() != Some(session))
+            || kept.context_hash != claim.context_hash
+            || kept.placement_hash != claim.placement_hash
+        {
+            return Err(conflict(
+                "planning pair member native",
+                "a known planning pair member native is immutable; another observation never replaces it",
+            ));
+        }
+        return Ok(kept);
+    }
+    transaction
+        .execute(
+            "INSERT INTO planning_pair_member_natives
+                 (run_id, project_id, seat_binding_id, occupancy_generation, runtime_kind, host,
+                  runtime_generation, native_id, provider_session_id, context_hash,
+                  placement_hash, readback_refusal, observed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                claim.run_id.as_text(),
+                claim.project_id.to_string(),
+                claim.seat_binding_id.to_string(),
+                i64::try_from(claim.occupancy_generation).unwrap_or(i64::MAX),
+                claim.identity.runtime_kind.as_str(),
+                claim.identity.host.as_str(),
+                i64::try_from(claim.identity.generation).unwrap_or(i64::MAX),
+                claim.identity.native_id.as_str(),
+                claim.provider_session_id.as_ref().map(ExternalId::as_str),
+                claim.context_hash.as_str(),
+                claim.placement_hash.as_str(),
+                claim.readback_refusal.map(|refusal| refusal.as_str()),
+                format_utc_timestamp(claim.observed_at),
+            ],
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::SqliteFailure(failure, _)
+                if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                conflict(
+                    "planning pair member native",
+                    "a known planning pair native belongs only to a current member seat of an open pair",
+                )
+            }
+            other => backend(other),
+        })?;
+    Ok(claim.clone())
+}
+
+/// One member seat's occupancy generation and native binding columns:
+/// `(occupancy_generation, runtime_kind, host, runtime_generation, native_id)`.
+type PlanningPairMemberSeatRow = (
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+);
+
+/// One planning pair member seat's generation and binding, read in
+/// `transaction`.
+fn planning_pair_member_seat_in(
+    transaction: &rusqlite::Transaction<'_>,
+    project_id: ProjectId,
+    run_id: ConsultationRunId,
+    seat_binding_id: SeatBindingId,
+) -> RepositoryResult<Option<PlanningPairMemberSeatRow>> {
+    transaction
+        .query_row(
+            "SELECT occupancy_generation, runtime_kind, host, generation, native_id
+               FROM consultation_seats
+              WHERE project_id = ?1 AND run_id = ?2 AND seat_binding_id = ?3",
+            params![
+                project_id.to_string(),
+                run_id.as_text(),
+                seat_binding_id.to_string()
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(backend)
+}
+
+/// Bind one member seat, at its current generation, to exactly its known
+/// session: a seat already bound to that session is unchanged, and one bound
+/// to any other is a conflict.
+fn bind_planning_pair_member_in(
+    transaction: &rusqlite::Transaction<'_>,
+    known: &StoredPlanningPairKnownNative,
+    observed_at: Timestamp,
+) -> RepositoryResult<()> {
+    let seat = planning_pair_member_seat_in(
+        transaction,
+        known.project_id,
+        known.run_id,
+        known.seat_binding_id,
+    )?;
+    let (generation, runtime_kind, host, runtime_generation, native_id) =
+        seat.ok_or(RepositoryError::NotFound {
+            subject: "consultation seat",
+        })?;
+    if u64::try_from(generation).ok() != Some(known.occupancy_generation) {
+        return Err(conflict(
+            "planning pair member",
+            "the member's occupancy generation moved",
+        ));
+    }
+    let identity = &known.identity;
+    if let Some(native_id) = native_id {
+        if runtime_kind.as_deref() != Some(identity.runtime_kind.as_str())
+            || host.as_deref() != Some(identity.host.as_str())
+            || runtime_generation.and_then(|value| u64::try_from(value).ok())
+                != Some(identity.generation)
+            || native_id != identity.native_id.as_str()
+        {
+            return Err(conflict(
+                "consultation seat",
+                "a frozen seat cannot move to another native session",
+            ));
+        }
+        return Ok(());
+    }
+    let changed = transaction
+        .execute(
+            "UPDATE consultation_seats
+                SET runtime_kind = ?5, host = ?6, generation = ?7, native_id = ?8,
+                    provider_session_id = ?9, observed_at = ?10
+              WHERE project_id = ?1 AND run_id = ?2 AND seat_binding_id = ?3
+                AND occupancy_generation = ?4 AND runtime_kind IS NULL",
+            params![
+                known.project_id.to_string(),
+                known.run_id.as_text(),
+                known.seat_binding_id.to_string(),
+                i64::try_from(known.occupancy_generation).unwrap_or(i64::MAX),
+                identity.runtime_kind.as_str(),
+                identity.host.as_str(),
+                i64::try_from(identity.generation).unwrap_or(i64::MAX),
+                identity.native_id.as_str(),
+                known.provider_session_id.as_ref().map(ExternalId::as_str),
+                text(observed_at),
+            ],
+        )
+        .map_err(backend)?;
+    if changed != 1 {
+        return Err(RepositoryError::NotFound {
+            subject: "consultation seat",
+        });
+    }
+    Ok(())
+}
+
+/// Hold one member readback to the seat it was taken against: the seat the
+/// run's current member at the expected generation, and the session the
+/// member's known one, bound or claimed. Answers the run's state. The run's
+/// revision and that it is not disposed are held by the one compare-and-swap
+/// that moves it, in the same transaction.
+fn planning_pair_member_readback_in(
+    transaction: &rusqlite::Transaction<'_>,
+    readback: &PlanningPairMemberReadback,
+) -> RepositoryResult<ConsultationRunState> {
+    let verified = &readback.verified;
+    if verified.run_id != readback.run_id
+        || verified.project_id != readback.project_id
+        || verified.seat_binding_id != readback.seat_binding_id
+        || verified.occupancy_generation != readback.occupancy_generation
+    {
+        return Err(conflict(
+            "planning pair member recovery",
+            "the readback describes another member",
+        ));
+    }
+    let state: Option<String> = transaction
+        .query_row(
+            "SELECT state FROM consultation_runs
+              WHERE project_id = ?1 AND run_id = ?2 AND family = 'planning_pair'",
+            params![readback.project_id.to_string(), readback.run_id.as_text()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    let state = ConsultationRunState::parse(&state.ok_or(RepositoryError::NotFound {
+        subject: "consultation run",
+    })?)?;
+    let seat = planning_pair_member_seat_in(
+        transaction,
+        readback.project_id,
+        readback.run_id,
+        readback.seat_binding_id,
+    )?;
+    let (generation, runtime_kind, host, runtime_generation, native_id) =
+        seat.ok_or(RepositoryError::NotFound {
+            subject: "consultation seat",
+        })?;
+    if u64::try_from(generation).ok() != Some(readback.occupancy_generation) {
+        return Err(conflict(
+            "planning pair member",
+            "the member's occupancy generation moved",
+        ));
+    }
+    let identity = &verified.identity;
+    let known = match native_id {
+        Some(native_id) => {
+            runtime_kind.as_deref() == Some(identity.runtime_kind.as_str())
+                && host.as_deref() == Some(identity.host.as_str())
+                && runtime_generation.and_then(|value| u64::try_from(value).ok())
+                    == Some(identity.generation)
+                && native_id == identity.native_id.as_str()
+        }
+        None => planning_pair_known_native_in(
+            transaction,
+            readback.project_id,
+            readback.run_id,
+            readback.seat_binding_id,
+            readback.occupancy_generation,
+        )?
+        .ok_or(RepositoryError::NotFound {
+            subject: "planning pair member native",
+        })?
+        .identity
+        .eq(identity),
+    };
+    if !known {
+        return Err(conflict(
+            "planning pair member recovery",
+            "the readback is not of the member's known native session",
+        ));
+    }
+    Ok(state)
+}
+
+/// Move one planning pair one revision, to `next`, under compare-and-swap.
+fn advance_planning_pair_run_in(
+    transaction: &rusqlite::Transaction<'_>,
+    readback: &PlanningPairMemberReadback,
+    next: ConsultationRunState,
+) -> RepositoryResult<()> {
+    let changed = transaction
+        .execute(
+            "UPDATE consultation_runs
+                SET revision = revision + 1, state = ?4, updated_at = ?5
+              WHERE project_id = ?1 AND run_id = ?2 AND family = 'planning_pair'
+                AND revision = ?3 AND state <> 'disposed'",
+            params![
+                readback.project_id.to_string(),
+                readback.run_id.as_text(),
+                i64::try_from(readback.expected_revision.get()).unwrap_or(i64::MAX),
+                next.as_str(),
+                format_utc_timestamp(readback.applied_at),
+            ],
+        )
+        .map_err(backend)?;
+    if changed != 1 {
+        return Err(conflict(
+            "consultation run",
+            "the run moved since it was read",
+        ));
+    }
+    Ok(())
+}
 
 fn read_consultation_seat(
     run_id: ConsultationRunId,
@@ -1608,6 +2290,36 @@ impl ProjectRepository for SqliteStore {
 
 const TOPOLOGY_NODE_COLUMNS: &str = "id, project_id, mini_project_id, spec_id, spec_version, \
     spec_hash, kind, parent_id, lifecycle, placement, revision, created_at, updated_at, task_id";
+/// Read one adoption row in the column order every adoption query selects.
+fn read_adoption_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RepositoryResult<StoredTeamRunAdmissionAdoption>> {
+    let id: String = row.get(0)?;
+    let project_id: String = row.get(1)?;
+    let task_id: String = row.get(2)?;
+    let team_run_id: String = row.get(3)?;
+    let role_slot_id: String = row.get(4)?;
+    let agent_run_id: String = row.get(5)?;
+    let revision: i64 = row.get(6)?;
+    let receipt_id: String = row.get(7)?;
+    let adopted_at: String = row.get(8)?;
+    Ok((|| {
+        Ok(StoredTeamRunAdmissionAdoption {
+            id: ExternalId::parse(&id)?,
+            project_id: ProjectId::parse(&project_id)?,
+            task_id: TaskId::parse(&task_id)?,
+            team_run_id: TeamRunId::parse(&team_run_id)?,
+            role_slot_id: RoleSlotId::parse(&role_slot_id)?,
+            agent_run_id: AgentRunId::parse(&agent_run_id)?,
+            adopted_agent_run_revision: AggregateRevision::parse(
+                u64::try_from(revision).unwrap_or(u64::MAX),
+            )?,
+            receipt_id: CommandReceiptId::parse(&receipt_id)?,
+            adopted_at: read_timestamp(&adopted_at)?,
+        })
+    })())
+}
+
 const SEAT_BINDING_COLUMNS: &str = "id, project_id, topology_node_id, role_slot_id, \
     role_catalog_id, role_catalog_version, role_code, standard_title, custom_display_name, \
     task_id, team_run_id, lifecycle, attach_deadline, last_attached_at, last_activity_at, \
@@ -1615,7 +2327,8 @@ const SEAT_BINDING_COLUMNS: &str = "id, project_id, topology_node_id, role_slot_
     revision, created_at, updated_at";
 const NATIVE_CONTAINER_COLUMNS: &str = "topology_node_id, project_id, container_binding_id, \
     runtime_kind, host, generation, native_id, observed_kind, canonical_cwd, bound_at, \
-    last_readback_at, revision";
+    last_readback_at, revision, observed_projection, visible_title, parent_runtime_kind, \
+    parent_host, parent_generation, parent_native_id, topology_correlation";
 const ADAPTIVE_ADMISSION_COLUMNS: &str = "project_id, mini_project_id, current_window, \
     clean_observation_streak, last_observation_id, revision, updated_at";
 
@@ -1715,6 +2428,76 @@ fn read_optional_timestamp(row: &Row<'_>, index: usize) -> RepositoryResult<Opti
 fn read_native_container_binding(row: &Row<'_>) -> RepositoryResult<NativeContainerBinding> {
     let canonical_cwd: Option<String> = row.get(8).map_err(backend)?;
     let generation: i64 = row.get(5).map_err(backend)?;
+    let projection: Option<String> = row.get(12).map_err(backend)?;
+    let visible_title: Option<String> = row.get(13).map_err(backend)?;
+    let parent_runtime_kind: Option<String> = row.get(14).map_err(backend)?;
+    let parent_host: Option<String> = row.get(15).map_err(backend)?;
+    let parent_generation: Option<i64> = row.get(16).map_err(backend)?;
+    let parent_native_id: Option<String> = row.get(17).map_err(backend)?;
+    let topology_correlation: Option<String> = row.get(18).map_err(backend)?;
+    let readback = match (projection, visible_title, topology_correlation) {
+        (None, None, None)
+            if parent_runtime_kind.is_none()
+                && parent_host.is_none()
+                && parent_generation.is_none()
+                && parent_native_id.is_none() =>
+        {
+            None
+        }
+        (Some(projection), Some(visible_title), Some(topology_correlation)) => {
+            let projection = ObservedContainerProjection::parse(&projection)?;
+            let native_parent = match projection {
+                ObservedContainerProjection::NativeRoot
+                    if parent_runtime_kind.is_none()
+                        && parent_host.is_none()
+                        && parent_generation.is_none()
+                        && parent_native_id.is_none() =>
+                {
+                    None
+                }
+                ObservedContainerProjection::NativeChild => {
+                    let (Some(runtime_kind), Some(host), Some(generation), Some(native_id)) = (
+                        parent_runtime_kind,
+                        parent_host,
+                        parent_generation,
+                        parent_native_id,
+                    ) else {
+                        return Err(RepositoryError::Backend {
+                            detail: "a native child readback has an incomplete parent identity"
+                                .to_owned(),
+                        });
+                    };
+                    Some(NativeRuntimeIdentity {
+                        runtime_kind: RuntimeKindKey::parse(&runtime_kind)?,
+                        host: ExternalName::parse(&host)?,
+                        generation: u64::try_from(generation).map_err(|_| {
+                            DomainError::invalid(
+                                "native parent generation",
+                                "is outside the stored range",
+                            )
+                        })?,
+                        native_id: ExternalId::parse(&native_id)?,
+                    })
+                }
+                ObservedContainerProjection::NativeRoot => {
+                    return Err(RepositoryError::Backend {
+                        detail: "a native root readback cannot carry a parent identity".to_owned(),
+                    });
+                }
+            };
+            Some(NativeContainerReadback {
+                projection,
+                visible_title: ExternalName::parse(&visible_title)?,
+                native_parent,
+                topology_correlation: ExternalName::parse(&topology_correlation)?,
+            })
+        }
+        _ => {
+            return Err(RepositoryError::Backend {
+                detail: "a native container readback is only partially populated".to_owned(),
+            });
+        }
+    };
     Ok(NativeContainerBinding {
         topology_node_id: TopologyNodeId::parse(&row.get::<_, String>(0).map_err(backend)?)?,
         project_id: ProjectId::parse(&row.get::<_, String>(1).map_err(backend)?)?,
@@ -1732,6 +2515,7 @@ fn read_native_container_binding(row: &Row<'_>) -> RepositoryResult<NativeContai
             .as_deref()
             .map(ExternalName::parse)
             .transpose()?,
+        readback,
         bound_at: read_timestamp(&row.get::<_, String>(9).map_err(backend)?)?,
         last_readback_at: read_timestamp(&row.get::<_, String>(10).map_err(backend)?)?,
         revision: revision_of(row.get::<_, i64>(11).map_err(backend)?)?,
@@ -2033,6 +2817,46 @@ impl SqliteStore {
     }
 }
 
+/// Every planning pair member seat holds a role that is an exact projection
+/// of the role catalog its epic selected: persisted bytes that hash to the
+/// `catalog_hash` the epic's frozen roster pins. A seat's own catalog
+/// reference is never trusted on its own, so a role resolved in any other
+/// catalog the realm happens to hold is refused here, inside the transaction.
+fn planning_pair_member_roles_in(
+    transaction: &Transaction<'_>,
+    run: &StoredConsultationRun,
+    seats: &[(&StoredConsultationSeat, &NewSeatBinding)],
+) -> RepositoryResult<()> {
+    let pinned: Option<String> = transaction
+        .query_row(
+            "SELECT catalog_hash FROM epic_rosters
+             WHERE project_id = ?1 AND mini_project_id = ?2",
+            params![run.project_id.to_string(), run.mini_project_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    let pinned = pinned.ok_or(RepositoryError::Conflict {
+        subject: "planning pair member role",
+        rule: "the epic has frozen no roster, so it has selected no role catalog",
+    })?;
+    for (_, binding) in seats {
+        let catalog = role_catalog_in(
+            transaction,
+            binding.role.catalog_id,
+            binding.role.catalog_revision,
+        )?;
+        if catalog.canonicalize()?.hash().as_str() != pinned {
+            return Err(RepositoryError::Conflict {
+                subject: "planning pair member role",
+                rule: "a member role names a role catalog the epic did not select",
+            });
+        }
+        binding.role.validate_against(&catalog)?;
+    }
+    Ok(())
+}
+
 fn role_catalog_in(
     transaction: &Transaction<'_>,
     catalog_id: RoleCatalogId,
@@ -2240,261 +3064,492 @@ impl SqliteStore {
         node: &NewSessionTopologyNode,
         seats: &[(&StoredConsultationSeat, &NewSeatBinding)],
     ) -> RepositoryResult<()> {
-        if run.project_id != node.project_id
-            || run.topology_node_id != node.id
-            || node.mini_project_id != Some(run.mini_project_id)
-        {
-            return Err(RepositoryError::Conflict {
-                subject: "consultation run",
-                rule: "the frozen run and topology node do not describe one scope",
-            });
-        }
-        let verified_context = CanonicalDocument::from_serializable(&run.context)?;
-        if ContentHash::of(run.question.as_str().as_bytes()) != run.question_hash
-            || verified_context.hash() != &run.context_hash
-        {
-            return Err(RepositoryError::Conflict {
-                subject: "consultation run",
-                rule: "frozen input does not match its digest",
-            });
-        }
+        validate_frozen_consultation_run(run, node)?;
         let transaction = self.begin()?;
-        // The subject has to be inside the consultation naming it. The
-        // column's foreign key only proves the ticket exists somewhere:
-        // `tasks` is unique on (project_id, id) and SQLite cannot add a
-        // composite foreign key through ALTER TABLE ADD COLUMN, so a ticket
-        // from another project — or from a sibling epic in this one — would
-        // satisfy it while naming a subject this epic has no authority over.
-        // Storage refuses it too; this refusal is the legible one.
-        if let Some(subject_task_id) = run.subject.and_then(ConsultationSubject::task_id) {
-            let contained: bool = transaction
-                .query_row(
-                    "SELECT EXISTS (
-                         SELECT 1
-                           FROM tasks
-                          WHERE id = ?1
-                            AND project_id = ?2
-                            AND mini_project_id IS ?3
-                     )",
-                    params![
-                        subject_task_id.to_string(),
-                        run.project_id.to_string(),
-                        run.mini_project_id.to_string(),
-                    ],
-                    |row| row.get(0),
-                )
-                .map_err(backend)?;
-            if !contained {
-                return Err(RepositoryError::Conflict {
-                    subject: "consultation subject",
-                    rule: "the advised task belongs to another project or epic",
+        if let Err(error) = insert_consultation_run_in(&transaction, run, node, seats) {
+            let duplicate = matches!(
+                &error,
+                RepositoryError::Conflict {
+                    subject: "consultation semantic identity",
+                    ..
+                }
+            );
+            // Preserve the released typed-duplicate route after rolling back the
+            // loser's topology writes, just as before the shared helper existed.
+            drop(transaction);
+            if duplicate
+                && let Some(hash) = run.semantic_identity_hash.as_ref()
+                && let Some(existing) =
+                    self.get_consultation_run_by_semantic_identity(run.project_id, hash)?
+            {
+                return Err(RepositoryError::DuplicateConsultation {
+                    family: run.id.family(),
+                    run_id: existing.id,
                 });
             }
+            return Err(error);
         }
-        transaction
-            .execute(
-                "INSERT INTO topology_nodes
-                     (id, project_id, mini_project_id, spec_id, spec_version, spec_hash,
-                      kind, parent_id, lifecycle, placement, task_id, revision,
-                      created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                         'active', 'unbound', NULL, 1, ?9, ?9)",
-                params![
-                    node.id.to_string(),
-                    node.project_id.to_string(),
-                    node.mini_project_id.map(|id| id.to_string()),
-                    node.topology.spec_id.to_string(),
-                    version_column(node.topology.version),
-                    node.topology.canonical_hash.as_str(),
-                    node.kind.as_str(),
-                    node.parent_id.map(|id| id.to_string()),
-                    text(node.created_at),
-                ],
-            )
-            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
 
-        let context = canonical_json(&run.context, "consultation context")?;
-        let result = run
-            .result
-            .as_ref()
-            .map(|value| canonical_json(value, "consultation result"))
-            .transpose()?;
+    /// Freeze one planning pair (ASMA-8282): its consultation run, node and
+    /// member seats through exactly the statements every family uses, plus its
+    /// frozen placement and first record revision, in one transaction.
+    ///
+    /// The semantic-identity unique index is the shared one, so a duplicate
+    /// planning pair is refused exactly as a duplicate Committee is.
+    ///
+    /// # Errors
+    /// A conflict when the run is not a planning pair, the placement or record
+    /// names another run or project, the record is not the run's own first
+    /// revision, or any shared consultation rule refuses the run.
+    pub fn create_planning_pair_run(
+        &self,
+        run: &StoredConsultationRun,
+        node: &NewSessionTopologyNode,
+        seats: &[(&StoredConsultationSeat, &NewSeatBinding)],
+        placement: &StoredPlanningPairPlacement,
+        record: &StoredPlanningPairRecord,
+    ) -> RepositoryResult<()> {
+        if run.id.family() != ConsultationFamily::PlanningPair
+            || placement.run_id != run.id
+            || record.run_id != run.id
+            || placement.project_id != run.project_id
+            || record.project_id != run.project_id
+            || record.revision != run.revision
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "planning pair",
+                rule: "the run, placement and record do not describe one planning pair",
+            });
+        }
+        validate_frozen_consultation_run(run, node)?;
+        let transaction = self.begin()?;
+        planning_pair_member_roles_in(&transaction, run, seats)?;
+        insert_consultation_run_in(&transaction, run, node, seats)?;
         transaction
             .execute(
-                "INSERT INTO consultation_runs
-                     (run_id, project_id, mini_project_id, family, profile_id,
-                      profile_version, definition_hash, semantic_identity_hash, question, question_hash,
-                      context, context_hash, caller_seat_binding_id, topology_node_id,
-                      invoke_key, invoke_intent_hash, state, round, result, result_hash, revision, created_at,
-                      updated_at, settled_at, topic, subject_kind, subject_task_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                         ?26, ?27)",
+                "INSERT INTO planning_pair_placements
+                     (run_id, project_id, protocol, placement, placement_hash, created_at)
+                 VALUES (?1, ?2, 'planning_pair@1', ?3, ?4, ?5)",
                 params![
                     run.id.as_text(),
                     run.project_id.to_string(),
-                    run.mini_project_id.to_string(),
-                    run.id.family().as_str(),
-                    run.profile_id,
-                    version_column(run.profile_version),
-                    run.definition_hash.as_str(),
-                    run.semantic_identity_hash.as_ref().map(ContentHash::as_str),
-                    run.question.as_str(),
-                    run.question_hash.as_str(),
-                    context,
-                    run.context_hash.as_str(),
-                    run.caller_seat_binding_id.to_string(),
-                    run.topology_node_id.to_string(),
-                    run.invoke_key.as_str(),
-                    run.invoke_intent_hash.as_str(),
-                    run.state.as_str(),
-                    i64::from(run.round),
-                    result,
-                    run.result_hash.as_ref().map(ContentHash::as_str),
-                    i64::try_from(run.revision.get()).unwrap_or(i64::MAX),
-                    text(run.created_at),
-                    text(run.updated_at),
-                    run.settled_at.map(text),
-                    run.topic.as_ref().map(ExternalName::as_str),
-                    run.subject.map(ConsultationSubject::as_str),
-                    run.subject
-                        .and_then(ConsultationSubject::task_id)
-                        .map(|task_id| task_id.to_string()),
+                    placement.placement.json(),
+                    placement.placement.hash().as_str(),
+                    format_utc_timestamp(placement.created_at),
                 ],
             )
-            .map_err(|error| match error {
-                rusqlite::Error::SqliteFailure(failure, detail)
-                    if failure.code == rusqlite::ErrorCode::ConstraintViolation
-                        && detail.as_deref().is_some_and(|detail| {
-                            detail.contains("consultation_runs.project_id, consultation_runs.semantic_identity_hash")
-                                || detail.contains("consultation_runs_by_semantic_identity")
-                        }) =>
-                {
-                    conflict(
-                        "consultation semantic identity",
-                        "an Advisor or Committee run already owns this family, scope, template and topic",
-                    )
-                }
-                other => backend(other),
-            })?;
+            .map_err(backend)?;
+        insert_planning_pair_record_in(&transaction, record)?;
+        transaction.commit().map_err(backend)?;
+        Ok(())
+    }
 
-        if let Some(provenance) = run
-            .context
-            .get("re_review")
-            .filter(|value| !value.is_null())
+    /// The frozen placement of one planning pair, re-admitted under its
+    /// canonical address.
+    pub fn planning_pair_placement(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+    ) -> RepositoryResult<Option<StoredPlanningPairPlacement>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT placement, placement_hash, created_at
+                   FROM planning_pair_placements
+                  WHERE project_id = ?1 AND run_id = ?2",
+                params![project_id.to_string(), run_id.as_text()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|(placement, hash, created_at)| {
+            Ok(StoredPlanningPairPlacement {
+                run_id,
+                project_id,
+                placement: CanonicalDocument::from_stored(&placement, &ContentHash::parse(&hash)?)?,
+                created_at: read_timestamp(&created_at)?,
+            })
+        })
+        .transpose()
+    }
+
+    /// The latest record revision of one planning pair, re-admitted under its
+    /// canonical address. Nothing here interprets the record: the service
+    /// restores it through the domain transitions.
+    pub fn latest_planning_pair_record(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+    ) -> RepositoryResult<Option<StoredPlanningPairRecord>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT revision, phase, record, record_hash, created_at
+                   FROM planning_pair_record_revisions
+                  WHERE project_id = ?1 AND run_id = ?2
+                  ORDER BY revision DESC
+                  LIMIT 1",
+                params![project_id.to_string(), run_id.as_text()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|(revision, phase, record, hash, created_at)| {
+            Ok(StoredPlanningPairRecord {
+                run_id,
+                project_id,
+                revision: revision_of(revision)?,
+                phase: PlanningPairState::parse(&phase)?,
+                record: CanonicalDocument::from_stored(&record, &ContentHash::parse(&hash)?)?,
+                created_at: read_timestamp(&created_at)?,
+            })
+        })
+        .transpose()
+    }
+
+    /// Every finding and answer storage has accepted for one planning pair,
+    /// findings first, each round in slot order.
+    pub fn planning_pair_contributions(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+    ) -> RepositoryResult<Vec<StoredPlanningPairContribution>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT round, slot, document_hash, seat_binding_id, occupancy_generation,
+                        record_revision, created_at
+                   FROM planning_pair_contributions
+                  WHERE project_id = ?1 AND run_id = ?2
+                  ORDER BY CASE round WHEN 'findings' THEN 0 ELSE 1 END, slot",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(params![project_id.to_string(), run_id.as_text()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut contributions = Vec::new();
+        for row in rows {
+            let (round, slot, hash, seat, generation, record_revision, created_at) =
+                row.map_err(backend)?;
+            contributions.push(StoredPlanningPairContribution {
+                run_id,
+                round: PlanningPairRound::parse(&round)?,
+                slot: PlanningPairSlot::parse(&slot)?,
+                document_hash: ContentHash::parse(&hash)?,
+                seat_binding_id: SeatBindingId::parse(&seat)?,
+                occupancy_generation: u64::try_from(generation).map_err(|_| {
+                    RepositoryError::Conflict {
+                        subject: "planning pair contribution",
+                        rule: "the occupancy generation is outside the supported range",
+                    }
+                })?,
+                record_revision: revision_of(record_revision)?,
+                created_at: read_timestamp(&created_at)?,
+            });
+        }
+        Ok(contributions)
+    }
+
+    /// Accept one planning pair transition under compare-and-swap: the run
+    /// moves one revision and to `next_state`, the record revision for that
+    /// exact run revision is written, and a finding or answer is recorded
+    /// with the authenticated member that gave it — all or nothing.
+    ///
+    /// # Errors
+    /// A conflict when the run is not a planning pair, moved since it was read,
+    /// is disposed, or when the record does not describe the next revision;
+    /// the storage triggers refuse a rewritten contribution and anything after
+    /// a disposition.
+    pub fn append_planning_pair_record(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+        expected_revision: AggregateRevision,
+        next_state: ConsultationRunState,
+        record: &StoredPlanningPairRecord,
+        contribution: Option<&StoredPlanningPairContribution>,
+    ) -> RepositoryResult<StoredConsultationRun> {
+        let next_revision = expected_revision
+            .next()
+            .map_err(|_| RepositoryError::Conflict {
+                subject: "planning pair",
+                rule: "the run revision cannot advance",
+            })?;
+        if run_id.family() != ConsultationFamily::PlanningPair
+            || record.run_id != run_id
+            || record.project_id != project_id
+            || record.revision != next_revision
+            || contribution.is_some_and(|contribution| {
+                contribution.run_id != run_id || contribution.record_revision != next_revision
+            })
         {
-            if run.id.family() != ConsultationFamily::Committee {
-                return Err(conflict(
-                    "consultation re-review provenance",
-                    "only a Committee run may claim completion re-review lineage",
-                ));
-            }
-            let provenance = CanonicalDocument::from_serializable(&serde_json::json!({
-                "schema_version": 1,
-                "re_review": provenance,
-            }))?;
+            return Err(RepositoryError::Conflict {
+                subject: "planning pair",
+                rule: "the record and contribution must describe the run's next revision",
+            });
+        }
+        let transaction = self.begin()?;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_runs
+                    SET revision = revision + 1, state = ?4, updated_at = ?5
+                  WHERE project_id = ?1 AND run_id = ?2 AND family = 'planning_pair'
+                    AND revision = ?3 AND state <> 'disposed'",
+                params![
+                    project_id.to_string(),
+                    run_id.as_text(),
+                    i64::try_from(expected_revision.get()).unwrap_or(i64::MAX),
+                    next_state.as_str(),
+                    format_utc_timestamp(record.created_at),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "the run moved since it was read",
+            });
+        }
+        insert_planning_pair_record_in(&transaction, record)?;
+        if let Some(contribution) = contribution {
             transaction
                 .execute(
-                    "INSERT INTO committee_re_review_claims
-                         (project_id, mini_project_id, provenance, provenance_hash,
-                          committee_run_id, claimed_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    "INSERT INTO planning_pair_contributions
+                         (run_id, project_id, round, slot, document_hash, seat_binding_id,
+                          occupancy_generation, record_revision, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
-                        run.project_id.to_string(),
-                        run.mini_project_id.to_string(),
-                        provenance.json(),
-                        provenance.hash().as_str(),
-                        run.id.as_text(),
-                        text(run.created_at),
+                        run_id.as_text(),
+                        project_id.to_string(),
+                        contribution.round.as_str(),
+                        contribution.slot.as_str(),
+                        contribution.document_hash.as_str(),
+                        contribution.seat_binding_id.to_string(),
+                        i64::try_from(contribution.occupancy_generation).unwrap_or(i64::MAX),
+                        i64::try_from(next_revision.get()).unwrap_or(i64::MAX),
+                        format_utc_timestamp(contribution.created_at),
                     ],
                 )
                 .map_err(|error| match error {
                     rusqlite::Error::SqliteFailure(failure, _)
                         if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
                     {
-                        conflict(
-                            "Committee re-review provenance",
-                            "this completion freeze already has one clean Committee re-review",
-                        )
+                        RepositoryError::Conflict {
+                            subject: "planning pair contribution",
+                            rule: "a recorded finding or answer is immutable",
+                        }
                     }
                     other => backend(other),
                 })?;
         }
+        transaction.commit().map_err(backend)?;
+        self.get_consultation_run(project_id, run_id)?
+            .ok_or(RepositoryError::Conflict {
+                subject: "consultation run",
+                rule: "the run disappeared after its transition",
+            })
+    }
 
-        for (seat, binding) in seats {
-            if seat.run_id != run.id
-                || binding.id != seat.seat_binding_id
-                || binding.project_id != run.project_id
-                || binding.topology_node_id != node.id
-                || binding.role_slot_id != seat.role_slot_id
-            {
-                return Err(RepositoryError::Conflict {
-                    subject: "consultation seat",
-                    rule: "the frozen seat and SeatBinding do not describe one slot",
-                });
-            }
-            transaction
-                .execute(
-                    "INSERT INTO seat_bindings
-                         (id, project_id, topology_node_id, role_slot_id,
-                          role_catalog_id, role_catalog_version, role_code,
-                          standard_title, custom_display_name, task_id, team_run_id,
-                          lifecycle, attach_deadline, last_attached_at, last_activity_at,
-                          parent_seat_binding_id, released_at,
-                          replaced_by_seat_binding_id, runtime_reported,
-                          revision, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                             NULL, NULL, 'active', ?10, NULL, NULL, ?11,
-                             NULL, NULL, NULL, 1, ?12, ?12)",
-                    params![
-                        binding.id.to_string(),
-                        binding.project_id.to_string(),
-                        binding.topology_node_id.to_string(),
-                        binding.role_slot_id.as_str(),
-                        binding.role.catalog_id.to_string(),
-                        version_column(binding.role.catalog_revision),
-                        binding.role.role_code.as_str(),
-                        binding.role.standard_title.as_str(),
-                        binding
-                            .role
-                            .custom_display_name
-                            .as_ref()
-                            .map(ExternalName::as_str),
-                        text(binding.attach_deadline),
-                        binding.parent_seat_binding_id.map(|id| id.to_string()),
-                        text(binding.created_at),
-                    ],
-                )
-                .map_err(backend)?;
-            let model = serde_json::to_string(&seat.model_rung).map_err(|error| {
-                RepositoryError::Backend {
-                    detail: format!("a consultation model rung could not be encoded: {error}"),
-                }
-            })?;
-            transaction
-                .execute(
-                    "INSERT INTO consultation_seats
-                         (run_id, project_id, role_slot_id, committee_role,
-                          logical_role, seat_binding_id, model_rung, occupancy_generation,
-                          runtime_kind, host, generation, native_id,
-                          provider_session_id, observed_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                             NULL, NULL, NULL, NULL, NULL, NULL)",
-                    params![
-                        run.id.as_text(),
-                        run.project_id.to_string(),
-                        seat.role_slot_id.as_str(),
-                        seat.committee_role.map(CommitteeRole::as_str),
-                        seat.logical_role.as_str(),
-                        seat.seat_binding_id.to_string(),
-                        model,
-                        i64::try_from(seat.occupancy_generation).unwrap_or(i64::MAX),
-                    ],
-                )
-                .map_err(backend)?;
+    /// The known native claim of one planning pair member at one occupancy
+    /// generation, when a trusted runtime outcome recorded one.
+    pub fn planning_pair_known_native(
+        &self,
+        project_id: ProjectId,
+        run_id: ConsultationRunId,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+    ) -> RepositoryResult<Option<StoredPlanningPairKnownNative>> {
+        planning_pair_known_native_in(
+            &self.connection,
+            project_id,
+            run_id,
+            seat_binding_id,
+            occupancy_generation,
+        )
+    }
+
+    /// Record what one member launch's trusted readback proved, in one
+    /// transaction: the known native claim, and, only when that readback
+    /// qualified the member, its bind on exactly that session.
+    ///
+    /// A claim already kept for the member's generation is never replaced: the
+    /// same session is a replay, and any other observation is a conflict.
+    ///
+    /// # Errors
+    /// A conflict when the claim names another session than one already kept,
+    /// the seat is not the pair's current member, the pair is disposed, or the
+    /// seat is bound to another session.
+    pub fn record_planning_pair_member_launch(
+        &self,
+        claim: &StoredPlanningPairKnownNative,
+    ) -> RepositoryResult<StoredPlanningPairKnownNative> {
+        let transaction = self.begin()?;
+        let kept = keep_planning_pair_known_native_in(&transaction, claim)?;
+        if claim.readback_refusal.is_none() {
+            bind_planning_pair_member_in(&transaction, &kept, claim.observed_at)?;
         }
         transaction.commit().map_err(backend)?;
-        Ok(())
+        Ok(kept)
+    }
+
+    /// Requalify one planning pair member on its exact known native session,
+    /// with the frozen caller's receipt, in one transaction (ASMA-8282
+    /// frontier A).
+    ///
+    /// An exact replay of `command` changes nothing and answers the receipt
+    /// it first wrote. Otherwise the run must still be at the expected
+    /// revision and not disposed, the member at its current generation, and
+    /// the readback must name the member's known session, bound or claimed.
+    /// The member is bound to that session if it is not already. A pair whose
+    /// members are then both qualified leaves `needs_human` for `running`;
+    /// a materializing or running pair keeps its state. The run moves one
+    /// revision, and the receipt is written beside it.
+    ///
+    /// # Errors
+    /// A conflict when the run moved or is disposed, the generation moved, the
+    /// session is not the known one or the readback did not qualify the
+    /// member; not found when no native is known for the member.
+    pub fn requalify_planning_pair_member(
+        &self,
+        readback: &PlanningPairMemberReadback,
+        command: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<(StoredConsultationRun, CommandReceiptId, bool)> {
+        let command = command.peek(self.realm_id())?;
+        if readback.verified.readback_refusal.is_some() {
+            return Err(conflict(
+                "planning pair member recovery",
+                "a readback that did not qualify the member cannot requalify it",
+            ));
+        }
+        if command.target_revision != readback.expected_revision.next()? {
+            return Err(conflict(
+                "planning pair member recovery",
+                "the receipt must name the run's next revision",
+            ));
+        }
+        let transaction = self.begin()?;
+        if let Some(existing) =
+            crate::commands::intent::insert_local_command(&transaction, command)?
+        {
+            drop(transaction);
+            let run = self
+                .get_consultation_run(readback.project_id, readback.run_id)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "consultation run",
+                })?;
+            return Ok((run, existing.id, false));
+        }
+        let state = planning_pair_member_readback_in(&transaction, readback)?;
+        keep_planning_pair_known_native_in(&transaction, &readback.verified)?;
+        bind_planning_pair_member_in(&transaction, &readback.verified, readback.applied_at)?;
+        let unqualified: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM consultation_seats
+                  WHERE project_id = ?1 AND run_id = ?2 AND runtime_kind IS NULL",
+                params![readback.project_id.to_string(), readback.run_id.as_text()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        let next = if state == ConsultationRunState::NeedsHuman && unqualified == 0 {
+            ConsultationRunState::Running
+        } else {
+            state
+        };
+        advance_planning_pair_run_in(&transaction, readback, next)?;
+        transaction.commit().map_err(backend)?;
+        let run = self
+            .get_consultation_run(readback.project_id, readback.run_id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "consultation run",
+            })?;
+        Ok((run, command.receipt_id, true))
+    }
+
+    /// Withdraw one planning pair member's current qualification after an
+    /// adverse readback of its exact known native session, in one transaction
+    /// (ASMA-8282 frontier A).
+    ///
+    /// Only this member is unbound; its peer, every finding and the known
+    /// native claim are kept, and the claim is written from `verified` if none
+    /// was kept yet. A running pair moves to `needs_human`; a materializing
+    /// pair stays materializing. The run moves one revision. No receipt is
+    /// written: the operation is refused.
+    ///
+    /// # Errors
+    /// A conflict when the run moved or is disposed, the generation moved, or
+    /// the member is not bound to the known session.
+    pub fn disqualify_planning_pair_member(
+        &self,
+        readback: &PlanningPairMemberReadback,
+    ) -> RepositoryResult<StoredConsultationRun> {
+        let transaction = self.begin()?;
+        let state = planning_pair_member_readback_in(&transaction, readback)?;
+        keep_planning_pair_known_native_in(&transaction, &readback.verified)?;
+        let identity = &readback.verified.identity;
+        let changed = transaction
+            .execute(
+                "UPDATE consultation_seats
+                    SET runtime_kind = NULL, host = NULL, generation = NULL, native_id = NULL,
+                        provider_session_id = NULL, observed_at = NULL
+                  WHERE project_id = ?1 AND run_id = ?2 AND seat_binding_id = ?3
+                    AND occupancy_generation = ?4 AND runtime_kind = ?5 AND host = ?6
+                    AND generation = ?7 AND native_id = ?8",
+                params![
+                    readback.project_id.to_string(),
+                    readback.run_id.as_text(),
+                    readback.seat_binding_id.to_string(),
+                    i64::try_from(readback.occupancy_generation).unwrap_or(i64::MAX),
+                    identity.runtime_kind.as_str(),
+                    identity.host.as_str(),
+                    i64::try_from(identity.generation).unwrap_or(i64::MAX),
+                    identity.native_id.as_str(),
+                ],
+            )
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(conflict(
+                "planning pair member recovery",
+                "only a member bound to its known session can lose its qualification",
+            ));
+        }
+        let next = if state == ConsultationRunState::Running {
+            ConsultationRunState::NeedsHuman
+        } else {
+            state
+        };
+        advance_planning_pair_run_in(&transaction, readback, next)?;
+        transaction.commit().map_err(backend)?;
+        self.get_consultation_run(readback.project_id, readback.run_id)?
+            .ok_or(RepositoryError::NotFound {
+                subject: "consultation run",
+            })
     }
 
     /// One family-qualified consultation in one project.
@@ -3475,6 +4530,69 @@ impl SqliteStore {
             .transpose()
     }
 
+    /// Read the frozen profile for the current consultation generation, including
+    /// an unresolved recovery reservation. No runtime observation makes it terminal.
+    pub fn get_consultation_generation_profile(
+        &self,
+        project_id: ProjectId,
+        seat: &StoredConsultationSeat,
+    ) -> RepositoryResult<Option<(CanonicalDocument, String)>> {
+        let generation = i64::try_from(seat.occupancy_generation).map_err(|_| {
+            conflict(
+                "consultation profile",
+                "the generation cannot be represented",
+            )
+        })?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT recovery_profile, recovery_profile_hash, state
+             FROM consultation_seat_recovery_attempts
+             WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+               AND successor_occupancy_generation = ?4
+             UNION ALL
+             SELECT recovery_profile, recovery_profile_hash, 'installed'
+             FROM consultation_seat_materialization_reroutes
+             WHERE project_id = ?1 AND run_id = ?2 AND role_slot_id = ?3
+               AND successor_generation = ?4",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![
+                    project_id.to_string(),
+                    seat.run_id.as_text(),
+                    seat.role_slot_id.as_str(),
+                    generation
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        if rows.len() > 1 {
+            return Err(conflict(
+                "consultation profile",
+                "the current generation has ambiguous recovery provenance",
+            ));
+        }
+        rows.into_iter()
+            .next()
+            .map(|(json, hash, state)| {
+                Ok((
+                    CanonicalDocument::from_stored(&json, &ContentHash::parse(&hash)?)?,
+                    state,
+                ))
+            })
+            .transpose()
+    }
+
     /// Read an already-committed native-less reroute by its exact intent.
     pub fn get_consultation_materialization_reroute_by_intent(
         &self,
@@ -4240,6 +5358,157 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Freeze the role persona one launched occupancy is opened under.
+    ///
+    /// Written before the native call, beside the launch intent, so a launch
+    /// whose acknowledgement is lost still leaves behind what it was going to
+    /// deliver. A replay of the identical persona is the same act and converges;
+    /// a *different* persona for the same occupancy is a second answer to a
+    /// settled question and refuses rather than overwriting the first.
+    pub fn record_hosted_seat_role_persona(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+        snapshot: &kontor_core::spec::RolePersonaSnapshot,
+    ) -> RepositoryResult<Applied> {
+        // Re-verified before anything is written: a snapshot whose text and
+        // digest disagree is not a record of anything, and storing it would
+        // launder the disagreement into the audit trail.
+        snapshot.verify()?;
+        let generation =
+            i64::try_from(occupancy_generation).map_err(|_| RepositoryError::Backend {
+                detail: "a hosted-seat role persona generation is invalid".to_owned(),
+            })?;
+        let schema = i64::from(snapshot.schema_version.get());
+        if let Some(existing) =
+            self.get_hosted_seat_role_persona(project_id, seat_binding_id, occupancy_generation)?
+        {
+            if existing.prompt_hash != snapshot.prompt_hash {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted seat role persona",
+                    rule: "one occupancy generation cannot be launched under a second persona",
+                });
+            }
+            return Ok(Applied::Unchanged);
+        }
+        self.connection
+            .execute(
+                "INSERT INTO hosted_seat_role_personas
+                     (project_id, seat_binding_id, occupancy_generation, role_code,
+                      prompt, prompt_hash, delivery, schema_version, frozen_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    project_id.to_string(),
+                    seat_binding_id.to_string(),
+                    generation,
+                    snapshot.role_code.as_str(),
+                    snapshot.prompt.as_str(),
+                    snapshot.prompt_hash.as_str(),
+                    snapshot.delivery.as_str(),
+                    schema,
+                    text(snapshot.frozen_at),
+                ],
+            )
+            .map_err(backend)?;
+        Ok(Applied::Created)
+    }
+
+    /// The persona this seat's newest occupancy was opened under.
+    ///
+    /// Generations only increase and each hosted launch writes at most one row,
+    /// so the highest generation is the current occupancy. Asking for "the
+    /// newest" rather than being told a generation keeps a reader from having
+    /// to derive the occupancy from a runtime readback generation, which counts
+    /// something else entirely and would silently answer about the wrong launch.
+    pub fn latest_hosted_seat_role_persona(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> RepositoryResult<Option<(u64, kontor_core::spec::RolePersonaSnapshot)>> {
+        let generation: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT MAX(occupancy_generation) FROM hosted_seat_role_personas
+                 WHERE project_id = ?1 AND seat_binding_id = ?2",
+                params![project_id.to_string(), seat_binding_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?
+            .flatten();
+        let Some(generation) = generation else {
+            return Ok(None);
+        };
+        let generation = u64::try_from(generation).map_err(|_| RepositoryError::Backend {
+            detail: "a hosted-seat role persona generation is invalid".to_owned(),
+        })?;
+        Ok(self
+            .get_hosted_seat_role_persona(project_id, seat_binding_id, generation)?
+            .map(|persona| (generation, persona)))
+    }
+
+    /// Read the exact persona one occupancy generation was opened under.
+    ///
+    /// Absence is a real answer: a role with no seeded persona is launched under
+    /// none, and that is reported as `None` rather than as a missing record.
+    pub fn get_hosted_seat_role_persona(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        occupancy_generation: u64,
+    ) -> RepositoryResult<Option<kontor_core::spec::RolePersonaSnapshot>> {
+        let generation =
+            i64::try_from(occupancy_generation).map_err(|_| RepositoryError::Backend {
+                detail: "a hosted-seat role persona generation is invalid".to_owned(),
+            })?;
+        let row: Option<(String, String, String, String, i64, String)> = self
+            .connection
+            .query_row(
+                "SELECT role_code, prompt, prompt_hash, delivery, schema_version, frozen_at
+                 FROM hosted_seat_role_personas
+                 WHERE project_id = ?1 AND seat_binding_id = ?2
+                   AND occupancy_generation = ?3",
+                params![
+                    project_id.to_string(),
+                    seat_binding_id.to_string(),
+                    generation,
+                ],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((role_code, prompt, prompt_hash, delivery, schema_version, frozen_at)) = row
+        else {
+            return Ok(None);
+        };
+        let schema_version =
+            u32::try_from(schema_version).map_err(|_| RepositoryError::Backend {
+                detail: "a hosted-seat role persona schema version is invalid".to_owned(),
+            })?;
+        let snapshot = kontor_core::spec::RolePersonaSnapshot {
+            schema_version: kontor_core::id::SchemaVersion::parse(schema_version)?,
+            role_code: RoleCode::parse(&role_code)?,
+            prompt: BoundedText::parse(&prompt)?,
+            prompt_hash: ContentHash::parse(&prompt_hash)?,
+            delivery: kontor_core::spec::RolePersonaDelivery::parse(&delivery)?,
+            frozen_at: parse_utc_timestamp(&frozen_at)?,
+        };
+        // The stored halves are checked on the way out as well as in: a row
+        // edited underneath Kontor must not be reported as evidence.
+        snapshot.verify()?;
+        Ok(Some(snapshot))
+    }
+
     /// Record what one hosted-seat launch resolved, before the native call.
     ///
     /// Idempotent for the same decision and refusing for a different one. A
@@ -4371,11 +5640,382 @@ impl SqliteStore {
         .transpose()
     }
 
+    /// Every durable launch intent of one logical seat, oldest generation first.
+    ///
+    /// The singular reader answers "what was intended for this generation".
+    /// Lineage asks a different question — "which natives did Kontor itself
+    /// install for this seat" — and that cannot be answered one generation at a
+    /// time without the caller choosing the generation first, which is the
+    /// choice lineage exists to make.
+    pub fn list_hosted_seat_launch_intents(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> RepositoryResult<Vec<StoredHostedSeatLaunchIntent>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT occupancy_generation, autonomy, model_rung, state,
+                        observed_native_id, prepared_at, installed_at
+                 FROM hosted_topology_seat_launch_intents
+                 WHERE project_id = ?1 AND seat_binding_id = ?2
+                 ORDER BY occupancy_generation ASC",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), seat_binding_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                },
+            )
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(
+                |(generation, autonomy, model, state, observed, prepared_at, installed_at)| {
+                    Ok(StoredHostedSeatLaunchIntent {
+                        project_id,
+                        seat_binding_id,
+                        occupancy_generation: u64::try_from(generation).map_err(|_| {
+                            RepositoryError::Backend {
+                                detail: "a hosted-seat launch intent generation is negative"
+                                    .to_owned(),
+                            }
+                        })?,
+                        autonomy: read_seat_autonomy(&autonomy)?,
+                        model_rung: serde_json::from_str(&model).map_err(|error| {
+                            RepositoryError::Backend {
+                                detail: format!(
+                                    "a hosted-seat intent model rung could not be decoded: {error}"
+                                ),
+                            }
+                        })?,
+                        state: match state.as_str() {
+                            "prepared" => HostedSeatLaunchIntentState::Prepared,
+                            "installed" => HostedSeatLaunchIntentState::Installed,
+                            other => {
+                                return Err(RepositoryError::Backend {
+                                    detail: format!(
+                                        "a hosted-seat launch intent state is unknown: {other}"
+                                    ),
+                                });
+                            }
+                        },
+                        observed_native_id: observed
+                            .as_deref()
+                            .map(ExternalId::parse)
+                            .transpose()?,
+                        prepared_at: read_timestamp(&prepared_at)?,
+                        installed_at: installed_at.as_deref().map(read_timestamp).transpose()?,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    /// Read the immutable supersession digest before reconstructing its receipt.
+    /// The CAS ledger can survive a crash before the command receipt is written.
+    pub fn hosted_seat_launch_intent_supersession_hash(
+        &self,
+        key: &kontor_core::id::IdempotencyKey,
+    ) -> RepositoryResult<Option<ContentHash>> {
+        let hash: Option<String> = self.connection.query_row(
+            "SELECT intent_hash FROM hosted_seat_launch_intent_supersessions WHERE idempotency_key = ?1",
+            params![key.as_str()], |row| row.get(0)).optional().map_err(backend)?;
+        hash.map(|hash| ContentHash::parse(&hash).map_err(Into::into))
+            .transpose()
+    }
+
     /// Reconcile one prepared intent against the native its launch produced.
     ///
     /// Repeating this after a crash with the same native is unchanged. Naming a
     /// different native is a conflict: the intent describes one occupancy, and
     /// an installed row that pointed at a second native would make the evidence
+    pub fn supersede_hosted_seat_launch_intent(
+        &self,
+        request: &HostedSeatLaunchIntentSupersession,
+    ) -> RepositoryResult<Applied> {
+        let project = request.project_id.to_string();
+        let binding = request.seat_binding_id.to_string();
+        let generation =
+            i64::try_from(request.occupancy_generation).map_err(|_| RepositoryError::Backend {
+                detail: "a hosted-seat launch intent generation is invalid".to_owned(),
+            })?;
+        let expected_rung =
+            serde_json::to_string(&request.expected_model_rung).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!(
+                        "a hosted-seat intent model rung could not be encoded: {error}"
+                    ),
+                }
+            })?;
+        let replacement_rung =
+            serde_json::to_string(&request.replacement_model_rung).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!(
+                        "a hosted-seat intent model rung could not be encoded: {error}"
+                    ),
+                }
+            })?;
+        let transaction = self.begin()?;
+
+        // Replay first: the unique key is what makes this exactly-once, and a
+        // second attempt under the same key must answer rather than re-swap.
+        let recorded: Option<String> = transaction
+            .query_row(
+                "SELECT intent_hash FROM hosted_seat_launch_intent_supersessions
+                  WHERE idempotency_key = ?1",
+                params![request.idempotency_key.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some(recorded) = recorded {
+            transaction.rollback().map_err(backend)?;
+            return if recorded == request.intent_hash.as_str() {
+                Ok(Applied::Unchanged)
+            } else {
+                Err(RepositoryError::Conflict {
+                    subject: "hosted seat launch intent supersession",
+                    rule: "the idempotency key already superseded a different intent",
+                })
+            };
+        }
+
+        // The logical seat, exactly as the caller read it and still active.
+        let binding_row: Option<(String, i64, Option<String>, Option<String>)> = transaction
+            .query_row(
+                "SELECT lifecycle, revision, released_at, replaced_by_seat_binding_id
+                   FROM seat_bindings WHERE project_id = ?1 AND id = ?2",
+                params![project, binding],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((lifecycle, revision, released_at, replaced_by)) = binding_row else {
+            return Err(RepositoryError::NotFound {
+                subject: "seat binding",
+            });
+        };
+        if lifecycle != "active" || released_at.is_some() || replaced_by.is_some() {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent supersession",
+                rule: "the logical seat is released, replaced or not active",
+            });
+        }
+        if u64::try_from(revision).ok() != Some(request.expected_seat_binding_revision.get()) {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent supersession",
+                rule: "the logical SeatBinding moved since the supersession was read",
+            });
+        }
+
+        if let Some(predecessor) = &request.archived_predecessor {
+            if predecessor.project_id != request.project_id
+                || predecessor.seat_binding_id != request.seat_binding_id
+            {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted seat launch intent supersession",
+                    rule: "the archived predecessor belongs to another logical seat",
+                });
+            }
+            let history: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM hosted_topology_seat_history WHERE project_id = ?1 AND seat_binding_id = ?2",
+                params![project, binding], |row| row.get(0)).map_err(backend)?;
+            if generation != history + 2 {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted seat launch intent supersession",
+                    rule: "only the immediate unbound successor occupancy may be superseded",
+                });
+            }
+            let rung = serde_json::to_string(&predecessor.model_rung).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: error.to_string(),
+                }
+            })?;
+            let exact: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM hosted_topology_seats
+                 WHERE project_id = ?1 AND seat_binding_id = ?2 AND model_rung = ?3
+                   AND runtime_kind = ?4 AND host = ?5 AND generation = ?6
+                   AND native_id = ?7 AND provider_session_id IS ?8
+                   AND observed_at = ?9 AND autonomy = ?10",
+                    params![
+                        project,
+                        binding,
+                        rung,
+                        predecessor.native_identity.runtime_kind.as_str(),
+                        predecessor.native_identity.host.as_str(),
+                        i64::try_from(predecessor.native_identity.generation).unwrap_or(i64::MAX),
+                        predecessor.native_identity.native_id.as_str(),
+                        predecessor
+                            .provider_session_id
+                            .as_ref()
+                            .map(ExternalId::as_str),
+                        text(predecessor.observed_at),
+                        predecessor.autonomy.as_str()
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if exact != 1 {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted seat launch intent supersession",
+                    rule: "the current occupancy changed after its native archive was proved",
+                });
+            }
+            let later: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM hosted_topology_seat_launch_intents
+                 WHERE project_id = ?1 AND seat_binding_id = ?2 AND occupancy_generation > ?3",
+                    params![project, binding, generation],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if later != 0 {
+                return Err(RepositoryError::Conflict {
+                    subject: "hosted seat launch intent supersession",
+                    rule: "a later occupancy intent already exists",
+                });
+            }
+        } else {
+            // Absence of every effect. Any one of these means the intent was not
+            // inert and this repair does not apply.
+            for (table, subject) in [
+                (
+                    "hosted_topology_seats",
+                    "the seat already has a native occupant",
+                ),
+                (
+                    "hosted_topology_seat_history",
+                    "the seat already has retirement history",
+                ),
+            ] {
+                let present: i64 = transaction
+                    .query_row(
+                        &format!(
+                            "SELECT COUNT(*) FROM {table}
+                          WHERE project_id = ?1 AND seat_binding_id = ?2"
+                        ),
+                        params![project, binding],
+                        |row| row.get(0),
+                    )
+                    .map_err(backend)?;
+                if present != 0 {
+                    return Err(RepositoryError::Conflict {
+                        subject: "hosted seat launch intent supersession",
+                        rule: subject,
+                    });
+                }
+            }
+        }
+
+        // Never-bound recovery refuses any effect receipt. Successor recovery
+        // permits only historical effects preceding this exact prepared intent;
+        // later or ambiguous effects still refuse. `observe_seat`
+        // is read-only and deliberately absent from the list; a consultation
+        // this seat *asked* names it as the caller, not as a target, so it is
+        // matched on the seat-binding field rather than on the whole document.
+        let effectful: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM command_receipts
+                  WHERE project_id = ?1
+                    AND kind IN ('materialize_core_team', 'correct_core_team_route',
+                                 'claim_core_team_seat', 'replace_seat', 'retire_seat',
+                                 'launch_run')
+                    AND (json_extract(intent, '$.seat_binding') = ?2
+                         OR json_extract(intent, '$.seat_binding_id') = ?2)
+                    AND (?3 IS NULL OR julianday(created_at) >= julianday(?3))",
+                params![
+                    project,
+                    binding,
+                    request
+                        .archived_predecessor
+                        .as_ref()
+                        .map(|_| text(request.expected_prepared_at))
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if effectful != 0 {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent supersession",
+                rule: "a launch or effect receipt already names this seat",
+            });
+        }
+
+        // Recorded before the swap, not after: the v106 carve-out on the
+        // launch-intent immutability trigger only admits a route change that
+        // this exact evidence already accounts for, so the statement of what
+        // is being replaced has to exist first.
+        transaction
+            .execute(
+                "INSERT INTO hosted_seat_launch_intent_supersessions
+                     (idempotency_key, intent_hash, project_id, seat_binding_id,
+                      occupancy_generation, seat_binding_revision, superseded_model_rung,
+                      superseded_prepared_at, replacement_model_rung, receipt_id, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10)",
+                params![
+                    request.idempotency_key.as_str(),
+                    request.intent_hash.as_str(),
+                    project,
+                    binding,
+                    generation,
+                    i64::try_from(request.expected_seat_binding_revision.get()).unwrap_or(i64::MAX),
+                    expected_rung,
+                    text(request.expected_prepared_at),
+                    replacement_rung,
+                    text(request.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        // The swap itself. Every fence the intent carries is in the predicate,
+        // so a concurrent install or re-prepare makes this match zero rows
+        // rather than overwrite a decision someone else just made.
+        let swapped = transaction
+            .execute(
+                "UPDATE hosted_topology_seat_launch_intents
+                    SET model_rung = ?6, prepared_at = ?7
+                  WHERE project_id = ?1
+                    AND seat_binding_id = ?2
+                    AND occupancy_generation = ?3
+                    AND state = 'prepared'
+                    AND installed_at IS NULL
+                    AND observed_native_id IS NULL
+                    AND model_rung = ?4
+                    AND prepared_at = ?5",
+                params![
+                    project,
+                    binding,
+                    generation,
+                    expected_rung,
+                    text(request.expected_prepared_at),
+                    replacement_rung,
+                    text(request.recorded_at),
+                ],
+            )
+            .map_err(backend)?;
+        if swapped != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "hosted seat launch intent supersession",
+                rule: "the prepared launch intent is installed, re-routed or gone",
+            });
+        }
+
+        transaction.commit().map_err(backend)?;
+        Ok(Applied::Updated)
+    }
+
     /// ambiguous exactly where it has to be exact.
     pub fn install_hosted_seat_launch_intent(
         &self,
@@ -4612,6 +6252,83 @@ impl SqliteStore {
         .transpose()
     }
 
+    /// Every immutable predecessor of one logical seat, as whole occupancies.
+    ///
+    /// [`Self::list_hosted_topology_seat_history_native_ids`] answers a
+    /// negative admission fence and deliberately carries nothing but ids.
+    /// Lineage needs the generation and the route each native was bound under,
+    /// because a history row whose route disagrees is a different admission,
+    /// however well its native id matches.
+    pub fn list_hosted_topology_seat_history(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+    ) -> RepositoryResult<Vec<StoredHostedTopologySeat>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT native_id, model_rung, runtime_kind, host, generation,
+                        provider_session_id, observed_at, autonomy
+                 FROM hosted_topology_seat_history
+                 WHERE project_id = ?1 AND seat_binding_id = ?2
+                 ORDER BY retired_at ASC, rowid ASC",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), seat_binding_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(
+                |(native, model, runtime, host, generation, provider, observed, autonomy)| {
+                    Ok(StoredHostedTopologySeat {
+                        project_id,
+                        seat_binding_id,
+                        model_rung: serde_json::from_str(&model).map_err(|error| {
+                            RepositoryError::Backend {
+                                detail: format!(
+                                    "a hosted-seat history model rung could not be decoded: {error}"
+                                ),
+                            }
+                        })?,
+                        native_identity: NativeRuntimeIdentity {
+                            runtime_kind: RuntimeKindKey::parse(&runtime)?,
+                            host: ExternalName::parse(&host)?,
+                            generation: u64::try_from(generation).map_err(|_| {
+                                RepositoryError::Backend {
+                                    detail: "a hosted-seat history generation is negative"
+                                        .to_owned(),
+                                }
+                            })?,
+                            native_id: ExternalId::parse(&native)?,
+                        },
+                        autonomy: read_seat_autonomy(&autonomy)?,
+                        provider_session_id: provider
+                            .as_deref()
+                            .map(ExternalId::parse)
+                            .transpose()?,
+                        observed_at: read_timestamp(&observed)?,
+                    })
+                },
+            )
+            .collect()
+    }
+
     /// Read every immutable predecessor of one persistent topology seat.
     ///
     /// The ordered native ids are passed to the runtime only as a negative
@@ -4648,12 +6365,17 @@ impl SqliteStore {
 
     /// Atomically move the exact predecessor to history and make its successor
     /// the active native filler of the same logical SeatBinding.
+    /// `succession`, when supplied, is committed in this same transaction. The
+    /// transition and the evidence that reconstructs it therefore commit
+    /// together or not at all, which is what removes the window a process lost
+    /// between them used to leave open (ASMA-8187).
     pub fn replace_hosted_topology_seat_route(
         &self,
         predecessor: &StoredHostedTopologySeat,
         successor: &StoredHostedTopologySeat,
         retired_at: Timestamp,
         reason: &str,
+        succession: Option<&CoreTeamRouteSuccessionCommit>,
     ) -> RepositoryResult<Applied> {
         if predecessor.project_id != successor.project_id
             || predecessor.seat_binding_id != successor.seat_binding_id
@@ -4664,23 +6386,39 @@ impl SqliteStore {
             });
         }
         let transaction = self.begin()?;
-        let active_native: Option<String> = transaction
+        // The whole identity, not the external id alone. A provider may reissue
+        // an external id it has already used, so `native_id` on its own cannot
+        // say whether the seat holds *this* native or a later one wearing the
+        // same name; the runtime generation is what tells them apart
+        // (ASMA-8187 P1).
+        let active: Option<(String, i64, String, String)> = transaction
             .query_row(
-                "SELECT native_id FROM hosted_topology_seats
-                 WHERE project_id = ?1 AND seat_binding_id = ?2",
+                "SELECT native_id, generation, runtime_kind, host
+                   FROM hosted_topology_seats
+                  WHERE project_id = ?1 AND seat_binding_id = ?2",
                 params![
                     predecessor.project_id.to_string(),
                     predecessor.seat_binding_id.to_string(),
                 ],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(backend)?;
-        if active_native.as_deref() == Some(successor.native_identity.native_id.as_str()) {
+        let names = |identity: &NativeRuntimeIdentity| {
+            active
+                .as_ref()
+                .is_some_and(|(native, generation, kind, host)| {
+                    native == identity.native_id.as_str()
+                        && u64::try_from(*generation).unwrap_or(u64::MAX) == identity.generation
+                        && kind == identity.runtime_kind.as_str()
+                        && host == identity.host.as_str()
+                })
+        };
+        if names(&successor.native_identity) {
             transaction.rollback().map_err(backend)?;
             return Ok(Applied::Unchanged);
         }
-        if active_native.as_deref() != Some(predecessor.native_identity.native_id.as_str()) {
+        if !names(&predecessor.native_identity) {
             return Err(RepositoryError::Conflict {
                 subject: "hosted topology seat route",
                 rule: "the active native predecessor differs from the correction",
@@ -4758,8 +6496,725 @@ impl SqliteStore {
                 ],
             )
             .map_err(backend)?;
+        if let Some(succession) = succession {
+            // Validated here, at the boundary that persists it, and not only by
+            // whichever caller happened to build it. The readback arrives as
+            // free JSON, so this is the last place a nested forbidden key or a
+            // bearer-shaped value can be refused before it is durable — and the
+            // declared hash is re-derived rather than trusted, so a caller
+            // cannot record bytes under a digest that does not describe them.
+            let canonical = CanonicalDocument::from_value(&serde_json::json!({
+                "schema_version": 1,
+                "readback": succession.readback,
+            }))?;
+            if canonical.hash() != &succession.readback_hash {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the succession readback does not match its declared hash",
+                });
+            }
+            // And it is a *readback*, not merely well-formed JSON under an
+            // honest digest. Typing it here is what stops an incomplete or
+            // embellished document becoming durable in the first place; the
+            // binder's later check then has something whole to compare against
+            // (ASMA-8187 P2).
+            let typed = serde_json::from_value::<CoreTeamRouteSuccessionReadback>(
+                succession.readback.clone(),
+            )
+            .map_err(|_| RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession readback is not a complete Core Team succession readback",
+            })?;
+            typed
+                .check_internal_consistency()
+                .map_err(|rule| RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule,
+                })?;
+            // Coherent is not the same as true. The claim fixes the two
+            // generations this command produces, and the caller supplies the two
+            // seat rows and the retirement instant; the readback has to describe
+            // *those*, or it is an internally tidy account of a succession that
+            // did not happen. Runtime kind, host, provider session and model
+            // route are carried nowhere else durable, so this is the only place
+            // they can ever be checked (ASMA-8187 P2).
+            let claim: (i64, i64, i64) = transaction
+                .query_row(
+                    "SELECT predecessor_occupancy_generation, successor_occupancy_generation,
+                            successor_credential_generation
+                       FROM core_team_route_successions WHERE idempotency_key = ?1",
+                    params![succession.idempotency_key.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(backend)?
+                .ok_or(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "a succession outcome cannot commit onto a claim that was never taken",
+                })?;
+            typed
+                .check_describes_transition(
+                    predecessor,
+                    u64::try_from(claim.0).unwrap_or(u64::MAX),
+                    successor,
+                    u64::try_from(claim.1).unwrap_or(u64::MAX),
+                    u64::try_from(claim.2).unwrap_or(u64::MAX),
+                    retired_at,
+                )
+                .map_err(|rule| RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule,
+                })?;
+            let readback = serde_json::to_string(&succession.readback).map_err(|error| {
+                RepositoryError::Backend {
+                    detail: format!("a succession readback could not be encoded: {error}"),
+                }
+            })?;
+            // The claim must already exist, name this exact seat, and not yet
+            // be committed. Anything else is a caller committing an outcome
+            // onto a claim that is not the one it took.
+            let updated = transaction
+                .execute(
+                    "UPDATE core_team_route_successions
+                        SET successor_native_id = ?2, successor_generation = ?3,
+                            readback = ?4, readback_hash = ?5, route_committed_at = ?6
+                      WHERE idempotency_key = ?1
+                        AND project_id = ?7
+                        AND seat_binding_id = ?8
+                        AND predecessor_native_id = ?9
+                        AND route_committed_at IS NULL",
+                    params![
+                        succession.idempotency_key.as_str(),
+                        successor.native_identity.native_id.as_str(),
+                        i64::try_from(successor.native_identity.generation).unwrap_or(i64::MAX),
+                        readback,
+                        succession.readback_hash.as_str(),
+                        text(succession.route_committed_at),
+                        predecessor.project_id.to_string(),
+                        predecessor.seat_binding_id.to_string(),
+                        predecessor.native_identity.native_id.as_str(),
+                    ],
+                )
+                .map_err(backend)?;
+            if updated != 1 {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the claimed succession is already committed or names another seat",
+                });
+            }
+        }
+        transaction.commit().map_err(backend)?;
+        // The transition and its ledger row are durable and the caller is about
+        // to learn nothing about them. This is the *earliest* incomplete shape a
+        // replay can find — route committed, neither trailing effect attempted —
+        // and it is distinct from losing the latch after both have landed.
+        // Production builds never compile this.
+        #[cfg(feature = "fault-injection")]
+        if self.faults.lose_next_succession_route_ack.replace(false) {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault after the succession route commit".to_owned(),
+            });
+        }
+        Ok(Applied::Updated)
+    }
+
+    /// Take exclusive ownership of one Core Team route succession.
+    ///
+    /// This runs *before* the retire and the launch, and its uniqueness index is
+    /// the exclusivity itself. A second caller arriving with a second fresh
+    /// idempotency key for the same (project, seat, predecessor occupancy)
+    /// cannot insert, so it never reaches an effect: the seat cannot acquire two
+    /// natives claiming one logical owner.
+    ///
+    /// Re-claiming under the same key and the same intent is `Unchanged`, which
+    /// is what lets an exact replay continue. The same key with a different
+    /// intent, or a different key against a live claim, is a conflict.
+    pub fn claim_core_team_route_succession(
+        &self,
+        claim: &NewCoreTeamRouteSuccessionClaim,
+    ) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let existing: Option<(String, String, i64)> = transaction
+            .query_row(
+                "SELECT idempotency_key, intent_hash, predecessor_occupancy_generation
+                   FROM core_team_route_successions
+                  WHERE project_id = ?1 AND seat_binding_id = ?2
+                    AND predecessor_occupancy_generation = ?3",
+                params![
+                    claim.project_id.to_string(),
+                    claim.seat_binding_id.to_string(),
+                    i64::try_from(claim.predecessor_occupancy_generation).unwrap_or(i64::MAX),
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((key, intent_hash, _)) = existing {
+            transaction.rollback().map_err(backend)?;
+            if key != claim.idempotency_key.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "another idempotency key already owns this seat's succession",
+                });
+            }
+            if intent_hash != claim.intent_hash.as_str() {
+                return Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the idempotency key already claimed a different succession",
+                });
+            }
+            return Ok(Applied::Unchanged);
+        }
+        transaction
+            .execute(
+                "INSERT INTO core_team_route_successions
+                     (idempotency_key, intent_hash, project_id, mini_project_id,
+                      seat_binding_id, predecessor_native_id, predecessor_generation,
+                      predecessor_occupancy_generation, successor_occupancy_generation,
+                      successor_credential_generation, claimed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    claim.idempotency_key.as_str(),
+                    claim.intent_hash.as_str(),
+                    claim.project_id.to_string(),
+                    claim.mini_project_id.to_string(),
+                    claim.seat_binding_id.to_string(),
+                    claim.predecessor_native_id.as_str(),
+                    i64::try_from(claim.predecessor_generation).unwrap_or(i64::MAX),
+                    i64::try_from(claim.predecessor_occupancy_generation).unwrap_or(i64::MAX),
+                    i64::try_from(claim.successor_occupancy_generation).unwrap_or(i64::MAX),
+                    i64::try_from(claim.successor_credential_generation).unwrap_or(i64::MAX),
+                    text(claim.claimed_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok(Applied::Created)
+    }
+
+    /// Commit a succession's trailing effects by *proving* them.
+    ///
+    /// The previous shape took two booleans and trusted them, which meant the
+    /// persistence boundary recorded the caller's opinion rather than what
+    /// durable state actually says. Both latches are now derived here from the
+    /// exact rows the effects were supposed to write:
+    ///
+    /// * the launch intent for this occupancy is `installed` and names this
+    ///   succession's exact successor native — not merely some native;
+    /// * the seat's active occupant *is* that successor, and the SeatBinding's
+    ///   attachment instant is the successor's own observation instant, which
+    ///   is what ties the generic liveness write to this succession rather than
+    ///   to whatever last touched the seat.
+    ///
+    /// Anything short of both refuses and latches nothing, so a half-landed
+    /// succession cannot be talked into looking complete (ASMA-8187 P2).
+    pub fn commit_core_team_route_succession_effects(
+        &self,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Applied> {
+        // A crash here is indistinguishable, from the caller, from the latch
+        // never having happened — which is the interval the pending-effect
+        // columns exist to survive. Production builds never compile this.
+        #[cfg(feature = "fault-injection")]
+        if self.faults.lose_next_succession_effects.replace(false) {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault before the succession effect latch".to_owned(),
+            });
+        }
+        let recorded =
+            self.get_core_team_route_succession(key)?
+                .ok_or(RepositoryError::NotFound {
+                    subject: "core team route succession",
+                })?;
+        let (Some(successor_native_id), Some(_), Some(_)) = (
+            recorded.successor_native_id.clone(),
+            recorded.successor_generation,
+            recorded.route_committed_at,
+        ) else {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "a succession cannot commit effects before its route",
+            });
+        };
+        // The committed readback was proved against its own transition before it
+        // became durable and is immutable afterwards, so it — not the two
+        // identity columns beside it — is what the seat must still match.
+        let evidence = Self::committed_readback(&recorded)?;
+
+        // Effect zero, and the one the other two are only meaningful under: the
+        // seat is still standing in the occupancy this command produced. An
+        // external native id is the provider's to reissue, so a later occupancy
+        // reusing the same id would otherwise satisfy an older row's latches and
+        // let it receipt effects belonging to its successor's successor
+        // (ASMA-8187 P1).
+        let occupancy = self.hosted_topology_seat_occupancy_generation(
+            recorded.project_id,
+            recorded.seat_binding_id,
+        )?;
+        if occupancy != Some(recorded.successor_occupancy_generation) {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the seat has left the occupancy generation this succession installed",
+            });
+        }
+
+        // Effect one: the launch intent, installed against this exact native.
+        let intent = self.get_hosted_seat_launch_intent(
+            recorded.project_id,
+            recorded.seat_binding_id,
+            recorded.successor_occupancy_generation,
+        )?;
+        let launch_intent_installed = intent.is_some_and(|intent| {
+            intent.state == HostedSeatLaunchIntentState::Installed
+                && intent.observed_native_id.as_ref() == Some(&successor_native_id)
+        });
+
+        // Effect two: the observation, bound to this exact successor. The
+        // active occupant proves which native the seat holds — by its whole
+        // identity, so a reissued id under another runtime generation is not
+        // mistaken for it — and the attachment instant proves the observation
+        // was written for *that* native and not inherited from an earlier one.
+        let active =
+            self.get_hosted_topology_seat(recorded.project_id, recorded.seat_binding_id)?;
+        let seat_binding_observed = match (
+            active,
+            self.get_seat_binding(recorded.project_id, recorded.seat_binding_id)?,
+        ) {
+            (Some(active), Some(binding)) => {
+                evidence.successor_is(&active)
+                    && binding.last_attached_at == Some(active.observed_at)
+            }
+            _ => false,
+        };
+
+        if !launch_intent_installed || !seat_binding_observed {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession's trailing effects are not both proved against its successor",
+            });
+        }
+        let updated = self
+            .connection
+            .execute(
+                "UPDATE core_team_route_successions
+                    SET launch_intent_installed = 1, seat_binding_observed = 1
+                  WHERE idempotency_key = ?1 AND route_committed_at IS NOT NULL",
+                params![key.as_str()],
+            )
+            .map_err(backend)?;
+        if updated == 0 {
+            return Err(RepositoryError::NotFound {
+                subject: "core team route succession",
+            });
+        }
+        Ok(Applied::Updated)
+    }
+
+    /// The validated, immutable readback a committed succession recorded.
+    ///
+    /// Typed on the way in and proved against its own transition before it was
+    /// written, so decoding it here is reading evidence rather than trusting a
+    /// stored string. A row that cannot produce one is a row no later check can
+    /// stand on.
+    fn committed_readback(
+        recorded: &StoredCoreTeamRouteSuccession,
+    ) -> RepositoryResult<CoreTeamRouteSuccessionReadback> {
+        let readback = recorded.readback.clone().ok_or(RepositoryError::Conflict {
+            subject: "core team route succession",
+            rule: "a committed succession carries no readback to verify against",
+        })?;
+        serde_json::from_value(readback).map_err(|_| RepositoryError::Conflict {
+            subject: "core team route succession",
+            rule: "the stored succession readback is no longer a complete readback",
+        })
+    }
+
+    /// Bind one recorded succession to the receipt that completed it.
+    ///
+    /// One-time and exact on key *and* intent: a receipt is evidence for one
+    /// specific command, and binding it to another would make the ledger assert
+    /// something it never saw. Re-binding the identical receipt is unchanged,
+    /// which is what lets a lost acknowledgement finish.
+    pub fn bind_core_team_route_succession_receipt(
+        &self,
+        key: &IdempotencyKey,
+        intent_hash: &ContentHash,
+        receipt_id: CommandReceiptId,
+        receipted_at: Timestamp,
+    ) -> RepositoryResult<Applied> {
+        // The command receipt is already recorded by the time this runs, so a
+        // loss here leaves a realm holding a receipt no ledger row points at.
+        // A replay must rebind that same receipt rather than mint a second.
+        // Production builds never compile this.
+        #[cfg(feature = "fault-injection")]
+        if self
+            .faults
+            .lose_next_succession_receipt_binding
+            .replace(false)
+        {
+            return Err(RepositoryError::Backend {
+                detail: "injected fault before the succession receipt binding".to_owned(),
+            });
+        }
+        let transaction = self.begin()?;
+        #[allow(clippy::type_complexity)]
+        let row: Option<(
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+            String,
+            String,
+        )> = transaction
+            .query_row(
+                "SELECT intent_hash, receipt_id, route_committed_at,
+                            launch_intent_installed, seat_binding_observed,
+                            project_id, mini_project_id
+                       FROM core_team_route_successions
+                      WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((
+            recorded_hash,
+            bound,
+            committed,
+            launch_installed,
+            seat_observed,
+            project_id,
+            mini_project_id,
+        )) = row
+        else {
+            return Err(RepositoryError::NotFound {
+                subject: "core team route succession",
+            });
+        };
+        if recorded_hash != intent_hash.as_str() {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the receipt names a different succession intent",
+            });
+        }
+        // Completeness is a precondition of the receipt, not a consequence of
+        // it. A caller that reconciled nothing must not be able to mint the
+        // statement that everything landed.
+        if committed.is_none() || launch_installed != 1 || seat_observed != 1 {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "a receipt cannot bind a succession whose effects have not all landed",
+            });
+        }
+        // A foreign key proves the receipt exists; it says nothing about whose
+        // it is. Read it here, inside the same transaction, and require it to be
+        // the receipt this exact command produced: same project, same key, same
+        // command kind, same target epic, same intent. Anything else is a
+        // succession pointing at somebody else's completion (ASMA-8187 P2).
+        #[allow(clippy::type_complexity)]
+        let receipt: Option<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )> = transaction
+            .query_row(
+                "SELECT project_id, idempotency_key, kind, intent_hash,
+                            json_extract(target, '$.kind'),
+                            json_extract(target, '$.mini_project_id')
+                       FROM command_receipts WHERE id = ?1",
+                params![receipt_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((
+            receipt_project,
+            receipt_key,
+            receipt_kind,
+            receipt_intent,
+            target_kind,
+            target_epic,
+        )) = receipt
+        else {
+            return Err(RepositoryError::NotFound {
+                subject: "command receipt",
+            });
+        };
+        if receipt_project != project_id
+            || receipt_key != key.as_str()
+            || receipt_kind != "correct_core_team_route"
+            || receipt_intent != intent_hash.as_str()
+            || target_kind.as_deref() != Some("mini_project")
+            || target_epic.as_deref() != Some(mini_project_id.as_str())
+        {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the receipt was recorded for another command",
+            });
+        }
+        // The receipt is the last moment anything reads this row before it
+        // becomes the answer to every replay, so the evidence is re-proved
+        // here rather than assumed from the write that produced it. The digest
+        // is recomputed from the stored bytes, and every value the readback
+        // repeats from a ledger column is compared against that column: two
+        // layers wrote them, and agreement between the two is evidence rather
+        // than a restatement.
+        self.verify_succession_readback(&transaction, key)?;
+        // Only now may an identical binding answer `Unchanged`. Returning it
+        // earlier made the idempotent path the one path that proved nothing:
+        // a row bound by some other route — an upgrade, a restore, a direct
+        // write — would be re-affirmed on replay without its receipt or its
+        // readback ever being read. A replay is the most common way this row is
+        // looked at, so it has to be the most verified, not the least
+        // (ASMA-8187 P2).
+        if let Some(bound) = bound {
+            transaction.rollback().map_err(backend)?;
+            return if bound == receipt_id.to_string() {
+                Ok(Applied::Unchanged)
+            } else {
+                Err(RepositoryError::Conflict {
+                    subject: "core team route succession",
+                    rule: "the succession is already bound to another receipt",
+                })
+            };
+        }
+        transaction
+            .execute(
+                "UPDATE core_team_route_successions
+                    SET receipt_id = ?2, receipted_at = ?3
+                  WHERE idempotency_key = ?1",
+                params![key.as_str(), receipt_id.to_string(), text(receipted_at)],
+            )
+            .map_err(backend)?;
         transaction.commit().map_err(backend)?;
         Ok(Applied::Updated)
+    }
+
+    /// Re-prove a committed succession's readback against its own ledger row.
+    fn verify_succession_readback(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<()> {
+        let row: (
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            String,
+            i64,
+            i64,
+            i64,
+            String,
+        ) = transaction
+            .query_row(
+                "SELECT readback, readback_hash, predecessor_native_id, predecessor_generation,
+                        predecessor_occupancy_generation, successor_native_id,
+                        successor_generation, successor_occupancy_generation,
+                        successor_credential_generation, seat_binding_id
+                   FROM core_team_route_successions WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                    ))
+                },
+            )
+            .map_err(backend)?;
+        let readback: serde_json::Value =
+            serde_json::from_str(&row.0).map_err(|error| RepositoryError::Backend {
+                detail: format!("a succession readback could not be decoded: {error}"),
+            })?;
+        let declared = ContentHash::parse(&row.1)?;
+        let recomputed = CanonicalDocument::from_value(&serde_json::json!({
+            "schema_version": 1,
+            "readback": readback,
+        }))?;
+        if recomputed.hash() != &declared {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the stored succession readback no longer matches its recorded digest",
+            });
+        }
+        // Typed, not probed. Reading nine pointers out of free JSON proves those
+        // nine agree and says nothing about the rest of the document: a missing
+        // `host`, an absent `retired_at` or an extra member nobody declared all
+        // passed. Deserializing into the shared domain structure — which denies
+        // unknown fields and has no optional identity — is what makes the whole
+        // readback the thing under test (ASMA-8187 P2).
+        let readback: CoreTeamRouteSuccessionReadback =
+            serde_json::from_value(readback).map_err(|_| RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession readback is not a complete Core Team succession readback",
+            })?;
+        let seat_binding_id = row.9;
+        let agrees = readback.seat_binding_id.to_string() == seat_binding_id
+            && readback.predecessor.native_id.as_str() == row.2
+            && readback.predecessor.generation == u64::try_from(row.3).unwrap_or(u64::MAX)
+            && readback.predecessor.occupancy_generation
+                == u64::try_from(row.4).unwrap_or(u64::MAX)
+            && readback.successor.native_id.as_str() == row.5
+            && readback.successor.generation == u64::try_from(row.6).unwrap_or(u64::MAX)
+            && readback.successor.occupancy_generation == u64::try_from(row.7).unwrap_or(u64::MAX)
+            && readback.grant_subject.generation == u64::try_from(row.8).unwrap_or(u64::MAX)
+            && readback.grant_subject.subject_seat_binding_id.to_string() == seat_binding_id;
+        if !agrees {
+            return Err(RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule: "the succession readback disagrees with its own ledger identity",
+            });
+        }
+        // Re-asked here, over the stored bytes, rather than trusted from the
+        // write that produced them: the derived grant digest, two distinct
+        // occupants, a recorded retirement instant.
+        readback
+            .check_internal_consistency()
+            .map_err(|rule| RepositoryError::Conflict {
+                subject: "core team route succession",
+                rule,
+            })?;
+        Ok(())
+    }
+
+    /// Read one recorded succession by the key a replay arrives holding.
+    pub fn get_core_team_route_succession(
+        &self,
+        key: &IdempotencyKey,
+    ) -> RepositoryResult<Option<StoredCoreTeamRouteSuccession>> {
+        self.read_core_team_route_succession("WHERE idempotency_key = ?1", params![key.as_str()])
+    }
+
+    /// Read the exclusive owner of one seat's succession, if it has one.
+    pub fn core_team_route_succession_owner(
+        &self,
+        project_id: ProjectId,
+        seat_binding_id: SeatBindingId,
+        predecessor_occupancy_generation: u64,
+    ) -> RepositoryResult<Option<StoredCoreTeamRouteSuccession>> {
+        self.read_core_team_route_succession(
+            "WHERE project_id = ?1 AND seat_binding_id = ?2
+               AND predecessor_occupancy_generation = ?3",
+            params![
+                project_id.to_string(),
+                seat_binding_id.to_string(),
+                i64::try_from(predecessor_occupancy_generation).unwrap_or(i64::MAX),
+            ],
+        )
+    }
+
+    fn read_core_team_route_succession(
+        &self,
+        predicate: &str,
+        parameters: &[&dyn rusqlite::ToSql],
+    ) -> RepositoryResult<Option<StoredCoreTeamRouteSuccession>> {
+        let Some(row) = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT idempotency_key, intent_hash, project_id, mini_project_id,
+                            seat_binding_id, predecessor_native_id, predecessor_generation,
+                            predecessor_occupancy_generation, successor_occupancy_generation,
+                            successor_credential_generation, claimed_at, successor_native_id,
+                            successor_generation, readback, readback_hash, route_committed_at,
+                            launch_intent_installed, seat_binding_observed, receipt_id,
+                            receipted_at
+                       FROM core_team_route_successions {predicate}"
+                ),
+                parameters,
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, i64>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, Option<i64>>(12)?,
+                        row.get::<_, Option<String>>(13)?,
+                        row.get::<_, Option<String>>(14)?,
+                        row.get::<_, Option<String>>(15)?,
+                        row.get::<_, i64>(16)?,
+                        row.get::<_, i64>(17)?,
+                        row.get::<_, Option<String>>(18)?,
+                        row.get::<_, Option<String>>(19)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(StoredCoreTeamRouteSuccession {
+            idempotency_key: IdempotencyKey::parse(&row.0)?,
+            intent_hash: ContentHash::parse(&row.1)?,
+            project_id: ProjectId::parse(&row.2)?,
+            mini_project_id: MiniProjectId::parse(&row.3)?,
+            seat_binding_id: SeatBindingId::parse(&row.4)?,
+            predecessor_native_id: ExternalId::parse(&row.5)?,
+            predecessor_generation: u64::try_from(row.6).unwrap_or_default(),
+            predecessor_occupancy_generation: u64::try_from(row.7).unwrap_or_default(),
+            successor_occupancy_generation: u64::try_from(row.8).unwrap_or_default(),
+            successor_credential_generation: u64::try_from(row.9).unwrap_or_default(),
+            claimed_at: read_timestamp(&row.10)?,
+            successor_native_id: row.11.as_deref().map(ExternalId::parse).transpose()?,
+            successor_generation: row.12.map(|value| u64::try_from(value).unwrap_or_default()),
+            readback: row
+                .13
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|error| RepositoryError::Backend {
+                    detail: format!("a succession readback could not be decoded: {error}"),
+                })?,
+            readback_hash: row.14.as_deref().map(ContentHash::parse).transpose()?,
+            route_committed_at: row.15.as_deref().map(read_timestamp).transpose()?,
+            effects: CoreTeamRouteSuccessionEffects {
+                launch_intent_installed: row.16 != 0,
+                seat_binding_observed: row.17 != 0,
+            },
+            receipt_id: row.18.as_deref().map(CommandReceiptId::parse).transpose()?,
+            receipted_at: row.19.as_deref().map(read_timestamp).transpose()?,
+        }))
     }
 
     /// Read the one advice artifact a single-seat Advisor run produced.
@@ -6050,6 +8505,624 @@ impl SqliteStore {
         })
     }
 
+    /// Read one recorded retired-evaluator proof by its deterministic digest.
+    ///
+    /// # Errors
+    /// Backend failure, or a stored row this build can no longer parse.
+    pub fn retired_evaluator_attestation_by_digest(
+        &self,
+        project_id: ProjectId,
+        proof_digest: &ContentHash,
+    ) -> RepositoryResult<Option<StoredRetiredEvaluatorAttestation>> {
+        Self::read_attestation(&self.connection, project_id, proof_digest)
+    }
+
+    fn read_attestation(
+        connection: &rusqlite::Connection,
+        project_id: ProjectId,
+        proof_digest: &ContentHash,
+    ) -> RepositoryResult<Option<StoredRetiredEvaluatorAttestation>> {
+        let row = connection
+            .query_row(
+                "SELECT id, receipt_id, task_id, workflow_revision, gate_key, team_run_id,
+                        evaluator_role, role_slot_id, agent_run_id, seat_binding_id, seat_revision,
+                        runtime_binding_id, runtime_generation, native_id, artifact_key,
+                        artifact_checksum, evidence_digest, attested_at
+                   FROM retired_evaluator_attestations
+                  WHERE project_id = ?1 AND proof_digest = ?2",
+                params![project_id.to_string(), proof_digest.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, i64>(10)?,
+                        row.get::<_, String>(11)?,
+                        row.get::<_, i64>(12)?,
+                        row.get::<_, String>(13)?,
+                        row.get::<_, String>(14)?,
+                        row.get::<_, String>(15)?,
+                        row.get::<_, String>(16)?,
+                        row.get::<_, String>(17)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        row.map(|c| {
+            Ok(StoredRetiredEvaluatorAttestation {
+                id: ExternalId::parse(&c.0)?,
+                project_id,
+                receipt_id: CommandReceiptId::parse(&c.1)?,
+                task_id: TaskId::parse(&c.2)?,
+                workflow_revision: AggregateRevision::parse(
+                    u64::try_from(c.3).unwrap_or_default(),
+                )?,
+                gate_key: GateKey::parse(&c.4)?,
+                team_run_id: TeamRunId::parse(&c.5)?,
+                evaluator_role: RoleKey::parse(&c.6)?,
+                role_slot_id: RoleSlotId::parse(&c.7)?,
+                agent_run_id: AgentRunId::parse(&c.8)?,
+                seat_binding_id: SeatBindingId::parse(&c.9)?,
+                seat_revision: AggregateRevision::parse(u64::try_from(c.10).unwrap_or_default())?,
+                runtime_binding_id: ExternalId::parse(&c.11)?,
+                runtime_generation: u64::try_from(c.12).unwrap_or_default(),
+                native_id: ExternalId::parse(&c.13)?,
+                artifact_key: ArtifactKey::parse(&c.14)?,
+                artifact_checksum: ContentHash::parse(&c.15)?,
+                evidence_digest: ContentHash::parse(&c.16)?,
+                proof_digest: proof_digest.clone(),
+                attested_at: read_timestamp(&c.17)?,
+            })
+        })
+        .transpose()
+    }
+
+    /// Adopt one already-created AgentRun into a declared TeamRun slot.
+    ///
+    /// Every precondition is read inside the same transaction as the insert, so
+    /// a run that stops qualifying between the check and the write cannot be
+    /// adopted on the strength of a read that was true a moment earlier. The
+    /// three uniqueness rules in the schema are the final boundary; the checks
+    /// here exist to choose the refusal that names what was actually wrong.
+    ///
+    /// An exact-key replay — the same receipt recording the same claim — reads
+    /// the row the first call wrote and reports [`AdoptionWrite::Replayed`]
+    /// without writing again. The same receipt carrying a *different* claim is
+    /// changed-intent drift and is refused rather than overwriting the first.
+    ///
+    /// Nothing here admits a candidate, dispatches a turn, binds a runtime or
+    /// touches the run, task, team or topology.
+    ///
+    /// # Errors
+    /// [`RepositoryError::Conflict`] when any precondition fails or on
+    /// changed-intent drift; backend failure otherwise.
+    pub fn adopt_team_run_admission(
+        &self,
+        adoption: &StoredTeamRunAdmissionAdoption,
+    ) -> RepositoryResult<(StoredTeamRunAdmissionAdoption, AdoptionWrite)> {
+        let transaction = self.begin()?;
+        let result = Self::adopt_team_run_admission_in_transaction(&transaction, adoption)?;
+        transaction.commit().map_err(backend)?;
+        Ok(result)
+    }
+
+    fn adopt_team_run_admission_in_transaction(
+        transaction: &Transaction<'_>,
+        adoption: &StoredTeamRunAdmissionAdoption,
+    ) -> RepositoryResult<(StoredTeamRunAdmissionAdoption, AdoptionWrite)> {
+        let conflict = |rule: &'static str| RepositoryError::Conflict {
+            subject: "team-run admission adoption",
+            rule,
+        };
+
+        // Exact-key replay first: the same command asking again is the common
+        // case after a lost acknowledgement and must not be read as drift.
+        if let Some(existing) = Self::read_adoption_by_receipt(transaction, adoption.receipt_id)? {
+            if existing == *adoption {
+                return Ok((existing, AdoptionWrite::Replayed));
+            }
+            return Err(conflict(
+                "this receipt already recorded a different adoption",
+            ));
+        }
+
+        // The team, in this project, and still able to take a seat.
+        let team: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT lifecycle, task_id FROM team_runs WHERE project_id = ?1 AND id = ?2",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.team_run_id.to_string()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((team_lifecycle, team_task)) = team else {
+            return Err(conflict("the TeamRun does not exist in this project"));
+        };
+        if matches!(
+            team_lifecycle.as_str(),
+            "succeeded" | "failed" | "cancelled" | "parked"
+        ) {
+            return Err(conflict("a terminal TeamRun cannot adopt a run"));
+        }
+        if team_task != adoption.task_id.to_string() {
+            return Err(conflict("the TeamRun belongs to a different task"));
+        }
+
+        // The task is still live.
+        let task_state: Option<String> = transaction
+            .query_row(
+                "SELECT state FROM tasks WHERE project_id = ?1 AND id = ?2",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.task_id.to_string()
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(task_state) = task_state else {
+            return Err(conflict("the task does not exist in this project"));
+        };
+        if matches!(
+            task_state.as_str(),
+            "done" | "failed" | "cancelled" | "withdrawn"
+        ) {
+            return Err(conflict("a closed task cannot adopt a run"));
+        }
+
+        // AgentRun.role_key is the slot identity, not its catalog role. The
+        // frozen declaration and the queued run must name that exact slot.
+        let declared_slot: Option<String> = transaction
+            .query_row(
+                "SELECT json_extract(slot.value, '$.id')
+                   FROM team_runs AS team,
+                        json_each(json_extract(team.snapshot, '$.definition.slots')) AS slot
+                  WHERE team.project_id = ?1 AND team.id = ?2
+                    AND json_extract(slot.value, '$.id') = ?3",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.team_run_id.to_string(),
+                    adoption.role_slot_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(declared_slot) = declared_slot else {
+            return Err(conflict(
+                "the frozen TeamRun snapshot does not declare this slot",
+            ));
+        };
+
+        // The run: in this project, on this team, at the revision the caller
+        // proved it had read, and still an unstarted admission.
+        let run: Option<(String, String, String, String, String, i64)> = transaction
+            .query_row(
+                "SELECT team_run_id, role_key, lifecycle, desired_state, observed_state, revision
+                   FROM agent_runs WHERE project_id = ?1 AND id = ?2",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.agent_run_id.to_string()
+                ],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((run_team, run_role, lifecycle, desired, observed, revision)) = run else {
+            return Err(conflict("the run does not exist in this project"));
+        };
+        if run_team != adoption.team_run_id.to_string() {
+            return Err(conflict("the run belongs to a different TeamRun"));
+        }
+        if run_role != declared_slot {
+            return Err(conflict(
+                "the run does not hold the role slot this snapshot declares",
+            ));
+        }
+        if revision != i64::try_from(adoption.adopted_agent_run_revision.get()).unwrap_or(i64::MAX)
+        {
+            return Err(conflict("the run moved since the caller read it"));
+        }
+        if lifecycle != "queued" || desired != "run_requested" || observed != "unknown" {
+            return Err(conflict("the run is not an unstarted admission"));
+        }
+
+        // Nothing may already own this run: not a runtime, not the scheduler,
+        // not an owed dispatch, and not an earlier adoption.
+        let bound: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_bindings
+                                WHERE project_id = ?1 AND agent_run_id = ?2)",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.agent_run_id.to_string()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if bound {
+            return Err(conflict("the run already has a runtime binding"));
+        }
+        let admitted: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM scheduler_admission_events
+                                WHERE project_id = ?1 AND agent_run_id = ?2)",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.agent_run_id.to_string()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if admitted {
+            return Err(conflict("the run already has a scheduler admission"));
+        }
+        let owed: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM turn_dispatches
+                                WHERE project_id = ?1 AND team_run_id = ?2
+                                  AND to_role_slot_id = ?3)",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.team_run_id.to_string(),
+                    adoption.role_slot_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if owed {
+            return Err(conflict(
+                "the slot already has an owed dispatch and needs no adoption",
+            ));
+        }
+        let waived: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM role_slot_waivers
+                                WHERE project_id = ?1 AND team_run_id = ?2 AND role_slot_id = ?3)",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.team_run_id.to_string(),
+                    adoption.role_slot_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if waived {
+            return Err(conflict("the declared slot was waived"));
+        }
+        let slot_taken: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM team_run_admission_adoptions
+                                WHERE project_id = ?1 AND team_run_id = ?2 AND role_slot_id = ?3)",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.team_run_id.to_string(),
+                    adoption.role_slot_id.as_str()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if slot_taken {
+            return Err(conflict("this slot was already adopted"));
+        }
+        let run_taken: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM team_run_admission_adoptions
+                                WHERE project_id = ?1 AND agent_run_id = ?2)",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.agent_run_id.to_string()
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if run_taken {
+            return Err(conflict("this run was already adopted"));
+        }
+
+        let leaves: Vec<String> = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT candidate.id FROM agent_runs AS candidate
+                 WHERE candidate.project_id = ?1 AND candidate.team_run_id = ?2
+                   AND candidate.role_key = ?3
+                   AND NOT EXISTS (SELECT 1 FROM agent_runs AS child
+                     WHERE child.project_id = candidate.project_id
+                       AND child.team_run_id = candidate.team_run_id
+                       AND child.parent_agent_run_id = candidate.id)
+                   AND candidate.lifecycle NOT IN ('succeeded', 'failed', 'cancelled')",
+                )
+                .map_err(backend)?;
+            statement
+                .query_map(
+                    params![
+                        adoption.project_id.to_string(),
+                        adoption.team_run_id.to_string(),
+                        adoption.role_slot_id.as_str()
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?
+                .collect::<Result<_, _>>()
+                .map_err(backend)?
+        };
+        if leaves != [adoption.agent_run_id.to_string()] {
+            return Err(conflict(
+                "adoption requires the unique current queued slot leaf",
+            ));
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO team_run_admission_adoptions
+                     (id, project_id, task_id, team_run_id, role_slot_id, agent_run_id,
+                      adopted_agent_run_revision, receipt_id, adopted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    adoption.id.as_str(),
+                    adoption.project_id.to_string(),
+                    adoption.task_id.to_string(),
+                    adoption.team_run_id.to_string(),
+                    adoption.role_slot_id.as_str(),
+                    adoption.agent_run_id.to_string(),
+                    i64::try_from(adoption.adopted_agent_run_revision.get()).unwrap_or(i64::MAX),
+                    adoption.receipt_id.to_string(),
+                    adoption.adopted_at.to_string(),
+                ],
+            )
+            .map_err(backend)?;
+        Ok((adoption.clone(), AdoptionWrite::Recorded))
+    }
+
+    /// Atomically record adoption and its confirmed local command. Every
+    /// refusal rolls back both; replay returns the original immutable row.
+    ///
+    /// # Errors
+    /// Refuses changed intent, stale revisions, or an ineligible run.
+    pub fn adopt_team_run_admission_with_intent(
+        &self,
+        adoption: &StoredTeamRunAdmissionAdoption,
+        expected_task_revision: AggregateRevision,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
+    ) -> RepositoryResult<(StoredTeamRunAdmissionAdoption, CommandReceipt, Applied)> {
+        let command = envelope.peek(self.realm_id())?;
+        if command.project_id != adoption.project_id
+            || command.kind != CommandKind::StartScheduledWork
+            || !matches!(command.target, AggregateRef::MiniProject { .. })
+        {
+            return Err(conflict(
+                "admission adoption",
+                "the command does not authorize this project admission",
+            ));
+        }
+        let transaction = self.begin()?;
+        if let Some(receipt) = command_receipt_by_key(&transaction, &command.idempotency_key)? {
+            ensure_atomic_local_replay(&receipt, command)?;
+            let original = Self::read_adoption_by_receipt(&transaction, receipt.id)?
+                .ok_or_else(|| conflict("admission adoption", "the receipt has no adoption"))?;
+            return Ok((original, receipt, Applied::Unchanged));
+        }
+        if command.receipt_id != adoption.receipt_id || command.created_at != adoption.adopted_at {
+            return Err(conflict(
+                "admission adoption",
+                "the command and adoption authority differ",
+            ));
+        }
+        let (task_revision, epic, epic_revision): (i64, Option<String>, Option<i64>) = transaction
+            .query_row(
+                "SELECT task.revision, task.mini_project_id, epic.revision FROM tasks AS task
+                 LEFT JOIN mini_projects AS epic ON epic.project_id = task.project_id AND epic.id = task.mini_project_id
+                 WHERE task.project_id = ?1 AND task.id = ?2",
+                params![
+                    adoption.project_id.to_string(),
+                    adoption.task_id.to_string()
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(backend)?;
+        if task_revision != i64::try_from(expected_task_revision.get()).unwrap_or(i64::MAX) {
+            return Err(conflict(
+                "admission adoption",
+                "the task moved since adoption was authorized",
+            ));
+        }
+        let AggregateRef::MiniProject { mini_project_id } = command.target else {
+            unreachable!()
+        };
+        if epic.as_deref() != Some(mini_project_id.to_string().as_str())
+            || epic_revision
+                != Some(i64::try_from(command.target_revision.get()).unwrap_or(i64::MAX))
+        {
+            return Err(conflict(
+                "admission adoption",
+                "the task's epic or its authority revision changed",
+            ));
+        }
+        // The append-only adoption is this operation's durable result. The
+        // schema-115 result table intentionally belongs only to gate/lifecycle
+        // commands; do not widen it or fabricate a dispatch for this command.
+        if crate::commands::intent::insert_local_command(&transaction, command)?.is_some() {
+            return Err(conflict(
+                "admission adoption",
+                "the command key appeared during adoption",
+            ));
+        }
+        let (adopted, _) = Self::adopt_team_run_admission_in_transaction(&transaction, adoption)?;
+        crate::commands::receipts::append_transition(
+            &transaction,
+            command.project_id,
+            command.receipt_id,
+            2,
+            kontor_core::receipt::CommandReceiptState::Confirmed,
+            None,
+            None,
+            Some(&adopted.id),
+            command.created_at,
+        )?;
+        transaction.execute(
+            "UPDATE command_receipts SET state = 'confirmed', result_ref = ?3, updated_at = ?4
+             WHERE project_id = ?1 AND id = ?2 AND execution_mode = 'local' AND state = 'intent_persisted'",
+            params![command.project_id.to_string(), command.receipt_id.to_string(), adopted.id.as_str(), text(command.created_at)],
+        ).map_err(backend)?;
+        let receipt = command_receipt_by_key(&transaction, &command.idempotency_key)?.ok_or(
+            RepositoryError::NotFound {
+                subject: "adoption command receipt",
+            },
+        )?;
+        transaction.commit().map_err(backend)?;
+        Ok((adopted, receipt, Applied::Created))
+    }
+
+    /// The adoption one command recorded, if it recorded one.
+    ///
+    /// # Errors
+    /// Backend failure.
+    pub fn team_run_admission_adoption_by_receipt(
+        &self,
+        receipt_id: CommandReceiptId,
+    ) -> RepositoryResult<Option<StoredTeamRunAdmissionAdoption>> {
+        Self::read_adoption_by_receipt(&self.connection, receipt_id)
+    }
+
+    /// The adoption recorded against one declared slot, if any.
+    ///
+    /// This is the read a later seat fill consumes as its authority.
+    ///
+    /// # Errors
+    /// Backend failure.
+    pub fn team_run_admission_adoption(
+        &self,
+        project_id: ProjectId,
+        team_run_id: TeamRunId,
+        role_slot_id: &RoleSlotId,
+    ) -> RepositoryResult<Option<StoredTeamRunAdmissionAdoption>> {
+        self.connection
+            .query_row(
+                "SELECT id, project_id, task_id, team_run_id, role_slot_id, agent_run_id,
+                        adopted_agent_run_revision, receipt_id, adopted_at
+                   FROM team_run_admission_adoptions
+                  WHERE project_id = ?1 AND team_run_id = ?2 AND role_slot_id = ?3",
+                params![
+                    project_id.to_string(),
+                    team_run_id.to_string(),
+                    role_slot_id.as_str()
+                ],
+                read_adoption_row,
+            )
+            .optional()
+            .map_err(backend)?
+            .transpose()
+    }
+
+    fn read_adoption_by_receipt(
+        connection: &Connection,
+        receipt_id: CommandReceiptId,
+    ) -> RepositoryResult<Option<StoredTeamRunAdmissionAdoption>> {
+        connection
+            .query_row(
+                "SELECT id, project_id, task_id, team_run_id, role_slot_id, agent_run_id,
+                        adopted_agent_run_revision, receipt_id, adopted_at
+                   FROM team_run_admission_adoptions WHERE receipt_id = ?1",
+                params![receipt_id.to_string()],
+                read_adoption_row,
+            )
+            .optional()
+            .map_err(backend)?
+            .transpose()
+    }
+
+    /// Record one retired-evaluator proof, idempotently on its digest.
+    ///
+    /// An identical claim replays onto the existing row rather than writing a
+    /// second proof, which is what makes a lost acknowledgement safe. A claim
+    /// that changed any fenced fact digests differently, so recording it under
+    /// a receipt that already attested something else is duplicate-intent
+    /// drift and is refused rather than overwriting the first proof.
+    ///
+    /// # Errors
+    /// [`RepositoryError::Conflict`] on that drift; backend failure otherwise.
+    pub fn record_retired_evaluator_attestation(
+        &self,
+        attestation: &StoredRetiredEvaluatorAttestation,
+    ) -> RepositoryResult<(StoredRetiredEvaluatorAttestation, AttestationWrite)> {
+        let transaction = self.connection.unchecked_transaction().map_err(backend)?;
+        if let Some(existing) = Self::read_attestation(
+            &transaction,
+            attestation.project_id,
+            &attestation.proof_digest,
+        )? {
+            return Ok((existing, AttestationWrite::Replayed));
+        }
+        let receipt_taken: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM retired_evaluator_attestations WHERE receipt_id = ?1)",
+                params![attestation.receipt_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if receipt_taken {
+            return Err(RepositoryError::Conflict {
+                subject: "retired-evaluator attestation",
+                rule: "this receipt already attested a different claim",
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO retired_evaluator_attestations
+                     (id, project_id, receipt_id, task_id, workflow_revision, gate_key,
+                      team_run_id, evaluator_role, role_slot_id, agent_run_id, seat_binding_id,
+                      seat_revision, runtime_binding_id, runtime_generation, native_id,
+                      artifact_key, artifact_checksum, evidence_digest, proof_digest, attested_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                         ?17, ?18, ?19, ?20)",
+                params![
+                    attestation.id.as_str(),
+                    attestation.project_id.to_string(),
+                    attestation.receipt_id.to_string(),
+                    attestation.task_id.to_string(),
+                    i64::try_from(attestation.workflow_revision.get()).unwrap_or(i64::MAX),
+                    attestation.gate_key.as_str(),
+                    attestation.team_run_id.to_string(),
+                    attestation.evaluator_role.as_str(),
+                    attestation.role_slot_id.as_str(),
+                    attestation.agent_run_id.to_string(),
+                    attestation.seat_binding_id.to_string(),
+                    i64::try_from(attestation.seat_revision.get()).unwrap_or(i64::MAX),
+                    attestation.runtime_binding_id.as_str(),
+                    i64::try_from(attestation.runtime_generation).unwrap_or(i64::MAX),
+                    attestation.native_id.as_str(),
+                    attestation.artifact_key.as_str(),
+                    attestation.artifact_checksum.as_str(),
+                    attestation.evidence_digest.as_str(),
+                    attestation.proof_digest.as_str(),
+                    text(attestation.attested_at),
+                ],
+            )
+            .map_err(backend)?;
+        transaction.commit().map_err(backend)?;
+        Ok((attestation.clone(), AttestationWrite::Recorded))
+    }
+
     /// Append one wake intent, returning `false` when it already stood.
     ///
     /// `false` is the replay answer: the intent for this exact
@@ -6744,25 +9817,10 @@ impl SqliteStore {
     /// this read in the position of deciding which of several records for one key
     /// counts — a decision the gate does not need and must not make twice.
     ///
-    /// Two producer-owned sources are unioned because an artifact leaves a
-    /// durable trace in two ordinary delivery paths:
-    ///
-    /// - `artifact_evidence` — the addressable record: a key plus a locator
-    ///   someone can follow. Nothing in the delivery path writes it today.
-    /// - `role_turns.artifacts` — the settling role's own declaration of what its
-    ///   turn produced.
-    ///
-    /// Gate evaluations are intentionally absent. Their `evidence` field cites
-    /// already-produced artifacts; admitting the citation as production would
-    /// let a gate request manufacture the evidence it is meant to inspect.
-    /// Evidence drawn from a producer turn is still gated independently by the
-    /// profile's required gate states.
-    ///
-    /// Unparseable entries are skipped rather than raised. `role_turns.artifacts`
-    /// is open data — turns legitimately cite commit shas, filenames and one-off
-    /// labels beside contract keys — and a value that is not a well-formed name
-    /// cannot satisfy a declared artifact anyway. Failing the whole read on one
-    /// such label would deny the gate the keys that *are* present.
+    /// Only addressable registry records qualify. A settled turn's labels and a
+    /// gate's citations are claims about artifacts, not independently addressable
+    /// evidence. Historical explicit registry entries remain supported; legacy
+    /// task closure certificates have their separate epic-only read below.
     ///
     /// # Errors
     /// Returns a backend or decoding error.
@@ -6774,21 +9832,12 @@ impl SqliteStore {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT DISTINCT artifact_key FROM (
-                     SELECT artifact_key
-                       FROM artifact_evidence
-                      WHERE project_id = ?1 AND task_id = ?2
-                     UNION
-                     SELECT entry.value AS artifact_key
-                       FROM role_turns AS turn
-                       JOIN json_each(
-                                CASE WHEN json_valid(turn.artifacts)
-                                     THEN turn.artifacts ELSE '[]' END
-                            ) AS entry
-                      WHERE turn.project_id = ?1 AND turn.task_id = ?2
-                        AND entry.type = 'text'
-                 )
-                 ORDER BY artifact_key",
+                "SELECT DISTINCT evidence.artifact_key FROM artifact_evidence evidence
+                 JOIN task_workflows workflow ON workflow.project_id = evidence.project_id
+                  AND workflow.task_id = evidence.task_id AND workflow.id = evidence.workflow_id
+                  AND workflow.active = 1
+                 WHERE evidence.project_id = ?1 AND evidence.task_id = ?2
+                 ORDER BY evidence.artifact_key",
             )
             .map_err(backend)?;
         let rows = statement
@@ -6818,7 +9867,7 @@ impl SqliteStore {
     ///
     /// The task revision and sub-second command/transition timestamp bind the
     /// legacy local receipt to the transition it produced. Current local
-    /// receipts also carry their result in the outbox payload, but early native
+    /// receipts retain an immutable result separately from the outbox; early native
     /// closures predate that result envelope. Imported historical completions,
     /// direct store seeding, waivers, stale passes and reopened revisions all
     /// fail one of the joins and contribute nothing.
@@ -6865,6 +9914,18 @@ impl SqliteStore {
                     )
                     AND (
                         closure_receipt.result_ref = closure_receipt.intent_hash
+                        OR EXISTS (
+                            SELECT 1 FROM local_command_results AS local_result
+                            WHERE local_result.project_id = closure_receipt.project_id
+                              AND local_result.receipt_id = closure_receipt.id
+                              AND local_result.payload_hash = closure_receipt.result_ref
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM legacy_dispatch_local_confirmation_provenance AS repaired
+                            WHERE repaired.project_id = closure_receipt.project_id
+                              AND repaired.receipt_id = closure_receipt.id
+                              AND repaired.certificate_ref = closure_receipt.result_ref
+                        )
                         OR EXISTS (
                             SELECT 1
                               FROM legacy_local_command_confirmation_provenance AS closure_provenance
@@ -6937,6 +9998,18 @@ impl SqliteStore {
                            AND (
                                gate_receipt.result_ref = gate_receipt.intent_hash
                                OR EXISTS (
+                                   SELECT 1 FROM local_command_results AS local_result
+                                   WHERE local_result.project_id = gate_receipt.project_id
+                                     AND local_result.receipt_id = gate_receipt.id
+                                     AND local_result.payload_hash = gate_receipt.result_ref
+                               )
+                               OR EXISTS (
+                                   SELECT 1 FROM legacy_dispatch_local_confirmation_provenance AS repaired
+                                   WHERE repaired.project_id = gate_receipt.project_id
+                                     AND repaired.receipt_id = gate_receipt.id
+                                     AND repaired.certificate_ref = gate_receipt.result_ref
+                               )
+                               OR EXISTS (
                                    SELECT 1
                                      FROM legacy_local_command_confirmation_provenance AS gate_provenance
                                     WHERE gate_provenance.project_id = gate_receipt.project_id
@@ -6976,6 +10049,53 @@ impl SqliteStore {
         let mut keys = BTreeSet::new();
         for row in rows {
             keys.insert(ExternalName::parse(&row.map_err(backend)?)?);
+        }
+        Ok(keys)
+    }
+
+    /// Artifact keys a settled role turn claimed for a task that is still done.
+    ///
+    /// Epic completion may treat those claims as ticket evidence. They are not
+    /// producer evidence: a gate still has to pass on its own record. An open,
+    /// imported, or reopened task contributes nothing, and a key the turn never
+    /// claimed stays absent.
+    ///
+    /// # Errors
+    /// Returns a backend or decoding error.
+    pub fn list_settled_turn_artifact_keys(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> RepositoryResult<BTreeSet<ExternalName>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT DISTINCT claimed.value
+                   FROM role_turns AS turn
+                   JOIN tasks AS task
+                     ON task.project_id = turn.project_id
+                    AND task.id = turn.task_id
+                   JOIN json_each(turn.artifacts) AS claimed
+                     ON claimed.type = 'text'
+                  WHERE turn.project_id = ?1
+                    AND turn.task_id = ?2
+                    AND turn.settled_at IS NOT NULL
+                    AND task.state = 'done'
+                    AND task.imported_state IS NULL
+                  ORDER BY claimed.value",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map(
+                params![project_id.to_string(), task_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(backend)?;
+        let mut keys = BTreeSet::new();
+        for row in rows {
+            if let Ok(key) = ExternalName::parse(&row.map_err(backend)?) {
+                keys.insert(key);
+            }
         }
         Ok(keys)
     }
@@ -8002,6 +11122,28 @@ impl TopologyRepository for SqliteStore {
             }
         }
 
+        // Leaves before roots, and here rather than in any one caller: a
+        // retired child is finished *with*, but it is still addressable and may
+        // still hold a native container. Archiving its parent first would strand
+        // that child under an ancestor nothing may reach, and leave the native
+        // cleanup order deciding itself from whichever route happened to run.
+        if lifecycle == TopologyLifecycle::Archived {
+            let open_children: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM topology_nodes
+                     WHERE project_id = ?1 AND parent_id = ?2 AND lifecycle != 'archived'",
+                    params![project_id.to_string(), id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
+            if open_children > 0 {
+                return Err(conflict(
+                    "topology node",
+                    "the node still has children that are not archived",
+                ));
+            }
+        }
+
         transaction
             .execute(
                 "UPDATE topology_nodes SET lifecycle = ?1, revision = revision + 1, updated_at = ?2
@@ -8334,6 +11476,8 @@ impl TopologyRepository for SqliteStore {
         request: &NewNativeContainerBinding,
     ) -> RepositoryResult<NativeContainerBinding> {
         let transaction = self.begin()?;
+        let readback = request.readback.as_ref();
+        let parent = readback.and_then(|readback| readback.native_parent.as_ref());
         let owning_project: Option<String> = transaction
             .query_row(
                 "SELECT project_id FROM topology_nodes WHERE id = ?1",
@@ -8381,12 +11525,35 @@ impl TopologyRepository for SqliteStore {
             transaction
                 .execute(
                     "UPDATE topology_node_containers
-                     SET last_readback_at = ?2, observed_kind = ?3, revision = revision + 1
+                     SET last_readback_at = ?2, observed_kind = ?3, canonical_cwd = ?4,
+                         observed_projection = CASE WHEN ?5 THEN ?6 ELSE observed_projection END,
+                         visible_title = CASE WHEN ?5 THEN ?7 ELSE visible_title END,
+                         parent_runtime_kind = CASE WHEN ?5 THEN ?8 ELSE parent_runtime_kind END,
+                         parent_host = CASE WHEN ?5 THEN ?9 ELSE parent_host END,
+                         parent_generation = CASE WHEN ?5 THEN ?10 ELSE parent_generation END,
+                         parent_native_id = CASE WHEN ?5 THEN ?11 ELSE parent_native_id END,
+                         topology_correlation = CASE WHEN ?5 THEN ?12 ELSE topology_correlation END,
+                         revision = revision + 1
                      WHERE topology_node_id = ?1",
                     params![
                         request.topology_node_id.to_string(),
                         text(request.observed_at),
                         request.observed_kind.as_str(),
+                        request.canonical_cwd.as_ref().map(ExternalName::as_str),
+                        readback.is_some(),
+                        readback.map(|readback| readback.projection.as_str()),
+                        readback.map(|readback| readback.visible_title.as_str()),
+                        parent.map(|parent| parent.runtime_kind.as_str()),
+                        parent.map(|parent| parent.host.as_str()),
+                        parent
+                            .map(|parent| i64::try_from(parent.generation))
+                            .transpose()
+                            .map_err(|_| DomainError::invalid(
+                                "native parent generation",
+                                "is outside the storable range",
+                            ))?,
+                        parent.map(|parent| parent.native_id.as_str()),
+                        readback.map(|readback| readback.topology_correlation.as_str()),
                     ],
                 )
                 .map_err(backend)?;
@@ -8399,8 +11566,11 @@ impl TopologyRepository for SqliteStore {
                     "INSERT INTO topology_node_containers
                          (topology_node_id, project_id, container_binding_id, runtime_kind,
                           host, generation, native_id, observed_kind, canonical_cwd,
-                          bound_at, last_readback_at, revision)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, 1)",
+                          bound_at, last_readback_at, revision, observed_projection,
+                          visible_title, parent_runtime_kind, parent_host, parent_generation,
+                          parent_native_id, topology_correlation)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1,
+                             ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                     params![
                         request.topology_node_id.to_string(),
                         request.project_id.to_string(),
@@ -8416,7 +11586,21 @@ impl TopologyRepository for SqliteStore {
                         request.identity.native_id.as_str(),
                         request.observed_kind.as_str(),
                         request.canonical_cwd.as_ref().map(ExternalName::as_str),
+                        text(request.bound_at),
                         text(request.observed_at),
+                        readback.map(|readback| readback.projection.as_str()),
+                        readback.map(|readback| readback.visible_title.as_str()),
+                        parent.map(|parent| parent.runtime_kind.as_str()),
+                        parent.map(|parent| parent.host.as_str()),
+                        parent
+                            .map(|parent| i64::try_from(parent.generation))
+                            .transpose()
+                            .map_err(|_| DomainError::invalid(
+                                "native parent generation",
+                                "is outside the storable range",
+                            ))?,
+                        parent.map(|parent| parent.native_id.as_str()),
+                        readback.map(|readback| readback.topology_correlation.as_str()),
                     ],
                 )
                 .map_err(|error| match &error {
@@ -10060,6 +13244,63 @@ impl SqliteStore {
         transaction.commit().map_err(backend)?;
         Ok(stored)
     }
+
+    /// Bind one realm-scoped key to the logical operation it names, before the
+    /// effect that operation has outside this database.
+    ///
+    /// For an operation whose state lives in the Realm state root — fleet
+    /// policy publication and activation — there is no row to write in the same
+    /// transaction, so the key is judged on its own: `Created` for a first use,
+    /// `Unchanged` for an exact replay, and a conflict for a key already bound
+    /// to anything else. The caller performs its idempotent effect after either
+    /// answer, so a replay whose first attempt died before the effect converges.
+    ///
+    /// # Errors
+    /// A conflict when the key is bound to a different operation or fingerprint.
+    pub fn bind_realm_operation(&self, binding: &IdempotencyBinding) -> RepositoryResult<Applied> {
+        let transaction = self.begin()?;
+        let bound: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT operation, fingerprint FROM realm_idempotency_bindings
+                 WHERE idempotency_key = ?1",
+                params![binding.key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let applied = match bound {
+            Some((operation, fingerprint))
+                if operation == binding.operation
+                    && fingerprint == binding.fingerprint.as_str() =>
+            {
+                Applied::Unchanged
+            }
+            Some(_) => {
+                return Err(conflict(
+                    "idempotency key",
+                    "this key is already bound to a different operation",
+                ));
+            }
+            None => {
+                transaction
+                    .execute(
+                        "INSERT INTO realm_idempotency_bindings
+                             (idempotency_key, operation, fingerprint, bound_at)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            binding.key,
+                            binding.operation,
+                            binding.fingerprint.as_str(),
+                            text(binding.bound_at)
+                        ],
+                    )
+                    .map_err(backend)?;
+                Applied::Created
+            }
+        };
+        transaction.commit().map_err(backend)?;
+        Ok(applied)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -10305,15 +13546,7 @@ fn task_transition_result_in_transaction(
     transaction: &Transaction<'_>,
     receipt: &CommandReceipt,
 ) -> RepositoryResult<TaskTransitionResult> {
-    let stored: Option<(String, String)> = transaction
-        .query_row(
-            "SELECT payload, payload_hash FROM command_outbox
-             WHERE project_id = ?1 AND receipt_id = ?2",
-            params![receipt.project_id.to_string(), receipt.id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(backend)?;
+    let stored = local_or_legacy_command_result(transaction, receipt)?;
     let (json, hash) = stored.ok_or(RepositoryError::NotFound {
         subject: "task lifecycle result",
     })?;
@@ -10432,16 +13665,7 @@ impl SqliteStore {
         &self,
         receipt: &CommandReceipt,
     ) -> RepositoryResult<TaskTransitionResult> {
-        let stored: Option<(String, String)> = self
-            .connection
-            .query_row(
-                "SELECT payload, payload_hash FROM command_outbox
-                 WHERE project_id = ?1 AND receipt_id = ?2",
-                params![receipt.project_id.to_string(), receipt.id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(backend)?;
+        let stored = local_or_legacy_command_result(&self.connection, receipt)?;
         let (json, hash) = stored.ok_or(RepositoryError::NotFound {
             subject: "task lifecycle result",
         })?;
@@ -11385,6 +14609,110 @@ fn ensure_atomic_replay(
     Ok(())
 }
 
+fn ensure_atomic_local_replay(
+    existing: &CommandReceipt,
+    request: &NewLocalCommand,
+) -> RepositoryResult<()> {
+    if existing.project_id != request.project_id {
+        return Err(RepositoryError::CrossProject {
+            subject: "command receipt",
+        });
+    }
+    existing.ensure_replay(&request.target, &request.intent)?;
+    if existing.kind != request.kind || existing.target_revision != request.target_revision {
+        return Err(DomainError::invalid(
+            "CommandReceipt",
+            "idempotency key reused for a different command or target revision",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn ensure_atomic_local_intent_matches(
+    request: &NewLocalCommand,
+    project_id: ProjectId,
+    kind: CommandKind,
+    target: &AggregateRef,
+    target_revision: AggregateRevision,
+) -> RepositoryResult<()> {
+    if request.project_id != project_id
+        || request.kind != kind
+        || &request.target != target
+        || request.target_revision != target_revision
+    {
+        return Err(DomainError::invalid(
+            "CommandReceipt",
+            "the atomic command authority does not match the operation it accompanies",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The caller owns the effect transaction. No receipt, result or confirmation
+/// can survive its rollback, and no native dispatch is inferred or enqueued.
+fn record_atomic_local_result(
+    transaction: &Transaction<'_>,
+    request: &NewLocalCommand,
+    payload: &CanonicalDocument,
+) -> RepositoryResult<CommandReceipt> {
+    if crate::commands::intent::insert_local_command(transaction, request)?.is_some() {
+        return Err(conflict(
+            "command receipt",
+            "the idempotency key appeared during one atomic local change",
+        ));
+    }
+    transaction.execute(
+        "INSERT INTO local_command_results (project_id, receipt_id, payload, payload_hash, recorded_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![request.project_id.to_string(), request.receipt_id.to_string(),
+            payload.json(), payload.hash().as_str(), text(request.created_at)],
+    ).map_err(backend)?;
+    let evidence = ExternalId::parse(payload.hash().as_str())?;
+    crate::commands::receipts::append_transition(
+        transaction,
+        request.project_id,
+        request.receipt_id,
+        2,
+        kontor_core::receipt::CommandReceiptState::Confirmed,
+        None,
+        None,
+        Some(&evidence),
+        request.created_at,
+    )?;
+    transaction.execute(
+        "UPDATE command_receipts SET state = 'confirmed', result_ref = ?3, updated_at = ?4
+         WHERE project_id = ?1 AND id = ?2 AND execution_mode = 'local' AND state = 'intent_persisted'",
+        params![request.project_id.to_string(), request.receipt_id.to_string(),
+            evidence.as_str(), text(request.created_at)],
+    ).map_err(backend)?;
+    command_receipt_by_key(transaction, &request.idempotency_key)?.ok_or(
+        RepositoryError::NotFound {
+            subject: "command receipt",
+        },
+    )
+}
+
+/// Existing atomic results remain readable from their historical outbox. A
+/// present local result always wins, including when its hash is corrupt: the
+/// parser must refuse that corruption rather than fall back to older bytes.
+fn local_or_legacy_command_result(
+    connection: &Connection,
+    receipt: &CommandReceipt,
+) -> RepositoryResult<Option<(String, String)>> {
+    connection.query_row(
+        "SELECT payload, payload_hash FROM local_command_results
+         WHERE project_id = ?1 AND receipt_id = ?2
+         UNION ALL SELECT payload, payload_hash FROM command_outbox
+         WHERE project_id = ?1 AND receipt_id = ?2
+           AND NOT EXISTS (SELECT 1 FROM local_command_results WHERE project_id = ?1 AND receipt_id = ?2)
+         LIMIT 1",
+        params![receipt.project_id.to_string(), receipt.id.to_string()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(backend)
+}
+
 fn ensure_atomic_intent_matches(
     request: &NewCommandIntent,
     project_id: ProjectId,
@@ -11417,7 +14745,7 @@ fn topology_container_recovery_by_receipt(
                     prior_runtime_kind, prior_host, prior_generation, prior_native_id,
                     next_runtime_kind, next_host, next_generation, next_native_id,
                     parent_native_id, observed_kind, canonical_cwd, observed_title,
-                    recovered_at
+                    recovered_at, disposition
              FROM topology_container_recoveries
              WHERE project_id = ?1 AND receipt_id = ?2",
             params![project_id.to_string(), receipt_id.to_string()],
@@ -11442,6 +14770,7 @@ fn topology_container_recovery_by_receipt(
                     row.get::<_, Option<String>>(14)?,
                     row.get::<_, String>(15)?,
                     row.get::<_, String>(16)?,
+                    row.get::<_, String>(17)?,
                 ))
             },
         )
@@ -11469,8 +14798,10 @@ fn topology_container_recovery_by_receipt(
                 canonical_cwd,
                 observed_title,
                 recovered_at,
+                disposition,
             )| {
                 Ok(StoredTopologyContainerRecovery {
+                    disposition: TopologyContainerRecoveryDisposition::parse(&disposition)?,
                     receipt_id: CommandReceiptId::parse(&receipt_id)?,
                     project_id: ProjectId::parse(&project_id)?,
                     topology_node_id: TopologyNodeId::parse(&topology_node_id)?,
@@ -11936,16 +15267,31 @@ impl SqliteStore {
                 subject: "command receipt",
             },
         )?;
+        let readback = recovery.replacement.readback.as_ref().ok_or_else(|| {
+            DomainError::invalid(
+                "topology container recovery",
+                "the replacement must carry complete native readback",
+            )
+        })?;
+        let parent = readback.native_parent.as_ref().ok_or_else(|| {
+            DomainError::invalid(
+                "topology container recovery",
+                "the replacement child must carry its complete native parent",
+            )
+        })?;
         let changed = transaction
             .execute(
                 "UPDATE topology_node_containers
                  SET runtime_kind = ?1, host = ?2, generation = ?3, native_id = ?4,
                      observed_kind = ?5, canonical_cwd = ?6, bound_at = ?7,
-                     last_readback_at = ?7, revision = revision + 1
-                 WHERE project_id = ?8 AND topology_node_id = ?9
-                   AND container_binding_id = ?10
-                   AND runtime_kind = ?11 AND host = ?12 AND generation = ?13
-                   AND native_id = ?14 AND revision = ?15",
+                     last_readback_at = ?8, observed_projection = ?9, visible_title = ?10,
+                     parent_runtime_kind = ?11, parent_host = ?12,
+                     parent_generation = ?13, parent_native_id = ?14,
+                     topology_correlation = ?15, revision = revision + 1
+                 WHERE project_id = ?16 AND topology_node_id = ?17
+                   AND container_binding_id = ?18
+                   AND runtime_kind = ?19 AND host = ?20 AND generation = ?21
+                   AND native_id = ?22 AND revision = ?23",
                 params![
                     recovery.replacement.identity.runtime_kind.as_str(),
                     recovery.replacement.identity.host.as_str(),
@@ -11962,7 +15308,18 @@ impl SqliteStore {
                         .canonical_cwd
                         .as_ref()
                         .map(ExternalName::as_str),
+                    text(recovery.replacement.bound_at),
                     text(recovery.replacement.observed_at),
+                    readback.projection.as_str(),
+                    readback.visible_title.as_str(),
+                    parent.runtime_kind.as_str(),
+                    parent.host.as_str(),
+                    i64::try_from(parent.generation).map_err(|_| DomainError::invalid(
+                        "native parent generation",
+                        "is outside the storable range",
+                    ))?,
+                    parent.native_id.as_str(),
+                    readback.topology_correlation.as_str(),
                     recovery.expected.project_id.to_string(),
                     recovery.expected.topology_node_id.to_string(),
                     recovery.expected.container_binding_id.as_str(),
@@ -11992,9 +15349,9 @@ impl SqliteStore {
                       prior_runtime_kind, prior_host, prior_generation, prior_native_id,
                       next_runtime_kind, next_host, next_generation, next_native_id,
                       parent_native_id, observed_kind, canonical_cwd, observed_title,
-                      recovered_at)
+                      recovered_at, disposition)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                         ?13, ?14, ?15, ?16, ?17)",
+                         ?13, ?14, ?15, ?16, ?17, ?18)",
                 params![
                     receipt.id.to_string(),
                     recovery.expected.project_id.to_string(),
@@ -12027,6 +15384,7 @@ impl SqliteStore {
                         .map(ExternalName::as_str),
                     recovery.observed_title.as_str(),
                     text(recovery.replacement.observed_at),
+                    recovery.disposition.as_str(),
                 ],
             )
             .map_err(backend)?;
@@ -12454,15 +15812,7 @@ fn bound_gate_record_result(
     transaction: &Transaction<'_>,
     receipt: &CommandReceipt,
 ) -> RepositoryResult<Option<(TaskWorkflowId, u32)>> {
-    let stored: Option<(String, String)> = transaction
-        .query_row(
-            "SELECT payload, payload_hash FROM command_outbox
-             WHERE project_id = ?1 AND receipt_id = ?2",
-            params![receipt.project_id.to_string(), receipt.id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(backend)?;
+    let stored = local_or_legacy_command_result(transaction, receipt)?;
     // No stored payload: nothing claims a binding.
     let Some((json, hash)) = stored else {
         return Ok(None);
@@ -12819,15 +16169,7 @@ fn gate_record_result_in_transaction(
     transaction: &Transaction<'_>,
     receipt: &CommandReceipt,
 ) -> RepositoryResult<(TaskWorkflowId, u32)> {
-    let stored: Option<(String, String)> = transaction
-        .query_row(
-            "SELECT payload, payload_hash FROM command_outbox
-         WHERE project_id = ?1 AND receipt_id = ?2",
-            params![receipt.project_id.to_string(), receipt.id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(backend)?;
+    let stored = local_or_legacy_command_result(transaction, receipt)?;
     let (json, hash) = stored.ok_or(RepositoryError::NotFound {
         subject: "gate verdict result",
     })?;
@@ -12840,12 +16182,12 @@ impl SqliteStore {
         &self,
         request: &NewGateEvaluation,
         expected_workflow_revision: AggregateRevision,
-        envelope: &ReceiptEnvelope<NewCommandIntent>,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
     ) -> RepositoryResult<(u32, CommandReceipt)> {
         let intent = envelope.peek(self.realm_id())?;
         let transaction = self.begin()?;
         let (workflow, _) = load_workflow(&transaction, request.project_id, request.workflow_id)?;
-        ensure_atomic_intent_matches(
+        ensure_atomic_local_intent_matches(
             intent,
             request.project_id,
             CommandKind::RecordGateVerdict,
@@ -12855,7 +16197,7 @@ impl SqliteStore {
             intent.target_revision,
         )?;
         if let Some(existing) = command_receipt_by_key(&transaction, &intent.idempotency_key)? {
-            ensure_atomic_replay(&existing, intent)?;
+            ensure_atomic_local_replay(&existing, intent)?;
             let (recorded_workflow, sequence) =
                 gate_record_result_in_transaction(&transaction, &existing)?;
             if recorded_workflow != request.workflow_id {
@@ -12896,19 +16238,8 @@ impl SqliteStore {
                     "gate_sequence": sequence,
                 }),
             );
-        let mut recorded = intent.clone();
-        recorded.payload = CanonicalDocument::from_value(&payload)?;
-        if crate::commands::intent::insert_intent(&transaction, &recorded)?.is_some() {
-            return Err(conflict(
-                "command receipt",
-                "the idempotency key appeared during one atomic gate recording",
-            ));
-        }
-        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
-            RepositoryError::NotFound {
-                subject: "command receipt",
-            },
-        )?;
+        let payload = CanonicalDocument::from_value(&payload)?;
+        let receipt = record_atomic_local_result(&transaction, intent, &payload)?;
         // The route belongs to the same transaction as the verdict and the
         // receipt: all three commit together or none of them does, so there is
         // no window in which a workflow is routed and the reason it moved is
@@ -13279,6 +16610,45 @@ impl SqliteStore {
     ) -> RepositoryResult<Option<GateRejectionRoute>> {
         let transaction = self.begin()?;
         gate_rejection_route_by_source(&transaction, project_id, rejection_receipt_id)
+    }
+
+    /// Every active workflow a rejection route still fences, as
+    /// `(project, task)`.
+    ///
+    /// Exactly the population a build that corrected the fence predicate has to
+    /// reconsider: a workflow sitting on a phase some route returned it to. The
+    /// join is the same condition [`SqliteStore::active_gate_rejection_fence`]
+    /// applies to one workflow, so this cannot report a workflow that reads as
+    /// unfenced, and it reports nothing at all for a realm that never rejected
+    /// a gate.
+    ///
+    /// # Errors
+    /// Backend failures and unreadable stored identities.
+    pub fn list_fenced_task_workflows(&self) -> RepositoryResult<Vec<(ProjectId, TaskId)>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT DISTINCT workflow.project_id, workflow.task_id
+                 FROM task_workflows AS workflow
+                 JOIN task_gate_rejection_routes AS route
+                   ON route.project_id = workflow.project_id
+                  AND route.workflow_id = workflow.id
+                  AND route.rejection_target = workflow.current_phase
+                 WHERE workflow.active = 1
+                 ORDER BY workflow.project_id, workflow.task_id",
+            )
+            .map_err(backend)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(backend)?;
+        let mut fenced = Vec::new();
+        for row in rows {
+            let (project, task) = row.map_err(backend)?;
+            fenced.push((ProjectId::parse(&project)?, TaskId::parse(&task)?));
+        }
+        Ok(fenced)
     }
 
     /// The route currently fencing one active workflow, if any.
@@ -13664,13 +17034,13 @@ impl SqliteStore {
     pub fn transition_task_with_intent(
         &self,
         request: &TaskTransitionRequest,
-        envelope: &ReceiptEnvelope<NewCommandIntent>,
+        envelope: &ReceiptEnvelope<NewLocalCommand>,
     ) -> RepositoryResult<(TaskTransitionResult, CommandReceipt, crate::graph::Applied)> {
         let intent = envelope.peek(self.realm_id())?;
         let target = AggregateRef::Task {
             task_id: request.task_id,
         };
-        ensure_atomic_intent_matches(
+        ensure_atomic_local_intent_matches(
             intent,
             request.project_id,
             if request.to == TaskState::Withdrawn {
@@ -13685,26 +17055,14 @@ impl SqliteStore {
         )?;
         let transaction = self.begin()?;
         if let Some(existing) = command_receipt_by_key(&transaction, &intent.idempotency_key)? {
-            ensure_atomic_replay(&existing, intent)?;
+            ensure_atomic_local_replay(&existing, intent)?;
             let result = task_transition_result_in_transaction(&transaction, &existing)?;
             return Ok((result, existing, crate::graph::Applied::Unchanged));
         }
 
         let moved = transition_task_in_transaction(&transaction, request)?;
-        let mut recorded = intent.clone();
-        recorded.payload = task_transition_result_payload(&intent.intent, &moved)?;
-        let replayed = crate::commands::intent::insert_intent(&transaction, &recorded)?;
-        if replayed.is_some() {
-            return Err(conflict(
-                "command receipt",
-                "the idempotency key appeared during one atomic task transition",
-            ));
-        }
-        let receipt = command_receipt_by_key(&transaction, &intent.idempotency_key)?.ok_or(
-            RepositoryError::NotFound {
-                subject: "command receipt",
-            },
-        )?;
+        let payload = task_transition_result_payload(&intent.intent, &moved)?;
+        let receipt = record_atomic_local_result(&transaction, intent, &payload)?;
         transaction.commit().map_err(backend)?;
         Ok((
             TaskTransitionResult {
@@ -19166,51 +22524,8 @@ impl OpenQuestionRepository for SqliteStore {
         project_id: ProjectId,
         question: &OpenQuestion,
     ) -> RepositoryResult<()> {
-        if question.project_id != project_id {
-            return Err(RepositoryError::Conflict {
-                subject: "OpenQuestion",
-                rule: "a question is raised in the project it names",
-            });
-        }
-        question.shareability.validate_for(OPEN_QUESTION_TIER)?;
-        let Some(first) = question.rounds.first() else {
-            return Err(DomainError::invalid(
-                "OpenQuestion",
-                "a raised question carries its first round",
-            )
-            .into());
-        };
         let transaction = self.begin()?;
-        transaction
-            .execute(
-                "INSERT INTO open_questions
-                     (question_id, project_id, mini_project_id, subject, scope, attachment,
-                      author_seat_id, shareability_class, shareability_classifier,
-                      shareability_provenance, created_at, revision)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                params![
-                    question.question_id.to_string(),
-                    project_id.to_string(),
-                    question.mini_project_id.to_string(),
-                    question.subject.as_str(),
-                    question.scope.as_str(),
-                    serde_json::to_string(&question.attachment).map_err(|_| {
-                        DomainError::invalid("OpenQuestion attachment", "does not serialize")
-                    })?,
-                    question.author.to_string(),
-                    question.shareability.class.as_str(),
-                    question
-                        .shareability
-                        .classifier
-                        .identity()
-                        .map(ExternalName::as_str),
-                    question.shareability.provenance.as_str(),
-                    text(question.created_at),
-                    i64::try_from(question.revision.get()).unwrap_or(i64::MAX),
-                ],
-            )
-            .map_err(backend)?;
-        insert_open_question_round(&transaction, project_id, question.question_id, first)?;
+        insert_question_in(&transaction, project_id, question)?;
         transaction.commit().map_err(backend)?;
         Ok(())
     }
@@ -19306,33 +22621,14 @@ impl OpenQuestionRepository for SqliteStore {
         expected: AggregateRevision,
         disposition: &Disposition,
     ) -> RepositoryResult<AggregateRevision> {
-        disposition.outcome.validate()?;
         let transaction = self.begin()?;
-        transaction
-            .execute(
-                "INSERT INTO open_question_dispositions
-                     (project_id, question_id, ordinal, author_seat_id, kind, trigger_key,
-                      payload, supersedes, recorded_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    project_id.to_string(),
-                    question_id.to_string(),
-                    i64::from(disposition.ordinal),
-                    disposition.author.to_string(),
-                    disposition.outcome.kind().as_str(),
-                    disposition
-                        .outcome
-                        .deferred_trigger()
-                        .map(|trigger| trigger.key.as_str()),
-                    serde_json::to_string(&disposition.outcome).map_err(|_| {
-                        DomainError::invalid("OpenQuestion disposition", "does not serialize")
-                    })?,
-                    disposition.supersedes.map(i64::from),
-                    text(disposition.recorded_at),
-                ],
-            )
-            .map_err(backend)?;
-        let revision = bump_open_question(&transaction, project_id, question_id, expected)?;
+        let revision = append_question_disposition_in(
+            &transaction,
+            project_id,
+            question_id,
+            expected,
+            disposition,
+        )?;
         transaction.commit().map_err(backend)?;
         Ok(revision)
     }
@@ -19345,46 +22641,331 @@ impl OpenQuestionRepository for SqliteStore {
         firing: &TriggerFiring,
     ) -> RepositoryResult<AggregateRevision> {
         let transaction = self.begin()?;
-        // The schema refuses a firing that names a trigger its deferral did not,
-        // and refuses a second firing against one deferral. What it cannot see is
-        // whether that deferral is still the *current* disposition, so that is
-        // checked here.
-        let current: Option<i64> = transaction
-            .query_row(
-                "SELECT MAX(ordinal) FROM open_question_dispositions
+        let revision =
+            fire_deferred_trigger_in(&transaction, project_id, question_id, expected, firing)?;
+        transaction.commit().map_err(backend)?;
+        Ok(revision)
+    }
+}
+
+fn insert_question_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    question: &OpenQuestion,
+) -> RepositoryResult<()> {
+    if question.project_id != project_id {
+        return Err(RepositoryError::Conflict {
+            subject: "OpenQuestion",
+            rule: "a question is raised in the project it names",
+        });
+    }
+    question.shareability.validate_for(OPEN_QUESTION_TIER)?;
+    let Some(first) = question.rounds.first() else {
+        return Err(DomainError::invalid(
+            "OpenQuestion",
+            "a raised question carries its first round",
+        )
+        .into());
+    };
+    transaction
+        .execute(
+            "INSERT INTO open_questions
+                     (question_id, project_id, mini_project_id, subject, scope, attachment,
+                      author_seat_id, shareability_class, shareability_classifier,
+                      shareability_provenance, created_at, revision)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                question.question_id.to_string(),
+                project_id.to_string(),
+                question.mini_project_id.to_string(),
+                question.subject.as_str(),
+                question.scope.as_str(),
+                serde_json::to_string(&question.attachment).map_err(|_| {
+                    DomainError::invalid("OpenQuestion attachment", "does not serialize")
+                })?,
+                question.author.to_string(),
+                question.shareability.class.as_str(),
+                question
+                    .shareability
+                    .classifier
+                    .identity()
+                    .map(ExternalName::as_str),
+                question.shareability.provenance.as_str(),
+                text(question.created_at),
+                i64::try_from(question.revision.get()).unwrap_or(i64::MAX),
+            ],
+        )
+        .map_err(backend)?;
+    insert_open_question_round(transaction, project_id, question.question_id, first)?;
+    Ok(())
+}
+
+fn append_question_disposition_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    question_id: OpenQuestionId,
+    expected: AggregateRevision,
+    disposition: &Disposition,
+) -> RepositoryResult<AggregateRevision> {
+    disposition.outcome.validate()?;
+    transaction
+        .execute(
+            "INSERT INTO open_question_dispositions
+                     (project_id, question_id, ordinal, author_seat_id, kind, trigger_key,
+                      payload, supersedes, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                project_id.to_string(),
+                question_id.to_string(),
+                i64::from(disposition.ordinal),
+                disposition.author.to_string(),
+                disposition.outcome.kind().as_str(),
+                disposition
+                    .outcome
+                    .deferred_trigger()
+                    .map(|trigger| trigger.key.as_str()),
+                serde_json::to_string(&disposition.outcome).map_err(|_| {
+                    DomainError::invalid("OpenQuestion disposition", "does not serialize")
+                })?,
+                disposition.supersedes.map(i64::from),
+                text(disposition.recorded_at),
+            ],
+        )
+        .map_err(backend)?;
+    let revision = bump_open_question(transaction, project_id, question_id, expected)?;
+    Ok(revision)
+}
+
+fn fire_deferred_trigger_in(
+    transaction: &Transaction<'_>,
+    project_id: ProjectId,
+    question_id: OpenQuestionId,
+    expected: AggregateRevision,
+    firing: &TriggerFiring,
+) -> RepositoryResult<AggregateRevision> {
+    // The schema refuses a firing that names a trigger its deferral did not,
+    // and refuses a second firing against one deferral. What it cannot see is
+    // whether that deferral is still the *current* disposition, so that is
+    // checked here.
+    let current: Option<i64> = transaction
+        .query_row(
+            "SELECT MAX(ordinal) FROM open_question_dispositions
                  WHERE project_id = ?1 AND question_id = ?2",
-                params![project_id.to_string(), question_id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(backend)?
-            .flatten();
-        if current != Some(i64::from(firing.disposition_ordinal)) {
-            return Err(RepositoryError::Conflict {
-                subject: "OpenQuestion trigger",
-                rule: "only the question's current deferral can be reopened",
-            });
-        }
-        transaction
-            .execute(
-                "INSERT INTO open_question_trigger_firings
+            params![project_id.to_string(), question_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?
+        .flatten();
+    if current != Some(i64::from(firing.disposition_ordinal)) {
+        return Err(RepositoryError::Conflict {
+            subject: "OpenQuestion trigger",
+            rule: "only the question's current deferral can be reopened",
+        });
+    }
+    transaction
+        .execute(
+            "INSERT INTO open_question_trigger_firings
                      (project_id, question_id, ordinal, disposition_ordinal, trigger_key,
                       observed_by_seat_id, recorded_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    project_id.to_string(),
-                    question_id.to_string(),
-                    i64::from(firing.ordinal),
-                    i64::from(firing.disposition_ordinal),
-                    firing.trigger.as_str(),
-                    firing.observed_by.to_string(),
-                    text(firing.recorded_at),
-                ],
+            params![
+                project_id.to_string(),
+                question_id.to_string(),
+                i64::from(firing.ordinal),
+                i64::from(firing.disposition_ordinal),
+                firing.trigger.as_str(),
+                firing.observed_by.to_string(),
+                text(firing.recorded_at),
+            ],
+        )
+        .map_err(backend)?;
+    let revision = bump_open_question(transaction, project_id, question_id, expected)?;
+    Ok(revision)
+}
+
+impl SqliteStore {
+    /// Commit one validated question append and its immutable retry receipt atomically.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_open_question_command(
+        &self,
+        key: &IdempotencyKey,
+        intent: &CanonicalDocument,
+        question: &OpenQuestion,
+        expected_revision: u64,
+        actor: SeatBindingId,
+        actor_revision: AggregateRevision,
+        occupancy_generation: Option<u64>,
+    ) -> RepositoryResult<serde_json::Value> {
+        let transaction = self.begin()?;
+        if let Some((hash, result)) = transaction
+            .query_row(
+                "SELECT intent_hash, result FROM open_question_commands WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
-            .map_err(backend)?;
-        let revision = bump_open_question(&transaction, project_id, question_id, expected)?;
+            .optional()
+            .map_err(backend)?
+        {
+            if hash != intent.hash().as_str() {
+                return Err(conflict(
+                    "open question command",
+                    "an idempotency key cannot name another question command",
+                ));
+            }
+            return from_json(&result);
+        }
+        let active: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM seat_bindings s JOIN topology_nodes n ON n.id = s.topology_node_id
+             WHERE s.project_id = ?1 AND s.id = ?2 AND s.revision = ?3 AND s.lifecycle = 'active'
+               AND n.mini_project_id = ?4)",
+            params![question.project_id.to_string(), actor.to_string(), i64::try_from(actor_revision.get()).unwrap_or(i64::MAX), question.mini_project_id.to_string()],
+            |row| row.get(0),
+        ).map_err(backend)?;
+        if !active {
+            return Err(conflict(
+                "open question author",
+                "the author moved since its authority was resolved",
+            ));
+        }
+        if let Some(generation) = occupancy_generation {
+            let current: Option<i64> = transaction.query_row(
+                "SELECT 1 + (SELECT COUNT(*) FROM hosted_topology_seat_history h WHERE h.project_id = s.project_id AND h.seat_binding_id = s.seat_binding_id)
+                 FROM hosted_topology_seats s WHERE s.project_id = ?1 AND s.seat_binding_id = ?2",
+                params![question.project_id.to_string(), actor.to_string()], |row| row.get(0),
+            ).optional().map_err(backend)?;
+            if current != i64::try_from(generation).ok() {
+                return Err(conflict(
+                    "open question author",
+                    "the scoped seat occupancy was replaced",
+                ));
+            }
+        }
+        let row = transaction.query_row(
+            &format!("SELECT {OPEN_QUESTION_COLUMNS} FROM open_questions WHERE project_id = ?1 AND question_id = ?2"),
+            params![question.project_id.to_string(), question.question_id.to_string()], open_question_row,
+        ).optional().map_err(backend)?;
+        if let Some(row) = row {
+            let previous = read_open_question(&transaction, question.project_id, row)?;
+            if previous.revision.get() != expected_revision
+                || question.revision != previous.revision.next()?
+            {
+                return Err(conflict(
+                    "open question",
+                    "only its current revision may be appended to",
+                ));
+            }
+            let mut header = question.clone();
+            header.revision = previous.revision;
+            header.rounds.clone_from(&previous.rounds);
+            header.dispositions.clone_from(&previous.dispositions);
+            header.firings.clone_from(&previous.firings);
+            if header != previous
+                || !question.rounds.starts_with(&previous.rounds)
+                || !question.dispositions.starts_with(&previous.dispositions)
+                || !question.firings.starts_with(&previous.firings)
+            {
+                return Err(conflict(
+                    "open question",
+                    "question history and header are immutable",
+                ));
+            }
+            let added = (
+                question.rounds.len() - previous.rounds.len(),
+                question.dispositions.len() - previous.dispositions.len(),
+                question.firings.len() - previous.firings.len(),
+            );
+            match added {
+                (1, 0, 0) => {
+                    insert_open_question_round(
+                        &transaction,
+                        question.project_id,
+                        question.question_id,
+                        &question.rounds[previous.rounds.len()],
+                    )?;
+                    bump_open_question(
+                        &transaction,
+                        question.project_id,
+                        question.question_id,
+                        previous.revision,
+                    )?;
+                }
+                (0, 1, 0) => {
+                    append_question_disposition_in(
+                        &transaction,
+                        question.project_id,
+                        question.question_id,
+                        previous.revision,
+                        &question.dispositions[previous.dispositions.len()],
+                    )?;
+                }
+                (0, 0, 1) => {
+                    fire_deferred_trigger_in(
+                        &transaction,
+                        question.project_id,
+                        question.question_id,
+                        previous.revision,
+                        &question.firings[previous.firings.len()],
+                    )?;
+                }
+                _ => {
+                    return Err(conflict(
+                        "open question",
+                        "one command appends exactly one history item",
+                    ));
+                }
+            }
+        } else {
+            if expected_revision != 0
+                || question.revision != AggregateRevision::INITIAL
+                || question.rounds.len() != 1
+                || !question.dispositions.is_empty()
+                || !question.firings.is_empty()
+            {
+                return Err(conflict(
+                    "open question",
+                    "raising starts at revision zero with one initial round",
+                ));
+            }
+            insert_question_in(&transaction, question.project_id, question)?;
+        }
+        let receipt_id = CommandReceiptId::generate();
+        let result = serde_json::json!({"receipt_id":receipt_id,"question":question,"status":question.status()});
+        transaction.execute(
+            "INSERT INTO open_question_commands (idempotency_key, receipt_id, project_id, question_id, intent_hash, intent, result, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![key.as_str(),receipt_id.to_string(),question.project_id.to_string(),question.question_id.to_string(),intent.hash().as_str(),intent.json(),result.to_string(),text(Timestamp::now())],
+        ).map_err(backend)?;
         transaction.commit().map_err(backend)?;
-        Ok(revision)
+        Ok(result)
+    }
+
+    /// Read the exact original result for a matching command, including after restart.
+    pub fn replay_open_question_command(
+        &self,
+        key: &IdempotencyKey,
+        intent: &CanonicalDocument,
+    ) -> RepositoryResult<Option<serde_json::Value>> {
+        let found = self
+            .connection
+            .query_row(
+                "SELECT intent_hash, result FROM open_question_commands WHERE idempotency_key = ?1",
+                params![key.as_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        found
+            .map(|(hash, result)| {
+                if hash != intent.hash().as_str() {
+                    return Err(conflict(
+                        "open question command",
+                        "an idempotency key cannot name another question command",
+                    ));
+                }
+                from_json(&result)
+            })
+            .transpose()
     }
 }
 
@@ -20127,7 +23708,49 @@ impl TeamDefinitionRepository for SqliteStore {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT 'container' AS subject_kind, node.id, NULL AS seat_binding_id, node.kind,
+                "WITH RECURSIVE
+                 meaningful_runs AS (
+                     SELECT run.id, run.project_id, run.team_run_id, run.role_key
+                       FROM agent_runs AS run
+                      WHERE run.project_id = ?1 AND NOT (
+                          run.terminal_outcome IS 'abandoned'
+                          AND run.terminal_source_kind IS 'operator_abandon'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM runtime_bindings AS binding
+                               WHERE binding.project_id = run.project_id
+                                 AND binding.agent_run_id = run.id
+                          )
+                      )
+                 ),
+                 ancestry(project_id, team_run_id, role_key, descendant_id, ancestor_id) AS (
+                     SELECT run.project_id, run.team_run_id, run.role_key,
+                            run.id, run.parent_agent_run_id
+                       FROM agent_runs AS run
+                      WHERE run.project_id = ?1 AND run.parent_agent_run_id IS NOT NULL
+                     UNION
+                     SELECT chain.project_id, chain.team_run_id, chain.role_key,
+                            chain.descendant_id, parent.parent_agent_run_id
+                       FROM ancestry AS chain
+                       JOIN agent_runs AS parent ON parent.id = chain.ancestor_id
+                        AND parent.project_id = chain.project_id
+                        AND parent.team_run_id = chain.team_run_id
+                        AND parent.role_key = chain.role_key
+                      WHERE parent.parent_agent_run_id IS NOT NULL
+                 ),
+                 current_delivery_runs AS (
+                     SELECT run.* FROM meaningful_runs AS run
+                      WHERE NOT EXISTS (
+                          SELECT 1 FROM ancestry AS chain
+                          JOIN meaningful_runs AS successor
+                            ON successor.id = chain.descendant_id
+                           AND successor.project_id = chain.project_id
+                           WHERE chain.project_id = run.project_id
+                             AND chain.team_run_id = run.team_run_id
+                             AND chain.role_key = run.role_key
+                             AND chain.ancestor_id = run.id
+                      )
+                 )
+                 SELECT 'container' AS subject_kind, node.id, NULL AS seat_binding_id, node.kind,
                         container.runtime_kind, container.host, container.generation,
                         container.native_id
                   FROM topology_node_containers AS container
@@ -20168,7 +23791,7 @@ impl TeamDefinitionRepository for SqliteStore {
                         binding.runtime_kind, binding.host,
                         binding.generation, binding.native_id
                    FROM runtime_bindings AS binding
-                   JOIN agent_runs AS run
+                   JOIN current_delivery_runs AS run
                      ON run.id = binding.agent_run_id AND run.project_id = binding.project_id
                    JOIN seat_bindings AS seat
                      ON seat.team_run_id = run.team_run_id
@@ -20176,8 +23799,32 @@ impl TeamDefinitionRepository for SqliteStore {
                     AND seat.project_id = binding.project_id
                     AND seat.lifecycle = 'active'
                    JOIN topology_nodes AS node ON node.id = seat.topology_node_id
-                  WHERE binding.project_id = ?1 AND node.mini_project_id = ?2
+                 WHERE binding.project_id = ?1 AND node.mini_project_id = ?2
                     AND node.lifecycle = 'active'
+                    -- A persistent role has one current replacement-chain
+                    -- leaf. Bound ancestors remain immutable history, even
+                    -- when the leaf has not acquired its own native yet.
+                    -- Certified abandoned, never-bound attempts do not occupy
+                    -- the slot, but retain structural ancestry for meaningful
+                    -- descendants. A trailing abandoned-only chain does not
+                    -- hide its bound predecessor.
+                 UNION ALL
+                 -- A meaningful current leaf without a native is still a
+                 -- fork. Do not let its absence from runtime_bindings make
+                 -- migration accept a role that public preview refuses.
+                 SELECT 'ambiguous_delivery', node.id, seat.id, node.kind,
+                        NULL, NULL, NULL, NULL
+                   FROM seat_bindings AS seat
+                   JOIN topology_nodes AS node ON node.id = seat.topology_node_id
+                    AND node.project_id = seat.project_id
+                  WHERE seat.project_id = ?1 AND node.mini_project_id = ?2
+                    AND node.lifecycle = 'active' AND seat.lifecycle = 'active'
+                    AND (
+                        SELECT count(*) FROM current_delivery_runs AS run
+                         WHERE run.project_id = seat.project_id
+                           AND run.team_run_id = seat.team_run_id
+                           AND run.role_key = seat.role_slot_id
+                    ) > 1
                  ORDER BY 1, 8",
             )
             .map_err(backend)?;
@@ -20186,6 +23833,12 @@ impl TeamDefinitionRepository for SqliteStore {
             .map_err(backend)?;
         let mut subjects = Vec::new();
         while let Some(row) = rows.next().map_err(backend)? {
+            if row.get::<_, String>(0).map_err(backend)? == "ambiguous_delivery" {
+                return Err(conflict(
+                    "live native subject",
+                    "a delivery role has ambiguous current replacement-chain leaves",
+                ));
+            }
             let topology_node_id =
                 TopologyNodeId::parse(&row.get::<_, String>(1).map_err(backend)?)?;
             let seat: Option<String> = row.get(2).map_err(backend)?;
@@ -20222,9 +23875,19 @@ impl TeamDefinitionRepository for SqliteStore {
         // and both fail closed rather than skipping a live native.
         let mut owners: BTreeMap<(String, String, u64, String), TeamDefinitionMigrationSubject> =
             BTreeMap::new();
+        let mut occupied_seats = BTreeSet::new();
         for live in &subjects {
-            if !matches!(live.subject, TeamDefinitionMigrationSubject::Seat { .. }) {
+            let TeamDefinitionMigrationSubject::Seat {
+                seat_binding_id, ..
+            } = live.subject
+            else {
                 continue;
+            };
+            if !occupied_seats.insert(seat_binding_id) {
+                return Err(conflict(
+                    "live native subject",
+                    "one seat has ambiguous current native occupants",
+                ));
             }
             let key = (
                 live.identity.runtime_kind.as_str().to_owned(),
@@ -20404,12 +24067,9 @@ impl TeamDefinitionRepository for SqliteStore {
         &self,
         migration: &NewTeamDefinitionMigration,
     ) -> RepositoryResult<StoredTeamDefinitionMigration> {
-        if migration.targets.is_empty() {
-            return Err(conflict(
-                "team definition migration",
-                "a migration must enumerate at least one target",
-            ));
-        }
+        // An unmaterialized epic has an empty native census. The exact census
+        // proof below (and again at confirmation) still refuses an omitted
+        // live subject; a fabricated target must not be needed to move its pin.
         let mut subjects = BTreeMap::new();
         if !migration.targets.iter().all(|target| {
             subjects

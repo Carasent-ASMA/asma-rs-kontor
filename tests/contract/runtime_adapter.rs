@@ -1255,6 +1255,7 @@ async fn observation_separates_contact_from_run_state() {
     // The channel breaks. What the runtime last said about the work does not
     // change, and nothing about the work may be concluded from the break.
     let unreachable = ControlPlaneObservation {
+        drivable: true,
         contact: RuntimeContact::Unavailable,
         ..reachable.clone()
     };
@@ -2273,6 +2274,7 @@ async fn stream_close_without_terminal_remains_unconfirmed() {
         .await
         .expect("inspect answers");
     let lost = ControlPlaneObservation {
+        drivable: true,
         contact: RuntimeContact::StreamClosed,
         ..inspected
     };

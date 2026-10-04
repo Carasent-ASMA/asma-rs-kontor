@@ -1,0 +1,116 @@
+{
+  "id": "A01-skip-unconditional-destination-wal",
+  "base_head": "1e9b7d3b87a70fb03e3546d9351bd3e1c826312e",
+  "definition": "mutation-definition.json",
+  "runner": "run_mutation.py",
+  "commands": [
+    {
+      "name": "isolated-baseline",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "main_",
+        "--offline",
+        "--jobs",
+        "2"
+      ],
+      "environment": {
+        "CARGO_TARGET_DIR": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target",
+        "RUST_TEST_THREADS": "2"
+      },
+      "started_at_utc": "2026-10-03T19:15:43.861964+00:00",
+      "finished_at_utc": "2026-10-03T19:16:28.009893+00:00",
+      "seconds": 44.148,
+      "exit": 0,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/isolated-baseline.log"
+    },
+    {
+      "name": "isolated-A01-mutant",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "main_with_committed_wal",
+        "--offline",
+        "--jobs",
+        "2"
+      ],
+      "environment": {
+        "CARGO_TARGET_DIR": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target",
+        "RUST_TEST_THREADS": "2"
+      },
+      "started_at_utc": "2026-10-03T19:16:28.011658+00:00",
+      "finished_at_utc": "2026-10-03T19:16:53.831203+00:00",
+      "seconds": 25.82,
+      "exit": 101,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/isolated-A01-mutant.log"
+    },
+    {
+      "name": "isolated-restored-baseline",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_snapshot",
+        "main_",
+        "--offline",
+        "--jobs",
+        "2"
+      ],
+      "environment": {
+        "CARGO_TARGET_DIR": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target",
+        "RUST_TEST_THREADS": "2"
+      },
+      "started_at_utc": "2026-10-03T19:16:53.833002+00:00",
+      "finished_at_utc": "2026-10-03T19:17:09.528414+00:00",
+      "seconds": 15.695,
+      "exit": 0,
+      "log": "/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/isolated-restored-baseline.log"
+    }
+  ],
+  "verdict": "KILLED",
+  "compiled_successfully": true,
+  "intended_failed_tests": [
+    "missing_main_with_committed_wal_refuses_without_changing_destination_files",
+    "zero_main_with_committed_wal_refuses_without_changing_destination_files"
+  ],
+  "assertion_proof": [
+    {
+      "path": "crates/kontor-store/tests/backup_snapshot.rs",
+      "line": 338,
+      "column": 5,
+      "text": "assert!(matches!(",
+      "is_assertion": true
+    },
+    {
+      "path": "crates/kontor-store/tests/backup_snapshot.rs",
+      "line": 338,
+      "column": 5,
+      "text": "assert!(matches!(",
+      "is_assertion": true
+    }
+  ],
+  "mutant_sha256": "5f6da9d8cb3477d3a8f096a66a9be6705f110359802dfd7d08e3adead2ec2392",
+  "source_before_sha256": {
+    "crates/kontor-store/src/backup/restore.rs": "14ae5e6ff4cba2ffb0b7c94fdf250279ee88c8b8d7d2f932d2d253b60449d74c",
+    "crates/kontor-store/tests/backup_snapshot.rs": "12836f084f708eaa41c78ed900048a4693ce4b76dfd7b7ee42ba933aebe24a76"
+  },
+  "source_after_sha256": {
+    "crates/kontor-store/src/backup/restore.rs": "14ae5e6ff4cba2ffb0b7c94fdf250279ee88c8b8d7d2f932d2d253b60449d74c",
+    "crates/kontor-store/tests/backup_snapshot.rs": "12836f084f708eaa41c78ed900048a4693ce4b76dfd7b7ee42ba933aebe24a76"
+  },
+  "isolated_after_sha256": {
+    "crates/kontor-store/src/backup/restore.rs": "14ae5e6ff4cba2ffb0b7c94fdf250279ee88c8b8d7d2f932d2d253b60449d74c",
+    "crates/kontor-store/tests/backup_snapshot.rs": "12836f084f708eaa41c78ed900048a4693ce4b76dfd7b7ee42ba933aebe24a76"
+  },
+  "restored_baseline_passed": true
+}

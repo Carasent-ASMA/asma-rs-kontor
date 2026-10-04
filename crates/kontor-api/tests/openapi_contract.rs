@@ -136,3 +136,76 @@ fn the_contract_document_names_every_route_the_router_exposes() {
         );
     }
 }
+
+#[test]
+fn experience_contract_exposes_closed_typed_documents_and_frozen_readbacks() {
+    use kontor_core::{id::CanonicalDocument, memory::ExperienceMemoryV1};
+    use serde_json::{Value, json};
+    let document = serde_json::to_value(kontor_api::openapi::document()).unwrap();
+    let schemas = &document["components"]["schemas"];
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../kontor-core/tests/fixtures/experience-v1.json"
+    ))
+    .unwrap();
+    let typed =
+        ExperienceMemoryV1::from_document(&CanonicalDocument::from_value(&fixture).unwrap())
+            .unwrap();
+    let serialized = serde_json::to_value(typed).unwrap();
+    let actual_fields: Vec<_> = serialized.as_object().unwrap().keys().collect();
+    let contract_fields: Vec<_> = schemas["ExperienceMemoryV1"]["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(
+        actual_fields, contract_fields,
+        "the public schema must describe the domain fixture exactly"
+    );
+    assert_eq!(schemas["ExperienceMemoryV1"]["additionalProperties"], false);
+    assert_eq!(
+        schemas["ExperienceKind"]["enum"],
+        json!(["experience", "lesson", "mental_model"])
+    );
+    assert_eq!(schemas["ProjectionPolicy"]["default"], "local_only");
+    assert_eq!(schemas["EvidenceRef"]["oneOf"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        schemas["RecallMetadata"]["properties"]["block_bytes"]["maximum"],
+        32768
+    );
+    assert_eq!(
+        schemas["RecallMetadata"]["properties"]["identities"]["maxItems"],
+        8
+    );
+    for (wrapper, field, inner) in [
+        ("ExperienceProposal", "document", "ExperienceMemoryV1"),
+        (
+            "ExperienceProposalResponse",
+            "revision",
+            "ExperienceRevision",
+        ),
+        ("RecallResponse", "recall", "RecalledMemory"),
+        ("ProjectionResponse", "projection", "ProjectionReadback"),
+        ("ProjectionPreviewResponse", "preview", "ProjectionPreview"),
+    ] {
+        assert_eq!(
+            schemas[wrapper]["properties"][field]["$ref"],
+            format!("#/components/schemas/{inner}")
+        );
+    }
+    for (route, method, response) in [
+        ("experiences:propose", "post", "ExperienceProposalResponse"),
+        ("recall:preview", "post", "RecallResponse"),
+        ("projection:preview", "get", "ProjectionPreviewResponse"),
+        (
+            "experiences:classify",
+            "get",
+            "ExperienceClassificationResponse",
+        ),
+    ] {
+        assert_eq!(
+            document["paths"][format!("/v1/projects/{{project_id}}/memory/{route}")][method]["responses"]
+                ["200"]["content"]["application/json"]["schema"]["$ref"],
+            format!("#/components/schemas/{response}")
+        );
+    }
+}

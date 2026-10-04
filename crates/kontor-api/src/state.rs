@@ -390,7 +390,8 @@ impl ApiState {
         message_id: kontor_runtime::request::MessageId,
         provenance: &str,
         idempotency_key: &str,
-    ) -> Result<(), crate::error::ApiError> {
+        boundary_at: Option<kontor_runtime::timeline::TimelinePosition>,
+    ) -> Result<kontor_store::MessageIssuanceOutcome, crate::error::ApiError> {
         let issuance = kontor_store::MessageIssuance {
             message_id: message_id.to_string(),
             runtime_kind: identity.runtime_kind.as_str().to_owned(),
@@ -404,14 +405,235 @@ impl ApiState {
             // there is no acknowledged position yet. It arrives, if it arrives,
             // through `record_message_delivery`.
             delivered_at: None,
+            // The tail this send is about to be appended after, written in the
+            // same statement as the issuance so the pair is never half-recorded.
+            boundary_at: boundary_at.map(|position| (position.epoch, position.sequence)),
         };
         self.with_store(|store| store.record_message_issuance(&issuance))
-            .map(|_| ())
             .map_err(|error| crate::error::ApiError::from_repository(self.realm_id(), &error))
+    }
+
+    /// Hand an adapter back the durable knowledge a fresh process lost, when
+    /// this send is a replay rather than a first attempt.
+    ///
+    /// `Replayed` is the whole signal, and it is already exact: the issuance row
+    /// is written before the runtime is asked to accept anything, so a second
+    /// arrival under the same key means an earlier attempt reached at least that
+    /// far — and may have reached the session. An adapter rebuilt since then has
+    /// no way to know that on its own.
+    ///
+    /// A first attempt is left alone deliberately. Declaring it unconfirmed
+    /// would make every message pay for a canonical read to discover what cannot
+    /// be there yet.
+    ///
+    /// # Errors
+    /// Returns the adapter's refusal when the id is already recorded against a
+    /// different body.
+    pub fn note_replayed_issuance(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        outcome: kontor_store::MessageIssuanceOutcome,
+        message_id: kontor_runtime::request::MessageId,
+        body_hash: &kontor_core::id::ContentHash,
+    ) -> Result<(), crate::error::ApiError> {
+        // A durable proof owns replay decisions now. Do not first seed an
+        // adapter ledger with caller-supplied content: a contradictory retry
+        // could poison that ledger before the proof refuses its changed body.
+        if outcome == kontor_store::MessageIssuanceOutcome::Replayed
+            && self
+                .with_store(|store| store.message_delivery_proof(&message_id.to_string()))
+                .map_err(|error| crate::error::ApiError::from_repository(self.realm_id(), &error))?
+                .is_some()
+        {
+            return Ok(());
+        }
+        // The floor is read from the row, never recaptured. Capturing a tail now
+        // would place it *above* a delivery that already landed, and the scan
+        // would then prove absence over a range the message was never in — which
+        // is exactly the evidence that authorizes a resend.
+        let issued_after = self
+            .message_issuance(message_id)?
+            .and_then(|issuance| issuance.boundary_at)
+            .map(
+                |(epoch, sequence)| kontor_runtime::timeline::TimelinePosition { epoch, sequence },
+            );
+        // Every send gets its boundary, including the first. A first attempt
+        // still has to bound its own reconciliation — that is the whole of the
+        // ceiling — and registering the tail says nothing about delivery.
+        if let Some(floor) = issued_after {
+            adapter
+                .note_issuance_boundary(message_id, floor)
+                .map_err(|error| crate::error::ApiError::from_runtime(self.realm_id(), &error))?;
+        }
+        // Only a *second* arrival declares the delivery unknown, because only
+        // then could an earlier attempt have reached the session.
+        if outcome != kontor_store::MessageIssuanceOutcome::Replayed {
+            return Ok(());
+        }
+        adapter
+            .note_unconfirmed_delivery(message_id, body_hash, issued_after)
+            .map_err(|error| crate::error::ApiError::from_runtime(self.realm_id(), &error))
+    }
+
+    /// Replay a completed durable history proof, or perform the usual adapter delivery.
+    ///
+    /// A proof in progress or with negative evidence never falls through to a send.
+    /// Confirmed replay must match the original native body digest and binding.
+    ///
+    /// # Errors
+    /// Refuses changed content/identity, incomplete proof, or the adapter's delivery error.
+    pub async fn send_issued_message(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        request: &kontor_runtime::request::SendMessageRequest,
+    ) -> Result<kontor_runtime::adapter::MessageAck, crate::error::ApiError> {
+        use crate::error::{ApiError, ApiErrorCode};
+        use kontor_runtime::timeline::TimelinePosition;
+        let realm = self.realm_id();
+        let held = self
+            .with_store(|store| store.message_delivery_proof(&request.message_id.to_string()))
+            .map_err(|error| ApiError::from_repository(realm, &error))?;
+        if let Some(proof) = held {
+            let issued = self.message_issuance(request.message_id)?.ok_or_else(|| {
+                ApiError::new(
+                    realm,
+                    ApiErrorCode::RevisionConflict,
+                    "the proved issuance no longer exists",
+                )
+            })?;
+            let identity = request.binding.identity();
+            let unchanged = proof.state == "confirmed"
+                && proof.runtime_generation == identity.generation
+                && issued.runtime_binding_id == request.binding.binding_id().to_string()
+                && issued.native_session_id == identity.native_id.as_str()
+                && issued.runtime_kind == identity.runtime_kind.as_str()
+                && issued.host == identity.host.as_str()
+                && issued.delivered_at
+                    == proof
+                        .candidate_sequence
+                        .map(|sequence| (proof.anchor.epoch, sequence))
+                && kontor_store::message_issuance_digest(&issued)
+                    .map_err(|error| ApiError::from_repository(realm, &error))?
+                    .as_str()
+                    == proof.issuance_hash
+                && proof.candidate_body_hash.as_deref() == Some(request.body_hash().as_str());
+            if !unchanged {
+                return Err(ApiError::new(
+                    realm,
+                    ApiErrorCode::RevisionConflict,
+                    "the original delivery proof does not authorize this replay",
+                )
+                .advising(
+                    "retain the original message and proof; never resend uncertain delivery",
+                ));
+            }
+            let sequence = proof.candidate_sequence.ok_or_else(|| {
+                ApiError::new(
+                    realm,
+                    ApiErrorCode::RevisionConflict,
+                    "the proof has no candidate position",
+                )
+            })?;
+            let accepted_at = proof.candidate_accepted_at.ok_or_else(|| {
+                ApiError::new(
+                    realm,
+                    ApiErrorCode::RevisionConflict,
+                    "the proof has no candidate timestamp",
+                )
+            })?;
+            return Ok(kontor_runtime::adapter::MessageAck {
+                message_id: request.message_id,
+                binding_id: request.binding.binding_id(),
+                position: TimelinePosition {
+                    epoch: proof.anchor.epoch,
+                    sequence,
+                },
+                accepted_at,
+            });
+        }
+        adapter
+            .send(request)
+            .await
+            .map_err(|error| ApiError::from_runtime(realm, &error))
+    }
+
+    /// The session's canonical tail right now, as a boundary to issue against.
+    ///
+    /// One bounded tail read, never a walk: the boundary only has to name where
+    /// the transcript ends before this send, and that is the newest position the
+    /// runtime will report. An empty session yields sequence zero, which is a
+    /// real boundary — nothing precedes the send — rather than a missing one.
+    ///
+    /// A runtime that cannot answer yields `None`, and the issuance is recorded
+    /// without a floor: the send still happens, and its reconciliation falls
+    /// back to whole history exactly as it did before boundaries existed. That
+    /// is a slower proof, not a weaker one.
+    pub async fn canonical_tail_boundary(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        binding: &kontor_runtime::capability::RuntimeBindingSnapshot,
+    ) -> Result<Option<kontor_runtime::timeline::TimelinePosition>, crate::error::ApiError> {
+        // Through the durable barrier, not the raw adapter call. Reading the
+        // tail can *allocate* an epoch, and a boundary naming a number that
+        // exists only in this process is worthless to the restart it is meant to
+        // survive: the mapping has to be committed before the position is
+        // recorded or acted on.
+        match self
+            .tail_window_recovering_epoch_once(adapter, identity, binding, 1, 1)
+            .await
+        {
+            Ok(page) => Ok(Some(page.end)),
+            // The session's history is unreadable or has been renumbered.
+            // Turning that into "no boundary" and sending anyway would hide a
+            // break behind a slower proof, so it is reported.
+            Err(error) if error.code == crate::error::ApiErrorCode::TimelineRefetchRequired => {
+                Err(error)
+            }
+            // Everything else means this realm could not *obtain* a usable
+            // boundary: a runtime with no bounded tail read, or a mapping that
+            // could not be committed. Both are an explicit fallback to the
+            // whole-history proof, which is slower and still honest — and
+            // recording no boundary is the only safe outcome when the epoch
+            // behind it is not durable, because a floor naming an uncommitted
+            // number could not survive the restart it exists for.
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Make an acknowledged delivery durable before its position is exposed.
+    ///
+    /// Sending can allocate an epoch just as reading history can. Commit and
+    /// acknowledge those mappings before pinning the delivery; a later restart
+    /// must interpret its position under the same numbering. A failed commit
+    /// leaves the adapter's mappings pending and does not pin the delivery.
+    ///
+    /// # Errors
+    /// A repository refusal after native acceptance, with explicit advice to
+    /// reconcile the original effect rather than send a second instruction.
+    pub fn record_message_delivery_durably(
+        &self,
+        adapter: &dyn kontor_runtime::adapter::RuntimeAdapter,
+        identity: &kontor_core::state::NativeRuntimeIdentity,
+        message_id: kontor_runtime::request::MessageId,
+        position: kontor_runtime::timeline::TimelinePosition,
+    ) -> Result<(), crate::error::ApiError> {
+        self.persist_pending_epochs(adapter, identity)
+            .and_then(|()| self.record_message_delivery(message_id, position))
+            .map_err(|error| {
+                ApiError::new(
+                    error.realm_id,
+                    error.code,
+                    "the message was delivered and acknowledged, but its canonical delivery position could not be made durable",
+                )
+                .advising("reconcile the existing delivery with its original message id or replay the same idempotency key; never resend under a new key")
+            })
     }
 
     /// Record where the runtime acknowledged an issued message landing.
     ///
+    /// Low-level ledger write; runtime send paths use
+    /// [`Self::record_message_delivery_durably`] to commit the epoch first.
     /// Called after a delivery is acknowledged, and only then: the position is
     /// the runtime's answer, not something Kontor can predict. It is what lets a
     /// bounded observation ask whether the occurrence it found is *the* delivery

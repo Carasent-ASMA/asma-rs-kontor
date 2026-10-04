@@ -1,0 +1,20 @@
+=== 02-compile-default ===
+head          : b236eda75b6d95f96442ad37224030d7de753195
+tree          : 498939c3f301ea39c7e7664c197b54459369f9f9
+command       : cargo check --workspace --all-targets --locked
+toolchain     : rustc 1.97.1 (8bab26f4f 2026-07-14)
+started       : 2026-10-03T18:49:45Z
+disk free     : 154Gi
+--- git status --porcelain=v1 (whole repo, verbatim) BEFORE ---
+--- (end; no lines above means nothing was dirty) ---
+source vs HEAD: every tracked source path identical to HEAD
+applications.rs blob: c0269934e5348247e9834c8428fe5a730cbded2c (HEAD)
+applications.rs disk: c0269934e5348247e9834c8428fe5a730cbded2c (working tree)
+--- raw output ---
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.96s
+--- exit status: 0 (1s) ---
+finished      : 2026-10-03T18:49:47Z
+--- git status --porcelain=v1 (whole repo, verbatim) AFTER ---
+--- (end) ---
+source vs HEAD: every tracked source path identical to HEAD
+disk free     : 154Gi

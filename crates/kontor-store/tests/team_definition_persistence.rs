@@ -2,14 +2,18 @@
 //! resumable identity-preserving migration intent, and legacy-compatible
 //! consultation topic storage.
 
+mod support;
+
+use std::sync::{Arc, Barrier};
+
 use kontor_core::consultation::{
     ConsultationFamily, ConsultationRunId, ConsultationRunState, ConsultationSubject,
 };
 use kontor_core::id::{
-    AdvisorRunId, AggregateRevision, CanonicalDocument, CommandReceiptId, ContentHash, ExternalId,
-    ExternalName, IdempotencyKey, MiniProjectId, ProjectId, RoleCode, RoleSlotId, RuntimeKindKey,
-    SeatBindingId, SpecVersion, TeamDefinitionMigrationId, Timestamp, TopologyKindKey,
-    TopologyNodeId, parse_utc_timestamp,
+    AdvisorRunId, AggregateRevision, CanonicalDocument, CommandReceiptId, CommitteeRunId,
+    ContentHash, ExternalId, ExternalName, IdempotencyKey, MiniProjectId, ProjectId, RoleCode,
+    RoleSlotId, RuntimeKindKey, SeatBindingId, SpecVersion, TeamDefinitionMigrationId, Timestamp,
+    TopologyKindKey, TopologyNodeId, parse_utc_timestamp,
 };
 use kontor_core::naming::NativeNameValues;
 use kontor_core::realm::ReceiptEnvelope;
@@ -65,7 +69,7 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let home = TempDir::new().expect("a temporary directory");
-    let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
+    let store = support::store_from_template(&home.path().join("kontor.db"));
     let project_id = ProjectId::generate();
     let mini_project_id = MiniProjectId::generate();
     let created_at = at("2026-09-01T12:00:00Z");
@@ -200,6 +204,8 @@ fn bind_container(
             identity: native.clone(),
             observed_kind,
             canonical_cwd: Some(name("/tmp/kontor")),
+            readback: None,
+            bound_at: f.created_at,
             observed_at: f.created_at,
         })
         .expect("the native container is bound before migration preflight");
@@ -327,7 +333,7 @@ fn a_published_team_definition_revision_cannot_be_replaced_even_with_the_same_by
 #[test]
 fn a_definition_naming_an_unpublished_topology_revision_is_refused() {
     let home = TempDir::new().expect("a temporary directory");
-    let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
+    let store = support::store_from_template(&home.path().join("kontor.db"));
     let project_id = ProjectId::generate();
     let created_at = at("2026-09-01T12:00:00Z");
     store
@@ -881,12 +887,12 @@ fn a_recorded_migration_and_its_pin_survive_a_restart() {
 // Legacy-compatible consultation topic
 // ---------------------------------------------------------------------------
 
-/// Create one Advisor consultation, with or without an authoritative topic.
-fn consultation_with_topic(
+/// Everything one fresh Advisor consultation needs, without inserting it.
+fn prepared_consultation(
     f: &Fixture,
     topic: Option<ExternalName>,
     semantic_identity_hash: Option<ContentHash>,
-) -> StoredConsultationRun {
+) -> (StoredConsultationRun, NewSessionTopologyNode) {
     let domain = bundled_operational_domain().expect("the bundled domain validates");
     let catalog = domain
         .role_catalogs
@@ -984,21 +990,28 @@ fn consultation_with_topic(
         updated_at: f.created_at,
         settled_at: None,
     };
+    let node = NewSessionTopologyNode {
+        id: asw,
+        project_id: f.project_id,
+        mini_project_id: Some(f.mini_project_id),
+        topology: f.topology.clone(),
+        kind: TopologyKindKey::parse("ASW").expect("the advisor kind"),
+        parent_id: Some(esw),
+        task_id: None,
+        created_at: f.created_at,
+    };
+    (run, node)
+}
+
+/// Create one Advisor consultation, with or without an authoritative topic.
+fn consultation_with_topic(
+    f: &Fixture,
+    topic: Option<ExternalName>,
+    semantic_identity_hash: Option<ContentHash>,
+) -> StoredConsultationRun {
+    let (run, node) = prepared_consultation(f, topic, semantic_identity_hash);
     f.store
-        .create_consultation_run(
-            &run,
-            &NewSessionTopologyNode {
-                id: asw,
-                project_id: f.project_id,
-                mini_project_id: Some(f.mini_project_id),
-                topology: f.topology.clone(),
-                kind: TopologyKindKey::parse("ASW").expect("the advisor kind"),
-                parent_id: Some(esw),
-                task_id: None,
-                created_at: f.created_at,
-            },
-            &[],
-        )
+        .create_consultation_run(&run, &node, &[])
         .expect("the consultation is frozen");
     run
 }
@@ -1058,6 +1071,16 @@ fn a_fresh_invocation_key_cannot_freeze_the_same_semantic_consultation_twice() {
         error.to_string().contains("consultation semantic identity"),
         "the conflict names the duplicate identity: {error}"
     );
+    match &error {
+        RepositoryError::DuplicateConsultation { family, run_id } => {
+            assert_eq!(*family, ConsultationFamily::Advisor);
+            assert_eq!(
+                *run_id, first.id,
+                "the sequential duplicate already names the surviving run"
+            );
+        }
+        other => panic!("the sequential duplicate must be the typed refusal: {other}"),
+    }
     assert_eq!(
         f.store
             .get_consultation_run_by_semantic_identity(f.project_id, &identity)
@@ -1066,6 +1089,133 @@ fn a_fresh_invocation_key_cannot_freeze_the_same_semantic_consultation_twice() {
             .id,
         first.id
     );
+}
+
+/// Two real writers, one identity: the unique index still decides, and the
+/// loser receives the same typed refusal the sequential pre-check produces,
+/// naming the surviving run, with no row or node left by its own transaction.
+#[test]
+fn concurrent_semantic_identity_losers_get_the_typed_duplicate_naming_the_survivor() {
+    let f = fixture();
+    let database = f.home.path().join("kontor.db");
+    let (base_run, base_node) =
+        prepared_consultation(&f, Some(name("Concurrent completion")), None);
+    // The run's own family must have a published revision it can cite.
+    let committee_profile = CanonicalDocument::from_serializable(&serde_json::json!({
+        "schema_version": 1,
+        "slots": [],
+    }))
+    .expect("a canonical committee profile");
+    f.store
+        .publish_consultation_profile_revision(&StoredConsultationProfileRevision {
+            project_id: f.project_id,
+            family: ConsultationFamily::Committee,
+            profile_id: "01991c00-0000-7000-8000-00000000008c".to_owned(),
+            version: SpecVersion::FIRST,
+            name: name("Concurrent committee"),
+            definition: committee_profile.json().to_owned(),
+            definition_hash: committee_profile.hash().clone(),
+            published_at: f.created_at,
+        })
+        .expect("the committee profile publishes");
+    for (family, seed) in [
+        (
+            ConsultationFamily::Advisor,
+            b"concurrent advisor identity".as_slice(),
+        ),
+        (
+            ConsultationFamily::Committee,
+            b"concurrent committee identity".as_slice(),
+        ),
+    ] {
+        let identity = ContentHash::of(seed);
+        let barrier = Arc::new(Barrier::new(2));
+        let mut writers = Vec::new();
+        for suffix in ["a", "b"] {
+            let key = format!("concurrent-{family}-{suffix}");
+            let node_id = TopologyNodeId::generate();
+            let mut run = base_run.clone();
+            run.id = match family {
+                ConsultationFamily::Advisor => ConsultationRunId::Advisor(AdvisorRunId::generate()),
+                ConsultationFamily::Committee => {
+                    run.profile_id = "01991c00-0000-7000-8000-00000000008c".to_owned();
+                    run.definition_hash = committee_profile.hash().clone();
+                    ConsultationRunId::Committee(CommitteeRunId::generate())
+                }
+                ConsultationFamily::PlanningPair => {
+                    unreachable!(
+                        "this fixture covers the released Advisor and Committee duplicate route"
+                    )
+                }
+            };
+            run.semantic_identity_hash = Some(identity.clone());
+            run.topology_node_id = node_id;
+            run.invoke_key = IdempotencyKey::parse(&key).expect("a key");
+            run.invoke_intent_hash = ContentHash::of(key.as_bytes());
+            let mut node = base_node.clone();
+            node.id = node_id;
+            let barrier = Arc::clone(&barrier);
+            let database = database.clone();
+            writers.push(std::thread::spawn(move || {
+                let store = SqliteStore::open(&database).expect("a concurrent store");
+                barrier.wait();
+                let outcome = store.create_consultation_run(&run, &node, &[]);
+                (node_id, outcome)
+            }));
+        }
+        let results: Vec<_> = writers
+            .into_iter()
+            .map(|writer| writer.join().expect("the writer completes"))
+            .collect();
+        assert_eq!(
+            results
+                .iter()
+                .filter(|(_, outcome)| outcome.is_ok())
+                .count(),
+            1,
+            "exactly one writer may freeze {family}: {results:?}"
+        );
+        let survivor = f
+            .store
+            .get_consultation_run_by_semantic_identity(f.project_id, &identity)
+            .expect("the identity lookup succeeds")
+            .expect("the surviving run remains");
+        let (loser_node, loser) = results
+            .iter()
+            .find(|(_, outcome)| outcome.is_err())
+            .expect("one writer must lose");
+        let loser = loser
+            .as_ref()
+            .expect_err("the losing writer's transaction is refused");
+        match loser {
+            RepositoryError::DuplicateConsultation {
+                family: found,
+                run_id,
+            } => {
+                assert_eq!(*found, family);
+                assert_eq!(
+                    *run_id, survivor.id,
+                    "the transactional refusal must name the surviving run"
+                );
+            }
+            other => panic!("the concurrent loser must get the typed duplicate: {other}"),
+        }
+        assert!(
+            f.store
+                .get_topology_node(f.project_id, *loser_node)
+                .expect("the topology read succeeds")
+                .is_none(),
+            "the losing transaction must roll back its own node"
+        );
+        assert_eq!(
+            f.store
+                .list_consultation_runs(f.project_id, f.mini_project_id, family)
+                .expect("the runs read succeeds")
+                .len(),
+            1,
+            "the losing writer must leave no run row"
+        );
+    }
 }
 
 #[test]

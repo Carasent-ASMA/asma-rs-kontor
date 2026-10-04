@@ -37,12 +37,15 @@ use std::sync::Arc;
 
 use kontor_core::consultation::ConsultationRunId;
 use kontor_core::id::{
-    AgentRunId, CommitteeRunId, ExternalId, ExternalName, MiniProjectId, RoleSlotId,
-    RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId,
+    AgentRunId, CommitteeRunId, ExternalId, ExternalName, MiniProjectId, PlanningPairRunId,
+    RoleSlotId, RuntimeBindingId, RuntimeKindKey, SeatBindingId, TaskId, TeamRunId,
 };
+use kontor_core::planning_pair::PlanningPairSlot;
 use kontor_core::spec::SeatAutonomy;
 use kontor_core::spec::{EffortLevel, ModelRef, ModelRung, ProviderRef};
-use kontor_core::state::{ObservedRunState, RuntimeContact, TerminalOutcome};
+use kontor_core::state::{
+    ObservedContainerKind, ObservedRunState, RuntimeContact, TerminalOutcome,
+};
 use kontor_runtime::adapter::{
     ConsultationPermissionInspectRequest, ConsultationPermissionResponseRequest,
     CorrelationChallengeBoundary, HostedSeatClaimRequest, HostedSeatInspectRequest,
@@ -61,7 +64,7 @@ use kontor_runtime::request::{
 };
 use kontor_runtime::scope::{EpicScope, ExecutionScope, TaskScope};
 use kontor_runtime::timeline::{
-    EventSubject, HistoryCursor, HistoryReader, TimelineBreak, TimelinePosition,
+    EventSubject, HistoryCursor, HistoryReader, SessionEventKind, TimelineBreak, TimelinePosition,
 };
 use kontor_runtime::workspace::{
     WorkspaceBindingId, WorkspaceBindingSnapshot, WorkspacePrepareRequest, WorkspaceRoot,
@@ -75,8 +78,9 @@ use kontor_core::id::{ContentHash, TopologyNodeId};
 use kontor_core::spec::{NodeProjectionCapability, TopologySnapshot};
 use kontor_core::state::NativeRuntimeIdentity;
 use kontor_runtime::container::{
-    ContainerBinding, ContainerBindingId, ContainerProjection, ContainerRecoveryRequest,
-    ContainerRequest, RetitleContainerRequest,
+    ContainerBinding, ContainerBindingId, ContainerBindingSnapshot, ContainerInspectRequest,
+    ContainerProjection, ContainerRecoveryRequest, ContainerRecreationRequest, ContainerRequest,
+    RetitleContainerRequest,
 };
 use kontor_runtime_paseo::adapter::{
     PaseoAdapter, PaseoAdoptionIntent, PaseoCheckpoint, PaseoCompaction, PaseoConfig,
@@ -132,6 +136,8 @@ const AGENT_ADOPTED_PROVIDER_ROTATED: &str =
 const AGENT_OTHER_WORKSPACE: &str = fixture!("protocol/agent-other-workspace.json");
 const AGENT_OTHER_CWD: &str = fixture!("protocol/agent-other-cwd.json");
 const AGENT_FOREIGN: &str = fixture!("protocol/agent-foreign.json");
+const AGENT_NO_PROJECT_LABEL: &str = fixture!("protocol/agent-no-project-label.json");
+const AGENT_NO_WORKSPACE: &str = fixture!("protocol/agent-no-workspace.json");
 const AGENT_ADOPTED: &str = fixture!("protocol/agent-adopted.json");
 const AGENT_LIST_EMPTY: &str = fixture!("protocol/agent-list-empty.json");
 const AGENT_LIST_IMPLEMENT: &str = fixture!("protocol/agent-list-implement.json");
@@ -324,6 +330,7 @@ fn managed_worktree(
 
 fn managed_catalog_module_worktree(
     repository: &tempfile::TempDir,
+    slug: &str,
     branch: &str,
 ) -> (PaseoConfig, WorkspaceRoot, std::path::PathBuf) {
     let module_source = tempfile::tempdir().expect("a temporary module source");
@@ -370,7 +377,9 @@ fn managed_catalog_module_worktree(
 
     let path = repository
         .path()
-        .join(".worktrees/asma-8062/asma-rs-kontor");
+        .join(".worktrees")
+        .join(slug)
+        .join("asma-rs-kontor");
     std::fs::create_dir_all(path.parent().expect("the worktree has a parent"))
         .expect("the fixture worktree parent is created");
     let worktree = std::process::Command::new("git")
@@ -3153,7 +3162,7 @@ async fn preparation_accepts_an_asma_managed_catalog_module_worktree() {
     let repository = temporary_repository();
     let branch = "feat/ASMA-8062-native-naming";
     let (runtime_config, worktree_root, worktree) =
-        managed_catalog_module_worktree(&repository, branch);
+        managed_catalog_module_worktree(&repository, "asma-8062", branch);
     let readback = workspace_readback_at(WORKSPACE_LIST_ONE, &worktree_root, branch);
 
     let recorded = daemon();
@@ -3203,7 +3212,8 @@ async fn preparation_accepts_an_asma_managed_catalog_module_worktree() {
 async fn preparation_refuses_a_catalog_module_worktree_on_an_unrelated_branch() {
     let repository = temporary_repository();
     let branch = "feat/ASMA-9999-unrelated";
-    let (runtime_config, worktree_root, _) = managed_catalog_module_worktree(&repository, branch);
+    let (runtime_config, worktree_root, _) =
+        managed_catalog_module_worktree(&repository, "asma-8062", branch);
 
     let recorded = Arc::new(daemon());
     let adapter = PaseoAdapter::new(
@@ -3243,6 +3253,179 @@ async fn preparation_refuses_a_catalog_module_worktree_on_an_unrelated_branch() 
         RuntimeError::WorkspacePreparationFailed {
             rule: "branch_binding_mismatch: the branch key is not the confirmed tracker key of the epic or task it serves"
         }
+    );
+    assert_eq!(recorded.count("workspace create"), 0);
+}
+
+#[tokio::test]
+async fn preparation_refuses_a_task_catalog_branch_bound_to_the_epic_key() {
+    // The defect: slug and branch were each checked against the whole confirmed
+    // set, so a task-owned catalog checkout could ride the containing epic's
+    // branch. A task checkout binds both fields to the task key.
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-7744-epic-integration";
+    let (runtime_config, worktree_root, worktree) =
+        managed_catalog_module_worktree(&repository, "asma-8062", branch);
+    let (adapter, recorded) =
+        adapter_with_prepared_project(runtime_config, "cmd-task-epic-branch").await;
+
+    let refused = adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-8062",
+            worktree_root,
+            &worktree,
+        ))
+        .await
+        .expect_err("a task checkout may not ride the containing epic's branch");
+    assert_eq!(
+        refused,
+        RuntimeError::WorkspacePreparationFailed {
+            rule: "branch_binding_mismatch: the branch key is not the confirmed tracker key of the epic or task it serves"
+        }
+    );
+    assert_eq!(recorded.count("workspace create"), 0);
+}
+
+#[tokio::test]
+async fn preparation_refuses_a_catalog_branch_bound_to_a_different_task_key() {
+    // The compatibility scope may carry the ticket's stored key and the
+    // plane's configured key. The slug selects one of them, and the actual
+    // branch must carry that same key: mixing the two is refused.
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-7755-other-task";
+    let (runtime_config, worktree_root, worktree) =
+        managed_catalog_module_worktree(&repository, "asma-8062", branch);
+    let (adapter, recorded) =
+        adapter_with_prepared_project(runtime_config, "cmd-task-two-keys").await;
+
+    let refused = adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-8062",
+            worktree_root,
+            &worktree,
+        ))
+        .await
+        .expect_err("a slug and branch naming different task keys must be refused");
+    assert_eq!(
+        refused,
+        RuntimeError::WorkspacePreparationFailed {
+            rule: "branch_binding_mismatch: the branch key is not the confirmed tracker key of the epic or task it serves"
+        }
+    );
+    assert_eq!(recorded.count("workspace create"), 0);
+}
+
+#[tokio::test]
+async fn preparation_accepts_a_catalog_checkout_on_the_configured_task_key() {
+    // The same ticket spelled with the plane's configured key in both fields
+    // is one coherent identity, and the checkout is attested.
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-7755-other-task";
+    let (runtime_config, worktree_root, worktree) =
+        managed_catalog_module_worktree(&repository, "asma-7755", branch);
+    let readback = workspace_readback_at(WORKSPACE_LIST_ONE, &worktree_root, branch);
+
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    let recorded = Arc::new(
+        recorded
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", readback),
+    );
+    let adapter = PaseoAdapter::new(
+        runtime_config,
+        Box::new(Arc::clone(&recorded)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .expect("a fresh adapter");
+    adapter
+        .prepare_project("cmd-catalog-configured-task", &project_name())
+        .await
+        .expect("the epic project is prepared");
+
+    adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-8062",
+            worktree_root,
+            &worktree,
+        ))
+        .await
+        .expect("a checkout whose slug and branch share the configured task key is attested");
+    assert_eq!(recorded.count("workspace create"), 1);
+}
+
+#[tokio::test]
+async fn preparation_refuses_an_epic_catalog_slug_for_a_task_checkout() {
+    // The inverse mismatch: the containing epic's key may not name the slug of
+    // a checkout that serves one of its tasks.
+    let repository = temporary_repository();
+    let branch = "feat/ASMA-8062-native-naming";
+    let (runtime_config, worktree_root, worktree) =
+        managed_catalog_module_worktree(&repository, "asma-7744", branch);
+    let (adapter, recorded) =
+        adapter_with_prepared_project(runtime_config, "cmd-epic-slug-task").await;
+
+    let refused = adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-8062",
+            worktree_root,
+            &worktree,
+        ))
+        .await
+        .expect_err("a task checkout may not be named after the containing epic");
+    assert_eq!(
+        refused,
+        RuntimeError::WorkspacePreparationFailed {
+            rule: "the managed catalog worktree slug is not the confirmed task key"
+        }
+    );
+    assert_eq!(recorded.count("workspace create"), 0);
+}
+
+#[tokio::test]
+async fn preparation_refuses_an_absent_catalog_module_worktree() {
+    // The ASMA CLI owns catalog checkout creation. An absent two-segment
+    // worktree is refused rather than minted under a guessed branch.
+    let repository = temporary_repository();
+    let path = repository
+        .path()
+        .join(".worktrees/asma-8062/asma-rs-kontor");
+    let mut runtime_config = config();
+    runtime_config.scope.project_root_cwd = WorkspaceRoot::parse(
+        repository
+            .path()
+            .to_str()
+            .expect("the temporary path is UTF-8"),
+    )
+    .expect("an absolute project root");
+    let worktree_root = WorkspaceRoot::parse(path.to_str().expect("the temporary path is UTF-8"))
+        .expect("an absolute task worktree");
+    runtime_config.scope.canonical_worktree_cwd = worktree_root.clone();
+
+    let (adapter, recorded) =
+        adapter_with_prepared_project(runtime_config, "cmd-absent-catalog").await;
+    let refused = adapter
+        .prepare_workspace(&absent_checkout_request(
+            epic_scope(),
+            "ASMA-8062",
+            worktree_root,
+            &path,
+        ))
+        .await
+        .expect_err("an absent catalog worktree is refused");
+    assert_eq!(
+        refused,
+        RuntimeError::WorkspacePreparationFailed {
+            rule: "the ASMA CLI catalog worktree must exist before Kontor can attach it"
+        }
+    );
+    assert!(
+        !path.exists(),
+        "Kontor must not synthesize the catalog checkout"
     );
     assert_eq!(recorded.count("workspace create"), 0);
 }
@@ -4464,15 +4647,16 @@ async fn continuity_an_archived_binding_restores_after_its_workspace_is_retired(
 }
 
 #[tokio::test]
-async fn continuity_a_live_binding_without_placement_remains_unrestorable() {
+async fn continuity_a_live_binding_whose_workspace_still_exists_needs_its_placement() {
     let (_, binding) = launched().await;
     let recorded = daemon();
     recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
-    recorded.set_answer_rpc("fetch_agent_request", v(AGENT));
+    // The seat moved out of its canonical worktree while its workspace stayed
+    // in the census. The placement cannot be re-proved and the owner is not
+    // retired, which is exactly the case the readback exception must not cover:
+    // a seat that wandered is not a seat whose worktree was retired under it.
+    recorded.set_answer_rpc("fetch_agent_request", v(AGENT_OTHER_CWD));
     let (restarted, _) = Plane::prepared(recorded).await;
-    restarted
-        .daemon
-        .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
 
     assert!(
         restarted
@@ -4481,7 +4665,216 @@ async fn continuity_a_live_binding_without_placement_remains_unrestorable() {
             .await
             .expect("the missing placement is an attestation result")
             .is_empty(),
-        "only an explicitly archived exact identity may restore without placement"
+        "a workspace this plane can still see is not a retired owner"
+    );
+}
+
+/// The restart shape a retired task worktree leaves behind: nothing is
+/// prepared, so the epic project cannot be recovered from the adapter's own
+/// map, and the workspace the agent still names is in no project's census.
+async fn workspace_owner_retired_plane(answer: &str) -> Plane {
+    let recorded = daemon();
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
+    recorded.set_answer_rpc("fetch_agent_request", v(answer));
+    let (restarted, _) = Plane::prepared(recorded).await;
+    restarted
+        .daemon
+        .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
+    restarted
+}
+
+#[tokio::test]
+async fn continuity_a_live_seat_whose_workspace_owner_is_gone_restores_readback_only() {
+    let (_, binding) = launched().await;
+    let restarted = workspace_owner_retired_plane(AGENT).await;
+
+    assert_eq!(
+        restarted
+            .adapter
+            .restore_bindings(std::slice::from_ref(&binding))
+            .await
+            .expect("an exactly readable native outlives its retired workspace"),
+        vec![binding.clone()],
+        "the open run must stay settleable after its task worktree is retired"
+    );
+    let observed = restarted
+        .adapter
+        .inspect(&InspectRequest {
+            binding: binding.clone(),
+            requested_at: at("2026-08-10T09:32:00Z"),
+        })
+        .await
+        .expect("the restored seat is readable by exact identity");
+    assert_eq!(
+        observed.identity,
+        *binding.identity(),
+        "the whole native identity is preserved, not re-minted"
+    );
+    assert_eq!(observed.agent_run_id, binding.agent_run_id());
+}
+
+#[tokio::test]
+async fn continuity_an_observation_states_whether_the_seat_can_be_driven() {
+    // A placed seat and a readback-only one are both reachable. Only the
+    // placement tells a caller which of the two it is holding, so the
+    // observation carries it rather than leaving reachability to imply it.
+    let (plane, binding) = launched().await;
+    let placed = plane
+        .adapter
+        .inspect(&InspectRequest {
+            binding: binding.clone(),
+            requested_at: at("2026-08-10T09:32:00Z"),
+        })
+        .await
+        .expect("a placed seat inspects");
+    assert!(placed.drivable, "a placed seat is drivable");
+
+    let restarted = workspace_owner_retired_plane(AGENT).await;
+    restarted
+        .adapter
+        .restore_bindings(std::slice::from_ref(&binding))
+        .await
+        .expect("the readback-only restore succeeds");
+    let readback = restarted
+        .adapter
+        .inspect(&InspectRequest {
+            binding: binding.clone(),
+            requested_at: at("2026-08-10T09:32:00Z"),
+        })
+        .await
+        .expect("the readback-only seat inspects");
+    assert_eq!(readback.contact, RuntimeContact::Reachable);
+    assert!(
+        !readback.drivable,
+        "a seat restored without a placement is readable but not drivable"
+    );
+}
+
+#[tokio::test]
+async fn continuity_a_readback_only_seat_refuses_every_driving_operation() {
+    let (_, binding) = launched().await;
+    let restarted = workspace_owner_retired_plane(AGENT).await;
+    restarted
+        .adapter
+        .restore_bindings(std::slice::from_ref(&binding))
+        .await
+        .expect("the readback-only restore succeeds");
+
+    let refused = restarted
+        .adapter
+        .send(&message(&binding, "drive the seat"))
+        .await
+        .expect_err("a seat with no placement is readable, never drivable");
+    assert_eq!(refused, RuntimeError::WorkspaceBindingRequired);
+
+    let refused = restarted
+        .adapter
+        .correlation_challenge_boundary(&binding)
+        .await
+        .expect_err("no placement means no challenge may be prepared either");
+    assert_eq!(refused, RuntimeError::WorkspaceBindingRequired);
+}
+
+#[tokio::test]
+async fn continuity_a_restore_reads_the_workspace_census_once_however_many_claims() {
+    let (_, binding) = launched().await;
+    let restarted = workspace_owner_retired_plane(AGENT).await;
+    // A realm that has been running for weeks hands back hundreds of open
+    // claims in one restore. The directory read must not scale with them: a
+    // per-claim census spends the bounded restart window before it reaches the
+    // oldest claims, which are exactly the ones this exception exists for.
+    let claims = vec![
+        binding.clone(),
+        binding.clone(),
+        binding.clone(),
+        binding.clone(),
+    ];
+    let projects_before = restarted.daemon.count("rpc project.list.request");
+    let workspaces_before = restarted.daemon.count("rpc fetch_workspaces_request");
+
+    let restored = restarted
+        .adapter
+        .restore_bindings(&claims)
+        .await
+        .expect("every claim is judged against one census");
+
+    assert_eq!(
+        restarted.daemon.count("rpc project.list.request") - projects_before,
+        1,
+        "the project directory is enumerated once per restore, not once per claim"
+    );
+    assert_eq!(
+        restarted.daemon.count("rpc fetch_workspaces_request") - workspaces_before,
+        1,
+        "the workspace directory is enumerated once per restore, not once per claim"
+    );
+    assert_eq!(
+        restored.len(),
+        claims.len(),
+        "the last claim in the sweep is judged as fully as the first"
+    );
+}
+
+#[tokio::test]
+async fn continuity_an_unreadable_census_fails_the_whole_restore() {
+    let (_, binding) = launched().await;
+    let restarted = workspace_owner_retired_plane(AGENT).await;
+    // An enumeration that did not answer must never read as "no project owns
+    // this workspace", which is the one shape that widens the exception.
+    restarted.daemon.lose_next_rpc("project.list.request");
+
+    restarted
+        .adapter
+        .restore_bindings(std::slice::from_ref(&binding))
+        .await
+        .expect_err("an unreadable census fails the restore instead of implying retirement");
+}
+
+#[tokio::test]
+async fn continuity_an_absent_census_alone_is_not_a_retired_owner() {
+    // Two agents that would also fail project recovery against an empty census,
+    // and neither is the retired-worktree shape: one never said which epic it
+    // belonged to, the other never claimed a workspace at all. Reading "not
+    // found" as "retired" would restore both.
+    for (answer, why) in [
+        (
+            AGENT_NO_PROJECT_LABEL,
+            "an agent that names no epic project",
+        ),
+        (
+            AGENT_NO_WORKSPACE,
+            "an agent that never claimed a workspace",
+        ),
+    ] {
+        let (_, binding) = launched().await;
+        let restarted = workspace_owner_retired_plane(answer).await;
+        assert!(
+            restarted
+                .adapter
+                .restore_bindings(std::slice::from_ref(&binding))
+                .await
+                .expect("the refusal is an attestation result")
+                .is_empty(),
+            "{why} has no retired workspace owner to recover"
+        );
+    }
+}
+
+#[tokio::test]
+async fn continuity_a_retired_workspace_never_restores_another_identity() {
+    let (_, binding) = launched().await;
+    // Exactly the recoverable census shape, answered by a different native that
+    // carries none of this run's labels.
+    let restarted = workspace_owner_retired_plane(AGENT_FOREIGN).await;
+
+    assert!(
+        restarted
+            .adapter
+            .restore_bindings(std::slice::from_ref(&binding))
+            .await
+            .expect("the mismatch is an attestation result, not a transport error")
+            .is_empty(),
+        "a retired workspace never widens which identity may be restored"
     );
 }
 
@@ -5321,14 +5714,15 @@ async fn timeline_cursor_free_read_restarts_from_a_fresh_tail_after_runtime_refe
 }
 
 #[tokio::test]
-async fn timeline_a_collapsed_projection_is_refused_rather_than_paged() {
+async fn timeline_a_collapsed_projection_expands_to_one_event_per_native_sequence() {
     let (plane, binding) = with_history().await;
-    // What a `projected` read looks like: one entry covering a range.
+    // Paseo 0.9 answers every read from its projection: one entry covering a
+    // tool lifecycle's two sequences.
     plane
         .daemon
         .set_answer_rpc("fetch_agent_timeline_request", v(TIMELINE_COLLAPSED));
 
-    let refused = plane
+    let page = plane
         .adapter
         .history(&HistoryRequest {
             binding,
@@ -5336,12 +5730,104 @@ async fn timeline_a_collapsed_projection_is_refused_rather_than_paged() {
             page_size: 10,
         })
         .await
-        .expect_err("a collapsed range is a hole a canonical cursor cannot page over");
+        .expect("a collapsed range is expanded rather than refused");
+    let read: Vec<(u64, SessionEventKind)> = page
+        .items
+        .iter()
+        .map(|event| (event.position.sequence, event.kind))
+        .collect();
     assert_eq!(
-        refused,
-        RuntimeError::TimelineRefetchRequired {
-            reason: TimelineBreak::SequenceGap
-        }
+        read,
+        [(2, SessionEventKind::Log), (3, SessionEventKind::ToolCall)],
+        "the absorbed sequence is a stand-in and the tool call sits at its seqEnd"
+    );
+}
+
+#[tokio::test]
+async fn timeline_an_older_page_folds_in_the_anchor_that_completes_inside_it() {
+    let (plane, binding) = with_history().await;
+    let epoch = "8f2b1c34-0000-4000-8000-000000000021";
+    let page = |direction: &str, start: u64, has_older: bool, entries: Vec<serde_json::Value>| {
+        serde_json::json!({
+            "requestId": "req-projected",
+            "agentId": AGENT_ID,
+            "agent": serde_json::Value::Null,
+            "direction": direction,
+            "projection": "canonical",
+            "epoch": epoch,
+            "reset": false,
+            "staleCursor": false,
+            "gap": false,
+            "window": { "minSeq": 1, "maxSeq": 7, "nextSeq": 8 },
+            "startCursor": { "epoch": epoch, "seq": start },
+            "endCursor": serde_json::Value::Null,
+            "hasOlder": has_older,
+            "hasNewer": false,
+            "entries": entries,
+            "error": serde_json::Value::Null,
+        })
+    };
+    // call_a starts at 2 and completes at 5; Paseo anchors it at 2, so the
+    // page selected by seqStart 3–4 has a hole at 5 that only the next older
+    // page can fill.
+    let mut straddling = tool_entry(2, "call_a");
+    straddling["seqEnd"] = serde_json::json!(5);
+    straddling["sourceSeqRanges"] =
+        serde_json::json!([{ "startSeq": 2, "endSeq": 2 }, { "startSeq": 5, "endSeq": 5 }]);
+    straddling["collapsed"] = serde_json::json!(["tool_lifecycle"]);
+    for answer in [
+        page(
+            "tail",
+            6,
+            true,
+            vec![tool_entry(6, "call_6"), tool_entry(7, "call_7")],
+        ),
+        page(
+            "before",
+            3,
+            true,
+            vec![tool_entry(3, "call_3"), tool_entry(4, "call_4")],
+        ),
+        page(
+            "before",
+            1,
+            false,
+            vec![user_entry(1, "msg_someone_else"), straddling],
+        ),
+    ] {
+        plane
+            .daemon
+            .queue_answer_rpc("fetch_agent_timeline_request", answer);
+    }
+
+    let origin = plane
+        .adapter
+        .history(&HistoryRequest {
+            binding,
+            cursor: None,
+            page_size: 2,
+        })
+        .await
+        .expect("the hole is filled from the page holding its anchor");
+    let read: Vec<(u64, SessionEventKind)> = origin
+        .items
+        .iter()
+        .map(|event| (event.position.sequence, event.kind))
+        .collect();
+    assert_eq!(
+        read,
+        [
+            (1, SessionEventKind::Message),
+            (2, SessionEventKind::Log),
+            (3, SessionEventKind::ToolCall),
+            (4, SessionEventKind::ToolCall),
+            (5, SessionEventKind::ToolCall),
+        ]
+    );
+    assert_eq!(
+        plane.daemon.count("rpc fetch_agent_timeline_request"),
+        3,
+        "tail, the holed older page, then the page holding its anchor"
     );
 }
 
@@ -6118,6 +6604,235 @@ async fn a_null_id_timeline_correlates_only_one_new_server_challenge() {
     assert!(matches!(duplicate, RuntimeError::DuplicateMessage { .. }));
 }
 
+/// The exact live ASMA-8234 shape: Paseo streamed one assistant answer as 17
+/// adjacent entries under one provider messageId. Only their concatenation is
+/// the reply, and no single entry equals it.
+const ANSWER_CHUNKS: [&str; 17] = [
+    "Con", "fir", "med", ": ", "the", " fro", "zen", " art", "ifa", "ct ", "and", " che", "cks",
+    "um ", "are", " unch", "anged.",
+];
+const ANSWER_MESSAGE_ID: &str = "msg_0e447b";
+
+/// One challenge, sent and acknowledged, with nothing answering it yet.
+async fn answered_challenge() -> (Plane, CorrelationChallengeCompletionRequest) {
+    let recorded = daemon().without_journal_client_message_ids();
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let binding = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the exact seat launches")
+        .snapshot;
+    plane.daemon.append_journal_item(
+        AGENT_ID,
+        serde_json::json!({
+            "type": "user_message",
+            "text": "an older uncorrelated request",
+            "clientMessageId": null,
+        }),
+    );
+    plane.daemon.append_journal_item(
+        AGENT_ID,
+        serde_json::json!({
+            "type": "user_message",
+            "text": "another older uncorrelated request",
+            "clientMessageId": null,
+        }),
+    );
+    let CorrelationChallengeBoundary {
+        position: after,
+        native_epoch,
+    } = plane
+        .adapter
+        .correlation_challenge_boundary(&binding)
+        .await
+        .expect("the canonical tail is an exact post-history boundary");
+    let body = text("Kontor correlation challenge nonce-8234: verify the frozen artifact.");
+    let expected_response = text(&ANSWER_CHUNKS.concat());
+    let request = CorrelationChallengeRequest {
+        binding: binding.clone(),
+        message_id: MessageId::parse(MESSAGE).expect("pinned"),
+        body: body.clone(),
+        after,
+        native_epoch: native_epoch.clone(),
+        may_dispatch: true,
+        sent_at: at("2026-09-19T00:40:00Z"),
+    };
+    let acknowledgement = plane
+        .adapter
+        .send_correlation_challenge(&request)
+        .await
+        .expect("the challenge is dispatched once");
+    plane
+        .daemon
+        .set_answer_rpc("fetch_agent_request", v(AGENT_IDLE_FINISHED));
+    let completion = CorrelationChallengeCompletionRequest {
+        binding,
+        message_id: request.message_id,
+        message_position: acknowledgement.message.position,
+        after,
+        native_epoch,
+        body,
+        expected_response,
+    };
+    (plane, completion)
+}
+
+/// Append one assistant chunk, optionally under a named provider message id.
+fn append_chunk(plane: &Plane, text: &str, message_id: Option<&str>) {
+    plane.daemon.append_journal_item(
+        AGENT_ID,
+        serde_json::json!({
+            "type": "assistant_message",
+            "text": text,
+            "messageId": message_id,
+        }),
+    );
+}
+
+fn append_whole_answer(plane: &Plane, message_id: &str) {
+    for chunk in ANSWER_CHUNKS {
+        append_chunk(plane, chunk, Some(message_id));
+    }
+}
+
+#[tokio::test]
+async fn a_chunked_assistant_answer_coalesces_into_one_terminal_confirmation() {
+    let (plane, completion) = answered_challenge().await;
+    assert_eq!(
+        ANSWER_CHUNKS.concat(),
+        completion.expected_response.as_str(),
+        "the fixture's chunks are exactly the expected answer"
+    );
+    assert!(
+        !ANSWER_CHUNKS
+            .iter()
+            .any(|chunk| *chunk == completion.expected_response.as_str()),
+        "no single chunk is the answer, which is the whole defect"
+    );
+    append_whole_answer(&plane, ANSWER_MESSAGE_ID);
+
+    let terminal = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect("17 adjacent chunks under one provider id are one terminal answer");
+    assert_eq!(
+        terminal.sequence, 20,
+        "the proved position is the group's last chunk, not its first"
+    );
+}
+
+#[tokio::test]
+async fn a_chunk_carried_under_another_message_id_is_not_one_answer() {
+    let (plane, completion) = answered_challenge().await;
+    for (index, chunk) in ANSWER_CHUNKS.iter().enumerate() {
+        let id = if index == 9 {
+            "msg_someone_else"
+        } else {
+            ANSWER_MESSAGE_ID
+        };
+        append_chunk(&plane, chunk, Some(id));
+    }
+    let refused = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect_err("chunks under two provider ids are two partial answers");
+    assert!(matches!(
+        refused,
+        RuntimeError::ReplacementNotEvidenced { .. }
+    ));
+}
+
+#[tokio::test]
+async fn chunks_interrupted_by_other_content_are_not_one_answer() {
+    let (plane, completion) = answered_challenge().await;
+    for (index, chunk) in ANSWER_CHUNKS.iter().enumerate() {
+        if index == 9 {
+            plane.daemon.append_journal_item(
+                AGENT_ID,
+                serde_json::json!({
+                    "type": "user_message",
+                    "text": "an interleaved turn",
+                    "clientMessageId": null,
+                }),
+            );
+        }
+        append_chunk(&plane, chunk, Some(ANSWER_MESSAGE_ID));
+    }
+    let refused = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect_err("non-contiguous chunks never coalesce across the interruption");
+    assert!(matches!(
+        refused,
+        RuntimeError::ReplacementNotEvidenced { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_partial_chunked_answer_is_refused() {
+    let (plane, completion) = answered_challenge().await;
+    for chunk in ANSWER_CHUNKS.iter().take(ANSWER_CHUNKS.len() - 1) {
+        append_chunk(&plane, chunk, Some(ANSWER_MESSAGE_ID));
+    }
+    let refused = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect_err("a prefix of the answer is not the answer");
+    assert!(matches!(
+        refused,
+        RuntimeError::ReplacementNotEvidenced { .. }
+    ));
+}
+
+#[tokio::test]
+async fn extra_bytes_inside_the_group_are_refused() {
+    let (plane, completion) = answered_challenge().await;
+    append_whole_answer(&plane, ANSWER_MESSAGE_ID);
+    append_chunk(&plane, " And one more thing.", Some(ANSWER_MESSAGE_ID));
+    let refused = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect_err("the concatenation must equal the answer, not merely start with it");
+    assert!(matches!(
+        refused,
+        RuntimeError::ReplacementNotEvidenced { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_whole_answer_that_is_not_terminal_is_refused() {
+    let (plane, completion) = answered_challenge().await;
+    append_whole_answer(&plane, ANSWER_MESSAGE_ID);
+    append_chunk(&plane, "an unrelated later remark", Some("msg_later"));
+    let refused = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect_err("content after the answer means the group is not the session's last word");
+    assert!(matches!(
+        refused,
+        RuntimeError::ReplacementNotEvidenced { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_repeated_whole_answer_is_refused() {
+    let (plane, completion) = answered_challenge().await;
+    append_whole_answer(&plane, ANSWER_MESSAGE_ID);
+    append_whole_answer(&plane, "msg_second_copy");
+    let refused = plane
+        .adapter
+        .prove_correlation_challenge_completion(&completion)
+        .await
+        .expect_err("two whole answers are never one unique confirmation");
+    assert!(matches!(refused, RuntimeError::DuplicateMessage { .. }));
+}
+
 #[tokio::test]
 async fn message_a_changed_body_under_one_id_is_rejected() {
     let (plane, binding) = launched().await;
@@ -6277,7 +6992,7 @@ async fn message_a_confirmation_read_that_cannot_answer_is_unconfirmed_delivery(
 }
 
 #[tokio::test]
-async fn message_a_history_read_promotes_confirmation_unknown_to_a_replayable_ack() {
+async fn message_a_history_read_keeps_confirmation_unknown_until_a_complete_proof() {
     let (plane, binding) = launched().await;
     plane.daemon.lose_next_rpc("send_agent_message_request");
     let mut absent = v(TIMELINE_MESSAGE_LANDED);
@@ -6312,18 +7027,27 @@ async fn message_a_history_read_promotes_confirmation_unknown_to_a_replayable_ac
     assert_eq!(page.items[0].position.sequence, 1);
 
     let reads_before_replay = plane.daemon.count("rpc fetch_agent_timeline_request");
-    plane.daemon.refuse_next_rpc("fetch_agent_timeline_request");
+    plane.daemon.lose_next_rpc("fetch_agent_timeline_request");
     let replay = plane
         .adapter
         .send(&request)
         .await
-        .expect("the history read repaired the durable delivery ledger");
-    assert_eq!(replay.position.sequence, 1);
+        .expect_err("one history page cannot prove uniqueness across the transcript");
+    assert!(
+        matches!(replay, RuntimeError::Transport { .. }),
+        "{replay:?}"
+    );
     assert_eq!(
         plane.daemon.count("rpc fetch_agent_timeline_request"),
-        reads_before_replay,
-        "the acknowledged retry is answered before touching the runtime"
+        reads_before_replay + 1,
+        "an unconfirmed retry still owes its complete canonical proof"
     );
+    let proved = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("the subsequent complete scan proves one occurrence");
+    assert_eq!(proved.position.sequence, 1);
     assert_eq!(
         plane.daemon.count("rpc send_agent_message_request"),
         1,
@@ -6593,6 +7317,70 @@ async fn message_restart_replays_the_original_ack_without_a_second_send() {
     assert_eq!(journal, 1);
 }
 
+/// A send can be the first operation to learn an epoch. Its durability debt
+/// must survive the handoff to storage and retain the same position when a
+/// fresh adapter encounters another native epoch before revisiting this one.
+#[tokio::test]
+async fn message_delivery_epoch_survives_restart_and_interleaved_allocation() {
+    let (plane, binding) = launched().await;
+    assert!(plane.adapter.pending_timeline_epochs().is_empty());
+    let ack = plane
+        .adapter
+        .send(&message(&binding, "the next turn"))
+        .await
+        .expect("delivered under an initially unknown epoch");
+    let durable = plane.adapter.pending_timeline_epochs();
+    assert!(
+        durable
+            .iter()
+            .any(|(raw, epoch)| raw == EPOCH_RAW && *epoch == ack.position.epoch)
+    );
+    plane.adapter.ack_timeline_epochs(&durable);
+    let mut carried = plane.adapter.checkpoint();
+    carried.epochs.clear();
+    carried.cursors.clear();
+    carried.deliveries.clear();
+    drop(plane);
+    let other_raw = "11111111-2222-4333-8444-555555555555";
+    let restarted = Plane::build(
+        daemon().journaling(AGENT_ID, other_raw, vec![user_entry(1, "unrelated")]),
+        carried,
+    );
+    restarted
+        .adapter
+        .restore_timeline_epochs(&durable)
+        .expect("load the committed mappings");
+    let other = restarted
+        .adapter
+        .history(&HistoryRequest {
+            binding: binding.clone(),
+            cursor: None,
+            page_size: 10,
+        })
+        .await
+        .expect("a different epoch is encountered first");
+    assert_ne!(other.epoch, ack.position.epoch);
+    restarted
+        .daemon
+        .set_answer_rpc("fetch_agent_timeline_request", v(TIMELINE_MESSAGE_LANDED));
+    let page = restarted
+        .adapter
+        .history(&HistoryRequest {
+            binding,
+            cursor: None,
+            page_size: 10,
+        })
+        .await
+        .expect("the original native transcript remains addressable");
+    assert_eq!(page.epoch, ack.position.epoch);
+    assert!(
+        page.items
+            .iter()
+            .any(|event| event.position == ack.position)
+    );
+    assert_eq!(restarted.daemon.count("rpc send_agent_message_request"), 0);
+}
+
 // ---------------------------------------------------------------------------
 // permission_
 // ---------------------------------------------------------------------------
@@ -6770,8 +7558,9 @@ async fn consultation_recovery_retires_legacy_modes_but_refuses_another_route() 
     use kontor_runtime::adapter::ConsultationSeatRetireRequest;
     let run_id = ConsultationRunId::Committee(CommitteeRunId::parse(MINI_PROJECT).unwrap());
     let seat_binding_id = SeatBindingId::parse(RUN_QA).unwrap();
-    for mode in ["plan", "acceptEdits"] {
+    for (mode, status) in [("plan", "idle"), ("acceptEdits", "idle"), ("plan", "error")] {
         let mut before = consultation_agent(AGENT_IDLE_FINISHED, run_id, seat_binding_id);
+        before["agent"]["status"] = serde_json::json!(status);
         before["agent"]["currentModeId"] = serde_json::json!(mode);
         before["agent"]["labels"][label::READ_ONLY] = serde_json::json!("true");
         let mut archived_list = v(AGENT_LIST_ARCHIVED_ONLY);
@@ -7365,6 +8154,16 @@ async fn security_an_oversized_frame_is_refused_at_every_acceptance_point() {
         .await
         .expect_err("an oversized answer is refused");
     assert_eq!(refused, bound);
+    let reads = plane.daemon.sent_messages("fetch_agent_timeline_request");
+    let limits: Vec<_> = reads
+        .iter()
+        .map(|read| read["limit"].as_u64().unwrap())
+        .collect();
+    assert_eq!(
+        limits,
+        [10, 5, 2, 1],
+        "one oversized entry remains refused after bounded read retries"
+    );
 
     // The pushed half: a subscription frame is bounded too, and refused before
     // the epoch registry or the timeline guard sees it.
@@ -8169,6 +8968,210 @@ fn child_request(node_id: TopologyNodeId, parent: Option<ContainerBinding>) -> C
     }
 }
 
+#[tokio::test]
+async fn exact_container_inspection_preserves_raw_uuid_titles_and_native_identity() {
+    let raw_title = "01890000-0000-7000-8000-0000000000ff";
+    let mut projects = v(PROJECT_LIST);
+    projects["projects"][0]["projectDisplayName"] = serde_json::json!(raw_title);
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", projects)
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+    let root_binding = bound_root(node(NODE_B));
+
+    let root_readback = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: root_binding.clone(),
+            native_parent: None,
+            scope: epic_execution_scope(),
+            epic_container: true,
+            requested_at: at("2026-09-06T12:00:00Z"),
+        })
+        .await
+        .expect("the exact persisted project is inspected");
+    assert_eq!(root_readback.observed_kind, ObservedContainerKind::Project);
+    assert_eq!(root_readback.visible_title, raw_title);
+    assert_eq!(root_readback.canonical_cwd.as_ref(), Some(&root()));
+    assert_eq!(root_readback.native_parent, None);
+    assert_eq!(root_readback.binding.identity, root_binding.identity);
+    assert_eq!(root_readback.observed_at, at("2026-09-06T12:00:00Z"));
+    assert_eq!(
+        root_readback.correlation.label.topology_node_id(),
+        node(NODE_B)
+    );
+    assert_eq!(
+        plane
+            .adapter
+            .project_binding()
+            .expect("only exact ESW inspection may rehydrate the project")
+            .project_id,
+        external(PROJECT_ID)
+    );
+
+    let child_binding = ContainerBinding {
+        id: ContainerBindingId::generate(),
+        topology_node_id: node(NODE_A),
+        projection: ContainerProjection::NativeChild,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(WORKSPACE_ID),
+        },
+        root: Some(root()),
+        bound_at: at("2026-08-16T09:05:00Z"),
+    };
+    let child_readback = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: child_binding.clone(),
+            native_parent: Some(root_binding.identity.clone()),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-09-06T12:01:00Z"),
+        })
+        .await
+        .expect("the exact persisted workspace is inspected inside its exact parent");
+    assert_eq!(
+        child_readback.observed_kind,
+        ObservedContainerKind::Workspace
+    );
+    assert_eq!(child_readback.visible_title, CANONICAL_NODE_TITLE);
+    assert_eq!(child_readback.canonical_cwd.as_ref(), Some(&root()));
+    assert_eq!(child_readback.native_parent, Some(root_binding.identity));
+    assert_eq!(child_readback.binding.identity, child_binding.identity);
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "inspection never creates or renames"
+    );
+}
+
+/// A daemon restart clears the adapter's node ledger, while Kontor keeps the
+/// exact container binding in its store. The scheduler reads that binding back
+/// immediately before launch. That exact-id inspection must rehydrate the
+/// ephemeral ledger; otherwise the already-admitted run is stranded with
+/// `WorkspaceBindingRequired` despite the native workspace being present.
+#[tokio::test]
+async fn exact_container_inspection_rehydrates_launch_placement_after_restart() {
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+    let parent = bound_root(node(NODE_B));
+    let binding = ContainerBinding {
+        id: ContainerBindingId::generate(),
+        topology_node_id: node(NODE_A),
+        projection: ContainerProjection::NativeChild,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(WORKSPACE_ID),
+        },
+        root: Some(root()),
+        bound_at: at("2026-08-16T09:05:00Z"),
+    };
+    let inspected = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding,
+            native_parent: Some(parent.identity),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-09-19T20:35:38Z"),
+        })
+        .await
+        .expect("the exact persisted workspace is re-attested after restart");
+    let container = ContainerBindingSnapshot {
+        binding: inspected.binding,
+        capabilities: plane
+            .adapter
+            .discover_capabilities()
+            .await
+            .expect("the same runtime capability set is current"),
+        correlation: inspected.correlation,
+    };
+    let binding_id = RuntimeBindingId::generate();
+    let authority = plane
+        .adapter
+        .admit_launch(&AdmissionRequest {
+            slot: RoleSlotKey::new(team_run(), slot("implement-a")),
+            agent_run_id: run(RUN_IMPLEMENT),
+            binding_id,
+            replaces: None,
+            requested_at: at("2026-09-19T20:35:39Z"),
+        })
+        .await
+        .expect("the existing slot is admitted")
+        .into_authority()
+        .expect("new launch authority");
+
+    let launched = plane
+        .adapter
+        .launch(&authority.into_request(LaunchParts {
+            scope: execution_scope(),
+            display_name: name("Implement • KON-19"),
+            agent_run_id: run(RUN_IMPLEMENT),
+            team_run_id: team_run(),
+            role_slot_id: slot("implement-a"),
+            task_id: task(),
+            binding_id,
+            placement: Some(LaunchPlacement::Container(container)),
+            cwd: root(),
+            account_profile_id: None,
+            prompt: text("bootstrap the role"),
+            model_rung: model_rung(),
+            context_policy: standard_context_policy(),
+            autonomy: SeatAutonomy::standard(),
+            requested_at: at("2026-09-19T20:35:39Z"),
+        }))
+        .await
+        .expect("fresh exact-id inspection restores launch placement");
+
+    assert_eq!(launched.snapshot.agent_run_id(), run(RUN_IMPLEMENT));
+    assert_eq!(plane.daemon.count("workspace create"), 0);
+}
+
+#[tokio::test]
+async fn container_inspection_never_resolves_a_matching_title_or_cwd() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+    let parent = bound_root(node(NODE_B));
+    let missing = ContainerBinding {
+        id: ContainerBindingId::generate(),
+        topology_node_id: node(NODE_A),
+        projection: ContainerProjection::NativeChild,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external("01890000-0000-7000-8000-0000000000ee"),
+        },
+        root: Some(root()),
+        bound_at: at("2026-08-16T09:05:00Z"),
+    };
+    let error = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: missing,
+            native_parent: Some(parent.identity),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-09-06T12:02:00Z"),
+        })
+        .await
+        .expect_err("a matching title and cwd cannot replace an absent exact id");
+    assert!(matches!(error, RuntimeError::CorrelationFailed));
+    assert!(plane.daemon.mutations().is_empty());
+}
+
 fn local_archive_workspace() -> serde_json::Value {
     let mut workspace = v(WORKSPACE_LIST_ONE);
     workspace["entries"][0]["workspaceKind"] = serde_json::json!("directory");
@@ -8205,7 +9208,7 @@ fn archive_child() -> kontor_runtime::container::ArchiveContainerRequest {
             generation: 1,
             native_id: external(WORKSPACE_ID),
         },
-        bound_project_native_id: external(PROJECT_ID),
+        bound_project_native_id: Some(external(PROJECT_ID)),
         canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
         requested_at: at("2026-09-05T10:00:00Z"),
     }
@@ -8257,7 +9260,8 @@ async fn native_child_archive_refuses_unsafe_targets_before_any_mutation() {
         "foreign-parent",
         "wrong-cwd",
         "owned-worktree",
-        "root",
+        "root-claiming-a-parent",
+        "child-naming-no-parent",
         "foreign-host",
         "future-generation",
         "active-session",
@@ -8277,7 +9281,9 @@ async fn native_child_archive_refuses_unsafe_targets_before_any_mutation() {
         plane.daemon.forget_queued_rpc("fetch_workspaces_request");
         let mut request = archive_child();
         match case {
-            "foreign-parent" => request.bound_project_native_id = external("prj_somebody_else"),
+            "foreign-parent" => {
+                request.bound_project_native_id = Some(external("prj_somebody_else"));
+            }
             "git-worktree" => plane.daemon.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_ONE)),
             "running-script" => plane.daemon.set_answer_rpc("workspace.script.list.request", serde_json::json!({"workspaceId": WORKSPACE_ID, "scripts": [{"lifecycle": "running"}], "error": null})),
             "terminal" => plane.daemon.set_answer_rpc("list_terminals_request", serde_json::json!({"cwd": CWD, "terminals": [{"id": "interactive-shell"}]})),
@@ -8290,7 +9296,11 @@ async fn native_child_archive_refuses_unsafe_targets_before_any_mutation() {
             "owned-worktree" => plane
                 .daemon
                 .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_PASEO_OWNED)),
-            "root" => request.projection = ContainerProjection::NativeRoot,
+            // A root has no parent to name, and a child cannot be addressed
+            // without one. Both are refused by the request's own shape, before
+            // the adapter looks anything up.
+            "root-claiming-a-parent" => request.projection = ContainerProjection::NativeRoot,
+            "child-naming-no-parent" => request.bound_project_native_id = None,
             "foreign-host" => request.identity.host = name("another-host"),
             "future-generation" => request.identity.generation = 2,
             "active-session" | "orphan-session" => {
@@ -8469,8 +9479,363 @@ fn stale_container_recovery(stale_native_id: &str) -> ContainerRecoveryRequest {
         },
         bound_project_native_id: external(PROJECT_ID),
         canonical_cwd: root(),
+        task_container: true,
         expected_title: name(CANONICAL_NODE_TITLE),
         requested_at: at("2026-09-04T08:00:00Z"),
+    }
+}
+
+fn stale_container_recreation(stale_native_id: &str) -> ContainerRecreationRequest {
+    let recovery = stale_container_recovery(stale_native_id);
+    ContainerRecreationRequest {
+        topology_node_id: recovery.topology_node_id,
+        container_binding_id: recovery.container_binding_id,
+        absent_identity: recovery.stale_identity,
+        bound_project_native_id: recovery.bound_project_native_id,
+        canonical_cwd: recovery.canonical_cwd,
+        task_container: recovery.task_container,
+        expected_title: recovery.expected_title,
+        requested_at: recovery.requested_at,
+    }
+}
+
+/// Every mutating call the plane made, which is the create counter the frozen
+/// record's evidence items are stated in terms of.
+fn creates(plane: &Plane) -> Vec<String> {
+    plane.daemon.mutations()
+}
+
+#[tokio::test]
+async fn container_recreation_refuses_non_worktree_ticket_readback() {
+    for kind in ["local_checkout", "directory", "checkout", "unknown"] {
+        let mut wrong_kind = v(WORKSPACE_LIST_NODE);
+        wrong_kind["entries"][0]["workspaceKind"] = serde_json::json!(kind);
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", wrong_kind);
+        let plane = Plane::fresh(recorded);
+
+        let error = plane
+            .adapter
+            .recreate_container(&stale_container_recreation("wks_stale"))
+            .await
+            .expect_err(
+                "matching path and title cannot turn a local checkout into a ticket worktree",
+            );
+        assert!(
+            matches!(error, RuntimeError::StaleBinding { .. }),
+            "{kind}: {error:?}"
+        );
+        assert_eq!(
+            creates(&plane).len(),
+            1,
+            "a refused readback must not create again"
+        );
+    }
+}
+
+#[tokio::test]
+async fn container_recovery_and_lost_creation_adoption_validate_subject_kind() {
+    for (task_container, kind, accepted) in [
+        (true, "worktree", true),
+        (true, "local_checkout", false),
+        (true, "directory", false),
+        (true, "checkout", false),
+        (true, "unknown", false),
+        (false, "worktree", true),
+        (false, "local_checkout", true),
+        (false, "directory", true),
+        (false, "checkout", false),
+        (false, "unknown", false),
+    ] {
+        let mut listing = v(WORKSPACE_LIST_NODE);
+        listing["entries"][0]["workspaceKind"] = serde_json::json!(kind);
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", listing);
+        let plane = Plane::fresh(recorded);
+        let mut recovery = stale_container_recovery("wks_stale");
+        recovery.task_container = task_container;
+        let mut recreation = stale_container_recreation("wks_stale");
+        recreation.task_container = task_container;
+
+        let recovery_result = plane.adapter.preview_container_recovery(&recovery).await;
+        let preview_result = plane
+            .adapter
+            .preview_container_recreation(&recreation)
+            .await;
+        let apply_result = plane.adapter.recreate_container(&recreation).await;
+        assert_eq!(
+            recovery_result.is_ok(),
+            accepted,
+            "recovery task={task_container} kind={kind}: {recovery_result:?}"
+        );
+        assert_eq!(
+            preview_result.is_ok(),
+            accepted,
+            "preview task={task_container} kind={kind}: {preview_result:?}"
+        );
+        assert_eq!(
+            apply_result.is_ok(),
+            accepted,
+            "apply task={task_container} kind={kind}: {apply_result:?}"
+        );
+        for result in [preview_result, apply_result].into_iter().flatten() {
+            assert!(!result.created, "adoption cannot create another workspace");
+        }
+        assert!(creates(&plane).is_empty());
+    }
+}
+
+/// Evidence item 1 (runtime half): exact native absent plus zero candidates
+/// creates exactly one native and preserves the whole placement tuple.
+#[tokio::test]
+async fn container_recreation_creates_exactly_one_native_when_the_path_is_vacant() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+    let request = stale_container_recreation("wks_stale");
+
+    let outcome = plane
+        .adapter
+        .recreate_container(&request)
+        .await
+        .expect("a vacant canonical path is recreated");
+
+    assert!(outcome.created, "a vacant path must report a real creation");
+    assert_eq!(
+        creates(&plane).len(),
+        1,
+        "exactly one native may be built: {:?}",
+        creates(&plane)
+    );
+
+    // The whole preserved tuple, field by field. A recreation that kept the
+    // node but moved the container would pass a looser assertion than this.
+    assert_eq!(
+        outcome.snapshot.topology_node_id(),
+        request.topology_node_id
+    );
+    assert_eq!(outcome.snapshot.binding.id, request.container_binding_id);
+    assert_eq!(
+        outcome.snapshot.binding.projection,
+        ContainerProjection::NativeChild
+    );
+    assert_eq!(outcome.snapshot.root(), Some(&request.canonical_cwd));
+    assert_eq!(outcome.observed_title, request.expected_title.as_str());
+    assert_ne!(
+        outcome.snapshot.binding.identity.native_id, request.absent_identity.native_id,
+        "the replacement must not carry the identity proved absent"
+    );
+    outcome
+        .snapshot
+        .ensure_correlated()
+        .expect("the created native carries this node's label");
+}
+
+/// Evidence item 3: a create whose acknowledgement was lost is adopted by the
+/// retry, never built a second time.
+#[tokio::test]
+async fn container_recreation_adopts_its_own_lost_creation_instead_of_building_twice() {
+    // The retry's census now finds the native the lost attempt created: one
+    // candidate, exact parent, exact canonical path, exact rendered title.
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE));
+    let plane = Plane::fresh(recorded);
+
+    let outcome = plane
+        .adapter
+        .recreate_container(&stale_container_recreation("wks_stale"))
+        .await
+        .expect("the lost creation is adopted");
+
+    assert!(
+        !outcome.created,
+        "adopting a prior creation is not a creation, and the difference is the evidence"
+    );
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID,
+        "the exact native the lost attempt created is the one bound"
+    );
+    assert!(
+        creates(&plane).is_empty(),
+        "a retry after a lost acknowledgement must issue no create: {:?}",
+        creates(&plane)
+    );
+}
+
+/// Evidence item 2 (runtime half): every refusal fails closed, before a create.
+#[tokio::test]
+async fn container_recreation_refuses_live_native_ambiguity_and_title_drift() {
+    let mut duplicates = v(WORKSPACE_LIST_NODE);
+    let mut second = duplicates["entries"][0].clone();
+    second["id"] = serde_json::json!("wks_duplicate");
+    duplicates["entries"]
+        .as_array_mut()
+        .expect("entries are an array")
+        .push(second);
+
+    for (answer, stale, expected) in [
+        // The persisted native is still alive: recreation must never run beside
+        // a container the node still owns.
+        (v(WORKSPACE_LIST_NODE), WORKSPACE_ID, "still-live native"),
+        (duplicates, "wks_stale", "several candidates"),
+        (
+            v(WORKSPACE_LIST_NODE_STALE_TITLE),
+            "wks_stale",
+            "title drift",
+        ),
+    ] {
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", answer);
+        let plane = Plane::fresh(recorded);
+
+        let error = plane
+            .adapter
+            .recreate_container(&stale_container_recreation(stale))
+            .await
+            .expect_err(expected);
+
+        assert!(
+            matches!(
+                error,
+                RuntimeError::StaleBinding { .. } | RuntimeError::WorkspaceMismatch { .. }
+            ),
+            "{expected} must fail closed: {error:?}"
+        );
+        assert!(
+            creates(&plane).is_empty(),
+            "{expected} must refuse before any native is built: {:?}",
+            creates(&plane)
+        );
+    }
+}
+
+/// The still-live check earns its place here, and nowhere else.
+///
+/// When the persisted native is alive but sitting at some *other* path, the
+/// canonical path is genuinely empty — so a census that only counted candidates
+/// would call it vacant and build a second native beside a container the node
+/// still owns. Nothing downstream can catch that: the new native would read
+/// back perfectly, at the right parent, path and title.
+///
+/// Found by mutation: deleting the still-live guard left every other recreation
+/// test green, because they all place the live native *on* the canonical path
+/// where the readback's absent-id check happens to catch it.
+#[tokio::test]
+async fn container_recreation_refuses_a_live_persisted_native_parked_at_another_path() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_OTHER_CWD));
+    let plane = Plane::fresh(recorded);
+
+    // `WORKSPACE_OTHER_CWD` holds the persisted native, alive, in the exact
+    // parent — but at `/w/epic/task-99` rather than the canonical path.
+    let error = plane
+        .adapter
+        .recreate_container(&stale_container_recreation(WORKSPACE_ID))
+        .await
+        .expect_err("a live persisted native is never recreated, wherever it is parked");
+
+    assert!(
+        matches!(error, RuntimeError::StaleBinding { .. }),
+        "a live persisted native must be reported as a stale binding: {error:?}"
+    );
+    assert!(
+        creates(&plane).is_empty(),
+        "no native may be built beside a live one: {:?}",
+        creates(&plane)
+    );
+}
+
+/// Evidence item 2, post-create ambiguity: when the readback cannot prove the
+/// native it just built landed in the exact persisted parent, the attempt
+/// refuses, binds nothing, and does not try again inside the same call.
+///
+/// This is the one refusal that can follow a real create, so the count matters
+/// more here than anywhere else: it must be exactly one, never two.
+#[tokio::test]
+async fn container_recreation_refuses_a_created_native_it_cannot_read_back_in_the_exact_parent() {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        // Vacant, so one create is authorized; the readback then reports the
+        // native under another project.
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", v(WORKSPACE_NODE_OTHER_PROJECT));
+    let plane = Plane::fresh(recorded);
+
+    let error = plane
+        .adapter
+        .recreate_container(&stale_container_recreation("wks_stale"))
+        .await
+        .expect_err("a native that cannot be read back in the exact parent is refused");
+
+    assert!(
+        matches!(
+            error,
+            RuntimeError::CorrelationFailed
+                | RuntimeError::StaleBinding { .. }
+                | RuntimeError::WorkspaceMismatch { .. }
+        ),
+        "post-create ambiguity must fail closed: {error:?}"
+    );
+    assert_eq!(
+        creates(&plane).len(),
+        1,
+        "a failed readback must not provoke a second create: {:?}",
+        creates(&plane)
+    );
+}
+
+/// The preview half writes nothing, whichever answer it reaches.
+#[tokio::test]
+async fn container_recreation_preview_never_mutates() {
+    for answer in [v(WORKSPACE_LIST_EMPTY), v(WORKSPACE_LIST_NODE)] {
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", answer);
+        let plane = Plane::fresh(recorded);
+
+        plane
+            .adapter
+            .preview_container_recreation(&stale_container_recreation("wks_stale"))
+            .await
+            .expect("the preview reaches an answer");
+
+        assert!(
+            creates(&plane).is_empty(),
+            "a preview must be write-free: {:?}",
+            creates(&plane)
+        );
     }
 }
 
@@ -8588,8 +9953,11 @@ async fn a_container_is_keyed_by_topology_node_and_not_by_team_run() {
         WORKSPACE_ID
     );
 
-    // A second preparation of the same node is answered from the ledger and
-    // never reaches the wire.
+    // A second preparation of the same node reaches the wire and is answered
+    // from what it reads back, not from the adapter's ledger — there is
+    // deliberately no cache short-circuit. What stays true is the part that
+    // matters: it is idempotent and it mutates nothing, because the readback
+    // says the container is already there.
     let before = plane.daemon.mutations().len();
     let again = plane
         .adapter
@@ -8813,31 +10181,196 @@ async fn a_hosted_core_team_seat_launches_in_the_exact_local_ecp() {
         .expect("the existing exact ECP is bound")
         .snapshot;
 
-    let outcome = plane
+    // Real daemon order: prepare, inspect at a later instant, then launch.
+    // The inspection refreshes the proof even though every native id is stable.
+    let inspection = plane
         .adapter
-        .launch_hosted_seat(&HostedSeatLaunchRequest {
-            seat_binding_id,
-            role_slot_id: slot("lsa"),
-            display_name: name("LSA · ASMA-7744"),
-            container,
-            cwd: root(),
+        .inspect_container(&ContainerInspectRequest {
+            binding: container.binding.clone(),
+            native_parent: Some(bound_root(node(NODE_B)).identity),
             scope: epic_execution_scope(),
-            prompt: text("continue epic leadership through Kontor"),
-            credential: kontor_runtime::adapter::ScopedSeatCredential::new(
-                "kontor-seat-v2.test.1.redacted".to_owned(),
-            ),
-            fenced_predecessor_native_ids: Vec::new(),
-            model_rung: model_rung(),
-            autonomy: SeatAutonomy::standard(),
-            context_policy: standard_context_policy(),
-            requested_at: at("2026-08-16T09:10:00Z"),
+            epic_container: false,
+            requested_at: at("2026-08-16T09:09:00Z"),
         })
         .await
-        .expect("the Core Team seat launches in the local ECP");
+        .expect("the exact ECP is inspected after preparation");
+    assert_ne!(container.correlation, inspection.correlation);
+    let fresh_container = ContainerBindingSnapshot {
+        binding: inspection.binding,
+        capabilities: container.capabilities.clone(),
+        correlation: inspection.correlation,
+    };
+    let mut launch = HostedSeatLaunchRequest {
+        seat_binding_id,
+        role_slot_id: slot("lsa"),
+        display_name: name("LSA · ASMA-7744"),
+        container,
+        cwd: root(),
+        scope: epic_execution_scope(),
+        prompt: text("continue epic leadership through Kontor"),
+        role_prompt: Some(text("You are the Lead Software Architect.")),
+        credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+            "kontor-seat-v2.test.1.redacted".to_owned(),
+        ),
+        fenced_predecessor_native_ids: Vec::new(),
+        model_rung: model_rung(),
+        fleet_provenance: None,
+        autonomy: SeatAutonomy::standard(),
+        context_policy: standard_context_policy(),
+        requested_at: at("2026-08-16T09:10:00Z"),
+    };
+    let stale = plane
+        .adapter
+        .launch_hosted_seat(&launch)
+        .await
+        .expect_err("a caller must propagate the latest inspected proof");
+    assert!(matches!(stale, RuntimeError::WorkspaceMismatch { .. }));
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 0);
+    launch.container = fresh_container;
+    let outcome = plane
+        .adapter
+        .launch_hosted_seat(&launch)
+        .await
+        .expect("the Core Team seat launches with the exact inspected proof");
 
     assert!(outcome.created);
     assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
     assert_eq!(plane.daemon.count("rpc create_agent_request"), 1);
+    let sent = plane.daemon.sent_messages("create_agent_request");
+    let [create] = sent.as_slice() else {
+        panic!("exactly one create was sent: {sent:?}")
+    };
+    assert_eq!(
+        create["config"]["systemPrompt"], "You are the Lead Software Architect.",
+        "the persona did not reach the session config: {create}"
+    );
+    assert_eq!(
+        create["initialPrompt"],
+        "continue epic leadership through Kontor"
+    );
+}
+
+/// Hosted Codex aliases and OpenCode cannot inherit a Claude cwd config. Their
+/// actual launch must carry the scoped MCP, with no secret in durable config.
+#[tokio::test]
+async fn hosted_leadership_injects_scoped_mcp_through_the_actual_launch() {
+    for (provider, model, mode) in [
+        ("codex", "gpt-5.6-sol", "full-access"),
+        ("codex-personal", "gpt-5.6-sol", "full-access"),
+        ("codex-work", "gpt-5.6-sol", "full-access"),
+        ("opencode", "deepseek/deepseek-flash", "build"),
+    ] {
+        for enabled in [true, false] {
+            let seat_binding_id = SeatBindingId::generate();
+            let mut workspace = v(WORKSPACE_ROOT_LOCAL);
+            workspace["entries"][0]["name"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+            workspace["entries"][0]["title"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+            let mut agent = v(AGENT);
+            agent["agent"]["provider"] = serde_json::json!(provider);
+            agent["agent"]["model"] = serde_json::json!(model);
+            agent["agent"]["currentModeId"] = serde_json::json!(mode);
+            agent["agent"]["labels"] = serde_json::json!({
+                "jira.epic": "ASMA-7744", "kontor.project_id": MINI_PROJECT,
+                "kontor.seat_binding_id": seat_binding_id.to_string(),
+                "kontor.hosted_seat": "true", "kontor.role": "lsa",
+                "kontor.role_slot_id": "lsa", "kontor.workspace_id": WORKSPACE_ID,
+                "kontor.worktree": CWD,
+            });
+            let recorded = RecordedPaseo::new()
+                .answering(&PaseoCommand::version(), VERSION)
+                .announcing(&v(SERVER_INFO))
+                .answering_rpc("project.list.request", v(PROJECT_LIST))
+                .answering_rpc("fetch_workspaces_request", workspace)
+                .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+                .answering_rpc(
+                    "create_agent_request",
+                    serde_json::json!({
+                        "status": "agent_created", "agent": {"id": AGENT_ID}
+                    }),
+                )
+                .answering_rpc("fetch_agent_request", agent);
+            let mut configured = config();
+            configured.seat_mcp = enabled.then(|| kontor_runtime_paseo::seat_mcp::SeatMcp {
+                command: "/realm/bin/kontor-mcp".to_owned(),
+                state_root: "/realm/state".into(),
+            });
+            let plane = Plane::build_with_config(
+                recorded,
+                PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+                configured,
+            );
+            plane
+                .adapter
+                .prepare_project("cmd-hosted-mcp", &project_name())
+                .await
+                .unwrap();
+            let container = plane
+                .adapter
+                .prepare_container(&ecp_request(node(NODE_A), bound_root(node(NODE_B))))
+                .await
+                .unwrap()
+                .snapshot;
+            let request = HostedSeatLaunchRequest {
+                seat_binding_id,
+                role_slot_id: slot("lsa"),
+                display_name: name("LSA"),
+                container,
+                cwd: root(),
+                scope: epic_execution_scope(),
+                prompt: text("continue governed leadership"),
+                role_prompt: None,
+                credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+                    "hosted-scope-secret".to_owned(),
+                ),
+                fenced_predecessor_native_ids: Vec::new(),
+                model_rung: ModelRung {
+                    provider: ProviderRef(provider.to_owned()),
+                    model: ModelRef(model.to_owned()),
+                    effort: None,
+                },
+                fleet_provenance: None,
+                autonomy: SeatAutonomy::Bounded,
+                context_policy: standard_context_policy(),
+                requested_at: at("2026-08-16T09:10:00Z"),
+            };
+            let outcome = plane.adapter.launch_hosted_seat(&request).await.unwrap();
+            assert!(outcome.created);
+            let sent = plane.daemon.sent_messages("create_agent_request");
+            assert_eq!(sent.len(), 1);
+            let config = &sent[0]["config"];
+            assert_eq!(config["provider"], provider);
+            if enabled {
+                assert_eq!(
+                    config["mcpServers"]["kontor"]["args"],
+                    serde_json::json!([
+                        "--state-root",
+                        "/realm/state",
+                        "--credential-tier",
+                        "operator",
+                        "--serve-profile",
+                        "leadership"
+                    ]),
+                    "{provider} must receive its own leadership MCP"
+                );
+                assert_eq!(
+                    config["toolPolicy"]["preapproved"]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    6
+                );
+            } else {
+                assert!(config.get("mcpServers").is_none());
+                assert!(config.get("toolPolicy").is_none());
+            }
+            assert!(
+                !serde_json::to_string(&sent)
+                    .unwrap()
+                    .contains("hosted-scope-secret")
+            );
+            assert!(!format!("{:?}", plane.adapter.checkpoint()).contains("hosted-scope-secret"));
+        }
+    }
 }
 
 /// REQ-001: a leadership seat launches under the autonomy it was given, and the
@@ -8910,11 +10443,13 @@ async fn a_leadership_seat_launches_and_reads_back_the_autonomy_it_was_given() {
                 cwd: root(),
                 scope: epic_execution_scope(),
                 prompt: text("continue epic leadership through Kontor"),
+                role_prompt: None,
                 credential: kontor_runtime::adapter::ScopedSeatCredential::new(
                     "kontor-seat-v2.test.3.redacted".to_owned(),
                 ),
                 fenced_predecessor_native_ids: Vec::new(),
                 model_rung: model_rung(),
+                fleet_provenance: None,
                 autonomy: SeatAutonomy::Bounded,
                 context_policy: standard_context_policy(),
                 requested_at: at("2026-08-16T09:10:00Z"),
@@ -8937,6 +10472,140 @@ async fn a_leadership_seat_launches_and_reads_back_the_autonomy_it_was_given() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn an_attached_hosted_seat_with_no_provider_thread_recovers_in_place() {
+    let seat_binding_id = SeatBindingId::generate();
+    let mut workspace = v(WORKSPACE_ROOT_LOCAL);
+    workspace["entries"][0]["name"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+    workspace["entries"][0]["title"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+    let labels = serde_json::json!({
+        "jira.epic": "ASMA-7744",
+        "kontor.project_id": MINI_PROJECT,
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+        "kontor.role": "lsa",
+        "kontor.role_slot_id": "lsa",
+        "kontor.workspace_id": WORKSPACE_ID,
+        "kontor.worktree": CWD,
+    });
+    let mut failed = v(AGENT);
+    failed["agent"]["title"] = serde_json::json!("LSA · ASMA-7744");
+    failed["agent"]["labels"] = labels.clone();
+    failed["agent"]["status"] = serde_json::json!("error");
+    failed["agent"]["runtimeInfo"] = serde_json::Value::Null;
+    failed["agent"]["persistence"] = serde_json::Value::Null;
+    let census = serde_json::json!({
+        "requestId": "req-fixture",
+        "entries": [{"agent": failed["agent"].clone(), "project": failed["project"].clone()}],
+        "pageInfo": {"nextCursor": null, "prevCursor": null, "hasMore": false}
+    });
+    let mut recovered = v(AGENT);
+    recovered["agent"]["title"] = serde_json::json!("LSA · ASMA-7744");
+    recovered["agent"]["labels"] = labels;
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&PaseoCommand::agent_reload(AGENT_ID), CLI_AGENT_RELOADED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .answering_rpc("fetch_workspaces_request", workspace)
+        .answering_rpc("fetch_agents_request", census)
+        .then_answering_rpc("fetch_agent_request", failed)
+        .answering_rpc("fetch_agent_request", recovered);
+    let plane = Plane::fresh(recorded);
+    plane
+        .adapter
+        .prepare_project("cmd-hosted-pre-thread-recovery", &project_name())
+        .await
+        .expect("the epic project is prepared");
+    let container = plane
+        .adapter
+        .prepare_container(&ecp_request(node(NODE_A), bound_root(node(NODE_B))))
+        .await
+        .expect("the exact ECP is bound")
+        .snapshot;
+    let outcome = plane
+        .adapter
+        .launch_hosted_seat(&HostedSeatLaunchRequest {
+            seat_binding_id,
+            role_slot_id: slot("lsa"),
+            display_name: name("LSA · ASMA-7744"),
+            container,
+            cwd: root(),
+            scope: epic_execution_scope(),
+            prompt: text("continue epic leadership through Kontor"),
+            role_prompt: None,
+            credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+                "kontor-seat-v2.test.recovery.redacted".to_owned(),
+            ),
+            fenced_predecessor_native_ids: Vec::new(),
+            model_rung: model_rung(),
+            fleet_provenance: None,
+            // The recovery re-enters the same native under the same posture it
+            // was launched with; a reload that silently changed mode would be a
+            // replacement, not a recovery (ASMA-8193, ASMA-8115).
+            autonomy: SeatAutonomy::standard(),
+            context_policy: standard_context_policy(),
+            requested_at: at("2026-08-16T09:10:00Z"),
+        })
+        .await
+        .expect("the exact attached seat reloads and rehydrates its provider thread");
+    assert!(!outcome.created);
+    assert_eq!(outcome.identity.native_id.as_str(), AGENT_ID);
+    assert_eq!(
+        outcome.provider_session_id.as_ref().map(ExternalId::as_str),
+        Some("prov_sess_1")
+    );
+    assert_eq!(plane.daemon.count("agent reload agt_implement"), 1);
+    assert_eq!(plane.daemon.count("rpc create_agent_request"), 0);
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn an_oversized_hosted_history_is_reconciled_through_smaller_reads_without_resending() {
+    let seat_binding_id = SeatBindingId::generate();
+    let mut agent = v(AGENT);
+    agent["agent"]["labels"] = serde_json::json!({
+        "kontor.seat_binding_id": seat_binding_id.to_string(),
+        "kontor.hosted_seat": "true",
+    });
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("fetch_agent_request", agent)
+        .then_answering_rpc(
+            "fetch_agent_timeline_request",
+            serde_json::json!({
+                "filler": "x".repeat(MAX_FRAME_BYTES)
+            }),
+        )
+        .answering_rpc("fetch_agent_timeline_request", v(TIMELINE_MESSAGE_LANDED));
+    let plane = Plane::fresh(recorded);
+    let outcome = plane
+        .adapter
+        .message_hosted_seat(&HostedSeatMessageRequest {
+            seat_binding_id,
+            identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+                host: name(HOST_KEY),
+                generation: 1,
+                native_id: external(AGENT_ID),
+            },
+            message_id: MessageId::parse(MESSAGE).expect("message id"),
+            body: text("frozen completion wake"),
+            sent_at: at("2026-08-20T05:10:00Z"),
+        })
+        .await
+        .expect("smaller canonical pages retain the actual delivery proof");
+    assert_eq!(outcome.position.sequence, 1);
+    assert_eq!(plane.daemon.count("rpc fetch_agent_timeline_request"), 2);
+    let reads = plane.daemon.sent_messages("fetch_agent_timeline_request");
+    assert_eq!(reads[0]["limit"], 500);
+    assert_eq!(reads[1]["limit"], 250);
+    assert_eq!(reads[0]["cursor"], reads[1]["cursor"]);
+    assert_eq!(reads[0]["direction"], reads[1]["direction"]);
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
 }
 
 #[tokio::test]
@@ -9053,11 +10722,13 @@ async fn a_fenced_historical_hosted_native_does_not_block_its_successor() {
         cwd: root(),
         scope: epic_execution_scope(),
         prompt: text("continue epic leadership through Kontor"),
+        role_prompt: None,
         credential: kontor_runtime::adapter::ScopedSeatCredential::new(
             "kontor-seat-v2.test.2.redacted".to_owned(),
         ),
         fenced_predecessor_native_ids: Vec::new(),
         model_rung: model_rung(),
+        fleet_provenance: None,
         autonomy: SeatAutonomy::standard(),
         context_policy: standard_context_policy(),
         requested_at: at("2026-08-16T09:10:00Z"),
@@ -9298,60 +10969,63 @@ async fn a_sibling_workspace_title_does_not_block_an_exact_hosted_seat_claim() {
 /// the archived stamp and emits no second native effect.
 #[tokio::test]
 async fn an_exact_idle_hosted_seat_can_be_retired_once_with_evidence_preserved() {
-    let seat_binding_id = SeatBindingId::generate();
-    let labels = serde_json::json!({
-        "kontor.seat_binding_id": seat_binding_id.to_string(),
-        "kontor.hosted_seat": "true",
-    });
-    let mut before = v(AGENT);
-    before["agent"]["labels"] = labels.clone();
-    let mut after = before.clone();
-    after["agent"]["archivedAt"] = serde_json::json!("2026-08-20T05:10:00.000Z");
+    for status in ["idle", "error"] {
+        let seat_binding_id = SeatBindingId::generate();
+        let labels = serde_json::json!({
+            "kontor.seat_binding_id": seat_binding_id.to_string(),
+            "kontor.hosted_seat": "true",
+        });
+        let mut before = v(AGENT);
+        before["agent"]["status"] = serde_json::json!(status);
+        before["agent"]["labels"] = labels.clone();
+        let mut after = before.clone();
+        after["agent"]["archivedAt"] = serde_json::json!("2026-08-20T05:10:00.000Z");
 
-    let recorded = RecordedPaseo::new()
-        .answering(&PaseoCommand::version(), VERSION)
-        .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
-        .announcing(&v(SERVER_INFO))
-        .then_answering_rpc("fetch_agent_request", before)
-        .answering_rpc("fetch_agent_request", after);
-    let plane = Plane::fresh(recorded);
-    let request = HostedSeatRetireRequest {
-        placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
-            workspace_native_id: external(WORKSPACE_ID),
-            canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
-            provider_session_id: None,
-        }),
-        seat_binding_id,
-        identity: NativeRuntimeIdentity {
-            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
-            host: name(HOST_KEY),
-            generation: 1,
-            native_id: external(AGENT_ID),
-        },
-        model_rung: model_rung(),
-        autonomy: SeatAutonomy::standard(),
-        requested_at: at("2026-08-20T05:10:00Z"),
-    };
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&PaseoCommand::agent_archive(AGENT_ID), CLI_AGENT_ARCHIVED)
+            .announcing(&v(SERVER_INFO))
+            .then_answering_rpc("fetch_agent_request", before)
+            .answering_rpc("fetch_agent_request", after);
+        let plane = Plane::fresh(recorded);
+        let request = HostedSeatRetireRequest {
+            placement: Some(kontor_runtime::adapter::HostedSeatRetirePlacement {
+                workspace_native_id: external(WORKSPACE_ID),
+                canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
+                provider_session_id: None,
+            }),
+            seat_binding_id,
+            identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime kind"),
+                host: name(HOST_KEY),
+                generation: 1,
+                native_id: external(AGENT_ID),
+            },
+            model_rung: model_rung(),
+            autonomy: SeatAutonomy::standard(),
+            requested_at: at("2026-08-20T05:10:00Z"),
+        };
 
-    let retired = plane
-        .adapter
-        .retire_hosted_seat(&request)
-        .await
-        .expect("the exact idle predecessor is retired");
-    assert_eq!(retired.identity, request.identity);
-    assert_eq!(plane.daemon.count("agent archive agt_implement"), 1);
+        let retired = plane
+            .adapter
+            .retire_hosted_seat(&request)
+            .await
+            .expect("the exact idle predecessor is retired");
+        assert_eq!(retired.identity, request.identity);
+        assert_eq!(plane.daemon.count("agent archive agt_implement"), 1);
 
-    let replayed = plane
-        .adapter
-        .retire_hosted_seat(&request)
-        .await
-        .expect("the archived predecessor is an idempotent readback");
-    assert_eq!(replayed.identity, request.identity);
-    assert_eq!(
-        plane.daemon.count("agent archive agt_implement"),
-        1,
-        "retirement replay must not archive twice"
-    );
+        let replayed = plane
+            .adapter
+            .retire_hosted_seat(&request)
+            .await
+            .expect("the archived predecessor is an idempotent readback");
+        assert_eq!(replayed.identity, request.identity);
+        assert_eq!(
+            plane.daemon.count("agent archive agt_implement"),
+            1,
+            "retirement replay must not archive twice"
+        );
+    }
 }
 
 /// Paseo removes an archived agent from its exact active lookup even though
@@ -9412,6 +11086,7 @@ async fn hosted_seat_retirement_replays_when_exact_fetch_hides_the_archive() {
 async fn hosted_cleanup_refuses_running_or_moved_sessions_before_native_retirement() {
     for case in [
         "running",
+        "error-with-permission",
         "workspace",
         "cwd",
         "provider-conversation",
@@ -9440,6 +11115,11 @@ async fn hosted_cleanup_refuses_running_or_moved_sessions_before_native_retireme
         };
         match case {
             "running" => before["agent"]["status"] = serde_json::json!("running"),
+            "error-with-permission" => {
+                before["agent"]["status"] = serde_json::json!("error");
+                before["agent"]["pendingPermissions"] =
+                    v(AGENT_PERMISSION_OPEN)["agent"]["pendingPermissions"].clone();
+            }
             "workspace" => before["agent"]["workspaceId"] = serde_json::json!("wks_other"),
             "cwd" => before["agent"]["cwd"] = serde_json::json!("/somebody/else"),
             "provider-conversation" => {
@@ -11082,4 +12762,2652 @@ async fn the_retitle_and_the_bind_path_agree_on_what_a_container_is_called() {
         "a repair must not rename a container the bind path named correctly"
     );
     assert!(!preview.changed, "so there is nothing to repair");
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8234 position 3a — the shared bound-container proof
+// ---------------------------------------------------------------------------
+//
+// Every test below addresses a container by the id Kontor persisted, on a plane
+// whose own ledger is empty. That is the restart path, and it is the whole
+// point of the correction: the answer has to come from a readback, because the
+// adapter has nothing cached to answer from.
+
+/// One workspace directory listing with an exact native shape planted on it.
+fn workspace_list_of_kind(kind: &str) -> serde_json::Value {
+    let mut listing = v(WORKSPACE_LIST_NODE);
+    listing["entries"][0]["workspaceKind"] = serde_json::json!(kind);
+    listing
+}
+
+/// A request that addresses a container Kontor already holds a binding for.
+fn bound_child_request(
+    node_id: TopologyNodeId,
+    bound: &str,
+    scope: ExecutionScope,
+) -> ContainerRequest {
+    ContainerRequest {
+        bound_native_id: Some(external(bound)),
+        scope,
+        ..child_request(node_id, Some(bound_root(node(NODE_B))))
+    }
+}
+
+/// A plane that has never prepared anything: the restart state.
+fn restarted_plane(listing: serde_json::Value) -> Plane {
+    Plane::fresh(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", listing),
+    )
+}
+
+/// Item 2: a bound ticket container is re-proved by exact id after a restart.
+#[tokio::test]
+async fn a_bound_tsw_container_is_reconciled_by_exact_id_after_a_restart() {
+    let plane = restarted_plane(workspace_list_of_kind("worktree"));
+    let node_id = node(NODE_A);
+
+    let outcome = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node_id,
+            WORKSPACE_ID,
+            execution_scope(),
+        ))
+        .await
+        .expect("the exact bound ticket container is re-proved");
+
+    assert!(
+        !outcome.created,
+        "reconciling an existing container creates nothing"
+    );
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID
+    );
+    assert_eq!(outcome.snapshot.topology_node_id(), node_id);
+    assert_eq!(
+        outcome.snapshot.root().map(WorkspaceRoot::as_str),
+        Some(CWD),
+        "the exact canonical root is preserved"
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "a reconcile mutates nothing: {:?}",
+        plane.daemon.mutations()
+    );
+}
+
+/// Item 1: the same, for an epic-level container, whose shape is deliberately
+/// *not* a worktree.
+#[tokio::test]
+async fn a_bound_ecp_container_is_reconciled_by_exact_id_after_a_restart() {
+    for kind in ["directory", "local_checkout"] {
+        let plane = restarted_plane(workspace_list_of_kind(kind));
+        let node_id = node(NODE_A);
+
+        let outcome = plane
+            .adapter
+            .prepare_container(&bound_child_request(
+                node_id,
+                WORKSPACE_ID,
+                epic_execution_scope(),
+            ))
+            .await
+            .unwrap_or_else(|error| panic!("an epic container may be a {kind}: {error:?}"));
+
+        assert!(!outcome.created);
+        assert_eq!(
+            outcome.snapshot.binding.identity.native_id.as_str(),
+            WORKSPACE_ID
+        );
+        assert_eq!(
+            outcome.snapshot.root().map(WorkspaceRoot::as_str),
+            Some(CWD)
+        );
+        assert!(plane.daemon.mutations().is_empty());
+    }
+}
+
+/// Taskless containers may host an ECP or an isolated consultation. Shapes
+/// outside either supported use remain refused.
+#[tokio::test]
+async fn a_bound_epic_container_refuses_unaudited_shapes() {
+    for kind in ["checkout", "something_else"] {
+        let plane = restarted_plane(workspace_list_of_kind(kind));
+
+        let error = plane
+            .adapter
+            .prepare_container(&bound_child_request(
+                node(NODE_A),
+                WORKSPACE_ID,
+                epic_execution_scope(),
+            ))
+            .await
+            .expect_err(kind);
+
+        assert!(
+            matches!(error, RuntimeError::StaleBinding { .. }),
+            "an epic container that is a {kind} is stale: {error:?}"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "a refused shape mutates nothing: {:?}",
+            plane.daemon.mutations()
+        );
+    }
+}
+
+/// Item 3, semantic shape: a ticket container refuses every non-worktree shape.
+#[tokio::test]
+async fn a_bound_tsw_container_refuses_every_non_worktree_shape() {
+    for kind in ["directory", "local_checkout", "checkout", "something_else"] {
+        let plane = restarted_plane(workspace_list_of_kind(kind));
+
+        let error = plane
+            .adapter
+            .prepare_container(&bound_child_request(
+                node(NODE_A),
+                WORKSPACE_ID,
+                execution_scope(),
+            ))
+            .await
+            .expect_err(kind);
+
+        assert!(
+            matches!(error, RuntimeError::StaleBinding { .. }),
+            "a ticket container that is a {kind} is stale: {error:?}"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "a refused shape mutates nothing: {:?}",
+            plane.daemon.mutations()
+        );
+    }
+}
+
+/// Item 4: an exact bound id the runtime does not hold is stale, and is never
+/// a licence to make a replacement beside the one that went missing.
+#[tokio::test]
+async fn a_missing_exact_bound_id_is_stale_and_creates_nothing() {
+    let plane = restarted_plane(v(WORKSPACE_LIST_EMPTY));
+
+    let error = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node(NODE_A),
+            "wks_gone",
+            execution_scope(),
+        ))
+        .await
+        .expect_err("a bound id the runtime cannot show is stale");
+
+    assert!(
+        matches!(error, RuntimeError::StaleBinding { .. }),
+        "an absent bound container is stale, never a create: {error:?}"
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "no create, no search, no replacement: {:?}",
+        plane.daemon.mutations()
+    );
+}
+
+/// Item 3: the bound container must be inside the exact parent this node is
+/// placed under.
+#[tokio::test]
+async fn a_bound_container_outside_its_exact_parent_is_stale() {
+    let plane = restarted_plane(v(WORKSPACE_NODE_OTHER_PROJECT));
+
+    let error = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node(NODE_A),
+            WORKSPACE_ID,
+            execution_scope(),
+        ))
+        .await
+        .expect_err("a container under another parent is not this node's");
+
+    assert!(
+        matches!(error, RuntimeError::StaleBinding { .. }),
+        "{error:?}"
+    );
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+/// Item 3: the canonical directory is proved from the readback, not copied
+/// from the request.
+///
+/// This is the case the correction exists for. Before it, the snapshot carried
+/// `request.cwd` regardless of where the container had actually been re-rooted,
+/// so every later placement check agreed with a directory nobody had verified.
+#[tokio::test]
+async fn a_bound_container_re_rooted_since_binding_is_stale() {
+    let plane = restarted_plane(v(WORKSPACE_OTHER_CWD));
+
+    let error = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node(NODE_A),
+            WORKSPACE_ID,
+            execution_scope(),
+        ))
+        .await
+        .expect_err("a re-rooted container no longer works where the node declares");
+
+    assert!(
+        matches!(error, RuntimeError::StaleBinding { .. }),
+        "{error:?}"
+    );
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+/// Item 6: a title that has drifted is not an identity change.
+///
+/// The container is addressed by id. An operator who renamed it did not move
+/// it, and the reconcile must still return the same native bound to the same
+/// node — the opposite of the parent, path and shape checks above.
+#[tokio::test]
+async fn a_bound_container_whose_title_drifted_is_still_the_same_container() {
+    let plane = restarted_plane(v(WORKSPACE_LIST_NODE_STALE_TITLE));
+
+    let outcome = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node(NODE_A),
+            WORKSPACE_ID,
+            execution_scope(),
+        ))
+        .await
+        .expect("a renamed container is still the bound container");
+
+    assert!(!outcome.created);
+    assert_eq!(
+        outcome.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID,
+        "identity survives a title change"
+    );
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+/// Item 3: host, runtime kind and generation are proved on the exact-id
+/// readback surface, which is where a full persisted identity is presented.
+#[tokio::test]
+async fn an_exact_id_inspection_refuses_a_foreign_host_kind_or_generation() {
+    let base = bound_container_binding();
+    let foreign_kind = NativeRuntimeIdentity {
+        runtime_kind: RuntimeKindKey::parse("other.runtime").expect("a runtime kind"),
+        ..base.identity.clone()
+    };
+    let foreign_host = NativeRuntimeIdentity {
+        host: name("another-host"),
+        ..base.identity.clone()
+    };
+    let stale_generation = NativeRuntimeIdentity {
+        generation: base.identity.generation + 1,
+        ..base.identity.clone()
+    };
+
+    for (identity, what) in [
+        (foreign_kind, "runtime kind"),
+        (foreign_host, "runtime host"),
+        (stale_generation, "generation"),
+    ] {
+        let plane = restarted_plane(workspace_list_of_kind("worktree"));
+        let request = ContainerInspectRequest {
+            binding: ContainerBinding {
+                identity,
+                ..base.clone()
+            },
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        };
+
+        let error = plane
+            .adapter
+            .inspect_container(&request)
+            .await
+            .expect_err(what);
+
+        assert!(
+            matches!(error, RuntimeError::StaleBinding { .. }),
+            "a foreign {what} is stale: {error:?}"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "a refused inspection mutates nothing"
+        );
+    }
+}
+
+/// Item 5: inspection is read-only whether it succeeds or refuses.
+#[tokio::test]
+async fn an_exact_id_inspection_writes_nothing_either_way() {
+    for listing in [workspace_list_of_kind("worktree"), v(WORKSPACE_LIST_EMPTY)] {
+        let plane = restarted_plane(listing);
+        let request = ContainerInspectRequest {
+            binding: bound_container_binding(),
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        };
+
+        let _ = plane.adapter.inspect_container(&request).await;
+
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "inspection is read-only: {:?}",
+            plane.daemon.mutations()
+        );
+    }
+}
+
+/// The exact persisted binding the inspection surface addresses.
+fn bound_container_binding() -> ContainerBinding {
+    ContainerBinding {
+        id: ContainerBindingId::generate(),
+        topology_node_id: node(NODE_A),
+        projection: ContainerProjection::NativeChild,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("a runtime kind"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(WORKSPACE_ID),
+        },
+        root: Some(WorkspaceRoot::parse(CWD).expect("an absolute path")),
+        bound_at: at("2026-08-16T09:00:00Z"),
+    }
+}
+
+/// The case the cache short-circuit got wrong, and the reason it was removed.
+///
+/// The adapter has prepared this node once, so its ledger holds a perfectly
+/// good snapshot. Then the container moves. A preparation answered from that
+/// ledger reports the container as present and correctly rooted — it reaches no
+/// wire, so it cannot know otherwise — and every placement check downstream
+/// agrees with it. That is the mismatch five call sites reported and could not
+/// explain.
+///
+/// Proving it needs a *warm* plane: every other test here starts cold, which is
+/// precisely why a restored bypass survived them all.
+#[tokio::test]
+async fn a_warm_ledger_never_answers_for_a_container_that_moved() {
+    let plane = Plane::fresh(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            // First: the container is where it should be, and the ledger warms.
+            .then_answering_rpc(
+                "fetch_workspaces_request",
+                workspace_list_of_kind("worktree"),
+            )
+            // Then: it has been re-rooted somewhere else.
+            .answering_rpc("fetch_workspaces_request", v(WORKSPACE_OTHER_CWD)),
+    );
+    let node_id = node(NODE_A);
+
+    let first = plane
+        .adapter
+        .prepare_container(&child_request(node_id, Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the container is prepared and the ledger warms");
+    assert_eq!(
+        first.snapshot.binding.identity.native_id.as_str(),
+        WORKSPACE_ID
+    );
+
+    // The same node, now addressed by the id Kontor persisted. A cached answer
+    // would return the warm snapshot and call it proof.
+    let error = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node_id,
+            WORKSPACE_ID,
+            execution_scope(),
+        ))
+        .await
+        .expect_err("a moved container must not be answered from memory");
+
+    assert!(
+        matches!(error, RuntimeError::StaleBinding { .. }),
+        "the readback, not the ledger, decides: {error:?}"
+    );
+}
+
+/// The same shape, for a container that is gone rather than moved.
+#[tokio::test]
+async fn a_warm_ledger_never_answers_for_a_container_that_vanished() {
+    let plane = Plane::fresh(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .then_answering_rpc(
+                "fetch_workspaces_request",
+                workspace_list_of_kind("worktree"),
+            )
+            .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY)),
+    );
+    let node_id = node(NODE_A);
+
+    plane
+        .adapter
+        .prepare_container(&child_request(node_id, Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the ledger warms");
+
+    let error = plane
+        .adapter
+        .prepare_container(&bound_child_request(
+            node_id,
+            WORKSPACE_ID,
+            execution_scope(),
+        ))
+        .await
+        .expect_err("a vanished container is never reported as present");
+
+    assert!(
+        matches!(error, RuntimeError::StaleBinding { .. }),
+        "{error:?}"
+    );
+}
+
+/// Item 3, lockstep with the fake: an unbound request is never answered by
+/// reconciling whatever this process last put in its own map.
+///
+/// Kontor holds no binding for this node. Adoption by local memory would bind
+/// it to a container this adapter merely happens to remember — authority by
+/// coincidence rather than by the realm's own record.
+#[tokio::test]
+async fn an_unbound_request_is_never_adopted_from_the_adapters_own_memory() {
+    let plane = Plane::fresh(
+        RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            // Warm the ledger, then report the canonical path empty, then
+            // answer the post-create readback.
+            .then_answering_rpc(
+                "fetch_workspaces_request",
+                workspace_list_of_kind("worktree"),
+            )
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc(
+                "fetch_workspaces_request",
+                workspace_list_of_kind("worktree"),
+            ),
+    );
+    let node_id = node(NODE_A);
+
+    plane
+        .adapter
+        .prepare_container(&child_request(node_id, Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("the ledger warms");
+
+    // No `bound_native_id`: Kontor is not claiming a binding here. The census
+    // now finds nothing, so this must create rather than silently reconcile the
+    // remembered id.
+    let outcome = plane
+        .adapter
+        .prepare_container(&child_request(node_id, Some(bound_root(node(NODE_B)))))
+        .await
+        .expect("an unbound request falls through to placement");
+
+    assert!(
+        outcome.created,
+        "an empty census with no persisted binding is a creation, not a remembered adoption"
+    );
+}
+
+/// Item 5: a refused inspection never enters the ledger.
+///
+/// Rehydration is the *reward* for a complete proof, and it is deliberately
+/// the last thing the inspection does. An inspection that seeded the ledger on
+/// its way to refusing would leave behind exactly the thing a later placement
+/// trusts — a binding no readback ever confirmed.
+#[tokio::test]
+async fn a_refused_inspection_never_rehydrates_the_ledger() {
+    let base = bound_container_binding();
+    let node_id = base.topology_node_id;
+
+    for (identity, what) in [
+        (
+            NativeRuntimeIdentity {
+                host: name("another-host"),
+                ..base.identity.clone()
+            },
+            "a foreign host",
+        ),
+        (
+            NativeRuntimeIdentity {
+                generation: base.identity.generation + 1,
+                ..base.identity.clone()
+            },
+            "a stale generation",
+        ),
+        (
+            NativeRuntimeIdentity {
+                native_id: external("wks_gone"),
+                ..base.identity.clone()
+            },
+            "a native the runtime cannot show",
+        ),
+    ] {
+        let plane = restarted_plane(workspace_list_of_kind("worktree"));
+        assert!(
+            plane.adapter.container_binding(node_id).is_none(),
+            "the ledger starts empty"
+        );
+
+        let error = plane
+            .adapter
+            .inspect_container(&ContainerInspectRequest {
+                binding: ContainerBinding {
+                    identity,
+                    ..base.clone()
+                },
+                native_parent: Some(bound_root(node(NODE_B)).identity),
+                scope: execution_scope(),
+                epic_container: false,
+                requested_at: at("2026-08-16T09:05:00Z"),
+            })
+            .await
+            .expect_err(what);
+
+        assert!(
+            matches!(
+                error,
+                RuntimeError::StaleBinding { .. }
+                    | RuntimeError::WorkspaceMismatch { .. }
+                    | RuntimeError::CorrelationFailed
+            ),
+            "{what} is refused: {error:?}"
+        );
+        assert!(
+            plane.adapter.container_binding(node_id).is_none(),
+            "{what} must leave the ledger empty"
+        );
+        assert!(plane.daemon.mutations().is_empty());
+    }
+}
+
+/// And a complete inspection *does* rehydrate, which is what makes the refusal
+/// above meaningful rather than merely true of a method that never writes.
+#[tokio::test]
+async fn a_complete_inspection_rehydrates_the_ledger_from_its_proof() {
+    let plane = restarted_plane(workspace_list_of_kind("worktree"));
+    let binding = bound_container_binding();
+    let node_id = binding.topology_node_id;
+    assert!(plane.adapter.container_binding(node_id).is_none());
+
+    plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: binding.clone(),
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-08-16T09:05:00Z"),
+        })
+        .await
+        .expect("the exact container is proved");
+
+    let rehydrated = plane
+        .adapter
+        .container_binding(node_id)
+        .expect("a proved inspection rehydrates");
+    assert_eq!(rehydrated.binding.identity, binding.identity);
+    assert!(plane.daemon.mutations().is_empty(), "still read-only");
+}
+
+#[tokio::test]
+async fn inspection_refuses_changed_child_cwd_before_rehydrating_either_ledger() {
+    let plane = restarted_plane(v(WORKSPACE_OTHER_CWD));
+    let binding = bound_container_binding();
+    let error = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: binding.clone(),
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-09-20T12:00:00Z"),
+        })
+        .await
+        .expect_err("an exact native id does not prove its unchanged working directory");
+    assert!(matches!(error, RuntimeError::StaleBinding { .. }));
+    assert!(
+        plane
+            .adapter
+            .container_binding(binding.topology_node_id)
+            .is_none()
+    );
+    assert!(plane.adapter.project_binding().is_none());
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+#[tokio::test]
+async fn inspection_refuses_changed_root_cwd_before_rehydrating_either_ledger() {
+    let plane = restarted_plane(workspace_list_of_kind("worktree"));
+    let mut binding = bound_root(node(NODE_B));
+    binding.root = Some(WorkspaceRoot::parse("/wrong/persisted/root").expect("absolute root"));
+    let error = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: binding.clone(),
+            native_parent: None,
+            scope: epic_execution_scope(),
+            epic_container: true,
+            requested_at: at("2026-09-20T12:00:00Z"),
+        })
+        .await
+        .expect_err("an exact project id does not prove its unchanged root");
+    assert!(matches!(error, RuntimeError::StaleBinding { .. }));
+    assert!(
+        plane
+            .adapter
+            .container_binding(binding.topology_node_id)
+            .is_none()
+    );
+    assert!(plane.adapter.project_binding().is_none());
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+#[tokio::test]
+async fn inspection_refuses_inapplicable_workspace_shapes_before_rehydration() {
+    for (scope, kind) in [
+        (execution_scope(), "directory"),
+        (execution_scope(), "local_checkout"),
+        (execution_scope(), "checkout"),
+        (epic_execution_scope(), "checkout"),
+        (epic_execution_scope(), "something_else"),
+    ] {
+        let plane = restarted_plane(workspace_list_of_kind(kind));
+        let binding = bound_container_binding();
+        let error = plane
+            .adapter
+            .inspect_container(&ContainerInspectRequest {
+                binding: binding.clone(),
+                native_parent: Some(bound_root(node(NODE_B)).identity),
+                scope,
+                epic_container: false,
+                requested_at: at("2026-09-20T12:00:00Z"),
+            })
+            .await
+            .expect_err("the same path does not prove an applicable workspace shape");
+        assert!(
+            matches!(error, RuntimeError::StaleBinding { .. }),
+            "{kind}: {error:?}"
+        );
+        assert!(
+            plane
+                .adapter
+                .container_binding(binding.topology_node_id)
+                .is_none()
+        );
+        assert!(plane.adapter.project_binding().is_none());
+        assert!(plane.daemon.mutations().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn an_epic_consultation_worktree_reconciles_and_inspects_after_restart() {
+    let plane = restarted_plane(workspace_list_of_kind("worktree"));
+    let request = bound_child_request(node(NODE_A), WORKSPACE_ID, epic_execution_scope());
+    assert!(
+        request.scope.task.is_none(),
+        "an epic review serves no ticket"
+    );
+    let prepared = plane
+        .adapter
+        .prepare_container(&request)
+        .await
+        .expect("an epic consultation retains its bound Git worktree after restart");
+    let inspection = plane
+        .adapter
+        .inspect_container(&ContainerInspectRequest {
+            binding: prepared.snapshot.binding.clone(),
+            native_parent: Some(bound_root(node(NODE_B)).identity),
+            scope: epic_execution_scope(),
+            epic_container: false,
+            requested_at: at("2026-09-20T12:00:00Z"),
+        })
+        .await
+        .expect("the same consultation worktree is freshly attested");
+    assert!(!prepared.created);
+    assert_eq!(inspection.binding.identity.native_id.as_str(), WORKSPACE_ID);
+    assert_eq!(inspection.canonical_cwd, Some(root()));
+    assert!(plane.daemon.mutations().is_empty());
+
+    // Container reconciliation serves both consultations and leadership;
+    // the hosted-seat operation still applies the stricter ECP shape rule.
+    let refused = plane
+        .adapter
+        .launch_hosted_seat(&HostedSeatLaunchRequest {
+            seat_binding_id: SeatBindingId::generate(),
+            role_slot_id: slot("lsa"),
+            display_name: name("LSA"),
+            container: ContainerBindingSnapshot {
+                binding: inspection.binding,
+                capabilities: prepared.snapshot.capabilities,
+                correlation: inspection.correlation,
+            },
+            cwd: root(),
+            scope: epic_execution_scope(),
+            prompt: text("leadership requires its own local ECP"),
+            role_prompt: None,
+            credential: kontor_runtime::adapter::ScopedSeatCredential::new("test".to_owned()),
+            fenced_predecessor_native_ids: Vec::new(),
+            model_rung: model_rung(),
+            fleet_provenance: None,
+            autonomy: SeatAutonomy::standard(),
+            context_policy: standard_context_policy(),
+            requested_at: at("2026-09-20T12:01:00Z"),
+        })
+        .await
+        .expect_err("a consultation worktree never becomes a leadership ECP");
+    assert!(matches!(
+        refused,
+        RuntimeError::WorkspaceMismatch {
+            rule: "a Core Team seat may be placed only in the epic's local ECP workspace"
+        }
+    ));
+    assert!(plane.daemon.mutations().is_empty());
+}
+
+/// An intact ECP does not attest the claimant's own workspace or cwd. Both
+/// preview and apply must re-read the claimant before any metadata mutation.
+#[tokio::test]
+async fn a_hosted_claim_refuses_a_moved_claimant_with_a_valid_ecp() {
+    for field in ["workspaceId", "cwd"] {
+        let mut claimant = v(AGENT);
+        claimant["agent"]["title"] = serde_json::json!("hand-started LSA");
+        claimant["agent"]["labels"] = serde_json::json!({});
+        claimant["agent"][field] = serde_json::json!(if field == "workspaceId" {
+            "wks_somewhere_else"
+        } else {
+            "/w/somewhere-else"
+        });
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", v(WORKSPACE_ROOT_LOCAL))
+            .answering_rpc("fetch_agent_request", claimant)
+            .answering_rpc(
+                "fetch_agents_request",
+                serde_json::json!({
+                    "requestId": "req-fixture", "entries": [],
+                    "pageInfo": {"nextCursor": null, "prevCursor": null, "hasMore": false}
+                }),
+            );
+        let plane = Plane::fresh(recorded);
+        plane
+            .adapter
+            .prepare_project("cmd-claim-location-proof", &project_name())
+            .await
+            .expect("the valid epic project");
+        let request = HostedSeatClaimRequest {
+            seat_binding_id: SeatBindingId::generate(),
+            role_slot_id: slot("lsa"),
+            display_name: name("LSA"),
+            container_native_id: external(WORKSPACE_ID),
+            cwd: root(),
+            scope: epic_execution_scope(),
+            claimant_native_id: external(AGENT_ID),
+            expected_claimant_provider_session_id: None,
+            expected_predecessor: None,
+            requested_at: at("2026-09-20T16:00:00Z"),
+        };
+        let preview = plane
+            .adapter
+            .preview_hosted_seat_claim(&request)
+            .await
+            .expect_err("moved claimant must refuse preview even with a valid ECP");
+        assert!(
+            matches!(preview, RuntimeError::WorkspaceMismatch { .. }),
+            "{preview:?}"
+        );
+        let apply = plane
+            .adapter
+            .claim_hosted_seat(&request)
+            .await
+            .expect_err("moved claimant must refuse apply even with a valid ECP");
+        assert!(
+            matches!(apply, RuntimeError::WorkspaceMismatch { .. }),
+            "{apply:?}"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "no metadata or native write"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8204: native root cleanup
+// ---------------------------------------------------------------------------
+
+/// A daemon whose epic root is empty: no workspaces left, no sessions left.
+///
+/// That is the only state a root may be removed from, so it is the fixture the
+/// positive cases start in and the negative cases each break in exactly one way.
+fn root_archive_daemon() -> RecordedPaseo {
+    let recorded = daemon();
+    recorded.forget_queued_rpc("fetch_workspaces_request");
+    recorded.set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY));
+    recorded.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY));
+    recorded
+}
+
+/// The epic root itself, addressed by the identity its binding froze.
+fn archive_root() -> kontor_runtime::container::ArchiveContainerRequest {
+    kontor_runtime::container::ArchiveContainerRequest {
+        topology_node_id: node(NODE_A),
+        container_binding_id: ContainerBindingId::generate(),
+        projection: ContainerProjection::NativeRoot,
+        identity: NativeRuntimeIdentity {
+            runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).expect("runtime"),
+            host: name(HOST_KEY),
+            generation: 1,
+            native_id: external(PROJECT_ID),
+        },
+        // A root is the project. There is no ancestor to name.
+        bound_project_native_id: None,
+        canonical_cwd: WorkspaceRoot::parse(CWD).expect("cwd"),
+        requested_at: at("2026-09-17T10:00:00Z"),
+    }
+}
+
+#[tokio::test]
+async fn native_root_removal_proves_absence_and_replays_after_a_lost_ack() {
+    for lost_ack in [false, true] {
+        let plane = Plane::fresh(root_archive_daemon());
+        // Present once, then gone: the census before the removal and the proof
+        // after it are the same route answering twice.
+        plane.daemon.forget_queued_rpc("project.list.request");
+        plane
+            .daemon
+            .queue_answer_rpc("project.list.request", v(PROJECT_LIST));
+        plane
+            .daemon
+            .set_answer_rpc("project.list.request", v(PROJECT_LIST_EMPTY));
+        if lost_ack {
+            plane.daemon.lose_next_rpc("project.remove.request");
+        }
+        let request = archive_root();
+
+        let first = plane
+            .adapter
+            .archive_container(&request)
+            .await
+            .expect("a proved-absent root settles cleanup");
+        assert!(first.changed, "the first pass removed the project");
+        assert_eq!(first.request, request, "the answer names the same identity");
+        assert_eq!(
+            plane.daemon.mutations(),
+            vec!["rpc project.remove.request".to_owned()],
+            "exactly one native removal, whatever the acknowledgement did"
+        );
+        assert_eq!(
+            plane
+                .daemon
+                .sent_messages("project.remove.request")
+                .first()
+                .and_then(|sent| sent.get("projectId").cloned()),
+            Some(serde_json::json!(PROJECT_ID)),
+            "removal is addressed by exact id and nothing else"
+        );
+
+        plane.daemon.take_calls();
+        let retry = plane
+            .adapter
+            .archive_container(&request)
+            .await
+            .expect("prior absence is recovered, not repeated");
+        assert!(!retry.changed, "a retry after absence changed nothing");
+        assert_eq!(retry.request, request);
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "a replay must not remove a second time"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_root_removal_refuses_unsafe_targets_before_any_mutation() {
+    // Each case is paired with the refusal it must produce. Asserting only
+    // "it errored" would let a case pass on somebody else's gate — which is
+    // exactly how a guard gets deleted without a test noticing.
+    for (case, expected) in [
+        (
+            "adopted",
+            "adopted containers are preserved by scoped cleanup",
+        ),
+        (
+            "occupied-by-a-workspace",
+            "the native root still holds a workspace",
+        ),
+        (
+            "occupied-by-a-session",
+            "the native root still contains an unarchived session",
+        ),
+        (
+            "wrong-cwd",
+            "the native root came back rooted in another directory",
+        ),
+        ("no-remove-capability", "UnsupportedCapability"),
+        (
+            "foreign-host",
+            "the container belongs to another runtime host or a future generation",
+        ),
+        (
+            "future-generation",
+            "the container belongs to another runtime host or a future generation",
+        ),
+        (
+            "root-claiming-a-parent",
+            "a native root archive names a parent project it cannot have",
+        ),
+    ] {
+        let mut config = config();
+        if case == "adopted" {
+            config
+                .adopted_containers
+                .insert(node(NODE_A), external(PROJECT_ID));
+        }
+        let plane = Plane::build_with_config(
+            root_archive_daemon(),
+            PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+            config,
+        );
+        let mut request = archive_root();
+        match case {
+            "adopted" => {}
+            "occupied-by-a-workspace" => plane
+                .daemon
+                .set_answer_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_ONE)),
+            "occupied-by-a-session" => plane
+                .daemon
+                .set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT)),
+            "wrong-cwd" => {
+                request.canonical_cwd = WorkspaceRoot::parse("/w/somewhere-else").expect("cwd");
+            }
+            "no-remove-capability" => {
+                let mut identity = v(SERVER_INFO);
+                identity["features"]["projectRemove"] = serde_json::json!(false);
+                plane.daemon.set_identity(&identity);
+            }
+            "foreign-host" => request.identity.host = name("another-host"),
+            "future-generation" => request.identity.generation = 2,
+            "root-claiming-a-parent" => {
+                request.bound_project_native_id = Some(external(PROJECT_ID));
+            }
+            _ => unreachable!(),
+        }
+        let Err(error) = plane.adapter.archive_container(&request).await else {
+            panic!("{case} must refuse, but cleanup settled");
+        };
+        assert!(
+            format!("{error:?}").contains(expected),
+            "{case} must refuse on its own gate, not another: {error:?}"
+        );
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "{case} must mutate nothing"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_root_removal_does_not_trust_an_ack_without_absence() {
+    let plane = Plane::fresh(root_archive_daemon());
+    // The daemon keeps listing the project after answering the removal. An
+    // acknowledgement is not evidence; the listing is, and it disagrees.
+    plane
+        .daemon
+        .set_answer_rpc("project.remove.request", serde_json::json!({}));
+    let request = archive_root();
+    assert!(
+        matches!(
+            plane.adapter.archive_container(&request).await,
+            Err(RuntimeError::CorrelationFailed)
+        ),
+        "a root still present after removal is not cleanup"
+    );
+    assert_eq!(
+        plane.daemon.mutations(),
+        vec!["rpc project.remove.request".to_owned()],
+        "the removal was attempted exactly once before the census refused it"
+    );
+}
+
+/// HV-001: an epic root spelled `/` still has to prove its sessions are gone.
+///
+/// The verifier's rejection probe, kept as a regression. `WorkspaceRoot` accepts
+/// the filesystem root as a spellable place, so an epic can legitimately be
+/// bound to `/` — and every absolute session directory is then inside it. The
+/// original containment test stripped the root prefix and demanded a separator
+/// after it, which is true for `/w/epic` + `/w/epic/task` and false for `/` +
+/// `/dangling-session`. A live unarchived session was therefore read as outside
+/// the root it was plainly in, and the irreversible exact-id project removal
+/// went ahead over the top of it.
+///
+/// The assertion that matters is the pair: refused *and* nothing mutated.
+#[tokio::test]
+async fn native_root_removal_refuses_a_live_session_under_the_filesystem_root() {
+    let plane = Plane::fresh(root_archive_daemon());
+
+    // The epic root is the filesystem root, and the daemon says so.
+    let mut listed = v(PROJECT_LIST);
+    listed["projects"][0]["projectRootPath"] = serde_json::json!("/");
+    plane.daemon.forget_queued_rpc("project.list.request");
+    plane.daemon.set_answer_rpc("project.list.request", listed);
+
+    // Nothing lists the session any more — it is dangling — but it is running,
+    // unarchived, and its directory is inside the root about to be removed.
+    let mut agents = v(AGENT_LIST_IMPLEMENT);
+    agents["entries"][0]["agent"]["cwd"] = serde_json::json!("/dangling-session");
+    agents["entries"][0]["agent"]["workspaceId"] = serde_json::Value::Null;
+    plane.daemon.set_answer_rpc("fetch_agents_request", agents);
+
+    let mut request = archive_root();
+    request.canonical_cwd = WorkspaceRoot::parse("/").expect("the filesystem root is a place");
+
+    let Err(error) = plane.adapter.archive_container(&request).await else {
+        panic!("a root holding a live session must refuse, but cleanup settled");
+    };
+    assert!(
+        format!("{error:?}").contains("the native root still contains an unarchived session"),
+        "it must refuse on the session gate, not another: {error:?}"
+    );
+    assert!(
+        plane.daemon.mutations().is_empty(),
+        "no project may be removed while a session is live inside it"
+    );
+}
+
+/// The acknowledgement ceiling: a long session could not confirm any send.
+///
+/// Reconciliation walks back from the tail under `RECONCILE_PAGE_BUDGET` pages
+/// of `MAX_HISTORY_PAGE`, and refuses unless it reached the beginning — because
+/// only a complete read can count occurrences across a whole transcript. The
+/// exact `clientMessageId` is found on the first page, near the tail, and then
+/// discarded. Past two thousand canonical entries every send is therefore
+/// refused as confirmation-unknown however healthy the runtime is, which is what
+/// stopped large seats acknowledging messages that had plainly landed.
+///
+/// Both halves are asserted from one fixture, so the second is not taking the
+/// first on trust: with no recorded boundary the scan still exhausts its budget
+/// and still refuses, and with the boundary this issuance was recorded against
+/// it proves itself from the suffix and acknowledges the delivery that is
+/// already there.
+#[tokio::test]
+async fn a_long_session_acknowledges_from_a_bounded_suffix() {
+    let mut entries: Vec<serde_json::Value> = (1..=2400)
+        .map(|seq| {
+            if seq == 2300 {
+                user_entry(seq, MESSAGE)
+            } else {
+                assistant_entry(seq)
+            }
+        })
+        .collect();
+    entries.push(assistant_entry(2401));
+    let recorded = daemon().journaling(AGENT_ID, EPOCH_RAW, entries);
+    let (plane, workspace) = Plane::prepared(recorded).await;
+    let binding = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the seat launches")
+        .snapshot;
+    let request = message(&binding, "reconcile this");
+    let wanted = MessageId::parse(MESSAGE).expect("pinned");
+
+    // Without a boundary: whole history is required, the budget runs out first,
+    // and the honest answer is that nothing is proven either way.
+    plane
+        .adapter
+        .note_unconfirmed_delivery(wanted, &request.body_hash(), None)
+        .expect("recorded as unconfirmed");
+    assert!(
+        matches!(
+            plane.adapter.send(&request).await,
+            Err(RuntimeError::DeliveryConfirmationUnknown { .. })
+        ),
+        "a transcript past the page budget cannot be proven whole, and must not resend"
+    );
+
+    // With the tail this message was issued after, the same scan reaches the
+    // floor inside the budget and acknowledges the delivery already present.
+    let floor = TimelinePosition {
+        epoch: 1,
+        sequence: 2299,
+    };
+    plane
+        .adapter
+        .note_unconfirmed_delivery(wanted, &request.body_hash(), Some(floor))
+        .expect("recorded with its issuance boundary");
+    let acknowledged = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("the suffix proves the delivery landed");
+    assert_eq!(acknowledged.message_id, wanted);
+    assert_eq!(
+        acknowledged.position,
+        TimelinePosition {
+            epoch: 1,
+            sequence: 2300
+        },
+        "it adopts the occurrence that is actually there, not a fresh send"
+    );
+}
+
+async fn suffix_plane(entries: Vec<serde_json::Value>) -> (Plane, RuntimeBindingSnapshot) {
+    let (plane, workspace) =
+        Plane::prepared(daemon().journaling(AGENT_ID, EPOCH_RAW, entries)).await;
+    let binding = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .unwrap()
+        .snapshot;
+    (plane, binding)
+}
+
+fn suffix_floor(sequence: u64) -> TimelinePosition {
+    TimelinePosition { epoch: 1, sequence }
+}
+
+#[tokio::test]
+async fn issuance_suffix_first_send_and_fresh_adapter_replay_keep_one_native_message() {
+    let (plane, binding) = suffix_plane((1..=2400).map(assistant_entry).collect()).await;
+    let boundary = plane.adapter.tail_window(&binding, 1, 1).await.unwrap().end;
+    assert_eq!(boundary.sequence, 2400);
+    let durable_epochs = plane.adapter.pending_timeline_epochs();
+    plane.adapter.ack_timeline_epochs(&durable_epochs);
+    let request = message(&binding, "one long-session instruction");
+    plane
+        .adapter
+        .note_issuance_boundary(request.message_id, boundary)
+        .unwrap();
+    let ack = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("first send acknowledges beyond four historical pages");
+    assert_eq!(ack.position.sequence, 2401);
+    let native = Arc::clone(&plane.daemon);
+    drop(plane);
+    native.set_answer_rpc("fetch_agents_request", v(AGENT_LIST_IMPLEMENT));
+    let restarted = PaseoAdapter::new(
+        config(),
+        Box::new(Arc::clone(&native)),
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+    )
+    .unwrap();
+    restarted.restore_timeline_epochs(&durable_epochs).unwrap();
+    restarted
+        .restore_bindings(std::slice::from_ref(&binding))
+        .await
+        .unwrap();
+    restarted
+        .note_unconfirmed_delivery(request.message_id, &request.body_hash(), Some(boundary))
+        .unwrap();
+    let recovered = restarted
+        .send(&request)
+        .await
+        .expect("fresh adapter proves the original suffix without resending");
+    assert_eq!(recovered.position, ack.position);
+    assert_eq!(
+        native.count("rpc send_agent_message_request"),
+        1,
+        "the runtime's deduplication never gets a second request to hide"
+    );
+    assert_eq!(
+        native
+            .journal_client_message_ids(AGENT_ID)
+            .iter()
+            .filter(|id| id.as_deref() == Some(MESSAGE))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn issuance_suffix_duplicate_is_refused_without_a_send() {
+    let (plane, binding) = suffix_plane(
+        (1..=3000)
+            .map(|seq| {
+                if seq == 2600 || seq == 2999 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert!(matches!(
+        plane.adapter.send(&request).await,
+        Err(RuntimeError::DuplicateMessage { .. })
+    ));
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_excludes_preissuance_occurrences_in_the_boundary_page() {
+    let (plane, binding) = suffix_plane(
+        (1..=2700)
+            .map(|seq| {
+                if seq == 2400 || seq == 2500 || seq == 2600 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    let ack = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("only the occurrence after issuance is this delivery");
+    assert_eq!(ack.position.sequence, 2600);
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_changed_epoch_refuses_even_when_the_message_is_visible() {
+    let (plane, binding) = suffix_plane(
+        (1..=2700)
+            .map(|seq| {
+                if seq == 2600 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    plane
+        .adapter
+        .restore_timeline_epochs(&[(EPOCH_RAW.to_owned(), 2)])
+        .unwrap();
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert_eq!(
+        plane.adapter.send(&request).await.unwrap_err(),
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::EpochChanged
+        }
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_partial_absence_never_authorizes_a_send() {
+    let (plane, binding) = suffix_plane(
+        (1..=5000)
+            .map(|seq| {
+                if seq == 2500 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(1000)),
+        )
+        .unwrap();
+    assert!(matches!(
+        plane.adapter.send(&request).await,
+        Err(RuntimeError::DeliveryConfirmationUnknown { .. })
+    ));
+    assert_eq!(plane.daemon.count("rpc fetch_agent_timeline_request"), 4);
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_an_unrelated_message_is_not_adopted_as_delivery() {
+    let (plane, binding) = suffix_plane(
+        (1..=2400)
+            .map(|seq| {
+                if seq == 2300 {
+                    user_entry(seq, MESSAGE_ALT)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2200)),
+        )
+        .unwrap();
+    let ack = plane
+        .adapter
+        .send(&request)
+        .await
+        .expect("complete absence permits exactly one original effect");
+    assert_eq!(
+        ack.position.sequence, 2401,
+        "the unrelated occurrence at 2300 is not a delivery proof"
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 1);
+}
+
+#[tokio::test]
+async fn issuance_suffix_a_hole_inside_the_boundary_page_is_not_a_complete_proof() {
+    let (plane, binding) = suffix_plane(
+        (1..=2700)
+            .filter(|seq| *seq != 2501)
+            .map(|seq| {
+                if seq == 2600 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert_eq!(
+        plane.adapter.send(&request).await.unwrap_err(),
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::SequenceGap
+        }
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_a_hole_between_pages_is_not_a_complete_proof() {
+    let (plane, binding) = suffix_plane(
+        (1..=3500)
+            .filter(|seq| *seq != 3000)
+            .map(|seq| {
+                if seq == 3400 {
+                    user_entry(seq, MESSAGE)
+                } else {
+                    assistant_entry(seq)
+                }
+            })
+            .collect(),
+    )
+    .await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert_eq!(
+        plane.adapter.send(&request).await.unwrap_err(),
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::SequenceGap
+        }
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn issuance_suffix_an_early_history_end_does_not_prove_absence() {
+    let (plane, binding) = suffix_plane((2502..=2700).map(assistant_entry).collect()).await;
+    let request = message(&binding, "uncertain");
+    plane
+        .adapter
+        .note_unconfirmed_delivery(
+            request.message_id,
+            &request.body_hash(),
+            Some(suffix_floor(2500)),
+        )
+        .unwrap();
+    assert_eq!(
+        plane.adapter.send(&request).await.unwrap_err(),
+        RuntimeError::TimelineRefetchRequired {
+            reason: TimelineBreak::SequenceGap
+        }
+    );
+    assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+}
+
+#[tokio::test]
+async fn archived_predecessor_proof_is_read_only_and_rejects_ambiguous_recovery() {
+    use kontor_core::state::NativeRuntimeIdentity;
+    use kontor_runtime::adapter::HostedSeatRetirePlacement;
+    for case in [
+        "valid",
+        "live",
+        "permission",
+        "workspace",
+        "cwd",
+        "conversation",
+        "generation",
+        "label",
+        "successor",
+        "archived-successor",
+        "known-history",
+        "census-omits-predecessor",
+        "census-drift",
+    ] {
+        let seat_binding_id = SeatBindingId::generate();
+        let mut agent = v(AGENT)["agent"].clone();
+        agent["labels"] = serde_json::json!({
+            "kontor.seat_binding_id": seat_binding_id.to_string(),
+            "kontor.hosted_seat": "true",
+        });
+        agent["archivedAt"] = serde_json::json!("2026-09-20T05:42:26.512Z");
+        let mut request = HostedSeatRetireRequest {
+            seat_binding_id,
+            identity: NativeRuntimeIdentity {
+                runtime_kind: RuntimeKindKey::parse(RUNTIME_KIND).unwrap(),
+                host: name(HOST_KEY),
+                generation: 1,
+                native_id: external(AGENT_ID),
+            },
+            model_rung: model_rung(),
+            autonomy: SeatAutonomy::standard(),
+            requested_at: at("2026-09-21T09:00:00Z"),
+            placement: Some(HostedSeatRetirePlacement {
+                workspace_native_id: external(WORKSPACE_ID),
+                canonical_cwd: WorkspaceRoot::parse(CWD).unwrap(),
+                provider_session_id: None,
+            }),
+        };
+        match case {
+            "live" => agent["archivedAt"] = serde_json::Value::Null,
+            "permission" => {
+                agent["pendingPermissions"] =
+                    v(AGENT_PERMISSION_OPEN)["agent"]["pendingPermissions"].clone()
+            }
+            "workspace" => agent["workspaceId"] = serde_json::json!("wks_another"),
+            "cwd" => agent["cwd"] = serde_json::json!("/another/directory"),
+            "conversation" => {
+                request.placement.as_mut().unwrap().provider_session_id =
+                    Some(external("different-conversation"))
+            }
+            "generation" => request.identity.generation = 99,
+            "label" => {
+                agent["labels"]["kontor.seat_binding_id"] =
+                    serde_json::json!(SeatBindingId::generate())
+            }
+            _ => {}
+        }
+        let mut census = v(AGENT_LIST_ARCHIVED_ONLY);
+        census["entries"][0]["agent"] = agent.clone();
+        if matches!(case, "successor" | "archived-successor" | "known-history") {
+            let mut successor = agent.clone();
+            successor["id"] = serde_json::json!("unacknowledged-successor");
+            if case == "successor" {
+                successor["archivedAt"] = serde_json::Value::Null;
+            }
+            let mut entry = census["entries"][0].clone();
+            entry["agent"] = successor;
+            census["entries"].as_array_mut().unwrap().push(entry);
+        }
+        let known_history = if case == "known-history" {
+            vec![external("unacknowledged-successor")]
+        } else {
+            vec![]
+        };
+        if case == "census-omits-predecessor" {
+            census["entries"] = serde_json::json!([]);
+        }
+        if case == "census-drift" {
+            census["entries"][0]["agent"]["archivedAt"] = serde_json::Value::Null;
+        }
+        let mut exact = v(AGENT);
+        exact["agent"] = agent;
+        let plane = Plane::fresh(
+            daemon()
+                .answering_rpc("fetch_agent_request", exact)
+                .answering_rpc("fetch_agents_request", census),
+        );
+        let outcome = plane
+            .adapter
+            .prove_archived_hosted_seat(&request, &known_history)
+            .await;
+        if matches!(case, "valid" | "known-history") {
+            let proof = outcome.expect("the exact archived predecessor is provable");
+            assert_eq!(proof.identity, request.identity);
+            assert_eq!(proof.archived_at, at("2026-09-20T05:42:26.512Z"));
+        } else {
+            assert!(outcome.is_err(), "{case} was accepted");
+        }
+        assert!(
+            plane.daemon.mutations().is_empty(),
+            "{case} wrote to the runtime"
+        );
+    }
+}
+
+#[tokio::test]
+async fn message_a_history_page_cannot_hide_a_duplicate_outside_that_page() {
+    for floor in [None, Some(suffix_floor(2500))] {
+        let first = if floor.is_some() { 2600 } else { 1 };
+        let second = if floor.is_some() { 2999 } else { 2 };
+        let tail = if floor.is_some() { 3000 } else { 2 };
+        let (plane, binding) = suffix_plane(
+            (1..=tail)
+                .map(|seq| {
+                    if seq == first || seq == second {
+                        user_entry(seq, MESSAGE)
+                    } else {
+                        assistant_entry(seq)
+                    }
+                })
+                .collect(),
+        )
+        .await;
+        plane.adapter.tail_window(&binding, 1, 1).await.unwrap();
+        let request = message(&binding, "uncertain");
+        plane
+            .adapter
+            .note_unconfirmed_delivery(request.message_id, &request.body_hash(), floor)
+            .unwrap();
+        let page = plane
+            .adapter
+            .history(&HistoryRequest {
+                binding: binding.clone(),
+                cursor: Some(HistoryCursor::issue(
+                    binding.binding_id(),
+                    suffix_floor(first - 1),
+                )),
+                page_size: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(
+            page.items[0].subject,
+            EventSubject::Message(request.message_id)
+        );
+        assert!(
+            matches!(
+                plane.adapter.send(&request).await,
+                Err(RuntimeError::DuplicateMessage { .. })
+            ),
+            "a single-page observation must not bypass duplicate detection: {floor:?}"
+        );
+        assert_eq!(plane.daemon.count("rpc send_agent_message_request"), 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8280 G-3: fleet launch provenance on the native label surface
+// ---------------------------------------------------------------------------
+
+fn fleet_provenance() -> kontor_runtime::FleetLaunchProvenance {
+    kontor_runtime::FleetLaunchProvenance {
+        policy_hash: kontor_core::id::ContentHash::of(b"activated policy"),
+        source_bundle_hash: Some(kontor_core::id::ContentHash::of(b"bundle")),
+        binding_key: "leadership/abc/lsa".to_owned(),
+        chain: "lead".to_owned(),
+        step: 2,
+        sub_step: 1,
+        vendor: "openai".to_owned(),
+        eligibility: Some(kontor_runtime::LaunchEligibility {
+            unavailable_accounts: BTreeSet::from(["claude-personal".to_owned()]),
+            excluded_vendors: BTreeSet::new(),
+        }),
+    }
+}
+
+/// Every fleet label `provenance` is written as, merged into `labels`.
+fn with_fleet_labels(
+    mut labels: serde_json::Value,
+    provenance: &kontor_runtime::FleetLaunchProvenance,
+) -> serde_json::Value {
+    for (key, value) in kontor_runtime_paseo::wire::fleet_provenance_labels(provenance).unwrap() {
+        labels[key] = serde_json::json!(value);
+    }
+    labels
+}
+
+/// A hosted leadership launch writes its fleet provenance as exact native
+/// labels and reports what the agent's own labels hold — the scripted
+/// readback, never the request. A readback whose fleet label drifted refuses
+/// the launch; no provenance requested is no provenance observed.
+#[tokio::test]
+async fn hosted_leadership_writes_and_reads_back_its_fleet_provenance() {
+    let requested = fleet_provenance();
+    for case in ["observed", "drifted", "not_requested"] {
+        let seat_binding_id = SeatBindingId::generate();
+        let mut workspace = v(WORKSPACE_ROOT_LOCAL);
+        workspace["entries"][0]["name"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+        workspace["entries"][0]["title"] = serde_json::json!("ECP · ASMA-7744 · Kontor MVP");
+        let mut agent = v(AGENT);
+        agent["agent"]["provider"] = serde_json::json!("codex");
+        agent["agent"]["model"] = serde_json::json!("gpt-5.6-sol");
+        agent["agent"]["currentModeId"] = serde_json::json!("full-access");
+        let base = serde_json::json!({
+            "jira.epic": "ASMA-7744", "kontor.project_id": MINI_PROJECT,
+            "kontor.seat_binding_id": seat_binding_id.to_string(),
+            "kontor.hosted_seat": "true", "kontor.role": "lsa",
+            "kontor.role_slot_id": "lsa", "kontor.workspace_id": WORKSPACE_ID,
+            "kontor.worktree": CWD,
+        });
+        let mut labels = if case == "not_requested" {
+            base
+        } else {
+            with_fleet_labels(base, &requested)
+        };
+        if case == "drifted" {
+            labels["kontor.fleet.vendor"] = serde_json::json!("anthropic");
+        }
+        agent["agent"]["labels"] = labels;
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .answering_rpc("fetch_workspaces_request", workspace)
+            .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+            .answering_rpc(
+                "create_agent_request",
+                serde_json::json!({"status": "agent_created", "agent": {"id": AGENT_ID}}),
+            )
+            .answering_rpc("fetch_agent_request", agent);
+        let plane = Plane::build_with_config(
+            recorded,
+            PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+            config(),
+        );
+        plane
+            .adapter
+            .prepare_project("cmd-hosted-fleet", &project_name())
+            .await
+            .unwrap();
+        let container = plane
+            .adapter
+            .prepare_container(&ecp_request(node(NODE_A), bound_root(node(NODE_B))))
+            .await
+            .unwrap()
+            .snapshot;
+        let request = HostedSeatLaunchRequest {
+            seat_binding_id,
+            role_slot_id: slot("lsa"),
+            display_name: name("LSA"),
+            container,
+            cwd: root(),
+            scope: epic_execution_scope(),
+            prompt: text("continue governed leadership"),
+            role_prompt: None,
+            credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+                "hosted-fleet-secret".to_owned(),
+            ),
+            fenced_predecessor_native_ids: Vec::new(),
+            model_rung: ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: None,
+            },
+            fleet_provenance: (case != "not_requested").then(|| requested.clone()),
+            autonomy: SeatAutonomy::Bounded,
+            context_policy: standard_context_policy(),
+            requested_at: at("2026-08-16T09:10:00Z"),
+        };
+        let launched = plane.adapter.launch_hosted_seat(&request).await;
+        match case {
+            "drifted" => {
+                assert!(
+                    matches!(launched, Err(RuntimeError::CorrelationFailed)),
+                    "a drifted fleet label must refuse: {launched:?}"
+                );
+            }
+            "observed" => {
+                let outcome = launched.expect("the seat launches");
+                assert_eq!(
+                    outcome.fleet_provenance,
+                    kontor_runtime::FleetProvenanceObservation::Observed {
+                        surface: "paseo.agent.labels".to_owned(),
+                        provenance: requested.clone(),
+                    }
+                );
+                let sent = plane.daemon.sent_messages("create_agent_request");
+                let written = &sent[0]["labels"];
+                for (key, value) in
+                    kontor_runtime_paseo::wire::fleet_provenance_labels(&requested).unwrap()
+                {
+                    assert_eq!(written[&key], value, "{key} was not written: {written}");
+                }
+            }
+            _ => {
+                let outcome = launched.expect("the seat launches");
+                assert_eq!(
+                    outcome.fleet_provenance,
+                    kontor_runtime::FleetProvenanceObservation::NotRequested
+                );
+                let sent = plane.daemon.sent_messages("create_agent_request");
+                assert!(
+                    sent[0]["labels"].get("kontor.fleet.policy_hash").is_none(),
+                    "nothing requested is nothing written"
+                );
+            }
+        }
+    }
+}
+
+/// A delivery launch carries its fleet provenance into the exact label set its
+/// readback requires: an agent whose labels hold it is observed, and one whose
+/// labels do not is refused rather than observed from the request.
+#[tokio::test]
+async fn a_delivery_launch_reads_its_fleet_provenance_back_from_the_agent() {
+    let requested = fleet_provenance();
+    for carried in [true, false] {
+        let (plane, workspace) = Plane::prepared(daemon()).await;
+        let mut agent = v(AGENT);
+        if carried {
+            agent["agent"]["labels"] =
+                with_fleet_labels(agent["agent"]["labels"].clone(), &requested);
+        }
+        plane.daemon.set_answer_rpc("fetch_agent_request", agent);
+        let request = plane
+            .launch_request(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+            .await
+            .expect("admission")
+            .with_fleet_provenance(Some(requested.clone()));
+        let launched = plane.adapter.launch(&request).await;
+        if carried {
+            let outcome = launched.expect("the seat launches");
+            assert_eq!(
+                outcome.fleet_provenance,
+                kontor_runtime::FleetProvenanceObservation::Observed {
+                    surface: "paseo.agent.labels".to_owned(),
+                    provenance: requested.clone(),
+                }
+            );
+        } else {
+            assert!(
+                matches!(launched, Err(RuntimeError::CorrelationFailed)),
+                "an agent without the fleet labels must refuse: {launched:?}"
+            );
+        }
+    }
+    // A launch that requests none observes none.
+    let (plane, workspace) = Plane::prepared(daemon()).await;
+    let outcome = plane
+        .launch(run(RUN_IMPLEMENT), &slot("implement-a"), &workspace)
+        .await
+        .expect("the Implement seat launches");
+    assert_eq!(
+        outcome.fleet_provenance,
+        kontor_runtime::FleetProvenanceObservation::NotRequested
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ASMA-8282 D-3: the planning pair member surface.
+//
+// Every real Paseo route is refused for a planning pair member today, Claude
+// included: this Paseo acknowledges no applied closed tool restriction for a
+// created session, so a member's restriction could never be observed. The
+// Claude composition — guard, serve profile, creation frame, labels — is kept
+// and proved here by constructing it directly on source fixtures, never by an
+// advertised runtime launch or a hypothetical acknowledgement flag. The guard
+// is a stand-in script with the real `kontor-mcp` guard's decisions, which
+// `kontor-mcp`'s own tests prove on the shipped binary.
+// ---------------------------------------------------------------------------
+
+/// A fixture `kontor-mcp` that answers the guard protocol as the real member
+/// guard does — or, when `honours` is false, as a binary that does not know
+/// the member profile and denies everything. Every run leaves `ran` beside it.
+fn member_guard(directory: &std::path::Path, honours: bool) -> String {
+    let path = directory.join("kontor-mcp");
+    let member = if honours {
+        r#"case "$*" in
+  "--consultation-tool-guard --serve-profile planning_pair_member")
+    case "$input" in
+      *'"mcp__kontor__kontor_planning_pair_run_get"'*|*'"mcp__kontor__kontor_planning_pair_findings_record"'*|*'"mcp__kontor__kontor_planning_pair_answer_record"'*) decision=allow;;
+    esac;;
+esac"#
+    } else {
+        ""
+    };
+    let ran = directory.join("ran");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\ntouch '{}'\ninput=$(cat)\ndecision=deny\n{member}\nprintf '{{\"hookSpecificOutput\":{{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"%s\"}}}}\\n' \"$decision\"\n",
+            ran.display()
+        ),
+    )
+    .expect("the fixture guard is written");
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("the fixture guard is executable");
+    path.to_str().expect("a UTF-8 path").to_owned()
+}
+
+/// A temporary git worktree a member's surface is composed into.
+fn member_cwd() -> (tempfile::TempDir, WorkspaceRoot) {
+    let directory = tempfile::tempdir().expect("a temporary member cwd");
+    let output = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(directory.path())
+        .output()
+        .expect("git is available to the contract test");
+    assert!(output.status.success());
+    let canonical = std::fs::canonicalize(directory.path()).expect("a canonical cwd");
+    let root = WorkspaceRoot::parse(canonical.to_str().expect("a UTF-8 path"))
+        .expect("an absolute member cwd");
+    (directory, root)
+}
+
+/// A recorded fixture with its symbolic worktree path replaced by `cwd`.
+fn at_cwd(raw: &str, cwd: &WorkspaceRoot) -> serde_json::Value {
+    v(&raw.replace(CWD, cwd.as_str()))
+}
+
+fn member_rung(provider: &str, model: &str) -> ModelRung {
+    ModelRung {
+        provider: ProviderRef(provider.to_owned()),
+        model: ModelRef(model.to_owned()),
+        effort: None,
+    }
+}
+
+fn member_routes(
+    seat_a: ModelRung,
+    seat_b: ModelRung,
+) -> Vec<kontor_runtime::planning_pair::PlanningPairMemberRoute> {
+    vec![
+        kontor_runtime::planning_pair::PlanningPairMemberRoute {
+            slot: PlanningPairSlot::SeatA,
+            model_rung: seat_a,
+        },
+        kontor_runtime::planning_pair::PlanningPairMemberRoute {
+            slot: PlanningPairSlot::SeatB,
+            model_rung: seat_b,
+        },
+    ]
+}
+
+/// One member's frozen context and the launch request it travels on.
+fn member_request(
+    container: ContainerBindingSnapshot,
+    cwd: &WorkspaceRoot,
+    rung: ModelRung,
+    occupancy_generation: u64,
+) -> kontor_runtime::adapter::ConsultationLaunchRequest {
+    let run_id = PlanningPairRunId::generate();
+    let seat_binding_id = SeatBindingId::generate();
+    let placement_hash = ContentHash::of(b"placement receipt");
+    let mut requested = fleet_provenance();
+    requested.vendor = "anthropic".to_owned();
+    let context = kontor_runtime::planning_pair::PlanningPairLaunchContext {
+        run_id,
+        seat_binding_id,
+        slot: PlanningPairSlot::SeatA,
+        occupancy_generation,
+        profile: kontor_core::planning_pair::PlanningPairPin {
+            profile_id: kontor_core::id::PlanningPairProfileId::generate(),
+            version: kontor_core::id::SpecVersion::FIRST,
+            definition_hash: ContentHash::of(b"planning pair document"),
+        },
+        topology: topology(),
+        team_definition: kontor_core::spec::TeamDefinitionSnapshot {
+            definition_id: kontor_core::id::TeamDefinitionId::generate(),
+            version: kontor_core::id::SpecVersion::FIRST,
+            canonical_hash: ContentHash::of(b"team definition"),
+        },
+        role_catalog: kontor_runtime::planning_pair::PlanningPairCatalogPin {
+            catalog_id: kontor_core::id::RoleCatalogId::generate(),
+            version: kontor_core::id::SpecVersion::FIRST,
+            canonical_hash: ContentHash::of(b"role catalog"),
+        },
+        topology_node_id: container.topology_node_id(),
+        cwd: cwd.clone(),
+        route: rung.clone(),
+        vendor: "anthropic".to_owned(),
+        placement_hash: placement_hash.clone(),
+        requested_fleet_provenance: requested.clone(),
+    };
+    kontor_runtime::adapter::ConsultationLaunchRequest {
+        run_id: ConsultationRunId::PlanningPair(run_id),
+        seat_binding_id,
+        role_slot_id: slot("seat-a"),
+        display_name: name("SEAT A"),
+        container,
+        cwd: cwd.clone(),
+        scope: execution_scope(),
+        prompt: text("give one planning finding"),
+        credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+            "planning-pair-member-secret".to_owned(),
+        ),
+        model_rung: rung,
+        route_provenance: kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
+            placement_hash,
+        ),
+        fleet_provenance: Some(requested),
+        context_policy: standard_context_policy(),
+        requested_at: at("2026-10-02T09:10:00Z"),
+        planning_pair: Some(context),
+    }
+}
+
+/// A plane with its member container prepared in `cwd`, its seat MCP
+/// composed with `guard`, and its call ledger cleared.
+async fn member_plane(
+    cwd: &WorkspaceRoot,
+    guard: Option<String>,
+) -> (Plane, ContainerBindingSnapshot) {
+    let recorded = RecordedPaseo::new()
+        .answering(&PaseoCommand::version(), VERSION)
+        .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+        .announcing(&v(SERVER_INFO))
+        .answering_rpc("project.list.request", v(PROJECT_LIST))
+        .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+        .answering_rpc("fetch_workspaces_request", at_cwd(WORKSPACE_LIST_NODE, cwd))
+        .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+        .answering_rpc(
+            "create_agent_request",
+            serde_json::json!({"status": "agent_created", "agent": {"id": AGENT_ID}}),
+        );
+    let mut configured = config();
+    configured.seat_mcp = guard.map(|command| kontor_runtime_paseo::seat_mcp::SeatMcp {
+        command,
+        state_root: "/realm/state".into(),
+    });
+    let plane = Plane::build_with_config(
+        recorded,
+        PaseoCheckpoint::fresh(1, name(HOST_KEY)),
+        configured,
+    );
+    plane
+        .adapter
+        .prepare_project("cmd-planning-pair", &project_name())
+        .await
+        .expect("the epic project is prepared");
+    let mut request = child_request(node(NODE_A), Some(bound_root(node(NODE_B))));
+    request.cwd = Some(cwd.clone());
+    let container = plane
+        .adapter
+        .prepare_container(&request)
+        .await
+        .expect("the member container is prepared")
+        .snapshot;
+    plane.daemon.take_calls();
+    (plane, container)
+}
+
+/// D-3, no waiver: every real Paseo route is refused for a planning pair
+/// member, each with its own gap and provider, before the launch claim, any
+/// plane call, any composed file, any process and any session. Claude is
+/// refused too, even with seat MCP and a member-enforcing guard configured:
+/// no applied closed tool restriction is acknowledged for a created session.
+#[tokio::test]
+async fn every_real_planning_pair_member_route_is_refused_before_any_effect() {
+    use kontor_runtime::planning_pair::MemberSurfaceGap;
+    for (provider, model, gap) in [
+        (
+            "claude",
+            "claude-opus-5",
+            MemberSurfaceGap::RestrictionUnacknowledged,
+        ),
+        (
+            "claude-work",
+            "claude-opus-5",
+            MemberSurfaceGap::RestrictionUnacknowledged,
+        ),
+        (
+            "codex",
+            "gpt-5.6-sol",
+            MemberSurfaceGap::ClosedToolsUnavailable,
+        ),
+        (
+            "codex-work",
+            "gpt-5.6-sol",
+            MemberSurfaceGap::ClosedToolsUnavailable,
+        ),
+        ("cursor", "grok-4.7", MemberSurfaceGap::ReadOnlyUnenforced),
+        (
+            "opencode",
+            "deepseek/deepseek-flash",
+            MemberSurfaceGap::ReadOnlyUnenforced,
+        ),
+        ("pi", "pi-1", MemberSurfaceGap::NotComposed),
+        ("copilot", "gpt-5.6-sol", MemberSurfaceGap::NotComposed),
+    ] {
+        let (_cwd_dir, cwd) = member_cwd();
+        let guard_dir = tempfile::tempdir().expect("a guard directory");
+        let guard = member_guard(guard_dir.path(), true);
+        let (plane, container) = member_plane(&cwd, Some(guard)).await;
+        let route = member_rung(provider, model);
+        let expected = RuntimeError::PlanningPairMemberSurfaceUnsupported {
+            provider: provider.to_owned(),
+            gap,
+        };
+        assert_eq!(
+            plane
+                .adapter
+                .validate_planning_pair_member_surface(&member_routes(
+                    route.clone(),
+                    route.clone()
+                )),
+            Err(expected.clone()),
+            "{provider}"
+        );
+        assert_eq!(
+            plane
+                .adapter
+                .launch_consultation(&member_request(container, &cwd, route, 1))
+                .await,
+            Err(expected),
+            "{provider}"
+        );
+        assert!(plane.daemon.calls().is_empty(), "{provider}: no plane call");
+        assert!(
+            !std::path::Path::new(cwd.as_str())
+                .join(".mcp.json")
+                .exists()
+                && !std::path::Path::new(cwd.as_str()).join(".claude").exists(),
+            "{provider}: nothing composed"
+        );
+        assert!(
+            !guard_dir.path().join("ran").exists(),
+            "{provider}: the guard binary was never run"
+        );
+    }
+    // The pair is asked about exactly its two routes, seat A then seat B.
+    let (_cwd_dir, cwd) = member_cwd();
+    let (plane, _) = member_plane(&cwd, None).await;
+    let claude = member_rung("claude", "claude-opus-5");
+    for routes in [
+        member_routes(claude.clone(), claude.clone())[..1].to_vec(),
+        {
+            let mut reversed = member_routes(claude.clone(), claude.clone());
+            reversed.reverse();
+            reversed
+        },
+    ] {
+        assert!(matches!(
+            plane.adapter.validate_planning_pair_member_surface(&routes),
+            Err(RuntimeError::LaunchNotAdmitted { .. })
+        ));
+    }
+}
+
+/// Frontier A, typed unsupported: Paseo composes no same-native planning pair
+/// member reconcile, so every route, Claude included, is refused as an
+/// unsupported capability before any plane call, composed file or guard run.
+/// Nothing is created, resumed, retired or archived.
+#[tokio::test]
+async fn paseo_reconciles_no_planning_pair_member_native_and_refuses_before_any_effect() {
+    for (provider, model) in [
+        ("claude", "claude-opus-5"),
+        ("codex", "gpt-5.6-sol"),
+        ("cursor", "grok-4.7"),
+    ] {
+        let (_cwd_dir, cwd) = member_cwd();
+        let guard_dir = tempfile::tempdir().expect("a guard directory");
+        let guard = member_guard(guard_dir.path(), true);
+        let (plane, container) = member_plane(&cwd, Some(guard)).await;
+        let launch = member_request(container.clone(), &cwd, member_rung(provider, model), 1);
+        let request = kontor_runtime::planning_pair::PlanningPairMemberReconcileRequest {
+            context: launch.planning_pair.expect("a member context"),
+            identity: NativeRuntimeIdentity {
+                native_id: ExternalId::parse(AGENT_ID).expect("a native id"),
+                ..container.binding.identity.clone()
+            },
+            requested_at: at("2026-10-02T09:20:00Z"),
+        };
+        assert_eq!(
+            plane.adapter.reconcile_planning_pair_member(&request).await,
+            Err(RuntimeError::UnsupportedCapability {
+                capability: kontor_runtime::capability::RuntimeCapability::Resume,
+            }),
+            "{provider}"
+        );
+        assert!(plane.daemon.calls().is_empty(), "{provider}: no plane call");
+        assert!(
+            !std::path::Path::new(cwd.as_str())
+                .join(".mcp.json")
+                .exists()
+                && !std::path::Path::new(cwd.as_str()).join(".claude").exists(),
+            "{provider}: nothing composed"
+        );
+        assert!(
+            !guard_dir.path().join("ran").exists(),
+            "{provider}: the guard binary was never run"
+        );
+    }
+}
+
+/// Frontier C, C-M: every real Paseo route's pre-effect answer, read through
+/// the readiness seam, is a typed route refusal for the first blocker and an
+/// unassessed peer. The selected policy stays a selection, the caller plane
+/// stays unsupported, and nothing is authorized; there is no plane call, no
+/// composed file and no guard run.
+#[tokio::test]
+async fn every_real_route_reads_as_a_route_refusal_in_the_readiness_seam() {
+    use kontor_runtime::planning_pair::{CallerPlane, MemberPlane, PlanningPairReadiness};
+    let member = |slot, provider: &str, model: &str, vendor: &str| {
+        kontor_core::planning_pair::PlanningPairMember {
+            slot,
+            binding_key: format!("pair/{provider}"),
+            route: member_rung(provider, model),
+            vendor: vendor.to_owned(),
+        }
+    };
+    for ((a, a_model, a_vendor, gap), (b, b_model, b_vendor)) in [
+        (
+            (
+                "claude",
+                "claude-opus-5",
+                "anthropic",
+                "restriction_unacknowledged",
+            ),
+            ("codex", "gpt-5.6-sol", "openai"),
+        ),
+        (
+            (
+                "codex-work",
+                "gpt-5.6-sol",
+                "openai",
+                "closed_tools_unavailable",
+            ),
+            ("cursor", "grok-4.7", "xai"),
+        ),
+        (
+            ("cursor", "grok-4.7", "xai", "read_only_unenforced"),
+            ("claude-work", "claude-opus-5", "anthropic"),
+        ),
+        (
+            (
+                "opencode",
+                "deepseek/deepseek-flash",
+                "deepseek",
+                "read_only_unenforced",
+            ),
+            ("claude", "claude-opus-5", "anthropic"),
+        ),
+    ] {
+        let (_cwd_dir, cwd) = member_cwd();
+        let guard_dir = tempfile::tempdir().expect("a guard directory");
+        let guard = member_guard(guard_dir.path(), true);
+        let (plane, _container) = member_plane(&cwd, Some(guard)).await;
+        let placement = kontor_core::planning_pair::PlanningPairMembers::freeze(
+            ContentHash::of(b"placement"),
+            vec![
+                member(PlanningPairSlot::SeatA, a, a_model, a_vendor),
+                member(PlanningPairSlot::SeatB, b, b_model, b_vendor),
+            ],
+        )
+        .expect("two members on distinct vendors");
+        let answer = plane
+            .adapter
+            .validate_planning_pair_member_surface(&member_routes(
+                member_rung(a, a_model),
+                member_rung(b, b_model),
+            ));
+        let readiness = PlanningPairReadiness::assess(Some(&placement), &answer, [None, None]);
+        assert_eq!(
+            readiness.members[0].plane,
+            MemberPlane::RouteUnsupported {
+                provider: a.to_owned(),
+                gap,
+            },
+            "{a}"
+        );
+        assert_eq!(
+            readiness.members[1].plane,
+            MemberPlane::RouteUnassessed,
+            "{a}"
+        );
+        assert!(matches!(readiness.caller, CallerPlane::Unsupported { .. }));
+        assert!(!readiness.every_plane_established());
+        assert!(!readiness.native_actuation_authorized());
+        assert!(plane.daemon.calls().is_empty(), "{a}: no plane call");
+        assert!(
+            !std::path::Path::new(cwd.as_str())
+                .join(".mcp.json")
+                .exists(),
+            "{a}: nothing composed"
+        );
+        assert!(
+            !guard_dir.path().join("ran").exists(),
+            "{a}: the guard binary was never run"
+        );
+    }
+}
+
+/// The Claude member composition, constructed directly on source fixtures. It
+/// is reusable composition only: no runtime launch uses it while every route
+/// is refused, and nothing here is an acknowledgement or a qualification.
+///
+/// * The cwd gets the member serve profile in `.mcp.json` and the member guard
+///   hook; the legacy consultation hook is untouched.
+/// * The guard binary is attested for the member profile: an older or mixed
+///   binary that does not enforce it fails the probe.
+/// * The creation frame is Claude-only, in `default` mode, with the contained
+///   tool restriction, the member serve profile and exactly the three member
+///   tools preapproved from the one closed list, and the credential only in
+///   the frame's secret environment.
+#[tokio::test]
+async fn the_claude_member_composition_is_constructible_on_source_fixtures_only() {
+    let (_cwd_dir, cwd) = member_cwd();
+    let guard_dir = tempfile::tempdir().expect("a guard directory");
+    let seat = kontor_runtime_paseo::seat_mcp::SeatMcp {
+        command: member_guard(guard_dir.path(), true),
+        state_root: "/realm/state".into(),
+    };
+    seat.verify_planning_pair_member_guard()
+        .expect("a member-enforcing guard is attested");
+    let older_dir = tempfile::tempdir().expect("a guard directory");
+    let older = kontor_runtime_paseo::seat_mcp::SeatMcp {
+        command: member_guard(older_dir.path(), false),
+        state_root: "/realm/state".into(),
+    };
+    assert!(
+        older.verify_planning_pair_member_guard().is_err(),
+        "a guard that does not enforce the member profile is not attested"
+    );
+    seat.compose_planning_pair_member(std::path::Path::new(cwd.as_str()))
+        .expect("the member surface composes into a git worktree");
+    let mcp: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(std::path::Path::new(cwd.as_str()).join(".mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        mcp["mcpServers"]["kontor"]["args"],
+        serde_json::json!([
+            "--state-root",
+            "/realm/state",
+            "--credential-tier",
+            "operator",
+            "--serve-profile",
+            "planning_pair_member"
+        ])
+    );
+    let settings: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(std::path::Path::new(cwd.as_str()).join(".claude/settings.local.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        settings["hooks"]["PreToolUse"],
+        serde_json::json!([{
+            "matcher": ".*",
+            "hooks": [{
+                "type": "command",
+                "command": format!(
+                    "'{}' --consultation-tool-guard --serve-profile planning_pair_member || exit 2",
+                    seat.command
+                ),
+                "timeout": 10
+            }]
+        }])
+    );
+
+    // The frame needs no plane; a scripted container snapshot stands in only
+    // for the context's node id.
+    let (_dir, other) = member_cwd();
+    let (_plane, container) = member_plane(&other, None).await;
+    let request = member_request(container, &cwd, member_rung("claude", "claude-opus-5"), 3);
+    let context = request.planning_pair.as_ref().expect("a member context");
+    let labels = kontor_runtime_paseo::wire::planning_pair_member_labels(context);
+    assert_eq!(
+        labels,
+        [
+            (
+                "kontor.consultation_profile_hash",
+                context.profile.definition_hash.as_str()
+            ),
+            ("kontor.occupancy_generation", "3"),
+            ("kontor.placement_hash", context.placement_hash.as_str()),
+            ("kontor.serve_profile", "planning_pair_member"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect::<BTreeMap<_, _>>()
+    );
+    let mut frame = kontor_runtime_paseo::client::PaseoRpc::planning_pair_member_agent_create(
+        "request-1".to_owned(),
+        WORKSPACE_ID,
+        cwd.as_str(),
+        &request.model_rung,
+        "SEAT A",
+        &labels,
+        request.prompt.as_str(),
+        request.credential.expose_secret(),
+    )
+    .expect("a Claude member frame is constructible");
+    frame.with_planning_pair_member_mcp(&seat);
+    let config = &frame.message["config"];
+    assert_eq!(config["provider"], "claude");
+    assert_eq!(config["modeId"], "default");
+    assert_eq!(
+        config["mcpServers"]["kontor"]["args"],
+        mcp["mcpServers"]["kontor"]["args"]
+    );
+    assert_eq!(
+        config["toolPolicy"]["preapproved"],
+        serde_json::json!(
+            kontor_core::planning_pair::MEMBER_MCP_TOOLS
+                .iter()
+                .map(|tool| serde_json::json!({"kind": "mcp", "server": "kontor", "tool": tool}))
+                .collect::<Vec<_>>()
+        )
+    );
+    assert_eq!(
+        config["providerOptions"]["allowedTools"],
+        serde_json::json!(["Read", "Glob", "Grep", "ToolSearch"])
+    );
+    for denied in [
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+        "Agent",
+        "Task",
+        "Skill",
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "AskUserQuestion",
+    ] {
+        assert!(
+            config["providerOptions"]["disallowedTools"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(denied)),
+            "{denied}"
+        );
+    }
+    assert_eq!(frame.message["labels"], serde_json::json!(labels));
+    for surface in [
+        frame.message.to_string(),
+        serde_json::to_string(&mcp).unwrap(),
+        serde_json::to_string(&settings).unwrap(),
+        format!("{request:?}"),
+    ] {
+        assert!(
+            !surface.contains("planning-pair-member-secret"),
+            "{surface}"
+        );
+    }
+    assert_eq!(
+        frame.envelope()["message"]["env"]["KONTOR_AUTH"],
+        "planning-pair-member-secret",
+        "the credential crosses only the frame's secret environment"
+    );
+    for (provider, model) in [
+        ("codex", "gpt-5.6-sol"),
+        ("cursor", "grok-4.7"),
+        ("opencode", "x"),
+    ] {
+        assert!(
+            matches!(
+                kontor_runtime_paseo::client::PaseoRpc::planning_pair_member_agent_create(
+                    "request-2".to_owned(),
+                    WORKSPACE_ID,
+                    cwd.as_str(),
+                    &member_rung(provider, model),
+                    "SEAT A",
+                    &labels,
+                    "p",
+                    "secret",
+                ),
+                Err(RuntimeError::PermissionModeUnsupported { .. })
+            ),
+            "{provider}: no member frame is constructible"
+        );
+    }
+}
+
+/// A member launch is held to its complete frozen context, and an Advisor or
+/// Committee launch to having none: a missing, conflicting or foreign context
+/// is refused before any plane call, and a valid one is then refused for its
+/// route's gap.
+#[tokio::test]
+async fn a_member_launch_with_a_missing_or_conflicting_context_is_refused_before_any_plane_call() {
+    let (_cwd_dir, cwd) = member_cwd();
+    let (plane, container) = member_plane(&cwd, None).await;
+    let claude = member_rung("claude", "claude-opus-5");
+    let base = member_request(container, &cwd, claude, 2);
+    let mut cases: Vec<(&str, kontor_runtime::adapter::ConsultationLaunchRequest)> = Vec::new();
+    let mut missing = base.clone();
+    missing.planning_pair = None;
+    cases.push((
+        "a planning pair member launch requires its complete frozen context",
+        missing,
+    ));
+    let mut committee = base.clone();
+    committee.run_id = ConsultationRunId::Committee(CommitteeRunId::generate());
+    cases.push((
+        "an Advisor or Committee launch carries no planning pair context",
+        committee,
+    ));
+    let edit = |change: &dyn Fn(&mut kontor_runtime::planning_pair::PlanningPairLaunchContext)| {
+        let mut request = base.clone();
+        change(request.planning_pair.as_mut().expect("context"));
+        request
+    };
+    cases.push((
+        "the planning pair context names another run",
+        edit(&|context| context.run_id = PlanningPairRunId::generate()),
+    ));
+    cases.push((
+        "the planning pair context names another member seat",
+        edit(&|context| context.seat_binding_id = SeatBindingId::generate()),
+    ));
+    cases.push((
+        "the planning pair context names another member slot",
+        edit(&|context| context.slot = PlanningPairSlot::SeatB),
+    ));
+    cases.push((
+        "the planning pair context names no occupancy generation",
+        edit(&|context| context.occupancy_generation = 0),
+    ));
+    cases.push((
+        "the planning pair context froze another route",
+        edit(&|context| context.route.model = ModelRef("claude-sonnet-5".to_owned())),
+    ));
+    cases.push((
+        "the planning pair context names no actual vendor",
+        edit(&|context| context.vendor = "unknown".to_owned()),
+    ));
+    cases.push((
+        "the planning pair context names another member container",
+        edit(&|context| context.topology_node_id = node(NODE_B)),
+    ));
+    cases.push((
+        "the member route's provenance is not the frozen placement",
+        edit(&|context| context.placement_hash = ContentHash::of(b"another placement")),
+    ));
+    cases.push((
+        "the member launch requests another fleet provenance",
+        edit(&|context| context.requested_fleet_provenance.step = 9),
+    ));
+    for (rule, request) in cases {
+        let refused = plane.adapter.launch_consultation(&request).await;
+        assert!(
+            matches!(&refused, Err(RuntimeError::LaunchNotAdmitted { rule: found }) if *found == rule),
+            "{rule}: {refused:?}"
+        );
+    }
+    assert_eq!(
+        plane.adapter.launch_consultation(&base).await,
+        Err(RuntimeError::PlanningPairMemberSurfaceUnsupported {
+            provider: "claude".to_owned(),
+            gap: kontor_runtime::planning_pair::MemberSurfaceGap::RestrictionUnacknowledged,
+        }),
+        "a valid context is then refused for its route"
+    );
+    assert!(
+        plane.daemon.calls().is_empty(),
+        "no plane call for any refusal"
+    );
+}
+
+/// A consultation launch writes its fleet provenance beside the consultation
+/// labels and reports what the agent's labels hold; drift refuses the launch.
+/// The OpenCode `route_provenance.evidence_hash` label path is untouched: a
+/// Codex consultation still carries the read-only marker.
+#[tokio::test]
+async fn a_consultation_launch_writes_and_reads_back_its_fleet_provenance() {
+    let requested = fleet_provenance();
+    for drifted in [false, true] {
+        let seat_binding_id = SeatBindingId::generate();
+        let run_id = ConsultationRunId::Committee(CommitteeRunId::generate());
+        let mut agent = v(AGENT);
+        agent["agent"]["provider"] = serde_json::json!("codex");
+        agent["agent"]["model"] = serde_json::json!("gpt-5.6-sol");
+        agent["agent"]["currentModeId"] = serde_json::json!("auto-review");
+        let mut labels = with_fleet_labels(
+            serde_json::json!({
+                "kontor.consultation_run": format!("{}/{}", run_id.family().as_str(), run_id.as_text()),
+                "jira.epic": "ASMA-7744", "kontor.project_id": MINI_PROJECT,
+                "kontor.seat_binding_id": seat_binding_id.to_string(),
+                "kontor.role": "reviewer-a", "kontor.role_slot_id": "reviewer-a",
+                "kontor.workspace_id": WORKSPACE_ID, "kontor.worktree": CWD,
+                "kontor.read_only": "true",
+            }),
+            &requested,
+        );
+        if drifted {
+            labels["kontor.fleet.policy_hash"] =
+                serde_json::json!(kontor_core::id::ContentHash::of(b"another policy").as_str());
+        }
+        agent["agent"]["labels"] = labels;
+        let recorded = RecordedPaseo::new()
+            .answering(&PaseoCommand::version(), VERSION)
+            .answering(&any_workspace_create(), CLI_WORKSPACE_CREATED)
+            .announcing(&v(SERVER_INFO))
+            .answering_rpc("project.list.request", v(PROJECT_LIST))
+            .then_answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_EMPTY))
+            .answering_rpc("fetch_workspaces_request", v(WORKSPACE_LIST_NODE))
+            .answering_rpc("fetch_agents_request", v(AGENT_LIST_EMPTY))
+            .answering_rpc(
+                "create_agent_request",
+                serde_json::json!({"status": "agent_created", "agent": {"id": AGENT_ID}}),
+            )
+            .answering_rpc("fetch_agent_request", agent);
+        let plane = Plane::fresh(recorded);
+        plane
+            .adapter
+            .prepare_project("cmd-consultation-fleet", &project_name())
+            .await
+            .expect("the epic project is prepared");
+        let container = plane
+            .adapter
+            .prepare_container(&child_request(node(NODE_A), Some(bound_root(node(NODE_B)))))
+            .await
+            .expect("the consultation container is prepared")
+            .snapshot;
+        let request = kontor_runtime::adapter::ConsultationLaunchRequest {
+            run_id,
+            seat_binding_id,
+            role_slot_id: slot("reviewer-a"),
+            display_name: name("Reviewer A"),
+            container,
+            cwd: root(),
+            scope: execution_scope(),
+            prompt: text("review the change"),
+            credential: kontor_runtime::adapter::ScopedSeatCredential::new(
+                "consultation-fleet-secret".to_owned(),
+            ),
+            model_rung: ModelRung {
+                provider: ProviderRef("codex".to_owned()),
+                model: ModelRef("gpt-5.6-sol".to_owned()),
+                effort: None,
+            },
+            route_provenance:
+                kontor_runtime::adapter::ConsultationRouteProvenance::fleet_configuration(
+                    requested.policy_hash.clone(),
+                ),
+            fleet_provenance: Some(requested.clone()),
+            context_policy: standard_context_policy(),
+            requested_at: at("2026-08-16T09:10:00Z"),
+            planning_pair: None,
+        };
+        let launched = plane.adapter.launch_consultation(&request).await;
+        if drifted {
+            assert!(
+                matches!(launched, Err(RuntimeError::CorrelationFailed)),
+                "a drifted fleet label must refuse: {launched:?}"
+            );
+            continue;
+        }
+        let outcome = launched.expect("the consultation seat launches");
+        assert_eq!(
+            outcome.fleet_provenance,
+            kontor_runtime::FleetProvenanceObservation::Observed {
+                surface: "paseo.agent.labels".to_owned(),
+                provenance: requested.clone(),
+            }
+        );
+        let sent = plane.daemon.sent_messages("create_agent_request");
+        assert_eq!(sent[0]["labels"]["kontor.read_only"], "true");
+        assert_eq!(
+            sent[0]["labels"]["kontor.fleet.policy_hash"],
+            requested.policy_hash.as_str()
+        );
+    }
 }

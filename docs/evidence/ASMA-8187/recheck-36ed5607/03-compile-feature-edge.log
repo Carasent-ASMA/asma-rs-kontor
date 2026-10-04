@@ -1,0 +1,55 @@
+=== 03-compile-feature-edge ===
+head        : 36ed5607753bb749a3a3f12f785fe632c3092650
+tree        : d802479a71bdefa6dc2f0bee4332ee9237fc546d
+dirty       : 1 path(s)
+command     : cargo check -p kontor-store --all-targets --features fault-injection --locked
+toolchain   : rustc 1.97.1 (8bab26f4f 2026-07-14)
+started     : 2026-10-03T16:24:18Z
+disk free   : 15Gi
+--- raw output ---
+    Checking memchr v2.8.3
+    Checking serde_core v1.0.229
+    Checking getrandom v0.4.3
+   Compiling aws-lc-rs v1.18.1
+    Checking futures-task v0.3.34
+    Checking slab v0.4.12
+    Checking tracing-core v0.1.36
+    Checking futures-channel v0.3.34
+    Checking form_urlencoded v1.2.2
+    Checking log v0.4.34
+    Checking rustix v1.1.5
+    Checking futures-util v0.3.34
+    Checking nom v8.0.0
+    Checking url v2.5.8
+    Checking hyper v1.11.1
+    Checking tracing v0.1.44
+    Checking tempfile v3.27.0
+    Checking nom-language v0.1.0
+    Checking iso8601 v0.6.6
+    Checking hyper-util v0.1.20
+    Checking tower v0.5.3
+    Checking tower-http v0.6.11
+   Compiling rustls v0.23.45
+    Checking rustls-webpki v0.103.15
+    Checking tokio-rustls v0.26.5
+    Checking rustls-platform-verifier v0.7.0
+    Checking hyper-rustls v0.27.9
+    Checking uuid v1.24.0
+    Checking serde v1.0.229
+    Checking serde_json v1.0.151
+    Checking jiff v0.2.35
+    Checking icalendar v0.17.13
+    Checking reqwest v0.13.4
+    Checking kontor-core v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-core)
+    Checking kontor-runtime v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-runtime)
+    Checking kontor-context v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-context)
+    Checking kontor-policy v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-policy)
+    Checking kontor-scheduler v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-scheduler)
+    Checking kontor-teams v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-teams)
+    Checking kontor-profiles v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-profiles)
+    Checking kontor-calendar v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-calendar)
+    Checking kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.78s
+--- exit status: 0 (12s) ---
+finished    : 2026-10-03T16:24:31Z
+disk free   : 15Gi

@@ -1,0 +1,26 @@
+[package]
+name = "kontor-fleet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The one fleet policy parser, validator and deterministic route resolver."
+
+[lints]
+workspace = true
+
+[dependencies]
+# The exact version is the workspace's own package version. A bare path
+# dependency is a wildcard requirement, which `deny.toml` refuses.
+#
+# These four are the whole list, and deliberately so (ASMA-8280): the policy is
+# read by the daemon and, without the daemon, by direct-mode orchestration. A
+# store, a runtime or an adapter here would make interpreting policy depend on
+# the control plane being up, and a second copy of this crate anywhere else
+# would be a second answer to the same question.
+kontor-core = { path = "../kontor-core", version = "=0.2.1" }
+serde = { workspace = true }
+serde_yaml_ng = { workspace = true }
+thiserror = { workspace = true }

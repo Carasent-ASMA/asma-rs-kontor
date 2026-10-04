@@ -1,0 +1,38 @@
+=== mutant M-P22b1-receipt-not-unique ===
+baseline commit : 129466cc451d93ab742de69564767b2a5b893297
+baseline tree   : 73bb5f4b63fec04cc149aee6763940998bc9c187
+command         : cargo test -p kontor-store --test hosted_seat_autonomy -- one_receipt_cannot_be_bound_to_two_successions
+toolchain       : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform        : Darwin 25.6.0 arm64
+--- preimage sha256 (files this mutant touches, at baseline) ---
+37d120e727c4f98ee5477e5fe62ab9f8dc45c060f97970307722bdddb1d11043  crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
+--- mutated sha256 ---
+4d4681bb0d5c3803c88fe9695cc671423d758d3f55ec17d31fb3f9e2aeccd36b  crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
+--- raw output ---
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.28s
+     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-37350dd3fcfb6d32)
+
+running 1 test
+test one_receipt_cannot_be_bound_to_two_successions ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 1.78s
+
+--- exit status: 0 (non-zero = mutant killed) ---
+--- restored sha256 ---
+37d120e727c4f98ee5477e5fe62ab9f8dc45c060f97970307722bdddb1d11043  crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
+restoration: byte-identical to baseline 129466cc451d93ab742de69564767b2a5b893297
+
+--- outcome: SURVIVED, retained rather than discarded ---
+Baseline 129466cc, before the test was corrected. The uniqueness guard was
+removed and `one_receipt_cannot_be_bound_to_two_successions` still passed,
+because the second succession in that version was committed but incomplete: the
+0120 rule "a row may carry a receipt only once both trailing effects have
+landed" refused the planted binding before the uniqueness index was ever
+consulted. The split had therefore not actually separated the two guards.
+
+The test now carries the second succession to complete, so the completeness
+CHECK passes and uniqueness is the only rule left to refuse. Re-run against
+baseline e5aea100 as M-P22b1-receipt-not-unique: killed.
+
+This record is kept because the kill is only meaningful beside it.

@@ -1,0 +1,13 @@
+{
+  "observed_utc": "2026-10-03T21:40:04.803281+00:00",
+  "source_head": "ef0b71933d8879f33d963a4ad3b5f1fded4aa52f",
+  "owned_count": 13,
+  "original_candidate_final_isolated_hashes_equal": true,
+  "all_mutant_compilation_assertion_log_restoration_checks_pass": true,
+  "tracked_changed_paths_within_owned": true,
+  "restore_rs_sha256": "14ae5e6ff4cba2ffb0b7c94fdf250279ee88c8b8d7d2f932d2d253b60449d74c",
+  "restore_and_root_cargo_unchanged": true,
+  "exclusive_source_writes": "finished; released to root for publication",
+  "no_further_source_writes_scheduled": true,
+  "live_effects": "none; no staging/commit/push/installedDB/keychain/native/provider/activation"
+}

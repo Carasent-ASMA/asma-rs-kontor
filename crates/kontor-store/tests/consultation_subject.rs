@@ -15,6 +15,8 @@
 //! * losing the subject across a restart or a backup/restore;
 //! * inventing `epic` for a historical run whose subject was never recorded.
 
+mod support;
+
 use kontor_core::consultation::{
     ConsultationFamily, ConsultationRunId, ConsultationRunState, ConsultationSubject,
 };
@@ -67,7 +69,7 @@ struct World {
 /// One epic holding a task whose delivery workspace already owns the node-level
 /// task, so every consultation below has to coexist with it.
 fn world() -> World {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
     let project_id = ProjectId::generate();
     let mini_project_id = MiniProjectId::generate();

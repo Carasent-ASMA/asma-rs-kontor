@@ -1,0 +1,17 @@
+diff --git a/crates/kontor-store/src/repository.rs b/crates/kontor-store/src/repository.rs
+index 54b692a9..eb1babcc 100644
+--- a/crates/kontor-store/src/repository.rs
++++ b/crates/kontor-store/src/repository.rs
+@@ -5397,10 +5397,9 @@ impl SqliteStore {
+             active
+                 .as_ref()
+                 .is_some_and(|(native, generation, kind, host)| {
++                    // MUTANT M-P11c: the external id alone decides identity.
++                    let _ = (generation, kind, host);
+                     native == identity.native_id.as_str()
+-                        && u64::try_from(*generation).unwrap_or(u64::MAX) == identity.generation
+-                        && kind == identity.runtime_kind.as_str()
+-                        && host == identity.host.as_str()
+                 })
+         };
+         if names(&successor.native_identity) {

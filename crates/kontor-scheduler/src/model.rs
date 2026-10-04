@@ -962,6 +962,66 @@ pub enum RosterGovernance {
     LeadershipSeatUnbound,
 }
 
+/// The complete static placement proof carried into the ready-batch pass.
+///
+/// The daemon resolves these facts before the scheduler may admit a TeamRun.
+/// A successful proof carries the digest of the exact Jira bindings, pinned
+/// Team Definition renderings, worktree and native ESW/ECP/TSW readbacks that
+/// were inspected. Every other state is a typed refusal; absence is never
+/// interpreted as an older, weaker admission contract.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum PlacementAdmission {
+    /// Every required placement fact was freshly attested.
+    Confirmed {
+        /// Digest of the canonical placement attestation.
+        attestation_digest: ContentHash,
+    },
+    /// Either the epic or task lacks one exact confirmed Jira binding.
+    JiraBindingUnconfirmed,
+    /// The epic has no exact immutable Team Definition pin.
+    TeamDefinitionUnpinned,
+    /// The pinned Team Definition cannot name every declared delivery slot.
+    DeliverySlotUnregistered,
+    /// The task has no declared worktree.
+    WorktreeMissing,
+    /// A worktree is present but has not been proved usable for this task.
+    WorktreeUnverified,
+    /// One or more exact ESW/ECP/TSW native bindings or readbacks is absent.
+    #[default]
+    NativeTopologyUnconfirmed,
+}
+
+impl PlacementAdmission {
+    /// The typed refusal this proof represents, if it is not confirmed.
+    #[must_use]
+    pub const fn rejection_code(&self) -> Option<RejectionCode> {
+        match self {
+            Self::Confirmed { .. } => None,
+            Self::JiraBindingUnconfirmed => Some(RejectionCode::JiraBindingUnconfirmed),
+            Self::TeamDefinitionUnpinned => Some(RejectionCode::TeamDefinitionUnpinned),
+            Self::DeliverySlotUnregistered => Some(RejectionCode::DeliverySlotUnregistered),
+            Self::WorktreeMissing => Some(RejectionCode::WorktreeMissing),
+            Self::WorktreeUnverified => Some(RejectionCode::WorktreeUnverified),
+            Self::NativeTopologyUnconfirmed => Some(RejectionCode::NativeTopologyUnconfirmed),
+        }
+    }
+
+    /// The successful attestation digest, if every fact was confirmed.
+    #[must_use]
+    pub const fn attestation_digest(&self) -> Option<&ContentHash> {
+        match self {
+            Self::Confirmed { attestation_digest } => Some(attestation_digest),
+            Self::JiraBindingUnconfirmed
+            | Self::TeamDefinitionUnpinned
+            | Self::DeliverySlotUnregistered
+            | Self::WorktreeMissing
+            | Self::WorktreeUnverified
+            | Self::NativeTopologyUnconfirmed => None,
+        }
+    }
+}
+
 /// One task the scheduler is deciding about, with everything a blocker reads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Candidate {
@@ -983,6 +1043,9 @@ pub struct Candidate {
     /// would turn every legacy candidate into newly blocked work.
     #[serde(default = "registered_by_default")]
     pub delivery_slots_registered: bool,
+    /// Complete fail-closed placement evidence for this scheduling instant.
+    #[serde(default)]
+    pub placement: PlacementAdmission,
     /// Lifecycle state.
     pub state: TaskState,
     /// The revision the decision is computed against. The admission transaction
@@ -1238,6 +1301,14 @@ closed_enum! {
         /// runtime is asked anything: a task whose seats cannot be named must
         /// not cause a runtime to be contacted on its behalf.
         DeliverySlotUnregistered => "delivery_slot_unregistered",
+        /// The epic or task does not have one exact confirmed Jira binding.
+        JiraBindingUnconfirmed => "jira_binding_unconfirmed",
+        /// The epic has no exact immutable Team Definition pin.
+        TeamDefinitionUnpinned => "team_definition_unpinned",
+        /// The task has no declared worktree.
+        WorktreeMissing => "worktree_missing",
+        /// ESW/ECP/TSW native binding or current readback is absent or wrong.
+        NativeTopologyUnconfirmed => "native_topology_unconfirmed",
         /// The runtime does not declare a capability the launch needs.
         RuntimeCapabilityMissing => "runtime_capability_missing",
         /// The runtime's trust grade may not be driven autonomously.
@@ -1299,7 +1370,11 @@ impl RejectionCode {
     #[must_use]
     pub const fn public_code(self) -> &'static str {
         match self {
-            Self::DeliverySlotUnregistered => "placement_blocked",
+            Self::DeliverySlotUnregistered
+            | Self::JiraBindingUnconfirmed
+            | Self::TeamDefinitionUnpinned
+            | Self::WorktreeMissing
+            | Self::NativeTopologyUnconfirmed => "placement_blocked",
             other => other.as_str(),
         }
     }
@@ -1322,6 +1397,16 @@ impl RejectionCode {
             }
             Self::DeliverySlotUnregistered => {
                 "the pinned Team Definition registers no delivery slot this task's team template declares; publish and select a revision whose team_slots cover it"
+            }
+            Self::JiraBindingUnconfirmed => {
+                "confirm exactly one Jira epic and task binding, then re-plan"
+            }
+            Self::TeamDefinitionUnpinned => {
+                "pin one immutable Team Definition revision for the epic, then re-plan"
+            }
+            Self::WorktreeMissing => "register the task's exact worktree, then re-plan",
+            Self::NativeTopologyUnconfirmed => {
+                "materialize or read back the exact ESW, ECP and TSW identities, then re-plan"
             }
             Self::DependencyIncomplete => "wait for the named dependency to finish, then re-plan",
             Self::SerializationPeerInFlight => {
@@ -1567,6 +1652,12 @@ pub struct AdmittedCandidate {
     pub runtime_kind: RuntimeKindKey,
     /// The generation of that runtime.
     pub runtime_generation: u64,
+    /// Digest of the exact successful placement attestation.
+    ///
+    /// `None` exists only for admission rows written before this field. New
+    /// scheduler decisions always carry `Some`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement_attestation_digest: Option<ContentHash>,
     /// The intake receipt that armed it, for event-origin work.
     pub intake_receipt_id: Option<IntakeReceiptId>,
 }

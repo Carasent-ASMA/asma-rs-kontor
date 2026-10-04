@@ -1,0 +1,40 @@
+   Compiling reqwest v0.13.4
+   Compiling kontor-scheduler v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-scheduler)
+   Compiling kontor-runtime-paseo v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-runtime-paseo)
+   Compiling kontor-calendar v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-calendar)
+   Compiling kontor-store v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-store)
+   Compiling kontor-accounts v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-accounts)
+   Compiling kontor-jira v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-jira)
+   Compiling kontor-mcp v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-mcp)
+   Compiling kontor-api v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-api)
+   Compiling kontor-memory-cognee v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-memory-cognee)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/asma-8278-module-release-integration/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 14s
+     Running tests/experience_memory.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/experience_memory-f594935294624068)
+
+running 2 tests
+test secret_canaries_hidden_queries_and_projection_unavailable_are_static ... ok
+test proposal_approval_preview_freeze_readback_replay_and_purge_refusal ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.07s
+
+     Running tests/projection_rebuild.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/projection_rebuild-b51890f688f5239d)
+
+running 7 tests
+test composed_adverse_qualification_cannot_activate_before_canary ... ok
+test composed_http_success_local_exclusion_idempotent_replay_and_restart ... ok
+test result_receipt_failure_rolls_back_activation_and_retry_commits_once ... ok
+test stale_preview_is_refused_before_egress_and_inflight_ledger_change_conflicts ... ok
+test concurrent_same_key_replays_once_and_distinct_keys_use_late_cas ... ok
+test canary_failure_and_transport_failures_preserve_prior_active_pointer ... ok
+test absent_and_disabled_composition_refuse_without_lookup_or_network ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.49s
+
+     Running tests/synthetic_census_rehearsal.rs (/Users/igor/.local/state/asma/epics/ASMA-8278/prepared-diagnostic-20261004-0029/cargo-target/debug/deps/synthetic_census_rehearsal-f4a719b4dfc37249)
+
+running 1 test
+test synthetic_55_cohort_current_57_snapshot_restore_conflict_history_and_replay ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.68s
+

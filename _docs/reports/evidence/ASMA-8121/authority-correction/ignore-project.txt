@@ -1,0 +1,21 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.48s
+     Running tests/backup_export.rs (/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/target/debug/deps/backup_export-86507a0c15daf53a)
+
+running 1 test
+
+thread 'command_events_refuse_missing_or_wrong_project_receipts' (56644367) panicked at crates/kontor-store/tests/backup_export.rs:611:22:
+a command event needs its exact same-project receipt
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test command_events_refuse_missing_or_wrong_project_receipts ... FAILED
+
+failures:
+
+failures:
+    command_events_refuse_missing_or_wrong_project_receipts
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 24 filtered out; finished in 3.43s
+
+error: test failed, to rerun pass `-p kontor-store --test backup_export`
+
+PROCESS_EXIT_CODE=101

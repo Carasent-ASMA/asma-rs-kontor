@@ -1,0 +1,28 @@
+[package]
+name = "kontor-fleet-activation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The read-only, daemon-free reader of one activated fleet policy bundle."
+
+[lints]
+workspace = true
+
+[dependencies]
+# The exact version is the workspace's own package version. A bare path
+# dependency is a wildcard requirement, which `deny.toml` refuses.
+#
+# ASMA-8280 B-1: the one guarded reader of `fleet-activation.json` and the
+# immutable artifacts it names, shared by the daemon's read path and the
+# `kontor` CLI's local resolution. It writes nothing and holds no cache, so it
+# needs the resolver, the canonical-document rules and JSON — nothing else.
+kontor-core = { path = "../kontor-core", version = "=0.2.1" }
+kontor-fleet = { path = "../kontor-fleet", version = "=0.2.1" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1105,6 +1105,7 @@ impl<'a> CodexAdapter<'a> {
         observed_at: Timestamp,
     ) -> RuntimeResult<ControlPlaneObservation> {
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id,
             contact: RuntimeContact::ProcessMissing,
             state: ObservedRunState::Unknown,
@@ -1260,6 +1261,7 @@ impl<'a> CodexAdapter<'a> {
                 ending: None,
             };
             let observation = ControlPlaneObservation {
+                drivable: true,
                 agent_run_id: request.agent_run_id(),
                 contact: RuntimeContact::Reachable,
                 // A process that acknowledged its launch is running. That is an
@@ -1292,6 +1294,13 @@ impl<'a> CodexAdapter<'a> {
                 );
             }
             Ok(LaunchOutcome {
+                // ASMA-8280 G-3: the direct Codex launch has no session metadata a label can be written to or read back from, so a requested fleet provenance is
+                // reported unsupported with the native id — never echoed back.
+                fleet_provenance: kontor_runtime::FleetProvenanceObservation::without_surface(
+                    request.fleet_provenance(),
+                    "codex.exec",
+                    &snapshot.identity().native_id,
+                ),
                 snapshot,
                 observation,
             })
@@ -1590,6 +1599,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
             stored.clone()
         };
         Ok(ControlPlaneObservation {
+            drivable: true,
             agent_run_id: binding.agent_run_id(),
             contact: RuntimeContact::ProcessMissing,
             // Not `Cancelled`. A kill that was accepted is not a run that ended
@@ -1641,6 +1651,7 @@ impl RuntimeAdapter for CodexAdapter<'_> {
         }
         let Some(ending) = liveness.ending else {
             return Ok(ControlPlaneObservation {
+                drivable: true,
                 agent_run_id: binding.agent_run_id(),
                 contact: RuntimeContact::Reachable,
                 state: ObservedRunState::Running,

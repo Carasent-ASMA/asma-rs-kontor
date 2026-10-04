@@ -1,0 +1,195 @@
+   Compiling kontor-runtime v0.2.1 (/private/tmp/asma-8278-module-consolidation-20261002.Mcrugq/crates/kontor-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.27s
+     Running unittests src/lib.rs (target/debug/deps/kontor_runtime-38fd6bad31f23716)
+
+running 141 tests
+test admission::tests::releasing_leaves_another_attempts_claim_alone ... ok
+test admission::tests::a_launch_that_never_claimed_its_seat_records_no_session_in_it ... ok
+test admission::tests::a_reservation_being_spent_cannot_be_claimed_a_second_time ... ok
+test admission::tests::releasing_never_evicts_a_seat_that_holds_a_session ... ok
+test capability::tests::advisory_grade_may_read_but_not_drive ... ok
+test capability::tests::limits_refuse_an_oversized_request ... ok
+test capability::tests::the_registry_refuses_a_promoted_or_foreign_snapshot ... ok
+test admission::tests::a_reservation_in_another_seat_does_not_block_a_claim ... ok
+test admission::tests::a_run_committed_in_one_seat_cannot_claim_another ... ok
+test admission::tests::releasing_an_unclaimed_reservation_is_exact_and_never_releases_native_work ... ok
+test capability::tests::trust_rank_is_policy_not_declaration_order ... ok
+test capability::tests::unsupported_capability_is_refused_before_trust_is_considered ... ok
+test container::tests::a_snapshot_whose_correlation_names_another_node_is_not_evidence ... ok
+test container::tests::a_child_requires_the_exact_native_parent_binding ... ok
+test container::tests::a_label_round_trips_through_the_node_it_names ... ok
+test container::tests::a_projection_is_resolved_from_capabilities_and_never_from_a_kind_name ... ok
+test container::tests::a_native_container_id_cannot_be_read_as_a_kontor_identifier ... ok
+test container::tests::an_incoherent_capability_set_is_refused_rather_than_guessed ... ok
+test container::tests::a_root_and_a_logical_node_refuse_a_parent ... ok
+test observation::tests::an_aged_observation_closes_nothing ... ok
+test observation::tests::a_command_acknowledgement_never_closes_a_run ... ok
+test observation::tests::a_broken_channel_never_closes_a_run ... ok
+test observation::tests::an_observation_about_another_run_or_session_closes_nothing ... ok
+test observation::tests::the_grade_comes_from_the_binding_not_from_the_caller ... ok
+test observation::tests::a_forged_binding_is_not_evidence ... ok
+test observation::tests::only_an_allowed_grade_and_source_closes_a_run ... ok
+test fake::retitle_seat_generation_tests::persisted_seat_generation_is_a_bound_and_future_generation_is_refused ... ok
+test planning_pair::application::tests::a_moved_document_refuses_before_the_caller_is_authorized ... ok
+test planning_pair::application::tests::a_key_reused_for_another_consultation_refuses_before_any_freeze_or_launch ... ok
+test fake::retitle_seat_generation_tests::hosted_seat_inspection_distinguishes_live_archived_and_missing_without_effects ... ok
+test fake::retitle_seat_generation_tests::blocked_refusal_is_runtime_owned_and_inspected_with_exact_provenance ... ok
+test fake::retitle_seat_generation_tests::hosted_message_replay_is_exact_native_scoped_and_survives_adapter_rebuild ... ok
+test planning_pair::application::tests::a_new_pair_freezes_only_after_the_epic_check ... ok
+test planning_pair::application::tests::a_moved_epic_refuses_before_any_freeze ... ok
+test planning_pair::application::commands::tests::a_fenced_recovering_caller_never_reaches_context_or_runtime ... ok
+test planning_pair::application::tests::a_route_the_runtime_cannot_compose_refuses_before_any_container_or_launch ... ok
+test planning_pair::application::tests::a_lost_advance_answers_the_winners_row_and_a_still_materializing_run_refuses ... ok
+test planning_pair::application::tests::a_receipt_without_its_run_refuses ... ok
+test planning_pair::application::tests::an_unauthorized_caller_never_reaches_the_intent_or_the_replay ... ok
+test planning_pair::application::tests::a_running_pair_is_not_advanced_again ... ok
+test planning_pair::application::tests::an_exact_replay_is_authorized_first_and_answers_its_receipt_unchanged ... ok
+test planning_pair::application::tests::a_resumed_pair_with_both_members_bound_launches_nothing_and_classifies_its_receipt ... ok
+test planning_pair::application::commands::tests::a_fenced_actor_never_reaches_replay_for_any_contribution_command ... ok
+test planning_pair::application::commands::tests::each_exact_replay_is_authorized_and_never_reaches_revision_or_write ... ok
+test planning_pair::attestation::owner_checks::tests::current_binding_and_nonzero_occupancy_generation_must_match ... ok
+test planning_pair::attestation::owner_checks::tests::matching_observations_return_unit_diagnostic_consistency_only ... ok
+test planning_pair::attestation::owner_checks::tests::current_key_interval_is_inclusive_at_start_and_exclusive_at_end ... ok
+test planning_pair::attestation::owner_checks::tests::every_native_identity_component_and_positive_generation_must_match ... ok
+test planning_pair::attestation::owner_checks::tests::current_token_interval_can_narrow_but_never_bypass_signed_validity ... ok
+test planning_pair::attestation::owner_checks::tests::every_current_scope_component_and_task_presence_must_match ... ok
+test planning_pair::attestation::owner_checks::tests::active_seat_and_active_node_are_both_required ... ok
+test planning_pair::attestation::owner_checks::tests::selected_issuer_key_and_token_substitutions_are_refused ... ok
+test planning_pair::attestation::owner_checks::tests::key_and_token_revocation_after_verification_are_refused ... ok
+test planning_pair::attestation::owner_checks::tests::zero_older_and_newer_key_set_revisions_are_refused ... ok
+test planning_pair::attestation::snapshot_codec::tests::roundtrip_preserves_public_fields_without_establishing_trust_or_der_validity ... ok
+test planning_pair::attestation::snapshot_codec::tests::only_schema_version_one_is_accepted ... ok
+test planning_pair::attestation::owner_checks::tests::the_current_requested_operation_must_be_signed ... ok
+test planning_pair::attestation::owner_checks::tests::signed_token_expiry_between_verification_and_observation_is_refused ... ok
+test planning_pair::attestation::snapshot_codec::tests::identifier_bounds_measure_utf8_bytes_for_both_issuer_and_key ... ok
+test planning_pair::attestation::snapshot_codec::tests::unknown_duplicate_missing_and_invalid_typed_fields_are_refused ... ok
+test planning_pair::attestation::snapshot_codec::tests::shared_snapshot_guards_refuse_encode_and_decode_without_divergence ... ok
+test planning_pair::attestation::snapshot_codec::tests::input_ceiling_is_checked_before_parsing_and_exact_ceiling_is_accepted ... ok
+test planning_pair::attestation::snapshot_codec::tests::key_and_der_count_boundaries_keep_maximum_output_below_ceiling ... ok
+test planning_pair::attestation::tests::audience_and_ungranted_operation_are_refused ... ok
+test planning_pair::attestation::tests::bounds_are_checked_before_parsing_or_signature_verification ... ok
+test planning_pair::attestation::tests::seat_and_generation_must_match_exactly ... ok
+test planning_pair::attestation::tests::explicit_policy_audience_and_expected_generations_must_be_valid ... ok
+test planning_pair::attestation::tests::all_and_only_the_six_existing_command_names_are_supported ... ok
+test planning_pair::attestation::tests::exact_bytes_signature_and_domain_are_required ... ok
+test planning_pair::caller::tests::only_an_active_open_seat_is_a_caller ... ok
+test planning_pair::attestation::tests::token_interval_is_inclusive_at_start_exclusive_at_expiry_and_policy_bounded ... ok
+test planning_pair::caller::tests::only_the_current_hosted_generation_is_eligible ... ok
+test planning_pair::caller::tests::only_the_frozen_caller_acts_for_the_pair ... ok
+test planning_pair::attestation::tests::valid_signature_returns_only_claims_and_snapshot_revision ... ok
+test planning_pair::attestation::tests::every_native_identity_component_must_match_exactly ... ok
+test planning_pair::caller::tests::the_seat_node_is_this_epics_and_active_in_that_order ... ok
+test planning_pair::caller::tests::the_scope_is_this_epic_or_one_of_its_tickets_as_the_document_permits ... ok
+test planning_pair::attestation::tests::every_scope_component_must_match_exactly ... ok
+test planning_pair::attestation::tests::revoked_and_invalid_key_intervals_are_refused ... ok
+test planning_pair::context::tests::a_receipt_without_one_required_fact_names_no_provenance ... ok
+test planning_pair::caller::tests::the_slot_or_catalog_role_is_an_allowed_caller_role_without_case ... ok
+test planning_pair::context::tests::the_epics_pinned_team_definition_is_the_frozen_one ... ok
+test planning_pair::context::tests::a_member_is_held_to_its_frozen_run_pin_and_placement_in_order ... ok
+test planning_pair::attestation::tests::malformed_claims_and_zero_generations_are_refused ... ok
+test planning_pair::context::tests::the_build_refuses_an_invalid_catalog_then_a_missing_provenance ... ok
+test planning_pair::context::tests::the_requested_provenance_is_read_from_the_frozen_receipt_per_slot ... ok
+test planning_pair::context::tests::the_context_is_built_from_exactly_the_facts_read ... ok
+test planning_pair::context::tests::the_member_container_runs_the_epics_pinned_topology ... ok
+test planning_pair::intent::tests::a_disposition_is_the_baseline_document ... ok
+test planning_pair::intent::tests::a_clarification_is_the_baseline_document_in_request_order ... ok
+test planning_pair::intent::tests::a_finding_and_an_answer_are_their_baseline_documents ... ok
+test planning_pair::recovery::tests::a_request_is_held_to_the_known_session_in_order ... ok
+test planning_pair::attestation::tests::snapshot_ambiguity_invalid_revision_and_key_bounds_are_refused ... ok
+test planning_pair::recovery::tests::only_a_disposed_pair_refuses_a_recovery ... ok
+test planning_pair::intent::tests::a_recovery_is_the_baseline_document ... ok
+test planning_pair::recovery::tests::a_session_without_a_known_conversation_takes_the_one_read_back ... ok
+test planning_pair::intent::tests::an_invocation_is_the_baseline_document ... ok
+test planning_pair::recovery::tests::the_runtime_answer_is_classified_as_before ... ok
+test planning_pair::tests::a_policy_selection_alone_is_never_caller_or_member_readiness ... ok
+test planning_pair::recovery::tests::the_verified_claim_is_built_from_the_facts_read ... ok
+test planning_pair::tests::a_reconcile_answer_is_the_same_native_and_never_a_created_one ... ok
+test planning_pair::tests::a_reconcile_request_carries_no_credential ... ok
+test planning_pair::tests::a_fully_matched_hypothetical_pair_still_authorizes_nothing ... ok
+test provenance::tests::only_a_read_back_equal_to_the_request_proves_it ... ok
+test provenance::tests::the_record_shape_is_stable ... ok
+test planning_pair::tests::a_reconcile_request_names_one_exact_member ... ok
+test refusal::tests::a_sensitive_head_cannot_smuggle_its_secret_through_the_retained_tail ... ok
+test refusal::tests::a_sentence_is_carried_verbatim_for_classification ... ok
+test refusal::tests::a_sensitive_tail_is_still_refused ... ok
+test refusal::tests::an_absurdly_large_candidate_is_refused_rather_than_scanned ... ok
+test refusal::tests::debug_redacts_the_text_it_carries ... ok
+test planning_pair::recovery::tests::the_known_session_is_the_bound_seats_and_else_its_claim ... ok
+test refusal::tests::empty_and_blank_text_is_not_a_refusal ... ok
+test refusal::tests::sensitive_material_is_refused_rather_than_carried ... ok
+test request::tests::a_correlation_label_round_trips_through_its_text_form ... ok
+test refusal::tests::the_same_sentence_digests_the_same_way ... ok
+test request::tests::a_key_that_is_already_a_message_id_parses_to_itself ... ok
+test request::tests::a_derived_message_id_is_stable_and_parses_as_one ... ok
+test request::tests::a_message_id_rejects_a_non_v7_uuid ... ok
+test request::tests::a_native_id_cannot_be_read_as_a_kontor_identifier ... ok
+test request::tests::distinct_idempotency_keys_derive_distinct_message_ids ... ok
+test scope::tests::a_ticket_scope_answers_with_the_ticket_it_was_given ... ok
+test scope::tests::an_epic_is_recognized_by_id_and_not_by_its_rendered_name ... ok
+test refusal::tests::over_long_text_keeps_its_tail_where_a_refusal_lands ... ok
+test scope::tests::an_epic_level_scope_refuses_to_answer_a_ticket_question ... ok
+test timeline::tests::a_cursor_from_another_binding_is_refused ... ok
+test timeline::tests::a_position_from_before_the_guard_started_is_dropped_not_judged ... ok
+test timeline::tests::a_gap_breaks_the_timeline_permanently ... ok
+test timeline::tests::an_exact_replay_is_dropped_and_a_contradiction_is_refused ... ok
+test timeline::tests::a_validated_page_carries_no_duplicate_out ... ok
+test planning_pair::tests::a_route_answer_is_attributed_to_its_first_blocker_only ... ok
+test workspace::tests::a_workspace_root_is_absolute_and_normalized ... ok
+test workspace::tests::a_task_workspace_is_never_the_runtime_root ... ok
+test workspace::tests::a_doubled_separator_is_still_refused ... ok
+test timeline::tests::a_rewrite_of_an_older_position_is_refused_too ... ok
+test workspace::tests::a_native_workspace_id_cannot_be_read_as_a_kontor_identifier ... ok
+test planning_pair::attestation::tests::unknown_duplicate_fields_and_invalid_ids_are_refused_without_defaults ... ok
+test workspace::tests::a_non_normal_spelling_is_refused_rather_than_resolved ... ok
+test planning_pair::tests::every_member_check_holds_a_readback_to_the_exact_known_session ... ok
+test planning_pair::context::tests::the_frozen_hash_is_the_baseline_document_over_every_field ... ok
+test planning_pair::attestation::tests::unknown_issuer_key_and_wrong_public_key_are_refused ... ok
+
+test result: ok. 141 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+     Running tests/binding_timeline.rs (target/debug/deps/binding_timeline-d7b96736b3bc4249)
+
+running 5 tests
+test projection_refuses_contradictory_content_at_one_position ... ok
+test projection_collapses_exact_replays_without_changing_coverage ... ok
+test projection_refuses_zero_starting_positions_and_noncontiguous_ranges ... ok
+test projection_refuses_foreign_bindings_generations_and_mixed_epochs ... ok
+test projection_returns_only_messages_in_position_order_and_covers_the_source_range ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bound_container_contract.rs (target/debug/deps/bound_container_contract-d72f8b82b3673799)
+
+running 7 tests
+test the_shared_predicate_preserves_ticket_isolation_and_epic_consultation_worktrees ... ok
+test the_container_semantics_come_from_the_durable_scope ... ok
+test the_fake_refuses_a_bound_id_it_does_not_hold ... ok
+test the_fake_refuses_a_bound_id_that_does_not_match_what_it_holds ... ok
+test a_bound_container_of_either_semantics_reconciles_by_exact_id ... ok
+test the_fake_refuses_a_ticket_container_that_is_not_a_worktree ... ok
+test the_fake_accepts_epic_directories_and_consultation_worktrees ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/retitle_container.rs (target/debug/deps/retitle_container-b7a3276cdb775a3a)
+
+running 8 tests
+test retitling_is_a_change_and_is_declared_as_one ... ok
+test a_runtime_that_does_not_declare_the_capability_refuses_by_name ... ok
+test a_task_with_no_scope_on_this_plane_uses_the_supplied_title ... ok
+test a_task_scoped_container_is_titled_from_the_planes_scope ... ok
+test a_retitle_keeps_the_identity_and_reports_what_it_read_back ... ok
+test a_retitle_refuses_an_id_or_generation_it_did_not_bind ... ok
+test a_preview_answers_the_same_thing_and_changes_nothing ... ok
+test a_preview_refuses_what_an_apply_would_refuse ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests kontor_runtime
+
+running 2 tests
+test crates/kontor-runtime/src/planning_pair/attestation.rs - planning_pair::attestation::VerifiedAttestation (line 187) - compile fail ... ok
+test crates/kontor-runtime/src/planning_pair/attestation.rs - planning_pair::attestation::VerifiedAttestation (line 194) - compile fail ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+

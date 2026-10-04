@@ -1,0 +1,41 @@
+{
+  "baseSourceCommit": "51cfef9caaa1e2b12674ad932d0adfb0658d4777",
+  "scope": "Frozen/API verification of privately prepared two-response contract correction only; no whole-source qualification or deployment credit.",
+  "commands": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "kontor-api",
+        "--test",
+        "openapi_contract"
+      ],
+      "exitCode": 0
+    },
+    {
+      "command": [
+        "node",
+        "/Users/igor/carasent/asma-modules/_tools/asma-rs-kontor/node_modules/.pnpm/openapi-typescript@7.13.0_typescript@5.9.3/node_modules/openapi-typescript/bin/cli.js",
+        "/private/tmp/ASMA-8114-openapi-correction-51cfef9c/source/crates/kontor-api/contract/openapi.json",
+        "-o",
+        "/private/tmp/ASMA-8114-openapi-correction-51cfef9c/schema-verify.d.ts"
+      ],
+      "exitCode": 0
+    },
+    {
+      "command": [
+        "diff",
+        "-u",
+        "/private/tmp/ASMA-8114-openapi-correction-51cfef9c/source/apps/console/src/api/schema.d.ts",
+        "/private/tmp/ASMA-8114-openapi-correction-51cfef9c/schema-verify.d.ts"
+      ],
+      "exitCode": 0
+    }
+  ],
+  "startedAt": "2026-09-26T16:47:48.346439+00:00",
+  "finishedAt": "2026-09-26T16:47:49.416389+00:00",
+  "exitCode": 0,
+  "logSha256": "1b8b5ba126fcd4283e146c5aa983e2987bf35f89b5296f93d81ed71c18cda8b4"
+}

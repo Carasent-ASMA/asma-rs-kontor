@@ -1,0 +1,44 @@
+=== mutant M-CTL-control-pair-36ed5607 (corrected baseline) ===
+baseline commit   : 36ed5607753bb749a3a3f12f785fe632c3092650
+mutated file      : crates/kontor-daemon/src/main.rs
+snapshot sha256   : 92015a21f2f8a7e67b70ad1ae7965ba0e3ad2293f293e75fc17db30b03f22881
+mutated  sha256   : 2a2ec0980b5f992a6eaa3008f78389bf4e4152392ec4546266ff79c62a5f9bc1
+patch             : M-CTL-control-pair-36ed5607.patch (mutation-only, 13 lines)
+  git apply --check: accepted
+  patch --dry-run  : patching file 'crates/kontor-daemon/src/main.rs'
+test command      : cargo test -p kontor-daemon --bin kontor-daemon -- --test-threads=1 a_realm_stopped_before_the_current_schema a_current_realm_reaches
+reproduce (exact) : LIMIT=600 docs/evidence/ASMA-8187/mutants/harness/mutate.sh M-CTL-control-pair-36ed5607 docs/evidence/ASMA-8187/mutants/harness/m_ctl.py crates/kontor-daemon/src/main.rs test -p kontor-daemon --bin kontor-daemon -- --test-threads=1 a_realm_stopped_before_the_current_schema a_current_realm_reaches
+limiter           : this harness bounds the run at 600s wall clock and
+                    reports 124 = timeout, inconclusive, never a kill.
+toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform          : Darwin 25.6.0 arm64
+--- raw output ---
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+   Compiling kontor-api v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-api)
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.32s
+     Running unittests src/main.rs (target/debug/deps/kontor_daemon-a20f67ba496d7207)
+
+running 2 tests
+test tests::a_current_realm_reaches_the_credential_reader_and_fails_after_the_gate ... FAILED
+test tests::a_realm_stopped_before_the_current_schema_refuses_without_reading_or_installing ... ok
+
+failures:
+
+---- tests::a_current_realm_reaches_the_credential_reader_and_fails_after_the_gate stdout ----
+
+thread 'tests::a_current_realm_reaches_the_credential_reader_and_fails_after_the_gate' (25246277) panicked at crates/kontor-daemon/src/main.rs:967:9:
+a current realm did not reach the credential reader: Err(CredentialScope)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::a_current_realm_reaches_the_credential_reader_and_fails_after_the_gate
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 7.06s
+
+error: test failed, to rerun pass `-p kontor-daemon --bin kontor-daemon`
+--- exit status: 101 (non-zero = killed; 124 = timeout, inconclusive) ---
+restored sha256   : 92015a21f2f8a7e67b70ad1ae7965ba0e3ad2293f293e75fc17db30b03f22881
+restoration       : byte-identical to the named snapshot
+MUTANT markers    : 0
