@@ -1,0 +1,30 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running tests/backup_snapshot.rs (target/debug/deps/backup_snapshot-ba16d7a45b9280c9)
+
+running 23 tests
+test a_manifest_that_does_not_describe_its_snapshot_is_refused ... ok
+test a_nonempty_public_authority_snapshot_is_refused_before_destination_creation ... ok
+test a_published_snapshot_is_never_overwritten ... ok
+test a_damaged_database_is_never_copied_and_replaces_nothing ... ok
+test a_restore_refuses_a_taken_superseded_name_and_leaves_the_destination_intact ... ok
+test a_snapshot_taken_while_the_database_is_written_is_a_consistent_point ... ok
+test a_restore_reinstates_the_same_realm_and_refuses_a_different_one ... ok
+test an_old_empty_snapshot_cannot_rollback_current_public_key_revocation ... ok
+test an_uncheckpointed_public_ledger_refusal_leaves_all_target_files_unchanged ... ok
+test corrupted124_destination_ledger_tables_refuse_without_directory_changes ... ok
+test corrupted124_missing_ledger_tables_is_not_an_empty_restore_fallback ... ok
+test historical_pre124_files_retain_schema_refusal_and_additive_open_behavior ... ok
+test empty_ledger_restore_handles_uri_delimiters_in_the_target_path ... ok
+test memory_ledger_and_import_evidence_restore_while_fts_is_rebuilt ... ok
+test missing_and_zero_main_without_nonempty_wal_retain_supported_restore ... ok
+test nonempty_public_authority_ledger_is_not_silently_omitted_from_export ... ok
+test missing_main_with_committed_wal_refuses_without_changing_destination_files ... ok
+test retention_keeps_the_newest_seven_of_this_realm_and_touches_nothing_else ... ok
+test retention_never_empties_a_directory_that_holds_one_backup ... ok
+test snapshot_preserves_exact_k_and_k2_profile_selection_bindings ... ok
+test the_gate_rejection_route_schema_migrates_and_survives_a_snapshot ... ok
+test two_simultaneous_publishers_of_one_name_produce_one_snapshot ... ok
+test zero_main_with_committed_wal_refuses_without_changing_destination_files ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 84.13s
+

@@ -1294,6 +1294,13 @@ impl<'a> CodexAdapter<'a> {
                 );
             }
             Ok(LaunchOutcome {
+                // ASMA-8280 G-3: the direct Codex launch has no session metadata a label can be written to or read back from, so a requested fleet provenance is
+                // reported unsupported with the native id — never echoed back.
+                fleet_provenance: kontor_runtime::FleetProvenanceObservation::without_surface(
+                    request.fleet_provenance(),
+                    "codex.exec",
+                    &snapshot.identity().native_id,
+                ),
                 snapshot,
                 observation,
             })

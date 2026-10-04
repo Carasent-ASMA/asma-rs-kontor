@@ -1,0 +1,80 @@
+{
+  "commands": [
+    {
+      "argv": [
+        "rg",
+        "-n",
+        "\\b119\\b|\\b120\\b|\\b121\\b",
+        "crates",
+        "tests",
+        "scripts",
+        "apps",
+        ".github",
+        "--glob",
+        "*.rs",
+        "--glob",
+        "*.py",
+        "--glob",
+        "*.json",
+        "--glob",
+        "*.toml",
+        "--glob",
+        "*.ts",
+        "--glob",
+        "!openapi.json",
+        "--glob",
+        "!schema.d.ts",
+        "--glob",
+        "!test-timings.json"
+      ],
+      "command": "rg -n '\\b119\\b|\\b120\\b|\\b121\\b' crates tests scripts apps .github --glob '*.rs' --glob '*.py' --glob '*.json' --glob '*.toml' --glob '*.ts' --glob '!openapi.json' --glob '!schema.d.ts' --glob '!test-timings.json'",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit": 0,
+      "stdout": "tests/e2e/pilot_sections/scheduling.rs:724:        freshness: jiff::SignedDuration::from_secs(120),\ncrates/kontor-daemon/src/usage.rs:993:        for seconds in [2, 10, 60, 120] {\ntests/e2e/pilot_sections/runtime.rs:1712:        freshness: SignedDuration::from_secs(120),\ncrates/kontor-daemon/src/github_publication.rs:48:const TOKEN_MARGIN: Duration = Duration::from_secs(120);\ntests/fixtures/ao-0.12.1/mux-frames.json:2:  { \"ch\": \"terminal\", \"id\": \"trm_claude_1\", \"type\": \"open\", \"cols\": 120, \"rows\": 40 },\ncrates/kontor-store/src/migrations.rs:37:pub const SCHEMA_VERSION: i64 = 121;\ncrates/kontor-store/src/migrations.rs:630:    if version < 120 {\ntests/contract/scheduling.rs:437:            freshness: jiff::SignedDuration::from_secs(120),\ncrates/kontor-store/tests/schema_v1.rs:768:    assert_eq!(SCHEMA_VERSION, 121);\ncrates/kontor-store/tests/schema_v1.rs:6182:    connection.execute_batch(\"DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; PRAGMA user_version=119;\").unwrap();\ncrates/kontor-store/tests/memory_migration_rollback.rs:96:    connection.execute_batch(\"DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; PRAGMA user_version=119;\").unwrap();\ncrates/kontor-store/tests/memory_migration_rollback.rs:114:        119\ncrates/kontor-store/tests/memory_migration_rollback.rs:210:        serde_json::json!({\"prior_version\":119,\"final_version\":SCHEMA_VERSION,\"injected_failure\":\"0120 duplicate trigger after four table creations\",\"history_sha256\":hash,\"rollback_schema_equal\":true,\"rollback_ledger_equal\":true,\"clean_retry_equal\":true,\"typed_backfill_rows\":cache,\"forward_version_refused\":true})\ncrates/kontor-store/tests/scheduler_admission.rs:1980:        renewed_at: later(120),\ncrates/kontor-store/tests/scheduler_admission.rs:1993:        released_at: later(120),\ncrates/kontor-store/tests/scheduler_admission.rs:2006:        renewed_at: later(120),\ncrates/kontor-store/tests/scheduler_admission.rs:2344:        renewed_at: later(120),\ncrates/kontor-store/tests/scheduler_admission.rs:2499:                rusqlite::params![later(120).to_string(), project, lease],\ncrates/kontor-store/tests/scheduler_admission.rs:2562:                rusqlite::params![later(120).to_string(), receipt, project, lease],\ncrates/kontor-store/tests/scheduler_admission.rs:2693:            released_at: later(120),\ncrates/kontor-runtime-codex/tests/live.rs:259:        Box::new(CodexLiveTransport::new(60, 120).expect(\"the live transport is configured\")),\ncrates/kontor-scheduler/tests/ready_batch.rs:217:        freshness: jiff::SignedDuration::from_secs(120),\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "rg",
+        "-n",
+        "schema_version\\(\\)|PRAGMA user_version|pragma_update.*user_version|MIGRATIONS.len|include_str!.*(0119|0120|0121)",
+        "crates",
+        "tests",
+        "scripts",
+        "--glob",
+        "*.rs",
+        "--glob",
+        "*.py"
+      ],
+      "command": "rg -n 'schema_version\\(\\)|PRAGMA user_version|pragma_update.*user_version|MIGRATIONS.len|include_str!.*(0119|0120|0121)' crates tests scripts --glob '*.rs' --glob '*.py'",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit": 0,
+      "stdout": "crates/kontor-core/tests/spec_validation.rs:456:    assert_eq!(document.schema_version(), SchemaVersion::parse(1).unwrap());\ncrates/kontor-jira/tests/native_connector.rs:426:    assert_eq!(workflow.document().schema_version(), SCHEMA_VERSION);\ncrates/kontor-store/src/backup/snapshot.rs:263:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/src/backup/export.rs:1162:        database_schema_version: store.schema_version()?,\ncrates/kontor-store/src/migrations.rs:13://! `PRAGMA user_version = N`, which is transactional, so the recorded version\ncrates/kontor-store/src/migrations.rs:68:/// `PRAGMA user_version` that records it.\ncrates/kontor-store/src/migrations.rs:417:    include_str!(\"../migrations/0119_publication_attestations_immutable.sql\"),\ncrates/kontor-store/src/migrations.rs:419:    include_str!(\"../migrations/0120_experience_memory_projection.sql\"),\ncrates/kontor-store/src/migrations.rs:420:    include_str!(\"../migrations/0121_memory_projection_rebuild_receipts.sql\"),\ncrates/kontor-store/src/migrations.rs:424:    MIGRATIONS.len() == SCHEMA_VERSION as usize,\ncrates/kontor-store/src/migrations.rs:480:/// Read `PRAGMA user_version`.\ncrates/kontor-store/src/migrations.rs:482:    Ok(connection.query_row(\"PRAGMA user_version\", [], |row| row.get(0))?)\ncrates/kontor-store/src/migrations.rs:610:        // Each ends with its own transactional `PRAGMA user_version`: any\ncrates/kontor-store/tests/realm_preflight.rs:28:    connection.pragma_update(None, \"user_version\", 0).unwrap();\ncrates/kontor-context/src/model.rs:348:        self.document.schema_version()\ncrates/kontor-store/tests/schema_v1.rs:656:fn an_empty_database_migrates_to_the_current_schema_version() {\ncrates/kontor-store/tests/schema_v1.rs:660:        store.schema_version().expect(\"the version is readable\"),\ncrates/kontor-store/tests/schema_v1.rs:779:        store.schema_version().expect(\"the version reads\"),\ncrates/kontor-store/tests/schema_v1.rs:853:             PRAGMA user_version = 105;\",\ncrates/kontor-store/tests/schema_v1.rs:892:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/schema_v1.rs:1097:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/schema_v1.rs:1926:        store.schema_version().expect(\"the version reads\"),\ncrates/kontor-store/tests/schema_v1.rs:1974:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/schema_v1.rs:2006:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/schema_v1.rs:2083:    assert_eq!(store.schema_version().expect(\"readable\"), SCHEMA_VERSION);\ncrates/kontor-store/tests/schema_v1.rs:2146:            .execute_batch(\"PRAGMA user_version = 35;\")\ncrates/kontor-store/tests/schema_v1.rs:2178:    assert_eq!(store.schema_version().expect(\"readable\"), SCHEMA_VERSION);\ncrates/kontor-store/tests/schema_v1.rs:2279:    assert_eq!(store.schema_version().expect(\"readable\"), SCHEMA_VERSION);\ncrates/kontor-store/tests/schema_v1.rs:2324:            .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/schema_v1.rs:2355:    assert_eq!(store.schema_version().expect(\"readable\"), SCHEMA_VERSION);\ncrates/kontor-store/tests/schema_v1.rs:2409:    assert_eq!(store.schema_version().expect(\"readable\"), SCHEMA_VERSION);\ncrates/kontor-store/tests/schema_v1.rs:2470:    assert_eq!(store.schema_version().expect(\"readable\"), SCHEMA_VERSION);\ncrates/kontor-store/tests/schema_v1.rs:2696:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/schema_v1.rs:2742:    assert_eq!(second.schema_version().expect(\"readable\"), SCHEMA_VERSION);\ncrates/kontor-store/tests/schema_v1.rs:2768:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/schema_v1.rs:2807:        assert_eq!(store.schema_version().expect(\"readable\"), SCHEMA_VERSION);\ncrates/kontor-store/tests/schema_v1.rs:2812:            .pragma_update(None, \"user_version\", too_new)\ncrates/kontor-store/tests/schema_v1.rs:2829:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/schema_v1.rs:5322:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/schema_v1.rs:5413:    assert_eq!(store.schema_version().expect(\"readable\"), SCHEMA_VERSION);\ncrates/kontor-store/tests/schema_v1.rs:5542:    assert_eq!(store.schema_version().expect(\"readable\"), SCHEMA_VERSION);\ncrates/kontor-store/tests/schema_v1.rs:5716:        store.schema_version().expect(\"the version reads\"),\ncrates/kontor-store/tests/schema_v1.rs:5802:             PRAGMA user_version = 94;\",\ncrates/kontor-store/tests/schema_v1.rs:5979:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/schema_v1.rs:6034:        PRAGMA user_version=112;\ncrates/kontor-store/tests/schema_v1.rs:6182:    connection.execute_batch(\"DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; PRAGMA user_version=119;\").unwrap();\ncrates/kontor-store/tests/schema_v1.rs:6185:    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);\ncrates/kontor-store/tests/memory_migration_rollback.rs:48:    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);\ncrates/kontor-store/tests/memory_migration_rollback.rs:96:    connection.execute_batch(\"DROP TABLE memory_projection_rebuild_results; DROP TABLE memory_projection_rebuild_keys; DROP TABLE memory_recall_keys; DROP TABLE memory_recall_metadata; DROP TABLE memory_experience_proposals; DROP TABLE memory_projection_active; DROP TABLE memory_projection_snapshots; DROP TABLE memory_experience_eligibility; PRAGMA user_version=119;\").unwrap();\ncrates/kontor-store/tests/memory_migration_rollback.rs:112:            .query_row(\"PRAGMA user_version\", [], |r| r.get::<_, i64>(0))\ncrates/kontor-store/tests/memory_migration_rollback.rs:129:    assert_eq!(upgraded.schema_version().unwrap(), SCHEMA_VERSION);\ncrates/kontor-store/tests/memory_migration_rollback.rs:189:        .pragma_update(None, \"user_version\", SCHEMA_VERSION + 1)\ncrates/kontor-store/tests/memory_migration_rollback.rs:198:        .pragma_update(None, \"user_version\", SCHEMA_VERSION)\ncrates/kontor-store/tests/memory_migration_rollback.rs:204:            .schema_version()\ncrates/kontor-store/tests/jira_link_ledger.rs:91:             PRAGMA user_version = 80;\",\ncrates/kontor-store/tests/jira_link_ledger.rs:426:            .query_row(\"PRAGMA user_version\", [], |row| row.get::<_, i64>(0))\ncrates/kontor-store/tests/open_questions.rs:305:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/backlog_identity.rs:295:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/publication_attestations_immutable.rs:19:        store.schema_version().expect(\"schema version\"),\ncrates/kontor-store/tests/crash_reopen.rs:101:    assert_eq!(store.schema_version().expect(\"readable\"), SCHEMA_VERSION);\ncrates/kontor-store/tests/crash_reopen.rs:138:    assert_eq!(second.schema_version().expect(\"readable\"), SCHEMA_VERSION);\ncrates/kontor-store/tests/crash_reopen.rs:176:    // table, index and trigger, and `PRAGMA user_version = 1` \u2014 and then die\ncrates/kontor-store/tests/crash_reopen.rs:213:            .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/crash_reopen.rs:243:    assert_eq!(store.schema_version().expect(\"readable\"), SCHEMA_VERSION);\ncrates/kontor-store/tests/backup_snapshot.rs:794:            .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/jira_materialization.rs:467:             PRAGMA user_version = 80;\",\ncrates/kontor-store/tests/jira_materialization.rs:1588:             PRAGMA user_version = 72;\",\ncrates/kontor-store/tests/jira_materialization.rs:1612:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/hosted_seat_autonomy.rs:494:             PRAGMA user_version = 98;\",\ncrates/kontor-store/tests/hosted_seat_autonomy.rs:519:        .query_row(\"PRAGMA user_version\", [], |row| row.get(0))\ncrates/kontor-store/tests/repository_roundtrip.rs:109:             PRAGMA user_version = 96;\",\ncrates/kontor-store/tests/repository_roundtrip.rs:2834:         PRAGMA user_version = 114;\",\ncrates/kontor-api/src/control.rs:54:        .with_store(|store| store.schema_version())\ncrates/kontor-context/tests/resolution.rs:142:    assert_eq!(pack.schema_version(), SchemaVersion::parse(1).expect(\"v1\"));\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "rg",
+        "-n",
+        "pub use migrations::SCHEMA_VERSION|^mod migrations|^pub const SCHEMA_VERSION",
+        "crates/kontor-store/src/lib.rs",
+        "crates/kontor-store/src/migrations.rs"
+      ],
+      "command": "rg -n 'pub use migrations::SCHEMA_VERSION|^mod migrations|^pub const SCHEMA_VERSION' crates/kontor-store/src/lib.rs crates/kontor-store/src/migrations.rs",
+      "cwd": "/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8155-kontor-experience-memory-and",
+      "exit": 0,
+      "stdout": "crates/kontor-store/src/lib.rs:44:mod migrations;\ncrates/kontor-store/src/lib.rs:93:pub use migrations::SCHEMA_VERSION;\ncrates/kontor-store/src/migrations.rs:37:pub const SCHEMA_VERSION: i64 = 121;\n",
+      "stderr": ""
+    }
+  ],
+  "schema_version": 121,
+  "registered_sql_count": 121,
+  "contiguous": true,
+  "compile_time_length_assertion_present": true,
+  "disposition": {
+    "publication_assertion": "Public SCHEMA_VERSION re-export",
+    "v115_rewind": "Removes exactly the eight 0120/0121 tables",
+    "preserved": "Historical versions and intentional registry pin"
+  },
+  "source_manifest_sha256": "2c2442857cb61a0528ee04cd730d6beb8f343dc07c9c316630e898544e200229"
+}

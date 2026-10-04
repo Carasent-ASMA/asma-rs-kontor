@@ -459,8 +459,8 @@ The workspace is split by authority rather than by technical layer alone:
 
 - `kontor-core`, `kontor-store`: durable truth and transactions;
 - `kontor-runtime*`: replaceable native execution;
-- `kontor-context`, `kontor-accounts`, `kontor-teams`, `kontor-profiles`:
-  immutable execution inputs;
+- `kontor-context`, `kontor-accounts`, `kontor-teams`, `kontor-profiles`,
+  `kontor-fleet`: immutable execution inputs;
 - `kontor-scheduler`, `kontor-policy`, `kontor-calendar`: admission, safety and
   epic-completion compilation;
 - `kontor-jira`, `kontor-intake`: external boundaries — a native connector and

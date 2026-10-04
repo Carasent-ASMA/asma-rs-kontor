@@ -1,0 +1,13 @@
+{"baseline": "attestation_token_metadata", "exit": 0}
+{"baseline": "lib", "exit": 0}
+{"mutant": "M01-key-head", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"mutant": "M02-token-head", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"mutant": "M03-permanent-identity", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"mutant": "M04-hosted-generation", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"mutant": "M05-active-state", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"mutant": "M06-exact-task", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"mutant": "M07-native-subject", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"mutant": "M08-backup-token-schema", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"mutant": "M09-unrevocation", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"mutant": "M10-key-commitment", "result": "KILLED", "restored": true, "original_unchanged": true}
+{"finished": true, "killed": 10, "all_restored": true}

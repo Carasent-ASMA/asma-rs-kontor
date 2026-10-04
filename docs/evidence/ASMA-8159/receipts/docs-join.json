@@ -1,0 +1,303 @@
+{
+  "frozen_docs_commit": "9b5b538c269deca55058f3fdd9efc66ee8046ab9",
+  "current_docs_head": "9b5b538c269deca55058f3fdd9efc66ee8046ab9",
+  "current_docs_status": "",
+  "files_sha256": {
+    ".github/skills/experience-memory/SKILL.md": "c6792446f2cb1a1a8ea368bba02ba3d4266dfdad52133ace1c8e4261a025669b",
+    ".agents/skills/experience-memory/SKILL.md": "c6792446f2cb1a1a8ea368bba02ba3d4266dfdad52133ace1c8e4261a025669b",
+    ".github/skills/mini-project-kickoff/SKILL.md": "c3958626be263b706015601fe8f196bb2e708e9202151018c068219201aabf90",
+    ".agents/skills/mini-project-kickoff/SKILL.md": "c3958626be263b706015601fe8f196bb2e708e9202151018c068219201aabf90",
+    ".github/skills/epic-orchestration/SKILL.md": "951b26fe46a37569eb949df2304394ea05652f848e29142b56a62ffb490b463b",
+    ".agents/skills/epic-orchestration/SKILL.md": "951b26fe46a37569eb949df2304394ea05652f848e29142b56a62ffb490b463b",
+    ".github/skills/remember/SKILL.md": "047d2391545a5cf83ef88b300d322ca77b10ca3a251afd8d12d0d61996d39470",
+    ".agents/skills/remember/SKILL.md": "047d2391545a5cf83ef88b300d322ca77b10ca3a251afd8d12d0d61996d39470",
+    "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": "2ae6a57e7920226a295ba2b5714133fac16e0373ebc44358f22759ccc30136a5",
+    "_docs/ai-orchestration/index.md": "e96342d0c5a7391c0b1212ebeb02c611dbd16ebe94eda1e67fb9e83c7e15fdea",
+    ".claude/skills/experience-memory": "496f9bee77ebcabce313077627d813d861de729cbc87881f3434ddb9be7fce6c",
+    ".github/agent-policy-inventory.json": "ab9a5e291aad285468856533492f85763f410101e53ec9ce62720a53fc381511"
+  },
+  "mirrors_equal": {
+    "experience-memory": true,
+    "mini-project-kickoff": true,
+    "epic-orchestration": true,
+    "remember": true
+  },
+  "operations": [
+    {
+      "name": "kontor_experience_propose",
+      "tier": "Operator",
+      "method": "POST",
+      "path": "/v1/projects/{project_id}/memory/experiences:propose",
+      "registry_line": 3706
+    },
+    {
+      "name": "kontor_memory_recall_preview",
+      "tier": "Observer",
+      "method": "POST",
+      "path": "/v1/projects/{project_id}/memory/recall:preview",
+      "registry_line": 3753
+    },
+    {
+      "name": "kontor_memory_recall_freeze",
+      "tier": "Operator",
+      "method": "POST",
+      "path": "/v1/projects/{project_id}/memory/recall:freeze",
+      "registry_line": 3775
+    },
+    {
+      "name": "kontor_memory_recall_get",
+      "tier": "Observer",
+      "method": "GET",
+      "path": "/v1/projects/{project_id}/memory/recall/{agent_run_id}",
+      "registry_line": 3804
+    },
+    {
+      "name": "kontor_memory_projection_preview",
+      "tier": "Observer",
+      "method": "GET",
+      "path": "/v1/projects/{project_id}/memory/projection:preview",
+      "registry_line": 3826
+    },
+    {
+      "name": "kontor_memory_projection_get",
+      "tier": "Observer",
+      "method": "GET",
+      "path": "/v1/projects/{project_id}/memory/projection",
+      "registry_line": 3840
+    },
+    {
+      "name": "kontor_memory_projection_rebuild",
+      "tier": "Operator",
+      "method": "POST",
+      "path": "/v1/projects/{project_id}/memory/projection:rebuild",
+      "registry_line": 3854
+    },
+    {
+      "name": "kontor_experience_classify",
+      "tier": "Observer",
+      "method": "GET",
+      "path": "/v1/projects/{project_id}/memory/experiences:classify",
+      "registry_line": 3889
+    }
+  ],
+  "spellings_in_frozen_docs": {
+    "kontor_experience_propose": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "kontor_memory_recall_preview": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "kontor_memory_recall_freeze": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "kontor_memory_recall_get": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "kontor_memory_projection_preview": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "kontor_memory_projection_get": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "kontor_memory_projection_rebuild": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "kontor_experience_classify": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    }
+  },
+  "configuration_tokens": {
+    "memory-cognee.json": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "enabled": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "endpoint": {
+      ".github/skills/experience-memory/SKILL.md": true,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": true
+    },
+    "credential_alias": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "dataset_prefix": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "timeout_ms": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "cognee_unavailable": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "projection_unavailable": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "DaemonConfig::with_memory_cognee": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "frozen_payload_purged": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "document_type": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    },
+    "schema_version": {
+      ".github/skills/experience-memory/SKILL.md": false,
+      "_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md": false
+    }
+  },
+  "commands": [
+    {
+      "command": [
+        "git",
+        "-C",
+        "/Users/igor/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook",
+        "show",
+        "9b5b538c269deca55058f3fdd9efc66ee8046ab9:.github/skills/experience-memory/SKILL.md"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "c6792446f2cb1a1a8ea368bba02ba3d4266dfdad52133ace1c8e4261a025669b"
+    },
+    {
+      "command": [
+        "git",
+        "-C",
+        "/Users/igor/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook",
+        "show",
+        "9b5b538c269deca55058f3fdd9efc66ee8046ab9:.agents/skills/experience-memory/SKILL.md"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "c6792446f2cb1a1a8ea368bba02ba3d4266dfdad52133ace1c8e4261a025669b"
+    },
+    {
+      "command": [
+        "git",
+        "-C",
+        "/Users/igor/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook",
+        "show",
+        "9b5b538c269deca55058f3fdd9efc66ee8046ab9:.github/skills/mini-project-kickoff/SKILL.md"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "c3958626be263b706015601fe8f196bb2e708e9202151018c068219201aabf90"
+    },
+    {
+      "command": [
+        "git",
+        "-C",
+        "/Users/igor/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook",
+        "show",
+        "9b5b538c269deca55058f3fdd9efc66ee8046ab9:.agents/skills/mini-project-kickoff/SKILL.md"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "c3958626be263b706015601fe8f196bb2e708e9202151018c068219201aabf90"
+    },
+    {
+      "command": [
+        "git",
+        "-C",
+        "/Users/igor/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook",
+        "show",
+        "9b5b538c269deca55058f3fdd9efc66ee8046ab9:.github/skills/epic-orchestration/SKILL.md"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "951b26fe46a37569eb949df2304394ea05652f848e29142b56a62ffb490b463b"
+    },
+    {
+      "command": [
+        "git",
+        "-C",
+        "/Users/igor/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook",
+        "show",
+        "9b5b538c269deca55058f3fdd9efc66ee8046ab9:.agents/skills/epic-orchestration/SKILL.md"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "951b26fe46a37569eb949df2304394ea05652f848e29142b56a62ffb490b463b"
+    },
+    {
+      "command": [
+        "git",
+        "-C",
+        "/Users/igor/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook",
+        "show",
+        "9b5b538c269deca55058f3fdd9efc66ee8046ab9:.github/skills/remember/SKILL.md"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "047d2391545a5cf83ef88b300d322ca77b10ca3a251afd8d12d0d61996d39470"
+    },
+    {
+      "command": [
+        "git",
+        "-C",
+        "/Users/igor/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook",
+        "show",
+        "9b5b538c269deca55058f3fdd9efc66ee8046ab9:.agents/skills/remember/SKILL.md"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "047d2391545a5cf83ef88b300d322ca77b10ca3a251afd8d12d0d61996d39470"
+    },
+    {
+      "command": [
+        "git",
+        "-C",
+        "/Users/igor/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook",
+        "show",
+        "9b5b538c269deca55058f3fdd9efc66ee8046ab9:_docs/ai-orchestration/operations/2026-09-12-10-10-runbook-kontor-experience-memory.md"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "2ae6a57e7920226a295ba2b5714133fac16e0373ebc44358f22759ccc30136a5"
+    },
+    {
+      "command": [
+        "git",
+        "-C",
+        "/Users/igor/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook",
+        "show",
+        "9b5b538c269deca55058f3fdd9efc66ee8046ab9:_docs/ai-orchestration/index.md"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "e96342d0c5a7391c0b1212ebeb02c611dbd16ebe94eda1e67fb9e83c7e15fdea"
+    },
+    {
+      "command": [
+        "git",
+        "-C",
+        "/Users/igor/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook",
+        "show",
+        "9b5b538c269deca55058f3fdd9efc66ee8046ab9:.claude/skills/experience-memory"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "496f9bee77ebcabce313077627d813d861de729cbc87881f3434ddb9be7fce6c"
+    },
+    {
+      "command": [
+        "git",
+        "-C",
+        "/Users/igor/.paseo/worktrees/0vl4ss0m/docs-asma-8157-experience-memory-skill-and-runbook",
+        "show",
+        "9b5b538c269deca55058f3fdd9efc66ee8046ab9:.github/agent-policy-inventory.json"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "ab9a5e291aad285468856533492f85763f410101e53ec9ce62720a53fc381511"
+    }
+  ],
+  "claude_link_blob": "../../.github/skills/experience-memory",
+  "inventory_contains_experience_memory": true
+}

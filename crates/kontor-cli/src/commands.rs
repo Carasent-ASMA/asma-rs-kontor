@@ -202,6 +202,30 @@ mod tests {
         }
     }
 
+    /// ASMA-8280 B-1: a local operation is generated like every other row —
+    /// one command, spelled mechanically — and no two operations share a
+    /// command, whatever their execution class.
+    #[test]
+    fn every_command_is_declared_exactly_once_whatever_its_execution_class() {
+        let command = build();
+        let names: std::collections::BTreeSet<_> = command
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            .collect();
+        assert_eq!(
+            names.len(),
+            REGISTRY.len(),
+            "two operations share a command"
+        );
+        let local: Vec<_> = REGISTRY
+            .iter()
+            .filter(|tool| tool.local().is_some())
+            .map(|tool| command_name(tool.name))
+            .collect();
+        assert_eq!(local, ["fleet-policy-resolve"]);
+        assert!(names.contains("fleet-policy-resolve"));
+    }
+
     #[test]
     fn the_command_spelling_is_mechanical() {
         assert_eq!(command_name("kontor_epic_apply"), "epic-apply");

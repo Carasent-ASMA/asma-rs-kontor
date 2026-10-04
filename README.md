@@ -278,6 +278,7 @@ interface” development shortcut.
 | `crates/kontor-runtime*` | Shared runtime contract; production Paseo adapter; hermetic AO and Codex adapters |
 | `crates/kontor-context` | Context Pack resolution, redaction and handoff |
 | `crates/kontor-accounts` | Non-secret account profiles and launch routing |
+| `crates/kontor-fleet` | The one fleet policy parser, validator and route resolver, shared by both orchestration modes |
 | `crates/kontor-teams`, `kontor-profiles` | Versioned teams, seats, workflows and seed packs |
 | `crates/kontor-scheduler`, `kontor-policy`, `kontor-calendar` | Admission, leases, guardrails, epic-completion compilation and (unexposed) time policy |
 | `crates/kontor-jira`, `kontor-intake` | Native Jira connector and durable event intake |

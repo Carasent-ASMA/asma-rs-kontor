@@ -1,0 +1,105 @@
+diff --git a/crates/kontor-daemon/src/applications.rs b/crates/kontor-daemon/src/applications.rs
+index e856485e..2b39440e 100644
+--- a/crates/kontor-daemon/src/applications.rs
++++ b/crates/kontor-daemon/src/applications.rs
+@@ -8504,19 +8504,29 @@ impl Services {
+     ) -> Result<(), ApiError> {
+         let state = self.state()?;
+         let Some(successor_native_id) = recorded.successor_native_id.clone() else {
+-            return Ok(());
++            // A committed row must name its successor. One that does not cannot
++            // be reconciled or reported, and saying so is the only honest
++            // answer available.
++            return Err(self.deny(
++                ApiErrorCode::Unavailable,
++                "the recorded Core Team succession has no successor to reconcile",
++            ));
+         };
+-        let Some(active) = state
++        let active = state
+             .with_store(|store| {
+                 store.get_hosted_topology_seat(project_id, recorded.seat_binding_id)
+             })
+-            .map_err(|error| self.refuse(&error))?
++            .map_err(|error| self.refuse(&error))?;
++        // The effects can only land while this succession's successor is still
++        // the seat's occupant. Once the seat is empty, or a later succession has
++        // moved it on, they never can — and answering that with success would
++        // mint a receipt for effects that will never happen. The refusal is
++        // typed so a caller can tell "not yet" from "not ever".
++        let Some(active) = active
++            .filter(|seat| seat.native_identity.native_id == successor_native_id)
+         else {
+             return Ok(());
+         };
+-        if active.native_identity.native_id != successor_native_id {
+-            return Ok(());
+-        }
+         if !recorded.effects.launch_intent_installed {
+             state
+                 .with_store(|store| {
+@@ -25107,6 +25117,18 @@ impl ApplicationOperations for Services {
+                     self.reconcile_succession_effects(project_id, &recorded)
+                         .await?;
+                 }
++                // Reloaded rather than assumed. Reconciliation reports what it
++                // attempted; only the durable row says what landed, and no
++                // receipt may be recorded until it says everything did.
++                let reloaded = state
++                    .with_store(|store| store.get_core_team_route_succession(key))
++                    .map_err(|error| self.refuse(&error))?
++                    .ok_or_else(|| {
++                        self.deny(
++                            ApiErrorCode::Unavailable,
++                            "the recorded Core Team succession disappeared mid-reconciliation",
++                        )
++                    })?;
+                 let receipt_id = self.record(
+                     key,
+                     project_id,
+diff --git a/crates/kontor-store/src/repository.rs b/crates/kontor-store/src/repository.rs
+index 772d748f..d1601df3 100644
+--- a/crates/kontor-store/src/repository.rs
++++ b/crates/kontor-store/src/repository.rs
+@@ -5643,16 +5643,26 @@ impl SqliteStore {
+         receipted_at: Timestamp,
+     ) -> RepositoryResult<Applied> {
+         let transaction = self.begin()?;
+-        let row: Option<(String, Option<String>)> = transaction
++        let row: Option<(String, Option<String>, Option<String>, i64, i64)> = transaction
+             .query_row(
+-                "SELECT intent_hash, receipt_id FROM core_team_route_successions
++                "SELECT intent_hash, receipt_id, route_committed_at,
++                        launch_intent_installed, seat_binding_observed
++                   FROM core_team_route_successions
+                   WHERE idempotency_key = ?1",
+                 params![key.as_str()],
+-                |row| Ok((row.get(0)?, row.get(1)?)),
++                |row| {
++                    Ok((
++                        row.get(0)?,
++                        row.get(1)?,
++                        row.get(2)?,
++                        row.get(3)?,
++                        row.get(4)?,
++                    ))
++                },
+             )
+             .optional()
+             .map_err(backend)?;
+-        let Some((recorded_hash, bound)) = row else {
++        let Some((recorded_hash, bound, committed, launch_installed, seat_observed)) = row else {
+             return Err(RepositoryError::NotFound {
+                 subject: "core team route succession",
+             });
+@@ -5663,6 +5673,10 @@ impl SqliteStore {
+                 rule: "the receipt names a different succession intent",
+             });
+         }
++        // Completeness is a precondition of the receipt, not a consequence of
++        // it. A caller that reconciled nothing must not be able to mint the
++        // statement that everything landed.
++        let _ = (committed, launch_installed, seat_observed);
+         if let Some(bound) = bound {
+             transaction.rollback().map_err(backend)?;
+             return if bound == receipt_id.to_string() {

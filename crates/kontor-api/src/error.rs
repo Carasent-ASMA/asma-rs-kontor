@@ -14,6 +14,7 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use kontor_core::consultation::ConsultationFamily;
 use kontor_core::id::{AggregateRevision, EventCursor, ExternalId, RealmId};
 use kontor_core::realm::RealmCursor;
 use kontor_core::repository::RepositoryError;
@@ -45,6 +46,22 @@ closed_enum! {
     /// A client branches on this and on nothing else. The accompanying `rule` is
     /// for a human reading a log.
     ApiErrorCode, "ApiErrorCode" {
+        /// Typed memory document validation refused.
+        InvalidExperience => "invalid_experience",
+        /// Evidence cannot be resolved in this project.
+        UnresolvedEvidence => "unresolved_evidence",
+        /// Explicit purge removed a frozen payload; reselection is refused.
+        FrozenPayloadPurged => "frozen_payload_purged",
+        /// Frozen payload or receipt hash failed verification.
+        FrozenPayloadMismatch => "frozen_payload_mismatch",
+        /// The immutable memory binding or proposal key is already occupied.
+        MemoryBindingConflict => "binding_conflict",
+        /// Upstream candidate work exceeded its bound.
+        MemoryCandidateLimit => "candidate_limit",
+        /// Projection freshness or activation compare-and-swap failed.
+        ProjectionConflict => "projection_conflict",
+        /// A semantic adapter has not qualified a projection.
+        ProjectionUnavailable => "projection_unavailable",
         /// No usable credential was presented.
         Unauthenticated => "unauthenticated",
         /// The credential is valid but does not carry the required authority.
@@ -166,6 +183,14 @@ impl ApiErrorCode {
     #[must_use]
     pub const fn status(self) -> StatusCode {
         match self {
+            Self::InvalidExperience | Self::UnresolvedEvidence | Self::MemoryCandidateLimit => {
+                StatusCode::BAD_REQUEST
+            }
+            Self::FrozenPayloadPurged => StatusCode::GONE,
+            Self::FrozenPayloadMismatch
+            | Self::MemoryBindingConflict
+            | Self::ProjectionConflict => StatusCode::CONFLICT,
+            Self::ProjectionUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
@@ -215,6 +240,18 @@ impl ApiErrorCode {
     #[must_use]
     pub const fn default_action(self) -> &'static str {
         match self {
+            Self::InvalidExperience | Self::UnresolvedEvidence => {
+                "read the typed experience contract and correct the document or evidence"
+            }
+            Self::MemoryCandidateLimit => "bound candidate work before authoritative selection",
+            Self::FrozenPayloadPurged | Self::FrozenPayloadMismatch => {
+                "preserve the frozen receipt; do not silently reselect memories"
+            }
+            Self::MemoryBindingConflict => "replay the original request with its original identity",
+            Self::ProjectionConflict => "read a fresh projection preview and generation",
+            Self::ProjectionUnavailable => {
+                "configure and qualify the semantic adapter before rebuilding"
+            }
             Self::Unauthenticated => "present a credential for this realm",
             Self::Forbidden => "present a credential carrying the tier this operation requires",
             Self::RealmMismatch => "re-read the value from this realm and retry with that one",
@@ -617,11 +654,15 @@ impl ApiError {
             // the transport's side that is always "you were working from a state
             // that has moved", which is what a revision conflict says.
             //
-            // Which rule, on which aggregate, is logged. The caller is told one
-            // thing for every uniqueness and immutability rule in the store —
-            // otherwise a client could enumerate them — but an operator holding
-            // only "a persistence rule refused the write" has nothing to act on,
-            // and both fields are `&'static str` written in this workspace.
+            // Which rule, on which aggregate, is now told to the caller as well
+            // as logged. The previous reading withheld both to stop a client
+            // enumerating the store's rules, and the cost of that was paid in
+            // ASMA-8190: an operator retried one Core Team route apply twice
+            // against `current_revision: null` and "a persistence rule refused
+            // the write", which names nothing to re-read and nothing to change.
+            // Both fields are `&'static str` authored in this workspace, so
+            // there is no caller data in either; what they expose is a design
+            // detail, and a refusal nobody can act on is the worse trade.
             RepositoryError::Conflict { subject, rule } => {
                 warn!(
                     realm_id = %realm_id,
@@ -629,12 +670,32 @@ impl ApiError {
                     rule = %rule,
                     "a persistence rule refused a write"
                 );
-                Self::new(
-                    realm_id,
-                    ApiErrorCode::RevisionConflict,
-                    "a persistence rule refused the write against the presented state",
-                )
+                Self::new(realm_id, ApiErrorCode::RevisionConflict, rule).about(subject)
             }
+            // A semantic duplicate is the one uniqueness refusal whose answer is
+            // not "re-read and retry": the exact existing run is known, and the
+            // caller's next step is to read or resume it. The store carries that
+            // identity out of the failed atomic insert, so a concurrent loser
+            // receives the same typed refusal the sequential pre-check produces
+            // instead of a generic persistence conflict.
+            RepositoryError::DuplicateConsultation { family, run_id } => Self::new(
+                realm_id,
+                ApiErrorCode::IdempotencyConflict,
+                match family {
+                    ConsultationFamily::Advisor => {
+                        "consultation_semantic_duplicate: this Advisor scope and topic already has one run"
+                    }
+                    ConsultationFamily::Committee => {
+                        "consultation_semantic_duplicate: this Committee scope and topic already has one run"
+                    }
+                    ConsultationFamily::PlanningPair => {
+                        "consultation_semantic_duplicate: this planning pair scope and topic already has one run"
+                    }
+                },
+            )
+            .about("consultation semantic identity")
+            .located_at(format!("consultation-runs/{}", run_id.as_text()))
+            .advising("read or resume the existing consultation run"),
             // Which ceiling bound is a fact about this Realm's configuration and
             // its current load, so it is logged for the operator who runs the
             // plane and withheld from the caller who hit it. One static rule for
@@ -809,17 +870,22 @@ impl ApiError {
                     "re-prove the seat's workspace placement, then resume the exact queued run",
                 )
             }
+            // The rule is told, not only logged, for the same reason a
+            // persistence conflict now names its subject: a dozen distinct
+            // workspace conditions collapse to this one variant, and
+            // "the runtime will not work in the workspace this realm asked
+            // for" says nothing about which. ASMA-8190 is what that costs — an
+            // apply refused a route its own preview had accepted, and the
+            // operator had no way to tell a busy terminal from a moved
+            // directory from an uncorrelated setup census. Every rule here is
+            // an `&'static str` written in this workspace.
             RuntimeError::WorkspaceMismatch { rule } => {
                 warn!(
                     realm_id = %realm_id,
                     rule = %rule,
                     "runtime refused the workspace this realm asked for"
                 );
-                Self::new(
-                    realm_id,
-                    ApiErrorCode::UnsupportedCapability,
-                    "the runtime will not work in the workspace this realm asked for",
-                )
+                Self::new(realm_id, ApiErrorCode::UnsupportedCapability, rule)
             }
             RuntimeError::WorkspacePreparationFailed { rule } => {
                 warn!(
@@ -863,6 +929,11 @@ impl ApiError {
             // A launch the runtime will not admit because it cannot prove a
             // required capability is not unavailability either: retrying will
             // not help until the capability is provable.
+            RuntimeError::PlanningPairMemberSurfaceUnsupported { .. } => Self::new(
+                realm_id,
+                ApiErrorCode::UnsupportedCapability,
+                "this runtime cannot establish the closed planning pair member surface for that route",
+            ),
             RuntimeError::LaunchNotAdmitted { rule } => Self::new(
                 realm_id,
                 ApiErrorCode::UnsupportedCapability,
@@ -926,6 +997,48 @@ mod tests {
     use kontor_core::id::AggregateRevision;
 
     use super::*;
+
+    /// A refusal an operator cannot act on is a defect, not discretion.
+    ///
+    /// ASMA-8190: one Core Team route apply was retried twice against
+    /// `current_revision: null` and "a persistence rule refused the write",
+    /// which names nothing to re-read. Both fields are `&'static str` written
+    /// in this workspace, so neither carries caller data.
+    #[test]
+    fn a_persistence_conflict_names_its_subject_and_rule() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_repository(
+            realm,
+            &kontor_core::repository::RepositoryError::Conflict {
+                subject: "native container binding",
+                rule: "this topology node is bound to another native container",
+            },
+        );
+        assert_eq!(refusal.code, ApiErrorCode::RevisionConflict);
+        assert_eq!(
+            refusal.rule,
+            "this topology node is bound to another native container"
+        );
+        assert_eq!(refusal.subject(), Some("native container binding"));
+    }
+
+    /// A dozen workspace conditions share one variant; the rule is what tells
+    /// a busy terminal from a moved directory from an uncorrelated census.
+    #[test]
+    fn a_workspace_refusal_names_the_rule_that_fired() {
+        let realm = RealmId::generate();
+        let refusal = ApiError::from_runtime(
+            realm,
+            &RuntimeError::WorkspaceMismatch {
+                rule: "the workspace still reports terminals or another directory",
+            },
+        );
+        assert_eq!(refusal.code, ApiErrorCode::UnsupportedCapability);
+        assert_eq!(
+            refusal.rule,
+            "the workspace still reports terminals or another directory"
+        );
+    }
 
     /// The 2026-08-22 lesson, applied to the two refusals that were still
     /// falling through: a conflict and a capability refusal are actionable

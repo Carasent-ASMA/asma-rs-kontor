@@ -1,0 +1,61 @@
+    Blocking waiting for file lock on build directory
+   Compiling kontor-core v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 52.16s
+     Running unittests src/lib.rs (target/debug/deps/kontor_core-471d5875e3300392)
+
+running 43 tests
+test authority::tests::native_origins_start_writable_and_refuse_cutover ... ok
+test authority::tests::pending_origins_start_legacy_and_permit_cutover ... ok
+test authority::tests::spellings_round_trip ... ok
+test compaction::tests::a_runtime_that_enforces_nothing_has_no_threshold_to_reach ... ok
+test compaction::tests::a_finished_turn_is_not_a_trigger ... ok
+test compaction::tests::a_boundary_trigger_respects_the_policy_that_forbids_it ... ok
+test compaction::tests::each_deterministic_trigger_fires_on_its_own_grounds ... ok
+test compaction::tests::only_a_boundary_or_operator_compaction_owes_a_durable_handoff ... ok
+test epic_seat::tests::a_seat_nothing_was_ever_observed_of_is_unobserved ... ok
+test epic_seat::tests::a_runtime_self_report_certifies_a_native_but_not_activity ... ok
+test epic_seat::tests::a_released_seat_is_released_whatever_else_it_carries ... ok
+test epic_seat::tests::a_task_scoped_seat_with_a_native_can_be_succeeded ... ok
+test epic_seat::tests::a_task_scoped_seat_with_no_native_has_no_predecessor_to_cite ... ok
+test epic_seat::tests::an_attach_instant_alone_does_not_certify_a_native ... ok
+test epic_seat::tests::observed_activity_is_the_only_thing_that_certifies_work ... ok
+test quota::tests::a_threshold_of_zero_or_over_a_hundred_is_refused ... ok
+test quota::tests::a_window_is_classified_by_its_span_not_by_its_field_name ... ok
+test quota::tests::credit_above_its_reserve_clears_and_credit_at_the_floor_does_not ... ok
+test quota::tests::every_window_below_its_own_threshold_is_headroom ... ok
+test quota::tests::no_window_is_not_the_same_fact_as_an_empty_one ... ok
+test quota::tests::one_exhausted_window_blocks_even_beside_a_window_with_room ... ok
+test quota::tests::thresholds_are_per_kind_and_not_one_number ... ok
+test quota::tests::two_currencies_are_refused_rather_than_converted ... ok
+test quota::tests::two_exhausted_windows_block_until_the_later_reset ... ok
+test retired_evaluator::tests::the_exact_live_retired_audit_seat_is_attestable ... ok
+test selector::tests::a_canonical_key_selects_by_key ... ok
+test retired_evaluator::tests::the_same_claim_proves_the_same_digest_and_a_changed_one_does_not ... ok
+test selector::tests::a_uuid_selects_by_identity ... ok
+test selector::tests::an_epic_selector_accepts_both_spellings ... ok
+test selector::tests::lowercase_and_malformed_spellings_are_refused ... ok
+test selector::tests::the_two_grammars_do_not_collide ... ok
+test tpm_lineage::tests::a_native_no_durable_record_names_is_not_a_candidate ... ok
+test tpm_lineage::tests::a_prepared_intent_that_never_installed_names_no_native ... ok
+test tpm_lineage::tests::a_record_whose_route_disagrees_is_a_different_admission ... ok
+test tpm_lineage::tests::a_replayed_record_is_one_lineage_not_two ... ok
+test tpm_lineage::tests::an_agreeing_occupancy_and_intent_are_one_lineage_evidenced_by_both ... ok
+test retired_evaluator::tests::each_fence_refuses_on_its_own ... ok
+test tpm_lineage::tests::the_live_seat_resolves_generation_one_to_exactly_one_native ... ok
+test tpm_lineage::tests::a_seat_that_moved_out_of_its_ecp_refuses_before_any_lineage_is_read ... ok
+test tpm_lineage::tests::an_occupancy_and_intent_naming_different_natives_contradict ... ok
+test tpm_lineage::tests::another_generations_lineage_is_not_this_generations ... ok
+test tpm_lineage::tests::two_installed_intents_naming_different_natives_are_ambiguous ... ok
+test tpm_lineage::tests::two_occupancies_naming_different_natives_are_ambiguous ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/experience_memory.rs (target/debug/deps/experience_memory-d2397e2136ac7c8a)
+
+running 4 tests
+test strict_experience_roundtrip_and_non_memory_eligibility ... ok
+test secrets_in_every_text_list_locator_and_key_are_redacted ... ok
+test typed_byte_and_evidence_bounds_preserve_the_generic_document_ceiling ... ok
+test every_field_enum_bound_and_unknown_field_is_checked ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
