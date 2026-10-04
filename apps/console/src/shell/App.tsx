@@ -5,8 +5,7 @@
  * top bar always saying which realm it is and how current what is on screen
  * actually is.
  *
- * There is no realm switcher that merges, no account picker and no view that
- * aggregates across realms: every cache is keyed by `(realm_id, aggregate_id)`,
+ * Operational views do not aggregate across realms: every cache is keyed by `(realm_id, aggregate_id)`,
  * and attaching to another realm starts a new projection rather than adding to
  * this one.
  */
@@ -23,12 +22,15 @@ import { SessionView } from '../views/SessionView'
 import { IntakeView, ScheduleView, WorkflowView } from '../views/GatedViews'
 import { TeamsView } from '../views/TeamsView'
 import { ProjectView } from '../views/ProjectView'
+import { TokenomicsView } from '../views/TokenomicsView'
 
 /** Render the console. */
 export function App({ store }: { store?: CredentialStore }) {
   const [resolved, setResolved] = useState<CredentialStore | null>(store ?? null)
   const [endpoint, setEndpoint] = useState<Endpoint | null>(null)
-  const [view, setView] = useState<ViewId>('board')
+  const [view, setView] = useState<ViewId>(() =>
+    new URLSearchParams(window.location.search).get('view') === 'tokenomics' ? 'tokenomics' : 'board',
+  )
   const [selectedRun, setSelectedRun] = useState<string | null>(null)
   const [selectedTask, setSelectedTask] = useState<{ projectId: string; taskId: string } | null>(
     null,
@@ -56,8 +58,15 @@ export function App({ store }: { store?: CredentialStore }) {
   if (!resolved) {
     return <main className="loading">Starting…</main>
   }
-  if (!endpoint) {
-    return <Connect store={resolved} onConnect={setEndpoint} />
+  if (!endpoint && view !== 'tokenomics') {
+    return (
+      <>
+        <button className="tokenomics-entry" onClick={() => setView('tokenomics')}>
+          Open Tokenomics dashboard
+        </button>
+        <Connect store={resolved} onConnect={setEndpoint} />
+      </>
+    )
   }
 
   return (
@@ -65,12 +74,14 @@ export function App({ store }: { store?: CredentialStore }) {
       <a className="skip-link" href="#view">
         Skip to the view
       </a>
-      <TopBar
-        endpoint={endpoint}
-        realm={realm.realm}
-        health={realm.health}
-        control={realm.control}
-      />
+      {endpoint ? (
+        <TopBar endpoint={endpoint} realm={realm.realm} health={realm.health} control={realm.control} />
+      ) : (
+        <header className="top-bar">
+          <h1>Kontor</h1>
+          <p className="realm-id">Tokenomics</p>
+        </header>
+      )}
       <NavRail current={view} onSelect={setView} />
       <main id="view" className="view-host" tabIndex={-1}>
         {realm.error ? (
@@ -78,7 +89,9 @@ export function App({ store }: { store?: CredentialStore }) {
             {realm.error}
           </p>
         ) : null}
-        {realm.control === null ? (
+        {view === 'tokenomics' ? (
+          <TokenomicsView />
+        ) : realm.control === null ? (
           <p className="empty">Attaching to the realm…</p>
         ) : (
           <>
