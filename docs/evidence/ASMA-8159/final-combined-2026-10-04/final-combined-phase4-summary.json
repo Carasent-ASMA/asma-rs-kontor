@@ -1,0 +1,88 @@
+{
+  "subject": "ASMA-8159 Phase 4 supplementary breadth execution (independent QA seat)",
+  "recorded_at_utc": "2026-10-04T02:31:24.975502+00:00",
+  "head": "a04fc2ff0082d6e5650a757bb54a99d14f9d2840",
+  "tree": "a3e53f8a8cd24eff6a6bef5897b495dcc11b0870",
+  "results": {
+    "p4_gate1_loopback_api_full": {
+      "command": "cargo test -p kontor-daemon --test loopback_api --offline",
+      "exit": 0,
+      "passed": 506,
+      "failed": 0,
+      "ignored": 1,
+      "ignored_case": "inherited #[ignore] at crates/kontor-daemon/tests/loopback_api.rs:11737 (superseded by kontor-jira native connector contract tests)",
+      "keychain_note": "no OS Keychain operation attempted; only in-memory JiraFixtureKeychain fixture backend"
+    },
+    "p4_gate2_store_lib": {
+      "command": "cargo test -p kontor-store --lib --offline",
+      "exit": 0,
+      "passed": 25,
+      "failed": 0,
+      "ignored": 0
+    },
+    "p4_gate3_contract": {
+      "command": "cargo test -p kontor-tests-contract --offline",
+      "exit": 0,
+      "passed": 104,
+      "failed": 0,
+      "ignored": 0,
+      "note": "includes mcp_parity/mcp_cardinality/mcp_mutants"
+    },
+    "p4_gate4_cli_mcp": {
+      "command": "cargo test -p kontor-cli -p kontor-mcp --lib --tests --offline",
+      "exit": 0,
+      "passed": 97,
+      "failed": 0,
+      "ignored": 0
+    },
+    "p4_gate4b_cognee_fixtures": {
+      "exit": 0,
+      "passed": 5,
+      "failed": 0
+    },
+    "p4_gate4c_jira_adapters": {
+      "exit": 0,
+      "passed": 22,
+      "failed": 0,
+      "targets": "credential_scope + native_connector"
+    },
+    "p4_gate4d_runtime_contracts": {
+      "exit": 0,
+      "passed": 372,
+      "failed": 0,
+      "targets": "paseo/codex/ao --test contract only; live targets excluded by boundary"
+    },
+    "p4_gate5_fast_lane": {
+      "base": "8acdbd17e83d9d7ec545221c4b957e0325916997",
+      "plan_receipt": "p4-gate5-fast-lane-plan (exit 3 = heavy lane required, expected)",
+      "fmt": "exit 0",
+      "clippy_light": "exit 0 (-D warnings, 19 light packages)",
+      "test_light": "exit 0, 1023 passed / 0 failed / 0 ignored (runtime live targets excluded; contract targets run in p4_gate4d)",
+      "console": "BLOCKED: pnpm install unauthorized (apps/console/node_modules absent) - inherited exclusion"
+    },
+    "p4_gate5_heavy_lane": {
+      "store_full": "exit 0, 636 passed / 0 failed (cargo test -p kontor-store --locked --offline)",
+      "daemon": "BLOCKED: package lib usage suite invokes /usr/bin/security (macOS Keychain boundary)",
+      "accounts": "BLOCKED: resolver shells out to /usr/bin/security (real credential surface)",
+      "e2e": "BLOCKED: tests/e2e uses SystemKeychain",
+      "console": "BLOCKED: pnpm install unauthorized"
+    },
+    "p4_gate6_cargo_deny": {
+      "command": "cargo deny --offline check licenses bans sources",
+      "exit": 0,
+      "yoke_derive": "0.8.4 (accepted ASMA-8113 correction landed)",
+      "yoke": "0.8.3",
+      "notes": "inherited duplicate-entry warnings only; licenses/bans/sources clean"
+    }
+  },
+  "constraints": {
+    "tracked_tree": "clean (no staged/unstaged tracked changes)",
+    "commits": "none",
+    "push": "none",
+    "disk": "target/ pruned via cargo clean after execution (11.9 GiB reclaimed; below ~10 GiB cap)",
+    "other_worktrees": "untouched",
+    "primary_checkout": "untouched",
+    "live_action": "none (no provider/Cognee/credential/DB/live-runtime action)"
+  },
+  "receipts_dir": "docs/evidence/ASMA-8159/final-combined-2026-10-04/receipts/"
+}

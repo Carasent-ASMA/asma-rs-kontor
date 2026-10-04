@@ -1,6 +1,8 @@
 //! Schema v78: one Advisor Session Workspace holds one *or more* independently
 //! reporting seats, so advice is keyed by the seat that gave it.
 
+mod support;
+
 use kontor_core::consultation::{
     ConsultationFamily, ConsultationRunId, ConsultationRunState, ConsultationSubject,
 };
@@ -48,7 +50,7 @@ struct World {
 
 /// One Advisor run with two attested, independently reporting seats.
 fn world() -> World {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let store = SqliteStore::open(&home.path().join("kontor.db")).expect("the store opens");
     let project_id = ProjectId::generate();
     let mini_project_id = MiniProjectId::generate();
@@ -308,7 +310,9 @@ fn two_advisor_seats_each_record_their_own_advice_without_settling_the_run() {
     let w = world();
     let run_id = match w.run.id {
         ConsultationRunId::Advisor(id) => id,
-        ConsultationRunId::Committee(_) => unreachable!("the fixture builds an Advisor run"),
+        ConsultationRunId::Committee(_) | ConsultationRunId::PlanningPair(_) => {
+            unreachable!("the fixture builds an Advisor run")
+        }
     };
 
     let (first, first_hash) = advice("seat-a");
@@ -373,7 +377,9 @@ fn advice_is_idempotent_per_exact_seat_and_immutable_per_seat() {
     let w = world();
     let run_id = match w.run.id {
         ConsultationRunId::Advisor(id) => id,
-        ConsultationRunId::Committee(_) => unreachable!("the fixture builds an Advisor run"),
+        ConsultationRunId::Committee(_) | ConsultationRunId::PlanningPair(_) => {
+            unreachable!("the fixture builds an Advisor run")
+        }
     };
     let (document, hash) = advice("seat-a");
     let (run, inserted) = w

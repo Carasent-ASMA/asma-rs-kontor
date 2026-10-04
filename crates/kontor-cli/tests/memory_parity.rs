@@ -185,3 +185,152 @@ async fn native_memory_http_and_cli_share_realm_revision_and_cursor() {
     assert!(http_proposal.status().is_success());
     server.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typed_memory_http_cli_and_mcp_share_proposal_projection_and_classification() {
+    let root = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(
+        DaemonConfig::at(root.path()).with_port(0),
+        RuntimeRegistry::new(),
+    )
+    .unwrap();
+    let project = ProjectId::generate();
+    daemon
+        .state()
+        .with_store(|store| {
+            store.create_project(&NewProject {
+                id: project,
+                name: ExternalName::parse("Typed parity").unwrap(),
+                root_path: ExternalName::parse("/tmp/typed-parity").unwrap(),
+                created_at: Timestamp::now(),
+            })
+        })
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let router = daemon.router();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let doc = CanonicalDocument::from_value(
+        &serde_json::from_str::<serde_json::Value>(include_str!(
+            "../../kontor-core/tests/fixtures/experience-v1.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let project_text = project.to_string();
+    let provenance = serde_json::json!({"source":"synthetic","source_id":null,"legacy_last_write_wins":false,"history_unavailable":false});
+    let provenance_text = provenance.to_string();
+    let args = [
+        "experience-propose",
+        "--project-id",
+        &project_text,
+        "--idempotency-key",
+        "typed-parity",
+        "--item-id",
+        "typed",
+        "--expected-revision",
+        "0",
+        "--document",
+        doc.json(),
+        "--provenance",
+        &provenance_text,
+        "--proposed-by",
+        "fixture",
+    ];
+    let first = cli(root.path(), &base, "operator", &args);
+    let replay = cli(root.path(), &base, "operator", &args);
+    assert_eq!(first, replay);
+    assert_eq!(first["body"]["revision"]["approved"], false);
+    let client = reqwest::Client::new();
+    let operator = credential(root.path(), "operator");
+    let body = serde_json::json!({"item_id":"typed","expected_revision":0,"document":doc,"provenance":provenance,"proposed_by":"fixture"});
+    let http: serde_json::Value = client
+        .post(format!(
+            "{base}/v1/projects/{project}/memory/experiences:propose"
+        ))
+        .bearer_auth(&operator)
+        .header("Idempotency-Key", "typed-parity")
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(http, first["body"]);
+    let dispatcher =
+        kontor_mcp::connect(root.path(), Some(&base), kontor_mcp::CallerTier::Observer).unwrap();
+    let preview = dispatcher
+        .call(
+            "kontor_memory_projection_preview",
+            &serde_json::json!({"project_id":project_text}),
+        )
+        .await
+        .unwrap();
+    let cli_preview = cli(
+        root.path(),
+        &base,
+        "observer",
+        &["memory-projection-preview", "--project-id", &project_text],
+    );
+    assert_eq!(preview.body, cli_preview["body"]);
+    assert_eq!(preview.body["preview"]["entries"], serde_json::json!([]));
+    cli(
+        root.path(),
+        &base,
+        "admin",
+        &[
+            "memory-approve",
+            "--project-id",
+            &project_text,
+            "--revision-id",
+            first["body"]["revision"]["revision_id"].as_str().unwrap(),
+            "--idempotency-key",
+            "typed-approved",
+            "--item-id",
+            "typed",
+            "--expected-revision",
+            "1",
+            "--approved-by",
+            "reviewer",
+        ],
+    );
+    let classification = dispatcher
+        .call(
+            "kontor_experience_classify",
+            &serde_json::json!({"project_id":project_text}),
+        )
+        .await
+        .unwrap();
+    let cli_classification = cli(
+        root.path(),
+        &base,
+        "observer",
+        &["experience-classify", "--project-id", &project_text],
+    );
+    assert_eq!(classification.body, cli_classification["body"]);
+    assert_eq!(
+        classification.body["classifications"][0]["recall_eligible"],
+        true
+    );
+    let preview = dispatcher
+        .call(
+            "kontor_memory_projection_preview",
+            &serde_json::json!({"project_id":project_text}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        preview.body["preview"]["entries"],
+        serde_json::json!([]),
+        "local_only never projects"
+    );
+    let operator_dispatcher =
+        kontor_mcp::connect(root.path(), Some(&base), kontor_mcp::CallerTier::Operator).unwrap();
+    let refused=operator_dispatcher.call("kontor_memory_projection_rebuild",&serde_json::json!({"project_id":project_text,"idempotency_key":"rebuild-parity","expected_generation":preview.body["preview"]["active_generation"],"expected_memory_cursor":preview.body["preview"]["snapshot"]["memory_cursor"],"preview_digest":preview.body["preview"]["snapshot"]["digest"]})).await.unwrap();
+    assert_eq!(refused.status, 503);
+    assert_eq!(refused.body["code"], "projection_unavailable");
+    let hidden=dispatcher.call("kontor_memory_recall_preview",&serde_json::json!({"project_id":project_text,"task_id":kontor_core::id::TaskId::generate(),"query":"hidden"})).await.unwrap_err();
+    assert_eq!(hidden.code(), "invalid_request");
+    server.abort();
+}

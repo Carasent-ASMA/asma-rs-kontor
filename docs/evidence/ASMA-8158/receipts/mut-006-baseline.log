@@ -1,0 +1,8 @@
+
+running 1 test
+test experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.22s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running tests/loopback_api.rs (target/debug/deps/loopback_api-93f16ff36fadeb39)

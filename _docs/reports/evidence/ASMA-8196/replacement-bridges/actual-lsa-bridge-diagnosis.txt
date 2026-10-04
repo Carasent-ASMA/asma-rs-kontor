@@ -1,0 +1,58 @@
+---
+
+Bounded finding: **P1 fail-closed leaf-selection defect, not competing live authority.** No mutation was performed.
+
+### Exact failing lineage
+
+ASMA-8190 task `ASMA-8196` (`01a0abdd-b855-7862-89e4-1921f4415733`) owns TeamRun `01a0b032-fe68-70c2-8cd7-e5bcb76fb56d`, role `verify`, on active SeatBinding `01a0b033-1d67-7bc2-b5e4-e5dd3ad9c72b`.
+
+The live WAL-backed SQLite read shows one linear lineage:
+
+| AgentRun | Parent | Durable state | Binding/native |
+|---|---|---|---|
+| `01a0b033-78b0-7193-86cf-735f0e8989e8` | root | operator-abandoned, never bound | none |
+| `01a0bff0-c58c-7122-a53b-6b55917c8dcf` | preceding root | runtime-cancelled at cursor `4691` | binding `…c8dce`, native `5750a5be-8399-4360-a9af-4f9594eac006` |
+| `01a0c631-ed6f-7502-a510-cd945b2c8de6` | cancelled run | operator-abandoned bridge, never bound | none |
+| `01a0cf81-50ec-7822-8f3a-bd60690a9bfe` | abandoned bridge | projected running; last observation cursor `4848` | binding `…a9bff`, generation 1, native `a526c5cc-e399-43c9-8a5e-830e5834a27b` |
+
+The old native is independently recorded closed/archived; it is immutable history, not a second current owner. The current TeamRun is `running@15`; the seat is `active@12`, `runtime_reported=running`.
+
+### Cause
+
+[`current_delivery_role_leaf`](/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-daemon/src/applications.rs:2593) removes operator-abandoned/unbound rows before calculating parent relationships. That removes both lineage bridges, leaving the cancelled and running bound runs apparently childless and producing the exact [409 refusal](/private/tmp/ASMA-8121-postrestart-census-20260926/ASMA-8190-preview.json):
+
+> `a delivery role has ambiguous current replacement-chain leaves`
+
+The authoritative team hydrator already models this correctly: it retains abandoned/unbound records referenced by real successors at [`run.rs:883`](/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-teams/src/run.rs:883). The chain has two native attempts, within the frozen maximum successor depth of three.
+
+There is a matching second defect in the migration census SQL at [`repository.rs:21955`](/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-store/src/repository.rs:21955): it ignores an abandoned immediate child without following through to its bound descendant. Fixing only the daemon preview would therefore leave record/confirm parity inconsistent.
+
+The graph project `Users-igor-carasent-asma-modules-_tools-asma-rs-kontor` confirms this helper feeds native-name preparation plus seat/admission recovery, while the store census feeds both migration record and confirmation. Coverage reports no recorded gaps; deployed archive source remains the exact ground truth.
+
+### Smallest supported repair
+
+1. Correct daemon and store selection together so an abandoned/unbound bridge remains structural lineage when a non-abandoned successor depends on it.
+2. Add regressions for:
+   - cancelled bound → abandoned unbound → current bound selects only the current native;
+   - migration census/confirmation selects that same native;
+   - a trailing abandoned/unbound attempt still leaves its bound predecessor current;
+   - a genuine fork still returns `409`.
+3. Qualify and deploy once, without rewriting parents, retiring records, or changing SeatBinding/native identity.
+4. Use `runtime:settle` on current run `01a0cf81-…` for a fresh runtime observation. This is freshness evidence only: settlement alone cannot repair the present ambiguity because leaf selection is lifecycle-independent.
+5. Re-run ASMA-8190 preview and require:
+   - HTTP 200;
+   - verify target names SeatBinding `01a0b033-…c72b`;
+   - AgentRun `01a0cf81-…`;
+   - native `a526c5cc-…`;
+   - cancelled native `5750a5be-…` absent;
+   - zero `would_change`.
+6. Re-run all thirteen previews before claiming the post-restart census.
+
+### Census boundary
+
+- Historical applied set remains **89** targets: [final-apply-targets.json](/private/tmp/ASMA-8121-postrestart-census-20260926/final-apply-targets.json).
+- Historical cursor `4573` remains **88** targets, including the then-current cancelled ASMA-8190 native: [historical readback](/private/tmp/ASMA-8121-postrestart-census-20260926/historical-cursor4573-naming-readback.json).
+- Today’s twelve successful previews total **75** targets with zero changes; ASMA-8190 returned no target set. A current all-thirteen total therefore cannot be asserted.
+- The 08:17:15 deployment record proves source `dddb72870c6d58d5d6383a69227844dbc8dca45e`, qualified source `79b07f31…`, tree `538c219f…`, and schema 119 at deployment: [deployment.json](/Users/igor/.local/state/kontor/asma/deployments/ASMA-8121-dddb7287-20260926/deployment.json). It does not prove uninterrupted current daemon continuity.
+
+No P0 was found because the operation fails closed. The generic “settle the run” advice at [`error.rs:236`](/private/tmp/kontor-ASMA-8121-release-dddb7287/source/crates/kontor-api/src/error.rs:236) is a P2 diagnostic mismatch here. ASMA-8121’s prior source/deployment evidence remains valid, but the fresh all-thirteen census—and therefore whole-epic PASS—remains blocked on this P1 repair.

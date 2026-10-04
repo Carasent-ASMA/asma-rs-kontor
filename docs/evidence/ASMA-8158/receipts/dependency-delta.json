@@ -1,0 +1,14 @@
+{
+  "base_commit": "655e07ead8b87bebf3a5d43ddccc15c860114e05",
+  "added_packages": [
+    [
+      "kontor-memory-cognee",
+      "0.2.1",
+      ""
+    ]
+  ],
+  "removed_packages": [],
+  "base_lock_sha256": "16afee25fe03d980b6b159f9f3129b0190a2310bce36d26c917b365b528f8245",
+  "candidate_lock_sha256": "df30ba74da6a3ffd42cf5c0c3fc9ba4712e2f8cf96a6a09b4154573b819c5683",
+  "new_registry_packages": []
+}

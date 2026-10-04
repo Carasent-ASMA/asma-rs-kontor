@@ -1,0 +1,296 @@
+{
+  "source_head": "32909ae1de9729d4e8b4bcd334420039f42ee31a",
+  "owned_sha256": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "ceec30023360a91a6dfa4a6eb4d50fd74e6d515ea58d8b6c7d02ea9a2418d7a3",
+    "crates/kontor-runtime/src/planning_pair/attestation/owner_checks.rs": "23eeffe3a100d2d8553ab6b4c24af9a99c064f713fa394a8ea0de320e8dd171c",
+    "crates/kontor-runtime/src/planning_pair/attestation/owner_checks/tests.rs": "a1a64c3494716a9ba0e31f9d0631127faf895377c10daf86ba51470c18093ded"
+  },
+  "commands": [
+    {
+      "name": "mutation-baseline-before",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::owner_checks"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-source",
+      "exit": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-baseline-before.log"
+    },
+    {
+      "name": "skip-current-revision",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::owner_checks::tests::zero_older_and_newer_key_set_revisions_are_refused"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-source",
+      "exit": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-current-revision.log"
+    },
+    {
+      "name": "skip-token-revocation",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::owner_checks::tests::key_and_token_revocation_after_verification_are_refused"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-source",
+      "exit": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-token-revocation.log"
+    },
+    {
+      "name": "skip-generation",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::owner_checks::tests::current_binding_and_nonzero_occupancy_generation_must_match"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-source",
+      "exit": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-generation.log"
+    },
+    {
+      "name": "skip-active-seat",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::owner_checks::tests::active_seat_and_active_node_are_both_required"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-source",
+      "exit": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-active-seat.log"
+    },
+    {
+      "name": "skip-token-time",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::owner_checks::tests::signed_token_expiry_between_verification_and_observation_is_refused"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-source",
+      "exit": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-token-time.log"
+    },
+    {
+      "name": "skip-native-identity",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::owner_checks::tests::every_native_identity_component_and_positive_generation_must_match"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-source",
+      "exit": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-native-identity.log"
+    },
+    {
+      "name": "skip-current-operation",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::owner_checks::tests::the_current_requested_operation_must_be_signed"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-source",
+      "exit": 101,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-current-operation.log"
+    },
+    {
+      "name": "mutation-baseline-after",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--lib",
+        "--offline",
+        "--jobs",
+        "2",
+        "planning_pair::attestation::owner_checks"
+      ],
+      "cwd": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-source",
+      "exit": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-baseline-after.log"
+    }
+  ],
+  "mutants": [
+    {
+      "name": "skip-current-revision",
+      "test": "planning_pair::attestation::owner_checks::tests::zero_older_and_newer_key_set_revisions_are_refused",
+      "result": "KILLED",
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-current-revision.log"
+    },
+    {
+      "name": "skip-token-revocation",
+      "test": "planning_pair::attestation::owner_checks::tests::key_and_token_revocation_after_verification_are_refused",
+      "result": "KILLED",
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-token-revocation.log"
+    },
+    {
+      "name": "skip-generation",
+      "test": "planning_pair::attestation::owner_checks::tests::current_binding_and_nonzero_occupancy_generation_must_match",
+      "result": "KILLED",
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-generation.log"
+    },
+    {
+      "name": "skip-active-seat",
+      "test": "planning_pair::attestation::owner_checks::tests::active_seat_and_active_node_are_both_required",
+      "result": "KILLED",
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-active-seat.log"
+    },
+    {
+      "name": "skip-token-time",
+      "test": "planning_pair::attestation::owner_checks::tests::signed_token_expiry_between_verification_and_observation_is_refused",
+      "result": "KILLED",
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-token-time.log"
+    },
+    {
+      "name": "skip-native-identity",
+      "test": "planning_pair::attestation::owner_checks::tests::every_native_identity_component_and_positive_generation_must_match",
+      "result": "KILLED",
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-native-identity.log"
+    },
+    {
+      "name": "skip-current-operation",
+      "test": "planning_pair::attestation::owner_checks::tests::the_current_requested_operation_must_be_signed",
+      "result": "KILLED",
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/skip-current-operation.log"
+    }
+  ],
+  "combined_attestation_sha256": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "ceec30023360a91a6dfa4a6eb4d50fd74e6d515ea58d8b6c7d02ea9a2418d7a3",
+    "crates/kontor-runtime/src/planning_pair/attestation/owner_checks.rs": "23eeffe3a100d2d8553ab6b4c24af9a99c064f713fa394a8ea0de320e8dd171c",
+    "crates/kontor-runtime/src/planning_pair/attestation/tests.rs": "83b753337be6a11e3e8852b044baa1e6d4da1931e41fd3cd35d9f07c921cd359",
+    "crates/kontor-runtime/src/planning_pair/attestation/owner_checks/tests.rs": "a1a64c3494716a9ba0e31f9d0631127faf895377c10daf86ba51470c18093ded"
+  },
+  "isolated_source_restored": true,
+  "original_owned_sources_preserved": true,
+  "final_source_head": "32909ae1de9729d4e8b4bcd334420039f42ee31a",
+  "final_owner_only_checks": [
+    {
+      "name": "owner-runtime-regression",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-runtime",
+        "--offline",
+        "--jobs",
+        "2"
+      ],
+      "cwd": "/tmp/asma-8278-module-consolidation-20261002.Mcrugq",
+      "exit": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/owner-runtime-regression.log",
+      "test_summaries": [
+        "test result: ok. 134 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s"
+      ]
+    },
+    {
+      "name": "owner-fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "cwd": "/tmp/asma-8278-module-consolidation-20261002.Mcrugq",
+      "exit": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/owner-fmt.log"
+    },
+    {
+      "name": "owner-diff-check",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "cwd": "/tmp/asma-8278-module-consolidation-20261002.Mcrugq",
+      "exit": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/owner-diff-check.log"
+    },
+    {
+      "name": "owner-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "kontor-runtime",
+        "--all-targets",
+        "--offline",
+        "--jobs",
+        "2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/tmp/asma-8278-module-consolidation-20261002.Mcrugq",
+      "exit": 0,
+      "log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/owner-clippy.log"
+    }
+  ],
+  "final_owned_sha256": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "ceec30023360a91a6dfa4a6eb4d50fd74e6d515ea58d8b6c7d02ea9a2418d7a3",
+    "crates/kontor-runtime/src/planning_pair/attestation/owner_checks.rs": "23eeffe3a100d2d8553ab6b4c24af9a99c064f713fa394a8ea0de320e8dd171c",
+    "crates/kontor-runtime/src/planning_pair/attestation/owner_checks/tests.rs": "a1a64c3494716a9ba0e31f9d0631127faf895377c10daf86ba51470c18093ded"
+  },
+  "final_owned_hashes_match_mutation_source": true,
+  "limitations": [
+    "owner-only source/fixture checks",
+    "no codec export or source edits",
+    "no authentic acquisition or transaction-held freshness proof",
+    "no possession, native fence, readiness, admission or actuation proof",
+    "no staging, commits, publication, keychain, DB or live effects"
+  ]
+}

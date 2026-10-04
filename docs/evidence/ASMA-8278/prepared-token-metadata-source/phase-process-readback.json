@@ -1,0 +1,176 @@
+{
+  "readback": [
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "01-initial-check.log",
+        "chunk_id": "ad1f32",
+        "wall_time_seconds": 0.00000675,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "02-focused-initial.log",
+        "chunk_id": "75dbfe",
+        "wall_time_seconds": 0.000005625,
+        "exit_code": 101,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "03-focused-fixture-build-fix.log",
+        "chunk_id": "9bd4a2",
+        "wall_time_seconds": 0.000007875,
+        "exit_code": 101,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "04-focused-role-fix.log",
+        "chunk_id": "2e3b7b",
+        "wall_time_seconds": 0.000003458,
+        "exit_code": 101,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "05-focused-context-fix.log",
+        "chunk_id": "6653c5",
+        "wall_time_seconds": 0.00000475,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "06-domain-guards.log",
+        "chunk_id": "fe7db8",
+        "wall_time_seconds": 0.000003916,
+        "exit_code": 101,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "07-affected-initial.log",
+        "chunk_id": "fd9c70",
+        "wall_time_seconds": 0.000004667,
+        "exit_code": 101,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "09-focused-backup-lib.log",
+        "chunk_id": "05c0c0",
+        "wall_time_seconds": 0.000003167,
+        "exit_code": 101,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "11-core-regression.log",
+        "chunk_id": "903826",
+        "wall_time_seconds": 0.000004541,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "12-clippy-initial.log",
+        "chunk_id": "dee50c",
+        "wall_time_seconds": 0.000004375,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "14-backup-port-regression.log",
+        "chunk_id": "4bbc8d",
+        "wall_time_seconds": 0.000004041,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "15-family-registry-fixtures.log",
+        "chunk_id": "a07981",
+        "wall_time_seconds": 0.0000035,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "16-final-focused.log",
+        "chunk_id": "d2bd53",
+        "wall_time_seconds": 0.000010166,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "19-privacy-store-doc.log",
+        "chunk_id": "33f91b",
+        "wall_time_seconds": 0.0000035,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "21-final-clippy.log",
+        "chunk_id": "1c69b1",
+        "wall_time_seconds": 0.000004791,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    }
+  ],
+  "previously_observed": {
+    "08-affected-regression.log": 0,
+    "10-backup-regression.log": 0,
+    "13-backup-port-regression.log": 101,
+    "17-dependent-check.log": 0
+  },
+  "source_base": "ef0b71933d8879f33d963a4ad3b5f1fded4aa52f"
+}

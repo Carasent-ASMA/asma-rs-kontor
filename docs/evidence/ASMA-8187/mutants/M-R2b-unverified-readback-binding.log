@@ -1,0 +1,34 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+warning: method `verify_succession_readback` is never used
+    --> crates/kontor-store/src/repository.rs:5789:8
+     |
+2167 | impl SqliteStore {
+     | ---------------- method in this implementation
+...
+5789 |     fn verify_succession_readback(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-store` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.71s
+     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-37350dd3fcfb6d32)
+
+running 1 test
+test a_readback_naming_another_successor_is_refused_before_binding ... FAILED
+
+failures:
+
+---- a_readback_naming_another_successor_is_refused_before_binding stdout ----
+
+thread 'a_readback_naming_another_successor_is_refused_before_binding' (73872071) panicked at crates/kontor-store/tests/hosted_seat_autonomy.rs:1346:5:
+the refusal did not come from the readback verification: Conflict { subject: "storage", rule: "a uniqueness, check or immutability constraint refused the write" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_readback_naming_another_successor_is_refused_before_binding
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 1.79s
+
+error: test failed, to rerun pass `-p kontor-store --test hosted_seat_autonomy`

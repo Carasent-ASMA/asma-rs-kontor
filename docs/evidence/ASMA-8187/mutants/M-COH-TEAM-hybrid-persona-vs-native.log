@@ -1,0 +1,51 @@
+=== mutant M-COH-TEAM-hybrid-persona-vs-native (corrected baseline) ===
+baseline commit   : 8910ebc603b5d013861d0793c6f8384f75eaca9d
+mutated file      : crates/kontor-daemon/src/applications.rs
+snapshot sha256   : 3c679d0a574753fe3f40cfe4359860ea4e9e64445fa6d40056c456d38fedb517
+mutated  sha256   : 54752bf9d0145516d3fc784f9bed661f961dfafc3703c53b3722d1e32962bec2
+patch             : M-COH-TEAM-hybrid-persona-vs-native.patch (mutation-only, 64 lines)
+  git apply --check: accepted
+  patch --dry-run  : patching file 'crates/kontor-daemon/src/applications.rs'
+command           : cargo test -p kontor-daemon --lib -- coherence::the_core_team --test-threads=1   (hard limit 420s)
+toolchain         : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform          : Darwin 25.6.0 arm64
+--- raw output ---
+   Compiling kontor-daemon v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-daemon)
+warning: method `epic_control_seat_binding` is never used
+    --> crates/kontor-daemon/src/applications.rs:8492:8
+     |
+ 976 | impl Services {
+     | ------------- method in this implementation
+...
+8492 |     fn epic_control_seat_binding(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `kontor-daemon` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.42s
+     Running unittests src/lib.rs (target/debug/deps/kontor_daemon-efbe81bf64c053fc)
+
+running 1 test
+test applications::coherence::the_core_team_projection_answers_from_one_instant ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 124 filtered out; finished in 1.82s
+
+--- exit status: 0 (non-zero = killed; 124 = timeout, inconclusive) ---
+restored sha256   : 3c679d0a574753fe3f40cfe4359860ea4e9e64445fa6d40056c456d38fedb517
+restoration       : byte-identical to the named snapshot
+MUTANT markers    : 0
+
+--- outcome: SURVIVED, and it is the mutation that is wrong ---
+With the escape guard silenced, deferring only the persona lookup does not
+produce a hybrid: the lookup is keyed on the occupancy generation captured in
+the first acquisition, so a persona read after the succession still returns
+*that* generation's row. Native and persona stay consistent, and there is
+nothing for the assertions to catch.
+
+That is a fact about the split, not a hole in the test: a persona-only split is
+self-consistent. The hybrid the pre-correction code could produce needed the
+*generation* read to drift too, which is what
+M-COH-TEAM-hybrid-generation-and-persona defers. Retained because a survival
+caused by an unfaithful mutation is worth more in the record than a quiet
+replacement.

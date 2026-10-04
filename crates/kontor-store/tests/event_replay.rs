@@ -12,6 +12,8 @@
 //!   lifecycle change, an outcome or a terminal run;
 //! * persisting transcript, message or token data in the durable log.
 
+mod support;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -142,7 +144,7 @@ impl Fixture {
 fn fixture() -> Fixture {
     let directory = TempDir::new().expect("a temporary directory");
     let path = directory.path().join("kontor.db");
-    let store = SqliteStore::open(&path).expect("the store opens");
+    let store = support::store_from_template(&path);
     Connection::open(&path)
         .expect("a raw connection opens")
         .execute_batch(FIXTURE_SQL)
@@ -3292,7 +3294,20 @@ fn without_quota(document: &mut serde_json::Value) {
     // This fixture is rewritten as export generation 7. Succession counts
     // arrived later too, and although both arrays are empty their count keys
     // are not part of generation 7's continuity vocabulary.
-    for key in ["succession_attempts", "succession_receipts"] {
+    // Generation thirteen's Core Team succession ledger is later still, and it
+    // is absent from a generation-7 document's *records* as well as its
+    // vocabulary: the canonical byte path strips it below 13, so a fixture that
+    // carries it hashes as something no generation-7 emitter ever wrote
+    // (ASMA-8187).
+    document["records"]
+        .as_object_mut()
+        .expect("records are an object")
+        .remove("core_team_route_successions");
+    for key in [
+        "succession_attempts",
+        "succession_receipts",
+        "core_team_route_successions",
+    ] {
         document["continuity_summary"]["record_counts"]
             .as_object_mut()
             .expect("record counts are an object")

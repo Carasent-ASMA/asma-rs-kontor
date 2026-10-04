@@ -1,0 +1,128 @@
+{
+  "recordedAt": "2026-09-26T10:48:25.831735+00:00",
+  "sourceCommit": "e29b895d0f045c499144870a2fa610fc642b6cc0",
+  "results": [
+    {
+      "epic": "ASMA-7869",
+      "recordedAt": "2026-09-26T10:48:25.135369+00:00",
+      "processExit": 0,
+      "status": 200,
+      "targets": 7,
+      "wouldChange": 0,
+      "sha256": "319c20530851b3ead6a05873bddafc6d44a3fcd526d969ebb3f2eb74b9ca2084"
+    },
+    {
+      "epic": "ASMA-8049",
+      "recordedAt": "2026-09-26T10:48:25.203441+00:00",
+      "processExit": 0,
+      "status": 200,
+      "targets": 11,
+      "wouldChange": 0,
+      "sha256": "1d7259a2060047b7ebe04be81b2b1081e1423f1205e6e1a0e130cdcf8ed747bc"
+    },
+    {
+      "epic": "ASMA-8098",
+      "recordedAt": "2026-09-26T10:48:25.278358+00:00",
+      "processExit": 0,
+      "status": 200,
+      "targets": 12,
+      "wouldChange": 0,
+      "sha256": "ef1e5c9ce617bd3b85edbc8acb3c197f6726c20768b37ccad851e59977d2d203"
+    },
+    {
+      "epic": "ASMA-8101",
+      "recordedAt": "2026-09-26T10:48:25.365045+00:00",
+      "processExit": 0,
+      "status": 200,
+      "targets": 14,
+      "wouldChange": 0,
+      "sha256": "5c692c8c18e528c5c44bf29e85773a67bb505043c857eea237329a1872eaf182"
+    },
+    {
+      "epic": "ASMA-8108",
+      "recordedAt": "2026-09-26T10:48:25.400961+00:00",
+      "processExit": 0,
+      "status": 200,
+      "targets": 3,
+      "wouldChange": 0,
+      "sha256": "8214236c8836bf9685bbeaa1aa68bac2cff0fc6e7b66f7c33637d50735c513d8"
+    },
+    {
+      "epic": "ASMA-8109",
+      "recordedAt": "2026-09-26T10:48:25.456980+00:00",
+      "processExit": 0,
+      "status": 200,
+      "targets": 7,
+      "wouldChange": 0,
+      "sha256": "ccc9aeed3a3657e6fa58212d7b38a08fe489d39e5ee271eb3c66fa793ac79f59"
+    },
+    {
+      "epic": "ASMA-8111",
+      "recordedAt": "2026-09-26T10:48:25.484973+00:00",
+      "processExit": 0,
+      "status": 200,
+      "targets": 3,
+      "wouldChange": 0,
+      "sha256": "46d12b8dae66a111c87ceee2fc8698b96a4d46dc8ca3f89c110daab4cf14b352"
+    },
+    {
+      "epic": "ASMA-8113",
+      "recordedAt": "2026-09-26T10:48:25.495840+00:00",
+      "processExit": 0,
+      "status": 200,
+      "targets": 0,
+      "wouldChange": 0,
+      "sha256": "76aa02b5e5087c18c0aa67c8c563e27bc6b3a932cad2ae15594eab69a93339aa"
+    },
+    {
+      "epic": "ASMA-8155",
+      "recordedAt": "2026-09-26T10:48:25.505851+00:00",
+      "processExit": 0,
+      "status": 200,
+      "targets": 0,
+      "wouldChange": 0,
+      "sha256": "63018b07c85fda5d10224a49170a3949d1f7d560c6ace7a4123050568a12be3d"
+    },
+    {
+      "epic": "ASMA-8186",
+      "recordedAt": "2026-09-26T10:48:25.546081+00:00",
+      "processExit": 0,
+      "status": 200,
+      "targets": 5,
+      "wouldChange": 0,
+      "sha256": "ff657d12a53f52178a3c7d758ca4d9ba51a247e4ce039180978e7f9035ec2ea9"
+    },
+    {
+      "epic": "ASMA-8188",
+      "recordedAt": "2026-09-26T10:48:25.627492+00:00",
+      "processExit": 0,
+      "status": 200,
+      "targets": 13,
+      "wouldChange": 0,
+      "sha256": "79649fb8937325c688ed9c2fc7b41169e1e9769ac130bd45edd616028d2c7665"
+    },
+    {
+      "epic": "ASMA-8190",
+      "recordedAt": "2026-09-26T10:48:25.818660+00:00",
+      "processExit": 0,
+      "status": 200,
+      "targets": 24,
+      "wouldChange": 0,
+      "sha256": "2529e6b75d73a01ce453db42b8d248420233e907260b1a99a97f9ed8a856d2c7"
+    },
+    {
+      "epic": "ASMA-8208",
+      "recordedAt": "2026-09-26T10:48:25.831674+00:00",
+      "processExit": 0,
+      "status": 200,
+      "targets": 0,
+      "wouldChange": 0,
+      "sha256": "7104636ea6779d8fc96cecb8ed6b2691ccfbce45ff08c25a490588faae374979"
+    }
+  ],
+  "previewCount": 13,
+  "successful": 13,
+  "currentPreviewTargets": 99,
+  "wouldChange": 0,
+  "boundary": "Fresh read-only current naming previews for thirteen confirmed scopes. No apply, historical89/88 continuity reconciliation, task/workflow settlement or epic acceptance implied."
+}

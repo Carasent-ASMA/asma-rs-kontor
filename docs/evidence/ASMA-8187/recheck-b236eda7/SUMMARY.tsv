@@ -1,0 +1,7 @@
+01-fmt	0	3s	cargo fmt --all -- --check
+02-compile-default	0	1s	cargo check --workspace --all-targets --locked
+03-compile-feature-edge	0	1s	cargo check -p kontor-store --all-targets --features fault-injection --locked
+04-api	0	2s	cargo test -p kontor-api -- --test-threads=1
+05-mcp-parity	0	1s	cargo test -p kontor-mcp -- --test-threads=1
+06-daemon	0	303s	cargo test -p kontor-daemon -- --test-threads=1
+07-store	0	490s	cargo test -p kontor-store -- --test-threads=1

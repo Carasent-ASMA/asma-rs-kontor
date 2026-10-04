@@ -1,5 +1,7 @@
 //! Canonical Jira task-link identity at the store boundary and across upgrades.
 
+mod support;
+
 use kontor_core::id::{
     ConnectorKey, ExternalId, ExternalName, ProjectId, TaskId, TicketLinkId, Timestamp,
     parse_utc_timestamp,
@@ -41,7 +43,7 @@ struct Fixture {
 fn fixture() -> Fixture {
     let directory = TempDir::new().expect("a temporary directory");
     let path = directory.path().join("kontor.db");
-    let store = SqliteStore::open(&path).expect("the store opens");
+    let store = support::store_from_template(&path);
     let project = ProjectId::generate();
     store
         .create_project(&NewProject {

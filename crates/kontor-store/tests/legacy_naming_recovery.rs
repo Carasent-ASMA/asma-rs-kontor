@@ -1,5 +1,7 @@
 //! Atomic, append-only recovery contracts for legacy naming state.
 
+mod support;
+
 use kontor_core::backlog_identity::{EpicBacklogCode, LegacyEpicBacklogCode};
 use kontor_core::id::{
     AggregateRevision, CanonicalDocument, CommandReceiptId, ContentHash, ExternalId, ExternalName,
@@ -21,7 +23,6 @@ use kontor_core::state::{
 use kontor_profiles::bundled_operational_domain;
 use kontor_store::SqliteStore;
 use rusqlite::{Connection, params};
-use tempfile::TempDir;
 
 fn at(text: &str) -> Timestamp {
     parse_utc_timestamp(text).expect("a canonical instant")
@@ -98,7 +99,7 @@ fn legacy_code_command(
 
 #[test]
 fn a_legacy_epic_code_correction_is_atomic_append_only_and_replay_safe() {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let database = home.path().join("kontor.db");
     let store = SqliteStore::open(&database).expect("the store opens");
     let project_id = ProjectId::generate();
@@ -255,7 +256,7 @@ fn a_legacy_epic_code_correction_is_atomic_append_only_and_replay_safe() {
 
 #[test]
 fn a_stale_container_recovery_cas_preserves_logical_identity_and_history() {
-    let home = TempDir::new().expect("a temporary directory");
+    let home = support::state_root();
     let database = home.path().join("kontor.db");
     let store = SqliteStore::open(&database).expect("the store opens");
     let project_id = ProjectId::generate();

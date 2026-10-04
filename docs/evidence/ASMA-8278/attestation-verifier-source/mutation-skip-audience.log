@@ -1,0 +1,22 @@
+   Compiling kontor-runtime v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-attestation-mutations-gvnm3zs2/source/crates/kontor-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.49s
+     Running unittests src/lib.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-attestation-mutations-gvnm3zs2/target/debug/deps/kontor_runtime-38fd6bad31f23716)
+
+running 1 test
+test planning_pair::attestation::tests::audience_and_ungranted_operation_are_refused ... FAILED
+
+failures:
+
+---- planning_pair::attestation::tests::audience_and_ungranted_operation_are_refused stdout ----
+
+thread 'planning_pair::attestation::tests::audience_and_ungranted_operation_are_refused' (23396223) panicked at crates/kontor-runtime/src/planning_pair/attestation/tests.rs:97:49:
+must refuse: VerifiedAttestation { claims: AttestationClaims { schema_version: 1, issuer: ExternalId("dedicated-test-issuer"), key_id: ExternalId("test-key-1"), audience: "asma.other.application.v1", scope: AttestationScope { realm_id: RealmId(01a10226-6306-7721-b07d-118cc23f8bc1), project_id: ProjectId(01a10226-6306-7721-b07d-11989e84dc77), epic_id: MiniProjectId(01a10226-6306-7721-b07d-11afe5c683f2), task_id: Some(TaskId(01a10226-6306-7721-b07d-11bacc0490ac)) }, seat_binding_id: SeatBindingId(01a10226-6306-7721-b07d-11cb33c6e43d), occupancy_generation: 7, native_identity: AttestationNativeIdentity { runtime_kind: RuntimeKindKey("paseo"), host: ExternalName("test-host"), generation: 3, native_id: ExternalId("native-test-session") }, allowed_operations: [InvokePlanningPairRun], token_id: ExternalId("test-token-1"), not_before: 1000, expires_at: 1060 }, snapshot_revision: 9 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    planning_pair::attestation::tests::audience_and_ungranted_operation_are_refused
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.13s
+
+error: test failed, to rerun pass `-p kontor-runtime --lib`

@@ -1,0 +1,43 @@
+{
+  "recordedAt": "2026-09-26T08:14:40.560196+00:00",
+  "sourceCommit": "dddb72870c6d58d5d6383a69227844dbc8dca45e",
+  "qualifiedSource": "79b07f31028704a6a98203b89877264fd179a535",
+  "binaryChecks": [
+    {
+      "name": "kontor-daemon",
+      "candidate": "/private/tmp/kontor-ASMA-8121-release-dddb7287/bin/kontor-daemon",
+      "candidateSha256": "2249946d70d31bbd021b1eedb17daac9601cde09109ad39dcfe501d8eb1fa420",
+      "installedPath": "/Users/igor/.local/bin/kontor-daemon",
+      "installedResolvedPath": "/Users/igor/.local/bin/kontor-daemon",
+      "installedIsSymlink": false,
+      "installedSha256": "bbd1789ee55dda7d1dc207700c2147185a2cd5861c2170c36b09b3df298f817d"
+    },
+    {
+      "name": "kontor-mcp",
+      "candidate": "/private/tmp/kontor-ASMA-8121-release-dddb7287/bin/kontor-mcp",
+      "candidateSha256": "8f621e9dae400625ac0a238671e682df320ece9f7ab0b1c31a5cfaa2a4268576",
+      "installedPath": "/Users/igor/.local/bin/kontor-mcp",
+      "installedResolvedPath": "/Users/igor/.local/bin/kontor-mcp.7ffd650d",
+      "installedIsSymlink": true,
+      "installedSha256": "8f621e9dae400625ac0a238671e682df320ece9f7ab0b1c31a5cfaa2a4268576"
+    },
+    {
+      "name": "kontor",
+      "candidate": "/private/tmp/kontor-ASMA-8121-release-dddb7287/bin/kontor",
+      "candidateSha256": "6e52392b5876e5e2ddb3f1f823b8affb976cda217413124e054e9770d1e30575",
+      "installedPath": "/Users/igor/.local/bin/kontor",
+      "installedResolvedPath": "/Users/igor/.local/bin/kontor",
+      "installedIsSymlink": false,
+      "installedSha256": "cef7ad90db3b30af4e10021cfe8141a977e6fb584ac6dbde0a6f507ef5b1fbe7"
+    }
+  ],
+  "buildReceiptSha256": "98ca90eef88f81b9ae3233c79a47f82f7c53b6a67c065ffc2de75d4059b4a038",
+  "continuityReceiptSha256": "acb477a68fd3703461dc9b40c0cb69f0ab1836673734f0408cc7d80956d16b3f",
+  "backupDirectory": "/Users/igor/.local/state/kontor/asma/deployments/ASMA-8121-dddb7287-20260926",
+  "expectedSchema": 119,
+  "realmId": "01a00649-9ee6-73e0-ba1b-6a6c35cfd065",
+  "service": "com.asma.kontor.daemon",
+  "port": 7717,
+  "rollback": "Stop same LaunchAgent; restore backed-up exact installed files/symlinks; bootstrap same plist. Database source migration is unchanged schema119; consistent backup retained for operator recovery.",
+  "qualificationBoundary": "Installed7ffd hold released after verified8098closure. Newsource must earn its own postdeployment readbacks; no8098 qualification reused."
+}

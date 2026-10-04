@@ -21,6 +21,8 @@
 //!   so a caller who skips `kontor-intake` skips the policy;
 //! * a second decision attached to a proposal that already has one.
 
+mod support;
+
 use std::collections::BTreeMap;
 
 use kontor_core::calendar::{ExecutionAuthorization, TimeRange, WorkScope};
@@ -99,7 +101,7 @@ struct Fixture {
 
 impl Fixture {
     fn open() -> Self {
-        let directory = TempDir::new().expect("a temporary directory");
+        let directory = support::state_root();
         let store =
             SqliteStore::open(&directory.path().join("kontor.db")).expect("the store opens");
         let project = ProjectId::generate();

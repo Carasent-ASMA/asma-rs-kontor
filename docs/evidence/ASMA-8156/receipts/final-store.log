@@ -1,0 +1,27 @@
+   Compiling kontor-store v0.2.1 (/Users/igor/.paseo/worktrees/0n8yzbno/feat-asma-8156-typed-experience-contract-and/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.96s
+     Running unittests src/lib.rs (target/debug/deps/kontor_store-9640265f0baaa497)
+
+running 20 tests
+test memory::experience_tests::typed_proposal_evidence_idempotency_secret_refusal_and_generic_history ... ok
+test memory::experience_tests::deterministic_score_confidence_ties_duplicates_and_ninth_item ... ok
+test memory::tests::an_import_that_fails_while_recording_its_manifest_leaves_nothing_and_resumes ... ok
+test memory::experience_tests::every_degraded_reason_empty_foreign_only_candidate_limit_and_preview_rollback ... ok
+test memory::experience_tests::replay_after_restart_task_edit_rebuild_tombstone_and_purge_preserves_receipt ... ok
+test memory::experience_tests::validation_and_freeze_transaction_excludes_concurrent_tombstone ... ok
+test memory::experience_tests::lexical_limit_joins_exact_current_eligible_revision_and_never_lists ... ok
+test memory::experience_tests::malicious_tuple_project_current_approval_tombstone_hash_policy_and_kind ... ok
+test memory::experience_tests::projection_minimal_payload_failures_freshness_and_compare_and_swap ... ok
+test memory::experience_tests::exact_budget_32768_32769_unicode_escaping_and_skip_oversized_top ... ok
+test memory::tests::first_proposal_history_is_readable_before_approval_and_after_restart ... ok
+test memory::tests::concurrent_approvers_get_one_commit_and_one_typed_conflict ... ok
+test memory::tests::purge_removes_payload_approval_and_index_but_keeps_receipts ... ok
+test memory::tests::current_retrieval_does_not_decode_superseded_history_or_unapproved_drafts ... ok
+test memory::tests::two_approvals_leave_exactly_one_current_revision ... ok
+test memory::tests::cutover_is_attested_hashed_transactional_and_idempotent ... ok
+test memory::tests::reproposal_never_resets_the_aggregate_revision ... ok
+test memory::tests::proposal_never_enters_fts_before_approval ... ok
+test memory::tests::frozen_revision_hash_is_the_approved_stored_hash ... ok
+test memory::tests::ledger_conflicts_filters_rebuilds_and_freezes_context ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 89.89s

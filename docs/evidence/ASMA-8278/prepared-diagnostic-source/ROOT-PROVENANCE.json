@@ -1,0 +1,23 @@
+{
+  "source_commit": "e5fcabfa7905144ac01e295c2b52c9234ea5c48d",
+  "source_tree": "7e7b56452eb93e67ed643dbba1d5b0acbd830512",
+  "source_parent": "975b05f91a69ac4c8623c5655dc1855091f81b69",
+  "root_contract": "dc6d360a2616c683921526ea7e6f0114f0e4664f",
+  "original_manifest_sha256": "5f5ff9e09af502e7417b3c4686d456b1fb4f044d5116ab31696676d817b463b5",
+  "artifact_count": 38,
+  "candidate_owned_sha256": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "4902114724206f4581ca055b47a1e7c18444c449b7ae61094df46d8380e57260",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic.rs": "8d4b5040642c68b58986fb8d3d8614584e48bb70ff5ac3ba7728b9679efd1a2d",
+    "crates/kontor-runtime/src/planning_pair/attestation/prepared_diagnostic/tests.rs": "a353b4aeb87f0ff27f3bde04fda45e0c926a2707664304500f13295fcd4e2c1e"
+  },
+  "root_qualification": "root independently read \u00a79.8 contract, production diagnostic/refusal order/tests and runner; matched38 raw artifacts and3source hashes; actual logs157unit+20integration+2privacy;16diagnostic included,4compiled assertion kills andrestoredbaseline; initialfocusedtest bytes historical distinct explicitly preserved",
+  "limitations": [
+    "Result<(), fieldless refusal) reports supplied metadata/signed-byte consistency only.",
+    "No verified object, actor/grant/permission/receipt/intent/admission or current provenance is returned.",
+    "Caller-supplied projections and time establish no authenticity, transaction-held freshness, possession/custody/fencing/finality.",
+    "No store dependency/caller/writer/migration/endpoint, installed DB, keychain, provider or native effects.",
+    "Existing owner comparison and Unsupported guards unchanged; future authentic owner-transaction composition remains unresolved.",
+    "No epic acceptance or closure claim; root sole publisher and independent-review dispatcher."
+  ],
+  "recorded_utc": "2026-10-03T23:28:27.308919+00:00"
+}
