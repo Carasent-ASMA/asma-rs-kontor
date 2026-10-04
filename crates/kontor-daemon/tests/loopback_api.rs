@@ -435,18 +435,26 @@ async fn periodic_scanner_reopens_done_completion_after_startup() {
     let scanner = world
         .daemon
         .spawn_completion_scanner(std::time::Duration::from_millis(5));
-    for _ in 0..50 {
-        tokio::task::yield_now().await;
-    }
-    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    let read = Call::get(format!(
-        "/v1/projects/{}/epics/{}/completion",
-        seed.project, seed.epic
-    ))
-    .signed_as(&world, "observer")
-    .send(&world)
-    .await;
-    assert_eq!(read.status, 200, "{}", read.body);
+    // Wait for the observed transition rather than assuming the scanner runs
+    // within 30 ms while the full loopback suite competes for host resources.
+    let read = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let read = Call::get(format!(
+                "/v1/projects/{}/epics/{}/completion",
+                seed.project, seed.epic
+            ))
+            .signed_as(&world, "observer")
+            .send(&world)
+            .await;
+            assert_eq!(read.status, 200, "{}", read.body);
+            if read.json()["phase"]["phase"] == "ticket_gate" {
+                break read;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the periodic scanner reopens completion within the bounded wait");
     assert_eq!(read.json()["phase"]["phase"], "ticket_gate");
     assert_eq!(read.json()["generation"], 2);
     assert_eq!(read.json()["wakes"].as_array().expect("wakes").len(), 1);
