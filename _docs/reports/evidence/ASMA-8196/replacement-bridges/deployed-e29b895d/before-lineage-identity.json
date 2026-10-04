@@ -1,0 +1,142 @@
+{
+  "runs": [
+    {
+      "id": "01a0b032-fe68-70c2-8cd7-e5c65207640e",
+      "parent_agent_run_id": null,
+      "team_run_id": "01a0b032-fe68-70c2-8cd7-e5bcb76fb56d",
+      "role_key": "scope",
+      "account_profile_id": null
+    },
+    {
+      "id": "01a0b033-5331-7bc2-919a-5e9c90fbfa2c",
+      "parent_agent_run_id": null,
+      "team_run_id": "01a0b032-fe68-70c2-8cd7-e5bcb76fb56d",
+      "role_key": "implement",
+      "account_profile_id": null
+    },
+    {
+      "id": "01a0b033-78b0-7193-86cf-735f0e8989e8",
+      "parent_agent_run_id": null,
+      "team_run_id": "01a0b032-fe68-70c2-8cd7-e5bcb76fb56d",
+      "role_key": "verify",
+      "account_profile_id": "01a043d4-40f4-7682-9fb6-b6615d44bcc5"
+    },
+    {
+      "id": "01a0bff0-c58c-7122-a53b-6b55917c8dcf",
+      "parent_agent_run_id": "01a0b033-78b0-7193-86cf-735f0e8989e8",
+      "team_run_id": "01a0b032-fe68-70c2-8cd7-e5bcb76fb56d",
+      "role_key": "verify",
+      "account_profile_id": "01a02d6a-ffa7-75c3-b39e-c62099f41ec7"
+    },
+    {
+      "id": "01a0c631-ed6f-7502-a510-cd945b2c8de6",
+      "parent_agent_run_id": "01a0bff0-c58c-7122-a53b-6b55917c8dcf",
+      "team_run_id": "01a0b032-fe68-70c2-8cd7-e5bcb76fb56d",
+      "role_key": "verify",
+      "account_profile_id": "01a043d4-40f4-7682-9fb6-b6615d44bcc5"
+    },
+    {
+      "id": "01a0cf81-50ec-7822-8f3a-bd60690a9bfe",
+      "parent_agent_run_id": "01a0c631-ed6f-7502-a510-cd945b2c8de6",
+      "team_run_id": "01a0b032-fe68-70c2-8cd7-e5bcb76fb56d",
+      "role_key": "verify",
+      "account_profile_id": "01a0cf5c-4c83-7703-bd30-715c35adb346"
+    }
+  ],
+  "runtimeBindings": [
+    {
+      "id": "01a0b032-fe68-70c2-8cd7-e5d2368c1f56",
+      "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+      "agent_run_id": "01a0b032-fe68-70c2-8cd7-e5c65207640e",
+      "runtime_kind": "paseo.agent",
+      "host": "paseo-local",
+      "generation": 1,
+      "native_id": "bf8b7ea4-3f20-4754-a7c9-a2f03a5bdbce",
+      "bound_at": "2026-09-17T16:28:47.076078Z"
+    },
+    {
+      "id": "01a0b033-5331-7bc2-919a-5eaccef2f672",
+      "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+      "agent_run_id": "01a0b033-5331-7bc2-919a-5e9c90fbfa2c",
+      "runtime_kind": "paseo.agent",
+      "host": "paseo-local",
+      "generation": 1,
+      "native_id": "ba4ded2e-4943-45d3-b267-7eca5ee5440f",
+      "bound_at": "2026-09-17T16:28:47.076078Z"
+    },
+    {
+      "id": "01a0bff0-c58c-7122-a53b-6b55917c8dce",
+      "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+      "agent_run_id": "01a0bff0-c58c-7122-a53b-6b55917c8dcf",
+      "runtime_kind": "paseo.agent",
+      "host": "paseo-local",
+      "generation": 1,
+      "native_id": "5750a5be-8399-4360-a9af-4f9594eac006",
+      "bound_at": "2026-09-20T17:50:22.494546Z"
+    },
+    {
+      "id": "01a0cf81-50ec-7822-8f3a-bd60690a9bff",
+      "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+      "agent_run_id": "01a0cf81-50ec-7822-8f3a-bd60690a9bfe",
+      "runtime_kind": "paseo.agent",
+      "host": "paseo-local",
+      "generation": 1,
+      "native_id": "a526c5cc-e399-43c9-8a5e-830e5834a27b",
+      "bound_at": "2026-09-23T18:23:14.036819Z"
+    }
+  ],
+  "seatIdentities": [
+    {
+      "id": "01a0b033-1d41-7731-838c-aea8fe669e19",
+      "topology_node_id": "01a0b032-fecb-7cc3-b4fd-39ac48a615ca",
+      "role_slot_id": "scope",
+      "task_id": "01a0abdd-b855-7862-89e4-1921f4415733",
+      "team_run_id": "01a0b032-fe68-70c2-8cd7-e5bcb76fb56d",
+      "parent_seat_binding_id": "01a0abdd-b88e-7560-ac9a-19e7779cf336",
+      "replaced_by_seat_binding_id": null
+    },
+    {
+      "id": "01a0b033-1d62-7422-9b34-b37da8939421",
+      "topology_node_id": "01a0b032-fecb-7cc3-b4fd-39ac48a615ca",
+      "role_slot_id": "implement",
+      "task_id": "01a0abdd-b855-7862-89e4-1921f4415733",
+      "team_run_id": "01a0b032-fe68-70c2-8cd7-e5bcb76fb56d",
+      "parent_seat_binding_id": "01a0abdd-b88e-7560-ac9a-19e7779cf336",
+      "replaced_by_seat_binding_id": null
+    },
+    {
+      "id": "01a0b033-1d67-7bc2-b5e4-e5dd3ad9c72b",
+      "topology_node_id": "01a0b032-fecb-7cc3-b4fd-39ac48a615ca",
+      "role_slot_id": "verify",
+      "task_id": "01a0abdd-b855-7862-89e4-1921f4415733",
+      "team_run_id": "01a0b032-fe68-70c2-8cd7-e5bcb76fb56d",
+      "parent_seat_binding_id": "01a0abdd-b88e-7560-ac9a-19e7779cf336",
+      "replaced_by_seat_binding_id": null
+    },
+    {
+      "id": "01a0b033-1d6d-7843-b0e8-ec2274fc22b1",
+      "topology_node_id": "01a0b032-fecb-7cc3-b4fd-39ac48a615ca",
+      "role_slot_id": "audit",
+      "task_id": "01a0abdd-b855-7862-89e4-1921f4415733",
+      "team_run_id": "01a0b032-fe68-70c2-8cd7-e5bcb76fb56d",
+      "parent_seat_binding_id": "01a0abdd-b88e-7560-ac9a-19e7779cf336",
+      "replaced_by_seat_binding_id": null
+    }
+  ],
+  "asma8188Gate2": {
+    "project_id": "01a0064a-e056-7603-9968-ef64fdaacb75",
+    "workflow_id": "01a0aaa3-64a3-7c33-8a0e-cf2d989aeeb7",
+    "gate_key": "high-verification-gate",
+    "sequence": 2,
+    "verdict": "passed",
+    "evaluator_role": "fleet-verifier",
+    "evaluator_account": "01a02d6a-ffa7-75c3-b39e-c62099f41ec7",
+    "evidence": "[\"high-change\",\"high-verification-report\"]",
+    "recorded_at": "2026-09-26T10:38:51.106863Z",
+    "agent_run_id": "01a0ae73-2023-7890-a041-100299354ac8",
+    "reviewer_principal": "b8ff6ba8-48a5-41a8-bbd3-a13977ad4a99",
+    "policy_evaluation_id": null,
+    "session_evidence_agent_run": null,
+    "session_evidence_digest": null
+  }
+}

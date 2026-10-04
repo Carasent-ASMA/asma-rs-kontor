@@ -1,10 +1,10 @@
 //! Typed native-name rendering contract (ASMA-7967).
 
 use kontor_core::backlog_identity::ConfirmedJiraKey;
-use kontor_core::id::ExternalId;
+use kontor_core::id::{ExternalId, ExternalName, MAX_EXTERNAL_NAME_LEN};
 use kontor_core::naming::{
     AiShortName, NameSeparator, NativeNameSegment, NativeNameTemplate, NativeNameToken,
-    NativeNameValues,
+    NativeNameValues, render_retired_name,
 };
 
 fn tokens(tokens: &[NativeNameToken]) -> NativeNameTemplate {
@@ -263,4 +263,165 @@ fn a_jira_key_token_renders_its_exact_confirmed_bytes() {
         "ASMA-8117",
         "a rendered key is the confirmed binding itself, never a projection of it"
     );
+}
+
+fn retired_name(name: &str) -> ExternalName {
+    render_retired_name(
+        &ExternalName::parse(name).expect("valid fixture name"),
+        "STALE",
+        &NameSeparator::default(),
+        60,
+    )
+    .expect("the selected retirement policy renders")
+}
+
+#[test]
+fn retired_names_keep_exact_identity_text_under_one_selected_prefix() {
+    assert_eq!(
+        retired_name("TPM • ASMA-8278 • Shared orchestration").as_str(),
+        "STALE • TPM • ASMA-8278 • Shared orchestration"
+    );
+}
+
+#[test]
+fn retired_names_strip_all_repeated_leading_markers_and_are_idempotent() {
+    let expected = "STALE • TPM • ASMA-8278";
+    for name in [
+        "TPM • ASMA-8278",
+        "STALE • TPM • ASMA-8278",
+        "STALE • STALE • STALE • TPM • ASMA-8278",
+    ] {
+        let rendered = retired_name(name);
+        assert_eq!(rendered.as_str(), expected);
+        assert_eq!(retired_name(rendered.as_str()), rendered);
+    }
+    let shortened = retired_name(&"界".repeat(80));
+    assert_eq!(retired_name(shortened.as_str()), shortened);
+}
+
+#[test]
+fn retired_names_preserve_interior_marker_text_and_nonmatching_prefixes() {
+    for name in [
+        "TPM • STALE • topic",
+        "STALE · TPM",
+        "STALE TPM",
+        "UNSTALE • TPM",
+    ] {
+        assert_eq!(retired_name(name).as_str(), format!("STALE • {name}"));
+    }
+}
+
+#[test]
+fn retired_names_preserve_the_exact_sixty_scalar_boundary() {
+    for base_length in [51, 52] {
+        let base = "x".repeat(base_length);
+        let rendered = retired_name(&base);
+        assert_eq!(rendered.as_str(), format!("STALE • {base}"));
+        assert_eq!(rendered.as_str().chars().count(), 8 + base_length);
+    }
+    assert_eq!(
+        retired_name(&"x".repeat(53)).as_str(),
+        format!("STALE • {}…", "x".repeat(51))
+    );
+}
+
+#[test]
+fn retired_names_truncate_unicode_scalars_instead_of_utf8_bytes() {
+    let exact = retired_name(&"🦀".repeat(52));
+    assert_eq!(exact.as_str(), format!("STALE • {}", "🦀".repeat(52)));
+    assert_eq!(exact.as_str().chars().count(), 60);
+
+    let shortened = retired_name(&"🦀".repeat(53));
+    assert_eq!(shortened.as_str(), format!("STALE • {}…", "🦀".repeat(51)));
+    assert_eq!(shortened.as_str().chars().count(), 60);
+
+    // This contract counts scalars, not graphemes; a combining mark consumes
+    // one scalar and no Unicode normalization rewrites the original bytes.
+    let combined = retired_name(&"e\u{301}".repeat(27));
+    assert_eq!(
+        combined.as_str(),
+        format!("STALE • {}e…", "e\u{301}".repeat(25))
+    );
+    assert_eq!(combined.as_str().chars().count(), 60);
+}
+
+#[test]
+fn retired_names_take_marker_separator_and_cap_from_the_selected_policy() {
+    let separator = NameSeparator::parse(" / ").expect("selected separator");
+    let rendered = render_retired_name(
+        &ExternalName::parse("Seat preservation").expect("fixture name"),
+        "RETIRED",
+        &separator,
+        20,
+    )
+    .expect("alternative pinned naming policy");
+    assert_eq!(rendered.as_str(), "RETIRED / Seat pres…");
+    assert_eq!(rendered.as_str().chars().count(), 20);
+    assert_eq!(
+        render_retired_name(&rendered, "RETIRED", &separator, 20).expect("same policy rerenders"),
+        rendered
+    );
+}
+
+#[test]
+fn retired_names_reject_empty_controls_and_separator_bearing_markers() {
+    let name = ExternalName::parse("TPM").expect("fixture name");
+    for marker in [
+        "",
+        " ",
+        " STALE",
+        "STALE ",
+        "STALE\n",
+        "STALE • OTHER",
+        "STALE · OTHER",
+        "STA…LE",
+    ] {
+        assert!(render_retired_name(&name, marker, &NameSeparator::default(), 60).is_err());
+    }
+    assert!(
+        render_retired_name(
+            &name,
+            "OLD / COPY",
+            &NameSeparator::parse(" / ").expect("selected separator"),
+            60,
+        )
+        .is_err()
+    );
+    // A truncation suffix must not synthesize a complete leading marker on
+    // the next call, which would strip the entire shortened title.
+    assert!(
+        render_retired_name(
+            &ExternalName::parse("ABCD").expect("fixture name"),
+            "A",
+            &NameSeparator::parse("…").expect("valid general separator"),
+            4,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn retired_names_reject_caps_that_cannot_preserve_the_marker_and_base() {
+    let name = ExternalName::parse("TPM").expect("fixture name");
+    for cap in [0, 7, 8, 9, MAX_EXTERNAL_NAME_LEN + 1, usize::MAX] {
+        assert!(render_retired_name(&name, "STALE", &NameSeparator::default(), cap).is_err());
+    }
+    let minimal = render_retired_name(&name, "STALE", &NameSeparator::default(), 10)
+        .expect("prefix, one base scalar and ellipsis fit");
+    assert_eq!(minimal.as_str(), "STALE • T…");
+}
+
+#[test]
+fn retired_names_refuse_a_marker_only_or_untrimmed_base() {
+    for name in ["STALE|", "STALE|STALE|", "STALE| TPM"] {
+        assert!(
+            render_retired_name(
+                &ExternalName::parse(name).expect("valid external name before stripping"),
+                "STALE",
+                &NameSeparator::parse("|").expect("selected separator"),
+                60,
+            )
+            .is_err()
+        );
+    }
 }

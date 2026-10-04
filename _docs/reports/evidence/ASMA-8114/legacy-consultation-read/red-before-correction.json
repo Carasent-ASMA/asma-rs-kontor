@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "kontor-daemon",
+    "--test",
+    "loopback_api",
+    "legacy_consultation_reads",
+    "--",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "cwd": "/Users/igor/carasent/asma-modules/.worktrees/asma-8113/asma-rs-kontor",
+  "startedAt": "2026-09-26T16:16:07.451236+00:00",
+  "finishedAt": "2026-09-26T16:17:20.002102+00:00",
+  "exitCode": 101,
+  "logSha256": "a4638e32dfb2daddee4df037aa211035b28d2d13809e79981a41db4655f6e71f",
+  "logPath": "/private/tmp/ASMA-8114-legacy-read-qualification-20260926/red-before-correction.txt",
+  "scope": "Synthetic isolated test Realm only; pre-correction regression run."
+}

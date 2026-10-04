@@ -1,0 +1,14 @@
+diff --git a/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql b/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
+index ecd39abd..00838e7a 100644
+--- a/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
++++ b/crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
+@@ -50,7 +50,8 @@ DROP TABLE core_team_route_succession_bindings_are_coherent;
+ 
+ -- One receipt binds at most one succession. Partial, because an unbound row is
+ -- not a claim on any receipt and any number of them may be pending at once.
+-CREATE UNIQUE INDEX ux_core_team_route_succession_receipt
++-- MUTANT M-P22b1: one receipt may complete any number of successions.
++CREATE INDEX ux_core_team_route_succession_receipt
+ ON core_team_route_successions (receipt_id)
+ WHERE receipt_id IS NOT NULL;
+ 

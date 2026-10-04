@@ -1,0 +1,37 @@
+=== mutant M-P23-upgrade-assumes-coherent-bindings (joined baseline) ===
+baseline commit : 7646bcd9ad1b2c0113f60b1a383a0a74def996db
+baseline tree   : 1d7c94d44316c4f4a3c797cf5928249ff3e95514
+command         : cargo test -p kontor-store --test hosted_seat_autonomy -- a_mismatched_historical_binding_stops_the_upgrade_at_0122
+toolchain       : rustc 1.97.1 (8bab26f4f 2026-07-14)
+platform        : Darwin 25.6.0 arm64
+--- preimage sha256 ---
+37d120e727c4f98ee5477e5fe62ab9f8dc45c060f97970307722bdddb1d11043  crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
+--- mutated sha256 ---
+3523aa684b8353ffd49884a4bc090b8145f7e2c3df38f5e734996344af36be01  crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
+--- raw output ---
+   Compiling kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/feat/ASMA-8187-repair-admin-preview-apply-stale-native-core-team-succession/_tools/asma-rs-kontor/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.05s
+     Running tests/hosted_seat_autonomy.rs (target/debug/deps/hosted_seat_autonomy-37350dd3fcfb6d32)
+
+running 1 test
+test a_mismatched_historical_binding_stops_the_upgrade_at_0122 ... FAILED
+
+failures:
+
+---- a_mismatched_historical_binding_stops_the_upgrade_at_0122 stdout ----
+
+thread 'a_mismatched_historical_binding_stops_the_upgrade_at_0122' (17421352) panicked at crates/kontor-store/tests/hosted_seat_autonomy.rs:2934:5:
+a realm carrying a binding this generation cannot vouch for was opened anyway
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_mismatched_historical_binding_stops_the_upgrade_at_0122
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 1.88s
+
+error: test failed, to rerun pass `-p kontor-store --test hosted_seat_autonomy`
+--- exit status: 101 (non-zero = killed) ---
+--- restored sha256 ---
+37d120e727c4f98ee5477e5fe62ab9f8dc45c060f97970307722bdddb1d11043  crates/kontor-store/migrations/0122_core_team_route_succession_receipt_identity.sql
+restoration: byte-identical to baseline 7646bcd9ad1b2c0113f60b1a383a0a74def996db

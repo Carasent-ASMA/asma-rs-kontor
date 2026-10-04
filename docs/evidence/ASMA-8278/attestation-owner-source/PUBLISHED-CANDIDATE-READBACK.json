@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "source_candidate": "26b1c8713d14684a6a3483c00fe4b74f4ed3d223",
+  "source_tree": "8c06111c74afeca54d482241834aa33488eebdce",
+  "pre_commit_base": "32909ae1de9729d4e8b4bcd334420039f42ee31a",
+  "root_specification": "68626851460916488be6613084ca0d33118fcb4d",
+  "source_sha256": {
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "ceec30023360a91a6dfa4a6eb4d50fd74e6d515ea58d8b6c7d02ea9a2418d7a3",
+    "crates/kontor-runtime/src/planning_pair/attestation/owner_checks.rs": "23eeffe3a100d2d8553ab6b4c24af9a99c064f713fa394a8ea0de320e8dd171c",
+    "crates/kontor-runtime/src/planning_pair/attestation/owner_checks/tests.rs": "a1a64c3494716a9ba0e31f9d0631127faf895377c10daf86ba51470c18093ded"
+  },
+  "evidence_provenance": "Worker evidence produced against the pre-commit working-tree candidate; original source_head/final_source_head base labels preserved. All three recorded source hashes match published candidate26b exactly. Preliminary focused11-test log is preserved alongside final12-test baselines and134-unit regression.",
+  "checks": {
+    "unit": 134,
+    "integration": 20,
+    "compile_fail_privacy": 2,
+    "owner_tests": 12,
+    "assertion_killed_mutants": 7
+  },
+  "review_scope": "Bounded non-authorizing source findings only; O01 key-material/revision provenance and O02 generation-domain selection remain future owner composition requirements. No full committee, live acceptance, readiness or epic closure."
+}

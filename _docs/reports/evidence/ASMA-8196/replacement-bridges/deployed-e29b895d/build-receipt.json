@@ -1,0 +1,40 @@
+{
+  "sourceCommit": "e29b895d0f045c499144870a2fa610fc642b6cc0",
+  "sourceTree": "2105986a07ec6cd486d2d4e2f012d02da111bf9d",
+  "qualifiedSource": "6b3654bca823ac85ed7cc0bb1d6965bc730c4743",
+  "sourceArchiveSha256": "271ae9365699a880fd5f1c4e61b3789a7477fe56c16c317eb51dbc11c8f6321d",
+  "acceptedExecutableSourceUnchanged": true,
+  "qualificationReceiptSha256": "4859983d4da2c2d1a6c067858200ae68c03c0a1aa73eed3da42913c0442084bb",
+  "deployment": "not_installed",
+  "startedAt": "2026-09-26T10:40:38.803857+00:00",
+  "command": [
+    "cargo",
+    "build",
+    "--release",
+    "--locked",
+    "--bin",
+    "kontor-daemon",
+    "--bin",
+    "kontor-mcp",
+    "--bin",
+    "kontor"
+  ],
+  "buildCache": "Shared release target; exact merged source from disposable archive; separate from full qualification target.",
+  "exitCode": 0,
+  "finishedAt": "2026-09-26T10:43:33.465779+00:00",
+  "binaries": {
+    "kontor-daemon": {
+      "sha256": "0a187d5d1ef2e94ddce575cac4a71a04309fb43b34bbd0cfad77124597219b35",
+      "bytes": 45570176
+    },
+    "kontor-mcp": {
+      "sha256": "54160cfaaf39a90cbc12b495359aabf331e30ff3f3d3e85a2322e33e6117faab",
+      "bytes": 9753056
+    },
+    "kontor": {
+      "sha256": "a724ec68c9d793661cd05a4c099fc109e48614c599c9dcfb608e563cdd51979a",
+      "bytes": 7082256
+    }
+  },
+  "buildLogSha256": "acfa40e207df85b4bd40f14e9961fc641a0d60b517bc2ccbf19f0ac0d10dbb91"
+}

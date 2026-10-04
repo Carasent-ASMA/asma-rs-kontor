@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-26T17:04:00.154837+00:00",
+  "nativeAgentId": "6301c2d4-7fbd-4f08-b61c-9f12183ada82",
+  "providerSessionId": "01a0a39b-2b2c-7c02-923b-89a13f6c622c",
+  "route": "codex-personal/gpt-5.6-sol@xhigh",
+  "mode": "auto-review",
+  "sourceActivityUpdateCount": 3075,
+  "sourceActivityLimit": 1,
+  "onlyRemovedWrapper": "Showing 1 of 3075 activities (limited to 1)\n\n",
+  "sourceCommit": "1b99689d138aa1a4c1e406700f0a6be2316f5554",
+  "sourceTree": "738d887a11ab19c2e6039ca5dc74d20d5c255267",
+  "publicationBaseHead": "1b99689d138aa1a4c1e406700f0a6be2316f5554",
+  "actualTerminatorPresent": false,
+  "actualFinalLfPresent": false,
+  "decodedByteCount": 3617,
+  "decodedSha256": "29b3ac8ff21296cf53d690af1c302b2eb55ee0aadf3f69eb34f52c6500be1ea7",
+  "carrierPath": "actual-lsa-corrective-audit-1b99689d.txt.json",
+  "carrierSha256": "438fd83a49a90382265b63bb8adcc7085b67e1fa043319ffb1510489fbd38fe9",
+  "scope": "Actual independent corrective audit: P0/P1/P2 none; conditional integrated-source support only. Exact-1b running qualification, merge/deployment/live-read/task/workflow/epic/portfolio credit is not granted.",
+  "priorFullGateHashPrecision": {
+    "path": "qualified-51cfef9c-full-gate.txt.json",
+    "carrierSha256": "52df00735eeb6ec025121b659d4a02baf5e257915257e76360ea18c74b259a83",
+    "decodedSha256": "0fa98c9fe6e5c524b559ea4dadb58591c342e567d80d9b88809a4524bee2bdaa",
+    "note": "The actual finding calls 0fa98c9f a carrier SHA. It is the decoded raw-log hash; the exact actual wording is retained and the distinct carrier hash is bound here."
+  }
+}

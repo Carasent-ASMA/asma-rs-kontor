@@ -1,0 +1,25 @@
+{
+  "epic": "ASMA-8278",
+  "published_candidate": "c708701b6b8f80ef4db57b0b0410976dfd4dc482",
+  "worker_base_head": "dfeaa8a533db46a8d5b85cd05d491bb8bb531b4e",
+  "source_head_interpretation": "Original bundle records pre-commit base; published candidate is pinned by all five source hashes. Original evidence preserved unchanged.",
+  "owned_source_sha256": {
+    "Cargo.lock": "b62db27540b4a2295401631a57f3819c593b29690c896827286d93722e588e77",
+    "crates/kontor-runtime/Cargo.toml": "56a63ed87cad9de33234515983d55236fe49844bc5095f15f05c070ef349cf4d",
+    "crates/kontor-runtime/src/planning_pair.rs": "cbbda90596367a9ee86cc10364af83c7f67782df876d4b4666ae8b207ba316cf",
+    "crates/kontor-runtime/src/planning_pair/attestation.rs": "8c2bdc5071952401f8bae9066984ccd67b52626c6eb798a5e6579df7589bed95",
+    "crates/kontor-runtime/src/planning_pair/attestation/tests.rs": "83b753337be6a11e3e8852b044baa1e6d4da1931e41fd3cd35d9f07c921cd359"
+  },
+  "full_suite_command": [
+    "cargo",
+    "test",
+    "-p",
+    "kontor-runtime",
+    "--offline",
+    "--jobs",
+    "2"
+  ],
+  "full_suite_exit": 0,
+  "full_suite_log": "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-attestation-mutations-gvnm3zs2/c708701-runtime-full-suite.log",
+  "full_suite_log_sha256": "04d57807156fc42ae42a63c997c85c0b8bd583e3ae8fbc1bf38429b7d99d8335"
+}

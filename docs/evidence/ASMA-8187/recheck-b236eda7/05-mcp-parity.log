@@ -1,0 +1,118 @@
+=== 05-mcp-parity ===
+head          : b236eda75b6d95f96442ad37224030d7de753195
+tree          : 498939c3f301ea39c7e7664c197b54459369f9f9
+command       : cargo test -p kontor-mcp -- --test-threads=1
+toolchain     : rustc 1.97.1 (8bab26f4f 2026-07-14)
+started       : 2026-10-03T18:49:50Z
+disk free     : 154Gi
+--- git status --porcelain=v1 (whole repo, verbatim) BEFORE ---
+--- (end; no lines above means nothing was dirty) ---
+source vs HEAD: every tracked source path identical to HEAD
+applications.rs blob: c0269934e5348247e9834c8428fe5a730cbded2c (HEAD)
+applications.rs disk: c0269934e5348247e9834c8428fe5a730cbded2c (working tree)
+--- raw output ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running unittests src/lib.rs (target/debug/deps/kontor_mcp-8d7c27cc8b23cccd)
+
+running 66 tests
+test capability::tests::a_gate_admits_its_own_tier_and_everything_below_it ... ok
+test capability::tests::an_observer_gate_refuses_every_mutation_and_says_which_authority_was_wanted ... ok
+test capability::tests::the_admitted_token_reports_the_configured_tier_and_not_the_required_one ... ok
+test client::tests::a_credential_file_yields_exactly_the_tier_that_was_asked_for ... ok
+test client::tests::a_frame_is_assembled_only_at_a_block_boundary_and_data_free_blocks_are_dropped ... ok
+test client::tests::a_missing_or_unreadable_credential_file_is_a_local_failure_naming_the_path ... ok
+test client::tests::a_reply_reports_the_daemons_own_status_and_code_without_rewriting_them ... ok
+test client::tests::a_tier_is_named_or_refused_and_never_defaulted ... ok
+test client::tests::an_endpoint_file_is_read_when_present_and_defaulted_when_absent ... ok
+test client::tests::both_legacy_and_generation_fenced_consultation_credentials_are_recognized ... ok
+test client::tests::only_a_loopback_base_url_is_accepted ... ok
+test client::tests::the_credential_is_absent_from_debug_output ... ok
+test client::tests::tiers_are_ordered_by_policy_and_not_by_declaration ... ok
+test dispatch::tests::a_confirmed_key_fills_the_same_route_as_a_uuid ... ok
+test dispatch::tests::a_guessed_nested_shape_is_refused_here_and_names_the_field ... ok
+test dispatch::tests::a_launch_intent_supersession_is_reachable_through_the_mcp_route ... ok
+test dispatch::tests::a_legacy_epic_code_is_bounded_without_weakening_the_replacement ... ok
+test dispatch::tests::a_malformed_identifier_is_refused_by_the_domains_own_parser ... ok
+test dispatch::tests::a_malformed_key_never_reaches_the_daemon ... ok
+test dispatch::tests::a_missing_nested_field_is_refused_by_its_full_path ... ok
+test dispatch::tests::a_missing_required_property_is_refused_before_a_request_exists ... ok
+test dispatch::tests::a_path_template_is_filled_from_validated_arguments ... ok
+test dispatch::tests::a_streamed_read_bounds_itself_from_its_arguments_and_defaults_otherwise ... ok
+test dispatch::tests::a_subject_selector_takes_either_spelling_and_nothing_else ... ok
+test dispatch::tests::a_value_of_the_wrong_shape_is_refused ... ok
+test dispatch::tests::a_write_without_its_idempotency_key_never_becomes_a_request ... ok
+test dispatch::tests::an_epic_backlog_code_is_validated_before_dispatch ... ok
+test dispatch::tests::an_optional_query_argument_is_absent_rather_than_empty_when_it_is_not_given ... ok
+test dispatch::tests::an_unknown_property_is_refused_rather_than_dropped ... ok
+test dispatch::tests::arming_without_a_window_or_concurrency_still_becomes_a_request ... ok
+test dispatch::tests::committee_permission_response_addresses_the_exact_seat_and_request ... ok
+test dispatch::tests::committee_re_review_provenance_is_reachable_through_the_mcp_route ... ok
+test dispatch::tests::correlation_challenge_preview_and_apply_route_exactly_once_through_the_generic_client ... ok
+test dispatch::tests::exactly_one_tool_maps_the_launch_intent_supersession ... ok
+test dispatch::tests::frame_bounds_are_local_and_never_reach_the_wire ... ok
+test dispatch::tests::settlement_builds_a_request_with_no_body_at_all ... ok
+test dispatch::tests::the_declared_budget_shape_becomes_a_request ... ok
+test dispatch::tests::the_idempotency_key_reaches_the_header_and_never_the_body ... ok
+test registry::tests::a_gate_waiver_demands_admin_and_an_ordinary_verdict_does_not ... ok
+test registry::tests::a_selector_advertises_both_spellings_and_stays_a_string ... ok
+test registry::tests::a_write_carries_an_idempotency_key_and_a_read_does_not ... ok
+test registry::tests::every_profile_entry_names_a_registry_tool_at_or_below_operator ... ok
+test registry::tests::every_tool_name_is_unique_and_every_route_is_mapped_once ... ok
+test registry::tests::every_tool_targets_a_v1_route_and_declares_its_path_arguments ... ok
+test registry::tests::live_seat_quota_projection_is_observer_read_only ... ok
+test registry::tests::only_a_streamed_read_declares_frame_bounds ... ok
+test registry::tests::only_addressed_path_subjects_take_a_selector ... ok
+test registry::tests::seat_recovery_is_an_admin_resume_of_one_exact_predecessor ... ok
+test registry::tests::seat_replacement_requires_the_exact_predecessor_revision_as_u64 ... ok
+test registry::tests::settlement_accepts_no_caller_supplied_outcome ... ok
+test registry::tests::the_allowlist_names_two_routes_no_tool_also_claims ... ok
+test registry::tests::the_consultation_profile_is_the_exact_seat_surface ... ok
+test registry::tests::the_leadership_profile_is_the_exact_identity_bound_completion_surface ... ok
+test registry::tests::the_worker_profile_includes_approved_memory_reads ... ok
+test registry::tests::topology_draft_accepts_the_servers_canonical_uppercase_root_kind ... ok
+test registry::tests::turn_correlation_recovery_is_an_exact_operator_preview_apply_pair ... ok
+test server::tests::a_declaration_carries_the_same_schema_the_dispatch_path_enforces ... ok
+test server::tests::a_profile_never_widens_what_the_tier_allows ... ok
+test server::tests::a_refusal_says_that_nothing_was_dispatched ... ok
+test server::tests::a_server_lists_only_what_its_authority_can_perform ... ok
+test server::tests::a_tool_excluded_by_the_profile_is_refused_at_call_time ... ok
+test server::tests::every_declared_schema_is_closed ... ok
+test server::tests::the_consultation_profile_at_operator_serves_exactly_the_profile ... ok
+test server::tests::the_consultation_profile_never_widens_observer_authority ... ok
+test server::tests::the_instructions_name_the_authority_and_the_rules_callers_get_wrong ... ok
+test server::tests::the_worker_profile_at_operator_serves_exactly_the_profile ... ok
+
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/main.rs (target/debug/deps/kontor_mcp-6f7e534398c99217)
+
+running 3 tests
+test consultation_guard::tests::findings_are_allowed_but_writes_delegation_and_plan_approval_are_denied ... ok
+test tests::a_declared_profile_resolves ... ok
+test tests::an_unknown_profile_is_refused_and_the_valid_names_are_listed ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/seats.rs (target/debug/deps/seats-84972c898ccb74f0)
+
+running 5 tests
+test each_seat_selects_exactly_the_tier_it_is_named_for ... ok
+test no_seat_carries_a_secret_or_a_non_loopback_address ... ok
+test only_the_lead_seat_is_admin_scoped ... ok
+test the_seat_flags_are_the_ones_the_binary_declares ... ok
+test the_worker_seat_serves_the_worker_profile_and_the_others_serve_none ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests kontor_mcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+--- exit status: 0 (1s) ---
+finished      : 2026-10-03T18:49:51Z
+--- git status --porcelain=v1 (whole repo, verbatim) AFTER ---
+--- (end) ---
+source vs HEAD: every tracked source path identical to HEAD
+disk free     : 154Gi

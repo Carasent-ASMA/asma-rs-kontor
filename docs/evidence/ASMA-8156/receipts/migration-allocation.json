@@ -1,0 +1,18 @@
+{
+  "command": [
+    "git",
+    "ls-remote",
+    "origin",
+    "refs/heads/master"
+  ],
+  "remote_master": "8acdbd17e83d9d7ec545221c4b957e0325916997",
+  "starting_schema": 119,
+  "local_migration": 120,
+  "ordered_chain_contiguous": true,
+  "observed_unmerged_numbers_not_reserved": [
+    120,
+    121,
+    122
+  ],
+  "reconciliation_owner": "ASMA-8159 serialized integration"
+}

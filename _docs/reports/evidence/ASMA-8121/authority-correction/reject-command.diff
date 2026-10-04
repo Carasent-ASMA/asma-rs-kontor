@@ -1,0 +1,11 @@
+--- a/crates/kontor-store/src/backup/export.rs
++++ b/crates/kontor-store/src/backup/export.rs
+@@ -1185,7 +1185,7 @@
+             })?;
+         match event.event_kind.as_str() {
+             "runtime_observation" | "census_observation" => ensure_control_metadata(&payload)?,
+-            "command_intent" => ensure_command_event_authority(event, &receipts)?,
++            "command_intent" => ensure_control_metadata(&payload)?,
+             _ => {
+                 return Err(BackupError::Verification {
+                     detail: "a stored event has an unknown kind",

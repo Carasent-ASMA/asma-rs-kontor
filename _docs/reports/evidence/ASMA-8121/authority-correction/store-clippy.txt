@@ -1,0 +1,4 @@
+    Checking kontor-store v0.2.1 (/Users/igor/carasent/asma-modules/.worktrees/asma-8121/asma-rs-kontor/crates/kontor-store)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.45s
+
+PROCESS_EXIT_CODE=0
