@@ -1,0 +1,817 @@
+{
+  "command_note": "Normalized cargo invocation scopes reconstructed from executed command context; optional output flags/order are not represented as a byte-exact shell transcript. Mutation reports preserve exact executed argv/timing/log hashes; persisted runners preserve environment/target roots. Process readback packets preserve actual exits, including expired historical sessions.",
+  "phases": [
+    {
+      "log": "logs/01-initial-check.log",
+      "log_sha256": "bd4c145dbe9c6c2089f60936bdf9a69f56cf11327621eb6c29bfe865ea51d745",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "check",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store"
+      ],
+      "outcome": "initial source compilation",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/02-focused-initial.log",
+      "log_sha256": "468ab2d2f600c4a96cd0fe8385ffd124d59ae8f6c074b67873304af4c2b38c05",
+      "exit_code": 101,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata"
+      ],
+      "outcome": "three missing borrowed run-id strings; compile failure",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/03-focused-fixture-build-fix.log",
+      "log_sha256": "5817b1ef6b6e3521c4832a3269fb7da8600650a90cc9d1ba899a2a81b9757f3b",
+      "exit_code": 101,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata"
+      ],
+      "outcome": "13 passed/3 failed: uppercase fixture RoleKey",
+      "raw_test_results": [
+        {
+          "status": "FAILED",
+          "passed": 13,
+          "failed": 3
+        }
+      ],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/04-focused-role-fix.log",
+      "log_sha256": "dd4b558e57e9230302b0cbc311aceac609d786964f765677cfd217919428acee",
+      "exit_code": 101,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata"
+      ],
+      "outcome": "13 passed/3 failed: fixture CanonicalDocument schema_version",
+      "raw_test_results": [
+        {
+          "status": "FAILED",
+          "passed": 13,
+          "failed": 3
+        }
+      ],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/05-focused-context-fix.log",
+      "log_sha256": "ffe82fe07b483fab41fbaca9da1446615f7b5fc029a916b5cb13e54ca1b57baf",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata"
+      ],
+      "outcome": "16 passed",
+      "raw_test_results": [
+        {
+          "status": "ok",
+          "passed": 16,
+          "failed": 0
+        }
+      ],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/06-domain-guards.log",
+      "log_sha256": "030bb538da775b06f8869cfbf1353876e8c7a43630f6cb812ab8e3ade6d142b1",
+      "exit_code": 101,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata"
+      ],
+      "outcome": "fixture u64 ToSql compile failure",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/07-affected-initial.log",
+      "log_sha256": "03d186bc4b4f676e677e125c72c8e2c614a269899b10369771d1d2149be9a2c8",
+      "exit_code": 101,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "planning_pair"
+      ],
+      "outcome": "incorrect test target",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/08-affected-regression.log",
+      "log_sha256": "151fd011d2ba536c8bc5b9b6f99bdcf1874db9bf89f6fb4c98850586c6168ce1",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_authority",
+        "--test",
+        "attestation_token_metadata",
+        "--test",
+        "consultation_subject",
+        "--test",
+        "hosted_seat_autonomy",
+        "--test",
+        "planning_pair_store",
+        "--test",
+        "repository_roundtrip",
+        "--test",
+        "schema_v1"
+      ],
+      "outcome": "223 passed; prepared19, later three cases absent",
+      "raw_test_results": [
+        {
+          "status": "ok",
+          "passed": 10,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 19,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 13,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 16,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 8,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 89,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 68,
+          "failed": 0
+        }
+      ],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/09-focused-backup-lib.log",
+      "log_sha256": "ceeca0594db4fd78c2990cfa874eadcd7a03718978a6f2277e63bead7edaecaf",
+      "exit_code": 101,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--test",
+        "attestation_token_metadata",
+        "--test",
+        "backup_snapshot"
+      ],
+      "outcome": "nonexistent export_state fixture method compile failure",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/10-backup-regression.log",
+      "log_sha256": "127fd936695d36601fa9c7d2f6de0b2790a1c4a294b47e51404d5723d37b5fd6",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--lib",
+        "--test",
+        "attestation_token_metadata",
+        "--test",
+        "backup_snapshot"
+      ],
+      "outcome": "lib18/prepared20/backup25",
+      "raw_test_results": [
+        {
+          "status": "ok",
+          "passed": 18,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 20,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 25,
+          "failed": 0
+        }
+      ],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/11-core-regression.log",
+      "log_sha256": "783ba0483a231c0ada406232377abc0b30aefafcca5d57a2a696e16ba8b48d96",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-core"
+      ],
+      "outcome": "359 tests/5 docs",
+      "raw_test_results": [
+        {
+          "status": "ok",
+          "passed": 43,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 8,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 10,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 2,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 26,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 37,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 18,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 27,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 25,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 13,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 9,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 61,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 4,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 9,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 11,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 5,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 14,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 37,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 1,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 4,
+          "failed": 0
+        }
+      ],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/12-clippy-initial.log",
+      "log_sha256": "2c68a34ff5f2f981c27c09d3d0914c62fc48ca70969659f331d53ede5af7a66f",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-core",
+        "-p",
+        "kontor-store",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "outcome": "initial scoped Clippy",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/13-backup-port-regression.log",
+      "log_sha256": "45f1b56c257d4ad63779166fa71cede6c929ae21e8a45f5f079237ecc8641024",
+      "exit_code": 101,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_import"
+      ],
+      "outcome": "incorrect backup_import target",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/14-backup-port-regression.log",
+      "log_sha256": "94d92209dfeb6262d9660442831671378b36819795394e81f1dc58fb6f1612ef",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "backup_export",
+        "--test",
+        "consultation_profiles",
+        "--test",
+        "team_definition_backup_contract"
+      ],
+      "outcome": "25/9/2 passed",
+      "raw_test_results": [
+        {
+          "status": "ok",
+          "passed": 25,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 9,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 2,
+          "failed": 0
+        }
+      ],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/15-family-registry-fixtures.log",
+      "log_sha256": "bf88d29f2adf4ec796f516caa48b29043772b10788f8348d0578d0bc7f2cce48",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata"
+      ],
+      "outcome": "21 passed",
+      "raw_test_results": [
+        {
+          "status": "ok",
+          "passed": 21,
+          "failed": 0
+        }
+      ],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/16-final-focused.log",
+      "log_sha256": "979c91c49da4fb3edaa1389949b749621e3a04cb50f1d8f3b10a40ea55c3db20",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata"
+      ],
+      "outcome": "22 passed before partition",
+      "raw_test_results": [
+        {
+          "status": "ok",
+          "passed": 22,
+          "failed": 0
+        }
+      ],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/17-dependent-check.log",
+      "log_sha256": "d92fc084abc305ff7a1bc49312687e8969c9bd96e31d7d208aa004fbf645ec53",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "check",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-daemon",
+        "-p",
+        "kontor-api",
+        "-p",
+        "kontor-cli",
+        "-p",
+        "kontor-mcp"
+      ],
+      "outcome": "dependent compilation passed",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/18-mutation-runner.log",
+      "log_sha256": "5e00348bb58a399616af13f4d76ea2c15c33554bc9c0d5e2d5cd61d79dd74c14",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "python3",
+        "run_mutations.py"
+      ],
+      "outcome": "pre-partition10 compiled assertion kills and restored baselines; complete report plus expired later session",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/19-privacy-store-doc.log",
+      "log_sha256": "87073fc2ad79c9a6ddb2b3ce77ff4fd523dc0a64d0e3af380864743b38ebbf72",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "--doc",
+        "-p",
+        "kontor-runtime",
+        "-p",
+        "kontor-store"
+      ],
+      "outcome": "runtime2/store0 docs",
+      "raw_test_results": [
+        {
+          "status": "ok",
+          "passed": 2,
+          "failed": 0
+        },
+        {
+          "status": "ok",
+          "passed": 0,
+          "failed": 0
+        }
+      ],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/20-fmt-check.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "outcome": "pre-partition formatting",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/21-final-clippy.log",
+      "log_sha256": "73b525232d43aab4eb10c4ce067e18783267c03db7acf0597272ef3116e46962",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-core",
+        "-p",
+        "kontor-store",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "outcome": "pre-partition final source Clippy",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/22-post-partition-baseline.log",
+      "log_sha256": "67127facff5157af940292b71110079c56a7f24dbe595c9c768622aab51762e0",
+      "exit_code": 101,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata"
+      ],
+      "outcome": "complete compile-failure log; session expired after user interruption",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/23-post-partition-final-baseline.log",
+      "log_sha256": "c95b8008c92710a600290c4727a83b3878752c12b76f7c3549314b65f262a986",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "test",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-store",
+        "--test",
+        "attestation_token_metadata"
+      ],
+      "outcome": "final13-path22 passing cases",
+      "raw_test_results": [
+        {
+          "status": "ok",
+          "passed": 22,
+          "failed": 0
+        }
+      ],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/24-post-partition-clippy.log",
+      "log_sha256": "d21772df0e0d97d4d94c0affae0c97d05ecc837e20562ea34f1a23c14006ff29",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--jobs",
+        "2",
+        "-p",
+        "kontor-core",
+        "-p",
+        "kontor-store",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "outcome": "final13-path scoped Clippy",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/25-post-partition-mutation-setup.log",
+      "log_sha256": "e3f56f2721e611d52d28d389adc387ac6440dea85a7fb439442e8a27890416aa",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "python3",
+        "post-partition/prepare_mutations.py"
+      ],
+      "outcome": "13 source pins match isolated copy",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/26-post-partition-mutation-runner.log",
+      "log_sha256": "6d399398837aa85f639101c45e924fdce82c8fc112b34b551ec05d50d48748ef",
+      "exit_code": 1,
+      "normalized_invocation_scope": [
+        "python3",
+        "post-partition/run_mutations.py"
+      ],
+      "outcome": "reused target: integration22 pass, baseline unit guard fail; zero mutant kills counted",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/27-coding-size-check.log",
+      "log_sha256": "233f2e66c6c236b666103cb2d1a3575c37191b88ed9314bdbd66e006523cf5a9",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "python3",
+        "check_sizes.py"
+      ],
+      "outcome": "all new Rust sizes pass",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/28-final-fmt.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "outcome": "formatting, later exact readback repeated",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/29-final-diff-check.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "outcome": "diff check, later exact readback repeated",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/30-fresh-target-replay-setup.log",
+      "log_sha256": "cc0abc9ff273efdbfbba149a5f10ba5c8ca0fd6e63285ec36f71bc874a1e70fd",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "python3",
+        "post-partition-final/prepare_mutations.py"
+      ],
+      "outcome": "final13 copy matches",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/31-fresh-target-replay.log",
+      "log_sha256": "5e00348bb58a399616af13f4d76ea2c15c33554bc9c0d5e2d5cd61d79dd74c14",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "python3",
+        "post-partition-final/run_mutations.py"
+      ],
+      "outcome": "fresh target:10 compiled assertion kills; restored integration22/guard1",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/32-final-fmt-readback.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "outcome": "exact final process exit0",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    },
+    {
+      "log": "logs/33-final-diff-readback.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit_code": 0,
+      "normalized_invocation_scope": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "outcome": "exact final process exit0",
+      "raw_test_results": [],
+      "content_provenance": "phase-local source; final thirteen-byte pins apply specifically to final23/24 and successful post-partition-final replay, not retrospectively to all earlier phases"
+    }
+  ]
+}

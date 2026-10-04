@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use crate::backlog_identity::ConfirmedJiraKey;
-use crate::id::ExternalName;
+use crate::id::{ExternalName, MAX_EXTERNAL_NAME_LEN};
 use crate::{DomainError, DomainResult};
 
 /// The exact byte sequence joining adjacent name-template segments.
@@ -299,6 +299,61 @@ impl NativeNameTemplate {
             .join(separator.as_str());
         ExternalName::parse(&rendered)
     }
+}
+
+/// Render a retired display name from an explicitly selected marker and cap.
+///
+/// The caller supplies the pinned naming policy; this helper selects no marker,
+/// separator or runtime limit. Repeated exact leading markers are removed before
+/// one marker is applied. Interior text is preserved, and truncation counts
+/// Unicode scalar values and ends in an ellipsis. Reapplying the same policy is
+/// idempotent. The original full name belongs in the caller's retirement record.
+/// Rendering does not retire a seat, change its identity or release a write fence.
+///
+/// # Errors
+/// Refuses an empty, untrimmed, control-bearing or separator-bearing marker,
+/// a cap unable to retain the prefix plus one base scalar and an ellipsis, a
+/// prefix containing the truncation ellipsis, a cap exceeding the external-name
+/// bound, or an invalid base after stripping.
+pub fn render_retired_name(
+    name: &ExternalName,
+    marker: &str,
+    separator: &NameSeparator,
+    max_chars: usize,
+) -> DomainResult<ExternalName> {
+    let marker = ExternalName::parse(marker)?;
+    if marker.as_str().contains(separator.as_str())
+        || marker.as_str().contains(['\u{2022}', '\u{00b7}'])
+        || marker.as_str().contains('\u{2026}')
+        || separator.as_str().contains('\u{2026}')
+    {
+        return Err(DomainError::invalid(
+            "RetiredNativeName",
+            "marker must not contain a separator and prefix must not contain ellipsis",
+        ));
+    }
+    let prefix = format!("{}{}", marker.as_str(), separator.as_str());
+    let prefix_chars = prefix.chars().count();
+    if max_chars > MAX_EXTERNAL_NAME_LEN || max_chars < prefix_chars.saturating_add(2) {
+        return Err(DomainError::invalid(
+            "RetiredNativeName",
+            "cap must retain prefix, one base scalar and ellipsis within the name bound",
+        ));
+    }
+    let mut base = name.as_str();
+    while let Some(unmarked) = base.strip_prefix(&prefix) {
+        base = unmarked;
+    }
+    let base = ExternalName::parse(base)?;
+    let base_budget = max_chars - prefix_chars;
+    let suffix = if base.as_str().chars().count() > base_budget {
+        let mut shortened: String = base.as_str().chars().take(base_budget - 1).collect();
+        shortened.push('\u{2026}');
+        shortened
+    } else {
+        base.as_str().to_owned()
+    };
+    ExternalName::parse(&format!("{prefix}{suffix}"))
 }
 
 /// Explicit values available to one pure rendering operation.

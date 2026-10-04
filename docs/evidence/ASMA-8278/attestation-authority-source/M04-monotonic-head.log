@@ -1,0 +1,23 @@
+   Compiling kontor-store v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-authority-ledger-validation-eevekms_/isolated-source/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.82s
+     Running tests/attestation_authority.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-owner-check-validation-o7fe64z3/mutation-target/debug/deps/attestation_authority-56fe9fa166913f8c)
+
+running 1 test
+test direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head ... FAILED
+
+failures:
+
+---- direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head stdout ----
+
+thread 'direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head' (26801537) panicked at crates/kontor-store/tests/attestation_authority.rs:397:5:
+assertion failed: connection.execute("UPDATE attestation_authority_heads SET revision=99",
+        []).is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    direct_sql_cannot_change_material_unrevoke_delete_or_jump_the_head
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 1.98s
+
+error: test failed, to rerun pass `-p kontor-store --test attestation_authority`

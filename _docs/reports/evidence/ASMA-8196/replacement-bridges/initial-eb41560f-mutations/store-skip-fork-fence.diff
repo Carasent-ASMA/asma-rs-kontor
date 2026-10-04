@@ -1,0 +1,16 @@
+--- crates/kontor-store/src/repository.rs
++++ crates/kontor-store/src/repository.rs
+@@ -22038,12 +22038,7 @@
+             else {
+                 continue;
+             };
+-            if !occupied_seats.insert(seat_binding_id) {
+-                return Err(conflict(
+-                    "live native subject",
+-                    "one seat has ambiguous current native occupants",
+-                ));
+-            }
++            let _ = occupied_seats.insert(seat_binding_id);
+             let key = (
+                 live.identity.runtime_kind.as_str().to_owned(),
+                 live.identity.host.as_str().to_owned(),

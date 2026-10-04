@@ -38,7 +38,7 @@ struct FixtureKeychain {
 
 impl KeychainBackend for FixtureKeychain {
     fn secret(&self, target: &KeychainTarget) -> Result<SecretString, KeychainFailure> {
-        assert_eq!(target.service(), "kontor-jira");
+        assert!(target.service().starts_with("kontor-jira:"));
         assert_eq!(target.account(), "work");
         self.reads.fetch_add(1, Ordering::SeqCst);
         Ok(SecretString::from(
@@ -830,6 +830,7 @@ async fn create_is_marker_idempotent_and_credentials_are_resolved_per_request() 
     let keychain = Arc::new(FixtureKeychain::default());
     let connectors = JiraConnectors::read_with_keychain(
         root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::clone(&keychain) as Arc<dyn KeychainBackend>,
     )
     .expect("strict configuration loads");
@@ -934,9 +935,12 @@ async fn task_create_includes_project_configured_required_fields() {
         .expect("configuration serializes"),
     )
     .expect("configuration is written");
-    let connector =
-        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
-            .expect("configuration loads");
+    let connector = JiraConnectors::read_with_keychain(
+        root.path(),
+        kontor_core::id::RealmId::generate(),
+        Arc::new(FixtureKeychain::default()),
+    )
+    .expect("configuration loads");
     let plan = JiraIssuePlan {
         kind: JiraIssueKind::Task,
         requested_key: None,
@@ -977,9 +981,12 @@ fn create_field_configuration_cannot_override_kontor_owned_fields() {
     )
     .expect("configuration is written");
 
-    let error =
-        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
-            .expect_err("Kontor-owned create fields remain authoritative");
+    let error = JiraConnectors::read_with_keychain(
+        root.path(),
+        kontor_core::id::RealmId::generate(),
+        Arc::new(FixtureKeychain::default()),
+    )
+    .expect_err("Kontor-owned create fields remain authoritative");
     assert!(error.to_string().contains("may not override"), "{error}");
 }
 
@@ -1010,9 +1017,12 @@ async fn explicit_link_confirms_level_zero_without_claiming_type_or_content() {
         .expect("configuration serializes"),
     )
     .expect("configuration is written");
-    let connector =
-        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
-            .expect("configuration loads");
+    let connector = JiraConnectors::read_with_keychain(
+        root.path(),
+        kontor_core::id::RealmId::generate(),
+        Arc::new(FixtureKeychain::default()),
+    )
+    .expect("configuration loads");
     let plan = JiraIssuePlan {
         kind: JiraIssueKind::Task,
         requested_key: Some(ExternalId::parse("ASMA-8050").expect("issue key")),
@@ -1114,9 +1124,12 @@ async fn recovery_preserves_a_body_authored_since_creation() {
         .expect("configuration serializes"),
     )
     .expect("configuration is written");
-    let connectors =
-        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
-            .expect("configuration loads");
+    let connectors = JiraConnectors::read_with_keychain(
+        root.path(),
+        kontor_core::id::RealmId::generate(),
+        Arc::new(FixtureKeychain::default()),
+    )
+    .expect("configuration loads");
     // The plan still carries the generated placeholder, exactly as a replayed
     // historical Create intent does.
     let plan = JiraIssuePlan {
@@ -1216,9 +1229,12 @@ async fn explicit_link_updates_only_description_and_reads_it_back() {
         .expect("configuration serializes"),
     )
     .expect("configuration is written");
-    let connectors =
-        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
-            .expect("configuration loads");
+    let connectors = JiraConnectors::read_with_keychain(
+        root.path(),
+        kontor_core::id::RealmId::generate(),
+        Arc::new(FixtureKeychain::default()),
+    )
+    .expect("configuration loads");
     let connector = connectors
         .for_project(project_id)
         .expect("project is configured");
@@ -1290,9 +1306,12 @@ async fn materialization_identifies_each_mismatch_without_mutating_jira() {
         .expect("configuration serializes"),
     )
     .expect("configuration is written");
-    let connectors =
-        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
-            .expect("configuration loads");
+    let connectors = JiraConnectors::read_with_keychain(
+        root.path(),
+        kontor_core::id::RealmId::generate(),
+        Arc::new(FixtureKeychain::default()),
+    )
+    .expect("configuration loads");
     let connector = connectors
         .for_project(project_id)
         .expect("configured project");
@@ -1436,9 +1455,12 @@ async fn native_observe_reads_issue_transitions_and_principal() {
         .expect("configuration serializes"),
     )
     .expect("configuration is written");
-    let connector =
-        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
-            .expect("configuration loads");
+    let connector = JiraConnectors::read_with_keychain(
+        root.path(),
+        kontor_core::id::RealmId::generate(),
+        Arc::new(FixtureKeychain::default()),
+    )
+    .expect("configuration loads");
     let response = connector
         .for_project(project_id)
         .expect("project is configured")
@@ -1545,9 +1567,12 @@ async fn native_observe_carries_the_issue_body() {
         .expect("configuration serializes"),
     )
     .expect("configuration is written");
-    let connector =
-        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
-            .expect("configuration loads");
+    let connector = JiraConnectors::read_with_keychain(
+        root.path(),
+        kontor_core::id::RealmId::generate(),
+        Arc::new(FixtureKeychain::default()),
+    )
+    .expect("configuration loads");
     let response = connector
         .for_project(project_id)
         .expect("project is configured")
@@ -1613,9 +1638,12 @@ async fn native_requests_time_out_without_holding_the_daemon_open() {
         .expect("configuration serializes"),
     )
     .expect("configuration is written");
-    let connector =
-        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
-            .expect("configuration loads");
+    let connector = JiraConnectors::read_with_keychain(
+        root.path(),
+        kontor_core::id::RealmId::generate(),
+        Arc::new(FixtureKeychain::default()),
+    )
+    .expect("configuration loads");
     let request = JiraRequest {
         schema_version: SCHEMA_VERSION,
         operation: JiraOperation::Observe,
@@ -1689,6 +1717,7 @@ async fn a_blocking_keychain_read_is_bounded_by_the_credential_timeout() {
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     let connector = JiraConnectors::read_with_keychain(
         root.path(),
+        kontor_core::id::RealmId::generate(),
         Arc::new(BlockingKeychain {
             entered,
             release: Arc::new(std::sync::Mutex::new(release_rx)),
@@ -1734,9 +1763,12 @@ fn strict_configuration_rejects_inline_credentials() {
         r#"{"schema_version":1,"projects":[{"project_id":"0198fb22-056d-7de0-a8b2-777e719c83fd","endpoint":"https://user:secret@example.test","project_key":"ASMA","credential_alias":"work"}]}"#,
     )
     .expect("configuration is written");
-    let error =
-        JiraConnectors::read_with_keychain(root.path(), Arc::new(FixtureKeychain::default()))
-            .expect_err("inline credentials are refused");
+    let error = JiraConnectors::read_with_keychain(
+        root.path(),
+        kontor_core::id::RealmId::generate(),
+        Arc::new(FixtureKeychain::default()),
+    )
+    .expect_err("inline credentials are refused");
     assert!(!error.to_string().contains("secret"));
 }
 
@@ -1760,8 +1792,12 @@ async fn connector_for(
         .expect("configuration serializes"),
     )
     .expect("configuration is written");
-    JiraConnectors::read_with_keychain(root, Arc::new(FixtureKeychain::default()))
-        .expect("configuration loads")
+    JiraConnectors::read_with_keychain(
+        root,
+        kontor_core::id::RealmId::generate(),
+        Arc::new(FixtureKeychain::default()),
+    )
+    .expect("configuration loads")
 }
 
 /// The plan every immutable-id case below reads back against.

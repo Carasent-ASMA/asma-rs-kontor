@@ -1,0 +1,14 @@
+{
+  "observed_utc": "2026-10-03T22:36:01.403217+00:00",
+  "base": "975b05f91a69ac4c8623c5655dc1855091f81b69",
+  "actual_final_parent": "975b05f91a69ac4c8623c5655dc1855091f81b69",
+  "branch": "feat/ASMA-8278-shared-orchestration-workflow",
+  "tracked_delta_owned_only": true,
+  "attestation_rs_change_export_only": true,
+  "current_candidate_isolated_hashes_match": true,
+  "all_mutant_sources_restored": true,
+  "checks_passed": true,
+  "owned_writes": "finished and released to root",
+  "no_pending_worker_processes": "all observed check/mutation process sessions completed successfully; no further source work scheduled",
+  "limits": "no stage/commit/push/store dependency/caller/endpoint/DB/schema/custody/native/provider/live effects"
+}

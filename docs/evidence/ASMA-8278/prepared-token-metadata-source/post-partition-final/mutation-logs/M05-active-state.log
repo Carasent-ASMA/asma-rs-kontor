@@ -1,0 +1,19 @@
+   Compiling kontor-store v0.2.1 (/private/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-source/crates/kontor-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.59s
+     Running tests/attestation_token_metadata.rs (/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-prepared-token-validation-da8llp8_/post-partition-final/mutation-target/debug/deps/attestation_token_metadata-27446f01ef2e338a)
+
+running 1 test
+
+thread 'guards::inactive_binding_and_node_each_refuse_unchanged' (28678090) panicked at crates/kontor-store/tests/attestation_token_metadata/fixture.rs:392:14:
+must refuse: AttestationTokenProjection { scope: AttestationAuthorityScope { realm_id: RealmId(01a103a8-c065-73f2-8833-d94e2f34beaf), project_id: ProjectId(01a103a8-c7dc-7653-8d64-5ad2a7ced731), application: ExternalId("asma.planning-pair.application.v1") }, head_revision: 1, selected_token: Some(StoredPreparedAttestationToken { issuer: ExternalId("issuer"), key_id: ExternalId("key-1"), token_id: ExternalId("token-1"), payload_digest: ContentHash("9c95e8c8a466e399d2fa200e25f820bf3863ba11c90143559deefeaab6ee10b4"), key_material_digest: ContentHash("039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81"), key_registered_revision: 1, preparation_key_head_revision: 1, not_before: 10, expires_at: 1000, mini_project_id: MiniProjectId(01a103a8-c7dc-7653-8d64-5aeabfe476e5), task_id: None, seat_binding_id: SeatBindingId(01a103a8-c7eb-7cd3-a8a7-b96aaad45223), topology_node_id: TopologyNodeId(01a103a8-c7e6-7d62-840f-7c84419c42e0), binding_revision: AggregateRevision(1), node_revision: AggregateRevision(1), provenance: Hosted, occupancy_generation: 1, native_identity: NativeRuntimeIdentity { runtime_kind: RuntimeKindKey("paseo.agent"), host: ExternalName("fixture-host"), generation: 11, native_id: ExternalId("hosted-current") }, registered_revision: 1, revoked_revision: None }) }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test guards::inactive_binding_and_node_each_refuse_unchanged ... FAILED
+
+failures:
+
+failures:
+    guards::inactive_binding_and_node_each_refuse_unchanged
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 1.96s
+
+error: test failed, to rerun pass `-p kontor-store --test attestation_token_metadata`

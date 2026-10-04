@@ -1,0 +1,10 @@
+{
+  "command": [
+    "python3",
+    "/var/folders/t3/0tbx772d571_57t01yb9twx00000gn/T/asma-8278-ledger-a01-wal-validation-2i033aws/run_mutation.py"
+  ],
+  "started_at_utc": "2026-10-03T19:15:42.721233+00:00",
+  "finished_at_utc": "2026-10-03T19:17:09.539069+00:00",
+  "exit": 0,
+  "seconds": 86.818
+}

@@ -1,0 +1,254 @@
+[
+  {
+    "mutant": "MUT-004",
+    "path": "crates/kontor-memory-cognee/src/lib.rs",
+    "verdict": "KILLED",
+    "base_file_sha256": "f461effcda17a460a0939ef2bb077f74de1bd0b26ee5b6c44b997fcd3ec84c40",
+    "mutant_file_sha256": "dc38c8dfa7d31eaf9d9e27145b35b549fa3fd5e86d4df58510192450d3c73f24",
+    "patch_sha256": "79488c1a95a3fb92944ea6f33bda9bea091c2637e5940e84e11fe41e5bf380fd",
+    "base_source_sha256": "528cbcd02cc5ccf553923c01751390bea1cf8f1441f2157e4e6a3c920ecb2b21",
+    "mutant_source_sha256": "a8c2ef9beb945abc9108bb281a8703f0517aea3e8dede1b5fdfefd65e4c3ae78",
+    "restored_source_sha256": "528cbcd02cc5ccf553923c01751390bea1cf8f1441f2157e4e6a3c920ecb2b21",
+    "baseline": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-memory-cognee",
+        "--test",
+        "fixtures",
+        "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text",
+        "--",
+        "--exact"
+      ],
+      "exit_code": 0,
+      "seconds": 4.043,
+      "log": "docs/evidence/ASMA-8158/receipts/mut-004-baseline.log",
+      "log_sha256": "c791508a5812f0b34d08e7240f7c90d0d39a9dd92e82cba4abf08477bdf8b92b",
+      "compiled": true,
+      "behavioral_failure": false,
+      "executed_tests": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.74s"
+      ],
+      "failed_tests": []
+    },
+    "seeded": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-memory-cognee",
+        "--test",
+        "fixtures",
+        "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text",
+        "--",
+        "--exact"
+      ],
+      "exit_code": 101,
+      "seconds": 3.693,
+      "log": "docs/evidence/ASMA-8158/receipts/mut-004-seeded.log",
+      "log_sha256": "af397e0cfad20c441381f3ebb67306f12de690daefc977ba5c530ab21bdcc386",
+      "compiled": true,
+      "behavioral_failure": true,
+      "executed_tests": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.81s"
+      ],
+      "failed_tests": [
+        "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text"
+      ]
+    },
+    "restored": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-memory-cognee",
+        "--test",
+        "fixtures",
+        "authoritative_rehydration_rejects_leakage_and_never_trusts_cognee_text",
+        "--",
+        "--exact"
+      ],
+      "exit_code": 0,
+      "seconds": 3.373,
+      "log": "docs/evidence/ASMA-8158/receipts/mut-004-restored.log",
+      "log_sha256": "2e24ed101e8130ce2632090718c5b3a9ca04ac312993a06316b8fd586ccba875",
+      "compiled": true,
+      "behavioral_failure": false,
+      "executed_tests": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.71s"
+      ],
+      "failed_tests": []
+    },
+    "patch": "docs/evidence/ASMA-8158/receipts/mut-004.patch.gz",
+    "patch_gzip_sha256": "38bc1ba105da3f0e5d012670f350b5c50edc13429ca03a182943b6179c8ff887"
+  },
+  {
+    "mutant": "MUT-005",
+    "path": "crates/kontor-daemon/src/applications.rs",
+    "verdict": "KILLED",
+    "base_file_sha256": "0a15e9f04c77edfd34b56ef6a0be1f70b5c142b4cdc1d795bc0e5d2a7292617a",
+    "mutant_file_sha256": "df0b77962daa2ffe6901b80f5dfcb5738aee9d1ba5d80661854d6d147013a482",
+    "patch_sha256": "584a9fcb593bd17604f0c9ab4285144edc8d3023b5fa12b9ed475a61262a3ec7",
+    "base_source_sha256": "528cbcd02cc5ccf553923c01751390bea1cf8f1441f2157e4e6a3c920ecb2b21",
+    "mutant_source_sha256": "ff02ed24c4414294097d4d274dbc923919477145087b5677f02fef526b62b7ca",
+    "restored_source_sha256": "528cbcd02cc5ccf553923c01751390bea1cf8f1441f2157e4e6a3c920ecb2b21",
+    "baseline": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked",
+        "--",
+        "--exact"
+      ],
+      "exit_code": 0,
+      "seconds": 25.163,
+      "log": "docs/evidence/ASMA-8158/receipts/mut-005-baseline.log",
+      "log_sha256": "211a6148a50f8fdf5b0b0680127d94e9e0816fe8ea3befa1e5cc5b1f671ddce5",
+      "compiled": true,
+      "behavioral_failure": false,
+      "executed_tests": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.41s"
+      ],
+      "failed_tests": []
+    },
+    "seeded": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked",
+        "--",
+        "--exact"
+      ],
+      "exit_code": 101,
+      "seconds": 37.482,
+      "log": "docs/evidence/ASMA-8158/receipts/mut-005-seeded.log",
+      "log_sha256": "85434d9d9448df6a44187fc1bfa7aaeee02b2e8069dca795f4667bc12cff9c05",
+      "compiled": true,
+      "behavioral_failure": true,
+      "executed_tests": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.48s"
+      ],
+      "failed_tests": [
+        "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked"
+      ]
+    },
+    "restored": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::degraded_launch_never_lists_the_corpus_and_timeout_keeps_store_unlocked",
+        "--",
+        "--exact"
+      ],
+      "exit_code": 0,
+      "seconds": 25.359,
+      "log": "docs/evidence/ASMA-8158/receipts/mut-005-restored.log",
+      "log_sha256": "bc64075a96c69381514bda82803bba139435288b7875275916c06916e5c70451",
+      "compiled": true,
+      "behavioral_failure": false,
+      "executed_tests": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.37s"
+      ],
+      "failed_tests": []
+    },
+    "patch": "docs/evidence/ASMA-8158/receipts/mut-005.patch.gz",
+    "patch_gzip_sha256": "bd1a5e367309c49936a39540be52cffcd9fa4003d8f8e884c6ac35a8fcfc368b"
+  },
+  {
+    "mutant": "MUT-006",
+    "path": "crates/kontor-daemon/src/applications.rs",
+    "verdict": "KILLED",
+    "base_file_sha256": "0a15e9f04c77edfd34b56ef6a0be1f70b5c142b4cdc1d795bc0e5d2a7292617a",
+    "mutant_file_sha256": "27bdb82aa4bccf1f73271f84f50113a5c230844f39c2b71d26bd8cc64729008b",
+    "patch_sha256": "5421780f81c2c4754c6e04534341ba086e8f891bb7b5626ba41021bc9cb655e7",
+    "base_source_sha256": "528cbcd02cc5ccf553923c01751390bea1cf8f1441f2157e4e6a3c920ecb2b21",
+    "mutant_source_sha256": "4d32bc2545bb54274011151e80ede79cde60a5631c2f7aac39dee067b0e55dcc",
+    "restored_source_sha256": "528cbcd02cc5ccf553923c01751390bea1cf8f1441f2157e4e6a3c920ecb2b21",
+    "baseline": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding",
+        "--",
+        "--exact"
+      ],
+      "exit_code": 0,
+      "seconds": 2.508,
+      "log": "docs/evidence/ASMA-8158/receipts/mut-006-baseline.log",
+      "log_sha256": "aca7a3c3530ed4537b6dbbfc4d20552ee9bb5436cf307810829ebeb7a568bd0a",
+      "compiled": true,
+      "behavioral_failure": false,
+      "executed_tests": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.22s"
+      ],
+      "failed_tests": []
+    },
+    "seeded": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding",
+        "--",
+        "--exact"
+      ],
+      "exit_code": 101,
+      "seconds": 36.746,
+      "log": "docs/evidence/ASMA-8158/receipts/mut-006-seeded.log",
+      "log_sha256": "8ec25738563f681308ee8b69d8e6bb56a413896ce5ce6df502377c71db6fbb5e",
+      "compiled": true,
+      "behavioral_failure": true,
+      "executed_tests": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.30s"
+      ],
+      "failed_tests": [
+        "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding"
+      ]
+    },
+    "restored": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "kontor-daemon",
+        "--test",
+        "loopback_api",
+        "experience_launch::root_launch_contains_exact_frozen_canonical_bytes_and_downstream_cites_same_binding",
+        "--",
+        "--exact"
+      ],
+      "exit_code": 0,
+      "seconds": 24.819,
+      "log": "docs/evidence/ASMA-8158/receipts/mut-006-restored.log",
+      "log_sha256": "6eff6b44ed058e719d4600119d0becec7bd641afb5601e9838d03cfa1ed9333b",
+      "compiled": true,
+      "behavioral_failure": false,
+      "executed_tests": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 488 filtered out; finished in 2.27s"
+      ],
+      "failed_tests": []
+    },
+    "patch": "docs/evidence/ASMA-8158/receipts/mut-006.patch.gz",
+    "patch_gzip_sha256": "d70a488e3e7a976181203c907d9ad720fd7f912880390ef558b16bfd1b987793"
+  }
+]

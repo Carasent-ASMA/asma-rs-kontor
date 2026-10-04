@@ -1,0 +1,18 @@
+{
+  "sourceCommit": "51cfef9caaa1e2b12674ad932d0adfb0658d4777",
+  "sourceTree": "c63a37e6d0b0db8e6cfb495d044e02d33f62a698",
+  "archiveSha256": "a4a661119a5f5e5c6fa211a75397cd72c5b5f5a7e45bc4d84816b0fc96f7cebe",
+  "command": [
+    "python3",
+    "-u",
+    "scripts/verify-tree.py",
+    "--mode",
+    "archive"
+  ],
+  "startedAt": "2026-09-26T16:29:20.686892+00:00",
+  "finishedAt": "2026-09-26T16:55:33.417607+00:00",
+  "exitCode": 0,
+  "logSha256": "0fa98c9fe6e5c524b559ea4dadb58591c342e567d80d9b88809a4524bee2bdaa",
+  "privateTarget": "/private/tmp/ASMA-8114-legacy-read-full-gate-51cfef9c-network/target",
+  "scope": "Full exact-candidate archive gate only; no merge/build/deployment/acceptance credit."
+}
